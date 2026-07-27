@@ -81,7 +81,7 @@ UniqueHandle DuplicateStandardHandle(DWORD standard_handle, DWORD null_access) {
 }
 
 UniqueHandle CreateKillOnCloseJob() {
-    const UniqueHandle job{CreateJobObjectW(nullptr, nullptr)};
+    UniqueHandle job{CreateJobObjectW(nullptr, nullptr)};
     if (!job) {
         throw Win32Error("CreateJobObjectW");
     }
@@ -141,13 +141,10 @@ std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& argv) {
     return command_line;
 }
 
-DWORD RunProcessInJob(
+DWORD RunProcessInJobImpl(
     HANDLE primary_token,
     const std::vector<std::wstring>& argv,
     const std::filesystem::path& cwd) {
-    if (primary_token == nullptr || primary_token == INVALID_HANDLE_VALUE) {
-        throw std::invalid_argument("primary token handle is invalid");
-    }
     auto command_line = BuildWindowsCommandLine(argv);
     std::vector<wchar_t> mutable_command_line(
         command_line.begin(), command_line.end());
@@ -183,7 +180,21 @@ DWORD RunProcessInJob(
     const auto job = CreateKillOnCloseJob();
     constexpr DWORD kCreationFlags =
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
-    if (CreateProcessAsUserW(
+    BOOL created = FALSE;
+    if (primary_token == nullptr) {
+        created = CreateProcessW(
+            nullptr,
+            mutable_command_line.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            kCreationFlags,
+            nullptr,
+            cwd.c_str(),
+            &startup.StartupInfo,
+            &process_info);
+    } else {
+        created = CreateProcessAsUserW(
             primary_token,
             nullptr,
             mutable_command_line.data(),
@@ -194,8 +205,11 @@ DWORD RunProcessInJob(
             nullptr,
             cwd.c_str(),
             &startup.StartupInfo,
-            &process_info) == 0) {
-        throw Win32Error("CreateProcessAsUserW");
+            &process_info);
+    }
+    if (created == FALSE) {
+        throw Win32Error(
+            primary_token == nullptr ? "CreateProcessW" : "CreateProcessAsUserW");
     }
     const UniqueHandle process{process_info.hProcess};
     const UniqueHandle thread{process_info.hThread};
@@ -218,6 +232,22 @@ DWORD RunProcessInJob(
         throw Win32Error("GetExitCodeProcess");
     }
     return exit_code;
+}
+
+DWORD RunProcessInJob(
+    HANDLE primary_token,
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd) {
+    if (primary_token == nullptr || primary_token == INVALID_HANDLE_VALUE) {
+        throw std::invalid_argument("primary token handle is invalid");
+    }
+    return RunProcessInJobImpl(primary_token, argv, cwd);
+}
+
+DWORD RunHostProcessInJob(
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd) {
+    return RunProcessInJobImpl(nullptr, argv, cwd);
 }
 
 }  // namespace mycli::sandbox

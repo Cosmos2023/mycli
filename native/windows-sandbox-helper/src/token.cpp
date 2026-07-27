@@ -18,6 +18,12 @@ UniqueHandle CreateRestrictedPrimaryToken(const std::vector<PSID>& restricting_s
     }
     const UniqueHandle process_token{raw_process_token};
 
+    return CreateRestrictedPrimaryTokenFrom(process_token.get(), restricting_sids);
+}
+
+UniqueHandle CreateRestrictedPrimaryTokenFrom(
+    HANDLE base_token,
+    const std::vector<PSID>& restricting_sids) {
     HANDLE raw_restricted_token = nullptr;
     std::vector<SID_AND_ATTRIBUTES> entries;
     entries.reserve(restricting_sids.size());
@@ -27,7 +33,7 @@ UniqueHandle CreateRestrictedPrimaryToken(const std::vector<PSID>& restricting_s
     const DWORD flags = DISABLE_MAX_PRIVILEGE |
         (entries.empty() ? 0 : (LUA_TOKEN | WRITE_RESTRICTED));
     if (CreateRestrictedToken(
-            process_token.get(),
+            base_token,
             flags,
             0,
             nullptr,

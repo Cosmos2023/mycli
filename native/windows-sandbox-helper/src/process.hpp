@@ -14,6 +14,8 @@ DWORD RunProcessInJob(
     HANDLE primary_token,
     const std::vector<std::wstring>& argv,
     const std::filesystem::path& cwd);
+DWORD RunHostProcessInJob(
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd);
 
 }  // namespace mycli::sandbox
-

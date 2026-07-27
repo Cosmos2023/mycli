@@ -91,7 +91,69 @@ jobs:
       - name: Smoke-test helper handshake
         shell: pwsh
         run: |
-          $handshake = & native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe --handshake | ConvertFrom-Json
+          $helper = "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe"
+          & $helper --setup
+          if ($LASTEXITCODE -ne 0) { throw "sandbox setup failed" }
+          $handshake = & $helper --handshake | ConvertFrom-Json
           if ($handshake.name -ne "mycli-windows-sandbox") { throw "helper identity mismatch" }
           if ($handshake.protocol_version -ne 1) { throw "helper protocol mismatch" }
+          if ($handshake.setup_complete -ne $true) { throw "helper setup is incomplete" }
           if ($handshake.sandbox_ready -ne $false) { throw "incomplete helper must fail closed" }
+      - name: Enforce filesystem and network boundaries
+        shell: pwsh
+        run: |
+          $helper = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe").Path
+          $probe = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox-probe.exe").Path
+          $workspace = Join-Path $env:RUNNER_TEMP "mycli-sandbox-workspace"
+          $outside = Join-Path $env:RUNNER_TEMP "mycli-sandbox-outside.txt"
+          New-Item -ItemType Directory -Force -Path $workspace, (Join-Path $workspace ".git") | Out-Null
+          Set-Content -NoNewline -Path (Join-Path $workspace ".env") -Value "secret"
+
+          function Invoke-Sandbox([string[]] $commandArgs) {
+            $request = @{
+              protocol_version = 1
+              command = @{ argv = $commandArgs }
+              cwd = $workspace
+              workspace_roots = @($workspace)
+              writable_roots = @($workspace)
+              denied_read_roots = @()
+              denied_read_globs = @("**/.env", "**/.env.*")
+              filesystem = "workspace_write"
+              network = "disabled"
+              mode = "workspace-write"
+            } | ConvertTo-Json -Depth 5 -Compress
+            & $helper --request-json $request
+            return $LASTEXITCODE
+          }
+
+          $inside = Join-Path $workspace "inside.txt"
+          if ((Invoke-Sandbox @($probe, "--write-file", $inside)) -ne 0) {
+            throw "sandbox could not write inside workspace"
+          }
+          if (-not (Test-Path $inside)) { throw "inside write did not create a file" }
+          if ((Invoke-Sandbox @($probe, "--write-file", $outside)) -eq 0) {
+            throw "sandbox wrote outside workspace"
+          }
+          if (Test-Path $outside) { throw "outside write created a file" }
+          if ((Invoke-Sandbox @($probe, "--read-file", (Join-Path $workspace ".env"))) -eq 0) {
+            throw "sandbox read a denied secret"
+          }
+          if ((Invoke-Sandbox @($probe, "--write-file", (Join-Path $workspace ".git/config"))) -eq 0) {
+            throw "sandbox wrote protected repository metadata"
+          }
+
+          $portFile = Join-Path $env:RUNNER_TEMP "mycli-sandbox-port.txt"
+          $server = Start-Process -FilePath $probe -ArgumentList @("--listen", $portFile) -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(10)
+            while (-not (Test-Path $portFile)) {
+              if ((Get-Date) -gt $deadline) { throw "network test server did not start" }
+              Start-Sleep -Milliseconds 50
+            }
+            $port = (Get-Content $portFile -Raw).Trim()
+            if ((Invoke-Sandbox @($probe, "--connect", $port)) -eq 0) {
+              throw "offline sandbox connected to a loopback server"
+            }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }

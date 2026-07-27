@@ -46,6 +46,15 @@ void GrantWritableRoot(const std::filesystem::path& root, PSID capability_sid) {
         SUB_CONTAINERS_AND_OBJECTS_INHERIT);
 }
 
+void GrantReadableRoot(const std::filesystem::path& root, PSID account_sid) {
+    UpdatePathAcl(
+        root,
+        account_sid,
+        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        GRANT_ACCESS,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+}
+
 void DenyReadPath(const std::filesystem::path& path, PSID capability_sid) {
     UpdatePathAcl(
         path,

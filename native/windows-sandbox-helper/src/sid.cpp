@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cwctype>
 #include <sstream>
+#include <vector>
 
 namespace mycli::sandbox {
 LocalSid DeriveCapabilitySid(
@@ -17,14 +18,43 @@ LocalSid DeriveCapabilitySid(
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
         throw std::runtime_error("BCryptOpenAlgorithmProvider failed");
     }
+    DWORD object_bytes = 0;
+    DWORD copied = 0;
+    if (BCryptGetProperty(
+            algorithm,
+            BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&object_bytes),
+            sizeof(object_bytes),
+            &copied,
+            0) < 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("BCryptGetProperty failed");
+    }
+    std::vector<UCHAR> hash_object(object_bytes);
     std::array<unsigned char, 32> digest{};
-    const auto status = BCryptHash(
-        algorithm, nullptr, 0,
-        reinterpret_cast<PUCHAR>(normalized.data()),
-        static_cast<ULONG>(normalized.size() * sizeof(wchar_t)),
-        digest.data(), static_cast<ULONG>(digest.size()));
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    auto status = BCryptCreateHash(
+        algorithm,
+        &hash,
+        hash_object.data(),
+        static_cast<ULONG>(hash_object.size()),
+        nullptr,
+        0,
+        0);
+    if (status >= 0) {
+        status = BCryptHashData(
+            hash,
+            reinterpret_cast<PUCHAR>(normalized.data()),
+            static_cast<ULONG>(normalized.size() * sizeof(wchar_t)),
+            0);
+    }
+    if (status >= 0) {
+        status = BCryptFinishHash(
+            hash, digest.data(), static_cast<ULONG>(digest.size()), 0);
+    }
+    if (hash != nullptr) BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (status < 0) throw std::runtime_error("BCryptHash failed");
+    if (status < 0) throw std::runtime_error("BCrypt SHA-256 failed");
     std::wostringstream text;
     text << L"S-1-5-21";
     for (std::size_t offset = 0; offset < 16; offset += 4) {
@@ -34,6 +64,14 @@ LocalSid DeriveCapabilitySid(
     }
     PSID sid = nullptr;
     if (ConvertStringSidToSidW(text.str().c_str(), &sid) == 0) {
+        throw Win32Error("ConvertStringSidToSidW");
+    }
+    return LocalSid{sid};
+}
+
+LocalSid SidFromString(const std::wstring& sid_string) {
+    PSID sid = nullptr;
+    if (ConvertStringSidToSidW(sid_string.c_str(), &sid) == 0) {
         throw Win32Error("ConvertStringSidToSidW");
     }
     return LocalSid{sid};

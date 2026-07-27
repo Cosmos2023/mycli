@@ -102,7 +102,22 @@ std::vector<std::filesystem::path> ResolveDeniedReadPaths(
 
 }  // namespace
 
-DWORD RunSandboxRequest(const SandboxRequest& request) {
+DWORD RunSandboxRequest(
+    const SandboxRequest& request,
+    HANDLE base_token,
+    PSID account_sid) {
+    if (account_sid != nullptr) {
+        for (const auto& root_value : request.workspace_roots) {
+            GrantReadableRoot(std::filesystem::path{root_value}, account_sid);
+        }
+        const std::filesystem::path executable{request.command_argv.front()};
+        if (executable.is_absolute() && executable.has_parent_path()) {
+            const auto install_root = executable.parent_path().has_parent_path()
+                ? executable.parent_path().parent_path()
+                : executable.parent_path();
+            GrantReadableRoot(install_root, account_sid);
+        }
+    }
     std::vector<LocalSid> capabilities;
     if (request.mode == SandboxMode::kReadOnly) {
         capabilities.push_back(DeriveCapabilitySid(
@@ -113,6 +128,7 @@ DWORD RunSandboxRequest(const SandboxRequest& request) {
             const std::filesystem::path root{root_value};
             capabilities.push_back(DeriveCapabilitySid(root, L"workspace-write"));
             GrantWritableRoot(root, capabilities.back().get());
+            if (account_sid != nullptr) GrantWritableRoot(root, account_sid);
         }
     }
 
@@ -131,13 +147,27 @@ DWORD RunSandboxRequest(const SandboxRequest& request) {
             }
         }
     }
+    if (account_sid != nullptr) {
+        for (const auto& path : denied_paths) DenyReadPath(path, account_sid);
+        for (const auto& root_value : request.writable_roots) {
+            const std::filesystem::path root{root_value};
+            for (const auto* name : kProtectedMetadata) {
+                const auto protected_path = root / name;
+                if (std::filesystem::exists(protected_path)) {
+                    DenyWritePath(protected_path, account_sid);
+                }
+            }
+        }
+    }
 
     std::vector<PSID> restricting_sids;
     restricting_sids.reserve(capabilities.size());
     for (const auto& capability : capabilities) {
         restricting_sids.push_back(capability.get());
     }
-    const auto token = CreateRestrictedPrimaryToken(restricting_sids);
+    const auto token = base_token == nullptr
+        ? CreateRestrictedPrimaryToken(restricting_sids)
+        : CreateRestrictedPrimaryTokenFrom(base_token, restricting_sids);
     return RunProcessInJob(
         token.get(), request.command_argv, std::filesystem::path{request.cwd});
 }
