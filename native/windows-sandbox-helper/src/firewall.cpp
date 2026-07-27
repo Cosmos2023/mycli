@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+#include "wfp.hpp"
+
 namespace mycli::sandbox {
 namespace {
 
@@ -359,6 +361,7 @@ void SetupOfflineFirewall(
             throw std::runtime_error("offline firewall rule read-back verification failed");
         }
     }
+    SetupOfflineWfp(offline_sid);
     std::filesystem::create_directories(state_directory);
     std::ofstream marker{MarkerPath(state_directory), std::ios::binary | std::ios::trunc};
     marker << SidAscii(offline_sid) << '\n';
@@ -373,7 +376,7 @@ bool OfflineFirewallSetupReady(
     std::string stored;
     std::getline(marker, stored);
     if ((!marker.good() && !marker.eof()) || stored != SidAscii(offline_sid)) return false;
-    return LiveFirewallRuleReady(offline_sid);
+    return LiveFirewallRuleReady(offline_sid) && OfflineWfpReady(offline_sid);
 }
 
 }  // namespace mycli::sandbox

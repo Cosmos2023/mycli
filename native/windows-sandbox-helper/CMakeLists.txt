@@ -16,7 +16,7 @@ function(mycli_configure_windows_target target_name)
     )
     target_include_directories(${target_name} PRIVATE src third_party)
     target_link_libraries(${target_name} PRIVATE
-        advapi32 bcrypt crypt32 netapi32 ole32 oleaut32 shell32 shlwapi uuid)
+        advapi32 bcrypt crypt32 fwpuclnt netapi32 ole32 oleaut32 rpcrt4 shell32 shlwapi uuid)
 
     if(MSVC)
         target_compile_options(${target_name} PRIVATE /W4 /WX /permissive- /utf-8)
@@ -34,6 +34,7 @@ add_executable(mycli-windows-sandbox
     src/sandbox.cpp
     src/sid.cpp
     src/token.cpp
+    src/wfp.cpp
 )
 mycli_configure_windows_target(mycli-windows-sandbox)
 
