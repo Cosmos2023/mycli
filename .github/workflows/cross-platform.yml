@@ -89,6 +89,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Publish Windows sandbox started marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-started $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-started --force
       - name: Build helper
         shell: pwsh
         run: |
