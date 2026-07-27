@@ -1,8 +1,12 @@
 from pathlib import Path
+import sys
 import threading
 import time
 
+import pytest
+
 from mycli.domain.runtime import (
+    ExecutionPolicy,
     RiskLevel,
     RuntimeInterruptToken,
     ShellBackendProfile,
@@ -16,8 +20,8 @@ from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, ShellTool, derive_command_pattern, execute_bash
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackendRequest
+from mycli.tools.process_sandbox import process_sandbox_backend_profile
 from tests.support.shell_commands import python_shell_command
-import sys
 
 
 def test_execute_bash_forwards_configured_shell_path(tmp_path: Path) -> None:
@@ -262,6 +266,92 @@ def test_shell_tool_executes_through_backend_contract(tmp_path: Path) -> None:
     backend_payload = result.raw_payload["runtime_enforcement"]["backend"]
     assert backend_payload["backend"] == "local"
     assert backend_payload["isolation"] == "host_subprocess"
+
+
+def test_shell_tool_passes_runtime_sandbox_to_backend(tmp_path: Path) -> None:
+    class FakeBackend(LocalShellBackend):
+        def __init__(self) -> None:
+            self.requests: list[ShellBackendRequest] = []
+
+        def execute(self, request: ShellBackendRequest) -> dict[str, object]:
+            self.requests.append(request)
+            return {
+                "exit_code": 0,
+                "output": "ok",
+                "truncated": False,
+                "process_state": "completed",
+            }
+
+    policy = ExecutionPolicy.for_workspace(tmp_path)
+    backend = FakeBackend()
+    tool = ShellTool(workspace_root=tmp_path, shell_backend=backend)
+
+    result = tool.execute(
+        {
+            "command": "printf ok",
+            "_runtime_shell_options": ShellExecutionOptions.from_policy(policy),
+        }
+    )
+
+    assert result.success is True
+    assert backend.requests[0].sandbox == policy.sandbox
+
+
+def test_shell_tool_reports_effective_process_sandbox(tmp_path: Path) -> None:
+    policy = ExecutionPolicy.for_workspace(tmp_path)
+    profile = process_sandbox_backend_profile(policy.sandbox)
+    if not profile.available:
+        pytest.skip("platform process sandbox is unavailable")
+    tool = ShellTool(workspace_root=tmp_path)
+
+    result = tool.execute(
+        {
+            "command": "printf ok",
+            "_runtime_shell_options": ShellExecutionOptions.from_policy(policy),
+        }
+    )
+
+    assert result.success is True
+    assert result.raw_payload["runtime_enforcement"]["backend"]["isolation"] == profile.isolation
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_shell_tool_cannot_write_outside_workspace_in_default_sandbox(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    policy = ExecutionPolicy.for_workspace(workspace)
+    tool = ShellTool(workspace_root=workspace)
+
+    result = tool.execute(
+        {
+            "command": f"printf blocked > {outside}",
+            "_runtime_shell_options": ShellExecutionOptions.from_policy(policy),
+        }
+    )
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "nonzero_exit"
+    assert not outside.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_shell_tool_runs_tty_command_inside_default_sandbox(tmp_path: Path) -> None:
+    policy = ExecutionPolicy.for_workspace(tmp_path)
+    tool = ShellTool(workspace_root=tmp_path)
+
+    result = tool.execute(
+        {
+            "command": "printf tty-ok",
+            "tty": True,
+            "_runtime_shell_options": ShellExecutionOptions.from_policy(policy),
+        }
+    )
+
+    assert result.success is True
+    assert "tty-ok" in str(result.raw_payload["output"])
 
 
 def test_shell_tool_maps_new_session_controls_to_backend(tmp_path: Path) -> None:

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
+from unittest.mock import patch
 
+import pytest
+
+from mycli.domain.runtime import ExecutionPolicy, SandboxMode
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
 
@@ -17,6 +22,43 @@ def test_git_status_reports_dirty_worktree(tmp_path: Path) -> None:
     assert result.raw_payload["dirty"] is True
     assert result.raw_payload["entry_count"] == 1
     assert result.raw_payload["entries"] == [{"status": "??", "path": "notes.txt"}]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_git_process_uses_runtime_sandbox(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(
+        [],
+        0,
+        stdout="## main\n",
+        stderr="",
+    )
+    with patch("mycli.tools.git_tools.subprocess.run", return_value=completed) as run:
+        result = GitStatusTool(tmp_path).execute(
+            {
+                "_runtime_sandbox_profile": ExecutionPolicy.for_workspace(
+                    tmp_path
+                ).sandbox
+            }
+        )
+
+    assert result.success is True
+    assert run.call_args.args[0][0] == "/usr/bin/sandbox-exec"
+    assert run.call_args.kwargs["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_git_status_runs_in_read_only_sandbox(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    policy = ExecutionPolicy.for_workspace(
+        tmp_path,
+        sandbox_mode=SandboxMode.READ_ONLY,
+    )
+
+    result = GitStatusTool(tmp_path).execute(
+        {"_runtime_sandbox_profile": policy.sandbox}
+    )
+
+    assert result.success is True
 
 
 def test_git_diff_reports_bounded_diff_and_stat(tmp_path: Path) -> None:

@@ -142,6 +142,14 @@ def test_shell_backend_profile_is_bounded_runtime_metadata() -> None:
     assert "command" not in str(payload)
 
 
+def test_shell_execution_options_preserve_runtime_sandbox_profile() -> None:
+    policy = ExecutionPolicy.for_workspace(Path("/repo"))
+
+    options = ShellExecutionOptions.from_policy(policy)
+
+    assert options.sandbox == policy.sandbox
+
+
 def test_approval_gate_protocol_accepts_policy_decisions() -> None:
     class DenyGate:
         def decide(self, call: ToolCall, policy: ExecutionPolicy) -> ToolRuntimeDecision:

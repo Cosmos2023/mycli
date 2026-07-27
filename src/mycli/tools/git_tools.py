@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
 
+from mycli.domain.runtime import SandboxProfile
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.model_output import git_model_output
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
+from mycli.tools.process_sandbox import (
+    ProcessSandboxUnavailable,
+    prepare_sandboxed_argv,
+)
 
 
 TEXT_LIMIT = 12_000
@@ -35,8 +41,11 @@ class GitStatusTool:
         return ToolEffectProfile(filesystem="read", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        del arguments
-        result = _run_git(self._workspace_root, ["status", "--short", "--branch"])
+        result = _run_git(
+            self._workspace_root,
+            ["status", "--short", "--branch"],
+            sandbox=_sandbox_profile(arguments),
+        )
         if not result["success"]:
             return _failure("Failed to read git status", result)
         stdout = str(result["stdout"])
@@ -85,6 +94,7 @@ class GitDiffTool:
         return ToolEffectProfile(filesystem="read", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        sandbox = _sandbox_profile(arguments)
         path_result = _pathspec(self._workspace_root, arguments.get("path"))
         if isinstance(path_result, ToolResult):
             return path_result
@@ -94,7 +104,7 @@ class GitDiffTool:
             base_args.append("--cached")
         if path_result is not None:
             base_args.extend(["--", path_result])
-        diff_result = _run_git(self._workspace_root, base_args)
+        diff_result = _run_git(self._workspace_root, base_args, sandbox=sandbox)
         if not diff_result["success"]:
             return _failure("Failed to read git diff", diff_result)
 
@@ -106,8 +116,12 @@ class GitDiffTool:
         if path_result is not None:
             stat_args.extend(["--", path_result])
             shortstat_args.extend(["--", path_result])
-        stat_result = _run_git(self._workspace_root, stat_args)
-        shortstat_result = _run_git(self._workspace_root, shortstat_args)
+        stat_result = _run_git(self._workspace_root, stat_args, sandbox=sandbox)
+        shortstat_result = _run_git(
+            self._workspace_root,
+            shortstat_args,
+            sandbox=sandbox,
+        )
 
         diff_text, diff_meta = _bounded_text(str(diff_result["stdout"]))
         payload = {
@@ -154,6 +168,7 @@ class GitLogTool:
         return ToolEffectProfile(filesystem="read", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        sandbox = _sandbox_profile(arguments)
         limit = _bounded_int(arguments.get("limit"), default=DEFAULT_LOG_LIMIT, minimum=1, maximum=MAX_LOG_LIMIT)
         ref = arguments.get("ref")
         args = [
@@ -164,7 +179,7 @@ class GitLogTool:
         ]
         if isinstance(ref, str) and ref:
             args.append(ref)
-        result = _run_git(self._workspace_root, args)
+        result = _run_git(self._workspace_root, args, sandbox=sandbox)
         if not result["success"]:
             return _failure("Failed to read git log", result)
         commits = _parse_log(str(result["stdout"]))
@@ -200,6 +215,7 @@ class GitShowTool:
         return ToolEffectProfile(filesystem="read", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        sandbox = _sandbox_profile(arguments)
         ref = arguments.get("ref")
         ref_text = ref if isinstance(ref, str) and ref else "HEAD"
         path_result = _pathspec(self._workspace_root, arguments.get("path"))
@@ -216,7 +232,7 @@ class GitShowTool:
         args.append(ref_text)
         if path_result is not None:
             args.extend(["--", path_result])
-        result = _run_git(self._workspace_root, args)
+        result = _run_git(self._workspace_root, args, sandbox=sandbox)
         if not result["success"]:
             return _failure("Failed to show git revision", result)
         output, meta = _bounded_text(str(result["stdout"]))
@@ -241,14 +257,21 @@ class GitShowTool:
         return self.execute(call.arguments)
 
 
-def _run_git(workspace_root: Path, args: list[str]) -> dict[str, object]:
+def _run_git(
+    workspace_root: Path,
+    args: list[str],
+    *,
+    sandbox: SandboxProfile | None = None,
+) -> dict[str, object]:
     command = ["git", "-C", str(workspace_root), *args]
     try:
+        launch = prepare_sandboxed_argv(tuple(command), sandbox=sandbox)
         result = subprocess.run(
-            command,
+            list(launch.argv),
             capture_output=True,
             text=True,
             timeout=30,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
             check=False,
         )
     except FileNotFoundError as exc:
@@ -263,6 +286,13 @@ def _run_git(workspace_root: Path, args: list[str]) -> dict[str, object]:
             "success": False,
             "error": "git command timed out after 30s",
             "error_kind": "timeout",
+            "command": _command_preview(args),
+        }
+    except ProcessSandboxUnavailable as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "error_kind": "sandbox_unavailable",
             "command": _command_preview(args),
         }
 
@@ -285,6 +315,11 @@ def _failure(summary: str, payload: dict[str, object]) -> ToolResult:
         error=str(payload.get("error") or summary),
         raw_payload=payload,
     )
+
+
+def _sandbox_profile(arguments: dict[str, Any]) -> SandboxProfile | None:
+    value = arguments.get("_runtime_sandbox_profile")
+    return value if isinstance(value, SandboxProfile) else None
 
 
 def _pathspec(workspace_root: Path, raw_path: object) -> str | ToolResult | None:

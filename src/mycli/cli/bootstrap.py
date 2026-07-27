@@ -100,7 +100,7 @@ def build_turn_service(
             KillShellTool(),
             WebSearchTool(),
             WebFetchTool(),
-            LintTool(),
+            LintTool(workspace_root),
             GitStatusTool(workspace_root),
             GitDiffTool(workspace_root),
             GitLogTool(workspace_root),
@@ -167,5 +167,8 @@ def _build_mcp_tool_providers(
     }
     if not configs:
         return ()
-    clients = {name: McpClient(config) for name, config in configs.items()}
+    clients = {
+        name: McpClient(config, cwd=workspace_root)
+        for name, config in configs.items()
+    }
     return (McpToolContributionProvider(McpToolAdapter(clients)),)

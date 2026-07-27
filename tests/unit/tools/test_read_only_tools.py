@@ -1,5 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
+import sys
 
+import pytest
+
+from mycli.domain.runtime import ExecutionPolicy
 from mycli.domain.tools import ToolCall, ToolEvidence
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.filesystem import FileSystemRuntime
@@ -500,6 +505,29 @@ def test_grep_files_with_matches_is_model_visible(tmp_path: Path) -> None:
     assert "Files with matches (2):" in rendered
     assert "README.md" in rendered
     assert "notes.md" in rendered
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_grep_process_cannot_read_denied_env_file(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "secret.txt").write_text("MYCLI_UNIQUE_SECRET", encoding="utf-8")
+    tool = GrepTool(root)
+    sandbox = replace(
+        ExecutionPolicy.for_workspace(root).sandbox,
+        denied_read_globs=("**/secret.txt",),
+    )
+
+    result = tool.execute(
+        {
+            "pattern": "MYCLI_UNIQUE_SECRET",
+            "output_mode": "content",
+            "_runtime_sandbox_profile": sandbox,
+        }
+    )
+
+    assert result.success is True
+    assert result.raw_payload["matches"] == []
 
 
 def test_grep_content_matches_are_structured_and_locatable(tmp_path: Path) -> None:

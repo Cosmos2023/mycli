@@ -59,6 +59,9 @@ from mycli.tools.invocation_context import ToolInvocationContext
 from mycli.tools.routing.tool_router import ToolRouter
 
 SHELL_TOOL_NAMES = frozenset({"Shell", "Bash", "run_shell"})
+LOCAL_PROCESS_SANDBOX_TOOL_NAMES = frozenset(
+    {"Grep", "Lint", "GitStatus", "GitDiff", "GitLog", "GitShow"}
+)
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
 MAX_LIFECYCLE_CONTENT_PREVIEW_CHARS = 12_000
@@ -936,7 +939,23 @@ class ToolExecutionService:
         *,
         interrupt_token: RuntimeInterruptToken | None,
     ) -> ToolCall:
-        if call.name not in SHELL_TOOL_NAMES and call.name != "WriteStdin":
+        if call.name in LOCAL_PROCESS_SANDBOX_TOOL_NAMES:
+            if self._policy_gate is None:
+                return call
+            arguments = dict(call.arguments)
+            arguments["_runtime_sandbox_profile"] = (
+                self._policy_gate.default_policy().sandbox
+            )
+            return ToolCall(
+                name=call.name,
+                arguments=arguments,
+                reason=call.reason,
+                call_id=call.call_id,
+            )
+        if (
+            call.name not in SHELL_TOOL_NAMES
+            and call.name != "WriteStdin"
+        ):
             return call
         arguments = dict(call.arguments)
         if call.name in SHELL_TOOL_NAMES and self._policy_gate is not None:

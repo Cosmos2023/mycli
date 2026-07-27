@@ -118,6 +118,24 @@ class FakeWriteStdinTool:
         return ToolResult(success=True, summary="captured")
 
 
+class FakeLocalProcessTool:
+    spec = ToolSpec(
+        name="Lint",
+        description="Capture local process runtime arguments",
+        parameters=(),
+    )
+
+    def __init__(self) -> None:
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="read", process=True)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        return ToolResult(success=True, summary="captured")
+
+
 class FakeEditTool:
     spec = ToolSpec(
         name="edit_file",
@@ -1690,6 +1708,51 @@ def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
     assert "stderr" not in tool_trace.payload["raw_payload_keys"]
     assert "python3 -c" not in str(tool_trace.payload)
     assert "print" not in str(tool_trace.payload)
+
+
+def test_tool_execution_service_injects_local_process_sandbox_profile(
+    tmp_path: Path,
+) -> None:
+    tool = FakeLocalProcessTool()
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    service, _ = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=gate,
+        registry=ToolRegistry.from_tools([tool]),
+    )
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Lint"),
+                source=ToolRouteSource.REGISTRY,
+                spec=tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Lint",
+            arguments={},
+            reason="lint",
+            call_id="call_lint",
+        ),
+        tool_router=service._test_router,  # type: ignore[attr-defined]
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    sandbox = tool.seen_arguments[0]["_runtime_sandbox_profile"]
+    assert isinstance(sandbox, SandboxProfile)
+    assert sandbox.mode is SandboxMode.WORKSPACE_WRITE
 
 
 def test_tool_execution_service_injects_shell_interrupt_token_without_tracing_it(

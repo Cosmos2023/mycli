@@ -4,7 +4,12 @@ from collections.abc import Callable
 from pathlib import Path
 import time
 
-from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent, ShellProfile
+from mycli.domain.runtime import (
+    RuntimeInterruptToken,
+    SandboxProfile,
+    ShellLifecycleEvent,
+    ShellProfile,
+)
 from mycli.domain.runtime.background_jobs import BackgroundJobState, BackgroundJobSummary
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_session_manager import (
@@ -41,6 +46,7 @@ class ShellProcessRegistry:
         call_id: str | None = None,
         lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        sandbox: SandboxProfile | None = None,
     ) -> dict[str, object]:
         snapshot = self._manager.start(
             ShellStartRequest(
@@ -58,6 +64,7 @@ class ShellProcessRegistry:
                 call_id=call_id,
                 lifecycle_sink=lifecycle_sink,
                 interrupt_token=interrupt_token,
+                sandbox=sandbox,
             )
         )
         return _snapshot_payload(snapshot)
@@ -81,6 +88,7 @@ class ShellProcessRegistry:
         call_id: str | None = None,
         lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        sandbox: SandboxProfile | None = None,
     ) -> dict[str, object]:
         started = time.monotonic()
         snapshot = self._manager.start(
@@ -101,6 +109,7 @@ class ShellProcessRegistry:
                 call_id=call_id,
                 lifecycle_sink=lifecycle_sink,
                 interrupt_token=interrupt_token,
+                sandbox=sandbox,
             )
         )
         payload = _snapshot_payload(snapshot)

@@ -11,6 +11,7 @@ import time
 import pytest
 
 from mycli.domain.runtime import (
+    ExecutionPolicy,
     PowerShellEdition,
     RuntimeInterruptToken,
     ShellKind,
@@ -63,6 +64,34 @@ def test_manager_decodes_partial_binary_chunks_without_line_wait(tmp_path: Path)
     assert snapshot.stderr == ""
     assert snapshot.transport == "pipe"
     assert snapshot.tty is False
+
+
+def test_manager_applies_process_sandbox_before_transport(tmp_path: Path) -> None:
+    transport = FakeShellTransport()
+    transport.finish(0)
+    seen: list[ShellTransportRequest] = []
+
+    def create_transport(request: ShellTransportRequest) -> FakeShellTransport:
+        seen.append(request)
+        return transport
+
+    manager = ShellSessionManager(transport_factory=create_transport)
+    policy = ExecutionPolicy.for_workspace(tmp_path)
+
+    snapshot = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="printf ok",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=False,
+            sandbox=policy.sandbox,
+        )
+    )
+
+    assert snapshot.success is True
+    assert seen[0].argv[0] == "/usr/bin/sandbox-exec"
+    assert seen[0].argv[-3:] == ("/bin/bash", "-c", "printf ok")
 
 
 def test_manager_flushes_decoder_before_completed_event(tmp_path: Path) -> None:

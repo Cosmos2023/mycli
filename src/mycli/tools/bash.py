@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from mycli.domain.runtime import (
     RuntimeInterruptToken,
+    SandboxProfile,
     ShellExecutionOptions,
     ShellProfile,
     ShellLifecycleEvent,
@@ -79,6 +80,7 @@ class ShellCommandRuntime:
         call_id: str | None = None,
         lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        sandbox: SandboxProfile | None = None,
     ) -> dict[str, Any]:
         effective_cwd = workdir or os.getcwd()
         owner_session_id = current_tool_owner_session_id(self._owner_session_id)
@@ -98,6 +100,7 @@ class ShellCommandRuntime:
             call_id=call_id,
             lifecycle_sink=lifecycle_sink,
             interrupt_token=interrupt_token,
+            sandbox=sandbox,
         )
         payload["cwd"] = effective_cwd
         payload["duration_ms"] = _duration_ms(started)
@@ -143,6 +146,7 @@ class ShellCommandRuntime:
         call_id: str | None = None,
         lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        sandbox: SandboxProfile | None = None,
     ) -> dict[str, Any]:
         effective_cwd = workdir or os.getcwd()
         started = time.monotonic()
@@ -163,6 +167,7 @@ class ShellCommandRuntime:
             call_id=call_id,
             lifecycle_sink=lifecycle_sink,
             interrupt_token=interrupt_token,
+            sandbox=sandbox,
         )
         payload["cwd"] = effective_cwd
         payload["duration_ms"] = _duration_ms(started)
@@ -208,6 +213,7 @@ def execute_bash(
     call_id: str | None = None,
     lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
     interrupt_token: RuntimeInterruptToken | None = None,
+    sandbox: SandboxProfile | None = None,
     backend: ShellBackend | None = None,
 ) -> dict[str, Any]:
     effective_profile = shell_profile or detect_shell_profile(shell_path)
@@ -229,6 +235,7 @@ def execute_bash(
                 call_id=call_id,
                 lifecycle_sink=lifecycle_sink,
                 interrupt_token=interrupt_token,
+                sandbox=sandbox,
             )
         )
     runtime = (
@@ -250,6 +257,7 @@ def execute_bash(
         call_id=call_id,
         lifecycle_sink=lifecycle_sink,
         interrupt_token=interrupt_token,
+        sandbox=sandbox,
     )
 
 
@@ -487,6 +495,7 @@ class _ShellToolBase:
                     RuntimeInterruptToken,
                 )
                 else None,
+                sandbox=shell_options.sandbox,
             )
         )
         payload.setdefault("command_pattern", analysis.command_pattern)
@@ -496,7 +505,13 @@ class _ShellToolBase:
             env_keys=tuple(sorted(env)),
             cwd=cwd_result,
         )
-        runtime_enforcement["backend"] = self._shell_backend.profile.to_trace_payload()
+        profile_for = getattr(self._shell_backend, "profile_for", None)
+        backend_profile = (
+            profile_for(shell_options.sandbox)
+            if callable(profile_for)
+            else self._shell_backend.profile
+        )
+        runtime_enforcement["backend"] = backend_profile.to_trace_payload()
         payload["runtime_enforcement"] = runtime_enforcement
         exit_code = payload.get("exit_code")
         success = exit_code == 0 or payload.get("status") == "running"

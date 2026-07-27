@@ -194,6 +194,7 @@ class ShellBackendProfile:
 @dataclass(slots=True, frozen=True)
 class ShellExecutionOptions:
     workspace_root: Path
+    sandbox: SandboxProfile | None = None
     shell_path: str | None = None
     shell_profile: ShellProfile | None = None
     filesystem: FilesystemPolicy = "workspace_write"
@@ -216,6 +217,7 @@ class ShellExecutionOptions:
     ) -> "ShellExecutionOptions":
         return cls(
             workspace_root=policy.sandbox.cwd,
+            sandbox=policy.sandbox,
             shell_path=shell_path,
             shell_profile=shell_profile,
             filesystem=policy.sandbox.filesystem,
@@ -501,6 +503,7 @@ class RuntimeEnvironmentContract:
         *,
         execpolicy_rule_count: int = 0,
         execpolicy_sources: tuple[str, ...] = (),
+        shell_backend: ShellBackendProfile | None = None,
     ) -> "RuntimeEnvironmentContract":
         normalized_sources = tuple(sorted(set(execpolicy_sources)))
         return cls(
@@ -515,6 +518,7 @@ class RuntimeEnvironmentContract:
             execpolicy_status="enabled" if execpolicy_rule_count > 0 else "disabled",
             execpolicy_rule_count=max(0, execpolicy_rule_count),
             execpolicy_sources=normalized_sources,
+            shell_backend=shell_backend or ShellBackendProfile(),
             writable_roots=policy.sandbox.writable_roots,
             denied_read_roots=policy.sandbox.denied_read_roots,
             denied_read_globs=policy.sandbox.denied_read_globs,

@@ -1,8 +1,11 @@
 from pathlib import Path
 import subprocess
+import sys
 from unittest.mock import patch
 
-from mycli.domain.runtime import PowerShellEdition, ShellKind, ShellProfile
+import pytest
+
+from mycli.domain.runtime import ExecutionPolicy, PowerShellEdition, ShellKind, ShellProfile
 from mycli.tools.lint import LintTool, _detect_linters, lint
 
 
@@ -118,3 +121,41 @@ class TestLint:
             "Lint diagnostics: 1\n"
             "src/app.py:3:4 [F841] local variable is assigned but never used"
         )
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+    def test_linter_process_cannot_write_outside_workspace(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "custom.toml").write_text("", encoding="utf-8")
+        outside = tmp_path / "outside.txt"
+        script = workspace / "lint_probe.py"
+        script.write_text(
+            "\n".join(
+                [
+                    "from pathlib import Path",
+                    "try:",
+                    f"    Path({str(outside)!r}).write_text('escaped')",
+                    "except OSError:",
+                    "    pass",
+                    "print('[]')",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        tool = LintTool(workspace)
+
+        with patch.dict(
+            "mycli.tools.lint.PROJECT_LINTERS",
+            {"custom.toml": [(sys.executable, str(script))]},
+            clear=True,
+        ):
+            result = tool.execute(
+                {
+                    "_runtime_sandbox_profile": ExecutionPolicy.for_workspace(
+                        workspace
+                    ).sandbox
+                }
+            )
+
+        assert result.success is True
+        assert not outside.exists()

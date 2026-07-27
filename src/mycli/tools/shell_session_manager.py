@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from mycli.domain.runtime import (
     RuntimeInterruptToken,
+    SandboxProfile,
     ShellKind,
     ShellLifecycleEvent,
     ShellLifecycleKind,
@@ -19,6 +20,10 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_output_decoder import ShellOutputDecoder
+from mycli.tools.process_sandbox import (
+    ProcessSandboxUnavailable,
+    prepare_sandboxed_argv,
+)
 from mycli.tools.shell_output_buffer import ShellOutputBuffer
 from mycli.tools.shell_resolver import (
     ShellCommandConfig,
@@ -61,6 +66,7 @@ class ShellStartRequest:
     call_id: str | None = None
     lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None
     interrupt_token: RuntimeInterruptToken | None = None
+    sandbox: SandboxProfile | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,9 +213,13 @@ class ShellSessionManager:
                 shell_profile = ShellProfile(ShellKind.BASH, legacy_shell.executable)
             else:
                 shell_profile = request.shell_profile
+            launch = prepare_sandboxed_argv(
+                tuple(shell_profile.exec_argv(request.command)),
+                sandbox=request.sandbox,
+            )
             transport = self._transport_factory(
                 ShellTransportRequest(
-                    argv=tuple(shell_profile.exec_argv(request.command)),
+                    argv=launch.argv,
                     cwd=request.cwd,
                     env=request.env,
                     tty=request.tty,
@@ -220,6 +230,13 @@ class ShellSessionManager:
             return self._error_snapshot(
                 owner_session_id=request.owner_session_id,
                 error_kind="shell_resolution_failed",
+                error=str(exc),
+            )
+        except ProcessSandboxUnavailable as exc:
+            self._release_capacity_reservation()
+            return self._error_snapshot(
+                owner_session_id=request.owner_session_id,
+                error_kind="sandbox_unavailable",
                 error=str(exc),
             )
         except ShellTransportUnavailable as exc:

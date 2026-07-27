@@ -192,10 +192,13 @@ class RuntimeContextBuilder:
             tool_policy=policy.tool_policy,
         )
         sources = tuple(rule.source.value for rule in self._execpolicy_rules.rules)
+        from mycli.tools.process_sandbox import process_sandbox_backend_profile
+
         return RuntimeEnvironmentContract.from_policy(
             policy,
             execpolicy_rule_count=len(self._execpolicy_rules.rules),
             execpolicy_sources=sources,
+            shell_backend=process_sandbox_backend_profile(policy.sandbox),
         )
 
     def assemble_turn_context(

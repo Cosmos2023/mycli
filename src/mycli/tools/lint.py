@@ -6,10 +6,14 @@ import shlex
 import subprocess
 from typing import Any
 
-from mycli.domain.runtime import ShellKind, ShellProfile
+from mycli.domain.runtime import SandboxProfile, ShellKind, ShellProfile
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.output import ToolModelOutput
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.process_sandbox import (
+    ProcessSandboxUnavailable,
+    prepare_sandboxed_argv,
+)
 from mycli.tools.shell_resolver import detect_shell_profile
 
 
@@ -60,6 +64,7 @@ def lint(
     cwd: Path | str | None = None,
     shell_path: str | None = None,
     shell_profile: ShellProfile | None = None,
+    sandbox: SandboxProfile | None = None,
 ) -> dict[str, Any]:
     root = Path.cwd() if cwd is None else Path(cwd)
     commands = _detect_linters(cwd=root)
@@ -78,8 +83,9 @@ def lint(
                 script = f"{script} {_quote_script_args(path_args, profile.kind)}"
             argv = profile.exec_argv(script)
         try:
+            launch = prepare_sandboxed_argv(tuple(argv), sandbox=sandbox)
             result = subprocess.run(
-                argv,
+                list(launch.argv),
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -88,6 +94,8 @@ def lint(
             )
         except subprocess.TimeoutExpired:
             continue
+        except ProcessSandboxUnavailable:
+            return {"error": "[Process sandbox unavailable]"}
         except OSError:
             continue
 
@@ -168,7 +176,8 @@ class LintTool:
         supports_parallel_tool_calls=True,
     )
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_root: Path | None = None) -> None:
+        self._workspace_root = workspace_root
         self._shell_path: str | None = None
         self._shell_profile: ShellProfile | None = None
 
@@ -185,8 +194,10 @@ class LintTool:
         paths = arguments.get("paths")
         payload = lint(
             paths=paths if isinstance(paths, str) else None,
+            cwd=self._workspace_root,
             shell_path=self._shell_path,
             shell_profile=self._shell_profile,
+            sandbox=_sandbox_profile(arguments),
         )
         success = "error" not in payload
         return ToolResult(
@@ -219,3 +230,8 @@ def _quote_script_args(arguments: list[str], shell_kind: ShellKind) -> str:
     if shell_kind is ShellKind.CMD:
         return subprocess.list2cmdline(arguments)
     return shlex.join(arguments)
+
+
+def _sandbox_profile(arguments: dict[str, Any]) -> SandboxProfile | None:
+    value = arguments.get("_runtime_sandbox_profile")
+    return value if isinstance(value, SandboxProfile) else None

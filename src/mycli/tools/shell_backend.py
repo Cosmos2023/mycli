@@ -6,6 +6,7 @@ from typing import Any, Callable, Protocol
 
 from mycli.domain.runtime import (
     RuntimeInterruptToken,
+    SandboxProfile,
     ShellBackendProfile,
     ShellLifecycleEvent,
     ShellProfile,
@@ -33,6 +34,7 @@ class ShellBackendRequest:
     call_id: str | None = None
     lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None
     interrupt_token: RuntimeInterruptToken | None = None
+    sandbox: SandboxProfile | None = None
 
 
 class ShellBackend(Protocol):
@@ -48,6 +50,11 @@ class LocalShellBackend:
     @property
     def profile(self) -> ShellBackendProfile:
         return ShellBackendProfile()
+
+    def profile_for(self, sandbox: SandboxProfile | None) -> ShellBackendProfile:
+        from mycli.tools.process_sandbox import process_sandbox_backend_profile
+
+        return process_sandbox_backend_profile(sandbox)
 
     def execute(self, request: ShellBackendRequest) -> dict[str, Any]:
         from mycli.tools.bash import ShellCommandRuntime, execute_bash
@@ -71,6 +78,7 @@ class LocalShellBackend:
                 call_id=request.call_id,
                 lifecycle_sink=request.lifecycle_sink,
                 interrupt_token=request.interrupt_token,
+                sandbox=request.sandbox,
             )
 
         return execute_bash(
@@ -88,4 +96,5 @@ class LocalShellBackend:
             call_id=request.call_id,
             lifecycle_sink=request.lifecycle_sink,
             interrupt_token=request.interrupt_token,
+            sandbox=request.sandbox,
         )

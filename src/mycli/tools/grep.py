@@ -5,10 +5,15 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+from mycli.domain.runtime import SandboxProfile
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.model_output import structured_model_output
 from mycli.tools.path_utils import resolve_workspace_path
+from mycli.tools.process_sandbox import (
+    ProcessSandboxUnavailable,
+    prepare_sandboxed_argv,
+)
 
 
 EXCLUDE_DIRS = [".git", "node_modules", "__pycache__", ".venv", "dist", "build"]
@@ -22,6 +27,7 @@ def grep(
     context: int = 3,
     head_limit: int = 50,
     ignore_case: bool = False,
+    sandbox: SandboxProfile | None = None,
 ) -> dict[str, Any]:
     args = ["rg", "--no-heading", "--color", "never", "--with-filename"]
 
@@ -45,8 +51,9 @@ def grep(
         args.append(path)
 
     try:
+        launch = prepare_sandboxed_argv(tuple(args), sandbox=sandbox)
         result = subprocess.run(
-            args,
+            list(launch.argv),
             capture_output=True,
             text=True,
             timeout=30,
@@ -57,6 +64,8 @@ def grep(
         return {"error": "[ripgrep (rg) not installed. Install: brew install ripgrep]"}
     except subprocess.TimeoutExpired:
         return {"error": "[Grep timed out. Narrow your search path.]"}
+    except ProcessSandboxUnavailable:
+        return {"error": "[Process sandbox unavailable]"}
 
     lines = result.stdout.splitlines()
     truncated = len(lines) > head_limit
@@ -100,7 +109,7 @@ class GrepTool:
         self._unrestricted = unrestricted
 
     def effect_profile(self) -> ToolEffectProfile:
-        return ToolEffectProfile(filesystem="read")
+        return ToolEffectProfile(filesystem="read", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         pattern = str(arguments.get("pattern") or arguments.get("query") or "")
@@ -126,6 +135,7 @@ class GrepTool:
             context=int(arguments.get("context", 3)),
             head_limit=int(arguments.get("head_limit", arguments.get("max_matches", 50))),
             ignore_case=bool(arguments.get("ignore_case", False)),
+            sandbox=_sandbox_profile(arguments),
         )
         if "error" in payload:
             return ToolResult(
@@ -233,3 +243,8 @@ class GrepTool:
             return str(Path(path).resolve().relative_to(self._workspace_root.resolve()))
         except ValueError:
             return path
+
+
+def _sandbox_profile(arguments: dict[str, Any]) -> SandboxProfile | None:
+    value = arguments.get("_runtime_sandbox_profile")
+    return value if isinstance(value, SandboxProfile) else None
