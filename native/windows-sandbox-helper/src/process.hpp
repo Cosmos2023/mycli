@@ -17,5 +17,10 @@ DWORD RunProcessInJob(
 DWORD RunHostProcessInJob(
     const std::vector<std::wstring>& argv,
     const std::filesystem::path& cwd);
+DWORD RunProcessWithLogonInJob(
+    const std::wstring& username,
+    const std::wstring& password,
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd);
 
 }  // namespace mycli::sandbox

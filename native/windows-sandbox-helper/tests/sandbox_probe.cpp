@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <string_view>
 
@@ -66,6 +67,11 @@ int Connect(unsigned short port) {
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+    if (argc == 2 && std::wstring_view{argv[1]} == L"--stdio") {
+        std::cout << "sandbox-stdout-ok\n" << std::flush;
+        std::cerr << "sandbox-stderr-ok\n" << std::flush;
+        return 0;
+    }
     if (argc == 3 && std::wstring_view{argv[1]} == L"--write-file") {
         std::ofstream output{std::filesystem::path{argv[2]}};
         output << "ok";

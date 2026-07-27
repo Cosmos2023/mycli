@@ -250,4 +250,63 @@ DWORD RunHostProcessInJob(
     return RunProcessInJobImpl(nullptr, argv, cwd);
 }
 
+DWORD RunProcessWithLogonInJob(
+    const std::wstring& username,
+    const std::wstring& password,
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd) {
+    auto command_line = BuildWindowsCommandLine(argv);
+    std::vector<wchar_t> mutable_command_line(
+        command_line.begin(), command_line.end());
+    mutable_command_line.push_back(L'\0');
+
+    const auto stdin_handle = DuplicateStandardHandle(STD_INPUT_HANDLE, GENERIC_READ);
+    const auto stdout_handle = DuplicateStandardHandle(STD_OUTPUT_HANDLE, GENERIC_WRITE);
+    const auto stderr_handle = DuplicateStandardHandle(STD_ERROR_HANDLE, GENERIC_WRITE);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = stdin_handle.get();
+    startup.hStdOutput = stdout_handle.get();
+    startup.hStdError = stderr_handle.get();
+
+    PROCESS_INFORMATION process_info{};
+    const auto job = CreateKillOnCloseJob();
+    constexpr DWORD kCreationFlags =
+        CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+    if (CreateProcessWithLogonW(
+            username.c_str(),
+            L".",
+            password.c_str(),
+            LOGON_WITH_PROFILE,
+            nullptr,
+            mutable_command_line.data(),
+            kCreationFlags,
+            nullptr,
+            cwd.c_str(),
+            &startup,
+            &process_info) == 0) {
+        throw Win32Error("CreateProcessWithLogonW");
+    }
+    const UniqueHandle process{process_info.hProcess};
+    const UniqueHandle thread{process_info.hThread};
+    if (AssignProcessToJobObject(job.get(), process.get()) == 0) {
+        TerminateProcess(process.get(), 1);
+        throw Win32Error("AssignProcessToJobObject(logon process)");
+    }
+    if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
+        TerminateJobObject(job.get(), 1);
+        throw Win32Error("ResumeThread(logon process)");
+    }
+    if (WaitForSingleObject(process.get(), INFINITE) != WAIT_OBJECT_0) {
+        TerminateJobObject(job.get(), 1);
+        throw Win32Error("WaitForSingleObject(logon process)");
+    }
+    DWORD exit_code = 0;
+    if (GetExitCodeProcess(process.get(), &exit_code) == 0) {
+        throw Win32Error("GetExitCodeProcess(logon process)");
+    }
+    return exit_code;
+}
+
 }  // namespace mycli::sandbox

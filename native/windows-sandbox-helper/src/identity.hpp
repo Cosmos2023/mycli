@@ -2,6 +2,7 @@
 
 #include <string>
 #include <filesystem>
+#include <vector>
 
 #include "sid.hpp"
 #include "win32.hpp"
@@ -22,6 +23,11 @@ void SetupOfflineIdentity(
 OfflineIdentity LoadOfflineIdentity(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid);
+DWORD RunAsOfflineIdentity(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid,
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd);
 bool OfflineIdentityCredentialsExist(const std::filesystem::path& state_directory);
 std::filesystem::path SandboxStateDirectory();
 

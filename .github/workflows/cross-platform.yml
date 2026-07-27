@@ -320,6 +320,14 @@ jobs:
           }
 
           $inside = Join-Path $workspace "inside.txt"
+          if ((Invoke-Sandbox @($probe, "--stdio")) -ne 0) {
+            throw "sandbox stdio probe failed"
+          }
+          $stdioLog = Get-Content $log -Raw
+          if ($stdioLog -notmatch "sandbox-stdout-ok" -or
+              $stdioLog -notmatch "sandbox-stderr-ok") {
+            throw "sandbox stdio was not forwarded"
+          }
           if ((Invoke-Sandbox @($probe, "--write-file", $inside)) -ne 0) {
             throw "sandbox could not write inside workspace"
           }

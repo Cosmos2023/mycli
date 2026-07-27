@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include "process.hpp"
+
 namespace mycli::sandbox {
 namespace {
 
@@ -439,6 +441,24 @@ OfflineIdentity LoadOfflineIdentity(
     if (logged_on == 0) throw Win32Error("LogonUserW(offline sandbox account)");
     auto [sid, sid_string] = LookupOfflineSid(username);
     return OfflineIdentity{UniqueHandle{raw_token}, std::move(sid), std::move(sid_string)};
+}
+
+DWORD RunAsOfflineIdentity(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid,
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd) {
+    const auto username = OfflineUsernameForOwner(owner_sid);
+    auto password = LoadPassword(state_directory);
+    try {
+        const DWORD exit_code = RunProcessWithLogonInJob(
+            username, password, argv, cwd);
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        return exit_code;
+    } catch (...) {
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        throw;
+    }
 }
 
 }  // namespace mycli::sandbox
