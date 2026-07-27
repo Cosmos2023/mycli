@@ -113,7 +113,22 @@ jobs:
       - name: Compile sandbox helper
         shell: pwsh
         run: |
-          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+          $output = & cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath windows-sandbox-compile.log
+          exit $exitCode
+      - name: Publish Windows sandbox compile failure
+        if: failure() && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $message = Get-Content windows-sandbox-compile.log -Raw
+          if ($message.Length -gt 12000) {
+            $message = $message.Substring($message.Length - 12000)
+          }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a -f ci-windows-sandbox-compile-failed $env:GITHUB_SHA -m $message
+          git push origin refs/tags/ci-windows-sandbox-compile-failed --force
       - name: Publish Windows sandbox helper compile marker
         if: github.event_name == 'push'
         shell: pwsh
