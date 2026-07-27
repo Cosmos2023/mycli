@@ -75,12 +75,15 @@ int RunTests(const std::filesystem::path& executable) {
         allowed, L"workspace-write");
     const auto read_only_capability = mycli::sandbox::DeriveCapabilitySid(
         allowed, L"read-only");
+    auto account_sid = mycli::sandbox::SidFromString(
+        mycli::sandbox::CurrentUserSidString());
     if (EqualSid(capability.get(), read_only_capability.get()) != 0) {
         std::cerr << "read-only and workspace-write capability SIDs collided\n";
         return 1;
     }
     mycli::sandbox::GrantWritableRoot(allowed, capability.get());
     mycli::sandbox::DenyReadPath(allowed / L".env", capability.get());
+    mycli::sandbox::DenyReadPath(allowed / L".env", account_sid.get());
     mycli::sandbox::DenyWritePath(allowed / L".git", capability.get());
     const auto write_token = mycli::sandbox::CreateRestrictedPrimaryToken(
         {capability.get()});
@@ -115,6 +118,10 @@ int RunTests(const std::filesystem::path& executable) {
         write_token.get(),
         {executable.wstring(), L"--write-file", (allowed / L".git" / L"config").wstring()},
         allowed);
+    std::cerr << "boundary exits: allowed=" << allowed_exit
+              << " outside=" << denied_exit
+              << " secret=" << secret_read_exit
+              << " metadata=" << metadata_write_exit << '\n' << std::flush;
     if (allowed_exit != 0 || denied_exit == 0 ||
         secret_read_exit == 0 || metadata_write_exit == 0 ||
         !std::filesystem::exists(allowed / L"ok.txt") ||
@@ -140,7 +147,8 @@ int RunTests(const std::filesystem::path& executable) {
         .network = mycli::sandbox::NetworkPolicy::kDisabled,
         .mode = mycli::sandbox::SandboxMode::kWorkspaceWrite,
     };
-    if (mycli::sandbox::RunSandboxRequest(policy_request) == 0) {
+    if (mycli::sandbox::RunSandboxRequest(
+            policy_request, nullptr, account_sid.get()) == 0) {
         std::cerr << "request-level denied-read policy failed\n";
         return 1;
     }
