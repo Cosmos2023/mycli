@@ -2,6 +2,8 @@ name: cross-platform
 
 on:
   push:
+    tags-ignore:
+      - ci-windows-sandbox-passed
   pull_request:
 
 jobs:
@@ -34,6 +36,12 @@ jobs:
             native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
             src/mycli/native/windows/mycli-windows-sandbox.exe
       - run: uv sync --locked --dev
+      - name: Verify packaged Windows helper wheel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          uv build --wheel --out-dir dist-windows
+          uv run python -c "import pathlib,zipfile; wheel=next(pathlib.Path('dist-windows').glob('*win_amd64.whl')); archive=zipfile.ZipFile(wheel); names=archive.namelist(); assert 'mycli/native/windows/mycli-windows-sandbox.exe' in names; metadata=archive.read(next(name for name in names if name.endswith('.dist-info/WHEEL'))).decode(); assert 'Root-Is-Purelib: false' in metadata; print(wheel.name)"
       - run: npm ci --prefix tui/mycli-shell
       - run: uv run pytest -q
       - run: uv run ruff check .
@@ -77,6 +85,8 @@ jobs:
 
   windows-sandbox-helper:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Build helper
@@ -157,3 +167,9 @@ jobs:
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+      - name: Publish Windows sandbox verification marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-passed $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-passed --force

@@ -46,3 +46,5 @@ packages = ["mycli"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/mycli"]
 artifacts = ["src/mycli/native/windows/*.exe"]
+
+[tool.hatch.build.hooks.custom]
