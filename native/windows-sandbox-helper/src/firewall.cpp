@@ -94,7 +94,11 @@ void SetupOfflineFirewall(
     }
     std::filesystem::create_directories(state_directory);
     std::ofstream marker{MarkerPath(state_directory), std::ios::binary | std::ios::trunc};
-    const std::string sid_ascii(offline_sid.begin(), offline_sid.end());
+    std::string sid_ascii;
+    sid_ascii.reserve(offline_sid.size());
+    for (const wchar_t character : offline_sid) {
+        sid_ascii.push_back(static_cast<char>(character));
+    }
     marker << sid_ascii << '\n';
     marker.close();
     if (!marker) throw std::runtime_error("failed to persist firewall setup marker");
