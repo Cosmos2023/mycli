@@ -286,16 +286,19 @@ jobs:
           git tag -f ci-windows-sandbox-setup-passed $env:GITHUB_SHA
           git push origin refs/tags/ci-windows-sandbox-setup-passed --force
       - name: Enforce filesystem boundaries
+        timeout-minutes: 3
         shell: pwsh
         run: |
           $helper = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe").Path
           $probe = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox-probe.exe").Path
+          $log = "windows-sandbox-filesystem.log"
           $workspace = Join-Path $env:RUNNER_TEMP "mycli-sandbox-workspace"
           $outside = Join-Path $env:RUNNER_TEMP "mycli-sandbox-outside.txt"
           New-Item -ItemType Directory -Force -Path $workspace, (Join-Path $workspace ".git") | Out-Null
           Set-Content -NoNewline -Path (Join-Path $workspace ".env") -Value "secret"
 
           function Invoke-Sandbox([string[]] $commandArgs) {
+            Add-Content -Path $log -Value "invoke: $($commandArgs[1])"
             $request = @{
               protocol_version = 1
               command = @{ argv = $commandArgs }
@@ -308,8 +311,12 @@ jobs:
               network = "disabled"
               mode = "workspace-write"
             } | ConvertTo-Json -Depth 5 -Compress
-            & $helper --request-json $request
-            return $LASTEXITCODE
+            & $helper --request-json $request 2>&1 |
+              Tee-Object -FilePath $log -Append |
+              Out-Host
+            $exitCode = $LASTEXITCODE
+            Add-Content -Path $log -Value "exit: $exitCode"
+            return $exitCode
           }
 
           $inside = Join-Path $workspace "inside.txt"
@@ -327,6 +334,22 @@ jobs:
           if ((Invoke-Sandbox @($probe, "--write-file", (Join-Path $workspace ".git/config"))) -eq 0) {
             throw "sandbox wrote protected repository metadata"
           }
+      - name: Publish Windows sandbox filesystem failure
+        if: failure() && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          if (Test-Path windows-sandbox-filesystem.log) {
+            $message = Get-Content windows-sandbox-filesystem.log -Raw
+          } else {
+            $message = "Windows sandbox filesystem test failed before producing output"
+          }
+          if ($message.Length -gt 12000) {
+            $message = $message.Substring($message.Length - 12000)
+          }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a -f ci-windows-sandbox-filesystem-failed $env:GITHUB_SHA -m $message
+          git push origin refs/tags/ci-windows-sandbox-filesystem-failed --force
       - name: Publish Windows sandbox filesystem marker
         if: github.event_name == 'push'
         shell: pwsh
@@ -334,13 +357,16 @@ jobs:
           git tag -f ci-windows-sandbox-filesystem-passed $env:GITHUB_SHA
           git push origin refs/tags/ci-windows-sandbox-filesystem-passed --force
       - name: Enforce network boundary
+        timeout-minutes: 3
         shell: pwsh
         run: |
           $helper = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe").Path
           $probe = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox-probe.exe").Path
+          $log = "windows-sandbox-network.log"
           $workspace = Join-Path $env:RUNNER_TEMP "mycli-sandbox-workspace"
 
           function Invoke-Sandbox([string[]] $commandArgs) {
+            Add-Content -Path $log -Value "invoke: $($commandArgs[1])"
             $request = @{
               protocol_version = 1
               command = @{ argv = $commandArgs }
@@ -353,8 +379,12 @@ jobs:
               network = "disabled"
               mode = "workspace-write"
             } | ConvertTo-Json -Depth 5 -Compress
-            & $helper --request-json $request
-            return $LASTEXITCODE
+            & $helper --request-json $request 2>&1 |
+              Tee-Object -FilePath $log -Append |
+              Out-Host
+            $exitCode = $LASTEXITCODE
+            Add-Content -Path $log -Value "exit: $exitCode"
+            return $exitCode
           }
 
           $portFile = Join-Path $env:RUNNER_TEMP "mycli-sandbox-port.txt"
@@ -372,6 +402,22 @@ jobs:
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+      - name: Publish Windows sandbox network failure
+        if: failure() && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          if (Test-Path windows-sandbox-network.log) {
+            $message = Get-Content windows-sandbox-network.log -Raw
+          } else {
+            $message = "Windows sandbox network test failed before producing output"
+          }
+          if ($message.Length -gt 12000) {
+            $message = $message.Substring($message.Length - 12000)
+          }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a -f ci-windows-sandbox-network-failed $env:GITHUB_SHA -m $message
+          git push origin refs/tags/ci-windows-sandbox-network-failed --force
       - name: Publish Windows sandbox network marker
         if: github.event_name == 'push'
         shell: pwsh
