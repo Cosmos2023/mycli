@@ -44,6 +44,7 @@ add_executable(mycli-windows-sandbox-protocol-tests
 )
 mycli_configure_windows_target(mycli-windows-sandbox-protocol-tests)
 add_test(NAME protocol COMMAND mycli-windows-sandbox-protocol-tests)
+set_tests_properties(protocol PROPERTIES TIMEOUT 30)
 
 add_executable(mycli-windows-sandbox-primitives-tests
     tests/windows_primitives_tests.cpp
@@ -56,6 +57,7 @@ add_executable(mycli-windows-sandbox-primitives-tests
 )
 mycli_configure_windows_target(mycli-windows-sandbox-primitives-tests)
 add_test(NAME windows_primitives COMMAND mycli-windows-sandbox-primitives-tests)
+set_tests_properties(windows_primitives PROPERTIES TIMEOUT 60)
 
 add_executable(mycli-windows-sandbox-probe tests/sandbox_probe.cpp)
 mycli_configure_windows_target(mycli-windows-sandbox-probe)
