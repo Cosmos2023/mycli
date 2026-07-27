@@ -16,7 +16,7 @@ function(mycli_configure_windows_target target_name)
     )
     target_include_directories(${target_name} PRIVATE src third_party)
     target_link_libraries(${target_name} PRIVATE
-        advapi32 bcrypt crypt32 netapi32 ole32 shell32 shlwapi uuid)
+        advapi32 bcrypt crypt32 netapi32 ole32 oleaut32 shell32 shlwapi uuid)
 
     if(MSVC)
         target_compile_options(${target_name} PRIVATE /W4 /WX /permissive- /utf-8)
