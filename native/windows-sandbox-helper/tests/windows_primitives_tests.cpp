@@ -132,15 +132,21 @@ int RunTests(const std::filesystem::path& executable) {
     }
 
     stage("request-level-policy");
+    const auto policy_allowed = test_root / L"policy-allowed";
+    std::filesystem::create_directories(policy_allowed);
+    {
+        std::ofstream secret{policy_allowed / L".env"};
+        secret << "secret";
+    }
     const mycli::sandbox::SandboxRequest policy_request{
         .protocol_version = mycli::sandbox::kProtocolVersion,
         .command_argv = {
             executable.wstring(),
             L"--read-file",
-            (allowed / L".env").wstring()},
-        .cwd = allowed.wstring(),
-        .workspace_roots = {allowed.wstring()},
-        .writable_roots = {allowed.wstring()},
+            (policy_allowed / L".env").wstring()},
+        .cwd = policy_allowed.wstring(),
+        .workspace_roots = {policy_allowed.wstring()},
+        .writable_roots = {policy_allowed.wstring()},
         .denied_read_roots = {},
         .denied_read_globs = {L"**/.env", L"**/.env.*"},
         .filesystem = mycli::sandbox::FilesystemPolicy::kWorkspaceWrite,
