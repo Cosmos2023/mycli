@@ -733,7 +733,7 @@ mycli 当前测试主要集中在 unit，integration 较少，真实 eval 已开
 建议：
 
 1. 每补一个 Hermes parity 能力，都增加 unit + integration + real smoke。
-2. 扩大 `evaluation/scenarios`，覆盖工具、session、approval、subagent、browser。
+2. 扩大聚焦的 smoke 与回归测试，覆盖工具、session、approval、subagent、browser。
 3. Node TUI scripted smoke 保持常态化。
 4. 引入 CI 后再扩大 full suite。
 

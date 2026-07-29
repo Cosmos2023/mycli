@@ -48,8 +48,7 @@
 - `llms/clients/anthropic_messages.py`：Anthropic Messages client。
 - `llms/adapters/base.py`：model adapter 协议和 runtime block/message 类型桥接。
 - `llms/adapters/responses_adapter.py`：Responses API 事件与 runtime turn result 的适配；input serialization、output parsing、stream event state 分别在独立模块中维护。
-- `llms/adapters/native_tool_adapter.py`、`compat_chat_adapter.py`、`anthropic_messages_adapter.py`：各协议 adapter。
-- `infrastructure/openai_client.py`、`openai_responses_client.py`、`anthropic_messages_client.py`、`infrastructure/models/*`：旧路径兼容导出，不再承载真实实现。
+- `llms/adapters/native_tool_adapter.py`、`responses_adapter.py`、`anthropic_messages_adapter.py`：各协议 adapter。
 
 Provider client 只负责协议请求、响应解析、错误归一化和原始日志。Agent runtime 不应把 provider-specific 细节散落在多个应用层模块中。
 
@@ -57,12 +56,12 @@ Provider client 只负责协议请求、响应解析、错误归一化和原始�
 
 参考常见 agent 项目的 `config/`、`memory/`、`llms/`、`tools/`、`utils/logger` 分层，当前仓库的对应关系是：
 
-- `config/settings.py`：配置层。旧 `services/config_service.py` 仅保留兼容导出。
-- `memory/service.py`：记忆层。旧 `services/memory_service.py` 仅保留兼容导出。
-- `state/session_service.py`：状态和会话管理层，message/runtime block 序列化在 `state/session_serialization.py`。旧 `services/session_service.py` 仅保留兼容导出。
+- `config/settings.py`：配置层。
+- `memory/service.py`：记忆层。
+- `state/session_service.py`：状态和会话管理层，message/runtime block 序列化在 `state/session_serialization.py`。
 - `llms/clients/` + `llms/adapters/`：LLM 集成层。
-- `tools/` + `tools/routing/` + `application/runtime/tools/`：工具层。runtime contributed tool registry/provider 放在 `application/runtime/tools/`，旧 `services/tool_router.py`、`services/tool_exposure_planner.py` 仅保留兼容导出。
-- `utils/workspace_logger.py`：日志辅助。旧 `services/workspace_log_service.py` 仅保留兼容导出。
+- `tools/` + `tools/routing/` + `application/runtime/tools/`：工具层。runtime contributed tool registry/provider 放在 `application/runtime/tools/`。
+- `utils/workspace_logger.py`：日志辅助。
 - `services/context/`：turn context 和 instruction contract 组装。
 - `services/context/window_service.py`：context window 截断与摘要窗口计算。
 - `services/planning/`：计划状态更新。
@@ -76,13 +75,11 @@ Provider client 只负责协议请求、响应解析、错误归一化和原始�
 
 - `domain/runtime/`：turn state、runtime block、instruction contract、tracing、request shape 等 runtime 领域模型。
 - `domain/tooling/`：工具调用、工具结果、动态工具、工具暴露和工具集合领域模型。
-- `domain/tools.py`、`domain/tool_exposure.py`、`domain/tool_set.py`：旧路径兼容导出，不承载真实实现。
-
-旧的 `services/config_service.py`、`memory_service.py`、`session_service.py`、`workspace_log_service.py`、`tool_router.py`、`infrastructure/openai_client.py`、`infrastructure/models/*` 等仍被测试或历史计划引用的根级旧路径只保留兼容导出。未被当前代码和测试引用的旧 request/context-window/runtime-policy helper 入口不再保留，避免形成多套等价入口。
+旧的 domain、service 和 infrastructure 重导出路径不再保留。仓库代码和测试统一从上述 canonical 模块导入，避免形成多套等价入口。
 
 ## 当前遗留风险
 
 - `application/runtime/agent_runtime.py` 仍然偏大，下一步应继续拆出 provider continuation、tool activity、turn persistence。
 - `llms/clients/openai_responses.py` 仍然偏大，后续可继续拆 continuation retry/state bookkeeping。
-- `llms/adapters/responses_adapter.py` 已拆到主流程级别，后续主要关注测试覆盖和旧 infrastructure re-export 收口。
+- `llms/adapters/responses_adapter.py` 已拆到主流程级别，后续主要关注测试覆盖。
 - `application/turn_service.py` 和 `agents/react_loop.py` 仍是兼容/旧式路径，需要在确认 CLI 和测试迁移完成后再决定删除或降级为兼容层。

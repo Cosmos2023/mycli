@@ -223,8 +223,12 @@ Latest verified commands:
   smoke coverage, while hosted MCP and plugin lifecycle remain later phases;
   skills still need marketplace/sync/management productization.
 - No browser/computer-use/vision/image-generation tools.
-- No sandbox backends beyond local shell; Hermes supports richer terminal
-  environments.
+- Restricted Shell, configured hook, and MCP stdio execution share a Seatbelt
+  process sandbox on macOS and a fail-closed Bubblewrap sandbox on Linux.
+  Windows restricted modes fail closed until a restricted-token helper is
+  available. Python plugin imports and callbacks run in one-shot subprocess
+  hosts under the same process sandbox instead of executing in the mycli
+  process; Hermes still supports richer terminal environments.
 - No per-path lock or cross-agent file state registry.
 - Patch is exact replacement only; it does not yet have Hermes-level fuzzy patch
   recovery.

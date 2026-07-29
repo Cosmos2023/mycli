@@ -300,7 +300,6 @@ Append one entry per completed slice.
   - `uv run ruff check src/mycli/application/runtime/request tests/unit/services/test_request_shape_builder.py`
 - Smoke/evaluation:
   - `uv run python evaluation/context_smoke.py`
-  - `uv run python -m mycli.cli.main --eval-scenario 07`
 - Parity impact: provider-visible chat transcript shape is now a single system
   snapshot plus append-only transcript, instead of inserting contextual user
   messages before and after replay. This is closer to Hermes' stable system

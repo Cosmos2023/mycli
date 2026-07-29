@@ -1,92 +1,110 @@
 # mycli
 
-`mycli` 是一个本地优先的终端 coding agent。它把模型对话、工具调用、仓库分析、文件编辑、Shell 执行、subagent、记忆和 session 持久化放在同一个运行时里，目标是成为一个可长期使用的个人开发助手。
+`mycli` 是一个本地优先的终端 coding agent。它把模型对话、结构化工具调用、文件编辑、持久 Shell、session、compact、MCP、skills、subagent 和长期记忆放在同一个运行时中，并提供接近 Codex 的 Node TUI 交互。
 
-当前分支重点是让体验更接近 Claude Code / Codex：
+当前主线具备以下能力：
 
-- 默认启动 Node TUI，保留终端原生文字选择和 scrollback。
-- 工具调用以 `Read`、`Write`、`Edit`、`Shell`、`Task` 等紧凑块展示。
-- Shell 命令、写文件内容和 diff 默认折叠成可扫描预览。
-- approval 使用选择器，不再只是把确认文本打在 transcript 里。
-- subagent 默认后台运行，完成后通过 `<task-notification>` 回到主对话。
-- 支持 Claude-style file memory，可按 workspace 保存长期记忆。
-- 支持 Codex-compatible command hooks，可在 tool、prompt、session 和 stop 生命周期中插入本地命令。
+- OpenAI Responses、OpenAI-compatible Chat Completions 和 Anthropic Messages 三条协议路径。
+- append-only turn 历史、结构化 tool call/output、Responses continuation state 和 SQLite session 持久化。
+- 可 steering 的运行中输入、follow-up queue、即时中断提示以及后台 worker 收尾。
+- Codex 风格流重试状态，默认最多重试 5 次；context overflow 会尝试 compact/recovery。
+- 结构化 compact：压缩模型会看到完整 conversation、tool call、参数、`call_id`、tool output 和当前工具 schema。
+- 持久 PTY Shell、后台终端、`/ps`、stdin 续写、输出轮询和跨平台 shell profile。
+- MCP、skills、plugins、hooks、ToolSearch 和后台 subagent。
+- Node TUI 中的紧凑工具块、diff 高亮、全局详情折叠、响应式布局和原生终端 scrollback。
 
-## 快速开始
-
-### 环境要求
+## 环境要求
 
 - Python `3.13`
-- `uv`
-- Node.js `>=22.19.0`，用于默认 Node TUI
-- `npm`
-- Windows 原生支持 PowerShell 7、Windows PowerShell 5.1 和 `cmd.exe`；Git Bash 可选
-- 一个支持的模型 provider API key
+- [`uv`](https://docs.astral.sh/uv/)
+- Node.js `>=22.19.0`
+- npm
+- 一个受支持 provider 的 API key
 
-### 安装
+Windows 原生支持 PowerShell 7、Windows PowerShell 5.1 和 `cmd.exe`；Git Bash 可选。详细 shell 选择和 ConPTY 说明见 [docs/windows.md](docs/windows.md)。
+
+## 安装与启动
 
 ```bash
 uv venv
 uv sync --dev
 npm ci --prefix tui/mycli-shell
-```
-
-Linux 和 macOS 从源码启动：
-
-```bash
 uv run mycli
 ```
 
-Windows 可在 PowerShell 中启动：
-
-```powershell
-uv run mycli
-```
-
-Windows 默认依次选择 PowerShell 7、Windows PowerShell 5.1、`cmd.exe`。识别出的 `shell_path` 也可以显式选择 Bash、zsh、sh、PowerShell 或 CMD；无效或未知 override 会被忽略，并由 `mycli doctor` 报告。完整规则见 [Windows 源码运行指南](docs/windows.md)。
-
-### 配置模型
-
-首次启动时，如果没有检测到 API key，`mycli` 会进入交互式 setup wizard。也可以手动运行：
+首次启动没有可用凭证时会进入 setup wizard。也可以显式运行：
 
 ```bash
 uv run mycli setup
 ```
 
-setup 默认采用 TypeScript TUI，交互风格参考 pi-agent：先选择认证方式，再通过 provider 列表选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。完成前会展示配置摘要。当前模型配置写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显；如果 Node TUI 不可用，会自动回退到纯文本 setup。
+setup 会写入：
 
-setup 还会准备 mycli 自用的 `rg`，安装位置为：
+- `~/.mycli/config.toml`：当前模型和运行时配置。
+- `~/.mycli/auth.json`：按 `auth_ref` 保存的 API key。
+- `~/.mycli/models.json`：`/model` 使用的模型目录。
+
+setup 还会准备 mycli 自用的 ripgrep：
 
 ```text
 ~/.mycli/vendor/ripgrep/<platform>/rg
 ```
 
-也可以手动执行：
+常用启动参数：
 
 ```bash
-uv run python scripts/prepare_ripgrep.py
+# 默认 Node TUI
+uv run mycli
+
+# 指定 session
+uv run mycli --session demo
+
+# 临时覆盖当前模型名
+uv run mycli --model gpt-5.4
+
+# 显式选择 Node TUI
+uv run mycli --node-tui
 ```
 
-进入 TUI 后，也可以运行 `/login` 打开同样的认证方式选择、provider 选择和 `Login to <Provider>` API key 输入界面。
+交互式会话需要 Node.js 20+，并且 stdin/stdout 必须连接到终端。
+`doctor`、`hooks`、`plugins`、`mcp`、`subagents` 和 `setup` 等管理命令仍可用于脚本和非 TTY 环境。
 
-也可以手动把用户级模型配置写到 `~/.mycli/config.toml`。新配置使用标准 TOML section；旧版顶层 key 仍会兼容读取，下一次 setup 或 TUI 设置保存时会被规范化：
+## 模型与认证
+
+### 当前模型配置
+
+推荐使用 sectioned TOML：
 
 ```toml
 [model]
 provider = "openai"
 protocol = "responses"
-name = "gpt-5"
+name = "gpt-5.4"
 api_base_url = "https://api.openai.com/v1"
-auth_ref = "openai"
+auth_ref = "openai-primary"
 supports_images = true
 
 [request]
-max_prompt_tokens = 12000
-max_output_tokens = 2048
+max_prompt_tokens = 120000
+request_max_retries = 4
+stream_max_retries = 5
+prompt_cache_key_enabled = true
 
 [reasoning]
 enabled = true
 effort = "medium"
+
+[runtime]
+collaboration_mode = "default"
+sandbox_mode = "workspace-write"
+heartbeat_enabled = true
+heartbeat_interval_seconds = 30
+
+[context]
+compaction_l4_trigger_ratio = 0.9
+compaction_l4_buffer_tokens = 13000
+compaction_tail_turns = 2
+compaction_tail_max_tokens = 8000
 
 [memory]
 enabled = true
@@ -95,34 +113,44 @@ extraction_interval_turns = 5
 dream_enabled = true
 dream_min_hours = 24
 dream_min_sessions = 5
+
+[tui]
+view_mode = "default"
+statusline_enabled = true
+statusbar_mode = "full"
+theme = "dark"
+tool_details_default = "collapsed"
 ```
 
-也可以使用环境变量：
+旧版顶层 key 仍可读取；setup 和 TUI 保存配置时会规范化为 sectioned TOML。
+
+配置来源按以下优先级读取：
+
+1. CLI 参数和 `MYCLI_*` 环境变量。
+2. `~/.mycli/config.toml`。
+3. `<workspace>/.mycli/config.toml`。
+4. 旧路径 `~/.config/mycli/config.toml`。
+
+API key 的优先级是 `MYCLI_API_KEY`、`~/.mycli/auth.json`，然后才兼容读取旧配置中的 `api_key`。不要把新凭证直接写进 `config.toml`。
+
+常用环境变量：
 
 ```bash
 export MYCLI_API_KEY="your-api-key"
 export MYCLI_PROVIDER="openai"
 export MYCLI_PROTOCOL="responses"
-export MYCLI_MODEL="gpt-5"
+export MYCLI_MODEL="gpt-5.4"
 export MYCLI_BASE_URL="https://api.openai.com/v1"
-export MYCLI_AUTH_REF="openai"
-export MYCLI_MEMORY_EXTRACTION_ENABLED=true
-export MYCLI_MEMORY_DREAM_ENABLED=true
-export MYCLI_MEMORY_DREAM_MIN_HOURS=24
-export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
+export MYCLI_AUTH_REF="openai-primary"
+export MYCLI_REASONING_EFFORT="medium"
+export MYCLI_STREAM_MAX_RETRIES=5
 ```
 
-配置读取位置：
+### 模型目录
 
-- 用户级：`~/.mycli/config.toml`
-- 可选模型目录：`~/.mycli/models.json`
-- 项目级覆盖：`<workspace>/.mycli/config.toml`
-- 用户凭证：`~/.mycli/auth.json`
-- 旧用户级 fallback：`~/.config/mycli/config.toml`
+`/model` 读取 `~/.mycli/models.json`。文件第一次创建时会写入内置预设和当前模型；之后不会自动补回、删除或重排用户条目。
 
-读取优先级是命令行参数和环境变量最高，其次是 `~/.mycli/config.toml`，再到项目级 `.mycli/config.toml`，最后才读取旧的 `~/.config/mycli/config.toml`。API key 优先级是环境变量、`~/.mycli/auth.json`，然后才兼容读取 config 中旧式 `api_key`；新配置不要把密钥写进 `config.toml`。
-
-`/model` 只展示 `~/.mycli/models.json` 中定义的模型。该文件不存在时，mycli 会在首次读取模型目录时写入内置预设和当前模型；此后文件内容由用户管理，不会被自动补回或重排。每个模型可以使用独立 endpoint 和 credential reference：
+每个条目可以使用独立 endpoint、协议、凭证和 reasoning effort：
 
 ```json
 {
@@ -137,137 +165,41 @@ export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
       "description": "Primary OpenAI endpoint",
       "reasoning_efforts": ["low", "medium", "high", "xhigh"],
       "default_reasoning_effort": "medium"
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "protocol": "chat_completions",
+      "base_url": "https://api.deepseek.com",
+      "auth_ref": "deepseek",
+      "reasoning_efforts": ["high", "xhigh"],
+      "default_reasoning_effort": "high"
     }
   ]
 }
 ```
 
-`auth_ref` 对应 `~/.mycli/auth.json` 的顶层键；未填写时默认使用 `provider`。同一 provider 的多个 endpoint 可以引用不同凭证：
+`auth_ref` 对应 `~/.mycli/auth.json` 的顶层键：
 
 ```json
 {
   "openai-primary": {"type": "api_key", "key": "sk-..."},
-  "openai-proxy": {"type": "api_key", "key": "sk-..."}
+  "deepseek": {"type": "api_key", "key": "sk-..."}
 }
 ```
 
-成功切换后，`config.toml` 只保存当前模型的 `provider`、`protocol`、`name`、`api_base_url`、`auth_ref` 和运行时能力；模型清单仍以 `models.json` 为准。
+模型切换成功后，当前选择会写回 `config.toml`；模型清单仍以 `models.json` 为准。
 
-### 启动
+## Provider 与协议
 
-```bash
-uv run mycli
-```
-
-常用启动方式：
-
-```bash
-# 指定 session
-uv run mycli --session demo
-
-# 覆盖模型
-uv run mycli --model gpt-5
-
-# 行式 REPL，不启动 TUI
-uv run mycli --plain
-
-# 显式启动 Node TUI
-uv run mycli --node-tui
-```
-
-## TUI 交互
-
-默认 Node TUI 使用主屏幕渲染，但不捕获鼠标，因此终端原生复制和 scrollback 仍然可用。它也维护一个内部 transcript viewport，用于在不破坏底部输入框的情况下滚动历史。
-
-如果当前模型支持视觉输入，可以在 TUI 输入中使用 `@/path/to/image.png`、`@/path/to/image.jpg`、`@/path/to/image.webp` 或 `@/path/to/image.gif` 附加本地图片。发送时输入里的路径会替换为 `[image #1]` 占位文本，图片本体作为结构化 image block 传给 provider。
-
-`supports_images` 默认随 provider 选择：OpenAI、Codex、Qwen、Anthropic 和 compatible 默认开启，DeepSeek 默认关闭。如果 compatible endpoint 实际不支持多模态，可以在 `[model]` 中设为 `false`。
-
-常用按键：
-
-| 按键 | 行为 |
-| --- | --- |
-| `enter` | 发送当前输入 |
-| `tab` | 当前 turn 运行中追加 follow-up |
-| `esc` | 请求中断当前 turn |
-| `option+up` / `shift+left` | 取回 queued/follow-up 输入 |
-| `ctrl+p` | 打开命令面板 |
-| `ctrl+l` | 打开模型选择器 |
-| `ctrl+o` | 切换工具详情显示 |
-| `ctrl+c` | 空输入时清空/退出；运行中不会直接杀掉后台 subagent |
-| 鼠标滚轮 | 滚动会话历史 |
-
-TUI 中的工具展示默认偏紧凑：
-
-- `Read` / `Glob` / `Grep` / `LS` 等上下文工具会折叠成同类分组。
-- `Write` 会展示写入内容预览和行数。
-- `Edit` / mutation 工具优先展示 diff 预览。
-- `Shell` 只展示命令摘要，长命令默认折叠，并在详情中显示当前 shell profile。
-- `Task` / subagent 会在输入框附近显示运行状态和进度。
-
-## 常用命令
-
-在 TUI 或 `--plain` REPL 中输入 slash command：
-
-| 命令 | 说明 |
-| --- | --- |
-| `/help` | 查看命令列表 |
-| `/status` | 查看当前 session、模型、provider、context 状态 |
-| `/status usage` | 查看当前 session token/usage |
-| `/status context` | 查看 context window 诊断 |
-| `/status stats` | 查看 runtime 聚合统计 |
-| `/model <model> [--thinking-effort low\|medium\|high\|xhigh]` | 切换模型或 thinking effort |
-| `/view [default\|verbose\|focus]` | 切换 transcript 展示密度 |
-| `/tools` | 查看当前工具 |
-| `/tools permissions` | 查看 approval 和命令 allowance |
-| `/tools sets` | 查看 toolset 状态 |
-| `/tools hooks` | 查看 hook 状态 |
-| `/tools extensions` | 查看 extension runtime |
-| `/tools plugins` | 查看或执行 plugin command |
-| `/tools skills` | 查看 skills |
-| `/plan` | 查看并进入 plan 协作模式 |
-| `/mode [default\|plan]` | 查看或切换协作模式 |
-| `/sandbox [next\|read-only\|workspace-write\|danger-full-access]` | 查看或切换当前 session sandbox |
-| `/permissions allow <command-pattern>` | 为当前 session 添加 shell 命令 allowlist |
-| `/permissions revoke <command-pattern>` | 移除当前 session 命令 allowlist |
-| `/permissions clear` | 清空当前 session 命令 allowlist |
-| `/memory` | 查看 memory 摘要 |
-| `/memory path` | 查看 file memory 目录 |
-| `/memory search <query>` | 搜索 file memory |
-| `/memory add <type> <name> :: <content>` | 手动添加 file memory |
-| `/memory forget <filename-or-query>` | 删除匹配的 file memory |
-| `/agents` | 查看 subagent profile 配置 |
-| `/agents inspect <profile_id>` | 查看单个 subagent profile |
-| `/agents runs [child_session_id]` | 查看 subagent run 或其 transcript |
-| `/tasks` | 查看后台 task |
-| `/tasks agents [child_session_id]` | 查看后台 subagent 或其 transcript |
-| `/tasks agents kill <child_session_id>` | 停止指定后台 subagent |
-| `/tasks bashes` | 查看后台 shell |
-| `/changes` | 查看文件变更 |
-| `/changes undo` | 撤销最近一次可恢复文件变更 |
-| `/trace` | 查看最近 runtime trace |
-| `/trace export` | 导出 trace JSONL |
-| `/trace logs` | 查看 workspace log |
-| `/session` | 查看当前 session |
-| `/session list` | 列出当前 workspace 的 sessions |
-| `/session resume <session>` | 恢复 session |
-| `/session fork [source] <new-session> [message-index]` | 从 session fork |
-| `/session search <query>` | 搜索 saved sessions |
-| `/session maintenance [--apply-empty\|--apply-orphans\|--apply-vacuum]` | 检查或执行 session 存储维护 |
-| `/quit` | 退出 |
-
-旧入口仍兼容：`/usage`、`/context`、`/stats`、`/sessions`、`/resume`、`/fork`、`/search`、`/permissions`、`/hooks`、`/toolsets`、`/jobs`、`/bashes`、`/subagents`、`/trace-jsonl`、`/logs`、`/undo` 会映射到上面的分组命令。
-
-## 模型 Provider
-
-`mycli` 用 `provider` 和 `protocol` 组合描述模型访问方式。
+`mycli` 用 `provider + protocol + model + base_url + auth_ref` 唯一描述模型连接。
 
 支持的 provider：
 
 - `openai`
 - `codex`
-- `qwen`
 - `deepseek`
+- `qwen`
 - `anthropic`
 - `compatible`
 
@@ -277,28 +209,48 @@ TUI 中的工具展示默认偏紧凑：
 - `chat_completions`
 - `anthropic_messages`
 
-### OpenAI / compatible Responses
+### OpenAI Responses
 
 ```toml
 [model]
 provider = "openai"
 protocol = "responses"
-name = "gpt-5"
+name = "gpt-5.4"
 api_base_url = "https://api.openai.com/v1"
+auth_ref = "openai"
 ```
 
-### Codex-style Responses
+Responses 路径支持结构化 input items、并行工具、流事件、`previous_response_id` capability 检测、prompt cache key 和 provider-private replay state。兼容网关不支持某项能力时，client 会禁用对应 continuation 优化并回退到完整 append-only transcript。
 
-Use `codex` for OpenAI-compatible Responses gateways that support Codex/OpenAI
-Responses parameters such as `parallel_tool_calls`.
+### Codex-compatible Responses gateway
+
+`codex` provider 用于接受 Codex/OpenAI Responses 参数的兼容网关，它不是本机 `codex` CLI，也不会读取 `codex login` 状态：
 
 ```toml
 [model]
 provider = "codex"
 protocol = "responses"
 name = "gpt-5.4"
-api_base_url = "https://your-codex-compatible-gateway.example/v1"
+api_base_url = "https://gateway.example/v1"
+auth_ref = "codex-gateway"
 ```
+
+### DeepSeek Chat Completions
+
+```toml
+[model]
+provider = "deepseek"
+protocol = "chat_completions"
+name = "deepseek-v4-flash"
+api_base_url = "https://api.deepseek.com"
+auth_ref = "deepseek"
+
+[reasoning]
+enabled = true
+effort = "high"
+```
+
+DeepSeek 使用 OpenAI-compatible Chat Completions。conversation 主线仍保持 append-only；provider adapter 负责将结构化 runtime items 转换为 chat messages，并维护 tool call/output 配对。
 
 ### Qwen
 
@@ -314,29 +266,9 @@ cache_control_enabled = true
 prompt_cache_key_enabled = false
 ```
 
-如果 `api_base_url` 包含 `dashscope.aliyuncs.com`，未显式配置 provider 时会自动推断为 `qwen`。Qwen 默认走 OpenAI-compatible Chat Completions，并使用 DashScope 兼容的 cache-control 上下文缓存策略。
+DashScope URL 可以自动推断为 `qwen`。Qwen 默认使用 Chat Completions 和兼容的 cache-control 策略，也可以在 provider profile 允许时选择 Responses。
 
-### DeepSeek
-
-DeepSeek 走 OpenAI-compatible chat completions：
-
-```toml
-[model]
-provider = "deepseek"
-protocol = "chat_completions"
-name = "deepseek-v4-flash"
-api_base_url = "https://api.deepseek.com"
-
-[reasoning]
-enabled = true
-effort = "medium"
-```
-
-DeepSeek 的 reasoning metadata 会进入 activity、trace、workspace log 和 session turn history，便于调试工具调用链路。
-
-### Anthropic
-
-Anthropic 使用原生 Messages API：
+### Anthropic Messages
 
 ```toml
 [model]
@@ -345,213 +277,228 @@ protocol = "anthropic_messages"
 name = "claude-sonnet-4-6"
 api_base_url = "https://api.anthropic.com"
 
-[request]
-max_output_tokens = 4096
-
 [reasoning]
 enabled = true
 effort = "medium"
 ```
 
-开启 thinking 时，`thinking_effort` 会映射到 Anthropic `budget_tokens`，并要求预算小于 `max_output_tokens`。当前映射：
+thinking effort 会映射为 Anthropic thinking budget。Anthropic client 使用内部输出上限，并确保 thinking budget 低于该上限。
 
-- `low = 1024`
-- `medium = 1536`
-- `high = 3072`
-- `xhigh = 6144`
+## Node TUI
 
-## 工具与安全
+默认 TUI 保留终端原生复制和 scrollback，同时维护独立 transcript viewport。终端 resize 会重新计算 transcript、工具详情、diff 和 footer；主 transcript 不用于渲染临时 overlay。
 
-常用内置工具：
+### 按键
 
-- 文件工具：`Read`、`Write`、`Edit`、`Glob`、`Grep`、`LS`
-- Shell 工具：`Shell`、`ShellOutput`、`KillShell`；`Bash`/`BashOutput` 仅用于旧会话兼容
-- Git 工具：`GitStatus`、`GitDiff`、`GitLog`、`GitShow`
-- 工作流工具：`Plan`、`update_plan`、`Task`、`SubagentOutput`
-- 交互工具：`AskUserQuestion`
-- 外部工具：MCP、skills、plugins 可贡献额外工具
-
-mycli 使用 Codex 风格的工具发现策略。少量外部工具会直接暴露给模型；当单轮有效 contributed tool 达到 100 项时，这些工具会转为 deferred，只向模型暴露 `ToolSearch`。模型先按能力搜索，获得最多 8 个完整工具定义后，可在同一 turn 中调用命中的工具。内置核心工具始终直接暴露，`ToolSearch` 的 call/output 会沿用普通工具的持久化、resume 和重试链路。
-
-安全模型：
-
-- sandbox 支持 `read-only`、`workspace-write`、`danger-full-access`，可通过 `/sandbox` 查看或切换。
-- 低风险读取和搜索默认自动执行；`read-only` 下 mutating tools 会被阻止。
-- `workspace-write` 下常规 workspace 内编辑默认可执行。
-- Shell、跨 workspace、策略命中或高风险操作会进入 approval。
-- approval 支持一次允许、拒绝、session allowlist。
-- `/permissions allow <pattern>` 可以为当前 session 放行匹配的 shell 命令。
-- plan mode 是只读模式，会阻止 mutating tools。
-
-File memory 目录会被加入允许根目录，因此 Agent 可以读写自己的 memory 文件；其他 workspace 外路径仍会被 filesystem runtime 拦截。
-
-## Subagents
-
-`Task` 工具用于启动 subagent。当前默认模型侧语义接近 Claude Code background task：
-
-1. 主 agent 发起 `Task` 后立即继续，不同步等待子 agent 完成。
-2. 子 agent 在独立 child session 中运行，有自己的 transcript。
-3. TUI 会显示 subagent 进度，包括 tool call、tool result 和 final 状态。
-4. 子 agent 完成后，runtime 将 `<task-notification>` 放回主对话队列。
-5. 主 agent 下一次模型请求会看到该 notification。
-
-`SubagentOutput` 只用于用户明确要求查看后台任务进度/结果时。模型不应该主动轮询它；完成结果会自动通知。
-
-自定义 subagent 推荐使用 Claude Code 风格 Markdown profile：
-
-```text
-.mycli/agents/<profile-id>.md
-~/.mycli/agents/<profile-id>.md
-```
-
-示例：
-
-```md
----
-name: security-reviewer
-description: Review security-sensitive changes.
-tools: Read, Grep, Glob, LS
-disallowedTools: Shell, Write
-model: gpt-5.4-mini
-maxTurns: 5
----
-You are a security review sub-agent. Focus on concrete vulnerabilities,
-unsafe trust boundaries, and missing regression tests.
-```
-
-Markdown frontmatter 中 `name` 和 `description` 必填，正文会作为该 subagent 的 system prompt。旧版 TOML profile 仍兼容：
-`.mycli/subagents/*.toml` 和 `~/.mycli/subagents/*.toml`。
-
-## Memory
-
-主线长期记忆采用 Claude-style file memory。
-
-File memory 保存在：
-
-```text
-~/.mycli/projects/<workspace-key>/memory/
-```
-
-其中：
-
-- `MEMORY.md` 是索引文件。
-- 具体记忆保存在独立 Markdown 文件中。
-- 支持的类型是 `user`、`feedback`、`project`、`reference`。
-- runtime 会按当前请求选择相关 memory 注入上下文。
-- 用户明确要求“记住/忘记”时，Agent 可以写入或删除 memory 文件。
-- 成功 turn 之后会后台尝试提取值得长期保留的偏好或反馈。
-- dream/consolidation 会定期尝试整理 memory。
-
-关闭 memory：
-
-```toml
-[memory]
-enabled = false
-```
-
-完整配置示例：
-
-```toml
-[memory]
-enabled = true
-extraction_enabled = true
-extraction_interval_turns = -1
-dream_enabled = true
-dream_min_hours = 24
-dream_min_sessions = 5
-```
-
-- `enabled = false`：关闭 session summary、memory 注入、extraction 和 dream。
-- `extraction_enabled = false`：关闭显式和自动 extraction。
-- `extraction_interval_turns = -1`：只关闭自动 extraction，显式“记住/忘记”仍然有效。
-- `dream_enabled = false`：关闭后台 memory consolidation。
-
-或：
-
-```bash
-export MYCLI_MEMORY_ENABLED=false
-export MYCLI_MEMORY_EXTRACTION_ENABLED=false
-export MYCLI_MEMORY_DREAM_ENABLED=false
-export MYCLI_MEMORY_DREAM_MIN_HOURS=24
-export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
-```
-
-关闭后，runtime 不再注入 file memory，也不会启动后台 memory extraction/dream。
-
-## Sessions、Trace 与持久化
-
-主要数据位置：
-
-| 数据 | 路径 |
+| 按键 | 行为 |
 | --- | --- |
-| Session DB | `~/.mycli/sessions.db` |
-| Auth store | `~/.mycli/auth.json` |
-| File memory | `~/.mycli/projects/<workspace-key>/memory/` |
-| Workspace trace | `~/.mycli/traces/` |
-| User config | `~/.mycli/config.toml` |
-| Workspace config | `<workspace>/.mycli/config.toml` |
-| Hook config | `<workspace>/.mycli/hooks.json`、`~/.mycli/hooks.json` |
-| Hook allowlist | `~/.mycli/hook-allowlist.json` |
-| Plugins | `<workspace>/.mycli/plugins/`、`~/.mycli/plugins/` |
-| MCP config | `~/.mycli/mcp_servers.toml`、`<workspace>/.mycli/mcp_servers.toml` |
+| `enter` | 空闲时发送；turn 可 steering 时向当前 turn 追加 steering message |
+| `tab` | 将输入加入 follow-up queue |
+| `esc` | 立即在 TUI 显示中断状态，并请求 backend 停止当前 turn |
+| `ctrl+c` | 运行中中断；空输入时清空或退出 |
+| `option+up` / `shift+left` | 取回最后一条 queued follow-up 继续编辑 |
+| `ctrl+p` | 打开命令面板 |
+| `ctrl+l` | 打开两阶段模型/思考强度选择器 |
+| `ctrl+o` | 全局切换工具详情 |
+| `ctrl+x` | 循环切换 sandbox |
+| `shift+tab` | 循环切换协作模式 |
+| `?` | 打开快捷键帮助 |
+| `ctrl+v` | 粘贴图片 |
+| `ctrl+d` | 退出 |
 
-SQLite session store 会保存：
+运行中按 `enter` 发送的消息会优先进入 steering queue；当前采样边界不可 steering 时会降级为 follow-up。被消费的 queued user message 会按真实消费顺序进入 transcript 和 session history。
 
-- conversation messages
-- structured history items
-- context baselines
-- turn rollouts 和 continuation state
-- pending decisions 和 suspended turns
-- plan state
-- per-session summaries
+### 图片输入
 
-旧 JSON session 文件 `~/.mycli/sessions/*.json` 已不再作为主运行时存储。
-
-SQLite 默认使用 WAL journal mode，因此运行中可能看到 `sessions.db-wal` 和 `sessions.db-shm`。这是 SQLite 的正常写入日志文件；checkpoint 后可能变小或保留为空文件，不需要手动删除。
-
-## MCP、Skills 与 Plugins
-
-### Skills
-
-内置 skills 位于：
+支持视觉输入的模型可以使用：
 
 ```text
-src/mycli/prompts/skills/
+分析这张截图 @/absolute/path/screenshot.png
 ```
 
-新 skills 推荐使用 Agent Skills 目录格式：
+支持 `.png`、`.jpg`、`.jpeg`、`.webp` 和 `.gif`。发送后路径会替换为 `[image #N]`，图片作为结构化 image block 进入 provider request。
+
+### 工具展示
+
+- `Read`、`LS` 等读取工具显示紧凑摘要。
+- `Write` 显示新增内容和行数。
+- `Edit`、`Patch` 和 mutation receipt 使用新增/删除颜色高亮。
+- `Shell` 显示命令、状态、耗时和折叠输出。
+- `Task` 显示后台 subagent 状态。
+- `ctrl+o` 控制所有历史和当前工具详情，不把控制命令写入 transcript。
+- `/resume` 恢复时沿用工具折叠策略，不全量展开旧 output。
+
+## Slash commands
+
+命令面板以 [slash command registry](src/mycli/cli/slash_command_registry.py) 为准。overlay 类命令不会覆盖最后一条 assistant 消息，也不会作为普通对话写进 session。
+
+| 命令 | 说明 |
+| --- | --- |
+| `/help` | 打开命令帮助 |
+| `/model [model] [--thinking-effort level]` | 选择模型和思考强度 |
+| `/plan` | 进入 Plan 协作模式 |
+| `/permissions [allow\|revoke\|clear]` | 查看或更新 session shell allowance |
+| `/new` | 新建本地 transcript/session |
+| `/resume [session-id]` | 选择或恢复 session |
+| `/fork [source] [new-session] [message-index]` | fork session |
+| `/status` | 当前 session、模型和 runtime 状态 |
+| `/usage` | 当前窗口和累计 token usage |
+| `/compact` | 手动压缩 active model context |
+| `/skills` | 查看可用 skills |
+| `/tools [list\|sets\|hooks\|extensions\|plugins]` | 查看工具和扩展 |
+| `/tasks [agents\|kill-agents]` | 查看或停止后台 agent task |
+| `/ps` | 查看后台终端 |
+| `/changes` | 查看文件变更 |
+| `/quit` | 退出 |
+
+其他可用命令包括：
+
+- `/settings`、`/sandbox`、`/context`、`/stats`、`/resources`
+- `/memory`、`/agents`、`/stop`、`/undo`
+- `/trace [export|logs]`
+- `/details`、`/view`、`/hotkeys`、`/copy`、`/clear`
+- `/login`、`/trust`
+- `/session search`、`/session maintenance`
+
+旧别名如 `/sessions`、`/search`、`/hooks`、`/toolsets`、`/jobs`、`/bashes`、`/subagents`、`/logs` 和 `/trace-jsonl` 仍兼容，但新文档和新交互应使用 canonical command。
+
+## Turn、重试与中断
+
+一个 turn 的主流程是：
 
 ```text
-<workspace>/.agents/skills/<skill-name>/SKILL.md
-<workspace>/.mycli/skills/<skill-name>/SKILL.md
-~/.mycli/skills/<skill-name>/SKILL.md
+user input
+  -> instruction/context assembly
+  -> tool exposure planning
+  -> provider request
+  -> assistant text/reasoning/tool calls
+  -> tool execution
+  -> continuation request
+  -> final assistant response
 ```
 
-`.agents/skills` 适合放入仓库并与其他 coding agent 共享；`.mycli/skills` 适合
-mycli 专属 skill。每个 skill 目录可以包含自己的 `scripts/`、`references/` 和
-`assets/`。标准 `SKILL.md` 使用 YAML frontmatter；原有 TOML frontmatter 继续兼容。
+关键语义：
 
-为兼容已有配置，以上目录及内置目录中的扁平 `<skill-name>.md` 文件仍会加载。
-同名 skill 按以下顺序覆盖，右侧优先级更高：
+- 用户消息只在进入有效 turn 后持久化；未开始就被取消的输入不会伪装成已完成历史。
+- 已完成的 assistant item、tool call 和 tool output 会按 append-only 顺序保存。
+- 中断会补齐未完成工具所需的合成结果，避免 Responses/Chat replay 出现孤立 call/output。
+- TUI 会立即显示 `Turn interrupted`，backend worker 在后台完成取消和资源回收。
+- 可重试 transport/HTTP/SSE 错误默认最多重试 5 次，并显示 `Reconnecting... N/5`。
+- retry 期间保留当前 turn 状态；恢复后回到 retry 前的 Thinking/Running 状态。
+- context-window error 会先尝试确定性修复或 compact，再决定是否使用 fallback model。
 
-```text
-builtin < user ~/.mycli < workspace .agents < workspace .mycli
+## Context 与 compact
+
+`mycli` 的 canonical conversation 是 provider-independent 的 append-only 时间线。每种协议只负责把它投影为自己的 wire format，不在 adapter 内重排语义历史。
+
+自动和手动 compact 使用同一条主路径：
+
+1. 根据 provider usage 或本地 token estimate 判断是否触发。
+2. 选择要替换的历史与保留尾部。
+3. 将完整结构化 conversation 交给 summarizer。
+4. 保留 tool name、arguments、`call_id` 和 tool output；删除孤立 output，并为缺失 output 生成合成结果。
+5. 单条超长 tool output 在 compact 输入边界使用 head-tail 截断。
+6. summary 通过校验后，原子安装 `summary + exact tail + active in-flight suffix`。
+7. summary 失败时保留原 conversation，不静默删除历史。
+
+当前 model-visible 工具 schema 会提供给 summarizer，但 compact 请求强制禁止实际工具调用。compact 后旧 tool call/output 不原样保留在 replacement history 中；它们作为结构化证据参与 summary。
+
+相关配置：
+
+```toml
+[context]
+compaction_token_limit = 100000
+compaction_reserved_output_tokens = 13000
+compaction_tail_turns = 2
+compaction_tail_max_tokens = 8000
+compaction_l4_trigger_ratio = 0.9
+compaction_l4_buffer_tokens = 13000
+compaction_l4_summarizer_model = "gpt-5.4-mini"
 ```
 
-Skill metadata 会被索引，正文按需加载。匹配到的 skill 会作为独立指令注入当前 turn。
+## 工具系统
 
-### MCP servers
+默认直接暴露给模型的内置工具：
 
-MCP 配置可以放在用户级或项目级：
+- 文件与上下文：`Read`、`LS`、`Write`、`Edit`
+- 终端：`Shell`、`WriteStdin`
+- Web：`WebFetch`、`WebSearch`
+- 交互与工作流：`AskUserQuestion`、`Plan`、`Task`、`SendMessage`、`Skill`
+
+按需或兼容使用的内置工具包括 `Patch`、`ShellOutput`、`KillShell`、`Bash`、`BashOutput`、`GitStatus`、`GitDiff`、`GitLog`、`GitShow`、`Lint`、`SubagentOutput` 和 plan-mode 工具。
+
+`Glob` 和 `Grep` 已从默认模型工具集中 retired；路径发现和文本搜索应使用 `Read`、`LS` 或 `Shell` 中的 `rg`。
+
+当单轮 contributed tools 达到 100 项时，外部工具会转为 deferred，只直接暴露 `ToolSearch`。模型通过 ToolSearch 获得最多 8 个匹配工具定义后，可以在同一 turn 调用它们。
+
+### WebSearch 的当前边界
+
+当前 `WebSearch` 是 mycli 的 client-executed function tool：
+
+- `provider="deepseek"` 分支返回 DeepSeek server-side search descriptor；它本身不是一次独立搜索 HTTP 调用。
+- 非 DeepSeek 分支使用 `SERPAPI_API_KEY` 调用 SerpAPI，并规范化标题和 URL。
+- OpenAI Responses hosted `web_search` 与 Codex standalone `web.run` 是不同能力，当前没有作为 mycli 的 raw search backend 接入。
+- Responses hosted search 只向客户端暴露 `web_search_call`、最终模型 message，以及可选的 `web_search_call.action.sources`；它不暴露内部原始 tool output。
+
+不要把 `provider="codex"` 理解成复用本机 Codex 搜索或 ChatGPT 登录态。
+
+## Shell 与后台终端
+
+`Shell` 使用持久 PTY transport：macOS/Linux 使用 Unix PTY，Windows 使用 ConPTY。环境来自启动 mycli 的进程，并经过 `shell_environment_policy` 过滤、覆盖和最小环境补全。
+
+长时间运行的命令会返回 session ID，并进入后台终端注册表：
+
+- `/ps` 查看后台终端。
+- `ShellOutput` 获取新增输出。
+- `WriteStdin` 向交互进程写入输入。
+- `KillShell` 或 `/stop` 停止进程。
+- TUI footer 显示后台终端数量。
+
+HTTP server、watcher 和持续输出进程不会因为首次命令返回而被误判为已结束；runtime 根据 PTY/process 生命周期维护状态。
+
+## Sandbox 与 approval
+
+支持三种 sandbox：
+
+- `read-only`
+- `workspace-write`
+- `danger-full-access`
+
+默认是 `workspace-write`。安全策略结合 tool effect、目标路径、shell command 分析和 session allowance 决定自动执行、请求批准或拒绝。
+
+- workspace 内常规读取和编辑通常可自动执行。
+- workspace 外写入、危险 Shell、策略命中和高风险操作进入 approval。
+- macOS 上，`read-only` 和 `workspace-write` 的 Shell、configured Hook 和 MCP stdio
+  进程通过固定的 `/usr/bin/sandbox-exec` 进入 Seatbelt；文件写入和网络访问在 OS
+  边界执行限制。
+- Linux 上，受限模式通过固定的 `/usr/bin/bwrap` 或 `/bin/bwrap` 进入 Bubblewrap；
+  根文件系统默认只读，仅重新挂载允许写入的目录，并按策略隔离网络 namespace。
+  Bubblewrap 缺失时受限进程拒绝启动，不会静默降级到宿主机执行。
+- Lint、Grep 和只读 Git 工具启动的本地进程复用同一 sandbox profile，不能作为
+  Shell 之外的宿主机执行旁路。
+- workspace-write 会在可写 workspace 内重新保护现有 `.git`、`.agents` 和 `.codex`
+  元数据路径；Shell 可以修改项目文件，但不能直接改写这些控制目录。
+- `danger-full-access` 不启用 OS sandbox，相关子进程直接继承当前系统用户权限。
+- Windows 的 restricted-token helper 和进程内插件隔离仍在建设中。Windows
+  受限模式当前 fail closed 并报告 `sandbox_unavailable`，不会静默降级到宿主机；
+  需要直接继承当前用户权限时必须显式选择 `danger-full-access`。
+- `/permissions allow <pattern>` 添加当前 session allowance。
+- `/permissions revoke <pattern>` 撤销 allowance。
+- Plan mode 阻止 mutation tools。
+- memory 和当前 session task output 目录作为明确允许根目录加入 filesystem runtime。
+
+## MCP、Skills、Hooks 与 Plugins
+
+### MCP
+
+配置位置：
 
 ```text
 ~/.mycli/mcp_servers.toml
 <workspace>/.mycli/mcp_servers.toml
 ```
 
-项目级同名 server 会覆盖用户级配置。
-
-stdio server 示例：
+项目级同名 server 覆盖用户级配置。支持 `stdio`、`http` 和 `streamable_http`。
 
 ```toml
 [servers.filesystem]
@@ -560,42 +507,43 @@ transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 timeout_seconds = 30
-```
 
-HTTP server 示例：
-
-```toml
-[servers.search]
-enabled = true
-transport = "http"
-url = "http://127.0.0.1:8765/mcp"
-timeout_seconds = 30
-```
-
-Streamable HTTP server 也兼容常见的 `mcpServers` 和 `type` 写法：
-
-```toml
-[mcpServers.remote]
+[mcpServers.rail]
 enabled = true
 type = "streamable_http"
 url = "https://mcp.example.test/mcp"
 timeout_seconds = 30
 ```
 
-环境变量可以用 `${NAME}` 引用：
+MCP env 支持 `${NAME}` 插值。管理命令：
 
-```toml
-[servers.github]
-enabled = true
-transport = "stdio"
-command = "uvx"
-args = ["mcp-server-github"]
-env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+```bash
+uv run mycli mcp list
+uv run mycli mcp inspect <server-id>
 ```
+
+### Skills
+
+推荐目录：
+
+```text
+<workspace>/.agents/skills/<skill-name>/SKILL.md
+<workspace>/.mycli/skills/<skill-name>/SKILL.md
+~/.mycli/skills/<skill-name>/SKILL.md
+src/mycli/prompts/skills/<skill-name>/SKILL.md
+```
+
+同名 skill 的优先级为：
+
+```text
+builtin < user ~/.mycli < workspace .agents < workspace .mycli
+```
+
+标准 `SKILL.md` 使用 YAML frontmatter，并可以包含 `scripts/`、`references/` 和 `assets/`。扁平 `<skill-name>.md` 与旧 TOML frontmatter 仍兼容。
 
 ### Hooks
 
-`mycli` 支持一个 Codex-compatible command hook subset。主路径对齐 Codex 的五个事件：
+支持以下 command hook：
 
 - `PreToolUse`
 - `PostToolUse`
@@ -603,7 +551,12 @@ env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 - `UserPromptSubmit`
 - `Stop`
 
-推荐使用 Codex grouped 配置，放在项目级 `<workspace>/.mycli/hooks.json` 或用户级 `~/.mycli/hooks.json`：
+配置位置：
+
+```text
+<workspace>/.mycli/hooks.json
+~/.mycli/hooks.json
+```
 
 ```json
 {
@@ -613,7 +566,7 @@ env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
       "hooks": [
         {
           "type": "command",
-          "command": "python3 .mycli/hooks/post_tool_reminder.py",
+          "command": "python3 .mycli/hooks/post_tool.py",
           "timeoutSec": 2
         }
       ]
@@ -622,111 +575,133 @@ env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 }
 ```
 
-hook command 从 stdin 读取 JSON，并向 stdout 写 JSON。`PostToolUse` 追加上下文示例：
-
-```python
-import json
-
-print(json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "PostToolUse",
-        "additionalContext": (
-            "The previous tool call has completed. Use its result above; "
-            "do not repeat the same tool call unless the result is missing, "
-            "stale, or insufficient for the current task."
-        )
-    }
-}))
-```
-
-阻断示例：
-
-```python
-import json
-import sys
-
-payload = json.load(sys.stdin)
-prompt = payload.get("prompt", "")
-
-if "rm -rf" in prompt:
-    print(json.dumps({
-        "decision": "block",
-        "reason": "Prompt contains a high-risk delete command."
-    }))
-else:
-    print("{}")
-```
-
-也可以用 exit code `2` 阻断，并把原因写到 stderr。
-
-matcher 规则：
-
-- `PreToolUse` / `PostToolUse` matcher 匹配 tool name。
-- `SessionStart` matcher 匹配 source，例如 `startup`。
-- `UserPromptSubmit` / `Stop` 忽略 matcher。
-- 空 matcher 或 `*` 匹配全部；其他字符串按正则匹配。
-
-配置文件 hook 是本地命令，默认需要 allowlist。先查看 identity：
+配置文件 hook 默认需要 allowlist：
 
 ```bash
 uv run mycli hooks list
+uv run mycli hooks inspect <hook-id>
+uv run mycli hooks approve <hook-id>
+uv run mycli hooks revoke <hook-id>
 ```
-
-然后批准：
-
-```bash
-uv run mycli hooks approve repo:PostToolUse-0-0:post_tool_use
-```
-
-如果使用 mycli 旧 flat 格式，可以指定稳定 id：
-
-```json
-{
-  "hooks": [
-    {
-      "id": "post-tool-reminder",
-      "hook_point": "post_tool_use",
-      "command": ["python3", ".mycli/hooks/post_tool_reminder.py"],
-      "timeout_seconds": 2
-    }
-  ]
-}
-```
-
-对应 approve：
-
-```bash
-uv run mycli hooks approve repo:post-tool-reminder:post_tool_use
-```
-
-内置 `post_tool_context` 已默认注册，会在每次 tool 完成后生成防重复调用 reminder。这个 built-in hook 不走 allowlist；allowlist 只保护配置文件里的 command hook。
 
 ### Plugins
 
-插件和 hook 管理命令：
+插件位于 `<workspace>/.mycli/plugins/` 或 `~/.mycli/plugins/`。管理命令：
 
 ```bash
 uv run mycli plugins list
-uv run mycli hooks list
-uv run mycli mcp list
-uv run mycli subagents list
+uv run mycli plugins inspect <plugin-id>
+uv run mycli plugins run <plugin-id> <command-name> --json-args '{"key":"value"}'
 ```
 
-这些命令支持 `--json` 输出，方便脚本调用。常用管理命令：
+utility command 支持 `--json`，便于脚本化调用。
 
-```bash
-uv run mycli hooks inspect repo:post-tool-reminder:post_tool_use
-uv run mycli hooks approve repo:post-tool-reminder:post_tool_use
-uv run mycli hooks revoke repo:post-tool-reminder:post_tool_use
+插件模块不会导入到 mycli 主进程。注册探测以及 tool、hook、command callback 均在
+独立的一次性 Python worker 中执行，并复用当前 session 的 OS sandbox；worker 崩溃、
+超时或输出无效时会转换成有界插件错误。worker 只接收 `plugin.yaml` 的
+`requires_env` 明确声明的环境变量，不继承其他 token、key 或 secret。
 
-uv run mycli plugins inspect <plugin_id>
-uv run mycli plugins run <plugin_id> <command_name> --json-args '{"key":"value"}'
+## Subagents
 
-uv run mycli mcp inspect <server_id>
-uv run mycli subagents inspect <profile_id>
+`Task` 启动独立 child session 中的后台 subagent：
+
+1. 主 agent 发起 Task 后继续当前 turn，不同步等待。
+2. child session 有独立 transcript、工具预算和状态。
+3. TUI 显示后台进度。
+4. 完成后 runtime 将 `<task-notification>` 送入主 session queue。
+5. 主 agent 在后续采样边界消费 notification。
+
+`SubagentOutput` 只用于用户明确请求查看后台进度；正常完成依赖 notification，不需要模型轮询。
+
+推荐 profile：
+
+```text
+<workspace>/.mycli/agents/<profile-id>.md
+~/.mycli/agents/<profile-id>.md
 ```
 
-## 开发命令
+```md
+---
+name: security-reviewer
+description: Review security-sensitive changes.
+tools: Read, LS
+disallowedTools: Shell, Write
+model: gpt-5.4-mini
+maxTurns: 5
+---
+Focus on concrete vulnerabilities, unsafe trust boundaries, and missing tests.
+```
+
+旧 `.mycli/subagents/*.toml` 和 `~/.mycli/subagents/*.toml` 仍兼容。
+
+## Memory
+
+长期记忆使用 workspace-scoped file memory：
+
+```text
+~/.mycli/projects/<workspace-key>/memory/
+```
+
+- `MEMORY.md` 是索引。
+- 具体 memory 使用独立 Markdown 文件。
+- 类型包括 `user`、`feedback`、`project` 和 `reference`。
+- runtime 根据当前请求选择相关 memory。
+- extraction 在成功 turn 后后台提取值得长期保存的信息。
+- dream/consolidation 按时间和 session 数量阈值运行。
+
+关闭全部 memory：
+
+```toml
+[memory]
+enabled = false
+```
+
+仅关闭自动 extraction：
+
+```toml
+[memory]
+enabled = true
+extraction_enabled = true
+extraction_interval_turns = -1
+```
+
+## Session 与数据目录
+
+| 数据 | 路径 |
+| --- | --- |
+| SQLite session store | `~/.mycli/sessions.db` |
+| Session snapshot/events | `~/.mycli/sessions/<session-id>/` |
+| Background task output | `~/.mycli/sessions/<session-id>/tasks/` |
+| Trace | `~/.mycli/traces/` |
+| Runtime logs | `~/.mycli/logs/` |
+| Auth store | `~/.mycli/auth.json` |
+| Model catalog | `~/.mycli/models.json` |
+| User config | `~/.mycli/config.toml` |
+| File memory | `~/.mycli/projects/<workspace-key>/memory/` |
+| Vendor tools | `~/.mycli/vendor/` |
+
+SQLite 保存 conversation、structured history、context baseline、turn rollout、Responses continuation state、pending decision、suspended turn、queue 和 plan state。数据库使用 WAL，因此运行中出现 `sessions.db-wal` 和 `sessions.db-shm` 属于正常现象。
+
+`session.json` 和 `events.jsonl` 用于 snapshot、诊断和兼容读取；SQLite 是当前主状态源。恢复 session 时 TUI 使用原子 transcript replacement，避免把已显示历史再次追加一遍。
+
+## 代码结构
+
+```text
+src/mycli/cli/                    CLI、slash command、Node TUI gateway
+src/mycli/application/runtime/    turn loop、request、tool、ledger、recovery
+src/mycli/domain/                 conversation/runtime/tooling 领域类型
+src/mycli/llms/                   provider clients 和 adapters
+src/mycli/tools/                  内置工具、tool router、ToolSearch
+src/mycli/services/context/       context、compact、token 与 tool output
+src/mycli/state/                  session service 和序列化
+src/mycli/memory/                 file memory、extraction、dream
+src/mycli/services/mcp/           MCP transport 和 discovery
+tui/mycli-shell/                  TypeScript Node TUI
+```
+
+更详细的模块边界见 [docs/architecture.md](docs/architecture.md)，当前上下文语义见 [docs/context/mycli-context-assembly-reference.md](docs/context/mycli-context-assembly-reference.md)。`docs/superpowers/` 中的 specs、plans 和 reports 是历史设计材料，不应覆盖当前源码与本 README 的产品说明。
+
+## 开发与验证
 
 Python：
 
@@ -739,22 +714,32 @@ uv run mypy src
 Node TUI：
 
 ```bash
-cd tui/mycli-shell
-npm run typecheck
-npm test
-./node_modules/.bin/tsc --noEmit --noUnusedLocals --noUnusedParameters
+npm --prefix tui/mycli-shell run typecheck
+npm --prefix tui/mycli-shell test
 ```
 
-## 致谢
+运行诊断：
 
-`mycli` 的设计和实现参考了多个优秀 agent 项目、产品和实验思路。特别感谢 hermes-agent、pi-agent、Codex、Claude Code 等项目带来的启发，包括 Responses/工具调用运行时、append-only 上下文组织、subagent/background task、hook 生命周期、终端交互体验、登录配置流程和 session/memory 管理等方向。
-
-这些致谢只表示工程和产品思路上的学习与借鉴，不表示上述项目或其维护者对 `mycli` 的背书或关联。
+```bash
+uv run mycli doctor
+uv run mycli hooks list --json
+uv run mycli plugins list --json
+uv run mycli mcp list --json
+uv run mycli subagents list --json
+```
 
 ## 已知限制
 
-- OpenAI 主路径默认使用 `POST /responses`；不支持 Responses API 的 provider 需要配置 `protocol = "chat_completions"`。
-- `chat_completions` 兼容模式依赖 provider 的 OpenAI-compatible 行为，tool call replay 的严格程度因 provider 而异。
-- 当前 context token 估算和压缩摘要不是 provider 原生 tokenizer。
-- Node TUI 已尽量靠近 Claude Code 的交互语义，但不是完整复刻。
-- background subagent 通知依赖主 runtime 队列；如果 provider 对 tool-call/result 顺序特别严格，仍需要专项兼容测试。
+- OpenAI Responses gateway 的 hosted capabilities 取决于上游；支持 `/responses` 不代表支持 continuation、prompt cache、hosted web search 或 native compact。
+- Responses hosted `web_search` 是一次完整模型调用，不是独立 raw search API；原始内部 tool output 不会返回客户端。
+- 当前本地 `WebSearch` 尚未把 OpenAI hosted search 包装为跨 provider backend。
+- Chat Completions provider 对严格 tool call replay、reasoning metadata 和 cache-control 的兼容程度不同。
+- context token estimate 使用本地 tokenizer/估算，不等同于所有 provider 的计费 tokenizer。
+- 中断提示可以立即显示，但不可取消的第三方 SDK、系统调用或子进程仍可能需要后台收尾。
+- Node TUI 追求 Codex 风格的语义与布局，但不是 Codex UI 的逐像素复刻。
+
+## 致谢
+
+`mycli` 的设计参考了 Codex、Claude Code、Hermes Agent、pi-agent 等项目在 agent runtime、Responses、append-only history、工具生命周期、background task、hooks、memory 和终端交互方面的公开实现与产品思路。
+
+这些参考不表示上述项目或维护者对 `mycli` 的背书或关联。
