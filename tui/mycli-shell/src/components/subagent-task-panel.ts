@@ -74,7 +74,7 @@ export class BackgroundSubagentDialogComponent extends Container {
 		this.agents = sortedAgents(agents);
 		const detailId = this.viewState.mode === "detail" ? this.viewState.subagentId : null;
 		if (detailId && !this.agents.some((agent) => agent.id === detailId)) {
-			this.viewState = this.skippedListOnMount ? { mode: "list" } : { mode: "list" };
+			this.viewState = { mode: "list" };
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.agents.length - 1));
 		this.rebuild();

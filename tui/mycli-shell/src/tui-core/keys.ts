@@ -12,10 +12,7 @@
  *
  * API:
  * - matchesKey(data, keyId) - Check if input matches a key identifier
- * - parseKey(data) - Parse input and return the key identifier
- * - Key - Helper object for creating typed key identifiers
  * - setKittyProtocolActive(active) - Set global Kitty protocol state
- * - isKittyProtocolActive() - Query global Kitty protocol state
  */
 
 // =============================================================================
@@ -30,13 +27,6 @@ let _kittyProtocolActive = false;
  */
 export function setKittyProtocolActive(active: boolean): void {
 	_kittyProtocolActive = active;
-}
-
-/**
- * Query whether Kitty keyboard protocol is currently active.
- */
-export function isKittyProtocolActive(): boolean {
-	return _kittyProtocolActive;
 }
 
 // =============================================================================
@@ -150,106 +140,6 @@ type ModifiedKeyId<Key extends string, RemainingModifiers extends ModifierName =
  * Provides autocomplete and catches typos at compile time.
  */
 export type KeyId = BaseKey | ModifiedKeyId<BaseKey>;
-
-/**
- * Helper object for creating typed key identifiers with autocomplete.
- *
- * Usage:
- * - Key.escape, Key.enter, Key.tab, etc. for special keys
- * - Key.backtick, Key.comma, Key.period, etc. for symbol keys
- * - Key.ctrl("c"), Key.alt("x"), Key.super("k") for single modifiers
- * - Key.ctrlShift("p"), Key.ctrlAlt("x"), Key.ctrlSuper("k") for combined modifiers
- */
-export const Key = {
-	// Special keys
-	escape: "escape" as const,
-	esc: "esc" as const,
-	enter: "enter" as const,
-	return: "return" as const,
-	tab: "tab" as const,
-	space: "space" as const,
-	backspace: "backspace" as const,
-	delete: "delete" as const,
-	insert: "insert" as const,
-	clear: "clear" as const,
-	home: "home" as const,
-	end: "end" as const,
-	pageUp: "pageUp" as const,
-	pageDown: "pageDown" as const,
-	up: "up" as const,
-	down: "down" as const,
-	left: "left" as const,
-	right: "right" as const,
-	f1: "f1" as const,
-	f2: "f2" as const,
-	f3: "f3" as const,
-	f4: "f4" as const,
-	f5: "f5" as const,
-	f6: "f6" as const,
-	f7: "f7" as const,
-	f8: "f8" as const,
-	f9: "f9" as const,
-	f10: "f10" as const,
-	f11: "f11" as const,
-	f12: "f12" as const,
-
-	// Symbol keys
-	backtick: "`" as const,
-	hyphen: "-" as const,
-	equals: "=" as const,
-	leftbracket: "[" as const,
-	rightbracket: "]" as const,
-	backslash: "\\" as const,
-	semicolon: ";" as const,
-	quote: "'" as const,
-	comma: "," as const,
-	period: "." as const,
-	slash: "/" as const,
-	exclamation: "!" as const,
-	at: "@" as const,
-	hash: "#" as const,
-	dollar: "$" as const,
-	percent: "%" as const,
-	caret: "^" as const,
-	ampersand: "&" as const,
-	asterisk: "*" as const,
-	leftparen: "(" as const,
-	rightparen: ")" as const,
-	underscore: "_" as const,
-	plus: "+" as const,
-	pipe: "|" as const,
-	tilde: "~" as const,
-	leftbrace: "{" as const,
-	rightbrace: "}" as const,
-	colon: ":" as const,
-	lessthan: "<" as const,
-	greaterthan: ">" as const,
-	question: "?" as const,
-
-	// Single modifiers
-	ctrl: <K extends BaseKey>(key: K): `ctrl+${K}` => `ctrl+${key}`,
-	shift: <K extends BaseKey>(key: K): `shift+${K}` => `shift+${key}`,
-	alt: <K extends BaseKey>(key: K): `alt+${K}` => `alt+${key}`,
-	super: <K extends BaseKey>(key: K): `super+${K}` => `super+${key}`,
-
-	// Combined modifiers
-	ctrlShift: <K extends BaseKey>(key: K): `ctrl+shift+${K}` => `ctrl+shift+${key}`,
-	shiftCtrl: <K extends BaseKey>(key: K): `shift+ctrl+${K}` => `shift+ctrl+${key}`,
-	ctrlAlt: <K extends BaseKey>(key: K): `ctrl+alt+${K}` => `ctrl+alt+${key}`,
-	altCtrl: <K extends BaseKey>(key: K): `alt+ctrl+${K}` => `alt+ctrl+${key}`,
-	shiftAlt: <K extends BaseKey>(key: K): `shift+alt+${K}` => `shift+alt+${key}`,
-	altShift: <K extends BaseKey>(key: K): `alt+shift+${K}` => `alt+shift+${key}`,
-	ctrlSuper: <K extends BaseKey>(key: K): `ctrl+super+${K}` => `ctrl+super+${key}`,
-	superCtrl: <K extends BaseKey>(key: K): `super+ctrl+${K}` => `super+ctrl+${key}`,
-	shiftSuper: <K extends BaseKey>(key: K): `shift+super+${K}` => `shift+super+${key}`,
-	superShift: <K extends BaseKey>(key: K): `super+shift+${K}` => `super+shift+${key}`,
-	altSuper: <K extends BaseKey>(key: K): `alt+super+${K}` => `alt+super+${key}`,
-	superAlt: <K extends BaseKey>(key: K): `super+alt+${K}` => `super+alt+${key}`,
-
-	// Triple modifiers
-	ctrlShiftAlt: <K extends BaseKey>(key: K): `ctrl+shift+alt+${K}` => `ctrl+shift+alt+${key}`,
-	ctrlShiftSuper: <K extends BaseKey>(key: K): `ctrl+shift+super+${K}` => `ctrl+shift+super+${key}`,
-} as const;
 
 // =============================================================================
 // Constants
@@ -419,67 +309,6 @@ const LEGACY_CTRL_SEQUENCES = {
 	end: ["\x1b[8^"],
 } as const;
 
-const LEGACY_SEQUENCE_KEY_IDS: Record<string, KeyId> = {
-	"\x1bOA": "up",
-	"\x1bOB": "down",
-	"\x1bOC": "right",
-	"\x1bOD": "left",
-	"\x1bOH": "home",
-	"\x1bOF": "end",
-	"\x1b[E": "clear",
-	"\x1bOE": "clear",
-	"\x1bOe": "ctrl+clear",
-	"\x1b[e": "shift+clear",
-	"\x1b[2~": "insert",
-	"\x1b[2$": "shift+insert",
-	"\x1b[2^": "ctrl+insert",
-	"\x1b[3$": "shift+delete",
-	"\x1b[3^": "ctrl+delete",
-	"\x1b[[5~": "pageUp",
-	"\x1b[[6~": "pageDown",
-	"\x1b[a": "shift+up",
-	"\x1b[b": "shift+down",
-	"\x1b[c": "shift+right",
-	"\x1b[d": "shift+left",
-	"\x1bOa": "ctrl+up",
-	"\x1bOb": "ctrl+down",
-	"\x1bOc": "ctrl+right",
-	"\x1bOd": "ctrl+left",
-	"\x1b[5$": "shift+pageUp",
-	"\x1b[6$": "shift+pageDown",
-	"\x1b[7$": "shift+home",
-	"\x1b[8$": "shift+end",
-	"\x1b[5^": "ctrl+pageUp",
-	"\x1b[6^": "ctrl+pageDown",
-	"\x1b[7^": "ctrl+home",
-	"\x1b[8^": "ctrl+end",
-	"\x1bOP": "f1",
-	"\x1bOQ": "f2",
-	"\x1bOR": "f3",
-	"\x1bOS": "f4",
-	"\x1b[11~": "f1",
-	"\x1b[12~": "f2",
-	"\x1b[13~": "f3",
-	"\x1b[14~": "f4",
-	"\x1b[[A": "f1",
-	"\x1b[[B": "f2",
-	"\x1b[[C": "f3",
-	"\x1b[[D": "f4",
-	"\x1b[[E": "f5",
-	"\x1b[15~": "f5",
-	"\x1b[17~": "f6",
-	"\x1b[18~": "f7",
-	"\x1b[19~": "f8",
-	"\x1b[20~": "f9",
-	"\x1b[21~": "f10",
-	"\x1b[23~": "f11",
-	"\x1b[24~": "f12",
-	"\x1bb": "alt+left",
-	"\x1bf": "alt+right",
-	"\x1bp": "alt+up",
-	"\x1bn": "alt+down",
-} as const;
-
 type LegacyModifierKey = keyof typeof LEGACY_SHIFT_SEQUENCES;
 
 const matchesLegacySequence = (data: string, sequences: readonly string[]): boolean => sequences.includes(data);
@@ -502,7 +331,7 @@ const matchesLegacyModifierSequence = (data: string, key: LegacyModifierKey, mod
  * Event types from Kitty keyboard protocol (flag 2)
  * 1 = key press, 2 = key repeat, 3 = key release
  */
-export type KeyEventType = "press" | "repeat" | "release";
+type KeyEventType = "press" | "repeat" | "release";
 
 interface ParsedKittySequence {
 	codepoint: number;
@@ -541,32 +370,6 @@ export function isKeyRelease(data: string): boolean {
 		data.includes(":3D") ||
 		data.includes(":3H") ||
 		data.includes(":3F")
-	) {
-		return true;
-	}
-	return false;
-}
-
-/**
- * Check if the last parsed key event was a key repeat.
- * Only meaningful when Kitty keyboard protocol with flag 2 is active.
- */
-export function isKeyRepeat(data: string): boolean {
-	// Don't treat bracketed paste content as key repeat, even if it contains
-	// patterns like ":2F". See isKeyRelease() for details.
-	if (data.includes("\x1b[200~")) {
-		return false;
-	}
-
-	if (
-		data.includes(":2u") ||
-		data.includes(":2~") ||
-		data.includes(":2A") ||
-		data.includes(":2B") ||
-		data.includes(":2C") ||
-		data.includes(":2D") ||
-		data.includes(":2H") ||
-		data.includes(":2F")
 	) {
 		return true;
 	}
@@ -1194,128 +997,6 @@ export function matchesKey(data: string, keyId: KeyId): boolean {
 	}
 
 	return false;
-}
-
-/**
- * Parse input data and return the key identifier if recognized.
- *
- * @param data - Raw input data from terminal
- * @returns Key identifier string (e.g., "ctrl+c") or undefined
- */
-function formatParsedKey(codepoint: number, modifier: number, baseLayoutKey?: number): string | undefined {
-	const normalizedCodepoint = normalizeKittyFunctionalCodepoint(codepoint);
-	const identityCodepoint = normalizeShiftedLetterIdentityCodepoint(normalizedCodepoint, modifier);
-
-	// Use base layout key only when codepoint is not a recognized Latin
-	// letter (a-z), digit (0-9), or symbol (/, -, [, ;, etc.). For those,
-	// the codepoint is authoritative regardless of physical key position.
-	// This prevents remapped layouts (Dvorak, Colemak, xremap, etc.) from
-	// reporting the wrong key name based on the QWERTY physical position.
-	const isLatinLetter = identityCodepoint >= 97 && identityCodepoint <= 122; // a-z
-	const isDigit = identityCodepoint >= 48 && identityCodepoint <= 57; // 0-9
-	const isKnownSymbol = SYMBOL_KEYS.has(String.fromCharCode(identityCodepoint));
-	const effectiveCodepoint =
-		isLatinLetter || isDigit || isKnownSymbol ? identityCodepoint : (baseLayoutKey ?? identityCodepoint);
-
-	let keyName: string | undefined;
-	if (effectiveCodepoint === CODEPOINTS.escape) keyName = "escape";
-	else if (effectiveCodepoint === CODEPOINTS.tab) keyName = "tab";
-	else if (effectiveCodepoint === CODEPOINTS.enter || effectiveCodepoint === CODEPOINTS.kpEnter) keyName = "enter";
-	else if (effectiveCodepoint === CODEPOINTS.space) keyName = "space";
-	else if (effectiveCodepoint === CODEPOINTS.backspace) keyName = "backspace";
-	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.delete) keyName = "delete";
-	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.insert) keyName = "insert";
-	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.home) keyName = "home";
-	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.end) keyName = "end";
-	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageUp) keyName = "pageUp";
-	else if (effectiveCodepoint === FUNCTIONAL_CODEPOINTS.pageDown) keyName = "pageDown";
-	else if (effectiveCodepoint === ARROW_CODEPOINTS.up) keyName = "up";
-	else if (effectiveCodepoint === ARROW_CODEPOINTS.down) keyName = "down";
-	else if (effectiveCodepoint === ARROW_CODEPOINTS.left) keyName = "left";
-	else if (effectiveCodepoint === ARROW_CODEPOINTS.right) keyName = "right";
-	else if (effectiveCodepoint >= 48 && effectiveCodepoint <= 57) keyName = String.fromCharCode(effectiveCodepoint);
-	else if (effectiveCodepoint >= 97 && effectiveCodepoint <= 122) keyName = String.fromCharCode(effectiveCodepoint);
-	else if (SYMBOL_KEYS.has(String.fromCharCode(effectiveCodepoint))) keyName = String.fromCharCode(effectiveCodepoint);
-
-	if (!keyName) return undefined;
-	return formatKeyNameWithModifiers(keyName, modifier);
-}
-
-export function parseKey(data: string): string | undefined {
-	const kitty = parseKittySequence(data);
-	if (kitty) {
-		return formatParsedKey(kitty.codepoint, kitty.modifier, kitty.baseLayoutKey);
-	}
-
-	const modifyOtherKeys = parseModifyOtherKeysSequence(data);
-	if (modifyOtherKeys) {
-		return formatParsedKey(modifyOtherKeys.codepoint, modifyOtherKeys.modifier);
-	}
-
-	// Mode-aware legacy sequences
-	// When Kitty protocol is active, ambiguous sequences are interpreted as custom terminal mappings:
-	// - \x1b\r = shift+enter (Kitty mapping), not alt+enter
-	// - \n = shift+enter (Ghostty mapping)
-	if (_kittyProtocolActive) {
-		if (data === "\x1b\r" || data === "\n") return "shift+enter";
-	}
-
-	const legacySequenceKeyId = LEGACY_SEQUENCE_KEY_IDS[data];
-	if (legacySequenceKeyId) return legacySequenceKeyId;
-
-	// Legacy sequences (used when Kitty protocol is not active, or for unambiguous sequences)
-	if (data === "\x1b") return "escape";
-	if (data === "\x1c") return "ctrl+\\";
-	if (data === "\x1d") return "ctrl+]";
-	if (data === "\x1f") return "ctrl+-";
-	if (data === "\x1b\x1b") return "ctrl+alt+[";
-	if (data === "\x1b\x1c") return "ctrl+alt+\\";
-	if (data === "\x1b\x1d") return "ctrl+alt+]";
-	if (data === "\x1b\x1f") return "ctrl+alt+-";
-	if (data === "\t") return "tab";
-	if (data === "\r" || (!_kittyProtocolActive && data === "\n") || data === "\x1bOM") return "enter";
-	if (data === "\x00") return "ctrl+space";
-	if (data === " ") return "space";
-	if (data === "\x7f") return "backspace";
-	if (data === "\x08") return isWindowsTerminalSession() ? "ctrl+backspace" : "backspace";
-	if (data === "\x1b[Z") return "shift+tab";
-	if (!_kittyProtocolActive && data === "\x1b\r") return "alt+enter";
-	if (!_kittyProtocolActive && data === "\x1b ") return "alt+space";
-	if (data === "\x1b\x7f" || data === "\x1b\b") return "alt+backspace";
-	if (!_kittyProtocolActive && data === "\x1bB") return "alt+left";
-	if (!_kittyProtocolActive && data === "\x1bF") return "alt+right";
-	if (!_kittyProtocolActive && data.length === 2 && data[0] === "\x1b") {
-		const code = data.charCodeAt(1);
-		if (code >= 1 && code <= 26) {
-			return `ctrl+alt+${String.fromCharCode(code + 96)}`;
-		}
-		// Legacy alt+letter/digit (ESC followed by the key)
-		if ((code >= 97 && code <= 122) || (code >= 48 && code <= 57)) {
-			return `alt+${String.fromCharCode(code)}`;
-		}
-	}
-	if (data === "\x1b[A") return "up";
-	if (data === "\x1b[B") return "down";
-	if (data === "\x1b[C") return "right";
-	if (data === "\x1b[D") return "left";
-	if (data === "\x1b[H" || data === "\x1bOH") return "home";
-	if (data === "\x1b[F" || data === "\x1bOF") return "end";
-	if (data === "\x1b[3~") return "delete";
-	if (data === "\x1b[5~") return "pageUp";
-	if (data === "\x1b[6~") return "pageDown";
-
-	// Raw Ctrl+letter
-	if (data.length === 1) {
-		const code = data.charCodeAt(0);
-		if (code >= 1 && code <= 26) {
-			return `ctrl+${String.fromCharCode(code + 96)}`;
-		}
-		if (code >= 32 && code <= 126) {
-			return data;
-		}
-	}
-
-	return undefined;
 }
 
 // =============================================================================

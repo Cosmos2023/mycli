@@ -1,4 +1,5 @@
 import { copyText } from "./adapters/clipboard.ts";
+import { isSlashCommandSubmission } from "./adapters/slash-commands.ts";
 import { SelectList, type SelectItem } from "./tui-core/components/select-list.ts";
 import { Spacer } from "./tui-core/components/spacer.ts";
 import { Text } from "./tui-core/components/text.ts";
@@ -16,6 +17,8 @@ import type {
 	MycliShellModel,
 	MycliShellPendingApproval,
 	MycliShellPendingClarification,
+	MycliShellPermissionProfile,
+	MycliShellPermissionState,
 	MycliShellResource,
 	MycliShellSessionTree,
 	MycliShellSessionTreeNode,
@@ -38,6 +41,7 @@ import { FileChangeComponent } from "./components/file-change.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginFlowComponent } from "./components/login-flow.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
+import { PermissionSelectorComponent } from "./components/permission-selector.ts";
 import { PlanUpdateComponent } from "./components/plan-update.ts";
 import { PendingInputPreviewComponent } from "./components/pending-input-preview.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
@@ -67,6 +71,8 @@ export type MycliShellRuntimeOptions = {
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
 	onModelSelect?: (model: MycliShellModel) => void | MycliShellModel | Promise<void | MycliShellModel>;
+	onPermissionSelect?: (profile: MycliShellPermissionProfile) => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
+	onPermissionClearAllowances?: () => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onApiKeyLogin?: (providerId: string, apiKey: string) => void | { message?: string } | Promise<void | { message?: string }>;
 	onSessionSelect?: (sessionId: string) => void | Promise<void>;
 	onSessionTreeLoad?: () => MycliShellSessionTree | Promise<MycliShellSessionTree>;
@@ -98,7 +104,6 @@ type ToolDetailMode = "default" | "expanded" | "collapsed";
 
 type TurnActivityStatus = {
 	text: string;
-	kind?: string;
 	detail?: string;
 };
 
@@ -142,19 +147,27 @@ class TurnActivityComponent implements Component {
 
 	render(width: number): string[] {
 		const frame = this.frames[this.frameIndex] ?? this.frames[0] ?? "";
-		if (this.status.kind === "reconnecting") {
-			const header = new Text(
-				`${theme.fg("accent", frame)} ${theme.fg("muted", this.status.text)}`,
-				1,
-				0,
-			).render(width);
-			const detail = this.status.detail
-				? new Text(theme.fg("dim", this.status.detail), 3, 0).render(width).slice(0, 2)
-				: [];
-			return [...header, ...detail];
-		}
 		const elapsedSeconds = elapsedSecondsFor(this.now() - this.startedAtMs);
-		return new Text(`${theme.fg("accent", frame)} ${theme.fg("muted", `(Thinking... ${elapsedSeconds} s)`)}`, 1, 0).render(width);
+		const header = new Text(
+			`${theme.fg("accent", frame)} ${theme.fg("muted", `Working (${formatElapsedCompact(elapsedSeconds)} • esc to interrupt)`)}`,
+			1,
+			0,
+		).render(width);
+		const detail = this.detailText();
+		return detail
+			? [...header, ...new Text(theme.fg("dim", `  └ ${detail}`), 1, 0).render(width).slice(0, 2)]
+			: header;
+	}
+
+	private detailText(): string | null {
+		const generic = new Set(["", "running", "thinking", "streaming", "working"]);
+		const statusText = this.status.text.trim();
+		const parts = generic.has(statusText.toLowerCase()) ? [] : [statusText];
+		const detail = this.status.detail?.trim();
+		if (detail && detail !== statusText) {
+			parts.push(detail);
+		}
+		return parts.length > 0 ? parts.join(" · ") : null;
 	}
 
 	private start(): void {
@@ -462,8 +475,8 @@ export class MycliShellRuntime {
 		this.editor.onAction("app.mode.cycle", () => {
 			void this.cycleCollaborationMode();
 		});
-		this.editor.onAction("app.sandbox.cycle", () => {
-			void this.cycleSandboxMode();
+		this.editor.onAction("app.permissions.open", () => {
+			this.showPermissionSelector();
 		});
 		this.editor.onAction("app.message.followUp", () => {
 			void this.submitFollowUp();
@@ -590,7 +603,7 @@ export class MycliShellRuntime {
 	}
 
 	refreshTurnStatus(): void {
-		this.rebuildChat();
+		this.rebuildStatus();
 		this.ui.requestRender();
 	}
 
@@ -749,6 +762,7 @@ export class MycliShellRuntime {
 		const handlers: Record<string, () => void | Promise<void>> = {
 			open_command_palette: () => this.showCommandPalette(),
 			open_model_selector: () => this.showModelSelector(args || undefined),
+			open_permissions: () => this.showPermissionSelector(),
 			open_settings: () => this.showSettingsSelector(),
 			open_session_selector: () => this.showSessionSelector(),
 			start_new_session: () => this.startNewLocalSession(),
@@ -782,6 +796,23 @@ export class MycliShellRuntime {
 					onSelect: (model) => {
 						void this.submitModelSelection(model, selector, done);
 					},
+				onCancel: () => done(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	showPermissionSelector(): void {
+		const permissions = this.state.permissions ?? defaultPermissionState();
+		this.showSelector((done) => {
+			const selector = new PermissionSelectorComponent({
+				permissions,
+				onSelect: (profile) => {
+					void this.submitPermissionSelection(profile, selector, done);
+				},
+				onClearAllowances: () => {
+					void this.clearPermissionAllowances(selector, done);
+				},
 				onCancel: () => done(),
 			});
 			return { component: selector, focus: selector };
@@ -1015,7 +1046,10 @@ export class MycliShellRuntime {
 		if ((previousState.title ?? "mycli") !== (nextState.title ?? "mycli")) {
 			this.rebuildHeader();
 		}
-		if (this.chatSignature(previousState) !== this.chatSignature(nextState) || this.liveStateSignature(previousState) !== this.liveStateSignature(nextState)) {
+		if (
+			this.chatSignature(previousState) !== this.chatSignature(nextState) ||
+			this.isCompletedLiveState(previousState.footer.liveState) !== this.isCompletedLiveState(nextState.footer.liveState)
+		) {
 			this.rebuildChat();
 		}
 		if (
@@ -1025,7 +1059,7 @@ export class MycliShellRuntime {
 		) {
 			this.rebuildPending();
 		}
-		if (previousState.footer.liveState !== nextState.footer.liveState) {
+		if (this.liveStateSignature(previousState) !== this.liveStateSignature(nextState)) {
 			this.rebuildStatus();
 		}
 		if (this.subagentTaskSignature(previousState) !== this.subagentTaskSignature(nextState)) {
@@ -1189,7 +1223,6 @@ export class MycliShellRuntime {
 	}
 
 	private syncChatBlocks(blocks: MycliShellTranscriptBlock[]): void {
-		this.stopTurnActivity();
 		const nextBlocks = new Map<string, ChatBlockComponent>();
 		const children: Component[] = [];
 		for (const block of projectTranscriptBlocks(blocks)) {
@@ -1198,10 +1231,8 @@ export class MycliShellRuntime {
 			nextBlocks.set(block.id, next);
 			children.push(next.component);
 		}
-		const hasRoomForTurnStatus = children.length === 0 || this.transcriptHeight(this.ui.terminal.columns) > 1;
-		const turnStatus = hasRoomForTurnStatus ? this.createTurnStatusComponent() : null;
-		if (turnStatus) {
-			children.push(turnStatus);
+		if (this.isCompletedLiveState(this.state.footer.liveState)) {
+			children.push(new TurnCompletedComponent(this.completedDurationMs ?? 0));
 		}
 		this.chatBlocks = nextBlocks;
 		this.chatContainer.children = children;
@@ -1240,21 +1271,14 @@ export class MycliShellRuntime {
 		return null;
 	}
 
-	private createTurnStatusComponent(): Component | null {
-		if (this.isTurnActivityRunning(this.state)) {
-			const startedAtMs = this.turnStartedAtMs ?? this.now();
-			this.turnStartedAtMs = startedAtMs;
-			this.turnActivity = new TurnActivityComponent(this.ui, startedAtMs, this.now, {
-				text: this.state.footer.liveState ?? "Running",
-				kind: this.state.footer.liveStateKind,
-				detail: this.state.footer.liveStateDetail,
-			});
-			return this.turnActivity;
-		}
-		if (this.isCompletedLiveState(this.state.footer.liveState)) {
-			return new TurnCompletedComponent(this.completedDurationMs ?? 0);
-		}
-		return null;
+	private createTurnActivityComponent(): TurnActivityComponent {
+		const startedAtMs = this.turnStartedAtMs ?? this.now();
+		this.turnStartedAtMs = startedAtMs;
+		this.turnActivity = new TurnActivityComponent(this.ui, startedAtMs, this.now, {
+			text: this.state.footer.liveState ?? "Running",
+			detail: this.state.footer.liveStateDetail,
+		});
+		return this.turnActivity;
 	}
 
 	private syncChatBlock(block: ProjectedTranscriptBlock, cached?: ChatBlockComponent): ChatBlockComponent {
@@ -1394,11 +1418,13 @@ export class MycliShellRuntime {
 	}
 
 	private rebuildStatus(): void {
+		this.stopTurnActivity();
 		this.statusContainer.clear();
-		if (
-			this.isRunningLiveState(this.state.footer.liveState, this.state.footer.liveStateKind) ||
-			this.isCompletedLiveState(this.state.footer.liveState)
-		) {
+		if (this.isTurnActivityRunning(this.state)) {
+			this.statusContainer.addChild(this.createTurnActivityComponent());
+			return;
+		}
+		if (this.isCompletedLiveState(this.state.footer.liveState)) {
 			return;
 		}
 		if (this.state.footer.liveState && this.state.footer.liveState !== "Idle") {
@@ -1528,7 +1554,7 @@ export class MycliShellRuntime {
 			this.showCommandPalette();
 			return;
 		}
-		if (input.startsWith("/")) {
+		if (isSlashCommandSubmission(input)) {
 			this.editor.addToHistory(input);
 			this.editor.setText("");
 			await this.submitCommand(input);
@@ -1728,11 +1754,6 @@ export class MycliShellRuntime {
 		await this.submitCommand(`/mode ${nextMode}`);
 	}
 
-	private async cycleSandboxMode(): Promise<void> {
-		this.addSystemNotice("Sandbox next");
-		await this.submitCommand("/sandbox next");
-	}
-
 	private toggleToolDetails(): void {
 		if (this.toolDetailMode === "expanded") {
 			this.toolDetailMode = "collapsed";
@@ -1834,7 +1855,7 @@ export class MycliShellRuntime {
 				"Hotkeys",
 				"ctrl+p commands · ? help",
 				"enter send/steer · esc interrupt",
-				"ctrl+l model · ctrl+o tools · ctrl+x sandbox",
+				"ctrl+l model · ctrl+o tools · ctrl+x permissions",
 				"ctrl+c clear/exit · tab follow-up · alt+up/shift+left edit follow-up",
 			].join("\n"),
 		);
@@ -1985,6 +2006,43 @@ export class MycliShellRuntime {
 		}
 	}
 
+	private async submitPermissionSelection(
+		profile: MycliShellPermissionProfile,
+		selector: PermissionSelectorComponent,
+		done: () => void,
+	): Promise<void> {
+		try {
+			const selected = await this.options.onPermissionSelect?.(profile);
+			const permissions = selected ?? permissionStateWithActive(
+				this.state.permissions ?? defaultPermissionState(),
+				profile.id,
+			);
+			this.setState({ ...this.state, permissions });
+			done();
+			this.addSystemNotice(`Permissions updated to ${profile.label}`);
+		} catch (error) {
+			selector.setError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private async clearPermissionAllowances(
+		selector: PermissionSelectorComponent,
+		done: () => void,
+	): Promise<void> {
+		try {
+			const selected = await this.options.onPermissionClearAllowances?.();
+			const permissions = selected ?? {
+				...(this.state.permissions ?? defaultPermissionState()),
+				commandAllowanceCount: 0,
+			};
+			this.setState({ ...this.state, permissions });
+			done();
+			this.addSystemNotice("Session command allowances cleared");
+		} catch (error) {
+			selector.setError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	private async selectSession(sessionId: string): Promise<void> {
 		this.setState({
 			...this.state,
@@ -2006,6 +2064,47 @@ export class MycliShellRuntime {
 	}
 }
 
+function defaultPermissionState(): MycliShellPermissionState {
+	return {
+		active: "workspace",
+		commandAllowanceCount: 0,
+		profiles: [
+			{
+				id: "workspace",
+				label: "Ask for approval",
+				description: "Read and edit the current workspace; ask before network or outside access.",
+				current: true,
+			},
+			{
+				id: "full-access",
+				label: "Full Access",
+				description: "Access files and network without approval.",
+				current: false,
+			},
+			{
+				id: "read-only",
+				label: "Read Only",
+				description: "Read workspace files; ask before edits or network.",
+				current: false,
+			},
+		],
+	};
+}
+
+function permissionStateWithActive(
+	state: MycliShellPermissionState,
+	active: MycliShellPermissionProfile["id"],
+): MycliShellPermissionState {
+	return {
+		...state,
+		active,
+		profiles: state.profiles.map((profile) => ({
+			...profile,
+			current: profile.id === active,
+		})),
+	};
+}
+
 function resourceInspectCommand(type: MycliShellResource["type"]): string | null {
 	switch (type) {
 		case "hook":
@@ -2023,4 +2122,19 @@ function resourceInspectCommand(type: MycliShellResource["type"]): string | null
 
 function elapsedSecondsFor(durationMs: number): number {
 	return Math.max(0, Math.floor(durationMs / 1000));
+}
+
+function formatElapsedCompact(elapsedSeconds: number): string {
+	if (elapsedSeconds < 60) {
+		return `${elapsedSeconds}s`;
+	}
+	if (elapsedSeconds < 3600) {
+		const minutes = Math.floor(elapsedSeconds / 60);
+		const seconds = elapsedSeconds % 60;
+		return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+	}
+	const hours = Math.floor(elapsedSeconds / 3600);
+	const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+	const seconds = elapsedSeconds % 60;
+	return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
 }

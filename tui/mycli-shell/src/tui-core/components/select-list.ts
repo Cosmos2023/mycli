@@ -23,7 +23,7 @@ export interface SelectListTheme {
 	noMatch: (text: string) => string;
 }
 
-export interface SelectListTruncatePrimaryContext {
+interface SelectListTruncatePrimaryContext {
 	text: string;
 	maxWidth: number;
 	columnWidth: number;

@@ -77,7 +77,7 @@ export interface Focusable {
 }
 
 /** Type guard to check if a component implements Focusable */
-export function isFocusable(component: Component | null): component is Component & Focusable {
+function isFocusable(component: Component | null): component is Component & Focusable {
 	return component !== null && "focused" in component;
 }
 
@@ -108,7 +108,7 @@ export type OverlayAnchor =
 /**
  * Margin configuration for overlays
  */
-export interface OverlayMargin {
+interface OverlayMargin {
 	top?: number;
 	right?: number;
 	bottom?: number;
@@ -116,7 +116,7 @@ export interface OverlayMargin {
 }
 
 /** Value that can be absolute (number) or percentage (string like "50%") */
-export type SizeValue = number | `${number}%`;
+type SizeValue = number | `${number}%`;
 
 /** Parse a SizeValue into absolute value given a reference size */
 function parseSizeValue(value: SizeValue | undefined, referenceSize: number): number | undefined {
@@ -177,7 +177,7 @@ export interface OverlayOptions {
 }
 
 /** Options for {@link OverlayHandle.unfocus}. */
-export interface OverlayUnfocusOptions {
+interface OverlayUnfocusOptions {
 	/** Explicit target to focus after releasing this overlay. */
 	target: Component | null;
 }
@@ -290,6 +290,7 @@ export class TUI extends Container {
 	private pendingHistoryLines: string[] | null = null;
 	private pendingHistoryClearsViewport = false;
 	private pendingHistoryReplacesScrollback = false;
+	private nativeViewportAnchored = false;
 	private stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -1243,7 +1244,53 @@ export class TUI extends Container {
 		this.previousKittyImageIds = this.collectKittyImageIds(frameLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
+		this.nativeViewportAnchored = true;
 		this.positionHardwareCursor(cursorPos, frameLines.length);
+	}
+
+	private renderNativeFrame(
+		lines: string[],
+		cursorPos: { row: number; col: number } | null,
+		width: number,
+		height: number,
+	): void {
+		const frameStart = Math.max(0, lines.length - height);
+		const frameLines = lines.slice(frameStart, frameStart + height);
+		while (frameLines.length < height) frameLines.push("");
+
+		const previousStart = Math.max(0, this.previousLines.length - height);
+		const previousFrame = this.previousLines.slice(previousStart, previousStart + height);
+		while (previousFrame.length < height) previousFrame.push("");
+
+		const previousImageIds = this.collectKittyImageIds(previousFrame);
+		const nextImageIds = this.collectKittyImageIds(frameLines);
+		let buffer = "\x1b[?2026h";
+		for (const id of previousImageIds) {
+			if (!nextImageIds.has(id)) buffer += deleteKittyImage(id);
+		}
+
+		let finalCursorRow = this.hardwareCursorRow;
+		for (let row = 0; row < height; row++) {
+			if (previousFrame[row] === frameLines[row]) continue;
+			buffer += `\x1b[${row + 1};1H\x1b[2K${frameLines[row] ?? ""}`;
+			finalCursorRow = row;
+		}
+		buffer += "\x1b[?2026l";
+		this.terminal.write(buffer);
+
+		this.cursorRow = Math.max(0, frameLines.length - 1);
+		this.hardwareCursorRow = finalCursorRow;
+		this.maxLinesRendered = frameLines.length;
+		this.previousViewportTop = 0;
+		this.previousLines = frameLines;
+		this.previousKittyImageIds = nextImageIds;
+		this.previousWidth = width;
+		this.previousHeight = height;
+
+		const frameCursor = cursorPos && cursorPos.row >= frameStart
+			? { row: cursorPos.row - frameStart, col: cursorPos.col }
+			: null;
+		this.positionHardwareCursor(frameCursor, frameLines.length);
 	}
 
 	private doRender(): void {
@@ -1296,6 +1343,12 @@ export class TUI extends Container {
 				prevViewportTop,
 				hardwareCursorRow,
 			);
+			return;
+		}
+		if (this.terminal.nativeScrollback && this.nativeViewportAnchored && this.previousLines.length > 0) {
+			// The live frame is mutable. Address rows in place so only the
+			// controlled history path above can advance physical scrollback.
+			this.renderNativeFrame(newLines, cursorPos, width, height);
 			return;
 		}
 

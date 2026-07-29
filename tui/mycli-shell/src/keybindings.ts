@@ -15,7 +15,7 @@ declare module "./tui-core/keybindings.ts" {
 		"app.commandPalette": true;
 		"app.help": true;
 		"app.mode.cycle": true;
-		"app.sandbox.cycle": true;
+		"app.permissions.open": true;
 		"app.message.followUp": true;
 		"app.message.dequeue": true;
 		"app.clipboard.pasteImage": true;
@@ -32,7 +32,7 @@ const APP_KEYBINDINGS = {
 	"app.commandPalette": { defaultKeys: "ctrl+p", description: "Open commands" },
 	"app.help": { defaultKeys: "?", description: "Open help" },
 	"app.mode.cycle": { defaultKeys: "shift+tab", description: "Cycle mode" },
-	"app.sandbox.cycle": { defaultKeys: "ctrl+x", description: "Cycle sandbox" },
+	"app.permissions.open": { defaultKeys: "ctrl+x", description: "Open permissions" },
 	"app.message.followUp": { defaultKeys: "tab", description: "Queue follow-up" },
 	"app.message.dequeue": { defaultKeys: ["alt+up", "shift+left"], description: "Edit last queued follow-up" },
 	"app.clipboard.pasteImage": { defaultKeys: "ctrl+v", description: "Paste image" },

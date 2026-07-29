@@ -1,11 +1,11 @@
 import parseDiff from "parse-diff";
 
 import { applyBackgroundToLine, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
-import { theme } from "../theme/theme.ts";
+import { theme, type ThemeColor } from "../theme/theme.ts";
 import { highlightDiffCode } from "./syntax-highlight.ts";
 
 
-export type DiffRowKind = "context" | "add" | "remove" | "marker";
+type DiffRowKind = "context" | "add" | "remove" | "marker";
 
 export type DiffRenderOptions = {
 	width: number;
@@ -23,6 +23,24 @@ export function stripDiffHunkHeaders(diff: string): string {
 	return diff
 		.split(/\r?\n/)
 		.filter((line) => !line.startsWith("@@"))
+		.join("\n");
+}
+
+export function styleCompactDiff(text: string, contextColor: ThemeColor): string {
+	return text
+		.split("\n")
+		.map((line) => {
+			if (line.startsWith("+") && !line.startsWith("+++")) {
+				return theme.fg("toolDiffAdded", line);
+			}
+			if (line.startsWith("-") && !line.startsWith("---")) {
+				return theme.fg("toolDiffRemoved", line);
+			}
+			if (line.startsWith("@@")) {
+				return theme.fg("accent", line);
+			}
+			return theme.fg(contextColor, line);
+		})
 		.join("\n");
 }
 

@@ -287,6 +287,136 @@ class TestTerminal implements Terminal {
 	}
 }
 
+class ScrollbackTerminal extends TestTerminal {
+	private screen: string[];
+	private cursorRow = 0;
+	private cursorColumn = 0;
+	readonly scrollback: string[] = [];
+
+	constructor() {
+		super();
+		this.screen = Array.from({ length: this.rows }, () => "");
+	}
+
+	override write(data: string): void {
+		super.write(data);
+		this.resizeScreen();
+		for (let index = 0; index < data.length;) {
+			const char = data[index]!;
+			if (char === "\x1b") {
+				const consumed = this.applyEscape(data.slice(index));
+				index += Math.max(1, consumed);
+				continue;
+			}
+			if (char === "\r") {
+				this.cursorColumn = 0;
+				index += 1;
+				continue;
+			}
+			if (char === "\n") {
+				this.lineFeed();
+				index += 1;
+				continue;
+			}
+			const codePoint = data.codePointAt(index)!;
+			const text = String.fromCodePoint(codePoint);
+			this.writeText(text);
+			index += text.length;
+		}
+	}
+
+	visibleLines(): string[] {
+		return [...this.screen];
+	}
+
+	physicalLines(): string[] {
+		return [...this.scrollback, ...this.screen];
+	}
+
+	private resizeScreen(): void {
+		while (this.screen.length < this.rows) this.screen.push("");
+		if (this.screen.length > this.rows) {
+			this.scrollback.push(...this.screen.splice(0, this.screen.length - this.rows));
+		}
+		this.cursorRow = Math.min(this.cursorRow, Math.max(0, this.rows - 1));
+	}
+
+	private applyEscape(data: string): number {
+		const csi = data.match(/^\x1b\[([?\d;]*)([A-Za-z@`~])/);
+		if (csi) {
+			const params = csi[1]!.replace(/^\?/, "").split(";").filter(Boolean).map(Number);
+			const amount = Math.max(1, params[0] ?? 1);
+			switch (csi[2]) {
+				case "A":
+					this.cursorRow = Math.max(0, this.cursorRow - amount);
+					break;
+				case "B":
+					this.cursorRow = Math.min(this.rows - 1, this.cursorRow + amount);
+					break;
+				case "G":
+					this.cursorColumn = Math.max(0, amount - 1);
+					break;
+				case "H":
+				case "f":
+					this.cursorRow = Math.max(0, Math.min(this.rows - 1, (params[0] ?? 1) - 1));
+					this.cursorColumn = Math.max(0, (params[1] ?? 1) - 1);
+					break;
+				case "J":
+					this.eraseDisplay(params[0] ?? 0);
+					break;
+				case "K":
+					this.eraseLine(params[0] ?? 0);
+					break;
+			}
+			return csi[0].length;
+		}
+		const osc = data.match(/^\x1b\][^\x07]*(?:\x07|\x1b\\)/);
+		if (osc) return osc[0].length;
+		return data.length >= 2 ? 2 : 1;
+	}
+
+	private eraseDisplay(mode: number): void {
+		if (mode === 2) {
+			this.screen.fill("");
+			return;
+		}
+		if (mode === 3) {
+			this.scrollback.length = 0;
+			return;
+		}
+		if (mode !== 0) return;
+		this.screen[this.cursorRow] = (this.screen[this.cursorRow] ?? "").slice(0, this.cursorColumn);
+		for (let row = this.cursorRow + 1; row < this.screen.length; row++) this.screen[row] = "";
+	}
+
+	private eraseLine(mode: number): void {
+		const line = this.screen[this.cursorRow] ?? "";
+		if (mode === 2) {
+			this.screen[this.cursorRow] = "";
+		} else if (mode === 1) {
+			this.screen[this.cursorRow] = " ".repeat(this.cursorColumn + 1) + line.slice(this.cursorColumn + 1);
+		} else {
+			this.screen[this.cursorRow] = line.slice(0, this.cursorColumn);
+		}
+	}
+
+	private lineFeed(): void {
+		if (this.cursorRow === this.rows - 1) {
+			this.scrollback.push(this.screen.shift() ?? "");
+			this.screen.push("");
+			return;
+		}
+		this.cursorRow += 1;
+	}
+
+	private writeText(text: string): void {
+		const line = this.screen[this.cursorRow] ?? "";
+		this.screen[this.cursorRow] =
+			line.slice(0, this.cursorColumn) + text + line.slice(this.cursorColumn + text.length);
+		this.cursorColumn += text.length;
+	}
+}
+
 class ClosableTerminal extends TestTerminal {
 	closed = false;
 
@@ -2054,7 +2184,7 @@ test("stream deltas do not synchronously rerender the full transcript", async ()
 	assert.ok(transcriptRenders > 0);
 });
 
-test("mycli shell runtime renders thinking elapsed and completion duration with the active turn", async () => {
+test("mycli shell runtime keeps Codex-style working status below the transcript for the active turn", async () => {
 	const terminal = new TestTerminal();
 	let now = 10_000;
 	const runtime = new MycliShellRuntime({
@@ -2064,23 +2194,23 @@ test("mycli shell runtime renders thinking elapsed and completion duration with 
 	});
 
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Running" } });
-	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /\(Thinking\.\.\. 0 s\)/);
-	assert.doesNotMatch(stripAnsi(runtime.statusContainer.render(100).join("\n")), /Thinking|Running/);
+	let output = stripAnsi(runtime.statusContainer.render(100).join("\n"));
+	assert.match(output, /Working \(0s • esc to interrupt\)/);
+	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(100).join("\n")), /Working/);
 
 	now = 12_400;
 	runtime.refreshTurnStatus();
-	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /\(Thinking\.\.\. 2 s\)/);
+	output = stripAnsi(runtime.statusContainer.render(100).join("\n"));
+	assert.match(output, /Working \(2s • esc to interrupt\)/);
 
 	now = 13_100;
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Completed" } });
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	assert.match(output, /✻ Completed for 3 s/);
-	assert.doesNotMatch(stripAnsi(runtime.statusContainer.render(100).join("\n")), /Completed/);
+	assert.equal(stripAnsi(runtime.statusContainer.render(100).join("\n")), "");
 });
 
-test("thinking elapsed continues while the active turn waits on a tool", () => {
+test("working elapsed continues while the active turn waits on a tool", () => {
 	const terminal = new TestTerminal();
 	let now = 10_000;
 	const runtime = new MycliShellRuntime({
@@ -2112,8 +2242,9 @@ test("thinking elapsed continues while the active turn waits on a tool", () => {
 		},
 	});
 
-	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /\(Thinking\.\.\. 2 s\)/);
+	let output = stripAnsi(runtime.statusContainer.render(100).join("\n"));
+	assert.match(output, /Working \(2s • esc to interrupt\)/);
+	assert.match(output, /Waiting for background terminal/);
 
 	now = 15_100;
 	runtime.setState({
@@ -3965,7 +4096,7 @@ test("mycli shell renders reconnect details and keeps the turn interruptible", a
 	const lines = runtime.ui.render(terminal.columns);
 	const output = stripAnsi(lines.join("\n"));
 	assert.match(output, /Reconnecting\.\.\. 1\/5/);
-	assert.match(output, /Idle timeout waiting for model stream/);
+	assert.match(output.replace(/\s+/g, " "), /Idle timeout waiting for model stream/);
 	const retryLines = lines.filter((line) => /Reconnecting|Idle timeout|model stream/.test(stripAnsi(line)));
 	for (const line of retryLines) {
 		assert.ok(visibleWidth(line) <= terminal.columns, `line exceeded terminal width: ${stripAnsi(line)}`);
@@ -4058,9 +4189,11 @@ test("mycli shell forwards backend slash commands instead of chatting them", asy
 	await runtime.editor.onSubmit?.("/changes");
 	await runtime.editor.onSubmit?.("/tasks agents child-session");
 	await runtime.editor.onSubmit?.("/trace export");
+	await runtime.editor.onSubmit?.("/memroy");
+	await runtime.editor.onSubmit?.("/Users/cosmos/Desktop/demo 帮我在这个文件夹下新建一个文件夹，叫做game");
 
-	assert.deepEqual(submitted, []);
-	assert.deepEqual(commands, ["/changes", "/tasks agents child-session", "/trace export"]);
+	assert.deepEqual(submitted, ["/Users/cosmos/Desktop/demo 帮我在这个文件夹下新建一个文件夹，叫做game"]);
+	assert.deepEqual(commands, ["/changes", "/tasks agents child-session", "/trace export", "/memroy"]);
 });
 
 test("mycli shell cycles collaboration mode with shift tab", async () => {
@@ -4088,11 +4221,25 @@ test("mycli shell cycles collaboration mode with shift tab", async () => {
 	assert.deepEqual(commands, ["/mode plan", "/mode default"]);
 });
 
-test("mycli shell cycles sandbox mode with ctrl x", async () => {
+test("mycli shell opens permissions with ctrl x", async () => {
 	const commands: string[] = [];
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
-		initialState: sampleState(),
+		initialState: {
+			...sampleState(),
+			permissions: {
+				active: "workspace",
+				commandAllowanceCount: 0,
+				profiles: [
+					{
+						id: "workspace",
+						label: "Ask for approval",
+						description: "Workspace access with approval.",
+						current: true,
+					},
+				],
+			},
+		},
 		terminal,
 		onCommandSubmit: (command) => {
 			commands.push(command);
@@ -4104,7 +4251,8 @@ test("mycli shell cycles sandbox mode with ctrl x", async () => {
 	terminal.input?.("\x18");
 	await setTimeout(25);
 
-	assert.deepEqual(commands, ["/sandbox next"]);
+	assert.deepEqual(commands, []);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Update Model Permissions/);
 });
 
 test("mycli shell command palette includes backend-supported commands", async () => {
@@ -4559,6 +4707,26 @@ test("native TUI appends history deltas queued before one frame", async () => {
 	assert.ok(frame > second);
 });
 
+test("native TUI does not push mutable frame rows into physical scrollback", async () => {
+	const terminal = new ScrollbackTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 4;
+	terminal.columns = 40;
+	const ui = new TUI(terminal);
+	const frame = new Text("mutable row 1\nmutable row 2\nmutable row 3\nmutable row 4");
+	ui.addChild(frame);
+	ui.insertHistoryBeforeNextFrame(["committed history"]);
+	ui.start();
+	await setTimeout(25);
+
+	assert.deepEqual(terminal.scrollback.filter((line) => line.includes("mutable row")), []);
+	frame.setText("mutable row 1\nmutable row 2\nmutable row 3\nmutable row 4\nmutable row 5");
+	ui.requestRender();
+	await setTimeout(25);
+
+	assert.deepEqual(terminal.scrollback.filter((line) => line.includes("mutable row")), []);
+});
+
 test("native TUI clears the live viewport before scrolling history", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
@@ -4721,6 +4889,115 @@ test("native scrollback commits a tall slash command block in one state update",
 	assert.match(output, /Cache read tokens\s+53120/);
 	assert.match(output, /╰─+/);
 	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
+test("native scrollback does not replay a tall slash card during the next turn", async () => {
+	const terminal = new ScrollbackTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 12;
+	const assistant = {
+		id: "assistant-before-usage",
+		role: "assistant" as const,
+		text: "Python script completed normally.",
+	};
+	const usage = {
+		id: "command-usage-once",
+		kind: "command_result" as const,
+		commandResult: {
+			id: "command-usage-once",
+			display: {
+				version: 1 as const,
+				kind: "diagnostic" as const,
+				command: "/usage",
+				title: "Usage",
+				severity: "info" as const,
+				fields: [
+					{ label: "Session", value: "session-demo" },
+					{ label: "Turns", value: "43" },
+				],
+				rows: [],
+				sections: [
+					{
+						title: "Current context window",
+						fields: [
+							{ label: "Input tokens", value: "16217" },
+							{ label: "Max tokens", value: "100000" },
+							{ label: "Usage ratio", value: "16.2%" },
+						],
+						rows: [],
+					},
+					{
+						title: "Cumulative usage",
+						fields: [
+							{ label: "Input tokens", value: "608786" },
+							{ label: "Output tokens", value: "9079" },
+							{ label: "Cache read tokens", value: "570752" },
+						],
+						rows: [],
+					},
+				],
+				suggestions: [],
+				omittedRows: 0,
+				omittedChars: 0,
+			},
+			fallbackLines: [],
+			folded: false,
+		},
+	};
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [assistant],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: assistant.id, kind: "message", message: assistant },
+			usage,
+		],
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	runtime.start();
+	await setTimeout(25);
+
+	const user = { id: "user-after-usage", role: "user" as const, text: "run it again" };
+	runtime.setState({
+		...initial,
+		messages: [assistant, user],
+		transcript: [
+			...initial.transcript!,
+			{ id: user.id, kind: "message", message: user },
+		],
+		footer: { ...initial.footer, liveState: "Running" },
+	});
+	await setTimeout(25);
+	terminal.output = "";
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Running",
+			liveStateDetail: "Executing Shell",
+		},
+	});
+	await setTimeout(25);
+	const answer = { id: "assistant-after-usage", role: "assistant" as const, text: "ok" };
+	runtime.setState({
+		...runtime.getState(),
+		messages: [assistant, user, answer],
+		transcript: [
+			...runtime.getState().transcript!,
+			{ id: answer.id, kind: "message", message: answer },
+		],
+		footer: { ...runtime.getState().footer, liveState: "Completed" },
+	});
+	await setTimeout(25);
+
+	assert.doesNotMatch(stripAnsi(terminal.output), /\/usage/);
+	const physicalOutput = terminal.physicalLines().join("\n");
+	assert.equal(physicalOutput.match(/\/usage/g)?.length, 1);
+	assert.equal(physicalOutput.match(/Python script completed normally\./g)?.length, 1);
+	assert.equal(physicalOutput.match(/run it again/g)?.length, 1);
 });
 
 test("mycli shell does not clear screen when submitting into long native scrollback history", async () => {

@@ -3,7 +3,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import type { MycliShellTool } from "../model.ts";
 import { theme } from "../theme/theme.ts";
-import { stripDiffHunkHeaders } from "./diff-renderer.ts";
+import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { shortPreview } from "./tool-display.ts";
 import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "./tool-presentation.ts";
@@ -125,7 +125,7 @@ export class ToolExecutionComponent extends Container {
 			return theme.fg("error", text);
 		}
 		if (this.tool.diffPreview) {
-			return styleDiff(stripDiffHunkHeaders(text));
+			return styleCompactDiff(stripDiffHunkHeaders(text), "toolDiffContext");
 		}
 		return theme.fg("muted", text);
 	}
@@ -185,22 +185,4 @@ export class ToolExecutionComponent extends Container {
 		);
 	}
 
-}
-
-function styleDiff(text: string): string {
-	return text
-		.split("\n")
-		.map((line) => {
-			if (line.startsWith("+") && !line.startsWith("+++")) {
-				return theme.fg("toolDiffAdded", line);
-			}
-			if (line.startsWith("-") && !line.startsWith("---")) {
-				return theme.fg("toolDiffRemoved", line);
-			}
-			if (line.startsWith("@@")) {
-				return theme.fg("accent", line);
-			}
-			return theme.fg("toolDiffContext", line);
-		})
-		.join("\n");
 }

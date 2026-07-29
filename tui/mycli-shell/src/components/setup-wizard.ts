@@ -1,7 +1,6 @@
 import {
 	Container,
 	type Focusable,
-	fuzzyFilter,
 	Input,
 	Spacer,
 	Text,
@@ -12,6 +11,7 @@ import { getKeybindings } from "../tui-core/keybindings.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { ProviderList } from "./provider-list.ts";
 
 type SetupStep = "auth" | "provider" | "api_base_url" | "model" | "api_key" | "summary";
 
@@ -49,12 +49,10 @@ export class SetupWizardComponent extends Container implements Focusable {
 	private readonly apiBaseUrlInput = new Input();
 	private readonly modelInput = new Input();
 	private readonly apiKeyInput = new Input();
-	private readonly listContainer = new Container();
+	private readonly providerList: ProviderList<SetupProvider>;
 	private readonly tui: TUI;
 	private readonly providers: SetupProvider[];
-	private filteredProviders: SetupProvider[];
 	private step: SetupStep = "auth";
-	private providerIndex = 0;
 	private selectedProvider: SetupProvider | null = null;
 	private readonly onSubmitCallback: (result: SetupWizardResult) => void;
 	private readonly onCancelCallback: () => void;
@@ -75,7 +73,14 @@ export class SetupWizardComponent extends Container implements Focusable {
 		super();
 		this.tui = options.tui;
 		this.providers = options.state.providers.length > 0 ? options.state.providers : defaultProviders();
-		this.filteredProviders = this.providers;
+		this.providerList = new ProviderList(this.providers, {
+			emptyMessage: "No matching providers",
+			detail: (provider) => {
+				const model = provider.default_model ? theme.fg("muted", ` · ${provider.default_model}`) : "";
+				const protocol = provider.protocol ? theme.fg("muted", ` · ${provider.protocol}`) : "";
+				return model + protocol;
+			},
+		});
 		this.configPath = options.state.config_path;
 		this.authPath = options.state.auth_path;
 		this.onSubmitCallback = options.onSubmit;
@@ -132,16 +137,12 @@ export class SetupWizardComponent extends Container implements Focusable {
 	private handleProviderInput(keyData: string): void {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.select.up")) {
-			if (this.filteredProviders.length === 0) return;
-			this.providerIndex = Math.max(0, this.providerIndex - 1);
-			this.updateProviderList();
+			this.providerList.move(-1);
 			this.tui.requestRender();
 			return;
 		}
 		if (kb.matches(keyData, "tui.select.down")) {
-			if (this.filteredProviders.length === 0) return;
-			this.providerIndex = Math.min(this.filteredProviders.length - 1, this.providerIndex + 1);
-			this.updateProviderList();
+			this.providerList.move(1);
 			this.tui.requestRender();
 			return;
 		}
@@ -150,7 +151,7 @@ export class SetupWizardComponent extends Container implements Focusable {
 			return;
 		}
 		this.searchInput.handleInput(keyData);
-		this.filterProviders(this.searchInput.getValue());
+		this.providerList.filter(this.searchInput.getValue());
 		this.tui.requestRender();
 	}
 
@@ -191,9 +192,8 @@ export class SetupWizardComponent extends Container implements Focusable {
 		this.addChild(new Text(theme.fg("text", "Select provider to configure:"), 1, 0));
 		this.addChild(this.searchInput);
 		this.addChild(new Spacer(1));
-		this.addChild(this.listContainer);
+		this.addChild(this.providerList);
 		this.addHint(`${keyHint("tui.select.confirm", "select")} ${keyHint("tui.select.cancel", "back")}`);
-		this.updateProviderList();
 	}
 
 	private renderApiBaseUrl(): void {
@@ -247,40 +247,8 @@ export class SetupWizardComponent extends Container implements Focusable {
 		return `${theme.fg("accent", `Step ${index}/${steps.length}`)}  ${theme.fg("text", labels[this.step])}`;
 	}
 
-	private updateProviderList(): void {
-		this.listContainer.clear();
-		const maxVisible = 8;
-		const startIndex = Math.max(
-			0,
-			Math.min(this.providerIndex - Math.floor(maxVisible / 2), this.filteredProviders.length - maxVisible),
-		);
-		const endIndex = Math.min(startIndex + maxVisible, this.filteredProviders.length);
-		for (let index = startIndex; index < endIndex; index += 1) {
-			const provider = this.filteredProviders[index];
-			if (!provider) continue;
-			const selected = index === this.providerIndex;
-			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
-			const name = selected ? theme.fg("accent", provider.name) : theme.fg("text", provider.name);
-			const status = provider.configured ? theme.fg("success", " ✓ configured") : theme.fg("muted", " • unconfigured");
-			const model = provider.default_model ? theme.fg("muted", ` · ${provider.default_model}`) : "";
-			const protocol = provider.protocol ? theme.fg("muted", ` · ${provider.protocol}`) : "";
-			this.listContainer.addChild(new TruncatedText(prefix + name + status + model + protocol, 1, 0));
-		}
-		if (this.filteredProviders.length === 0) {
-			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching providers"), 1, 0));
-		}
-	}
-
-	private filterProviders(query: string): void {
-		this.filteredProviders = query
-			? fuzzyFilter(this.providers, query, (provider) => `${provider.name} ${provider.id}`)
-			: this.providers;
-		this.providerIndex = Math.max(0, Math.min(this.providerIndex, Math.max(0, this.filteredProviders.length - 1)));
-		this.updateProviderList();
-	}
-
 	private selectCurrentProvider(): void {
-		const provider = this.filteredProviders[this.providerIndex];
+		const provider = this.providerList.current();
 		if (!provider) return;
 		this.selectedProvider = provider;
 		this.apiBaseUrlInput.setValue(provider.default_base_url || "");
@@ -330,7 +298,7 @@ export class SetupWizardComponent extends Container implements Focusable {
 	}
 
 	private currentProvider(): SetupProvider {
-		return this.selectedProvider ?? this.filteredProviders[this.providerIndex] ?? this.providers[0] ?? defaultProviders()[0]!;
+		return this.selectedProvider ?? this.providerList.current() ?? this.providers[0] ?? defaultProviders()[0]!;
 	}
 
 	private maskedApiKey(): string {

@@ -1,7 +1,7 @@
 import type { MycliShellPendingApproval } from "../model.ts";
 import { getKeybindings, Spacer, Text, Container, truncateToWidth } from "../tui-core/index.ts";
 import { theme } from "../theme/theme.ts";
-import { stripDiffHunkHeaders } from "./diff-renderer.ts";
+import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
@@ -201,8 +201,9 @@ export class ApprovalSelectorComponent extends Container {
 
 	private changePreviewText(): string {
 		if (this.approval.diffPreview) {
-			return styleDiff(
+			return styleCompactDiff(
 				this.limitPreview(stripDiffHunkHeaders(this.approval.diffPreview)),
+				"muted",
 			);
 		}
 		if (this.approval.contentPreview) {
@@ -224,22 +225,4 @@ export class ApprovalSelectorComponent extends Container {
 		}
 		return `${visible.join("\n")}\n... ${hidden} more lines`;
 	}
-}
-
-function styleDiff(text: string): string {
-	return text
-		.split("\n")
-		.map((line) => {
-			if (line.startsWith("+") && !line.startsWith("+++")) {
-				return theme.fg("toolDiffAdded", line);
-			}
-			if (line.startsWith("-") && !line.startsWith("---")) {
-				return theme.fg("toolDiffRemoved", line);
-			}
-			if (line.startsWith("@@")) {
-				return theme.fg("accent", line);
-			}
-			return theme.fg("muted", line);
-		})
-		.join("\n");
 }

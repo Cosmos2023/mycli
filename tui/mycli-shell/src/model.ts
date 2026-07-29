@@ -27,7 +27,7 @@ export type MycliShellPlanUpdate = {
 	total: number;
 };
 
-export type MycliShellTaskProgress = {
+type MycliShellTaskProgress = {
 	completed: number;
 	total: number;
 };
@@ -106,7 +106,7 @@ export type MycliShellBash = {
 	expanded?: boolean;
 };
 
-export type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "max_tool_calls" | string;
+type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "max_tool_calls" | string;
 
 export type MycliShellSubagent = {
 	id: string;
@@ -127,7 +127,7 @@ export type MycliShellSubagent = {
 	progress?: MycliShellSubagentProgress[];
 };
 
-export type MycliShellSubagentProgress = {
+type MycliShellSubagentProgress = {
 	kind: string;
 	toolName?: string;
 	callId?: string;
@@ -325,7 +325,7 @@ export type MycliShellSession = {
 	current?: boolean;
 };
 
-export type MycliShellSessionTreeNodeKind = "session" | "message";
+type MycliShellSessionTreeNodeKind = "session" | "message";
 
 export type MycliShellSessionTreeNode = {
 	id: string;
@@ -363,7 +363,7 @@ export type MycliShellResource = {
 	command?: string;
 };
 
-export type MycliShellApprovalOption = {
+type MycliShellApprovalOption = {
 	choice: string;
 	label: string;
 };
@@ -385,7 +385,7 @@ export type MycliShellPendingApproval = {
 	diffPreview?: string;
 };
 
-export type MycliShellClarificationOption = {
+type MycliShellClarificationOption = {
 	label: string;
 	description?: string;
 };
@@ -396,6 +396,20 @@ export type MycliShellPendingClarification = {
 	header?: string;
 	options: MycliShellClarificationOption[];
 	multiSelect: boolean;
+};
+
+export type MycliShellPermissionProfile = {
+	id: "read-only" | "workspace" | "full-access";
+	label: string;
+	description: string;
+	current: boolean;
+	disabledReason?: string;
+};
+
+export type MycliShellPermissionState = {
+	active: MycliShellPermissionProfile["id"];
+	profiles: MycliShellPermissionProfile[];
+	commandAllowanceCount: number;
 };
 
 export type MycliShellState = {
@@ -415,6 +429,7 @@ export type MycliShellState = {
 	settings?: MycliShellVisualSettings;
 	sessions?: MycliShellSession[];
 	resources?: MycliShellResource[];
+	permissions?: MycliShellPermissionState;
 };
 
 export type MycliShellCommandSpec = {

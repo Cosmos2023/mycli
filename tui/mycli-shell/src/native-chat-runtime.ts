@@ -1,4 +1,5 @@
 import { createInterface, type Interface } from "node:readline";
+import { isSlashCommandSubmission } from "./adapters/slash-commands.ts";
 import { renderMycliShell, renderTranscriptBlocks } from "./shell-app.ts";
 import type { MycliShellState } from "./model.ts";
 
@@ -146,7 +147,7 @@ export class NativeChatRuntime {
 			this.readline?.prompt();
 			return;
 		}
-		if (text.startsWith("/")) {
+		if (isSlashCommandSubmission(text)) {
 			await this.options.onCommandSubmit?.(text);
 		} else if (this.state.pendingClarification) {
 			await this.options.onClarificationRespond?.(

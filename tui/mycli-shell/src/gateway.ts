@@ -18,6 +18,7 @@ import {
 	nextLocalUserInput,
 	removeLocalUserInput,
 	resourcesFromResult,
+	permissionStateFromUnknown,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
@@ -28,7 +29,7 @@ import {
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
 import { NativeChatRuntime } from "./native-chat-runtime.ts";
-import type { MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
+import type { MycliShellPermissionProfile, MycliShellPermissionState, MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
 import type {
 	MycliShellQueuedInput,
 	MycliShellSubmitAttachments,
@@ -597,6 +598,31 @@ async function saveSettings(settings: MycliShellVisualSettings): Promise<MycliSh
 	return savedSettings;
 }
 
+async function selectPermission(profile: MycliShellPermissionProfile): Promise<MycliShellPermissionState> {
+	const result = await send("permissions.update", { profile: profile.id });
+	const permissions = permissionStateFromUnknown(result.permissions);
+	if (!permissions) throw new Error("Gateway returned an invalid permission profile payload.");
+	runtimeState = {
+		...runtimeState,
+		permissions,
+		status: typeof result.status === "object" && result.status !== null
+			? result.status as Record<string, unknown>
+			: runtimeState.status,
+	};
+	setRuntimeState(runtimeState);
+	return permissions;
+}
+
+async function clearPermissionAllowances(): Promise<MycliShellPermissionState> {
+	await send("command.run", { command: "/permissions clear", surface: "cli" });
+	const result = await send("permissions.list", {});
+	const permissions = permissionStateFromUnknown(result);
+	if (!permissions) throw new Error("Gateway returned an invalid permission profile payload.");
+	runtimeState = { ...runtimeState, permissions };
+	setRuntimeState(runtimeState);
+	return permissions;
+}
+
 async function shutdown(exitCode = 0): Promise<void> {
 	try {
 		await client.send("shutdown", {});
@@ -679,6 +705,8 @@ async function main(): Promise<void> {
 			});
 			return model;
 		},
+		onPermissionSelect: selectPermission,
+		onPermissionClearAllowances: clearPermissionAllowances,
 		onSessionSelect: selectSession,
 		onSessionTreeLoad: loadSessionTree,
 		onSettingsChange: saveSettings,

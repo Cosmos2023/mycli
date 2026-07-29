@@ -2,21 +2,21 @@ import { createInterface, type Interface } from "node:readline";
 
 export type JsonObject = Record<string, unknown>;
 
-export type RpcRequest = {
+type RpcRequest = {
 	jsonrpc: "2.0";
 	id: string;
 	method: string;
 	params: JsonObject;
 };
 
-export type RpcResponse = {
+type RpcResponse = {
 	jsonrpc: "2.0";
 	id: string;
 	result?: JsonObject;
 	error?: { code: string; message: string; data?: JsonObject };
 };
 
-export type RpcNotification = {
+type RpcNotification = {
 	jsonrpc: "2.0";
 	method: string;
 	params: JsonObject;
@@ -40,15 +40,15 @@ type PendingEvent = {
 	timer: NodeJS.Timeout;
 };
 
-export function request(id: string, method: string, params: JsonObject = {}): RpcRequest {
+function request(id: string, method: string, params: JsonObject = {}): RpcRequest {
 	return { jsonrpc: "2.0", id, method, params };
 }
 
-export function encodeMessage(message: RpcMessage): string {
+function encodeMessage(message: RpcMessage): string {
 	return `${JSON.stringify(message)}\n`;
 }
 
-export function decodeMessage(line: string): RpcMessage {
+function decodeMessage(line: string): RpcMessage {
 	const message = JSON.parse(line) as RpcMessage;
 	if (message.jsonrpc !== "2.0") {
 		throw new Error("Unsupported JSON-RPC version");

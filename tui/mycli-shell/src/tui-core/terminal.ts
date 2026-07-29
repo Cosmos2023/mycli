@@ -20,7 +20,7 @@ export type KeyboardProtocolNegotiationSequence =
 	| { type: "kitty-flags"; flags: number }
 	| { type: "device-attributes" };
 
-export function parseKeyboardProtocolNegotiationSequence(
+function parseKeyboardProtocolNegotiationSequence(
 	sequence: string,
 ): KeyboardProtocolNegotiationSequence | undefined {
 	const kittyFlags = sequence.match(/^\x1b\[\?(\d+)u$/);

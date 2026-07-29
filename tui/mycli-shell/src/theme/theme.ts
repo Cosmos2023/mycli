@@ -63,7 +63,7 @@ export type ThemeColor =
 	| "thinkingXhigh"
 	| "bashMode";
 
-export type ThemeBg =
+type ThemeBg =
 	| "selectedBg"
 	| "userMessageBg"
 	| "customMessageBg"

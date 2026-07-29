@@ -1,11 +1,9 @@
 import {
 	Container,
 	type Focusable,
-	fuzzyFilter,
 	Input,
 	Spacer,
 	Text,
-	TruncatedText,
 	type TUI,
 } from "../tui-core/index.ts";
 import { getKeybindings } from "../tui-core/keybindings.ts";
@@ -13,6 +11,7 @@ import type { MycliShellAuthProvider } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { ProviderList } from "./provider-list.ts";
 
 type LoginStep = "provider" | "api_key";
 
@@ -31,15 +30,13 @@ export type LoginFlowOptions = {
 export class LoginFlowComponent extends Container implements Focusable {
 	private readonly searchInput = new Input();
 	private readonly apiKeyInput = new Input();
-	private readonly listContainer = new Container();
+	private readonly providerList: ProviderList<MycliShellAuthProvider>;
 	private readonly tui: TUI;
 	private readonly providers: MycliShellAuthProvider[];
-	private filteredProviders: MycliShellAuthProvider[];
 	private readonly onSubmitCallback: (result: LoginFlowResult) => void;
 	private readonly onCancelCallback: () => void;
 	private apiKey = "";
 	private step: LoginStep = "provider";
-	private providerIndex = 0;
 	private selectedProvider: MycliShellAuthProvider | null = null;
 	private _focused = false;
 
@@ -57,7 +54,10 @@ export class LoginFlowComponent extends Container implements Focusable {
 		super();
 		this.tui = options.tui;
 		this.providers = options.providers.length > 0 ? options.providers : defaultAuthProviders();
-		this.filteredProviders = this.providers;
+		this.providerList = new ProviderList(this.providers, {
+			emptyMessage: "No matching providers",
+			showPosition: true,
+		});
 		this.onSubmitCallback = options.onSubmit;
 		this.onCancelCallback = options.onCancel;
 		this.searchInput.onSubmit = () => this.selectCurrentProvider();
@@ -78,15 +78,11 @@ export class LoginFlowComponent extends Container implements Focusable {
 		}
 		if (this.step === "provider") {
 			if (kb.matches(keyData, "tui.select.up")) {
-				if (this.filteredProviders.length === 0) return;
-				this.providerIndex = Math.max(0, this.providerIndex - 1);
-				this.updateProviderList();
+				this.providerList.move(-1);
 				return;
 			}
 			if (kb.matches(keyData, "tui.select.down")) {
-				if (this.filteredProviders.length === 0) return;
-				this.providerIndex = Math.min(this.filteredProviders.length - 1, this.providerIndex + 1);
-				this.updateProviderList();
+				this.providerList.move(1);
 				return;
 			}
 			if (kb.matches(keyData, "tui.select.confirm")) {
@@ -94,7 +90,7 @@ export class LoginFlowComponent extends Container implements Focusable {
 				return;
 			}
 			this.searchInput.handleInput(keyData);
-			this.filterProviders(this.searchInput.getValue());
+			this.providerList.filter(this.searchInput.getValue());
 			this.tui.requestRender();
 			return;
 		}
@@ -125,45 +121,14 @@ export class LoginFlowComponent extends Container implements Focusable {
 		this.addHeader("Select provider to configure:");
 		this.addChild(this.searchInput);
 		this.addChild(new Spacer(1));
-		this.addChild(this.listContainer);
+		this.addChild(this.providerList);
 		this.addChild(new Spacer(1));
 		this.addHint(`${keyHint("tui.select.confirm", "select")} ${keyHint("tui.select.cancel", "cancel")}`);
 		this.addChild(new DynamicBorder());
-		this.updateProviderList();
-	}
-
-	private updateProviderList(): void {
-		this.listContainer.clear();
-		const maxVisible = 8;
-		const startIndex = Math.max(
-			0,
-			Math.min(this.providerIndex - Math.floor(maxVisible / 2), this.filteredProviders.length - maxVisible),
-		);
-		const endIndex = Math.min(startIndex + maxVisible, this.filteredProviders.length);
-
-		for (let index = startIndex; index < endIndex; index += 1) {
-			const provider = this.filteredProviders[index];
-			if (!provider) continue;
-			const selected = index === this.providerIndex;
-			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
-			const name = selected ? theme.fg("accent", provider.name) : theme.fg("text", provider.name);
-			this.listContainer.addChild(new TruncatedText(prefix + name + this.statusIndicator(provider), 1, 0));
-		}
-
-		if (startIndex > 0 || endIndex < this.filteredProviders.length) {
-			this.listContainer.addChild(
-				new TruncatedText(theme.fg("muted", `  (${this.providerIndex + 1}/${this.filteredProviders.length})`), 1, 0),
-			);
-		}
-
-		if (this.filteredProviders.length === 0) {
-			const message = this.providers.length === 0 ? "No providers available" : "No matching providers";
-			this.listContainer.addChild(new TruncatedText(theme.fg("muted", `  ${message}`), 1, 0));
-		}
 	}
 
 	private renderApiKeyDialog(): void {
-		const provider = this.selectedProvider ?? this.filteredProviders[this.providerIndex] ?? defaultAuthProviders()[0]!;
+		const provider = this.selectedProvider ?? this.providerList.current() ?? defaultAuthProviders()[0]!;
 		this.selectedProvider = provider;
 		this.apiKey = this.apiKeyInput.getValue();
 		this.addChild(new DynamicBorder());
@@ -184,16 +149,8 @@ export class LoginFlowComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 	}
 
-	private filterProviders(query: string): void {
-		this.filteredProviders = query
-			? fuzzyFilter(this.providers, query, (provider) => `${provider.name} ${provider.id}`)
-			: this.providers;
-		this.providerIndex = Math.max(0, Math.min(this.providerIndex, Math.max(0, this.filteredProviders.length - 1)));
-		this.updateProviderList();
-	}
-
 	private selectCurrentProvider(): void {
-		const provider = this.filteredProviders[this.providerIndex] ?? null;
+		const provider = this.providerList.current() ?? null;
 		if (!provider) return;
 		this.selectedProvider = provider;
 		this.step = "api_key";
@@ -202,10 +159,6 @@ export class LoginFlowComponent extends Container implements Focusable {
 		this.searchInput.focused = false;
 		this.apiKeyInput.focused = this._focused;
 		this.rebuild();
-	}
-
-	private statusIndicator(provider: MycliShellAuthProvider): string {
-		return provider.configured ? theme.fg("success", " ✓ configured") : theme.fg("muted", " • unconfigured");
 	}
 
 	private handleApiKeyInput(keyData: string): void {

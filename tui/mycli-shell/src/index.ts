@@ -18,6 +18,8 @@ export type {
 	MycliShellMessage,
 	MycliShellModel,
 	MycliShellPendingInput,
+	MycliShellPermissionProfile,
+	MycliShellPermissionState,
 	MycliShellQueuedInputPreview,
 	MycliShellState,
 	MycliShellSession,
@@ -45,6 +47,7 @@ export { FooterComponent } from "./components/footer.ts";
 export { FileChangeComponent } from "./components/file-change.ts";
 export { LoginFlowComponent } from "./components/login-flow.ts";
 export { ModelSelectorComponent } from "./components/model-selector.ts";
+export { PermissionSelectorComponent } from "./components/permission-selector.ts";
 export { PlanUpdateComponent } from "./components/plan-update.ts";
 export { PendingInputPreviewComponent } from "./components/pending-input-preview.ts";
 export { ProposedPlanComponent } from "./components/proposed-plan.ts";

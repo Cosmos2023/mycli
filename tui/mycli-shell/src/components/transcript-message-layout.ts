@@ -1,6 +1,6 @@
 import { truncateToWidth } from "../tui-core/utils.ts";
 
-export const TRANSCRIPT_MESSAGE_PREFIX_WIDTH = 2;
+const TRANSCRIPT_MESSAGE_PREFIX_WIDTH = 2;
 
 export function transcriptMessageContentWidth(width: number): number {
 	const safeWidth = Math.max(1, Math.floor(width));

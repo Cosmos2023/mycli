@@ -113,7 +113,7 @@ function segmentWithMarkers(
  * Represents a chunk of text for word-wrap layout.
  * Tracks both the text content and its position in the original line.
  */
-export interface TextChunk {
+interface TextChunk {
 	text: string;
 	startIndex: number;
 	endIndex: number;
@@ -130,7 +130,7 @@ export interface TextChunk {
  *                       When omitted the default Intl.Segmenter is used.
  * @returns Array of chunks with text and position information
  */
-export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl.SegmentData[]): TextChunk[] {
+function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl.SegmentData[]): TextChunk[] {
 	if (!line || maxWidth <= 0) {
 		return [{ text: "", startIndex: 0, endIndex: 0 }];
 	}
@@ -491,9 +491,7 @@ export class Editor implements Component, Focusable {
 		// Reset scroll - render() will adjust to show cursor
 		this.scrollOffset = 0;
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	invalidate(): void {
@@ -727,7 +725,7 @@ export class Editor implements Component, Focusable {
 					this.state.cursorLine = result.cursorLine;
 					this.setCursorCol(result.cursorCol);
 					this.cancelAutocomplete();
-					if (this.onChange) this.onChange(this.getText());
+					this.notifyChange();
 				}
 				return;
 			}
@@ -753,7 +751,7 @@ export class Editor implements Component, Focusable {
 						// Fall through to submit
 					} else {
 						this.cancelAutocomplete();
-						if (this.onChange) this.onChange(this.getText());
+						this.notifyChange();
 						return;
 					}
 				}
@@ -1122,9 +1120,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol((insertedLines[insertedLines.length - 1] || "").length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	// All the editor methods from before...
@@ -1151,9 +1147,7 @@ export class Editor implements Component, Focusable {
 		this.state.lines[this.state.cursorLine] = before + char + after;
 		this.setCursorCol(this.state.cursorCol + char.length);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 
 		// Check if we should trigger or update autocomplete
 		if (!this.autocompleteState) {
@@ -1277,9 +1271,7 @@ export class Editor implements Component, Focusable {
 		this.state.cursorLine++;
 		this.setCursorCol(0);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	private shouldSubmitOnBackslashEnter(data: string, kb: ReturnType<typeof getKeybindings>): boolean {
@@ -1306,7 +1298,7 @@ export class Editor implements Component, Focusable {
 		this.lastAction = null;
 
 		if (this.onSubmit) this.onSubmit(result);
-		if (this.onChange) this.onChange("");
+		this.notifyChange();
 	}
 
 	private handleBackspace(): void {
@@ -1344,26 +1336,8 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(previousLine.length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
-
-		// Update or re-trigger autocomplete after backspace
-		if (this.autocompleteState) {
-			this.updateAutocomplete();
-		} else {
-			// If autocomplete was cancelled (no matches), re-trigger if we're in a completable context
-			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			// Slash command context
-			if (this.isInSlashCommandContext(textBeforeCursor)) {
-				this.tryTriggerAutocomplete();
-			}
-			// Symbol-based completion context like @ or #
-			else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
-				this.tryTriggerAutocomplete();
-			}
-		}
+		this.notifyChange();
+		this.refreshAutocompleteAfterDelete();
 	}
 
 	/**
@@ -1556,9 +1530,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(previousLine.length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	private deleteToEndOfLine(): void {
@@ -1588,9 +1560,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	private deleteWordBackwards(): void {
@@ -1633,9 +1603,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(deleteFrom);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	private deleteWordForward(): void {
@@ -1675,9 +1643,7 @@ export class Editor implements Component, Focusable {
 				currentLine.slice(0, this.state.cursorCol) + currentLine.slice(deleteTo);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	private handleForwardDelete(): void {
@@ -1709,24 +1675,19 @@ export class Editor implements Component, Focusable {
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
+		this.refreshAutocompleteAfterDelete();
+	}
 
-		// Update or re-trigger autocomplete after forward delete
+	private refreshAutocompleteAfterDelete(): void {
 		if (this.autocompleteState) {
 			this.updateAutocomplete();
-		} else {
-			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			// Slash command context
-			if (this.isInSlashCommandContext(textBeforeCursor)) {
-				this.tryTriggerAutocomplete();
-			}
-			// Symbol-based completion context like @ or #
-			else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
-				this.tryTriggerAutocomplete();
-			}
+			return;
+		}
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
+		if (this.isInSlashCommandContext(textBeforeCursor) || /(?:^|[\s])[@#][^\s]*$/.test(textBeforeCursor)) {
+			this.tryTriggerAutocomplete();
 		}
 	}
 
@@ -1970,9 +1931,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol((lines[lines.length - 1] || "").length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	/**
@@ -2012,9 +1971,11 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(startCol);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
+	}
+
+	private notifyChange(): void {
+		this.onChange?.(this.getText());
 	}
 
 	private pushUndoSnapshot(): void {
@@ -2028,9 +1989,7 @@ export class Editor implements Component, Focusable {
 		Object.assign(this.state, snapshot);
 		this.lastAction = null;
 		this.preferredVisualCol = null;
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.notifyChange();
 	}
 
 	/**
@@ -2291,7 +2250,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines = result.lines;
 			this.state.cursorLine = result.cursorLine;
 			this.setCursorCol(result.cursorCol);
-			if (this.onChange) this.onChange(this.getText());
+			this.notifyChange();
 			this.tui.requestRender();
 			return;
 		}

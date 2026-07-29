@@ -284,7 +284,7 @@ export function normalizeTerminalOutput(str: string): string {
 /**
  * Extract ANSI escape sequences from a string at the given position.
  */
-export function extractAnsiCode(str: string, pos: number): { code: string; length: number } | null {
+function extractAnsiCode(str: string, pos: number): { code: string; length: number } | null {
 	if (pos >= str.length || str[pos] !== "\x1b") return null;
 
 	const next = str[pos + 1];
@@ -297,21 +297,8 @@ export function extractAnsiCode(str: string, pos: number): { code: string; lengt
 		return null;
 	}
 
-	// OSC sequence: ESC ] ... BEL or ESC ] ... ST (ESC \)
-	// Used for hyperlinks (OSC 8), window titles, etc.
-	if (next === "]") {
-		let j = pos + 2;
-		while (j < str.length) {
-			if (str[j] === "\x07") return { code: str.substring(pos, j + 1), length: j + 1 - pos };
-			if (str[j] === "\x1b" && str[j + 1] === "\\") return { code: str.substring(pos, j + 2), length: j + 2 - pos };
-			j++;
-		}
-		return null;
-	}
-
-	// APC sequence: ESC _ ... BEL or ESC _ ... ST (ESC \)
-	// Used for cursor marker and application-specific commands
-	if (next === "_") {
+	// OSC/APC string sequence: ESC ],_ ... BEL or ST (ESC \)
+	if (next === "]" || next === "_") {
 		let j = pos + 2;
 		while (j < str.length) {
 			if (str[j] === "\x07") return { code: str.substring(pos, j + 1), length: j + 1 - pos };
@@ -773,13 +760,6 @@ export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
  */
 export function isWhitespaceChar(char: string): boolean {
 	return /\s/.test(char);
-}
-
-/**
- * Check if a character is punctuation.
- */
-export function isPunctuationChar(char: string): boolean {
-	return PUNCTUATION_REGEX.test(char);
 }
 
 function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): string[] {

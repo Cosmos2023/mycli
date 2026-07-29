@@ -14,6 +14,8 @@ import type {
 	MycliShellModel,
 	MycliShellPendingApproval,
 	MycliShellPendingClarification,
+	MycliShellPermissionProfile,
+	MycliShellPermissionState,
 	MycliShellResource,
 	MycliShellPlanUpdate,
 	MycliShellPlanStep,
@@ -34,7 +36,7 @@ import {
 
 const TURN_INTERRUPTED_NOTICE = "Turn interrupted. The current turn was aborted; send a new message to continue.";
 
-export type RuntimeTranscriptItem = {
+type RuntimeTranscriptItem = {
 	id: string;
 	type: string;
 	text: string;
@@ -42,7 +44,7 @@ export type RuntimeTranscriptItem = {
 	metadata?: Record<string, unknown>;
 };
 
-export type RuntimeShellProcess = {
+type RuntimeShellProcess = {
 	shellId: string;
 	callId?: string;
 	commandPreview: string;
@@ -65,7 +67,7 @@ export type RuntimeShellProcess = {
 	shellEdition?: string;
 };
 
-export type RuntimeQueuedInputPreview = {
+type RuntimeQueuedInputPreview = {
 	message: string;
 	hasImages: boolean;
 	source?: string;
@@ -77,7 +79,7 @@ export type RuntimeLocalUserInput = {
 	attachments: MycliShellLocalImageAttachment[];
 };
 
-export type RuntimeLiveStatus = {
+type RuntimeLiveStatus = {
 	state: string;
 	text: string;
 	kind?: string;
@@ -120,6 +122,7 @@ export type RuntimeShellState = {
 	taskProgress: { completed: number; total: number } | null;
 	authProviders: MycliShellAuthProvider[];
 	resources: MycliShellResource[];
+	permissions: MycliShellPermissionState | null;
 	backgroundShells: Record<string, RuntimeShellProcess>;
 	backgroundShellCount: number;
 	shellEventSequences: Record<string, number>;
@@ -162,6 +165,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		taskProgress: null,
 		authProviders: [],
 		resources: [],
+		permissions: null,
 		backgroundShells: {},
 		backgroundShellCount: 0,
 		shellEventSequences: {},
@@ -368,6 +372,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		},
 		sessions,
 		resources: state.resources,
+		permissions: state.permissions ?? undefined,
 	};
 }
 
@@ -430,6 +435,7 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		collaborationMode: collaborationModeValue(payload.collaboration_mode) ?? collaborationModeValue(status.collaboration_mode) ?? state.collaborationMode,
 		provider: stringValue(payload.provider) ?? state.provider,
 		authProviders: authProvidersFromUnknown(payload.auth_providers),
+		permissions: permissionStateFromUnknown(payload.permissions ?? status.permissions) ?? state.permissions,
 		status,
 		trust,
 		trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
@@ -705,7 +711,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		const assistantId = state.activeAssistantItemId;
 		return {
 			...state,
-			turnRunning: params.final === true ? false : state.turnRunning,
+			turnRunning: state.turnRunning,
 			activeAssistantItemId: params.final === true ? null : state.activeAssistantItemId,
 			liveReasoning: null,
 			transcript: params.final === true ? reconcileFinalAnswer(state.transcript, assistantId, text) : state.transcript,
@@ -986,6 +992,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			model: stringValue(params.model) ?? state.model,
 			collaborationMode: collaborationModeValue(params.collaboration_mode) ?? state.collaborationMode,
 			provider: stringValue(params.provider) ?? state.provider,
+			permissions: permissionStateFromUnknown(params.permissions) ?? state.permissions,
 			trust,
 			trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
 		}, params, "status");
@@ -1238,15 +1245,6 @@ function localImageAttachments(value: unknown): MycliShellLocalImageAttachment[]
 	});
 }
 
-export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInputs: string[]): RuntimeShellState {
-	const visibleQueuedInputs = visibleQueuedMessages(queuedInputs);
-	return {
-		...state,
-		queuedInputs: visibleQueuedInputs,
-		hasPendingInput: visibleQueuedInputs.length > 0,
-	};
-}
-
 function applyQueuePayload(
 	state: RuntimeShellState,
 	payload: Record<string, unknown>,
@@ -1332,7 +1330,7 @@ function rollbackOutputFreeUserTurn(
 	return userIndex < 0 ? items : items.slice(0, userIndex);
 }
 
-export function runtimeStateWithMessageQueues(
+function runtimeStateWithMessageQueues(
 	state: RuntimeShellState,
 	queues: {
 		pendingSteers: RuntimeQueuedInputPreview[];
@@ -3186,6 +3184,39 @@ function modelListFromStatus(status: Record<string, unknown>, provider: string, 
 		models.push(currentModel(provider, model, reasoningLevelFromStatus(status)));
 	}
 	return models;
+}
+
+export function permissionStateFromUnknown(value: unknown): MycliShellPermissionState | null {
+	const record = recordValue(value);
+	const active = permissionProfileId(record.active);
+	const profiles = Array.isArray(record.profiles)
+		? record.profiles.map(permissionProfileFromUnknown).filter((profile): profile is MycliShellPermissionProfile => profile !== null)
+		: [];
+	if (!active || profiles.length === 0) return null;
+	return {
+		active,
+		profiles,
+		commandAllowanceCount: Math.max(0, numberValue(record.command_allowance_count) ?? numberValue(record.commandAllowanceCount) ?? 0),
+	};
+}
+
+function permissionProfileFromUnknown(value: unknown): MycliShellPermissionProfile | null {
+	const record = recordValue(value);
+	const id = permissionProfileId(record.id);
+	const label = stringValue(record.label);
+	const description = stringValue(record.description);
+	if (!id || !label || !description) return null;
+	return {
+		id,
+		label,
+		description,
+		current: record.current === true,
+		disabledReason: stringValue(record.disabled_reason) ?? stringValue(record.disabledReason) ?? undefined,
+	};
+}
+
+function permissionProfileId(value: unknown): MycliShellPermissionProfile["id"] | null {
+	return value === "read-only" || value === "workspace" || value === "full-access" ? value : null;
 }
 
 function modelFromUnknown(value: unknown): MycliShellModel | null {

@@ -12,7 +12,7 @@ export interface ParsedSessionSearchQuery {
 	error?: string;
 }
 
-export interface SessionMatchResult {
+interface SessionMatchResult {
 	matches: boolean;
 	score: number;
 }
@@ -25,7 +25,7 @@ export function sessionDisplayTitle(session: MycliShellSession): string {
 	return session.title?.trim() || session.firstMessage?.trim() || session.id;
 }
 
-export function sessionIsNamed(session: MycliShellSession): boolean {
+function sessionIsNamed(session: MycliShellSession): boolean {
 	return Boolean(session.title?.trim() || session.named);
 }
 
@@ -102,7 +102,7 @@ export function parseSessionSearchQuery(query: string): ParsedSessionSearchQuery
 	return { mode: "tokens", tokens, regex: null };
 }
 
-export function matchSession(session: MycliShellSession, parsed: ParsedSessionSearchQuery): SessionMatchResult {
+function matchSession(session: MycliShellSession, parsed: ParsedSessionSearchQuery): SessionMatchResult {
 	const text = sessionSearchText(session);
 	if (parsed.mode === "regex") {
 		if (!parsed.regex) return { matches: false, score: 0 };

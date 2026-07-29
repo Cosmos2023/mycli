@@ -40,6 +40,18 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 		workspace: "/repo",
 		model: "deepseek-v4-flash",
 		provider: "deepseek/openai",
+		permissions: {
+			active: "workspace",
+			command_allowance_count: 2,
+			profiles: [
+				{
+					id: "workspace",
+					label: "Ask for approval",
+					description: "Workspace access with approval.",
+					current: true,
+				},
+			],
+		},
 		status: { trust: { state: "trusted", workspace: "/repo" } },
 		welcome: { startup_mark: { text: "mycli" }, workspace: "/repo" },
 	});
@@ -63,6 +75,9 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.footer.cwd, "/repo");
 	assert.equal(shell.footer.model, "deepseek-v4-flash");
 	assert.equal(shell.footer.trust, "trusted");
+	assert.equal(shell.permissions?.active, "workspace");
+	assert.equal(shell.permissions?.commandAllowanceCount, 2);
+	assert.equal(shell.permissions?.profiles[0]?.current, true);
 	assert.equal(shell.messages.some((message) => message.role === "assistant" && message.thinking === "think"), true);
 	assert.equal(shell.tools[0]?.name, "Read");
 	assert.equal(shell.tools[0]?.args, "word.txt");
@@ -1557,6 +1572,27 @@ test("runtime adapter tracks the active server turn until its matching terminal 
 	assert.equal(state.activeTurnId, null);
 });
 
+test("runtime adapter keeps the turn running after final message until turn completion", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "message.complete", {
+		turn_id: "turn-1",
+		final: true,
+		text: "Done.",
+	});
+
+	assert.equal(state.turnRunning, true);
+	assert.equal(state.activeTurnId, "turn-1");
+
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		turn_id: "turn-1",
+		turn_state: "completed",
+	});
+	assert.equal(state.turnRunning, false);
+	assert.equal(state.activeTurnId, null);
+});
+
 test("runtime adapter clears the matching interrupted server turn", () => {
 	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
 		turn_id: "turn-1",
@@ -2241,6 +2277,12 @@ test("runtime adapter defers transcript command results until the active turn co
 	state = reduceRuntimeEvent(state, "message.complete", {
 		text: "assistant prefix\nassistant tail",
 		final: true,
+	});
+	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["message"]);
+
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		turn_id: "turn-1",
+		turn_state: "completed",
 	});
 
 	const projected = projectRuntimeState(state).transcript ?? [];

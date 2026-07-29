@@ -260,25 +260,7 @@ export class Markdown implements Component {
 		}
 
 		const sentinel = "\u0000";
-		let styled = sentinel;
-
-		if (this.defaultTextStyle.color) {
-			styled = this.defaultTextStyle.color(styled);
-		}
-
-		if (this.defaultTextStyle.bold) {
-			styled = this.theme.bold(styled);
-		}
-		if (this.defaultTextStyle.italic) {
-			styled = this.theme.italic(styled);
-		}
-		if (this.defaultTextStyle.strikethrough) {
-			styled = this.theme.strikethrough(styled);
-		}
-		if (this.defaultTextStyle.underline) {
-			styled = this.theme.underline(styled);
-		}
-
+		const styled = this.applyDefaultStyle(sentinel);
 		const sentinelIndex = styled.indexOf(sentinel);
 		this.defaultStylePrefix = sentinelIndex >= 0 ? styled.slice(0, sentinelIndex) : "";
 		return this.defaultStylePrefix;

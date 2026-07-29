@@ -25,7 +25,7 @@ function sanitizeStatusText(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 }
 
-export function formatCwdForFooter(cwd: string, home: string | undefined = process.env.HOME || process.env.USERPROFILE): string {
+function formatCwdForFooter(cwd: string, home: string | undefined = process.env.HOME || process.env.USERPROFILE): string {
 	if (cwd === "~" || cwd.startsWith("~/") || cwd.startsWith("~\\")) return cwd;
 	if (!home) return cwd;
 	const resolvedCwd = resolve(cwd);

@@ -43,6 +43,11 @@ export function slashCommandsFromResult(result: Record<string, unknown>): MycliS
 		.filter((command): command is MycliShellCommandSpec => command !== null);
 }
 
+export function isSlashCommandSubmission(text: string): boolean {
+	const firstToken = text.trim().split(/\s+/, 1)[0] ?? "";
+	return firstToken.startsWith("/") && !firstToken.slice(1).includes("/");
+}
+
 export function clientActionFromResult(result: Record<string, unknown>): MycliShellClientAction | null {
 	if (result.execution !== "tui") return null;
 	const action = typeof result.client_action === "string" ? result.client_action.trim() : "";

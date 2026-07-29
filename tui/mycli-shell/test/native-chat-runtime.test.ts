@@ -142,6 +142,32 @@ test("native chat runtime delegates every slash command including quit", async (
 	await runtime.stop({ notifyExit: false });
 });
 
+test("native chat runtime submits an absolute path as ordinary user text", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const submitted: string[] = [];
+	const commands: string[] = [];
+	const runtime = new NativeChatRuntime({
+		initialState: stateWithMessages(0),
+		streams: { input, output },
+		columns: () => 100,
+		onSubmit: (text) => {
+			submitted.push(text);
+		},
+		onCommandSubmit: (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	input.write("/Users/cosmos/Desktop/demo create game folder\n");
+	await setTimeout(10);
+
+	assert.deepEqual(submitted, ["/Users/cosmos/Desktop/demo create game folder"]);
+	assert.deepEqual(commands, []);
+	await runtime.stop({ notifyExit: false });
+});
+
 test("native chat runtime treats Ctrl+C as local interrupt exit", async () => {
 	const input = new PassThrough();
 	const output = new PassThrough();
