@@ -7,37 +7,6 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.model_output import mutation_model_output
-from mycli.tools.file_mutation import (
-    backup_file,
-    unified_diff,
-)
-
-
-def write_file(file_path: str, content: str) -> dict[str, Any]:
-    path = Path(file_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    existed = path.exists()
-    existing = ""
-    if existed:
-        existing = path.read_text()
-        if existing == content:
-            return {"status": "unchanged", "file": str(path), "diff": ""}
-        backup_file(path, existing)
-
-    path.write_text(content)
-    return {
-        "status": "overwritten" if existed else "created",
-        "file": str(path),
-        "diff": unified_diff(
-            before=existing,
-            after=content,
-            fromfile=f"{file_path}:before",
-            tofile=f"{file_path}:after",
-        ),
-    }
-
-
 class WriteTool:
     name = "Write"
     spec = ToolSpec(

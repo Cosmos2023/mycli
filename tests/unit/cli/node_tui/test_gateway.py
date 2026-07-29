@@ -219,12 +219,14 @@ class FakeService(TurnService):
         )
         self.fake_session_service = FakeSessionService()
         self._session_service = self.fake_session_service
+        self._session_title_cache: dict[str, str] = {}
         self.messages: list[str] = []
         self.image_paths: list[tuple[str, ...]] = []
         self.shell_listener: Callable[[ShellLifecycleEvent], None] | None = None
         self.shell_unsubscribe_count = 0
         self.active_shell_rows: tuple[dict[str, object], ...] = ()
         self.model_selections: list[ModelSelection] = []
+        self.active_permission_profile = "workspace"
 
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=demo", "turns=1")
@@ -245,6 +247,48 @@ class FakeService(TurnService):
             "allow_session pattern=git push",
             "execpolicy_rules=1",
             "execpolicy source=project decision=allow pattern_length=2",
+        )
+
+    def permission_profile_payload(self) -> dict[str, object]:
+        return {
+            "active": self.active_permission_profile,
+            "profiles": [
+                {
+                    "id": profile_id,
+                    "label": label,
+                    "description": description,
+                    "current": profile_id == self.active_permission_profile,
+                }
+                for profile_id, label, description in (
+                    (
+                        "workspace",
+                        "Ask for approval",
+                        "Read and edit this workspace; ask before network or outside access.",
+                    ),
+                    (
+                        "full-access",
+                        "Full Access",
+                        "Access files and network without approval.",
+                    ),
+                    (
+                        "read-only",
+                        "Read Only",
+                        "Read workspace files; ask before edits or network.",
+                    ),
+                )
+            ],
+            "command_allowance_count": 1,
+        }
+
+    def set_permission_profile(self, profile_id: str) -> dict[str, object]:
+        valid = {"workspace", "full-access", "read-only"}
+        if profile_id not in valid:
+            raise ValueError(f"Unsupported permission profile '{profile_id}'.")
+        self.active_permission_profile = profile_id
+        return next(
+            profile
+            for profile in self.permission_profile_payload()["profiles"]
+            if profile["id"] == profile_id
         )
 
     def inspect_hooks(self) -> tuple[str, ...]:
@@ -624,6 +668,54 @@ def test_gateway_bootstrap_and_status_include_optional_session_title(tmp_path: P
     assert response.result["welcome"]["session_title"] == "Boss reply follow-up"
     assert response.result["status"]["session_title"] == "Boss reply follow-up"
     assert status.result["session_title"] == "Boss reply follow-up"
+
+
+def test_gateway_lists_and_updates_permissions_during_running_turn(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+    gateway._turn_running = True
+
+    listed = gateway.handle_request(
+        RpcRequest(id="req_1", method="permissions.list", params={})
+    )
+    updated = gateway.handle_request(
+        RpcRequest(
+            id="req_2",
+            method="permissions.update",
+            params={"profile": "full-access"},
+        )
+    )
+
+    assert listed.error is None
+    assert listed.result["active"] == "workspace"
+    assert listed.result["command_allowance_count"] == 1
+    assert updated.error is None
+    assert updated.result["selected"]["id"] == "full-access"
+    assert updated.result["permissions"]["active"] == "full-access"
+    assert any(
+        method == "status.changed"
+        and params["permissions"]["active"] == "full-access"
+        for method, params in events
+    )
+
+
+def test_gateway_bootstrap_and_status_include_permission_profiles(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    bootstrap = gateway.handle_request(
+        RpcRequest(id="req_1", method="session.bootstrap", params={"protocol_version": 1})
+    )
+    status = gateway.handle_request(
+        RpcRequest(id="req_2", method="status.inspect", params={})
+    )
+
+    assert bootstrap.result["permissions"]["active"] == "workspace"
+    assert bootstrap.result["status"]["permissions"]["active"] == "workspace"
+    assert status.result["permissions"]["profiles"][0]["current"] is True
 
 
 def test_gateway_forwards_compaction_lifecycle_events(tmp_path: Path) -> None:
@@ -1230,15 +1322,12 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     assert changes.result["presentation"] == "transcript"
     assert changes.result["presentation_hint"] == "file changes"
     assert permissions.result is not None
-    assert permissions.result["presentation"] == "overlay"
-    assert permissions.result["display"]["kind"] == "list"
-    assert permissions.result["lines"] == [
-        "Permissions - 4 items",
-        "Session allowances  1",
-        "Allow session  git push",
-        "Execpolicy rules  1",
-        "Execpolicy  project  allow  2",
-    ]
+    assert permissions.result == {
+        "execution": "tui",
+        "client_action": "open_permissions",
+        "args": "",
+        "command_id": "permissions",
+    }
 
 
 def test_gateway_settings_load_and_save_persist_shell_settings(tmp_path: Path) -> None:
@@ -2090,7 +2179,7 @@ def test_gateway_extension_manifest_can_include_runtime_contributed_tools(tmp_pa
         ToolContributionScope,
         ToolContributionSource,
     )
-    from mycli.domain.tool_exposure import ToolRouteKey
+    from mycli.domain.tooling.exposure import ToolRouteKey
     from mycli.services.extensions import ExtensionManifestService
     from mycli.tools.base import ToolResult, ToolSpec
 

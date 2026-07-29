@@ -23,7 +23,6 @@ from mycli.schemas.responses_protocol import (
     ResponsesFunctionCallArgumentsDeltaEvent,
     ResponsesFunctionCallArgumentsDoneEvent,
     ResponsesInProgressEvent,
-    ResponsesFunctionCallOutputPayload,
     ResponsesMcpCallCompletedEvent,
     ResponsesOutputItemAddedEvent,
     ResponsesOutputItemDoneEvent,
@@ -97,9 +96,6 @@ class ResponsesModelAdapter:
         setter = getattr(self._client, "set_tool_choice", None)
         if callable(setter):
             setter(tool_choice)
-
-    def supports_tool_choice(self) -> bool:
-        return callable(getattr(self._client, "set_tool_choice", None))
 
     def set_model(self, model: str) -> None:
         setter = getattr(self._client, "set_model", None)
@@ -374,13 +370,6 @@ class ResponsesModelAdapter:
                     interrupt_token=interrupt_token,
                 )
         return getattr(self._client, "stream_response", None)
-
-    def _function_call_output_payload_for_block(
-        self,
-        *,
-        block: RuntimeBlock,
-    ) -> ResponsesFunctionCallOutputPayload:
-        return self._serializer.function_call_output_payload_for_block(block=block)
 
     def _serialize_tools(self, tools: list[ModelToolDefinition]) -> list[dict[str, object]]:
         return self._serializer.serialize_tools(tools)

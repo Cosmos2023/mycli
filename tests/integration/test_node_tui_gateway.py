@@ -104,7 +104,23 @@ class BrokenPipeNodeProcess(FakeNodeProcess):
         super().write_line(line)
 
 
-class FakeService:
+class _GatewayServiceStub:
+    def permission_profile_payload(self) -> dict[str, object]:
+        return {
+            "active": "workspace",
+            "profiles": [
+                {
+                    "id": "workspace",
+                    "label": "Ask for approval",
+                    "description": "Read and edit this workspace; ask before broader access.",
+                    "current": True,
+                }
+            ],
+            "command_allowance_count": 0,
+        }
+
+
+class FakeService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="demo",
@@ -327,7 +343,7 @@ class E2ESessionService:
         return ()
 
 
-class E2ETypedStreamService:
+class E2ETypedStreamService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="typed-smoke",
@@ -428,7 +444,7 @@ class E2EWaitingSessionService:
         return ()
 
 
-class E2EWaitingStateService:
+class E2EWaitingStateService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="waiting-smoke",
@@ -856,7 +872,7 @@ def test_run_node_tui_gateway_scripted_expected_waiting_states(
     assert clarification_state["pendingClarification"]["request_id"] == "call_question_1"
 
 
-class E2EToolLifecycleService:
+class E2EToolLifecycleService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="tool-lifecycle-smoke",
@@ -1010,7 +1026,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_tool_lifecycle(
     assert "tools donetools done" not in assistant_items[0]["text"]
 
 
-class E2EInterruptedStateService:
+class E2EInterruptedStateService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="interrupted-smoke",
@@ -1060,7 +1076,7 @@ class E2EInterruptedStateService:
         return (f"resumed {session_id or 'interrupted-smoke'}",)
 
 
-class E2EQueuedTurnService:
+class E2EQueuedTurnService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="queued-turn-smoke",
@@ -1172,7 +1188,7 @@ class E2EQueuedTurnService:
         return (f"resumed {session_id or 'queued-turn-smoke'}",)
 
 
-class E2EFailureRecoveryService:
+class E2EFailureRecoveryService(_GatewayServiceStub):
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
             session_id="failure-recovery-smoke",
@@ -1713,7 +1729,7 @@ class E2EResumeTipSessionService:
         return ()
 
 
-class E2EResumeTipService:
+class E2EResumeTipService(_GatewayServiceStub):
     def __init__(
         self,
         workspace_root: Path,

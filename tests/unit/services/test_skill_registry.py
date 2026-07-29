@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mycli.services.skill_registry import SkillRegistry
+from mycli.services.skills import SkillRegistry
 
 
 def test_skill_registry_prefers_user_skill_over_builtin(tmp_path: Path) -> None:

@@ -95,17 +95,17 @@ def check_node_version(
         completed = run(["node", "--version"])
     except FileNotFoundError as exc:
         raise NodeTuiProcessError(
-            "Node TUI requires Node.js >= 20. Use mycli --plain or install Node."
+            "Node TUI requires Node.js >= 20. Install Node.js and retry."
         ) from exc
     version = completed.stdout.strip()
     if completed.returncode != 0 or not version.startswith("v"):
         raise NodeTuiProcessError(
-            "Node TUI requires Node.js >= 20. Use mycli --plain or install Node."
+            "Node TUI requires Node.js >= 20. Install Node.js and retry."
         )
     major = _parse_node_major(version)
     if major < 20:
         raise NodeTuiProcessError(
-            "Node TUI requires Node.js >= 20. Use mycli --plain or install Node."
+            "Node TUI requires Node.js >= 20. Install Node.js and retry."
         )
     return version
 

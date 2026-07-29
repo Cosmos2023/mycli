@@ -12,7 +12,6 @@ def test_all_tools_importable():
     from mycli.tools.ls import LSTool
     from mycli.tools.patch import PatchTool
     from mycli.tools.plan import PlanTool
-    from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
     from mycli.tools.send_message import SendMessageTool
     from mycli.tools.shell_output import ShellOutputTool
@@ -45,8 +44,6 @@ def test_all_tools_importable():
             GitShowTool,
             AskUserQuestionTool,
             PlanTool,
-            EnterPlanModeTool,
-            ExitPlanModeTool,
         )
     )
 
@@ -80,8 +77,6 @@ def test_all_tools_registered():
         "Task",
         "SubagentOutput",
         "SendMessage",
-        "enter_plan_mode",
-        "exit_plan_mode",
     }
     assert set(names) == expected
 

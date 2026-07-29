@@ -57,8 +57,6 @@ HIDDEN_BY_DEFAULT_BUILTIN_TOOLS: frozenset[str] = frozenset(
         "ShellOutput",
         "KillShell",
         "SubagentOutput",
-        "enter_plan_mode",
-        "exit_plan_mode",
     }
 )
 

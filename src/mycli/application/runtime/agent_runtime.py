@@ -20,21 +20,13 @@ from mycli.domain.runtime import (
     MailboxAcceptance,
     CompactionRehydrationContext,
     ContextBaseline,
-    DecisionAction,
     ExecutionContext,
-    HistoryItem,
     InstructionContract,
-    ModelTurnResult,
-    PendingApproval,
-    PendingClarification,
-    PendingDecision,
     PlanState,
     QueueSnapshot,
-    QueuedInputKind,
     QueuedInputRecord,
     QueuedTurnInput,
     QueuedTurnSnapshot,
-    RuntimeBlock,
     RuntimeItem,
     RuntimeInterruptToken,
     RuntimeRole,
@@ -48,7 +40,6 @@ from mycli.domain.runtime import (
     TurnContext,
     TurnItem,
     TurnItemType,
-    TurnRecord,
     TurnResponse,
     TurnStatus,
     UserMessageInput,
@@ -152,6 +143,7 @@ from mycli.application.runtime.request import (
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
 )
+from mycli.application.runtime.request.message_projection import RequestMessageProjector
 from mycli.prompts.system import (
     SYSTEM_PROMPT_VERSION,
     build_system_prompt,
@@ -175,6 +167,14 @@ from mycli.tools.send_message import SendMessageTool
 from mycli.tools.subagent_output import SubagentOutputTool
 
 
+_AUTHORITATIVE_ALLOW_POLICIES = frozenset(
+    {
+        "execpolicy_prefix_rule",
+        "permission_profile_full_access",
+    }
+)
+
+
 class _SummarizerClientAdapter:
     """Adapt the normal model requester into the L4 summarizer protocol."""
 
@@ -188,14 +188,19 @@ class _SummarizerClientAdapter:
         restore_max_output_tokens: Callable[[], None] | None = None,
         disable_thinking: Callable[[], None] | None = None,
         restore_thinking: Callable[[], None] | None = None,
+        disable_tool_calls: Callable[[], None] | None = None,
+        restore_tool_calls: Callable[[], None] | None = None,
     ) -> None:
         self._requester = requester
+        self._messages = RequestMessageProjector()
         self._set_model = set_model
         self._restore_model = restore_model
         self._set_max_output_tokens = set_max_output_tokens
         self._restore_max_output_tokens = restore_max_output_tokens
         self._disable_thinking = disable_thinking
         self._restore_thinking = restore_thinking
+        self._disable_tool_calls = disable_tool_calls
+        self._restore_tool_calls = restore_tool_calls
 
     def complete(
         self,
@@ -204,17 +209,65 @@ class _SummarizerClientAdapter:
         model: str,
         max_tokens: int,
     ) -> str:
+        return self._complete_messages(
+            messages=tuple(
+                Message(
+                    role=_runtime_role(message["role"]),
+                    content=message["content"],
+                )
+                for message in messages
+            ),
+            tools=(),
+            model=model,
+            max_tokens=max_tokens,
+        )
+
+    def complete_compaction(
+        self,
+        *,
+        messages: tuple[Message, ...],
+        instruction: str,
+        tools: tuple[ModelToolDefinition, ...],
+        model: str,
+        max_tokens: int,
+    ) -> str:
+        return self._complete_messages(
+            messages=(
+                Message(role="system", content=instruction),
+                *messages,
+            ),
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+        )
+
+    def _complete_messages(
+        self,
+        *,
+        messages: tuple[Message, ...],
+        tools: tuple[ModelToolDefinition, ...],
+        model: str,
+        max_tokens: int,
+    ) -> str:
         legacy_messages = [
             ModelMessage(
-                role=message["role"],
-                content=message["content"],
+                role=message.role,
+                content=message.content,
+                tool_call_id=message.tool_call_id,
+                tool_calls=message.tool_calls,
+                metadata={
+                    **dict(message.metadata),
+                    **self._messages.message_metadata_from_blocks(message),
+                },
+                blocks=self._messages.runtime_blocks_from_message(message),
             )
             for message in messages
         ]
         runtime_items = [
             RuntimeItem(
-                role=_runtime_role(message["role"]),
-                blocks=(RuntimeBlock(type="text", text=message["content"]),),
+                role=message.role,
+                blocks=self._messages.runtime_blocks_from_message(message),
+                metadata=dict(message.metadata),
             )
             for message in messages
         ]
@@ -224,13 +277,17 @@ class _SummarizerClientAdapter:
             self._set_max_output_tokens(max_tokens)
         if self._disable_thinking is not None:
             self._disable_thinking()
+        if self._disable_tool_calls is not None:
+            self._disable_tool_calls()
         try:
             turn_result, _ = self._requester.request_model_turn(
                 runtime_items=runtime_items,
                 legacy_messages=legacy_messages,
-                tools=[],
+                tools=list(tools),
             )
         finally:
+            if self._restore_tool_calls is not None:
+                self._restore_tool_calls()
             if self._restore_thinking is not None:
                 self._restore_thinking()
             if self._restore_max_output_tokens is not None:
@@ -307,9 +364,10 @@ class AgentRuntime:
         self._hook_manager.register(HookPoint.POST_TOOL_USE, post_tool_context)
         self._hook_config_discovery = HookConfigDiscovery(hooks=(), issues=())
         self._plugin_command_registry = PluginCommandRegistry()
+        self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._model_turn_requester = ModelTurnRequester(
             model_adapter=model_adapter,
-            normalize_tool_call=self._normalize_tool_call,
+            normalize_tool_call=self._assistant_conversation_recorder.normalize_tool_call,
             stream_diagnostics_sink=self._record_model_stream_diagnostics,
         )
         self._compact_summarizer_client = _SummarizerClientAdapter(
@@ -320,6 +378,8 @@ class AgentRuntime:
             restore_max_output_tokens=self._restore_model_max_output_tokens,
             disable_thinking=self._disable_model_thinking,
             restore_thinking=self._restore_model_thinking,
+            disable_tool_calls=lambda: self._set_model_tool_choice("none"),
+            restore_tool_calls=lambda: self._set_model_tool_choice(None),
         )
         self._latest_provider_input_tokens: int | None = None
         self._compact_model_downshift_pending = False
@@ -405,7 +465,6 @@ class AgentRuntime:
             append_turn_item=self._append_turn_item,
         )
         self._user_input_mailbox = ActiveTurnMailbox()
-        self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
         self._execpolicy_writer = ExecPolicyWriter(home_dir=home_dir)
         self._execpolicy_rules = self._load_execpolicy_rules(home_dir=home_dir, config=config)
@@ -418,6 +477,7 @@ class AgentRuntime:
             execpolicy_rules=self._execpolicy_rules,
             collaboration_mode=config.collaboration_mode,
             sandbox_mode=config.sandbox_mode,
+            permission_profile=config.permission_profile,
             shell_path=config.shell_path,
             shell_profile=self._shell_resolution.profile,
             shell_environment_policy=config.shell_environment_policy,
@@ -476,13 +536,15 @@ class AgentRuntime:
             trace_service=self._trace_service,
             append_turn_item=self._append_turn_item,
             append_lifecycle_events=self._append_contributed_tool_lifecycle_events,
-            apply_tool_effects=self._apply_tool_effects,
-            normalize_tool_call=self._normalize_tool_call,
+            apply_tool_effects=self._planning_effects.apply_tool_effects,
+            normalize_tool_call=self._assistant_conversation_recorder.normalize_tool_call,
             hook_manager=self._hook_manager,
             file_history=self._file_history_service,
-            record_invoked_skill=lambda snapshot: self._session_service.record_invoked_skill_snapshot(
-                self._config.session_id,
-                snapshot,
+            record_invoked_skill=lambda snapshot: (
+                self._session_service.record_invoked_skill_snapshot(
+                    self._config.session_id,
+                    snapshot,
+                )
             ),
             write_diagnostics_runner=self._write_diagnostics_service.run,
             policy_gate=self._runtime_policy_gate,
@@ -565,13 +627,17 @@ class AgentRuntime:
             trace_service=self._trace_service,
             workspace_log_service=self._workspace_log_service,
             append_turn_item=self._append_turn_item,
-            tool_call_from_block=self._tool_call_from_block,
-            record_assistant_text_block=self._record_assistant_text_block,
-            record_assistant_tool_calls=self._record_assistant_tool_calls,
-            execute_tool_call=self._execute_tool_call,
-            execute_tool_call_for_clarification=self._execute_tool_call_for_clarification,
-            execute_tool_calls=self._execute_tool_calls,
-            pending_decision_from_approval=self._pending_decision_from_approval,
+            tool_call_from_block=self._assistant_conversation_recorder.tool_call_from_block,
+            record_assistant_text_block=self._assistant_conversation_recorder.record_text_block,
+            record_assistant_tool_calls=self._assistant_conversation_recorder.record_tool_calls,
+            execute_tool_call=self._tool_execution_service.execute_tool_call,
+            execute_tool_call_for_clarification=(
+                self._tool_execution_service.execute_tool_call_for_clarification
+            ),
+            execute_tool_calls=self._tool_execution_service.execute_tool_calls,
+            pending_decision_from_approval=(
+                self._approval_decisions.pending_decision_from_approval
+            ),
             runtime_policy_decision=self._runtime_policy_decision_for_block,
         )
         self._model_state = RuntimeModelState(
@@ -594,11 +660,9 @@ class AgentRuntime:
             skill_registry=self._skill_registry,
             tool_registry=self._tool_registry,
             workspace_log_service=self._workspace_log_service,
+            policy_provider=self._runtime_policy_gate.default_policy,
             trace_service=self._trace_service,
             execpolicy_rules=self._execpolicy_rules,
-            writable_roots=self._writable_roots(),
-            denied_read_roots=config.sandbox_denied_read_roots,
-            denied_read_globs=config.sandbox_denied_read_globs,
         )
         self._closed = False
         self._session_hook_contexts: dict[str, tuple[str, ...]] = {}
@@ -635,9 +699,7 @@ class AgentRuntime:
             self._runtime_context_builder.set_execpolicy_rules(rules)
             return rules
         except Exception as exc:
-            raise ExecPolicyRefreshError(
-                "Could not refresh Shell approval rules."
-            ) from exc
+            raise ExecPolicyRefreshError("Could not refresh Shell approval rules.") from exc
 
     def _writable_roots(self) -> tuple[Path, ...]:
         return tuple(
@@ -668,7 +730,6 @@ class AgentRuntime:
         from mycli.tools.edit import EditTool
         from mycli.services.filesystem import FileSystemRuntime
         from mycli.tools.ls import LSTool
-        from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
         from mycli.tools.plan import PlanTool
         from mycli.tools.read import ReadTool
 
@@ -687,8 +748,6 @@ class AgentRuntime:
                 EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
                 ShellTool(workspace_root),
                 PlanTool(),
-                EnterPlanModeTool(workspace_root),
-                ExitPlanModeTool(workspace_root),
             ]
         )
         return cls(
@@ -720,9 +779,7 @@ class AgentRuntime:
                 buffer_tokens=config.compaction_l4_buffer_tokens,
             )
             configured_limit = max(1, int(config.max_prompt_tokens * trigger_ratio))
-        self._compact_trigger_policy = CompactTriggerPolicy(
-            limit_tokens=max(1, configured_limit)
-        )
+        self._compact_trigger_policy = CompactTriggerPolicy(limit_tokens=max(1, configured_limit))
         self._compact_service = CompactService(
             provider=LocalCompactProvider(
                 summarizer_client=self._compact_summarizer_client,
@@ -774,8 +831,7 @@ class AgentRuntime:
 
     def _recent_session_ids_for_memory_dream(self, *, limit: int = 20) -> tuple[str, ...]:
         return tuple(
-            overview.session_id
-            for overview in self._session_service.list_sessions(limit=limit)
+            overview.session_id for overview in self._session_service.list_sessions(limit=limit)
         )
 
     def _load_model_continuation_state(self, *, turn_id: str) -> None:
@@ -802,39 +858,6 @@ class AgentRuntime:
             phase=phase,
             exc=exc,
         )
-
-    def _build_context(
-        self,
-        user_message: str,
-        conversation: Conversation,
-        plan_state: PlanState,
-        runtime_reminders: tuple[str, ...] = (),
-        compaction_rehydration: CompactionRehydrationContext | None = None,
-        tool_exposure: ToolExposure | None = None,
-    ) -> ExecutionContext:
-        self._runtime_context_builder.set_config(self._config)
-        return self._runtime_context_builder.build_context(
-            user_message=user_message,
-            conversation=conversation,
-            plan_state=plan_state,
-            runtime_reminders=runtime_reminders,
-            compaction_rehydration=compaction_rehydration,
-            tool_exposure=tool_exposure,
-        )
-
-    def _build_runtime_items(
-        self,
-        *,
-        request_shape: RequestShape,
-    ) -> list[RuntimeItem]:
-        return self._request_pipeline.runtime_items(request_shape=request_shape)
-
-    def _build_messages(
-        self,
-        *,
-        request_shape: RequestShape,
-    ) -> list[ModelMessage]:
-        return self._request_pipeline.legacy_messages(request_shape=request_shape)
 
     def _assemble_instruction_contract(
         self,
@@ -918,9 +941,6 @@ class AgentRuntime:
             runtime_contributed_tools=runtime_contributed_tools,
             interrupt_token=interrupt_token,
         )
-
-    def _build_tool_router(self, planned_exposure: PlannedToolExposure) -> ToolRouter:
-        return self._tool_orchestrator.build_tool_router(planned_exposure)
 
     def _child_tool_exposure(self, tool_names: tuple[str, ...]) -> ToolExposure:
         specs = self._tool_registry.specs or {}
@@ -1050,34 +1070,6 @@ class AgentRuntime:
             source=source,
         )
 
-    def queue_input(
-        self,
-        *,
-        kind: QueuedInputKind,
-        message: str,
-        image_paths: tuple[str, ...] = (),
-        client_turn_id: str | None = None,
-        source: str = "user",
-    ) -> QueuedTurnSnapshot:
-        text = message.strip()
-        if not text:
-            return self.queued_input_items()
-        if kind == "steering":
-            self.queue_steering_message(
-                text,
-                image_paths=image_paths,
-                client_turn_id=client_turn_id,
-                source=source,
-            )
-        else:
-            self.queue_follow_up_message(
-                text,
-                image_paths=image_paths,
-                client_turn_id=client_turn_id,
-                source=source,
-            )
-        return self.queued_input_items()
-
     def queue_task_notification(
         self,
         notification: TaskNotification,
@@ -1185,30 +1177,12 @@ class AgentRuntime:
             ),
         )
 
-    def pop_next_steering_message(self) -> QueuedTurnInput | None:
-        snapshot = self.queue_snapshot()
-        if not snapshot.pending_steers:
-            return None
-        record = snapshot.pending_steers[0]
-        self._session_queue.commit((record.queue_id,))
-        return self._legacy_queue_item(record)
-
-    def pop_next_follow_up_message(self) -> QueuedTurnInput | None:
-        record = self._session_queue.next_end_of_turn()
-        if record is None:
-            return None
-        self._session_queue.mark_started(record.queue_id)
-        return self._legacy_queue_item(record)
-
     def pop_last_follow_up_input(self) -> QueuedTurnInput | None:
         record = self._session_queue.pop_last_follow_up()
         return None if record is None else self._legacy_queue_item(record)
 
     def claim_pending_steers(self, turn_id: str) -> tuple[QueuedInputRecord, ...]:
         return self._session_queue.claim_pending_steers(turn_id)
-
-    def commit_queue_items(self, queue_ids: tuple[str, ...]) -> QueueSnapshot:
-        return self._session_queue.commit(queue_ids)
 
     def reject_pending_for_turn(self, turn_id: str) -> QueueSnapshot:
         return self._session_queue.reject_pending_for_turn(turn_id)
@@ -1232,8 +1206,7 @@ class AgentRuntime:
         committed_queue_ids = {
             queue_id
             for item in self._session_service.load_history_items(session_id)
-            if isinstance((queue_id := item.metadata.get("queue_id")), str)
-            and queue_id
+            if isinstance((queue_id := item.metadata.get("queue_id")), str) and queue_id
         }
         coordinator = SessionQueueCoordinator.restore(
             session_id=session_id,
@@ -1259,8 +1232,7 @@ class AgentRuntime:
         if not jobs:
             return ("No background sub-agents running.",)
         return tuple(
-            f"cancelled {job.job_id} owner_turn={job.owner_turn_id or 'unknown'}"
-            for job in jobs
+            f"cancelled {job.job_id} owner_turn={job.owner_turn_id or 'unknown'}" for job in jobs
         )
 
     def cancel_background_subagent(self, child_session_id: str) -> tuple[str, ...]:
@@ -1268,8 +1240,7 @@ class AgentRuntime:
         if not jobs:
             return (f"No running background sub-agent found: {child_session_id}",)
         return tuple(
-            f"cancelled {job.job_id} owner_turn={job.owner_turn_id or 'unknown'}"
-            for job in jobs
+            f"cancelled {job.job_id} owner_turn={job.owner_turn_id or 'unknown'}" for job in jobs
         )
 
     def inspect_subagent_transcript(self, child_session_id: str) -> tuple[str, ...]:
@@ -1321,13 +1292,12 @@ class AgentRuntime:
 
     def inspect_plugin_commands(self) -> tuple[str, ...]:
         lines = [
-            (
-                f"{entry['id']} plugin={entry['plugin_id']} "
-                f"name={entry['name']} kind={entry['kind']}"
-            )
+            (f"{entry['id']} plugin={entry['plugin_id']} name={entry['name']} kind={entry['kind']}")
             for entry in self._plugin_command_registry.list_entries()
         ]
-        lines.extend(f"plugin_command_issue {issue}" for issue in self._plugin_command_registry.issues())
+        lines.extend(
+            f"plugin_command_issue {issue}" for issue in self._plugin_command_registry.issues()
+        )
         return tuple(lines) or ("no plugin commands registered",)
 
     def run_plugin_command(
@@ -1390,21 +1360,6 @@ class AgentRuntime:
             contributed_tools=contributed_tools,
         ).manifest()
 
-    def _append_tool_exposure_turn_item(
-        self,
-        *,
-        turn_id: str,
-        turn_items: list[TurnItem],
-        activity_events: list[ActivityEvent],
-        tool_exposure: ToolExposure,
-    ) -> None:
-        self._tool_orchestrator.append_tool_exposure_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            activity_events=activity_events,
-            tool_exposure=tool_exposure,
-        )
-
     def _append_contributed_tool_lifecycle_events(
         self,
         *,
@@ -1418,158 +1373,6 @@ class AgentRuntime:
             turn_items=turn_items,
             activity_events=activity_events,
             lifecycle_events=lifecycle_events,
-        )
-
-    def _normalize_tool_call(self, call: ToolCall) -> ToolCall:
-        return self._assistant_conversation_recorder.normalize_tool_call(call)
-
-    def _tool_call_from_block(self, block: RuntimeBlock) -> ToolCall:
-        return self._assistant_conversation_recorder.tool_call_from_block(block)
-
-    def _record_assistant_text_block(
-        self,
-        conversation: Conversation,
-        *,
-        block: RuntimeBlock,
-        response_id: str | None,
-    ) -> None:
-        self._assistant_conversation_recorder.record_text_block(
-            conversation,
-            block=block,
-            response_id=response_id,
-        )
-
-    def _record_assistant_tool_calls(
-        self,
-        conversation: Conversation,
-        *,
-        tool_calls: tuple[ToolCall, ...],
-        blocks: tuple[RuntimeBlock, ...],
-        response_id: str | None = None,
-    ) -> None:
-        self._assistant_conversation_recorder.record_tool_calls(
-            conversation,
-            tool_calls=tool_calls,
-            blocks=blocks,
-            response_id=response_id,
-        )
-
-    def _execute_tool_call(
-        self,
-        *,
-        conversation: Conversation,
-        call: ToolCall,
-        tool_router: ToolRouter,
-        tool_exposure: ToolExposure,
-        plan_state: PlanState,
-        turn_id: str,
-        activity_events: list[ActivityEvent],
-        turn_items: list[TurnItem],
-        provider_id: str | None = None,
-        response_id: str | None = None,
-        metadata: dict[str, object] | None = None,
-        record_assistant_call: bool = True,
-        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
-        policy_approved: bool = False,
-        interrupt_token: RuntimeInterruptToken | None = None,
-    ) -> PlanState:
-        return self._tool_execution_service.execute_tool_call(
-            conversation=conversation,
-            call=call,
-            tool_router=tool_router,
-            tool_exposure=tool_exposure,
-            plan_state=plan_state,
-            turn_id=turn_id,
-            activity_events=activity_events,
-            turn_items=turn_items,
-            provider_id=provider_id,
-            response_id=response_id,
-            metadata=metadata,
-            record_assistant_call=record_assistant_call,
-            lifecycle_sink=lifecycle_sink,
-            policy_approved=policy_approved,
-            interrupt_token=interrupt_token,
-        )
-
-    def _execute_tool_call_for_clarification(
-        self,
-        *,
-        conversation: Conversation,
-        call: ToolCall,
-        tool_router: ToolRouter,
-        tool_exposure: ToolExposure,
-        plan_state: PlanState,
-        turn_id: str,
-        activity_events: list[ActivityEvent],
-        turn_items: list[TurnItem],
-        provider_id: str | None = None,
-        response_id: str | None = None,
-        metadata: dict[str, object] | None = None,
-        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
-        interrupt_token: RuntimeInterruptToken | None = None,
-    ) -> tuple[PlanState, PendingClarification | None]:
-        return self._tool_execution_service.execute_tool_call_for_clarification(
-            conversation=conversation,
-            call=call,
-            tool_router=tool_router,
-            tool_exposure=tool_exposure,
-            plan_state=plan_state,
-            turn_id=turn_id,
-            activity_events=activity_events,
-            turn_items=turn_items,
-            provider_id=provider_id,
-            response_id=response_id,
-            metadata=metadata,
-            lifecycle_sink=lifecycle_sink,
-            interrupt_token=interrupt_token,
-        )
-
-    def _record_clarification_response_tool_result(
-        self,
-        conversation: Conversation,
-        *,
-        call: ToolCall,
-        response: str,
-    ) -> None:
-        self._tool_execution_service.record_clarification_response(
-            conversation,
-            call=call,
-            response=response,
-        )
-
-    def _execute_tool_calls(
-        self,
-        *,
-        conversation: Conversation,
-        calls: tuple[ToolCall, ...],
-        tool_router: ToolRouter,
-        tool_exposure: ToolExposure,
-        plan_state: PlanState,
-        turn_id: str,
-        activity_events: list[ActivityEvent],
-        turn_items: list[TurnItem],
-        provider_id: str | None = None,
-        response_id: str | None = None,
-        metadata: dict[str, object] | None = None,
-        record_assistant_call: bool = True,
-        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
-        interrupt_token: RuntimeInterruptToken | None = None,
-    ) -> PlanState:
-        return self._tool_execution_service.execute_tool_calls(
-            conversation=conversation,
-            calls=calls,
-            tool_router=tool_router,
-            tool_exposure=tool_exposure,
-            plan_state=plan_state,
-            turn_id=turn_id,
-            activity_events=activity_events,
-            turn_items=turn_items,
-            provider_id=provider_id,
-            response_id=response_id,
-            metadata=metadata,
-            record_assistant_call=record_assistant_call,
-            lifecycle_sink=lifecycle_sink,
-            interrupt_token=interrupt_token,
         )
 
     def _render_model_tools(
@@ -1793,12 +1596,6 @@ class AgentRuntime:
                     self._latest_provider_input_tokens = restored_tokens
                     return
 
-    def _estimate_window_budget(self, conversation: Conversation) -> ContextBudget:
-        return ContextBudget.from_estimate(
-            max_tokens=self._config.max_prompt_tokens,
-            estimated_input_tokens=self._estimated_conversation_tokens(conversation),
-        )
-
     def _estimate_request_window_budget(self, request_shape: RequestShape) -> ContextBudget:
         return ContextBudget.from_estimate(
             max_tokens=self._config.max_prompt_tokens,
@@ -1816,9 +1613,14 @@ class AgentRuntime:
         conversation: Conversation,
         *,
         decision: CompactDecision,
+        tools: tuple[ModelToolDefinition, ...] = (),
     ) -> Conversation:
         active_suffix = self._active_inflight_suffix(conversation)
-        compacted = self._compact_service.compact(conversation, decision)
+        compacted = self._compact_service.compact(
+            conversation,
+            decision,
+            tools=tools,
+        )
         if compacted is conversation:
             return conversation
         compacted.messages.extend(active_suffix)
@@ -1850,7 +1652,11 @@ class AgentRuntime:
         previous_turn_id = getattr(self, "_current_turn_id", None)
         self._set_current_turn_id(f"compact_{uuid4().hex}")
         try:
-            compacted = self._compact_active_history(conversation, decision=decision)
+            compacted = self._compact_active_history(
+                conversation,
+                decision=decision,
+                tools=tuple(self._tool_registry.render_for_model()),
+            )
         finally:
             if previous_turn_id is not None:
                 self._set_current_turn_id(previous_turn_id)
@@ -1884,9 +1690,7 @@ class AgentRuntime:
         if any(message.metadata.get("interrupted") for message in suffix):
             return ()
         has_final_answer = any(
-            message.role == "assistant"
-            and bool(message.content.strip())
-            and not message.tool_calls
+            message.role == "assistant" and bool(message.content.strip()) and not message.tool_calls
             for message in suffix[1:]
         )
         return () if has_final_answer else suffix
@@ -2000,10 +1804,7 @@ class AgentRuntime:
         self._observability_service.metrics.record_ptl_event(triggered=triggered)
 
     def _estimated_conversation_tokens(self, conversation: Conversation) -> int:
-        return sum(
-            self._token_counter.count_message(message)
-            for message in conversation.messages
-        )
+        return sum(self._token_counter.count_message(message) for message in conversation.messages)
 
     def _estimated_request_shape_tokens(self, request_shape: RequestShape) -> int:
         seen: set[str] = set()
@@ -2083,25 +1884,6 @@ class AgentRuntime:
     def _has_l4_compaction(conversation: Conversation) -> bool:
         return any(message.metadata.get("compaction") is True for message in conversation.messages)
 
-    def _request_model_turn(
-        self,
-        *,
-        runtime_items: list[RuntimeItem],
-        legacy_messages: list[ModelMessage],
-        tools: list[ModelToolDefinition],
-        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
-        completed_item_sink: Callable[[RuntimeItem], None] | None = None,
-        interrupt_token: RuntimeInterruptToken | None = None,
-    ) -> tuple[ModelTurnResult, tuple[str, ...]]:
-        return self._model_turn_requester.request_model_turn(
-            runtime_items=runtime_items,
-            legacy_messages=legacy_messages,
-            tools=tools,
-            stream_sink=stream_sink,
-            completed_item_sink=completed_item_sink,
-            interrupt_token=interrupt_token,
-        )
-
     def _record_model_stream_diagnostics(self, diagnostics: ModelStreamDiagnostics) -> None:
         turn_id = getattr(self, "_current_turn_id", "turn_unknown")
         payload = {
@@ -2127,56 +1909,12 @@ class AgentRuntime:
         self._workspace_log_service.log(
             level=LogLevel.INFO if diagnostics.success else LogLevel.WARNING,
             event="model_stream_diagnostics",
-            message=(
-                "Model stream completed"
-                if diagnostics.success
-                else "Model stream failed"
-            ),
+            message=("Model stream completed" if diagnostics.success else "Model stream failed"),
             context={
                 "session_id": self._config.session_id,
                 "turn_id": turn_id,
                 **payload,
             },
-        )
-
-    def _consume_assistant_blocks(
-        self,
-        *,
-        turn_result: ModelTurnResult,
-        conversation: Conversation,
-        tool_router: ToolRouter,
-        tool_exposure: ToolExposure,
-        plan_state: PlanState,
-        turn_id: str,
-        user_message: str,
-        progress_updates: list[str],
-        activity_events: list[ActivityEvent],
-        streamed_chunks: list[str],
-        turn_items: list[TurnItem],
-        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
-        conversation_items_precommitted: bool = False,
-        interrupt_token: RuntimeInterruptToken | None = None,
-    ) -> tuple[
-        PlanState,
-        bool,
-        list[str],
-        tuple[TurnResponse, TurnStatus, StopReason] | None,
-    ]:
-        return self._assistant_block_consumer.consume_assistant_blocks(
-            turn_result=turn_result,
-            conversation=conversation,
-            tool_router=tool_router,
-            tool_exposure=tool_exposure,
-            plan_state=plan_state,
-            turn_id=turn_id,
-            user_message=user_message,
-            progress_updates=progress_updates,
-            activity_events=activity_events,
-            streamed_chunks=streamed_chunks,
-            turn_items=turn_items,
-            stream_sink=stream_sink,
-            conversation_items_precommitted=conversation_items_precommitted,
-            interrupt_token=interrupt_token,
         )
 
     def _append_turn_item(
@@ -2190,39 +1928,6 @@ class AgentRuntime:
             turn_id=turn_id,
             turn_items=turn_items,
             item=item,
-        )
-
-    def _timestamp(self) -> str:
-        return self._event_ledger.timestamp()
-
-    def _persist_completed_turn_items(
-        self,
-        *,
-        turn_id: str,
-        turn_items: list[TurnItem],
-    ) -> tuple[HistoryItem, ...]:
-        return self._event_ledger.persist_completed_turn_items(
-            turn_id=turn_id,
-            turn_items=turn_items,
-        )
-
-    def _persist_turn_record(
-        self,
-        *,
-        turn_id: str,
-        user_message: str,
-        started_at: str,
-        status: TurnStatus,
-        stop_reason: StopReason | None,
-        turn_items: list[TurnItem],
-    ) -> TurnRecord:
-        return self._response_finalizer.persist_turn_record(
-            turn_id=turn_id,
-            user_message=user_message,
-            started_at=started_at,
-            status=status,
-            stop_reason=stop_reason,
-            turn_items=turn_items,
         )
 
     def _context_baseline_from_contract(
@@ -2248,19 +1953,6 @@ class AgentRuntime:
             return None
         state: object | None = getter()
         return state
-
-    def _persist_structured_runtime_state(
-        self,
-        *,
-        turn: TurnRecord,
-        started_at: str,
-        context_baseline: ContextBaseline | None,
-    ) -> None:
-        self._response_finalizer.persist_structured_runtime_state(
-            turn=turn,
-            started_at=started_at,
-            context_baseline=context_baseline,
-        )
 
     def _finalize_response(
         self,
@@ -2292,17 +1984,6 @@ class AgentRuntime:
             context_baseline=context_baseline,
         )
 
-    def _policy_decision(
-        self,
-        *,
-        user_message: str,
-        conversation: Conversation,
-        plan_state: PlanState,
-        step_index: int,
-    ) -> tuple[ReasoningEffort, tuple[str, ...], dict[str, object], bool, str | None, TurnResponse | None]:
-        del user_message, conversation, plan_state, step_index
-        return self._config.reasoning_effort, (), {}, False, None, None
-
     def _save_runtime_state(
         self,
         *,
@@ -2311,32 +1992,6 @@ class AgentRuntime:
     ) -> None:
         self._session_service.save_conversation(conversation)
         self._session_service.save_plan_state(self._config.session_id, plan_state)
-
-    def _apply_tool_effects(
-        self,
-        *,
-        call: ToolCall,
-        result_payload: dict[str, object],
-        plan_state: PlanState,
-    ) -> PlanState:
-        return self._planning_effects.apply_tool_effects(
-            call=call,
-            result_payload=result_payload,
-            plan_state=plan_state,
-        )
-
-    def _complete_task_if_active(
-        self,
-        plan_state: PlanState,
-        item_id: str | None,
-    ) -> PlanState:
-        return self._planning_effects.complete_task_if_active(plan_state, item_id)
-
-    def _pending_decision_from_approval(
-        self,
-        approval: PendingApproval,
-    ) -> PendingDecision:
-        return self._approval_decisions.pending_decision_from_approval(approval)
 
     def _runtime_policy_decision_for_block(
         self,
@@ -2353,7 +2008,7 @@ class AgentRuntime:
             effect_profile=effect_profile,
         )
         if decision.kind is ToolRuntimeDecisionKind.ALLOWED:
-            if decision.policy != "execpolicy_prefix_rule":
+            if decision.policy not in _AUTHORITATIVE_ALLOW_POLICIES:
                 return None
         self._trace_service.append(
             self._config.session_id,
@@ -2365,8 +2020,32 @@ class AgentRuntime:
         )
         return decision
 
-    def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
-        return self._approval_decisions.format_allowed_choices(options)
+    def update_permission_profile(self, config: AgentConfig) -> None:
+        self._config = config
+        self._model_state.set_config(config)
+        self._approval_service.set_safety_policy(
+            SafetyPolicy(
+                workspace_root=config.workspace_root,
+                writable_roots=self._writable_roots(),
+                auto_approve_medium=config.auto_approve_medium,
+                shell_profile=self._shell_resolution.profile,
+            )
+        )
+        self._runtime_context_builder.set_config(config)
+        self._runtime_policy_gate.set_workspace_policy(
+            workspace_root=config.workspace_root,
+            execpolicy_rules=self._execpolicy_rules,
+            writable_roots=self._writable_roots(),
+            denied_read_roots=config.sandbox_denied_read_roots,
+            denied_read_globs=config.sandbox_denied_read_globs,
+            collaboration_mode=config.collaboration_mode,
+            sandbox_mode=config.sandbox_mode,
+            shell_environment_policy=config.shell_environment_policy,
+        )
+        if config.permission_profile is not None:
+            self._runtime_policy_gate.set_permission_profile(config.permission_profile)
+        self._request_pipeline.set_config(config)
+        self._configure_contributed_process_sandboxes()
 
     def rebind_session(self, config: AgentConfig) -> None:
         previous_config = self._config
@@ -2401,11 +2080,6 @@ class AgentRuntime:
         )
         self._runtime_context_builder.set_config(config)
         self._runtime_context_builder.set_execpolicy_rules(self._execpolicy_rules)
-        self._runtime_context_builder.set_writable_roots(self._writable_roots())
-        self._runtime_context_builder.set_denied_reads(
-            denied_read_roots=config.sandbox_denied_read_roots,
-            denied_read_globs=config.sandbox_denied_read_globs,
-        )
         self._runtime_policy_gate.set_workspace_policy(
             workspace_root=config.workspace_root,
             execpolicy_rules=self._execpolicy_rules,
@@ -2416,14 +2090,14 @@ class AgentRuntime:
             sandbox_mode=config.sandbox_mode,
             shell_environment_policy=config.shell_environment_policy,
         )
+        if config.permission_profile is not None:
+            self._runtime_policy_gate.set_permission_profile(config.permission_profile)
         self._runtime_policy_gate.set_shell_profile(
             self._shell_resolution.profile,
             shell_path=config.shell_path,
         )
         self._configure_contributed_process_sandboxes()
-        self._write_diagnostics_service.configure_shell_profile(
-            self._shell_resolution.profile
-        )
+        self._write_diagnostics_service.configure_shell_profile(self._shell_resolution.profile)
         self._request_pipeline.set_config(config)
         self._provider_timeline = ProviderTimelineCoordinator(
             session_id=session_id,

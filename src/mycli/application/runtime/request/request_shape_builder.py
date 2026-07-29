@@ -1065,38 +1065,12 @@ class RequestShapeBuilder:
             if self._transcript_contextual_section_is_model_visible(section)
         )
 
-    def _runtime_reminders_context(self, contract: InstructionContract) -> str:
-        return self._join_content(
-            self._contextual_section_content(section, contract)
-            for section in self._provider_visible_contextual_sections(contract)
-            if self._cache_class(section) == "ephemeral"
-            if str(section.kind) == "runtime_reminders"
-        )
-
-    def _runtime_reminders_context_metadata(self) -> dict[str, object]:
-        return {
-            "ephemeral_context": {
-                "kind": "runtime_reminders",
-                "source": "provider_transcript_projection",
-            },
-            "cache_class": "ephemeral",
-        }
-
     def _post_tool_additional_context(self, contract: InstructionContract) -> str:
         return self._join_content(
             context
             for message in self._chat_completions_replay_messages(contract)
             for context in self._post_tool_additional_contexts_from_message(message)
         )
-
-    def _post_tool_context_metadata(self) -> dict[str, object]:
-        return {
-            "ephemeral_context": {
-                "kind": "post_tool_context",
-                "source": "post_tool_use_hook",
-            },
-            "cache_class": "ephemeral",
-        }
 
     def _with_chat_post_tool_context_messages(
         self,
@@ -1282,19 +1256,6 @@ class RequestShapeBuilder:
             if self._cache_class(section) == "ephemeral"
             if str(section.kind) != "runtime_reminders"
             if self._responses_contextual_section_is_model_visible(section)
-        )
-
-    def _render_transcript_delta_context(
-        self,
-        contract: InstructionContract,
-        *,
-        cache_classes: set[str],
-    ) -> str:
-        return self._join_content(
-            self._contextual_section_content(section, contract)
-            for section in self._provider_visible_contextual_sections(contract)
-            if self._cache_class(section) in cache_classes
-            if self._transcript_contextual_section_is_model_visible(section)
         )
 
     def _responses_contextual_section_is_model_visible(

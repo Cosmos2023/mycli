@@ -143,7 +143,7 @@ def test_tool_display_survives_ledger_history_and_snapshot_projection() -> None:
         ),
     )
 
-    history = _ledger().provider_history_items_from_turn(turn)
+    history = _ledger().history_items_from_turn(turn)
     snapshot = project_history_items_for_snapshot(history)
 
     assert history[1].metadata["display"]["status"] == "success"
@@ -155,7 +155,7 @@ def test_tool_display_survives_ledger_history_and_snapshot_projection() -> None:
     assert "raw_payload" not in str(snapshot[0].to_dict())
 
 
-def test_runtime_event_ledger_persists_plan_update_but_excludes_it_from_provider_history() -> None:
+def test_runtime_event_ledger_persists_plan_update() -> None:
     turn = TurnRecord(
         thread_id="demo",
         turn_id="turn-1",
@@ -195,20 +195,15 @@ def test_runtime_event_ledger_persists_plan_update_but_excludes_it_from_provider
     )
 
     durable = _ledger().history_items_from_turn(turn)
-    provider = _ledger().provider_history_items_from_turn(turn)
 
     assert [item.type for item in durable] == [
         HistoryItemType.TOOL_CALL,
         HistoryItemType.PLAN_UPDATE,
         HistoryItemType.TOOL_RESULT,
     ]
-    assert [item.type for item in provider] == [
-        HistoryItemType.TOOL_CALL,
-        HistoryItemType.TOOL_RESULT,
-    ]
 
 
-def test_runtime_event_ledger_persists_clarification_response_for_transcript_only() -> None:
+def test_runtime_event_ledger_persists_clarification_response() -> None:
     turn = TurnRecord(
         thread_id="demo",
         turn_id="turn-1",
@@ -224,10 +219,8 @@ def test_runtime_event_ledger_persists_clarification_response_for_transcript_onl
     )
 
     durable = _ledger().history_items_from_turn(turn)
-    provider = _ledger().provider_history_items_from_turn(turn)
 
     assert [item.type for item in durable] == [HistoryItemType.CLARIFICATION_RESPONSE]
-    assert provider == ()
 
 
 def test_runtime_event_ledger_baseline_keeps_replayable_memory_and_plan() -> None:

@@ -16,7 +16,7 @@ from mycli.domain.runtime import (
     TurnItemType,
     TurnStatus,
 )
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.services.hooks import HookAction, HookContext, HookPoint, HookResult
 from mycli.services.tracing import TraceService
 
@@ -412,7 +412,11 @@ def test_approval_resume_finalizes_interrupt_during_approved_tool_execution(
         del kwargs
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr(runtime, "_execute_tool_call", interrupt_tool)
+    monkeypatch.setattr(
+        runtime._tool_execution_service,
+        "execute_tool_call",
+        interrupt_tool,
+    )
 
     interrupted = TurnExecutor(runtime).resolve_pending_approval("1")
 

@@ -16,6 +16,8 @@ SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
         "extension.manifest",
         "model.list",
         "model.select",
+        "permissions.list",
+        "permissions.update",
         "resource.list",
         "session.bootstrap",
         "session.list",

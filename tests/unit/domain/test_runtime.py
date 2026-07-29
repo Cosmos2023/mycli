@@ -30,14 +30,14 @@ from mycli.domain.runtime import (
     ViewMode,
     TurnContextSectionType,
 )
-from mycli.domain.tool_exposure import (
+from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureEntry,
     ToolExposureKind,
     ToolRouteKey,
     ToolRouteSource,
 )
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolSpec
 
 

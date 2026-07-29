@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from mycli.domain.tool_exposure import (
+from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureEntry,
     ToolRouteKey,
     ToolRouteSource,
 )
-from mycli.domain.tool_set import ToolSet
+from mycli.domain.tooling.tool_set import ToolSet
 from mycli.tools.base import ToolSpec
 
 
@@ -48,7 +48,6 @@ def test_tool_set_order_is_stable_when_exposure_order_changes() -> None:
     assert [entry.name for entry in first.model_visible_entries()] == [
         entry.name for entry in second.model_visible_entries()
     ]
-    assert first.order_hash() == second.order_hash()
 
 
 def test_tool_set_rejects_duplicate_route_names() -> None:

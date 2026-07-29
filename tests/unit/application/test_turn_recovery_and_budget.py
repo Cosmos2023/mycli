@@ -363,11 +363,14 @@ def test_retry_backoff_policy_applies_jitter_and_provider_delay() -> None:
     policy = RetryBackoffPolicy(base_seconds=0.2, multiplier=2.0, max_seconds=4.0)
 
     assert policy.delay_for_attempt(2, jitter_factor=1.1) == pytest.approx(0.44)
-    assert policy.delay_for_attempt(
-        2,
-        jitter_factor=0.9,
-        retry_after_seconds=3.0,
-    ) == 3.0
+    assert (
+        policy.delay_for_attempt(
+            2,
+            jitter_factor=0.9,
+            retry_after_seconds=3.0,
+        )
+        == 3.0
+    )
 
 
 def test_error_classifier_maps_p8_provider_error_taxonomy() -> None:
@@ -382,7 +385,9 @@ def test_error_classifier_maps_p8_provider_error_taxonomy() -> None:
     }
 
     for failure_kind, expected in cases.items():
-        result = classifier.classify(ModelResponseError("provider failed", failure_kind=failure_kind))
+        result = classifier.classify(
+            ModelResponseError("provider failed", failure_kind=failure_kind)
+        )
         assert result.error_class is expected
         assert result.failure_kind == failure_kind
         assert "provider failed" not in result.to_trace_payload().values()
@@ -391,21 +396,30 @@ def test_error_classifier_maps_p8_provider_error_taxonomy() -> None:
 def test_error_classifier_uses_bounded_message_fallbacks() -> None:
     classifier = ErrorClassifier()
 
-    assert classifier.classify(
-        ModelResponseError("invalid encrypted_content replay")
-    ).error_class is RecoveryErrorClass.INVALID_ENCRYPTED_CONTENT
-    assert classifier.classify(
-        ModelResponseError("This model's maximum context length was exceeded")
-    ).error_class is RecoveryErrorClass.CONTEXT_OVERFLOW
-    assert classifier.classify(
-        ModelResponseError("Invalid schema for request payload")
-    ).error_class is RecoveryErrorClass.SCHEMA_REJECTED
-    assert classifier.classify(
-        ModelResponseError("Unsupported content block in request payload")
-    ).error_class is RecoveryErrorClass.UNSUPPORTED_PAYLOAD
-    assert classifier.classify(
-        ModelResponseError("image payload is too large")
-    ).error_class is RecoveryErrorClass.IMAGE_TOO_LARGE
+    assert (
+        classifier.classify(ModelResponseError("invalid encrypted_content replay")).error_class
+        is RecoveryErrorClass.INVALID_ENCRYPTED_CONTENT
+    )
+    assert (
+        classifier.classify(
+            ModelResponseError("This model's maximum context length was exceeded")
+        ).error_class
+        is RecoveryErrorClass.CONTEXT_OVERFLOW
+    )
+    assert (
+        classifier.classify(ModelResponseError("Invalid schema for request payload")).error_class
+        is RecoveryErrorClass.SCHEMA_REJECTED
+    )
+    assert (
+        classifier.classify(
+            ModelResponseError("Unsupported content block in request payload")
+        ).error_class
+        is RecoveryErrorClass.UNSUPPORTED_PAYLOAD
+    )
+    assert (
+        classifier.classify(ModelResponseError("image payload is too large")).error_class
+        is RecoveryErrorClass.IMAGE_TOO_LARGE
+    )
 
 
 def test_recovery_policy_maps_p8_retry_and_surface_actions() -> None:
@@ -414,7 +428,9 @@ def test_recovery_policy_maps_p8_retry_and_surface_actions() -> None:
 
     invalid = policy.decide(
         classifier.classify(
-            ModelResponseError("invalid encrypted_content", failure_kind="invalid_encrypted_content")
+            ModelResponseError(
+                "invalid encrypted_content", failure_kind="invalid_encrypted_content"
+            )
         )
     )
     assert invalid.action is RecoveryPolicyAction.STRIP_ENCRYPTED_REASONING_RETRY
@@ -430,31 +446,23 @@ def test_recovery_policy_maps_p8_retry_and_surface_actions() -> None:
     assert overflow.should_retry is True
 
     schema_without_repair = policy.decide(
-        classifier.classify(
-            ModelResponseError("schema rejected", failure_kind="schema_rejected")
-        )
+        classifier.classify(ModelResponseError("schema rejected", failure_kind="schema_rejected"))
     )
     assert schema_without_repair.action is RecoveryPolicyAction.SURFACE_ONLY
     assert schema_without_repair.should_retry is False
 
     schema_with_repair = policy.decide(
-        classifier.classify(
-            ModelResponseError("schema rejected", failure_kind="schema_rejected")
-        ),
+        classifier.classify(ModelResponseError("schema rejected", failure_kind="schema_rejected")),
         deterministic_repair_available=True,
     )
     assert schema_with_repair.action is RecoveryPolicyAction.SANITIZE_REPAIR_RETRY
     assert schema_with_repair.should_retry is True
 
     unsupported = policy.decide(
-        classifier.classify(
-            ModelResponseError("unsupported", failure_kind="unsupported_payload")
-        )
+        classifier.classify(ModelResponseError("unsupported", failure_kind="unsupported_payload"))
     )
     image = policy.decide(
-        classifier.classify(
-            ModelResponseError("image too large", failure_kind="image_too_large")
-        )
+        classifier.classify(ModelResponseError("image too large", failure_kind="image_too_large"))
     )
     assert unsupported.action is RecoveryPolicyAction.SURFACE_ONLY
     assert image.action is RecoveryPolicyAction.SURFACE_ONLY
@@ -480,10 +488,11 @@ def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
     assert sleeps == [0.2, 0.4]
     assert response.turn is not None
     assert not any(
-        item.type is TurnItemType.WARNING
-        and item.metadata.get("recovery_kind") == "retry"
+        item.type is TurnItemType.WARNING and item.metadata.get("recovery_kind") == "retry"
         for item in response.turn.items
     )
+
+
 def test_turn_executor_resets_partial_stream_before_reconnecting(tmp_path: Path) -> None:
     adapter = PartialStreamFailureThenDoneAdapter()
     sleeps: list[float] = []
@@ -522,8 +531,7 @@ def test_turn_executor_resets_partial_stream_before_reconnecting(tmp_path: Path)
     assert len(sleeps) == 1
     assert response.turn is not None
     assert not any(
-        item.type is TurnItemType.WARNING
-        and item.metadata.get("recovery_kind") == "retry"
+        item.type is TurnItemType.WARNING and item.metadata.get("recovery_kind") == "retry"
         for item in response.turn.items
     )
     conversation = runtime._session_service.load_conversation(runtime._config.session_id)
@@ -622,9 +630,10 @@ def test_turn_executor_retries_invalid_encrypted_content_once_without_leaking_se
     assert response.assistant_message == "Recovered without encrypted replay"
     assert adapter.calls == 2
     assert adapter.continuation_states == [initial_state, None]
-    assert runtime._session_service.load_responses_continuation_state(
-        runtime._config.session_id
-    ) is None
+    assert (
+        runtime._session_service.load_responses_continuation_state(runtime._config.session_id)
+        is None
+    )
     assert response.turn is not None
     warning = next(
         item
@@ -709,9 +718,7 @@ def test_turn_executor_context_window_recovery_drains_then_reactive_compacts(
     assert adapter.calls == 3
     assert response.turn is not None
     warnings = [
-        item.text
-        for item in response.turn.items
-        if item.type is TurnItemType.WARNING and item.text
+        item.text for item in response.turn.items if item.type is TurnItemType.WARNING and item.text
     ]
     assert any("draining redundant context" in warning.lower() for warning in warnings)
     assert any("reactive compaction" in warning.lower() for warning in warnings)
@@ -873,8 +880,7 @@ def test_turn_executor_replays_completed_stream_item_after_interrupt(
     )
     runtime.rebind_session(replace(runtime._config, memory_enabled=False))
     adapter.persisted_probe = lambda: any(
-        message.role == "assistant"
-        and message.content == "persisted answer"
+        message.role == "assistant" and message.content == "persisted answer"
         for message in runtime._session_service.load_conversation(
             runtime._config.session_id
         ).messages
@@ -969,8 +975,8 @@ def test_turn_executor_records_marker_during_pre_request_compaction_interrupt(
         model_adapter=adapter,
     )
 
-    def interrupt_compaction(conversation, decision):
-        del conversation, decision
+    def interrupt_compaction(conversation, decision, *, tools=()):
+        del conversation, decision, tools
         raise KeyboardInterrupt()
 
     runtime._compact_compatibility_changed_pending = True
@@ -1141,7 +1147,7 @@ def test_turn_executor_interrupted_finalization_repairs_dangling_tool_call(
         conversation=conversation,
         current_plan_state=PlanState(),
         turn_id="turn_interrupted",
-        started_at=runtime._timestamp(),
+        started_at=runtime._event_ledger.timestamp(),
         turn_items=turn_items,
         latest_context_baseline=None,
         activity_events=[],

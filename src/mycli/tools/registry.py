@@ -123,16 +123,6 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "auto_allow",
         "capability_tags": ("planning", "status"),
     },
-    "enter_plan_mode": {
-        "toolset": "workflow",
-        "approval_policy": "auto_allow",
-        "capability_tags": ("planning", "mode"),
-    },
-    "exit_plan_mode": {
-        "toolset": "workflow",
-        "approval_policy": "auto_allow",
-        "capability_tags": ("planning", "mode"),
-    },
     "Task": {
         "toolset": "workflow",
         "approval_policy": "auto_allow_or_request",
@@ -624,7 +614,13 @@ class ToolRegistry:
         return spec.supports_parallel_tool_calls
 
 
-def default_tools(workspace_root: Path) -> list[SchemaTool]:
+def default_tools(
+    workspace_root: Path,
+    *,
+    allowed_roots: tuple[Path, ...] = (),
+    unrestricted_filesystem: bool = False,
+    include_task: bool = True,
+) -> list[SchemaTool]:
     from mycli.services.filesystem import FileSystemRuntime
     from mycli.tools.ask_user_question import AskUserQuestionTool
     from mycli.tools.bash import BashTool, ShellTool
@@ -636,7 +632,6 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.ls import LSTool
     from mycli.tools.patch import PatchTool
     from mycli.tools.plan import PlanTool
-    from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
     from mycli.tools.send_message import SendMessageTool
     from mycli.tools.shell_output import ShellOutputTool
@@ -647,13 +642,21 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.write_stdin import WriteStdinTool
     from mycli.tools.write import WriteTool
 
-    filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
-    return [
+    filesystem_runtime = FileSystemRuntime(
+        workspace_root=workspace_root,
+        allowed_roots=allowed_roots,
+        unrestricted=unrestricted_filesystem,
+    )
+    tools: list[SchemaTool] = [
         ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
         EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
         PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
         WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
-        LSTool(workspace_root),
+        LSTool(
+            workspace_root,
+            allowed_roots=allowed_roots,
+            unrestricted=unrestricted_filesystem,
+        ),
         ShellTool(workspace_root),
         WriteStdinTool(),
         ShellOutputTool(),
@@ -662,19 +665,18 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         KillShellTool(),
         WebSearchTool(),
         WebFetchTool(),
-        LintTool(),
+        LintTool(workspace_root),
         GitStatusTool(workspace_root),
         GitDiffTool(workspace_root),
         GitLogTool(workspace_root),
         GitShowTool(workspace_root),
         AskUserQuestionTool(),
         PlanTool(),
-        EnterPlanModeTool(workspace_root),
-        ExitPlanModeTool(workspace_root),
-        TaskTool(),
-        SubagentOutputTool(),
-        SendMessageTool(),
     ]
+    if include_task:
+        tools.append(TaskTool())
+    tools.extend((SubagentOutputTool(), SendMessageTool()))
+    return tools
 
 
 def _parameter_manifest(parameter: ToolParameter) -> dict[str, object]:

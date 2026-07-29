@@ -239,6 +239,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         argument_hint="[allow|revoke|clear]",
         aliases=("/tools permissions",),
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        tui_policy=_hybrid_policy("open_permissions"),
         presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(

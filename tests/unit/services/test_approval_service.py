@@ -6,9 +6,9 @@ from mycli.domain.runtime import (
     ShellKind,
     ShellProfile,
 )
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.services.approval.approval_service import ApprovalService
-from mycli.services.safety_policy import SafetyPolicy
+from mycli.services.approval.safety_policy import SafetyPolicy
 
 
 def test_approval_service_suspends_git_push_with_command_pattern() -> None:

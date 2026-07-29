@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from mycli.services.context.token_counter import (
-    CachePolicy,
-    Fragment,
-    FragmentKind,
-    Priority,
-    TokenCounter,
-)
+from mycli.services.context.token_counter import TokenCounter
 
 
 class TestTokenCounter:
@@ -41,37 +35,3 @@ class TestTokenCounter:
         first = counter.count(text)
         second = counter.count(text)
         assert first == second
-        assert counter._cache_hits > 0
-
-    def test_count_fragment(self) -> None:
-        fragment = Fragment(
-            id="test",
-            kind=FragmentKind.TOOL_RESULT,
-            priority=Priority.MEDIUM,
-            cache_policy=CachePolicy.EPHEMERAL,
-            content="hello world",
-        )
-        counter = TokenCounter()
-        tokens = counter.count_fragment(fragment)
-        assert tokens > 0
-
-    def test_count_all_includes_overhead(self) -> None:
-        counter = TokenCounter()
-        fragments = [
-            Fragment(
-                id="a",
-                kind=FragmentKind.SYSTEM,
-                priority=Priority.CRITICAL,
-                cache_policy=CachePolicy.STATIC,
-                content="system",
-            ),
-            Fragment(
-                id="b",
-                kind=FragmentKind.HISTORY_USER,
-                priority=Priority.MEDIUM,
-                cache_policy=CachePolicy.DYNAMIC,
-                content="hello",
-            ),
-        ]
-        total = counter.count_all(fragments)
-        assert total == counter.count("system") + counter.count("hello") + 8

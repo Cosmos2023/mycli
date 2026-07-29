@@ -19,6 +19,7 @@ from mycli.domain.runtime import (
     ExecPolicyRuleSet,
     ExecPolicySource,
     InvokedSkillSnapshot,
+    PermissionProfile,
     PlanState,
     RuntimeStreamEvent,
     RuntimeInterruptToken,
@@ -531,6 +532,53 @@ def test_shell_call_receives_internal_runtime_call_id(tmp_path: Path) -> None:
     )
 
     assert tool.seen_arguments[0]["_runtime_tool_call_id"] == "call-shell"
+
+
+def test_approved_shell_call_receives_escalated_runtime_options(tmp_path: Path) -> None:
+    tool = FakeBashTool()
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        permission_profile=PermissionProfile.WORKSPACE,
+    )
+    service, _ = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=gate,
+        registry=ToolRegistry.from_tools([tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "curl https://example.com"},
+            reason="approved network request",
+            call_id="call-approved-shell",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn-1",
+        activity_events=[],
+        turn_items=[],
+        policy_approved=True,
+    )
+
+    options = tool.seen_arguments[0]["_runtime_shell_options"]
+    assert options.filesystem == "unrestricted"
+    assert options.network == "enabled"
+    assert options.shell == "enabled"
 
 
 def test_tool_execution_service_workspace_write_outside_workspace_requires_approval(
@@ -1142,7 +1190,7 @@ def test_tool_execution_service_sandbox_read_only_blocks_write_tool(
     assert not (tmp_path / "notes.txt").exists()
     trace = TraceService(home_dir=tmp_path / "home").load("demo")
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
-    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["decision"] == "needs_approval"
     assert policy_trace.payload["policy"] == "sandbox_filesystem_policy"
     assert policy_trace.payload["reason_code"] == "filesystem_write_blocked_by_read_only"
     assert policy_trace.payload["effect"] == {
@@ -1316,7 +1364,7 @@ def test_tool_execution_service_sandbox_network_disabled_blocks_network_tool(
     assert network_tool.seen_arguments == []
     trace = TraceService(home_dir=tmp_path / "home").load("demo")
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
-    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["decision"] == "needs_approval"
     assert policy_trace.payload["policy"] == "sandbox_network_policy"
     assert policy_trace.payload["reason_code"] == "network_disabled"
     assert policy_trace.payload["effect"] == {

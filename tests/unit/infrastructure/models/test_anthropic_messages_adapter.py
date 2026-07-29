@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
 )

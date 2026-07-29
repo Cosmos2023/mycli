@@ -11,7 +11,6 @@ from typing import Any
 from mycli.tools.bash import BashTool
 from mycli.tools.file_snapshot import FileSnapshotStore
 from mycli.tools.git_tools import GitStatusTool
-from mycli.tools.grep import GrepTool
 from mycli.tools.patch import PatchTool
 from mycli.tools.read import ReadTool
 from mycli.tools.write import WriteTool
@@ -75,41 +74,23 @@ def _data_summary_smoke() -> dict[str, Any]:
 
 def _doc_lookup_smoke() -> dict[str, Any]:
     root = SCENARIO_ROOT / "02-policy-and-doc-lookup" / "fixtures"
-    grep = GrepTool(root)
+    search = BashTool(root)
     tool_calls: list[dict[str, Any]] = []
-    train = grep.execute(
-        {
-            "pattern": "高铁二等座",
-            "path": ".",
-            "output_mode": "content",
-            "include": "*.md",
-        }
-    )
-    hotel = grep.execute(
-        {
-            "pattern": "650",
-            "path": ".",
-            "output_mode": "content",
-            "include": "*.md",
-        }
-    )
-    missing = grep.execute(
-        {
-            "pattern": "餐补具体金额",
-            "path": ".",
-            "output_mode": "content",
-            "include": "*.md",
-        }
-    )
+    train = search.execute({"command": "rg -n --glob '*.md' '高铁二等座' . || true"})
+    hotel = search.execute({"command": "rg -n --glob '*.md' '650' . || true"})
+    missing = search.execute({"command": "rg -n --glob '*.md' '餐补具体金额' . || true"})
     for result in (train, hotel, missing):
-        tool_calls.append(_call_result("Grep", result.success, result.summary, result.raw_payload))
+        tool_calls.append(_call_result("Bash", result.success, result.summary, result.raw_payload))
+    train_output = str(train.raw_payload.get("output", ""))
+    hotel_output = str(hotel.raw_payload.get("output", ""))
+    missing_output = str(missing.raw_payload.get("output", ""))
     success = (
         train.success
         and hotel.success
         and missing.success
-        and train.raw_payload.get("match_count", 0) >= 1
-        and hotel.raw_payload.get("match_count", 0) >= 1
-        and missing.raw_payload.get("match_count", 0) == 0
+        and bool(train_output.strip())
+        and bool(hotel_output.strip())
+        and not missing_output.strip()
     )
     return {
         "scenario": "02-policy-and-doc-lookup",
@@ -118,9 +99,9 @@ def _doc_lookup_smoke() -> dict[str, Any]:
         "tool_call_count": len(tool_calls),
         "tool_calls": tool_calls,
         "checks": {
-            "found_train_policy": train.raw_payload.get("match_count", 0) >= 1,
-            "found_hotel_limit": hotel.raw_payload.get("match_count", 0) >= 1,
-            "missing_topic_stays_missing": missing.raw_payload.get("match_count", 0) == 0,
+            "found_train_policy": bool(train_output.strip()),
+            "found_hotel_limit": bool(hotel_output.strip()),
+            "missing_topic_stays_missing": not missing_output.strip(),
         },
     }
 

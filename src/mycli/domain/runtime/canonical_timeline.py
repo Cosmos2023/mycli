@@ -56,18 +56,6 @@ class CanonicalTimelineItem:
             and self.scope is CanonicalTimelineScope.TRANSCRIPT
         )
 
-    def to_model_visible_metadata(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "durability": self.durability.value,
-            "scope": self.scope.value,
-            "cache_class": self._cache_class_value(self.cache_class),
-            "model_visible": self.is_model_visible,
-            "replayable": self.is_replayable,
-        }
-        if self.provider_state:
-            payload["provider_state_keys"] = tuple(sorted(self.provider_state))
-        return payload
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": str(self.role),

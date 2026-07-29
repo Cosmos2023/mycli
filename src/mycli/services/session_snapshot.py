@@ -200,6 +200,7 @@ class SessionSnapshotService:
         existing = self.read_snapshot(conversation.session_id)
         existing_created_at = existing.get("created_at") if existing is not None else None
         created_at = existing_created_at if isinstance(existing_created_at, str) else now
+        existing_title = existing.get("title") if existing is not None else None
         transcript_items = (
             project_history_items_for_snapshot(history_items)
             if history_items
@@ -210,7 +211,11 @@ class SessionSnapshotService:
         raw_payload: dict[str, object] = {
             "schema_version": SESSION_SNAPSHOT_SCHEMA_VERSION,
             "session_id": conversation.session_id,
-            "title": self._title(transcript),
+            "title": (
+                existing_title.strip()
+                if isinstance(existing_title, str) and existing_title.strip()
+                else self._title(transcript)
+            ),
             "cwd": str(context.workspace_root),
             "created_at": created_at,
             "updated_at": now,

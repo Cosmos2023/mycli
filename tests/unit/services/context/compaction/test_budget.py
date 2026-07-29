@@ -29,7 +29,7 @@ def test_budget_records_input_only_usage_for_context_calibration() -> None:
     budget = ContextBudget(max_tokens=200_000)
     budget.record({"input_tokens": 45_000})
     assert budget.conversation_tokens == 45_000
-    assert budget.usage_ratio == 45_000 / budget.usable_limit
+    assert budget.usage_ratio == 45_000 / budget.max_tokens
 
 
 def test_budget_conversation_tokens_setter_clamps_negative_values() -> None:

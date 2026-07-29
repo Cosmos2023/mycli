@@ -127,15 +127,6 @@ class SessionStore(Protocol):
         items: list[JsonObject],
     ) -> None: ...
 
-    def replace_history_items(
-        self,
-        *,
-        session_id: str,
-        workspace_root: Path,
-        thread_id: str,
-        items: list[JsonObject],
-    ) -> None: ...
-
     def load_history_items(self, session_id: str) -> list[JsonObject]: ...
 
     def append_turn_rollout(

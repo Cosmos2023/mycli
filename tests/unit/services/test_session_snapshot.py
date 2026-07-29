@@ -86,6 +86,40 @@ def test_snapshot_preserves_created_at_across_rewrites(tmp_path: Path) -> None:
     assert second["created_at"] == first["created_at"]
 
 
+def test_snapshot_preserves_title_when_compaction_replaces_legacy_conversation(
+    tmp_path: Path,
+) -> None:
+    service = SessionSnapshotService(home_dir=tmp_path)
+    context = SessionSnapshotContext(workspace_root=tmp_path)
+    service.write_conversation_snapshot(
+        conversation=Conversation(
+            session_id="legacy",
+            messages=[Message(role="user", content="Original session request")],
+        ),
+        history_items=(),
+        context=context,
+    )
+
+    service.write_conversation_snapshot(
+        conversation=Conversation(
+            session_id="legacy",
+            messages=[
+                Message(
+                    role="user",
+                    content="## 1. Primary Request\nCompacted summary",
+                    metadata={"compaction": True},
+                )
+            ],
+        ),
+        history_items=(),
+        context=context,
+    )
+
+    payload = service.read_snapshot("legacy")
+    assert payload is not None
+    assert payload["title"] == "Original session request"
+
+
 def test_empty_snapshot_keeps_required_transcript_array(tmp_path: Path) -> None:
     service = SessionSnapshotService(home_dir=tmp_path)
     service.write_conversation_snapshot(

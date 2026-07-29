@@ -65,8 +65,6 @@ class SafetyPolicy:
             "GitShow",
             "AskUserQuestion",
             "Plan",
-            "EnterPlanMode",
-            "ExitPlanMode",
             "Skill",
             "Task",
             "ShellOutput",
@@ -97,8 +95,6 @@ class SafetyPolicy:
             "GitShow",
             "AskUserQuestion",
             "Plan",
-            "EnterPlanMode",
-            "ExitPlanMode",
             "Skill",
             "Task",
             "ShellOutput",
@@ -363,8 +359,6 @@ def _canonical_tool_name(name: str) -> str:
         "ShellOutput": "ShellOutput",
         "BashOutput": "ShellOutput",
         "update_plan": "Plan",
-        "enter_plan_mode": "EnterPlanMode",
-        "exit_plan_mode": "ExitPlanMode",
     }.get(name, name)
 
 

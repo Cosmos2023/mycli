@@ -74,7 +74,10 @@ def test_check_node_version_reports_missing_node() -> None:
     def runner(_cmd):
         raise FileNotFoundError
 
-    with pytest.raises(NodeTuiProcessError, match="Use mycli --plain or install Node"):
+    with pytest.raises(
+        NodeTuiProcessError,
+        match="Node TUI requires Node.js >= 20. Install Node.js and retry",
+    ):
         check_node_version(runner=runner)
 
 

@@ -16,10 +16,10 @@ from mycli.domain.memory import MemoryKind
 from mycli.domain.runtime import (
     AgentConfig,
     CollaborationMode,
-    DecisionAction,
     HistoryItem,
     HistoryItemType,
     MailboxAcceptance,
+    PermissionProfile,
     QueueSnapshot,
     ReasoningEffort,
     QueuedInputRecord,
@@ -126,6 +126,25 @@ def _next_sandbox_mode(current: SandboxMode) -> SandboxMode:
     return modes[(index + 1) % len(modes)]
 
 
+_PERMISSION_PROFILE_COPY: dict[PermissionProfile, tuple[str, str]] = {
+    PermissionProfile.READ_ONLY: (
+        "Read Only",
+        "mycli can read files in the current workspace. Approval is required to edit "
+        "files or access the internet.",
+    ),
+    PermissionProfile.WORKSPACE: (
+        "Ask for approval",
+        "mycli can read and edit files in the current workspace, and run commands. "
+        "Approval is required to access the internet or edit other files.",
+    ),
+    PermissionProfile.FULL_ACCESS: (
+        "Full Access",
+        "mycli can edit files outside this workspace and access the internet without "
+        "asking for approval. Exercise caution when using.",
+    ),
+}
+
+
 class ModelSelectionError(ValueError):
     pass
 
@@ -162,6 +181,7 @@ class TurnService:
             "_session_service",
             SessionService(home_dir=home_dir),
         )
+        self._session_title_cache: dict[str, str] = {}
         self._context_window_service = None
         self._skill_registry = getattr(
             runtime,
@@ -203,10 +223,6 @@ class TurnService:
             "_instruction_contract_assembler",
             InstructionContractAssembler(),
         )
-
-    def _available_tool_names(self) -> tuple[str, ...]:
-        assert self._tool_registry is not None
-        return tuple(self._tool_registry.list_names())
 
     def close(self) -> None:
         close = getattr(self._runtime, "close", None)
@@ -407,23 +423,6 @@ class TurnService:
             return None
         return cast(QueuedTurnInput | None, pop())
 
-    def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
-        choice_to_action = {
-            "1": DecisionAction.APPROVE_ONCE,
-            "2": DecisionAction.REJECT,
-            "3": DecisionAction.ALLOW_SESSION,
-            "4": DecisionAction.ALWAYS_ALLOW,
-        }
-        allowed_choices = tuple(
-            key for key, action in choice_to_action.items()
-            if action in options
-        )
-        if len(allowed_choices) == 1:
-            return allowed_choices[0]
-        if len(allowed_choices) == 2:
-            return f"{allowed_choices[0]} or {allowed_choices[1]}"
-        return ", ".join(allowed_choices[:-1]) + f", or {allowed_choices[-1]}"
-
     def handle_user_turn(
         self,
         user_message: str,
@@ -520,12 +519,6 @@ class TurnService:
                 interrupt_token=interrupt_token,
             ),
         )
-
-    def confirm_pending_action(self) -> TurnResponse:
-        return self.resolve_pending_decision("1")
-
-    def reject_pending_action(self) -> TurnResponse:
-        return self.resolve_pending_decision("2")
 
     def inspect_plan(self) -> tuple[str, ...]:
         plan_state = self._session_service.load_plan_state(self._config.session_id)
@@ -634,6 +627,63 @@ class TurnService:
         else:
             lines.append("execpolicy_rules=0")
         return tuple(lines)
+
+    def list_permission_profiles(self) -> tuple[dict[str, object], ...]:
+        active = self._effective_permission_profile()
+        return tuple(
+            {
+                "id": profile.value,
+                "label": _PERMISSION_PROFILE_COPY[profile][0],
+                "description": _PERMISSION_PROFILE_COPY[profile][1],
+                "current": profile is active,
+            }
+            for profile in (
+                PermissionProfile.WORKSPACE,
+                PermissionProfile.FULL_ACCESS,
+                PermissionProfile.READ_ONLY,
+            )
+        )
+
+    def permission_profile_payload(self) -> dict[str, object]:
+        active = self._effective_permission_profile()
+        allowances = self._session_service.load_command_allowances(self._config.session_id)
+        return {
+            "active": active.value,
+            "profiles": list(self.list_permission_profiles()),
+            "command_allowance_count": len(allowances),
+        }
+
+    def set_permission_profile(self, profile_id: str) -> dict[str, object]:
+        try:
+            profile = PermissionProfile(profile_id.strip().lower())
+        except ValueError as exc:
+            allowed = ", ".join(item.value for item in PermissionProfile)
+            raise ValueError(
+                f"Unsupported permission profile '{profile_id}'. Allowed: {allowed}."
+            ) from exc
+        self._config = replace(
+            self._config,
+            permission_profile=profile,
+            sandbox_mode=profile.sandbox_mode,
+        )
+        if self._runtime is not None:
+            update = getattr(self._runtime, "update_permission_profile", None)
+            if callable(update):
+                update(self._config)
+            else:
+                self._runtime.rebind_session(self._config)
+        label, description = _PERMISSION_PROFILE_COPY[profile]
+        return {
+            "id": profile.value,
+            "label": label,
+            "description": description,
+            "current": True,
+        }
+
+    def _effective_permission_profile(self) -> PermissionProfile:
+        return self._config.permission_profile or PermissionProfile.from_sandbox_mode(
+            self._config.sandbox_mode
+        )
 
     def add_permission_allowance(self, pattern: str) -> tuple[str, ...]:
         normalized = pattern.strip()
@@ -811,7 +861,7 @@ class TurnService:
         pending_decision = self._session_service.load_pending_decision(self._config.session_id)
         suspended = self._session_service.load_suspended_turn(self._config.session_id)
         allowances = self._session_service.load_command_allowances(self._config.session_id)
-        session_name = self._session_title_from_conversation(conversation) or self._config.session_id
+        session_name = self.session_title() or self._config.session_id
         return (
             f"session={session_name}",
             f"messages={len(conversation.messages)}",
@@ -822,12 +872,30 @@ class TurnService:
         )
 
     def session_title(self) -> str | None:
-        conversation = self._session_service.load_conversation(self._config.session_id)
-        return self._session_title_from_conversation(conversation)
+        session_id = self._config.session_id
+        cached_title = self._session_title_cache.get(session_id)
+        if cached_title is not None:
+            return cached_title
+        title_loader = getattr(self._session_service, "load_session_title", None)
+        if callable(title_loader):
+            persisted_title = title_loader(session_id)
+            if isinstance(persisted_title, str) and persisted_title.strip():
+                persisted_preview = self._preview(persisted_title, limit=80)
+                self._session_title_cache[session_id] = persisted_preview
+                return persisted_preview
+        conversation = self._session_service.load_conversation(session_id)
+        conversation_title = self._session_title_from_conversation(conversation)
+        if conversation_title is not None:
+            self._session_title_cache[session_id] = conversation_title
+        return conversation_title
 
     def _session_title_from_conversation(self, conversation: Conversation) -> str | None:
         for message in conversation.messages:
-            if message.role == "user" and message.content.strip():
+            if (
+                message.role == "user"
+                and message.content.strip()
+                and not message.metadata.get("compaction")
+            ):
                 return self._preview(message.content, limit=80)
         return None
 
@@ -1153,9 +1221,8 @@ class TurnService:
             except ValueError:
                 allowed = ", ".join(item.value for item in SandboxMode)
                 return (f"unsupported sandbox_mode={mode}; allowed={allowed}",)
-        self._config = replace(self._config, sandbox_mode=sandbox_mode)
-        if self._runtime is not None:
-            self._runtime.rebind_session(self._config)
+        profile = PermissionProfile.from_sandbox_mode(sandbox_mode)
+        self.set_permission_profile(profile.value)
         return self.inspect_sandbox()
 
     def _runtime_policy(self) -> ExecutionPolicy:

@@ -206,6 +206,22 @@ class SessionService:
     ) -> tuple[dict[str, object], ...]:
         return self._snapshot_service.load_tui_items(session_id)
 
+    def load_session_title(self, session_id: str) -> str | None:
+        for item in self.load_replay_history_items(session_id):
+            if (
+                item.type is HistoryItemType.USER_MESSAGE
+                and item.text
+                and item.text.strip()
+                and not item.metadata.get("compaction")
+                and item.metadata.get("role") != "system"
+            ):
+                return item.text.strip()
+        snapshot = self._snapshot_service.read_snapshot(session_id)
+        if snapshot is None:
+            return None
+        title = snapshot.get("title")
+        return title.strip() if isinstance(title, str) and title.strip() else None
+
     def sync_conversation_view_from_history(self, session_id: str) -> None:
         history_items = self.load_replay_history_items(session_id)
         checkpoint = self.load_compact_checkpoint(session_id)
@@ -312,33 +328,6 @@ class SessionService:
 
     def load_compact_checkpoint(self, session_id: str) -> dict[str, object] | None:
         return self._load_state_object(session_id, self._KEY_COMPACT_CHECKPOINT)
-
-    def compact_history(
-        self,
-        session_id: str,
-        *,
-        replaced_item_ids: tuple[str, ...],
-        compacted_item: HistoryItem,
-    ) -> None:
-        replaced = set(replaced_item_ids)
-        remaining = [
-            item.to_dict()
-            for item in self.load_history_items(session_id)
-            if item.id not in replaced
-        ]
-        remaining.append(compacted_item.to_dict())
-        self._store.replace_history_items(
-            session_id=session_id,
-            workspace_root=self._workspace_root,
-            thread_id=compacted_item.thread_id,
-            items=remaining,
-        )
-        self._refresh_snapshot(session_id)
-        self._snapshot_service.append_event(
-            session_id=session_id,
-            event_type="history.compacted",
-            payload={"replaced_item_count": len(replaced_item_ids)},
-        )
 
     def save_context_baseline(
         self,
@@ -642,9 +631,6 @@ class SessionService:
             )
         )
 
-    def clear_plan_state(self, session_id: str) -> None:
-        self._store.delete_state(session_id, self._KEY_PLAN_STATE)
-
     def save_runtime_environment_context_state(
         self,
         session_id: str,
@@ -712,9 +698,6 @@ class SessionService:
         session_id: str,
     ) -> dict[str, object] | None:
         return self._load_state_object(session_id, self._KEY_PROVIDER_TIMELINE)
-
-    def clear_provider_timeline_state(self, session_id: str) -> None:
-        self._store.delete_state(session_id, self._KEY_PROVIDER_TIMELINE)
 
     def load_responses_continuation_state(
         self,
@@ -942,9 +925,6 @@ class SessionService:
         if payload is None:
             return None
         return TurnRecord.from_dict(payload)
-
-    def clear_turn_record(self, session_id: str) -> None:
-        self._store.delete_state(session_id, self._KEY_TURN_RECORD)
 
     def save_contributed_tool_state(self, session_id: str, descriptors: list[dict[str, Any]]) -> None:
         self._save_state(

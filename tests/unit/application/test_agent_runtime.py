@@ -13,7 +13,7 @@ from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.runtime.request.provider_timeline import ProviderTimelineState
 from mycli.application.runtime.turn_executor import TurnExecutor
 from mycli.domain.conversation import Conversation, Message
-from mycli.domain.contributed_tools import (
+from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
     ToolContributionLifecycleState,
     ToolContributionRegistration,
@@ -26,7 +26,7 @@ from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
-from mycli.domain.tool_exposure import ToolRouteKey
+from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.domain.runtime import (
     ActivityEvent,
     AgentConfig,
@@ -38,6 +38,7 @@ from mycli.domain.runtime import (
     InstructionContract,
     MailboxAcceptance,
     ModelTurnResult,
+    PermissionProfile,
     PlanItem,
     PlanState,
     PlanStatus,
@@ -57,13 +58,13 @@ from mycli.domain.runtime import (
     UserMessageInput,
 )
 from mycli.schemas.responses_protocol import ResponsesContinuationState
-from mycli.services.trace_service import TraceService
+from mycli.services.tracing import TraceService
 from mycli.services.execpolicy_writer import ExecPolicyWriter
 from mycli.services.hooks import HookAllowlist, HookConfigRegistry
 from mycli.application.runtime.tools.contributed_tool_provider import ToolContributionProvider
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.memory.service import MemoryService
-from mycli.services.skill_registry import SkillRegistry
+from mycli.services.skills import SkillRegistry
 from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.edit import EditTool
@@ -74,7 +75,6 @@ from mycli.tools.bash import BashTool, ShellTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.kill_shell import KillShellTool
 from mycli.tools.shell_registry import SHELL_REGISTRY
-from mycli.tools.grep import GrepTool
 from mycli.tools.write import WriteTool
 from mycli.tools.plan import PlanTool
 from mycli.tools.ask_user_question import AskUserQuestionTool
@@ -261,7 +261,8 @@ def test_agent_runtime_uses_existing_instruction_snapshot_for_contract(
             "hash": "legacy-hash",
         },
     )
-    context = runtime._build_context(
+    runtime._runtime_context_builder.set_config(runtime._config)
+    context = runtime._runtime_context_builder.build_context(
         user_message="continue",
         conversation=Conversation(session_id=runtime._config.session_id),
         plan_state=PlanState(),
@@ -367,7 +368,7 @@ def test_refresh_execpolicy_rules_updates_gate_without_session_rebind(
     rules = runtime.refresh_execpolicy_rules()
 
     assert rules.match(("git", "push", "origin", "main")) is not None
-    decision = runtime._runtime_policy_gate.decide_execpolicy(
+    decision = runtime._runtime_policy_gate.decide(
         ToolCall(
             name="Shell",
             arguments={"command": "git push origin main"},
@@ -1606,6 +1607,41 @@ class ShellThenDoneAdapter:
         )()
 
 
+class FullAccessShellThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_action(self, *, messages, tools):
+        del messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return type(
+                "Action",
+                (),
+                {
+                    "assistant_message": None,
+                    "progress_message": "Checking the current user",
+                    "tool_call": ToolCall(
+                        call_id="call_full_access_shell_1",
+                        name="Shell",
+                        arguments={"command": 'echo "$(whoami)"'},
+                        reason="verify full access shell execution",
+                    ),
+                    "done": False,
+                },
+            )()
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": "Full access shell check complete",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
 class BlockInspectThenDoneAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -2830,7 +2866,6 @@ def build_runtime_with_capture_adapter(
         [
             LSTool(tmp_path),
             ReadTool(tmp_path),
-            GrepTool(tmp_path),
             EditTool(tmp_path),
             ShellTool(tmp_path),
             PlanTool(),
@@ -2944,14 +2979,14 @@ def test_agent_runtime_consumes_steering_before_next_model_request(
         model_adapter=adapter,
     )
     disable_runtime_memory(runtime)
-    original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
+    original_execute_tool_calls = runtime._assistant_block_consumer._execute_tool_calls
 
     def queue_steering_after_tools(**kwargs):
         result = original_execute_tool_calls(**kwargs)
         runtime.queue_steering_message("also check docs")
         return result
 
-    runtime._tool_execution_service.execute_tool_calls = queue_steering_after_tools
+    runtime._assistant_block_consumer._execute_tool_calls = queue_steering_after_tools
 
     response = runtime.handle_user_turn("inspect both files")
 
@@ -2986,7 +3021,7 @@ def test_agent_runtime_preserves_queued_steering_images_in_next_request(
         model_adapter=adapter,
     )
     disable_runtime_memory(runtime)
-    original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
+    original_execute_tool_calls = runtime._assistant_block_consumer._execute_tool_calls
 
     def queue_steering_after_tools(**kwargs):
         result = original_execute_tool_calls(**kwargs)
@@ -2996,7 +3031,7 @@ def test_agent_runtime_preserves_queued_steering_images_in_next_request(
         )
         return result
 
-    runtime._tool_execution_service.execute_tool_calls = queue_steering_after_tools
+    runtime._assistant_block_consumer._execute_tool_calls = queue_steering_after_tools
 
     runtime.handle_user_turn("inspect both files")
 
@@ -3225,6 +3260,66 @@ def test_turn_service_resume_switches_runtime_session_for_follow_up_turn(
         "inspect resumed session",
     ]
     assert default.messages == []
+
+
+def test_turn_service_updates_permission_profile_without_rebinding_session(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    service = TurnService(
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    notification_inbox = runtime._runtime_notification_inbox
+    runtime.rebind_session = lambda _config: pytest.fail("permission update rebound session")  # type: ignore[method-assign]
+
+    selected = service.set_permission_profile("full-access")
+
+    assert selected == {
+        "id": "full-access",
+        "label": "Full Access",
+        "description": (
+            "mycli can edit files outside this workspace and access the internet "
+            "without asking for approval. Exercise caution when using."
+        ),
+        "current": True,
+    }
+    assert service._config.permission_profile is PermissionProfile.FULL_ACCESS
+    assert service._config.sandbox_mode is SandboxMode.DANGER_FULL_ACCESS
+    assert runtime._config.permission_profile is PermissionProfile.FULL_ACCESS
+    assert runtime._runtime_policy_gate.default_policy().sandbox.mode is SandboxMode.DANGER_FULL_ACCESS
+    assert runtime._runtime_notification_inbox is notification_inbox
+
+
+def test_legacy_sandbox_switch_maps_to_profile_and_preserves_allowances(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    service = TurnService(
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    service.add_permission_allowance("git status")
+
+    lines = service.set_sandbox_mode("read-only")
+
+    assert service.permission_profile_payload()["active"] == "read-only"
+    assert "sandbox_mode=read-only" in lines
+    assert any("pattern=git status" in line for line in service.inspect_permissions())
 
 
 def test_turn_service_resume_ancestor_switches_runtime_session_to_resolved_tip(
@@ -3940,6 +4035,26 @@ def test_agent_runtime_reinjects_grounded_shell_stdout_into_tool_message(
     )
 
 
+def test_agent_runtime_full_access_shell_skips_legacy_approval(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=FullAccessShellThenDoneAdapter(),
+    )
+    runtime.update_permission_profile(
+        replace(
+            runtime._config,
+            permission_profile=PermissionProfile.FULL_ACCESS,
+            sandbox_mode=SandboxMode.DANGER_FULL_ACCESS,
+        )
+    )
+
+    response = runtime.handle_user_turn("check shell in full access")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == "Full access shell check complete"
+
+
 def test_agent_runtime_emits_waiting_approval_activity_event(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
@@ -4139,7 +4254,6 @@ def test_agent_runtime_passes_session_and_turn_context_to_model_logging(
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
-                GrepTool(tmp_path),
                 EditTool(tmp_path),
                 ShellTool(tmp_path),
                 PlanTool(),
@@ -4281,7 +4395,6 @@ def test_agent_runtime_logs_assembled_turn_context_summary(tmp_path: Path) -> No
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
-                GrepTool(tmp_path),
                 EditTool(tmp_path),
                 ShellTool(tmp_path),
                 PlanTool(),
@@ -4867,7 +4980,6 @@ def test_agent_runtime_exposes_skill_catalog_without_auto_loading_body(tmp_path:
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
-                GrepTool(tmp_path),
                 EditTool(tmp_path),
                 ShellTool(tmp_path),
                 PlanTool(),
@@ -4952,7 +5064,6 @@ def test_agent_runtime_keeps_explicit_skill_mentions_as_plain_user_text(tmp_path
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
-                GrepTool(tmp_path),
                 EditTool(tmp_path),
                 ShellTool(tmp_path),
                 PlanTool(),
@@ -5815,9 +5926,6 @@ class OverviewForceAnswerAdapter:
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self.tool_choices.append(tool_choice)
 
-    def supports_tool_choice(self) -> bool:
-        return True
-
     def next_turn(self, *, items, tools):
         del items
         self.calls += 1
@@ -5894,9 +6002,6 @@ class ImplementationAuditForceAnswerAdapter:
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self.tool_choices.append(tool_choice)
 
-    def supports_tool_choice(self) -> bool:
-        return True
-
     def next_turn(self, *, items, tools):
         del items
         self.calls += 1
@@ -5968,9 +6073,6 @@ class ForceAnswerRequestShapeAdapter:
 
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self.tool_choices.append(tool_choice)
-
-    def supports_tool_choice(self) -> bool:
-        return True
 
     def next_turn(self, *, items, tools):
         del items
@@ -6466,7 +6568,8 @@ def test_agent_runtime_build_context_uses_runtime_snapshot_history_and_baseline(
         ),
     )
 
-    context = runtime._build_context(
+    runtime._runtime_context_builder.set_config(runtime._config)
+    context = runtime._runtime_context_builder.build_context(
         user_message="continue",
         conversation=Conversation(session_id=runtime._config.session_id),
         plan_state=PlanState(),
@@ -6519,7 +6622,8 @@ def test_agent_runtime_build_context_uses_append_only_provider_replay(
         ),
     )
 
-    context = runtime._build_context(
+    runtime._runtime_context_builder.set_config(runtime._config)
+    context = runtime._runtime_context_builder.build_context(
         user_message="continue",
         conversation=Conversation(session_id=runtime._config.session_id),
         plan_state=PlanState(),
@@ -6574,7 +6678,8 @@ def test_agent_runtime_build_context_reconstructs_block_aware_messages_from_hist
         ),
     )
 
-    context = runtime._build_context(
+    runtime._runtime_context_builder.set_config(runtime._config)
+    context = runtime._runtime_context_builder.build_context(
         user_message="continue",
         conversation=Conversation(session_id=runtime._config.session_id),
         plan_state=PlanState(),
@@ -6626,7 +6731,8 @@ def test_agent_runtime_runtime_items_allow_responses_adapter_to_consume_history_
             ),
         ),
     )
-    context = runtime._build_context(
+    runtime._runtime_context_builder.set_config(runtime._config)
+    context = runtime._runtime_context_builder.build_context(
         user_message="continue",
         conversation=Conversation(session_id=runtime._config.session_id),
         plan_state=PlanState(),
@@ -6645,7 +6751,7 @@ def test_agent_runtime_runtime_items_allow_responses_adapter_to_consume_history_
         contract=contract,
         tools=(),
     )
-    runtime_items = runtime._build_runtime_items(request_shape=request_shape)
+    runtime_items = runtime._request_pipeline.runtime_items(request_shape=request_shape)
     client = CapturingResponsesClient()
     adapter = ResponsesModelAdapter(client=client)
 
@@ -6806,7 +6912,6 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
-                GrepTool(tmp_path),
                 ShellTool(tmp_path),
                 EditTool(tmp_path),
                 PlanTool(),
@@ -6865,14 +6970,14 @@ def test_agent_runtime_batches_adjacent_safe_tool_calls_from_same_model_item(
     (tmp_path / "README.md").write_text("readme\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
     batch_calls: list[tuple[str, ...]] = []
-    original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
+    original_execute_tool_calls = runtime._assistant_block_consumer._execute_tool_calls
 
     def capture_execute_tool_calls(**kwargs):
         calls = tuple(kwargs["calls"])
         batch_calls.append(tuple(call.name for call in calls))
         return original_execute_tool_calls(**kwargs)
 
-    runtime._tool_execution_service.execute_tool_calls = capture_execute_tool_calls
+    runtime._assistant_block_consumer._execute_tool_calls = capture_execute_tool_calls
 
     response = runtime.handle_user_turn("inspect both files")
 

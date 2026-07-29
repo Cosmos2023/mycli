@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
-from mycli.services.trace_service import TraceService
+from mycli.services.tracing import TraceService
 
 
 def test_trace_service_round_trips_tool_event(tmp_path: Path) -> None:

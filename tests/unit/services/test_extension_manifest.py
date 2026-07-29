@@ -9,7 +9,7 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.runtime.gateway_contract import GATEWAY_ERROR_CODES
-from mycli.domain.tool_exposure import ToolRouteKey
+from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.services.extensions import ExtensionManifestService
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec

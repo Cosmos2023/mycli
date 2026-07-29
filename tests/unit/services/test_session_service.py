@@ -36,7 +36,7 @@ from mycli.domain.runtime import (
     TurnRolloutEvent,
     TurnStatus,
 )
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.session_service import SessionService
 from mycli.services.storage_layout import MycliStorageLayout
@@ -2208,58 +2208,6 @@ def test_session_service_appends_and_loads_turn_rollouts(tmp_path: Path) -> None
     assert [rollout.turn_id for rollout in loaded] == ["turn_1", "turn_2"]
     assert loaded[0].events[0].payload["tool_name"] == "list_directory"
     assert loaded[1].stop_reason is StopReason.MODEL_ERROR
-
-
-def test_session_service_compacts_history_by_replacing_a_window_with_compaction_item(
-    tmp_path: Path,
-) -> None:
-    service = SessionService(home_dir=tmp_path / "home")
-    service.append_history_items(
-        "demo",
-        (
-            HistoryItem(
-                id="hist_1",
-                thread_id="demo",
-                turn_id="turn_1",
-                type=HistoryItemType.USER_MESSAGE,
-                text="inspect repo",
-            ),
-            HistoryItem(
-                id="hist_2",
-                thread_id="demo",
-                turn_id="turn_1",
-                type=HistoryItemType.REASONING,
-                text="Thinking: inspect files",
-            ),
-            HistoryItem(
-                id="hist_3",
-                thread_id="demo",
-                turn_id="turn_1",
-                type=HistoryItemType.TOOL_RESULT,
-                text="Done reading: pyproject.toml",
-                tool_name="read_file",
-                call_id="call_read_1",
-            ),
-        ),
-    )
-
-    service.compact_history(
-        "demo",
-        replaced_item_ids=("hist_2", "hist_3"),
-        compacted_item=HistoryItem(
-            id="compact_1",
-            thread_id="demo",
-            turn_id="turn_compact_1",
-            type=HistoryItemType.COMPACTION,
-            text="Compacted reasoning and file read into a shorter history item.",
-            metadata={"replaced_item_ids": ["hist_2", "hist_3"]},
-        ),
-    )
-    loaded = service.load_history_items("demo")
-
-    assert [item.id for item in loaded] == ["hist_1", "compact_1"]
-    assert loaded[1].type is HistoryItemType.COMPACTION
-    assert loaded[1].metadata["replaced_item_ids"] == ["hist_2", "hist_3"]
 
 
 def test_session_service_installs_active_compact_replacement_without_rewriting_history(

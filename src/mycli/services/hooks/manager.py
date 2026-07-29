@@ -31,7 +31,6 @@ class HookManager:
         self._hooks: dict[HookPoint, list[HookCallback]] = defaultdict(list)
         self._names: dict[int, str] = {}
         self._state: dict[tuple[HookPoint, str], HookRegistrationSnapshot] = {}
-        self._last_execution_summary: tuple[HookExecutionSummary, ...] = ()
 
     def register(self, point: HookPoint, callback: HookCallback, *, name: str | None = None) -> None:
         self._hooks[point].append(callback)
@@ -86,11 +85,7 @@ class HookManager:
             self._record_summary(summary)
             if result.action is HookAction.DENY:
                 break
-        self._last_execution_summary = tuple(summaries)
         return HookExecution(results=tuple(results), summaries=tuple(summaries))
-
-    def last_execution_summary(self) -> tuple[HookExecutionSummary, ...]:
-        return self._last_execution_summary
 
     def has_hooks(self, point: HookPoint) -> bool:
         return bool(self._hooks.get(point))

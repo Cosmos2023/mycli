@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mycli.domain.contributed_tools import (
+from mycli.domain.tooling.contributed_tools import (
     ToolContributionConflictOutcome,
     ToolContributionDescriptor,
     ToolContributionLifecycleState,
@@ -8,7 +8,7 @@ from mycli.domain.contributed_tools import (
     ToolContributionScope,
     ToolContributionSource,
 )
-from mycli.domain.tool_exposure import ToolRouteKey
+from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 

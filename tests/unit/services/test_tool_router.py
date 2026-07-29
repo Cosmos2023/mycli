@@ -7,14 +7,14 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionScope,
     ToolContributionSource,
 )
-from mycli.domain.tool_exposure import (
+from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureEntry,
     ToolExposureKind,
     ToolRouteKey,
     ToolRouteSource,
 )
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec

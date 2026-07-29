@@ -6,10 +6,6 @@ from mycli.domain.subagents import SubAgentProfile
 GLOBAL_CHILD_DENYLIST: tuple[str, ...] = (
     "Task",
     "AskUserQuestion",
-    "enter_plan_mode",
-    "exit_plan_mode",
-    "EnterPlanMode",
-    "ExitPlanMode",
 )
 
 _PROFILES: dict[str, SubAgentProfile] = {

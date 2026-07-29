@@ -82,10 +82,6 @@ class McpToolDescriptor:
     input_schema: JsonObject = field(default_factory=dict)
 
     @property
-    def route_namespace(self) -> str:
-        return provider_safe_tool_name("mcp", self.server_name)
-
-    @property
     def route_name(self) -> str:
         return provider_safe_tool_name("mcp", self.server_name, self.name)
 
@@ -768,22 +764,6 @@ def _resolve_env(raw: object, *, environ: Mapping[str, str] | None) -> dict[str,
 def _encode_framed_json(payload: JsonObject) -> bytes:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
-
-
-def _decode_framed_json(data: bytes) -> JsonObject:
-    header_bytes, separator, body = data.partition(b"\r\n\r\n")
-    if not separator:
-        header_bytes, separator, body = data.partition(b"\n\n")
-    if not separator:
-        return _decode_json(data)
-    headers: dict[str, str] = {}
-    for line in header_bytes.decode("ascii", errors="replace").splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        headers[key.strip().lower()] = value.strip()
-    length = int(headers.get("content-length", len(body)))
-    return _decode_json(body[:length])
 
 
 def _read_framed_json(

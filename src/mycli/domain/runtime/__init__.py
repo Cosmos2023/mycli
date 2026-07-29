@@ -113,6 +113,7 @@ from mycli.domain.runtime.message_queue import (
 from mycli.domain.runtime.execution_policy import (
     ApprovalGate as ApprovalGate,
     ExecutionPolicy as ExecutionPolicy,
+    PermissionProfile as PermissionProfile,
     RuntimeEnvironmentContract as RuntimeEnvironmentContract,
     SandboxMode as SandboxMode,
     SandboxProfile as SandboxProfile,
@@ -223,6 +224,7 @@ class AgentConfig:
     view_mode: ViewMode = ViewMode.DEFAULT
     collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT
     sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE
+    permission_profile: PermissionProfile | None = None
     statusline_enabled: bool = True
     tui_startup_mark: str = "default"
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
@@ -430,6 +432,7 @@ __all__ = [
     "ProviderCachePolicyCapability",
     "ProviderRequestPolicyShape",
     "ProviderRuntimeItemShape",
+    "PermissionProfile",
     "RequestFragment",
     "RequestFragmentKind",
     "RequestShape",

@@ -54,9 +54,9 @@ def test_tool_runtime_orchestrator_coordinates_policy_decision(tmp_path: Path) -
     )
 
     assert decision is not None
-    assert decision.kind is ToolRuntimeDecisionKind.DENIED
+    assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
     result = orchestrator.policy_result(decision)
-    assert result.raw_payload["error_kind"] == "tool_denied_by_policy"
+    assert result.raw_payload["error_kind"] == "tool_needs_approval"
 
 
 def test_tool_runtime_orchestrator_coordinates_hooks_and_write_diagnostics() -> None:

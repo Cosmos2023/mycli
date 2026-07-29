@@ -27,11 +27,6 @@ def _is_within(candidate: Path, root: Path) -> bool:
     return candidate == resolved_root or resolved_root in candidate.parents
 
 
-def require_text_file(path: Path) -> None:
-    if path.exists() and path.is_dir():
-        raise ValueError("Expected a file path, got a directory.")
-
-
 def classify_filesystem_error(exc: Exception) -> str:
     if isinstance(exc, FileNotFoundError):
         return "not_found"

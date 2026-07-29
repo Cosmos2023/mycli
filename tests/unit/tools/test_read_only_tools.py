@@ -1,16 +1,9 @@
-from dataclasses import replace
 from pathlib import Path
-import sys
 
-import pytest
-
-from mycli.domain.runtime import ExecutionPolicy
-from mycli.domain.tools import ToolCall, ToolEvidence
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.filesystem import FileSystemRuntime
 from mycli.tools.base import ToolResult
-from mycli.tools.grep import GrepTool
-from mycli.tools.glob import GlobTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
 from mycli.tools.registry import default_tools
@@ -45,8 +38,6 @@ def test_read_only_tools_return_grounded_results(tmp_path: Path) -> None:
 
     list_tool = LSTool(root)
     read_tool = ReadTool(root)
-    search_tool = GrepTool(root)
-
     listed = list_tool.run(ToolCall(name="LS", arguments={"path": "."}, reason="inspect"))
     loaded = read_tool.run(
         ToolCall(
@@ -55,12 +46,9 @@ def test_read_only_tools_return_grounded_results(tmp_path: Path) -> None:
             reason="inspect",
         )
     )
-    searched = search_tool.run(ToolCall(name="Grep", arguments={"query": "hello"}, reason="inspect"))
-
     assert listed.success is True
     assert "README.md" in listed.summary
     assert "hello world" in loaded.raw_payload["content"]
-    assert "README.md" in searched.raw_payload["matches"][0]
 
 
 def test_unrestricted_read_only_tools_allow_absolute_paths_outside_workspace(
@@ -73,19 +61,8 @@ def test_unrestricted_read_only_tools_allow_absolute_paths_outside_workspace(
     (outside / "README.md").write_text("hello outside\n", encoding="utf-8")
 
     listed = LSTool(root, unrestricted=True).execute({"path": str(outside)})
-    found = GlobTool(root, unrestricted=True).execute(
-        {"path": str(outside), "pattern": "*.md"}
-    )
-    searched = GrepTool(root, unrestricted=True).execute(
-        {"path": str(outside), "pattern": "hello"}
-    )
-
     assert listed.success is True
     assert "README.md" in listed.raw_payload["files"]
-    assert found.success is True
-    assert found.raw_payload["files"] == ["README.md"]
-    assert searched.success is True
-    assert str(outside / "README.md") in searched.raw_payload["matches"][0]
 
 
 def test_list_directory_returns_failure_for_missing_directory(tmp_path: Path) -> None:
@@ -100,32 +77,6 @@ def test_list_directory_returns_failure_for_missing_directory(tmp_path: Path) ->
     assert result.success is False
     assert result.error is not None
     assert "directory" in result.error.lower()
-
-
-def test_search_text_exposes_match_evidence(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("hello world\n", encoding="utf-8")
-
-    tool = GrepTool(root)
-    result = tool.run(
-        ToolCall(
-            name="Grep",
-            arguments={"query": "hello", "output_mode": "content"},
-            reason="inspect",
-        )
-    )
-
-    assert result.success is True
-    assert len(result.evidence) == 1
-    evidence = result.evidence[0]
-    assert evidence.kind == "search_match"
-    assert evidence.title == 'Match 1 for "hello"'
-    assert evidence.path.endswith("README.md")
-    assert evidence.line_start == 1
-    assert evidence.line_end == 1
-    assert evidence.snippet == "hello world"
-    assert evidence.metadata["query"] == "hello"
 
 
 def test_read_file_exposes_file_excerpt_evidence(tmp_path: Path) -> None:
@@ -471,186 +422,3 @@ def test_ls_formatter_separates_directory_file_and_hidden_counts(tmp_path: Path)
     assert "Directories (1): src/" in rendered
     assert "Files (1): README.md" in rendered
     assert "Hidden (1): .env.example" in rendered
-
-
-def test_glob_returns_formatter_visible_matches(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "src").mkdir()
-    (root / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
-    (root / "tests").mkdir()
-    (root / "tests" / "test_app.py").write_text("def test_app(): pass\n", encoding="utf-8")
-
-    result = GlobTool(root).execute({"pattern": "**/*.py", "path": "."})
-    rendered = ToolResultFormatter().format("Glob", result)
-
-    assert result.success is True
-    assert result.raw_payload["file_count"] == 2
-    assert "Glob matches for **/*.py" in rendered
-    assert "src/app.py" in rendered
-    assert "tests/test_app.py" in rendered
-
-
-def test_grep_files_with_matches_is_model_visible(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("hello world\n", encoding="utf-8")
-    (root / "notes.md").write_text("hello again\n", encoding="utf-8")
-
-    result = GrepTool(root).execute({"pattern": "hello", "output_mode": "files_with_matches"})
-    rendered = ToolResultFormatter().format("Grep", result)
-
-    assert result.success is True
-    assert result.raw_payload["match_count"] == 2
-    assert "Files with matches (2):" in rendered
-    assert "README.md" in rendered
-    assert "notes.md" in rendered
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
-def test_grep_process_cannot_read_denied_env_file(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "secret.txt").write_text("MYCLI_UNIQUE_SECRET", encoding="utf-8")
-    tool = GrepTool(root)
-    sandbox = replace(
-        ExecutionPolicy.for_workspace(root).sandbox,
-        denied_read_globs=("**/secret.txt",),
-    )
-
-    result = tool.execute(
-        {
-            "pattern": "MYCLI_UNIQUE_SECRET",
-            "output_mode": "content",
-            "_runtime_sandbox_profile": sandbox,
-        }
-    )
-
-    assert result.success is True
-    assert result.raw_payload["matches"] == []
-
-
-def test_grep_content_matches_are_structured_and_locatable(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("first\nhello world\n", encoding="utf-8")
-
-    result = GrepTool(root).execute({"pattern": "hello", "output_mode": "content"})
-    rendered = ToolResultFormatter().format("Grep", result)
-
-    assert result.success is True
-    structured = result.raw_payload["structured_matches"]
-    assert structured[0]["path"] == "README.md"
-    assert structured[0]["line_number"] == 2
-    assert "README.md:2: hello world" in rendered
-    assert result.evidence[0].path == "README.md"
-
-
-def test_grep_empty_results_are_actionable(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("hello world\n", encoding="utf-8")
-
-    result = GrepTool(root).execute({"pattern": "missing"})
-    rendered = ToolResultFormatter().format("Grep", result)
-
-    assert result.success is True
-    assert result.raw_payload["match_count"] == 0
-    assert "No matches found" in rendered
-    assert "try broader terms" in rendered
-
-
-def test_search_text_supports_path_and_glob_filters(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    (root / "src").mkdir(parents=True)
-    (root / "docs").mkdir()
-    (root / "src" / "app.py").write_text("TOKEN = 'abc'\n", encoding="utf-8")
-    (root / "docs" / "notes.md").write_text("token mention\n", encoding="utf-8")
-
-    tool = GrepTool(root)
-    result = tool.run(
-        ToolCall(
-            name="Grep",
-            arguments={
-                "query": "TOKEN",
-                "path": "src",
-                "include": "*.py",
-                "output_mode": "content",
-            },
-            reason="rg for token in source",
-        )
-    )
-
-    assert result.success is True
-    assert len(result.raw_payload["matches"]) == 1
-    assert "app.py" in result.raw_payload["matches"][0]
-
-
-def test_search_text_supports_case_sensitive_matching(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("Token\ntoken\n", encoding="utf-8")
-
-    tool = GrepTool(root)
-    result = tool.run(
-        ToolCall(
-            name="Grep",
-            arguments={
-                "query": "Token",
-                "case_sensitive": True,
-                "output_mode": "content",
-            },
-            reason="rg with case sensitivity",
-        )
-    )
-
-    assert result.success is True
-    assert any("Token" in match for match in result.raw_payload["matches"])
-    assert all("Token" in evidence.snippet for evidence in result.evidence)
-
-
-def test_search_text_returns_matching_files_by_default(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("hello world\n", encoding="utf-8")
-
-    tool = GrepTool(root)
-    result = tool.run(
-        ToolCall(name="Grep", arguments={"query": "hello"}, reason="inspect")
-    )
-
-    assert result.success is True
-    assert "README.md" in result.raw_payload["matches"][0]
-
-
-def test_search_text_supports_single_file_content_mode(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    target = root / "README.md"
-    target.write_text("hello world\nsecond line\n", encoding="utf-8")
-
-    tool = GrepTool(root)
-    result = tool.run(
-        ToolCall(
-            name="Grep",
-            arguments={"query": "hello", "path": "README.md", "output_mode": "content"},
-            reason="inspect single file",
-        )
-    )
-
-    assert result.success is True
-    assert "hello world" in result.raw_payload["matches"][0]
-
-
-def test_search_text_returns_empty_matches_for_no_hits(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    (root / "README.md").write_text("hello world\n", encoding="utf-8")
-
-    tool = GrepTool(root)
-    result = tool.run(
-        ToolCall(name="Grep", arguments={"query": "missing"}, reason="inspect")
-    )
-
-    assert result.success is True
-    assert result.raw_payload["matches"] == []

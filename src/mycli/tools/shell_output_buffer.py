@@ -34,11 +34,6 @@ class ShellOutputBuffer:
         self._total_chars = 0
         self._lock = Lock()
 
-    @property
-    def end_cursor(self) -> int:
-        with self._lock:
-            return self._total_chars
-
     def append(self, text: str) -> None:
         if not text:
             return
@@ -87,4 +82,3 @@ class ShellOutputBuffer:
                 cursor_was_evicted=omitted > 0,
                 omitted_before_chunk=omitted,
             )
-

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.runtime import ProviderMessageShape, ProviderRuntimeItemShape, RequestShape, RuntimeBlock
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.application.runtime.request import RequestShapePayloadFormatter
 
 

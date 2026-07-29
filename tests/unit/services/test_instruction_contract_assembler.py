@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.contributed_tools import (
+from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
     ToolContributionLifecycleState,
     ToolContributionScope,
@@ -24,7 +24,7 @@ from mycli.domain.runtime import (
     TurnContextSection,
     TurnContextSectionType,
 )
-from mycli.domain.tool_exposure import (
+from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureEntry,
     ToolExposureKind,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -9,103 +8,10 @@ from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError,
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.model_output import mutation_model_output
 from mycli.tools.file_snapshot import FileSnapshotStore
-from mycli.tools.file_mutation import (
-    backup_file,
-    contains_secret_like_content,
-    unified_diff,
-)
+from mycli.tools.file_mutation import contains_secret_like_content
 
 
-LINE_NUMBER_PATTERN = re.compile(r"^\s*\d+\t", re.MULTILINE)
 MAX_EDIT_FILE_BYTES = 1_000_000
-
-
-class EditError(Exception):
-    """Raised when an edit cannot be applied safely."""
-
-
-def edit_file(
-    file_path: str,
-    old_string: str,
-    new_string: str,
-    replace_all: bool = False,
-) -> dict[str, Any]:
-    path = Path(file_path)
-    old_string = _preprocess(old_string, path)
-
-    if old_string == new_string:
-        raise EditError("Edit would be a no-op; old_string and new_string are identical.")
-
-    if old_string == "":
-        return _write_empty_old_string(path, new_string)
-
-    if not path.exists():
-        raise EditError(f"File does not exist: {file_path}")
-    if path.is_dir():
-        raise EditError(f"Path is a directory: {file_path}")
-
-    content = path.read_text()
-    count = content.count(old_string)
-    if count == 0:
-        raise EditError(
-            "String not found in file. The file may have changed since you "
-            "last read it. Re-read the file and try again."
-        )
-    if count > 1 and not replace_all:
-        raise EditError(
-            f"Multiple matches ({count}) found. Add more surrounding context "
-            "to make the old_string unique (include 3-5 lines before and after)."
-        )
-
-    new_content = (
-        content.replace(old_string, new_string)
-        if replace_all
-        else content.replace(old_string, new_string, 1)
-    )
-
-    backup_file(path, content)
-    path.write_text(new_content)
-    diff = unified_diff(
-        before=content,
-        after=new_content,
-        fromfile=f"{file_path}:before",
-        tofile=f"{file_path}:after",
-    )
-
-    return {
-        "status": "edited",
-        "file": str(path),
-        "matches": count if replace_all else 1,
-        "diff": diff,
-    }
-
-
-def _write_empty_old_string(path: Path, new_string: str) -> dict[str, str]:
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_string)
-        return {"status": "created", "file": str(path)}
-
-    if path.is_dir():
-        raise EditError(f"Path is a directory: {path}")
-
-    content = path.read_text()
-    if content.strip():
-        raise EditError(
-            "File has existing content. Use Edit with old_string to modify, "
-            "or Write to overwrite the entire file."
-        )
-
-    backup_file(path, content)
-    path.write_text(new_string)
-    return {"status": "written", "file": str(path)}
-
-
-def _preprocess(text: str, path: Path) -> str:
-    text = LINE_NUMBER_PATTERN.sub("", text)
-    if path.suffix.lower() not in {".md", ".mdx"}:
-        text = text.rstrip(" \t\r")
-    return text
 
 
 class EditTool:
@@ -244,7 +150,7 @@ class EditTool:
                 **_mutation_payload(mutation),
                 "matches": matches,
             }
-        except (OSError, UnicodeDecodeError, ValueError, EditError, FileSystemRuntimeError) as exc:
+        except (OSError, UnicodeDecodeError, ValueError, FileSystemRuntimeError) as exc:
             error_kind = _edit_error_kind(exc)
             return ToolResult(
                 success=False,

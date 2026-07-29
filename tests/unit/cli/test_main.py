@@ -5,56 +5,31 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
-from rich.status import Status
-from rich.syntax import Syntax
-from rich.text import Text
+import pytest
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.main import (
-    build_command_handler,
     build_parser,
     build_turn_service,
     handle_mcp_command,
     handle_subagents_command,
-    handle_slash_command,
     main,
-    render_activity_lines,
 )
+from mycli.cli.node_tui import NodeTuiProcessError
 from mycli.config.auth_store import AuthStore
 from mycli.tools.ripgrep_prepare import RipgrepPrepareResult
-from mycli.cli.node_tui import NodeTuiProcessError
-from mycli.cli.rendering import (
-    RenderOptions,
-    StreamingRenderState,
-    render_diff_view,
-    render_diff_lines,
-    render_runtime_stream_event,
-    render_stream_lines,
-    render_streaming_live_output,
-    render_streaming_state_lines,
-    render_tool_status,
-)
 from mycli.domain.runtime import (
-    ActivityEvent,
-    DecisionAction,
-    DecisionKind,
-    PendingDecision,
-    RuntimeStreamEvent,
     StopReason,
     TurnItem,
     TurnItemType,
-    TurnRecord,
     TurnRollout,
     TurnRolloutEvent,
     TurnResponse,
     TurnStatus,
-    ViewMode,
 )
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
-from mycli.domain.tools import ToolCall
 from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
-from mycli.services.extensions import ExtensionManifestService
 from mycli.services.mcp import McpToolContributionProvider
 
 
@@ -74,6 +49,65 @@ def test_build_parser_leaves_session_unset_by_default() -> None:
     args = parser.parse_args([])
 
     assert args.session is None
+
+
+def test_build_parser_rejects_retired_plain_flag() -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--plain"])
+
+
+def test_main_rejects_non_tty_conversation_before_building_runtime(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    outputs: list[str] = []
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr(
+        "mycli.cli.main.build_turn_service",
+        lambda *_args, **_kwargs: pytest.fail("runtime must not be built"),
+    )
+
+    assert main([], cwd=tmp_path, home=tmp_path / "home", env={}, output_func=outputs.append) == 2
+    assert outputs == ["Interactive mycli requires a terminal."]
+
+
+def test_main_dispatches_utility_command_before_tty_validation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr(
+        "mycli.cli.main.handle_doctor_command",
+        lambda *_args, **_kwargs: calls.append("doctor") or 0,
+    )
+
+    assert main(["doctor"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
+    assert calls == ["doctor"]
+
+
+def test_main_contains_node_startup_failure_and_closes_runtime(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    outputs: list[str] = []
+    calls: list[str] = []
+    service = SimpleNamespace(close=lambda: calls.append("close"))
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(
+        "mycli.cli.main.run_node_tui",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(NodeTuiProcessError("node failed")),
+    )
+
+    assert main([], cwd=tmp_path, home=tmp_path / "home", env={}, output_func=outputs.append) == 2
+    assert outputs == ["node failed"]
+    assert calls == ["close"]
 
 
 def test_build_parser_accepts_doctor_command() -> None:
@@ -372,19 +406,6 @@ def test_main_runs_doctor_without_leaking_api_key(tmp_path: Path) -> None:
     assert "sk-doctor-secret" not in rendered
 
 
-def test_help_lists_sessions_command() -> None:
-    output = handle_slash_command("/help")
-    assert "/status" in output
-    assert "/resume" in output
-    assert "/usage" in output
-    assert "/ps" in output
-    assert "/context" not in output
-    assert "/undo" not in output
-    assert "/session list" not in output
-    assert "/status usage" not in output
-    assert "Aliases:" not in output
-
-
 def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
@@ -434,8 +455,6 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "WebSearch",
         "Write",
         "WriteStdin",
-        "enter_plan_mode",
-        "exit_plan_mode",
     ]
     memory_dir = home_dir / ".mycli" / "projects"
     write_tool = service._tool_registry.executors["Write"]
@@ -495,68 +514,6 @@ def test_turn_service_accepts_stream_sink(tmp_path: Path) -> None:
     assert response.assistant_message == "done hello"
     assert runtime.seen_sink is sink
     assert events[0].text == "hi"
-
-
-def test_render_runtime_stream_event_formats_text_delta() -> None:
-    assert render_runtime_stream_event(
-        RuntimeStreamEvent(kind="text_delta", text="hello")
-    ) == ["[stream] hello"]
-
-
-def test_render_runtime_stream_event_formats_reasoning() -> None:
-    assert render_runtime_stream_event(
-        RuntimeStreamEvent(kind="reasoning", text="thinking")
-    ) == ["[activity] Thinking: thinking"]
-
-
-def test_render_runtime_stream_event_formats_tool_call() -> None:
-    assert render_runtime_stream_event(
-        RuntimeStreamEvent(kind="tool_call", tool_name="Read")
-    ) == ["[activity] Tool: Read"]
-
-
-def test_render_runtime_stream_event_suppresses_completed() -> None:
-    assert render_runtime_stream_event(
-        RuntimeStreamEvent(kind="completed", metadata={"response_status": "completed"})
-    ) == []
-
-
-def test_focus_render_options_suppress_tool_exposure_and_stream_echo() -> None:
-    response = TurnResponse(
-        assistant_message="hello world",
-        streamed_chunks=("hello ", "world"),
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-05-25T00:00:00Z",
-            completed_at="2026-05-25T00:00:01Z",
-            items=(
-                TurnItem(
-                    type=TurnItemType.TOOL_EXPOSURE,
-                    text="Read, Grep",
-                    metadata={"tool_names": ["Read", "Grep"]},
-                ),
-            ),
-        ),
-    )
-    options = RenderOptions(view_mode=ViewMode.FOCUS)
-
-    assert render_activity_lines(response, options=options) == []
-    assert render_stream_lines(response, options=options) == []
-
-
-def test_verbose_render_options_keep_stream_lines_with_final_answer() -> None:
-    response = TurnResponse(
-        assistant_message="hello world",
-        streamed_chunks=("hello ", "world"),
-    )
-
-    assert render_stream_lines(
-        response,
-        options=RenderOptions(view_mode=ViewMode.VERBOSE),
-    ) == ["[stream] hello ", "[stream] world"]
 
 
 def test_build_turn_service_uses_chat_completions_when_protocol_is_explicitly_set(
@@ -746,102 +703,6 @@ def test_build_turn_service_discovers_shared_repo_standard_skill(tmp_path: Path)
     assert skill.source_path == str(skill_dir / "SKILL.md")
 
 
-def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path: Path) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        _config = SimpleNamespace(session_id="demo")
-        _session_service = SimpleNamespace(
-            load_pending_decision=lambda _session_id: PendingDecision(
-                tool_call=ToolCall(
-                    name="run_shell",
-                    arguments={"args": ["git", "push"]},
-                    reason="publish branch",
-                ),
-                kind=DecisionKind.NEEDS_CHOICE,
-                reason="Push modifies remote state.",
-                preview="git push",
-                options=(
-                    DecisionAction.APPROVE_ONCE,
-                    DecisionAction.REJECT,
-                    DecisionAction.ALLOW_SESSION,
-                ),
-                command_pattern="git push",
-            )
-        )
-
-        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
-            return TurnResponse(
-                assistant_message="final answer",
-                activity_events=(
-                    ActivityEvent(kind="thinking", message="Thinking: inspect repo"),
-                    ActivityEvent(kind="tool_started", message="Reading: README.md"),
-                ),
-                progress_updates=("Inspecting the repository",),
-                plan_steps=("in_progress: Inspect runtime entrypoints",),
-                pending_decision=PendingDecision(
-                    tool_call=ToolCall(
-                        name="run_shell",
-                        arguments={"args": ["git", "push"]},
-                        reason="publish branch",
-                    ),
-                    kind=DecisionKind.NEEDS_CHOICE,
-                    reason="Push modifies remote state.",
-                    preview="git push",
-                    options=(
-                        DecisionAction.APPROVE_ONCE,
-                        DecisionAction.REJECT,
-                        DecisionAction.ALLOW_SESSION,
-                    ),
-                    command_pattern="git push",
-                ),
-            )
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            return TurnResponse(
-                assistant_message=f"resolved {choice}",
-                progress_updates=("[decision] approved",),
-            )
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fake_run_repl(
-        turn_handler,
-        *,
-        session_id: str,
-        decision_handler,
-        pending_decision_provider,
-        **_kwargs,
-    ) -> None:
-        events["session_id"] = session_id
-        events["turn_output"] = list(turn_handler("inspect repo"))
-        events["has_pending_decision"] = pending_decision_provider()
-        events["decision_output"] = list(decision_handler("3"))
-
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    exit_code = main(argv=["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={})
-
-    assert exit_code == 0
-    assert events["session_id"] == "demo"
-    assert events["has_pending_decision"] is True
-    assert events["turn_output"] == [
-        "[activity] Thinking: inspect repo",
-        "[activity] Reading: README.md",
-        "[progress] Inspecting the repository",
-        "[plan] in_progress: Inspect runtime entrypoints",
-        "[decision] 发现需要确认的操作：",
-        "[decision] Tool: run_shell",
-        "[decision] Preview: git push",
-        "[decision] Reason: Push modifies remote state.",
-        "[1] 仅本次允许",
-        "[2] 拒绝",
-        "[3] 本次会话内始终允许同类命令",
-        "final answer",
-    ]
-    assert events["decision_output"] == ["[decision] approved", "resolved 3"]
-
-
 def test_main_interactive_defaults_to_node_tui(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
 
@@ -888,61 +749,10 @@ def test_main_interactive_missing_api_key_runs_setup_then_starts_node_tui(
     assert build_calls == 2
 
 
-def test_main_plain_interactive_missing_api_key_runs_setup_then_repl(
+def test_main_reports_malformed_config_without_traceback(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    calls: list[str] = []
-    build_calls = 0
-    service = SimpleNamespace(
-        _config=SimpleNamespace(
-            session_id="demo",
-            workspace_root=tmp_path,
-            statusline_enabled=False,
-        ),
-        _session_service=SimpleNamespace(load_pending_decision=lambda _session_id: None),
-        close=lambda: calls.append("close"),
-    )
-
-    def fake_build_turn_service(*_args, **_kwargs):
-        nonlocal build_calls
-        build_calls += 1
-        if build_calls == 1:
-            raise RuntimeError("MYCLI_API_KEY is required")
-        return service
-
-    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", fake_build_turn_service)
-    monkeypatch.setattr(
-        "mycli.cli.main.run_setup_wizard",
-        lambda **_kwargs: calls.append("setup"),
-    )
-    monkeypatch.setattr("mycli.cli.main.run_repl", lambda *args, **kwargs: calls.append("plain"))
-
-    assert main(["--plain"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
-    assert calls == ["setup", "plain", "close"]
-    assert build_calls == 2
-
-
-def test_main_noninteractive_missing_api_key_returns_error(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    outputs: list[str] = []
-
-    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: False))
-    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: False))
-    monkeypatch.setattr(
-        "mycli.cli.main.build_turn_service",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("MYCLI_API_KEY is required")),
-    )
-
-    assert main([], cwd=tmp_path, home=tmp_path / "home", env={}, output_func=outputs.append) == 2
-    assert outputs == ["MYCLI_API_KEY is required"]
-
-
-def test_main_reports_malformed_config_without_traceback(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
     config_dir = workspace / ".mycli"
@@ -951,6 +761,8 @@ def test_main_reports_malformed_config_without_traceback(tmp_path: Path) -> None
     config_path = config_dir / "config.toml"
     config_path.write_text("[model\nname = 'gpt-5'\n", encoding="utf-8")
     outputs: list[str] = []
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
 
     exit_code = main(
         [],
@@ -965,981 +777,6 @@ def test_main_reports_malformed_config_without_traceback(tmp_path: Path) -> None
     assert "Invalid mycli configuration" in outputs[0]
     assert str(config_path) in outputs[0]
     assert "Traceback" not in outputs[0]
-
-
-def test_main_plain_still_overrides_default_node_tui(monkeypatch, tmp_path: Path) -> None:
-    calls: list[str] = []
-    service = SimpleNamespace(
-        _config=SimpleNamespace(
-            session_id="demo",
-            workspace_root=tmp_path,
-            statusline_enabled=False,
-        ),
-        _session_service=SimpleNamespace(load_pending_decision=lambda _session_id: None),
-    )
-
-    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: service)
-    monkeypatch.setattr("mycli.cli.main.run_repl", lambda *args, **kwargs: calls.append("plain"))
-
-    assert main(["--plain"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
-    assert calls == ["plain"]
-
-
-def test_main_node_startup_fallback_to_plain(monkeypatch, tmp_path: Path) -> None:
-    calls: list[str] = []
-    service = SimpleNamespace(
-        _config=SimpleNamespace(
-            session_id="demo",
-            workspace_root=tmp_path,
-            statusline_enabled=False,
-        ),
-        _session_service=SimpleNamespace(load_pending_decision=lambda _session_id: None),
-    )
-
-    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: service)
-    monkeypatch.setattr(
-        "mycli.cli.main.run_node_tui",
-        lambda *args, **kwargs: (_ for _ in ()).throw(NodeTuiProcessError("node failed")),
-    )
-    monkeypatch.setattr("mycli.cli.main.run_repl", lambda *args, **kwargs: calls.append("plain"))
-
-    assert (
-        main([], cwd=tmp_path, home=tmp_path / "home", env={"MYCLI_TUI_FALLBACK": "plain"})
-        == 0
-    )
-    assert calls == ["plain"]
-
-
-def test_main_keeps_existing_output_when_no_activity_events_are_present(
-    monkeypatch, tmp_path: Path
-) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        _config = SimpleNamespace(session_id="demo")
-        _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
-
-        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
-            return TurnResponse(
-                assistant_message="plain answer",
-                progress_updates=("Working",),
-            )
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            return TurnResponse(assistant_message=choice)
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fake_run_repl(turn_handler, **_kwargs) -> None:
-        events["turn_output"] = list(turn_handler("inspect repo"))
-
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    exit_code = main(argv=["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={})
-
-    assert exit_code == 0
-    assert events["turn_output"] == [
-        "[progress] Working",
-        "plain answer",
-    ]
-
-
-def test_main_renders_activity_from_turn_items_when_present(monkeypatch, tmp_path: Path) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        _config = SimpleNamespace(session_id="demo")
-        _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
-
-        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
-            return TurnResponse(
-                assistant_message="plain answer",
-                turn=TurnRecord(
-                    thread_id="demo",
-                    turn_id="turn_1",
-                    status=TurnStatus.COMPLETED,
-                    stop_reason=StopReason.ASSISTANT_COMPLETED,
-                    started_at="2026-04-11T00:00:00+00:00",
-                    completed_at="2026-04-11T00:00:01+00:00",
-                    items=(
-                        TurnItem(type=TurnItemType.REASONING, text="inspect repo"),
-                        TurnItem(
-                            type=TurnItemType.TOOL_CALL,
-                            text="README.md",
-                            tool_name="read_file",
-                            call_id="call_1",
-                        ),
-                        TurnItem(
-                            type=TurnItemType.TOOL_RESULT,
-                            text="README.md",
-                            tool_name="read_file",
-                            call_id="call_1",
-                        ),
-                    ),
-                ),
-            )
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            return TurnResponse(assistant_message=choice)
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fake_run_repl(turn_handler, **_kwargs) -> None:
-        events["turn_output"] = list(turn_handler("inspect repo"))
-
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    exit_code = main(argv=["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={})
-
-    assert exit_code == 0
-    assert events["turn_output"] == [
-        "[activity] Thinking: inspect repo",
-        "[activity] Reading: README.md",
-        "[activity] Done reading: README.md",
-        "plain answer",
-    ]
-
-
-def test_render_activity_lines_coalesces_reasoning_fragments_from_turn_items() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text="The"),
-                TurnItem(type=TurnItemType.REASONING, text=" user wants"),
-                TurnItem(type=TurnItemType.REASONING, text=" a short summary."),
-                TurnItem(
-                    type=TurnItemType.TOOL_CALL,
-                    text="pyproject.toml",
-                    tool_name="read_file",
-                    call_id="call_1",
-                ),
-                TurnItem(
-                    type=TurnItemType.REASONING,
-                    text="Summarize",
-                    metadata={"activity_kind": "planning"},
-                ),
-                TurnItem(
-                    type=TurnItemType.REASONING,
-                    text=" the architecture next.",
-                    metadata={"activity_kind": "planning"},
-                ),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] 正在理解任务目标",
-        "[activity] Reading: pyproject.toml",
-        "[activity] 正在整理结论",
-    ]
-
-
-def test_render_activity_lines_includes_edit_diff_lines() -> None:
-    response = TurnResponse(
-        assistant_message="done",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(
-                    type=TurnItemType.TOOL_RESULT,
-                    text="notes.txt",
-                    tool_name="Edit",
-                    metadata={"diff": "@@ -1 +1 @@\n-before\n+after"},
-                ),
-            ),
-        ),
-    )
-
-    lines = render_activity_lines(response)
-
-    assert "[activity] Done: notes.txt" in lines
-    assert "[diff] 0001 @@ -1 +1 @@" in lines
-    assert "[diff] 0002 -before" in lines
-    assert "[diff] 0003 +after" in lines
-
-
-def test_render_activity_lines_preserves_provider_reasoning_content_verbatim() -> None:
-    reasoning_content = (
-        "The user wants me to read mission.txt. "
-        "I need to inspect mission.txt before answering, even if this sentence is long enough "
-        "that ordinary reasoning rendering would normally summarize it."
-    )
-    response = TurnResponse(
-        assistant_message="Read complete",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-26T00:00:00+00:00",
-            completed_at="2026-04-26T00:00:01+00:00",
-            items=(
-                TurnItem(
-                    type=TurnItemType.REASONING,
-                    text=f"Thinking: {reasoning_content}",
-                    metadata={
-                        "provider": "deepseek",
-                        "source": "provider_reasoning_content",
-                        "deepseek": {"reasoning_content": reasoning_content},
-                    },
-                ),
-                TurnItem(
-                    type=TurnItemType.TOOL_CALL,
-                    text="Reading: mission.txt",
-                    tool_name="read_file",
-                    call_id="call_read_file_1",
-                ),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        f"[activity] Thinking: {reasoning_content}",
-        "[activity] Reading: mission.txt",
-    ]
-
-
-def test_render_activity_lines_turns_exploration_reasoning_into_semantic_activity() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text="Thinking: Let me look at"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  the py project.toml"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  for entry points, the README"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  for project overview, and the src directory structure."),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] 正在查看 `pyproject.toml`、`README.md`、`src/`",
-    ]
-
-
-def test_render_activity_lines_semanticizes_reasoning_before_summary_truncation() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text="Thinking: This is a Python project"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  with `src/` directory."),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  I need to look"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  at `pyproject.toml`"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  and the `src/` directory structure."),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] 正在查看 `pyproject.toml`、`src/`",
-    ]
-
-
-def test_render_activity_lines_prefers_structured_repo_analysis_stage_messages() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text="Planning: 正在检查仓库结构"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking: for entry points, the README and src tree"),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] 正在检查仓库结构",
-    ]
-
-
-def test_render_activity_lines_suppresses_summary_draft_after_structured_answer_stage() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text="Planning: 已从确认的证据收口回答"),
-                TurnItem(
-                    type=TurnItemType.REASONING,
-                    text="Planning: Plan:\n根据已确认的 pyproject.toml，这个仓库的入口是 src/mycli/cli/main.py",
-                ),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] 已从确认的证据收口回答",
-    ]
-
-
-def test_render_activity_lines_deduplicates_repeated_semantic_reasoning() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text="Thinking: The user wants a short summary."),
-                TurnItem(
-                    type=TurnItemType.TOOL_CALL,
-                    text="Listing: src",
-                    tool_name="list_directory",
-                    call_id="call_1",
-                ),
-                TurnItem(
-                    type=TurnItemType.TOOL_RESULT,
-                    text="Done: list_directory",
-                    tool_name="list_directory",
-                    call_id="call_1",
-                ),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking: The user wants a short summary."),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] 正在理解任务目标",
-        "[activity] Listing: src",
-        "[activity] Done: list_directory",
-    ]
-
-
-def test_render_activity_lines_filters_prompt_scaffolding_reasoning_noise() -> None:
-    response = TurnResponse(
-        assistant_message="plain answer",
-        turn=TurnRecord(
-            thread_id="demo",
-            turn_id="turn_1",
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.ASSISTANT_COMPLETED,
-            started_at="2026-04-11T00:00:00+00:00",
-            completed_at="2026-04-11T00:00:01+00:00",
-            items=(
-                TurnItem(type=TurnItemType.REASONING, text='Planning: "Current plan"'),
-                TurnItem(type=TurnItemType.REASONING, text="Planning: , update_plan`"),
-                TurnItem(type=TurnItemType.REASONING, text="Planning: _text, update_plan"),
-                TurnItem(type=TurnItemType.REASONING, text="Planning: /plans/`,"),
-                TurnItem(type=TurnItemType.REASONING, text="Planning: plan: none`."),
-                TurnItem(
-                    type=TurnItemType.TOOL_CALL,
-                    text="Reading: README.md",
-                    tool_name="read_file",
-                    call_id="call_1",
-                ),
-            ),
-        ),
-    )
-
-    assert render_activity_lines(response) == [
-        "[activity] Reading: README.md",
-    ]
-
-
-def test_main_omits_duplicate_progress_lines_when_turn_activity_is_present(
-    monkeypatch, tmp_path: Path
-) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        _config = SimpleNamespace(session_id="demo")
-        _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
-
-        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
-            return TurnResponse(
-                assistant_message="plain answer",
-                progress_updates=("The user wants a short summary.",),
-                turn=TurnRecord(
-                    thread_id="demo",
-                    turn_id="turn_1",
-                    status=TurnStatus.COMPLETED,
-                    stop_reason=StopReason.ASSISTANT_COMPLETED,
-                    started_at="2026-04-11T00:00:00+00:00",
-                    completed_at="2026-04-11T00:00:01+00:00",
-                    items=(
-                        TurnItem(type=TurnItemType.REASONING, text="Thinking: The"),
-                        TurnItem(type=TurnItemType.REASONING, text="Thinking:  user wants"),
-                        TurnItem(type=TurnItemType.REASONING, text="Thinking:  a short summary."),
-                        TurnItem(
-                            type=TurnItemType.TOOL_CALL,
-                            text="Reading: pyproject.toml",
-                            tool_name="read_file",
-                            call_id="call_1",
-                        ),
-                    ),
-                ),
-            )
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            return TurnResponse(assistant_message=choice)
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fake_run_repl(turn_handler, **_kwargs) -> None:
-        events["turn_output"] = list(turn_handler("inspect repo"))
-
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    exit_code = main(argv=["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={})
-
-    assert exit_code == 0
-    assert events["turn_output"] == [
-        "[activity] 正在理解任务目标",
-        "[activity] Reading: pyproject.toml",
-        "plain answer",
-    ]
-
-
-def test_main_renders_error_details_when_present(monkeypatch, tmp_path: Path) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        _config = SimpleNamespace(session_id="demo")
-        _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
-
-        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
-            return TurnResponse(
-                assistant_message="Model request failed: boom",
-                error_details=(
-                    "Details logged to log/errors.log",
-                    "Raw error saved to log/model-raw/demo/demo-turn_1-error.json",
-                ),
-            )
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            return TurnResponse(assistant_message=choice)
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fake_run_repl(turn_handler, **_kwargs) -> None:
-        events["turn_output"] = list(turn_handler("inspect repo"))
-
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    exit_code = main(argv=["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={})
-
-    assert exit_code == 0
-    assert events["turn_output"] == [
-        "[error] Details logged to log/errors.log",
-        "[error] Raw error saved to log/model-raw/demo/demo-turn_1-error.json",
-        "Model request failed: boom",
-    ]
-
-
-def test_main_skips_streamed_answer_chunks_when_final_message_is_present(
-    monkeypatch, tmp_path: Path
-) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        _config = SimpleNamespace(session_id="demo")
-        _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
-
-        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
-            return TurnResponse(
-                assistant_message="Repository summary complete.",
-                activity_events=(ActivityEvent(kind="thinking", message="Thinking: inspect pyproject first"),),
-                streamed_chunks=("Repository ", "summary complete.",),
-            )
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            return TurnResponse(assistant_message=choice)
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fake_run_repl(turn_handler, **_kwargs) -> None:
-        events["turn_output"] = list(turn_handler("inspect repo"))
-
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    exit_code = main(argv=["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={})
-
-    assert exit_code == 0
-    assert events["turn_output"] == [
-        "[activity] Thinking: inspect pyproject first",
-        "Repository summary complete.",
-    ]
-
-
-def test_streaming_render_state_accumulates_chunks_and_tool_status() -> None:
-    state = StreamingRenderState()
-
-    assert state.start_tool("read_file", "README.md") == "[tool] running read_file: README.md"
-    assert state.append_chunk("hello") == "[stream] hello"
-    assert state.append_chunk(" world") == "[stream] hello world"
-    assert state.text == "hello world"
-    assert state.finish_tool("read_file", "README.md") == "[tool] done read_file: README.md"
-    assert state.active_tool is None
-
-
-def test_render_streaming_state_lines_shows_accumulated_output() -> None:
-    response = TurnResponse(
-        assistant_message="",
-        streamed_chunks=("hello", " ", "world"),
-    )
-
-    assert render_streaming_state_lines(response) == [
-        "[stream] hello",
-        "[stream] hello ",
-        "[stream] hello world",
-    ]
-
-
-def test_render_streaming_live_output_uses_rich_text() -> None:
-    response = TurnResponse(
-        assistant_message="",
-        streamed_chunks=("hello", " ", "world"),
-    )
-
-    rendered = render_streaming_live_output(response)
-
-    assert [item.plain for item in rendered] == ["hello", "hello ", "hello world"]
-    assert all(isinstance(item, Text) for item in rendered)
-
-
-def test_render_tool_status_uses_rich_status() -> None:
-    rendered = render_tool_status("read_file", "README.md")
-
-    assert isinstance(rendered, Status)
-    assert rendered.status == "read_file: README.md"
-
-
-def test_render_diff_view_uses_rich_syntax() -> None:
-    rendered = render_diff_view("+new")
-
-    assert isinstance(rendered, Syntax)
-    assert rendered.code == "+new"
-
-
-def test_render_diff_lines_adds_line_numbers_and_markers() -> None:
-    assert render_diff_lines("@@ -1 +1 @@\n-old\n+new") == [
-        "   1 [@]@@ -1 +1 @@",
-        "   2 [-]-old",
-        "   3 [+]+new",
-    ]
-
-
-def test_render_diff_lines_reports_omitted_tail_count() -> None:
-    diff = "\n".join(f"+line {index}" for index in range(1, 6))
-
-    assert render_diff_lines(diff, max_lines=3) == [
-        "   1 [+]+line 1",
-        "   2 [+]+line 2",
-        "   3 [+]+line 3",
-        "... 2 lines omitted",
-    ]
-
-
-def test_activity_diff_lines_reports_omitted_tail_count() -> None:
-    turn = TurnRecord(
-        thread_id="demo",
-        turn_id="turn_1",
-        status=TurnStatus.COMPLETED,
-        stop_reason=StopReason.ASSISTANT_COMPLETED,
-        started_at="2026-05-25T00:00:00Z",
-        completed_at="2026-05-25T00:00:01Z",
-        items=(
-            TurnItem(
-                type=TurnItemType.TOOL_RESULT,
-                text="Edited notes.txt",
-                tool_name="Edit",
-                metadata={"diff": "\n".join(f"+line {index}" for index in range(1, 6))},
-            ),
-        ),
-    )
-    response = TurnResponse(assistant_message="done", turn=turn)
-
-    assert render_activity_lines(
-        response,
-        options=RenderOptions(diff_max_lines=2),
-    )[-1] == "[diff] ... 3 lines omitted"
-
-
-def test_changes_command_renders_file_history_lines() -> None:
-    service = SimpleNamespace(
-        inspect_file_changes=lambda: ("snapshot_1 turn_1 Edit notes.txt",)
-    )
-    handler = build_command_handler(service)
-
-    assert list(handler("/changes")) == [
-        "File changes - 1 item",
-        "Snapshot 1  turn_1 Edit notes.txt",
-    ]
-
-
-def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
-    class FakeService:
-        def undo_last_file_change(self):
-            return "Restored notes.txt"
-
-        def inspect_plan(self) -> tuple[str, ...]:
-            return ("in_progress: Inspect runtime entrypoints",)
-
-        def inspect_mode(self) -> tuple[str, ...]:
-            return ("collaboration_mode=default",)
-
-        def set_collaboration_mode(self, mode: str) -> tuple[str, ...]:
-            if mode == "plan":
-                return ("collaboration_mode=plan",)
-            if mode == "default":
-                return ("collaboration_mode=default",)
-            return (f"unsupported collaboration_mode={mode}; allowed=default, plan",)
-
-        def inspect_sandbox(self) -> tuple[str, ...]:
-            return (
-                "sandbox_mode=workspace-write",
-                "filesystem=workspace_write network=disabled shell=restricted",
-            )
-
-        def set_sandbox_mode(self, mode: str) -> tuple[str, ...]:
-            if mode == "next":
-                return ("sandbox_mode=danger-full-access",)
-            return (f"sandbox_mode={mode}",)
-
-        def add_permission_allowance(self, pattern: str) -> tuple[str, ...]:
-            return (f"allow_session pattern={pattern}",)
-
-        def remove_permission_allowance(self, pattern: str) -> tuple[str, ...]:
-            return (f"removed_allow_session pattern={pattern}",)
-
-        def clear_permission_allowances(self) -> tuple[str, ...]:
-            return ("cleared_session_allowances=1",)
-
-        def set_model_settings(
-            self,
-            *,
-            model: str | None = None,
-            thinking_effort: str | None = None,
-        ) -> tuple[str, ...]:
-            del thinking_effort
-            return (f"model={model or 'gpt-test'}",)
-
-        def inspect_skills(self) -> tuple[str, ...]:
-            return ("repository-analysis: Inspect repos",)
-
-        def inspect_tools(self) -> tuple[str, ...]:
-            return (
-                "Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
-            )
-
-        def inspect_permissions(self) -> tuple[str, ...]:
-            return ("session_allowances=0", "execpolicy_rules=0")
-
-        def inspect_hooks(self) -> tuple[str, ...]:
-            return (
-                "pre_tool_use permission_guard enabled=true calls=0 errors=0",
-                "pre_tool_use configured:repo:deny-read enabled=true calls=1 errors=0",
-            )
-
-        def inspect_toolsets(self) -> tuple[str, ...]:
-            return (
-                "file enabled=true sources=builtin tools=Read,Write conflicts=0",
-            )
-
-        def inspect_bashes(self) -> tuple[str, ...]:
-            return ("no background shells",)
-
-        def inspect_file_changes(self) -> tuple[str, ...]:
-            return ("snapshot_1 turn_1 Edit notes.txt",)
-
-        def inspect_memory(self) -> tuple[str, ...]:
-            return (
-                "path=/tmp/mycli-memory",
-                "entrypoint=/tmp/mycli-memory/MEMORY.md",
-                "files=1",
-            )
-
-        def add_memory(
-            self,
-            *,
-            kind: str,
-            name: str,
-            content: str,
-            description: str | None = None,
-        ) -> tuple[str, ...]:
-            del description
-            return (f"added {kind} {name}: {content}",)
-
-        def search_memory(self, query: str) -> tuple[str, ...]:
-            return (f"match {query}",)
-
-        def forget_memory(self, query: str) -> tuple[str, ...]:
-            return (f"removed {query}",)
-
-        def inspect_memory_path(self) -> tuple[str, ...]:
-            return ("path=/tmp/mycli-memory", "entrypoint=/tmp/mycli-memory/MEMORY.md")
-
-        def inspect_extensions(self) -> tuple[str, ...]:
-            manifest = ExtensionManifestService().manifest()
-            return (
-                (
-                    "agent=mycli schema=1 "
-                    f"rpc_methods={len(manifest['rpc_methods'])} "
-                    f"event_streams={len(manifest['event_streams'])}"
-                ),
-                "rpc extension.manifest",
-                "rpc trace.export",
-                "runtime.trace.export available",
-                "extensions.lifecycle not_available",
-                "acp.server not_available",
-            )
-
-        def inspect_plugin_commands(self) -> tuple[str, ...]:
-            return ("plugin:demo:DemoCommand plugin=demo name=DemoCommand kind=slash",)
-
-        def run_plugin_command(self, plugin_id: str, command_name: str, raw_args: str = "") -> tuple[str, ...]:
-            return (f"ok {plugin_id}:{command_name} {raw_args or '{}'}",)
-
-        def inspect_trace(self) -> tuple[str, ...]:
-            return ("tool_execution search_text",)
-
-        def export_trace_jsonl(self) -> tuple[str, ...]:
-            return ('{"kind":"tool_execution","turn_id":"turn_1","payload":{"tool_name":"search_text"}}',)
-
-        def inspect_logs(self) -> tuple[str, ...]:
-            return ("agent_log=/tmp/mycli/logs/agent.log", "tail: INFO [demo] turn_started")
-
-        def inspect_session(self) -> tuple[str, ...]:
-            return ("session=demo", "messages=3")
-
-        def inspect_sessions(self) -> tuple[str, ...]:
-            return ("* demo active messages=3", "  backlog active messages=1")
-
-        def inspect_session_maintenance(self) -> tuple[str, ...]:
-            return ("dry_run=true", "workspace_sessions=2", "empty_sessions=1")
-
-        def apply_session_maintenance_empty_cleanup(self) -> tuple[str, ...]:
-            return ("dry_run=false", "deleted_empty_sessions=1", "deleted_session=empty")
-
-        def apply_session_maintenance_orphan_cleanup(self) -> tuple[str, ...]:
-            return (
-                "dry_run=false",
-                "deleted_orphan_rows=2",
-                "deleted_orphan_table=history_items rows=2",
-            )
-
-        def apply_session_maintenance_vacuum(self) -> tuple[str, ...]:
-            return (
-                "dry_run=false",
-                "before_freelist_count=2",
-                "after_freelist_count=0",
-            )
-
-        def search_sessions(self, query: str) -> tuple[str, ...]:
-            return (f"demo#1 assistant: {query}",)
-
-        def inspect_stats(self) -> tuple[str, ...]:
-            return ("cache_hit_rate=0.5", "alerts=none")
-
-        def inspect_context(self) -> tuple[str, ...]:
-            return ("budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider",)
-
-        def inspect_usage(self) -> tuple[str, ...]:
-            return ("session=demo", "turns=1")
-
-        def inspect_subagent_profiles(self) -> tuple[str, ...]:
-            return ("mycli subagents list: subagents: 1 profiles, 1 enabled, 0 disabled", "subagent explore")
-
-        def inspect_subagent_profile(self, profile_id: str) -> tuple[str, ...]:
-            return (f"mycli subagents inspect: subagent profile: {profile_id}", f"subagent {profile_id}")
-
-        def inspect_subagents(self, child_session_id: str | None = None) -> tuple[str, ...]:
-            return (f"explore running {child_session_id or 'child-session'}",)
-
-        def cancel_background_subagents(self) -> tuple[str, ...]:
-            return ("cancelled child-session",)
-
-        def cancel_background_subagent(self, child_session_id: str) -> tuple[str, ...]:
-            return (f"cancelled {child_session_id}",)
-
-        def inspect_status(self) -> tuple[str, ...]:
-            return (
-                "session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no",
-            )
-
-        def inspect_view(self) -> tuple[str, ...]:
-            return ("view_mode=default",)
-
-        def set_view_mode(self, mode: str) -> tuple[str, ...]:
-            return (f"view_mode={mode}",)
-
-        def resume_session(self, session_id=None) -> tuple[str, ...]:
-            return (f"resumed {session_id or 'demo'}", "messages=3")
-
-        def fork_session(self, source_session_id=None, new_session_id=None, fork_point=None) -> tuple[str, ...]:
-            return (
-                f"forked {source_session_id or 'demo'} -> {new_session_id or 'demo-fork'}",
-                f"fork_point={fork_point}",
-            )
-
-    handler = build_command_handler(FakeService())
-    commands = (
-        "/plan",
-        "/mode",
-        "/mode plan",
-        "/mode invalid",
-        "/model gpt-5.4",
-        "/skills",
-        "/tools",
-        "/tools list",
-        "/permissions",
-        "/permissions allow git push",
-        "/permissions revoke git push",
-        "/permissions clear",
-        "/sandbox",
-        "/sandbox next",
-        "/tools hooks",
-        "/tools sets",
-        "/ps",
-        "/tasks",
-        "/agents",
-        "/agents inspect explore",
-        "/tasks agents",
-        "/tasks agents child-1",
-        "/tasks kill-agents",
-        "/tasks agents kill child-1",
-        "/changes",
-        "/memory",
-        "/memory list",
-        "/memory path",
-        "/memory search terse",
-        "/memory forget terse.md",
-        "/memory add feedback terse :: Keep replies concise",
-        "/tools plugins",
-        "/tools plugins demo DemoCommand {\"name\":\"codex\"}",
-        "/tools extensions",
-        "/trace",
-        "/trace export",
-        "/trace logs",
-        "/resume",
-        "/resume backlog",
-        "/status",
-        "/session maintenance",
-        "/session maintenance --apply-empty",
-        "/session maintenance --apply-orphans",
-        "/session maintenance --apply-vacuum",
-        "/session search checkpoint",
-        "/undo",
-        "/stats",
-        "/context",
-        "/usage",
-        "/view",
-        "/view focus",
-        "/fork demo branch 2",
-    )
-    outputs = {command: list(handler(command)) for command in commands}
-
-    assert all(outputs.values())
-    legacy_prefixes = (
-        "[status]",
-        "[usage]",
-        "[context]",
-        "[stats]",
-        "[tool]",
-        "[skill]",
-        "[agent]",
-        "[permission]",
-        "[change]",
-        "[memory]",
-        "[mode]",
-        "[sandbox]",
-        "[undo]",
-    )
-    assert not any(
-        line.startswith(legacy_prefixes)
-        for command_output in outputs.values()
-        for line in command_output
-    )
-
-    aliases = (
-        ("/tools skills", "/skills"),
-        ("/tools permissions", "/permissions"),
-        ("/hooks", "/tools hooks"),
-        ("/toolsets", "/tools sets"),
-        ("/bashes", "/ps"),
-        ("/tasks bashes", "/ps"),
-        ("/jobs", "/ps"),
-        ("/jobs bashes", "/ps"),
-        ("/agents runs child-1", "/tasks agents child-1"),
-        ("/subagents child-1", "/tasks agents child-1"),
-        ("/agents kill", "/tasks kill-agents"),
-        ("/plugin", "/tools plugins"),
-        ("/extensions", "/tools extensions"),
-        ("/trace-jsonl", "/trace export"),
-        ("/logs", "/trace logs"),
-        ("/session", "/resume"),
-        ("/sessions", "/resume"),
-        ("/session list", "/resume"),
-        ("/session show", "/status"),
-        ("/session-maintenance", "/session maintenance"),
-        ("/search checkpoint", "/session search checkpoint"),
-        ("/changes undo", "/undo"),
-        ("/status stats", "/stats"),
-        ("/status context", "/context"),
-        ("/status usage", "/usage"),
-        ("/session resume backlog", "/resume backlog"),
-        ("/session fork demo branch 2", "/fork demo branch 2"),
-    )
-    for alias, canonical in aliases:
-        assert list(handler(alias)) == list(handler(canonical))
-
-    assert outputs["/plan"] == ["collaboration_mode=plan"]
-    assert outputs["/tools"][0] == "Tools - 1 item"
-    assert "Read  builtin  file  low  available  auto_allow" in outputs["/tools"]
-    assert outputs["/status"][:4] == [
-        "mycli",
-        "Session: demo",
-        "Model: gpt-test",
-        "Provider: openai/responses",
-    ]
-    assert outputs["/usage"] == ["Usage", "Session: demo", "Turns: 1"]
-    assert outputs["/trace logs"] == [
-        "agent_log=/tmp/mycli/logs/agent.log",
-        "tail: INFO [demo] turn_started",
-    ]
-    assert outputs["/undo"] == ["Restored notes.txt"]
 
 
 def test_turn_service_inspect_context_reports_empty_metrics(tmp_path: Path) -> None:
@@ -2749,95 +1586,14 @@ def test_turn_service_inspect_trace_prefers_high_signal_events_over_turn_items(t
     )
 
 
-def test_main_plain_flag_keeps_line_repl(monkeypatch, tmp_path: Path) -> None:
-    events: dict[str, object] = {}
-
-    class FakeService:
-        def __init__(self) -> None:
-            self._config = SimpleNamespace(
-                session_id="demo",
-                workspace_root=tmp_path,
-                view_mode=ViewMode.DEFAULT,
-                statusline_enabled=False,
-            )
-            self._session_service = SimpleNamespace(
-                load_pending_decision=lambda _session_id: None
-            )
-
-        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
-            del message, stream_sink
-            return TurnResponse(assistant_message="plain")
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            del choice
-            return TurnResponse(assistant_message="resolved")
-
-        def inspect_status(self) -> tuple[str, ...]:
-            return ("session=demo context=unknown",)
-
-    def fake_run_repl(turn_handler, **kwargs) -> None:
-        events["turn_output"] = list(turn_handler("hello"))
-        events["kwargs"] = kwargs
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    assert main(["--plain", "--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
-    assert events["turn_output"] == ["plain"]
-
-
-def test_main_non_interactive_stdout_uses_plain_mode(monkeypatch, tmp_path: Path) -> None:
-    events: dict[str, object] = {}
-
-    class FakeStdout:
-        def isatty(self) -> bool:
-            return False
-
-    class FakeStdin:
-        def isatty(self) -> bool:
-            return True
-
-    class FakeService:
-        def __init__(self) -> None:
-            self._config = SimpleNamespace(
-                session_id="demo",
-                workspace_root=tmp_path,
-                view_mode=ViewMode.DEFAULT,
-                statusline_enabled=False,
-            )
-            self._session_service = SimpleNamespace(
-                load_pending_decision=lambda _session_id: None
-            )
-
-        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
-            del message, stream_sink
-            return TurnResponse(assistant_message="plain")
-
-        def resolve_pending_decision(self, choice: str) -> TurnResponse:
-            del choice
-            return TurnResponse(assistant_message="resolved")
-
-        def inspect_status(self) -> tuple[str, ...]:
-            return ("session=demo context=unknown",)
-
-    def fake_run_repl(turn_handler, **kwargs) -> None:
-        events["turn_output"] = list(turn_handler("hello"))
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-    monkeypatch.setattr("mycli.cli.main.stdin", FakeStdin())
-    monkeypatch.setattr("mycli.cli.main.stdout", FakeStdout())
-    monkeypatch.setattr("mycli.cli.main.run_repl", fake_run_repl)
-
-    assert main(["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
-    assert events["turn_output"] == ["plain"]
-
-
 def test_main_routes_node_tui_flag_to_gateway(monkeypatch, tmp_path: Path) -> None:
     events: dict[str, object] = {}
 
     class FakeService:
         pass
 
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
 
     def fake_run_node_tui(service, *, cwd, env):
@@ -2864,6 +1620,8 @@ def test_main_routes_node_tui_env_backend(monkeypatch, tmp_path: Path) -> None:
     class FakeService:
         pass
 
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
     monkeypatch.setattr(
         "mycli.cli.main.run_node_tui",
@@ -2885,6 +1643,8 @@ def test_main_routes_mycli_shell_env_backend_through_node_gateway(monkeypatch, t
     class FakeService:
         pass
 
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
     monkeypatch.setattr(
         "mycli.cli.main.run_node_tui",
@@ -2898,43 +1658,3 @@ def test_main_routes_mycli_shell_env_backend_through_node_gateway(monkeypatch, t
         env={"MYCLI_API_KEY": "x", "MYCLI_TUI_BACKEND": "shell"},
     ) == 0
     assert events["env"]["MYCLI_TUI_BACKEND"] == "shell"
-
-
-def test_main_plain_overrides_node_tui_backend(monkeypatch, tmp_path: Path) -> None:
-    outputs: list[str] = []
-    scripted_inputs = iter(["/quit"])
-
-    class FakeService:
-        def __init__(self) -> None:
-            self._config = type(
-                "Config",
-                (),
-                {
-                    "session_id": "demo",
-                    "workspace_root": tmp_path,
-                    "view_mode": ViewMode.DEFAULT,
-                    "statusline_enabled": False,
-                },
-            )()
-            self._session_service = type(
-                "Sessions",
-                (),
-                {"load_pending_decision": lambda _self, _session_id: None},
-            )()
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-
-    def fail_node_tui(*args, **kwargs):
-        raise AssertionError("node tui should not run")
-
-    monkeypatch.setattr("mycli.cli.main.run_node_tui", fail_node_tui)
-
-    assert main(
-        ["--plain", "--session", "demo"],
-        cwd=tmp_path,
-        home=tmp_path / "home",
-        env={"MYCLI_API_KEY": "x", "MYCLI_TUI_BACKEND": "node"},
-        input_func=lambda _prompt: next(scripted_inputs),
-        output_func=outputs.append,
-    ) == 0
-    assert outputs[-1] == "Bye."

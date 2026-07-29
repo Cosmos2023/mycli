@@ -159,38 +159,12 @@ class AnthropicMessagesClient:
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
-            detail = str(exc)
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={"error_type": type(exc).__name__, "message": detail},
-            )
-            raise ModelResponseError(
-                f"Failed to reach Anthropic provider: {detail}",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-                stop_reason=StopReason.MODEL_ERROR,
-                is_retryable=True,
-                failure_kind="provider_connection_error",
-            ) from exc
+            raise self._connection_error(exc, request_path) from exc
         except (APIResponseValidationError, TypeError) as exc:
-            detail = str(exc)
-            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                    "response_body": response_body,
-                },
-            )
-            raise ModelResponseError(
+            raise self._response_validation_error(
+                exc,
+                request_path,
                 "Anthropic provider response did not serialize to a JSON object.",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-                stop_reason=StopReason.MODEL_ERROR,
-                failure_kind="provider_response_parse_error",
             ) from exc
         self._log_service_event(
             level=LogLevel.INFO,
@@ -269,38 +243,12 @@ class AnthropicMessagesClient:
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
-            detail = str(exc)
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={"error_type": type(exc).__name__, "message": detail},
-            )
-            raise ModelResponseError(
-                f"Failed to reach Anthropic provider: {detail}",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-                stop_reason=StopReason.MODEL_ERROR,
-                is_retryable=True,
-                failure_kind="provider_connection_error",
-            ) from exc
+            raise self._connection_error(exc, request_path) from exc
         except (APIResponseValidationError, TypeError) as exc:
-            detail = str(exc)
-            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                    "response_body": response_body,
-                },
-            )
-            raise ModelResponseError(
+            raise self._response_validation_error(
+                exc,
+                request_path,
                 "Anthropic provider stream did not serialize to JSON objects.",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-                stop_reason=StopReason.MODEL_ERROR,
-                failure_kind="provider_response_parse_error",
             ) from exc
         finally:
             for unregister in reversed(unregister_interrupt_callbacks):
@@ -481,6 +429,52 @@ class AnthropicMessagesClient:
                 failure_kind="invalid_provider_config",
             )
         return {"type": "enabled", "budget_tokens": budget}
+
+    def _connection_error(
+        self,
+        exc: APIConnectionError | APITimeoutError,
+        request_path: str | None,
+    ) -> ModelResponseError:
+        detail = str(exc)
+        error_path = self._log_failure(
+            message=detail,
+            request_path=request_path,
+            payload={"error_type": type(exc).__name__, "message": detail},
+        )
+        return ModelResponseError(
+            f"Failed to reach Anthropic provider: {detail}",
+            error_path=error_path,
+            log_path=self._default_error_log_path(),
+            stop_reason=StopReason.MODEL_ERROR,
+            is_retryable=True,
+            failure_kind="provider_connection_error",
+        )
+
+    def _response_validation_error(
+        self,
+        exc: APIResponseValidationError | TypeError,
+        request_path: str | None,
+        message: str,
+    ) -> ModelResponseError:
+        detail = str(exc)
+        error_path = self._log_failure(
+            message=detail,
+            request_path=request_path,
+            payload={
+                "error_type": type(exc).__name__,
+                "message": detail,
+                "response_body": (
+                    exc.body if isinstance(exc, APIResponseValidationError) else None
+                ),
+            },
+        )
+        return ModelResponseError(
+            message,
+            error_path=error_path,
+            log_path=self._default_error_log_path(),
+            stop_reason=StopReason.MODEL_ERROR,
+            failure_kind="provider_response_parse_error",
+        )
 
     def _status_error(
         self,

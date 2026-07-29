@@ -9,6 +9,33 @@ from mycli.llms.clients.openai_chat_errors import ModelResponseError
 NATIVE_TOOL_ARGUMENTS_PARSE_ERROR = "Native tool call arguments were not valid JSON."
 
 
+def tool_parameters_schema(tool: dict[str, object]) -> dict[str, object]:
+    raw_parameters = tool.get("parameters", [])
+    parameters = raw_parameters if isinstance(raw_parameters, list) else []
+    properties: dict[str, object] = {}
+    required: list[str] = []
+    for parameter in parameters:
+        if not isinstance(parameter, dict):
+            continue
+        name = str(parameter["name"])
+        property_schema: dict[str, object] = {"type": str(parameter["type"])}
+        description = parameter.get("description")
+        if description is not None:
+            property_schema["description"] = str(description)
+        items_schema = parameter.get("items_schema")
+        if isinstance(items_schema, dict):
+            property_schema["items"] = dict(items_schema)
+        properties[name] = property_schema
+        if bool(parameter.get("required", True)):
+            required.append(name)
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
 def decode_native_tool_call(
     raw_tool_call: dict[str, object],
     *,

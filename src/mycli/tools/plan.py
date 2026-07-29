@@ -114,7 +114,3 @@ class PlanTool:
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
-
-
-class UpdatePlanTool(PlanTool):
-    name = "Plan"

@@ -92,6 +92,3 @@ class RehydratedSkill:
 class CompactionRehydrationContext:
     files: tuple[RehydratedFile, ...] = ()
     invoked_skills: tuple[RehydratedSkill, ...] = ()
-
-    def is_empty(self) -> bool:
-        return not self.files and not self.invoked_skills

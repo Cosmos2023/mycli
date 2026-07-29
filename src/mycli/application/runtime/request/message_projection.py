@@ -139,7 +139,7 @@ class RequestMessageProjector:
                 return block.call_id
         return None
 
-    def _message_metadata_from_blocks(self, message: Message) -> dict[str, object]:
+    def message_metadata_from_blocks(self, message: Message) -> dict[str, object]:
         metadata: dict[str, object] = {}
         for block in message.blocks:
             if block.type == "image":
@@ -155,7 +155,7 @@ class RequestMessageProjector:
         return metadata
 
     def _model_visible_message_metadata(self, message: Message) -> dict[str, object]:
-        metadata = self._message_metadata_from_blocks(message)
+        metadata = self.message_metadata_from_blocks(message)
         value = message.metadata.get(POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY)
         if value:
             metadata[POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY] = value

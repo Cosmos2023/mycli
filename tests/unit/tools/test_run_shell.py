@@ -16,8 +16,8 @@ from mycli.domain.runtime import (
     ShellProfile,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
-from mycli.domain.tools import ToolCall
-from mycli.services.safety_policy import SafetyPolicy
+from mycli.domain.tooling.calls import ToolCall
+from mycli.services.approval.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, ShellTool, derive_command_pattern, execute_bash
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackendRequest
 from mycli.tools.process_sandbox import process_sandbox_backend_profile

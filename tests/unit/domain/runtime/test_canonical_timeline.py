@@ -41,10 +41,3 @@ def test_api_only_canonical_timeline_item_is_not_model_visible_or_replayable() -
 
     assert item.is_model_visible is False
     assert item.is_replayable is False
-    assert item.to_model_visible_metadata() == {
-        "durability": "api_only",
-        "scope": "request",
-        "cache_class": "ephemeral",
-        "model_visible": False,
-        "replayable": False,
-    }

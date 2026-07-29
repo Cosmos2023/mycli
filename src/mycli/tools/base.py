@@ -65,13 +65,6 @@ class MutationAwareTool(Protocol):
         ...
 
 
-class EffectAwareTool(Protocol):
-    spec: ToolSpec
-
-    def effect_profile(self) -> ToolEffectProfile:
-        ...
-
-
 def tool_has_mutation_contract(tool: object) -> bool:
     return callable(getattr(tool, "mutation_targets", None))
 

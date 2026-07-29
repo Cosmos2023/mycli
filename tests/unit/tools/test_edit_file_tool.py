@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.tools.file_snapshot import FileSnapshotStore
 from mycli.tools.patch import PatchTool

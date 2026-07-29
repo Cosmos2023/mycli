@@ -6,7 +6,12 @@ from pathlib import Path
 import tempfile
 
 from mycli.application.turn_service import TurnService
-from mycli.cli.repl import build_command_handler
+from mycli.cli.slash_command_dispatch import dispatch_backend_slash_command
+from mycli.cli.slash_command_registry import (
+    SlashCommandContext,
+    SlashCommandSurface,
+    resolve_slash_command,
+)
 from mycli.domain.runtime import AgentConfig
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
 from mycli.services.hooks import HookAllowlist, HookContext, HookManager, HookPoint
@@ -43,6 +48,12 @@ class FakeRuntime:
             for spec in self._hook_config_discovery.hooks
         )
         return tuple(lines)
+
+
+def _dispatch_cli_command(service: TurnService, command: str) -> tuple[str, ...]:
+    context = SlashCommandContext(surface=SlashCommandSurface.CLI)
+    invocation = resolve_slash_command(command, context)
+    return dispatch_backend_slash_command(service, invocation).lines
 
 
 def main() -> int:
@@ -177,7 +188,7 @@ def main() -> int:
             home_dir=home,
             runtime=FakeRuntime(workspace, home, hook_manager),
         )
-        slash_lines = tuple(build_command_handler(service)("/hooks"))
+        slash_lines = _dispatch_cli_command(service, "/hooks")
         doctor = DoctorService(
             workspace_root=workspace,
             home_dir=home,
@@ -211,8 +222,18 @@ def main() -> int:
             and len(blocked_discovery.hooks) == 3
             and any("permission_guard" in line for line in slash_lines)
             and any("configured:repo:configured-deny-write" in line for line in slash_lines)
-            and any("configured:repo:configured-deny-write" in line and "denies=1" in line for line in slash_lines)
-            and any("allowlist=allowed" in line for line in slash_lines)
+            and any(
+                line.startswith("Pre tool use")
+                and "configured:repo:configured-deny-write" in line
+                and "deny" in line
+                for line in slash_lines
+            )
+            and any(
+                line.startswith("Configured:repo:configured deny write")
+                and "allowed" in line
+                and "matched" in line
+                for line in slash_lines
+            )
             and any(event["kind"] == "hook_execution" for event in traces)
             and any(
                 event["kind"] == "hook_execution"

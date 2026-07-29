@@ -8,6 +8,7 @@ from mycli.services.context.compaction.pipeline import (
     LocalCompactProvider,
     effective_l4_trigger_ratio,
 )
+from mycli.llms.adapters.base import ModelToolDefinition
 from mycli.services.context.compaction.replacement import CompactionReplacementBuilder
 from mycli.services.context.compaction.trigger import (
     CompactPhase,
@@ -55,9 +56,40 @@ class CapturingCompactProvider:
         self.output = output
         self.messages: tuple[Message, ...] = ()
 
-    def compact(self, messages: tuple[Message, ...]) -> tuple[Message, ...]:
+    def compact(
+        self,
+        messages: tuple[Message, ...],
+        *,
+        tools: tuple[ModelToolDefinition, ...] = (),
+    ) -> tuple[Message, ...]:
         self.messages = messages
         return self.output
+
+
+class CapturingStructuredSummarizer:
+    def __init__(self, response: str = "Structured summary.") -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def complete_compaction(
+        self,
+        *,
+        messages: tuple[Message, ...],
+        instruction: str,
+        tools: tuple[ModelToolDefinition, ...],
+        model: str,
+        max_tokens: int,
+    ) -> str:
+        self.calls.append(
+            {
+                "messages": messages,
+                "instruction": instruction,
+                "tools": tools,
+                "model": model,
+                "max_tokens": max_tokens,
+            }
+        )
+        return self.response
 
 
 def _compact_decision():
@@ -84,7 +116,7 @@ def _three_completed_turns() -> Conversation:
     )
 
 
-def test_compact_service_summarizes_removed_prefix_only() -> None:
+def test_compact_service_summarizes_full_structured_history() -> None:
     provider = CapturingCompactProvider(
         (Message(role="assistant", content="Earlier work summary."),)
     )
@@ -103,6 +135,10 @@ def test_compact_service_summarizes_removed_prefix_only() -> None:
         "",
         "large old tool output",
         "old final answer",
+        "recent request",
+        "recent answer",
+        "latest request",
+        "latest answer",
     ]
     assert [(message.role, message.content) for message in result.messages] == [
         ("user", "[compact-summary]\nEarlier work summary."),
@@ -184,6 +220,74 @@ def test_local_compact_provider_excludes_private_reasoning() -> None:
     assert "old request" in output[0].content
     assert "old final answer" in output[0].content
     assert "private reasoning" not in output[0].content
+
+
+def test_local_compact_provider_sends_structured_tool_history_and_tool_specs() -> None:
+    client = CapturingStructuredSummarizer()
+    provider = LocalCompactProvider(
+        summarizer_client=client,
+        model_name="summary-model",
+    )
+    tool = ModelToolDefinition(
+        name="Read",
+        description="Read a file",
+        parameters=(),
+    )
+
+    output = provider.compact(
+        (
+            Message(role="user", content="inspect the project"),
+            _assistant_tool_call("call_structured"),
+            _tool_message("call_structured", content="README contents"),
+            Message(role="assistant", content="inspection complete"),
+        ),
+        tools=(tool,),
+    )
+
+    sent = client.calls[0]
+    messages = sent["messages"]
+    assert isinstance(messages, tuple)
+    assert messages[1].tool_calls[0].name == "Read"
+    assert messages[1].tool_calls[0].arguments == {"file_path": "README.md"}
+    assert messages[1].tool_calls[0].call_id == "call_structured"
+    assert messages[2].role == "tool"
+    assert messages[2].tool_call_id == "call_structured"
+    assert messages[2].content == "README contents"
+    assert sent["tools"] == (tool,)
+    assert "Conversation:" not in str(sent["instruction"])
+    assert output == (Message(role="assistant", content="Structured summary."),)
+
+
+def test_local_compact_provider_repairs_pairs_and_bounds_tool_output() -> None:
+    client = CapturingStructuredSummarizer()
+    provider = LocalCompactProvider(
+        summarizer_client=client,
+        model_name="summary-model",
+        tool_output_max_chars=80,
+    )
+
+    provider.compact(
+        (
+            _tool_message("orphan", content="must be removed"),
+            _assistant_tool_call("call_long"),
+            _tool_message("call_long", content="A" * 200),
+            _assistant_tool_call("call_missing"),
+            Message(role="assistant", content="done"),
+        )
+    )
+
+    messages = client.calls[0]["messages"]
+    assert isinstance(messages, tuple)
+    tool_messages = [message for message in messages if message.role == "tool"]
+    assert [message.tool_call_id for message in tool_messages] == [
+        "call_long",
+        "call_missing",
+    ]
+    assert len(tool_messages[0].content) <= 80
+    assert "chars omitted" in tool_messages[0].content
+    assert tool_messages[0].blocks[0].call_id == "call_long"
+    assert tool_messages[0].blocks[0].text == tool_messages[0].content
+    assert "unavailable during compaction" in tool_messages[1].content
 
 
 def test_legacy_ratio_migration_reserves_the_configured_buffer() -> None:

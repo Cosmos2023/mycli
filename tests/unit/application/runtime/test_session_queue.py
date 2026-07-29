@@ -141,6 +141,43 @@ def test_task_notification_capacity_replaces_oldest_internal_record(tmp_path: Pa
     ]
 
 
+def test_legacy_queue_ack_removes_user_records_but_keeps_task_notifications(
+    tmp_path: Path,
+) -> None:
+    queue = _coordinator(tmp_path)
+    queue.enqueue_follow_up(text="user follow-up", client_turn_id="user-1")
+    queue.enqueue_follow_up(
+        text="task update",
+        client_turn_id="task-1",
+        source="task_notification",
+    )
+    migration = queue.legacy_user_queue_migration()
+
+    assert migration is not None
+    queue.ack_legacy_user_queue_migration(migration.token)
+
+    assert [record.text for record in queue.snapshot().active_records()] == [
+        "task update"
+    ]
+
+
+def test_drain_task_notifications_keeps_user_records(tmp_path: Path) -> None:
+    queue = _coordinator(tmp_path)
+    queue.enqueue_follow_up(text="user follow-up", client_turn_id="user-1")
+    queue.enqueue_follow_up(
+        text="task update",
+        client_turn_id="task-1",
+        source="task_notification",
+    )
+
+    drained = queue.drain_legacy_task_notifications()
+
+    assert [record.text for record in drained] == ["task update"]
+    assert [record.text for record in queue.snapshot().active_records()] == [
+        "user follow-up"
+    ]
+
+
 def test_listener_runs_after_coordinator_lock_is_released(tmp_path: Path) -> None:
     queue = _coordinator(tmp_path)
     observed: list[int] = []

@@ -5,8 +5,6 @@ from pathlib import Path
 from mycli.tools.base import ToolEffectProfile, tool_effects_for_tool
 from mycli.tools.bash import BashTool
 from mycli.tools.edit import EditTool
-from mycli.tools.glob import GlobTool
-from mycli.tools.grep import GrepTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
 from mycli.tools.write import WriteTool
@@ -14,11 +12,6 @@ from mycli.tools.write import WriteTool
 
 def test_local_tools_report_expected_effect_profiles(tmp_path: Path) -> None:
     assert tool_effects_for_tool(ReadTool(tmp_path)) == ToolEffectProfile(filesystem="read")
-    assert tool_effects_for_tool(GrepTool(tmp_path)) == ToolEffectProfile(
-        filesystem="read",
-        process=True,
-    )
-    assert tool_effects_for_tool(GlobTool(tmp_path)) == ToolEffectProfile(filesystem="read")
     assert tool_effects_for_tool(LSTool(tmp_path)) == ToolEffectProfile(filesystem="read")
 
     assert tool_effects_for_tool(EditTool(tmp_path)) == ToolEffectProfile(filesystem="write")

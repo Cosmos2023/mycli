@@ -9,6 +9,8 @@ from mycli.domain.runtime import (
     AgentConfig,
     DecisionAction,
     DecisionKind,
+    HistoryItem,
+    HistoryItemType,
     ModelTurnResult,
     ModelDecision,
     PendingApproval,
@@ -24,7 +26,7 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.memory import MemoryKind
 from mycli.memory.service import MemoryService
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.base import ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
@@ -1252,7 +1254,7 @@ def test_turn_service_includes_recent_conversation_in_prompt(tmp_path: Path) -> 
     assert "first answer" in model.prompts[0]
 
 
-def test_turn_service_inspect_session_uses_conversation_title(tmp_path: Path) -> None:
+def test_turn_service_keeps_original_title_after_compact_replacement(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
@@ -1269,6 +1271,36 @@ def test_turn_service_inspect_session_uses_conversation_title(tmp_path: Path) ->
     conversation.append(Message(role="user", content="Fix the TUI session title rendering"))
     conversation.append(Message(role="assistant", content="Done"))
     service._session_service.save_conversation(conversation)
+
+    assert service.session_title() == "Fix the TUI session title rendering"
+    assert service.inspect_session()[0] == "session=Fix the TUI session title rendering"
+
+    service._session_service.append_history_items(
+        "demo",
+        (
+            HistoryItem(
+                id="turn-1:user",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="Fix the TUI session title rendering",
+            ),
+        ),
+    )
+    service._session_service.save_conversation(
+        Conversation(
+            session_id="demo",
+            messages=[
+                Message(
+                    role="user",
+                    content="## 1. Primary Request\nA compacted conversation summary",
+                    metadata={"compaction": True},
+                ),
+                Message(role="user", content="Continue the implementation"),
+            ],
+        )
+    )
+    service._session_title_cache.clear()
 
     assert service.session_title() == "Fix the TUI session title rendering"
     assert service.inspect_session()[0] == "session=Fix the TUI session title rendering"

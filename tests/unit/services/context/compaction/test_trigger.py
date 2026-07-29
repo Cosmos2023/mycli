@@ -50,28 +50,6 @@ def test_model_downshift_precedes_context_limit() -> None:
     assert decision.phase is CompactPhase.PRE_TURN
 
 
-def test_model_transition_detects_smaller_context_window() -> None:
-    decision = CompactTriggerPolicy(limit_tokens=87_000).model_transition(
-        previous_context_limit=200_000,
-        current_context_limit=100_000,
-        active_tokens=60_000,
-    )
-
-    assert decision.should_compact is True
-    assert decision.reason is CompactReason.MODEL_DOWNSHIFT
-
-
-def test_model_transition_ignores_equal_or_larger_context_window() -> None:
-    decision = CompactTriggerPolicy(limit_tokens=87_000).model_transition(
-        previous_context_limit=100_000,
-        current_context_limit=200_000,
-        active_tokens=60_000,
-    )
-
-    assert decision.should_compact is False
-    assert decision.reason is None
-
-
 def test_compatibility_change_triggers_pre_turn_compact() -> None:
     decision = CompactTriggerPolicy(limit_tokens=87_000).pre_turn(
         CompactTokenStatus(provider_input_tokens=10_000),
@@ -81,24 +59,6 @@ def test_compatibility_change_triggers_pre_turn_compact() -> None:
     assert decision.should_compact is True
     assert decision.reason is CompactReason.COMPATIBILITY_CHANGED
     assert decision.phase is CompactPhase.PRE_TURN
-
-
-def test_compatibility_transition_requires_two_different_hashes() -> None:
-    policy = CompactTriggerPolicy(limit_tokens=87_000)
-
-    changed = policy.compatibility_transition(
-        previous_hash="responses:v1",
-        current_hash="chat_completions:v1",
-        active_tokens=10_000,
-    )
-    initial = policy.compatibility_transition(
-        previous_hash=None,
-        current_hash="responses:v1",
-        active_tokens=10_000,
-    )
-
-    assert changed.reason is CompactReason.COMPATIBILITY_CHANGED
-    assert initial.should_compact is False
 
 
 def test_mid_turn_uses_new_request_estimate_after_tool_results() -> None:

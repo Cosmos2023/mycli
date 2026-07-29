@@ -122,27 +122,11 @@ class McpToolAdapter:
                 registrations.append(self._registration(client=client, descriptor=descriptor, hydrate=False))
         return tuple(registrations)
 
-    def load_tool_schema(self, route_name: str) -> ToolSpec:
-        descriptor = self._descriptors_by_route.get(route_name)
-        if descriptor is None:
-            descriptor = self._find_descriptor(route_name)
-        return self._spec_for(descriptor, hydrate=True)
-
     def registrations_with_full_schema(self) -> tuple[ToolContributionRegistration, ...]:
         return tuple(
             self._registration(client=self._clients[descriptor.server_name], descriptor=descriptor, hydrate=True)
             for descriptor in sorted(self._descriptors_by_route.values(), key=lambda item: item.route_name)
         )
-
-    def _find_descriptor(self, route_name: str) -> McpToolDescriptor:
-        for server_name, client in sorted(self._clients.items()):
-            if not client.config.enabled:
-                continue
-            for descriptor in client.list_tools():
-                self._descriptors_by_route[descriptor.route_name] = descriptor
-                if descriptor.route_name == route_name:
-                    return descriptor
-        raise ValueError(f"Unknown MCP tool route: {route_name}")
 
     def _registration(
         self,

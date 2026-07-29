@@ -15,6 +15,7 @@ from mycli.llms.clients.openai_chat import (
     _close_stream,
     _sdk_payload_to_dict,
 )
+from mycli.llms.clients.openai_chat_payloads import tool_parameters_schema
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.schemas.responses_protocol import (
     ResponsesCapabilityProfile,
@@ -186,38 +187,12 @@ class OpenAIResponsesClient:
     ) -> list[dict[str, object]]:
         normalized_tools: list[dict[str, object]] = []
         for tool in tools:
-            raw_parameters = tool.get("parameters", [])
-            parameters = raw_parameters if isinstance(raw_parameters, list) else []
-            properties: dict[str, object] = {}
-            required: list[str] = []
-            for parameter in parameters:
-                if not isinstance(parameter, dict):
-                    continue
-                name = str(parameter["name"])
-                property_schema: dict[str, object] = {
-                    "type": str(parameter["type"]),
-                }
-                description = parameter.get("description")
-                if description is not None:
-                    property_schema["description"] = str(description)
-                items_schema = parameter.get("items_schema")
-                if isinstance(items_schema, dict):
-                    property_schema["items"] = dict(items_schema)
-                properties[name] = property_schema
-                if bool(parameter.get("required", True)):
-                    required.append(name)
-
             normalized_tools.append(
                 {
                     "type": "function",
                     "name": str(tool["name"]),
                     "description": str(tool["description"]),
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                        "additionalProperties": False,
-                    },
+                    "parameters": tool_parameters_schema(tool),
                 }
             )
         return normalized_tools

@@ -26,9 +26,9 @@ from mycli.application.runtime.request import RequestShapeBuilder, RequestShapeP
 from mycli.application.runtime.request.cache_shape_diagnostics import CacheShapeDiagnostics
 from mycli.application.runtime.request.request_pipeline import RequestPipeline
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
-from mycli.services.trace_service import TraceService
+from mycli.services.tracing import TraceService
 from mycli.utils.workspace_logger import WorkspaceLogService
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, tool_effects_for_tool
 from mycli.tools.write import WriteTool
 

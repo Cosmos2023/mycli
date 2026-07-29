@@ -90,50 +90,6 @@ class CompactTriggerPolicy:
             trigger_tokens=status.mid_turn_tokens,
         )
 
-    def model_transition(
-        self,
-        *,
-        previous_context_limit: int | None,
-        current_context_limit: int | None,
-        active_tokens: int,
-    ) -> CompactDecision:
-        trigger_tokens = max(0, active_tokens)
-        if (
-            previous_context_limit is not None
-            and current_context_limit is not None
-            and previous_context_limit > 0
-            and current_context_limit > 0
-            and current_context_limit < previous_context_limit
-        ):
-            return self._compact(
-                reason=CompactReason.MODEL_DOWNSHIFT,
-                phase=CompactPhase.PRE_TURN,
-                trigger_tokens=trigger_tokens,
-            )
-        return self._no_compact(
-            phase=CompactPhase.PRE_TURN,
-            trigger_tokens=trigger_tokens,
-        )
-
-    def compatibility_transition(
-        self,
-        *,
-        previous_hash: str | None,
-        current_hash: str | None,
-        active_tokens: int,
-    ) -> CompactDecision:
-        trigger_tokens = max(0, active_tokens)
-        if previous_hash and current_hash and previous_hash != current_hash:
-            return self._compact(
-                reason=CompactReason.COMPATIBILITY_CHANGED,
-                phase=CompactPhase.PRE_TURN,
-                trigger_tokens=trigger_tokens,
-            )
-        return self._no_compact(
-            phase=CompactPhase.PRE_TURN,
-            trigger_tokens=trigger_tokens,
-        )
-
     def manual(self, *, active_tokens: int = 0) -> CompactDecision:
         return self._compact(
             reason=CompactReason.USER_REQUESTED,

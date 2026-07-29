@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
 
 from mycli.domain.conversation import Conversation
 from mycli.domain.logging import LogLevel
@@ -12,7 +12,6 @@ from mycli.domain.runtime import (
     ExecutionPolicy,
     PlanState,
     RuntimeEnvironmentContract,
-    SandboxProfile,
     RuntimeTraceEvent,
     TurnContext,
     TurnContextSection,
@@ -45,13 +44,11 @@ class RuntimeContextBuilder:
         skill_registry: SkillRegistry,
         tool_registry: ToolRegistry,
         workspace_log_service: WorkspaceLogService,
+        policy_provider: Callable[[], ExecutionPolicy],
         context_file_loader: ContextFileLoader | None = None,
         trace_service: TraceService | None = None,
         turn_context_budgeter: TurnContextBudgeter | None = None,
         execpolicy_rules: ExecPolicyRuleSet | None = None,
-        writable_roots: tuple[Path, ...] = (),
-        denied_read_roots: tuple[Path, ...] = (),
-        denied_read_globs: tuple[str, ...] = (),
     ) -> None:
         self._config = config
         self._session_service = session_service
@@ -61,31 +58,17 @@ class RuntimeContextBuilder:
         self._skill_registry = skill_registry
         self._tool_registry = tool_registry
         self._workspace_log_service = workspace_log_service
+        self._policy_provider = policy_provider
         self._context_file_loader = context_file_loader or ContextFileLoader()
         self._trace_service = trace_service
         self._turn_context_budgeter = turn_context_budgeter or TurnContextBudgeter()
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
-        self._writable_roots = tuple(path.resolve() for path in writable_roots)
-        self._denied_read_roots = tuple(path.resolve() for path in denied_read_roots)
-        self._denied_read_globs = tuple(denied_read_globs)
 
     def set_config(self, config: AgentConfig) -> None:
         self._config = config
 
     def set_execpolicy_rules(self, rules: ExecPolicyRuleSet) -> None:
         self._execpolicy_rules = rules
-
-    def set_writable_roots(self, writable_roots: tuple[Path, ...]) -> None:
-        self._writable_roots = tuple(path.resolve() for path in writable_roots)
-
-    def set_denied_reads(
-        self,
-        *,
-        denied_read_roots: tuple[Path, ...],
-        denied_read_globs: tuple[str, ...],
-    ) -> None:
-        self._denied_read_roots = tuple(path.resolve() for path in denied_read_roots)
-        self._denied_read_globs = tuple(denied_read_globs)
 
     def build_context(
         self,
@@ -144,53 +127,7 @@ class RuntimeContextBuilder:
         )
 
     def _runtime_environment_contract(self) -> RuntimeEnvironmentContract:
-        policy = ExecutionPolicy.for_workspace(
-            self._config.workspace_root,
-            sandbox_mode=self._config.sandbox_mode,
-        )
-        writable_roots = (
-            tuple(
-                dict.fromkeys(
-                    (
-                        *policy.sandbox.writable_roots,
-                        *self._writable_roots,
-                    )
-                )
-            )
-            if policy.sandbox.filesystem != "read_only"
-            else ()
-        )
-        policy = ExecutionPolicy(
-            sandbox=SandboxProfile(
-                workspace_roots=policy.sandbox.workspace_roots,
-                cwd=policy.sandbox.cwd,
-                mode=policy.sandbox.mode,
-                writable_roots=writable_roots,
-                denied_read_roots=tuple(
-                    dict.fromkeys(
-                        (
-                            *policy.sandbox.denied_read_roots,
-                            *self._denied_read_roots,
-                        )
-                    )
-                ),
-                denied_read_globs=tuple(
-                    dict.fromkeys(
-                        (
-                            *policy.sandbox.denied_read_globs,
-                            *self._denied_read_globs,
-                        )
-                    )
-                ),
-                filesystem=policy.sandbox.filesystem,
-                network=policy.sandbox.network,
-                shell=policy.sandbox.shell,
-            ),
-            approval_policy=policy.approval_policy,
-            command_policy=policy.command_policy,
-            file_policy=policy.file_policy,
-            tool_policy=policy.tool_policy,
-        )
+        policy = self._policy_provider()
         sources = tuple(rule.source.value for rule in self._execpolicy_rules.rules)
         from mycli.tools.process_sandbox import process_sandbox_backend_profile
 

@@ -6,13 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.97.0",
-    "langchain>=1.2.15",
     "openai>=2.30.0",
-    "pygments>=2.20.0",
     "pywinpty>=3.0.2; sys_platform == 'win32'",
     "pyyaml>=6.0.3",
-    "rich>=15.0.0",
-    "structlog>=25.5.0",
+    "requests>=2.32.0",
     "tiktoken>=0.12.0",
 ]
 

@@ -7,7 +7,7 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionScope,
     ToolContributionSource,
 )
-from mycli.domain.tool_exposure import ToolRouteKey
+from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.output import ToolOutputBudgetClass
 from mycli.services.approval.safety_policy import SafetyPolicy
@@ -18,6 +18,7 @@ from mycli.tools.registry import (
     ToolsetRegistry,
     combined_tool_manifest,
     contributed_tool_manifest_entry,
+    default_tools,
 )
 
 
@@ -120,6 +121,26 @@ def test_default_registry_has_visible_shell_and_legacy_aliases(tmp_path: Path) -
     assert "ShellOutput" in registry.list_names()
     assert "Bash" in registry.list_names()
     assert "BashOutput" in registry.list_names()
+
+
+def test_default_tools_preserve_runtime_filesystem_options(tmp_path: Path) -> None:
+    allowed_root = tmp_path / "allowed"
+    tools = {
+        tool.spec.name: tool
+        for tool in default_tools(
+            tmp_path,
+            allowed_roots=(allowed_root,),
+            unrestricted_filesystem=True,
+            include_task=False,
+        )
+    }
+
+    assert "Task" not in tools
+    assert tools["Read"]._filesystem.allowed_roots == (allowed_root,)  # type: ignore[attr-defined]
+    assert tools["Read"]._filesystem.unrestricted is True  # type: ignore[attr-defined]
+    assert tools["LS"]._allowed_roots == (allowed_root,)  # type: ignore[attr-defined]
+    assert tools["LS"]._unrestricted is True  # type: ignore[attr-defined]
+    assert tools["Lint"]._workspace_root == tmp_path  # type: ignore[attr-defined]
 
 
 def test_legacy_bash_alias_still_executes(tmp_path: Path) -> None:

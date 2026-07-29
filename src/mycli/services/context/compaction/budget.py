@@ -26,13 +26,6 @@ class ContextBudget:
         self.total_tokens = max(0, value)
 
     @property
-    def usable_limit(self) -> int:
-        return self.max_tokens
-
-    def reset_from_estimate(self, estimated_input_tokens: int) -> None:
-        self.total_tokens = max(0, estimated_input_tokens)
-
-    @property
     def usage_ratio(self) -> float:
         if self.max_tokens <= 0:
             return 0.0

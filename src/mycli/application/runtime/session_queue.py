@@ -399,17 +399,8 @@ class SessionQueueCoordinator:
                 raise QueueConflictError("legacy queue migration token is stale")
             record_ids = {record.queue_id for record in records}
             candidate = replace(
-                current,
+                self._without_records(current, record_ids),
                 revision=current.revision + 1,
-                pending_steers=tuple(
-                    record for record in current.pending_steers if record.queue_id not in record_ids
-                ),
-                rejected_steers=tuple(
-                    record for record in current.rejected_steers if record.queue_id not in record_ids
-                ),
-                follow_ups=tuple(
-                    record for record in current.follow_ups if record.queue_id not in record_ids
-                ),
             )
             listeners = self._persist_and_publish_locked(candidate)
         self._notify(listeners, candidate)
@@ -426,17 +417,8 @@ class SessionQueueCoordinator:
                 return ()
             record_ids = {record.queue_id for record in records}
             candidate = replace(
-                current,
+                self._without_records(current, record_ids),
                 revision=current.revision + 1,
-                pending_steers=tuple(
-                    record for record in current.pending_steers if record.queue_id not in record_ids
-                ),
-                rejected_steers=tuple(
-                    record for record in current.rejected_steers if record.queue_id not in record_ids
-                ),
-                follow_ups=tuple(
-                    record for record in current.follow_ups if record.queue_id not in record_ids
-                ),
             )
             listeners = self._persist_and_publish_locked(candidate)
         self._notify(listeners, candidate)
@@ -511,7 +493,7 @@ class SessionQueueCoordinator:
         if oldest_internal is None:
             self._emit_capacity_diagnostic(candidate)
             raise QueueCapacityError("queue capacity exceeded")
-        candidate = self._without_record(candidate, oldest_internal.queue_id)
+        candidate = self._without_records(candidate, {oldest_internal.queue_id})
         try:
             self._validate_capacity(candidate)
         except QueueCapacityError:
@@ -539,17 +521,21 @@ class SessionQueueCoordinator:
         self._snapshot = candidate
         return tuple(self._listeners)
 
-    def _without_record(self, snapshot: QueueSnapshot, queue_id: str) -> QueueSnapshot:
+    def _without_records(
+        self,
+        snapshot: QueueSnapshot,
+        record_ids: set[str],
+    ) -> QueueSnapshot:
         return replace(
             snapshot,
             pending_steers=tuple(
-                record for record in snapshot.pending_steers if record.queue_id != queue_id
+                record for record in snapshot.pending_steers if record.queue_id not in record_ids
             ),
             rejected_steers=tuple(
-                record for record in snapshot.rejected_steers if record.queue_id != queue_id
+                record for record in snapshot.rejected_steers if record.queue_id not in record_ids
             ),
             follow_ups=tuple(
-                record for record in snapshot.follow_ups if record.queue_id != queue_id
+                record for record in snapshot.follow_ups if record.queue_id not in record_ids
             ),
         )
 

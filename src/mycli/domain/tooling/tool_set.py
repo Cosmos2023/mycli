@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from mycli.domain.runtime import stable_hash
 from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureKind,
@@ -61,6 +60,3 @@ class ToolSet:
                 key=lambda entry: entry.name,
             )
         )
-
-    def order_hash(self) -> str:
-        return stable_hash("\n".join(entry.name for entry in self.model_visible_entries()))

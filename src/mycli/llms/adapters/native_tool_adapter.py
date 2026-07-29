@@ -65,9 +65,6 @@ class NativeToolModelAdapter:
         if callable(setter):
             setter(tool_choice)
 
-    def supports_tool_choice(self) -> bool:
-        return callable(getattr(self._client, "set_tool_choice", None))
-
     def set_model(self, model: str) -> None:
         setter = getattr(self._client, "set_model", None)
         if callable(setter):

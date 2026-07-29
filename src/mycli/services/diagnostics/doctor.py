@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 import importlib.util
@@ -2469,6 +2469,16 @@ def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:
     return valid_count, tuple(invalid_lines)
 
 
+def _iter_trace_events(lines: Iterable[str]) -> Iterator[RuntimeTraceEvent]:
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            yield _parse_trace_event_line(line)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+
+
 def _summarize_stream_diagnostics(paths: Iterable[Path]) -> _StreamDiagnosticsSummary:
     stream_count = 0
     failure_count = 0
@@ -2481,13 +2491,7 @@ def _summarize_stream_diagnostics(paths: Iterable[Path]) -> _StreamDiagnosticsSu
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "model_stream_diagnostics":
                         continue
                     stream_count += 1
@@ -2539,13 +2543,7 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind == "approval_resolution":
                         resolution_count += 1
                         resolution_results[
@@ -2616,13 +2614,7 @@ def _summarize_clarification_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "clarification_resolution":
                         continue
                     result_counts[_safe_diagnostic_result(event.payload.get("result"))] += 1
@@ -2665,13 +2657,7 @@ def _summarize_runtime_policy_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "runtime_policy_decision":
                         continue
                     policy_count += 1
@@ -2779,13 +2765,7 @@ def _summarize_tool_execution_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "tool_execution":
                         continue
                     tool_count += 1
@@ -2841,13 +2821,7 @@ def _summarize_tool_runtime_lifecycle_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "tool_runtime_lifecycle":
                         continue
                     lifecycle_count += 1
@@ -3055,13 +3029,7 @@ def _summarize_skill_runtime_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "skill_activation":
                         continue
                     activation_count += 1
@@ -3116,13 +3084,7 @@ def _summarize_turn_failure_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "turn_failed":
                         continue
                     failure_count += 1
@@ -3156,13 +3118,7 @@ def _summarize_turn_interrupt_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind == "turn_interrupt_requested":
                         request_count += 1
                         sources[_safe_diagnostic_result(event.payload.get("source"))] += 1
@@ -3194,13 +3150,7 @@ def _summarize_session_continuity_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind != "session_continuity":
                         continue
                     event_count += 1
@@ -3280,13 +3230,7 @@ def _summarize_context_diagnostics(
     for path in paths:
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        event = _parse_trace_event_line(line)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                        continue
+                for event in _iter_trace_events(handle):
                     if event.kind == "context_diagnostics":
                         context_count += 1
                         context_file = event.payload.get("context_file")
@@ -4462,13 +4406,6 @@ def _tool_call_payload_problem(value: object) -> str | None:
         return "arguments not object"
     if not isinstance(value.get("reason"), str):
         return "reason missing"
-    return None
-
-
-def _required_object_problem(payload: Mapping[str, object], key: str) -> str | None:
-    value = payload.get(key)
-    if not isinstance(value, dict):
-        return f"{key} missing"
     return None
 
 

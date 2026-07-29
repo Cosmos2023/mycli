@@ -833,38 +833,6 @@ class SQLiteSessionStore:
 
         self._execute_write(write)
 
-    def replace_history_items(
-        self,
-        *,
-        session_id: str,
-        workspace_root: Path,
-        thread_id: str,
-        items: list[JsonObject],
-    ) -> None:
-        def write(connection: sqlite3.Connection) -> None:
-            self._touch_session(
-                connection,
-                session_id=session_id,
-                workspace_root=workspace_root,
-                thread_id=thread_id,
-            )
-            connection.execute(
-                "DELETE FROM history_items WHERE session_id = ?",
-                (session_id,),
-            )
-            connection.executemany(
-                """
-                INSERT INTO history_items (session_id, item_id, payload_json)
-                VALUES (?, ?, ?)
-                """,
-                [
-                    (session_id, str(item["id"]), self._dump_payload(item))
-                    for item in items
-                ],
-            )
-
-        self._execute_write(write)
-
     def load_history_items(self, session_id: str) -> list[JsonObject]:
         with self._connect() as connection:
             rows = list(

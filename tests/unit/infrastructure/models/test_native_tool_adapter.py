@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from mycli.domain.model_events import ModelEvent, ModelEventType
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.runtime import RuntimeBlock, RuntimeItem
 from mycli.infrastructure.providers.deepseek import (
     DEEPSEEK_SYNTHETIC_REASONING_CONTENT,

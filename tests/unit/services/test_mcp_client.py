@@ -335,7 +335,7 @@ def test_mcp_tool_adapter_exposes_stubs_then_hydrates_full_schema_on_demand() ->
 
     stubs = adapter.list_tool_stubs()
     registration = stubs[0]
-    hydrated = adapter.load_tool_schema("mcp_fs_search")
+    hydrated = adapter.registrations_with_full_schema()[0].descriptor.spec
     result = registration.tool.execute({"query": "needle"})
 
     assert registration.descriptor.route_name == "mcp_fs_search"

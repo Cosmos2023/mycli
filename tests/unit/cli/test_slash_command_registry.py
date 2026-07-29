@@ -151,6 +151,19 @@ def test_surface_policy_selects_tui_bare_and_backend_inline_owner() -> None:
     assert cli_bare.owner is SlashCommandOwner.BACKEND
 
 
+def test_permissions_use_tui_selector_but_keep_inline_backend_commands() -> None:
+    bare = resolve_slash_command("/permissions", tui_context(turn_running=True))
+    inline = resolve_slash_command(
+        "/permissions allow git status",
+        tui_context(turn_running=True),
+    )
+
+    assert bare.owner is SlashCommandOwner.TUI
+    assert bare.client_action == "open_permissions"
+    assert inline.owner is SlashCommandOwner.BACKEND
+    assert inline.args == "allow git status"
+
+
 def test_cli_manifest_hides_tui_only_commands() -> None:
     names = tuple(item.name for item in command_manifest(cli_context()))
 

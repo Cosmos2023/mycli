@@ -31,6 +31,7 @@ from mycli.llms.clients.openai_chat_payloads import (
     decode_native_tool_call as _decode_native_tool_call,
     load_native_tool_argument_candidate as _load_native_tool_argument_candidate,
     native_tool_argument_candidates as _native_tool_argument_candidates,
+    tool_parameters_schema as _tool_parameters_schema,
     with_response_metadata as _with_response_metadata,
 )
 from mycli.llms.clients.openai_sdk import (
@@ -221,53 +222,17 @@ class OpenAIChatClient:
         tool_name_aliases = aliases or _ToolNameAliases.from_tools(tools)
         normalized_tools: list[dict[str, object]] = []
         for tool in tools:
-            raw_parameters = tool.get("parameters", [])
-            parameters = raw_parameters if isinstance(raw_parameters, list) else []
-            properties: dict[str, object] = {}
-            required: list[str] = []
-            for parameter in parameters:
-                if not isinstance(parameter, dict):
-                    continue
-                name = str(parameter["name"])
-                property_schema: dict[str, object] = {
-                    "type": str(parameter["type"]),
-                }
-                description = parameter.get("description")
-                if description is not None:
-                    property_schema["description"] = str(description)
-                items_schema = parameter.get("items_schema")
-                if isinstance(items_schema, dict):
-                    property_schema["items"] = dict(items_schema)
-                properties[name] = property_schema
-                if bool(parameter.get("required", True)):
-                    required.append(name)
             normalized_tools.append(
                 {
                     "type": "function",
                     "function": {
                         "name": tool_name_aliases.wire_name(str(tool["name"])),
                         "description": str(tool["description"]),
-                        "parameters": {
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                            "additionalProperties": False,
-                        },
+                        "parameters": _tool_parameters_schema(tool),
                     },
                 }
             )
         return normalized_tools
-
-    def _chat_payload_body(
-        self,
-        messages: list[dict[str, object]],
-        tools: list[dict[str, object]] | None = None,
-    ) -> dict[str, object]:
-        payload_body, _tool_name_aliases = self._chat_payload_body_with_tool_aliases(
-            messages,
-            tools,
-        )
-        return payload_body
 
     def _chat_payload_body_with_tool_aliases(
         self,
@@ -461,40 +426,9 @@ class OpenAIChatClient:
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
-            detail = str(exc)
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                },
-            )
-            raise ModelResponseError(
-                f"Failed to reach model provider: {detail}",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-                stop_reason=StopReason.TRANSPORT_FAILED,
-                is_retryable=True,
-                failure_kind="transport_error",
-            ) from exc
+            raise self._connection_error(exc, request_path) from exc
         except (APIResponseValidationError, TypeError) as exc:
-            detail = str(exc)
-            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                    "response_body": response_body,
-                },
-            )
-            raise ModelResponseError(
-                "Model provider did not return valid JSON.",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-            ) from exc
+            raise self._response_validation_error(exc, request_path) from exc
         self._log_service_event(
             level=LogLevel.INFO,
             event="model_response_received",
@@ -673,40 +607,9 @@ class OpenAIChatClient:
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
-            detail = str(exc)
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                },
-            )
-            raise ModelResponseError(
-                f"Failed to reach model provider: {detail}",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-                stop_reason=StopReason.TRANSPORT_FAILED,
-                is_retryable=True,
-                failure_kind="transport_error",
-            ) from exc
+            raise self._connection_error(exc, request_path) from exc
         except (APIResponseValidationError, TypeError) as exc:
-            detail = str(exc)
-            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                    "response_body": response_body,
-                },
-            )
-            raise ModelResponseError(
-                "Model provider did not return valid JSON.",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-            ) from exc
+            raise self._response_validation_error(exc, request_path) from exc
         finally:
             for unregister in reversed(unregister_interrupt_callbacks):
                 unregister()
@@ -1000,6 +903,49 @@ class OpenAIChatClient:
         if isinstance(response_id, str) and response_id:
             return response_id
         return None
+
+    def _connection_error(
+        self,
+        exc: APIConnectionError | APITimeoutError,
+        request_path: str | None,
+    ) -> ModelResponseError:
+        detail = str(exc)
+        error_path = self._log_failure(
+            message=detail,
+            request_path=request_path,
+            payload={"error_type": type(exc).__name__, "message": detail},
+        )
+        return ModelResponseError(
+            f"Failed to reach model provider: {detail}",
+            error_path=error_path,
+            log_path=self._default_error_log_path(),
+            stop_reason=StopReason.TRANSPORT_FAILED,
+            is_retryable=True,
+            failure_kind="transport_error",
+        )
+
+    def _response_validation_error(
+        self,
+        exc: APIResponseValidationError | TypeError,
+        request_path: str | None,
+    ) -> ModelResponseError:
+        detail = str(exc)
+        error_path = self._log_failure(
+            message=detail,
+            request_path=request_path,
+            payload={
+                "error_type": type(exc).__name__,
+                "message": detail,
+                "response_body": (
+                    exc.body if isinstance(exc, APIResponseValidationError) else None
+                ),
+            },
+        )
+        return ModelResponseError(
+            "Model provider did not return valid JSON.",
+            error_path=error_path,
+            log_path=self._default_error_log_path(),
+        )
 
     def _status_error(
         self,

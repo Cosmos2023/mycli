@@ -2,22 +2,9 @@ from __future__ import annotations
 
 import json
 
-from openai import APIStatusError, OpenAI
-
-from mycli.llms.clients.user_agent import model_request_headers
+from openai import APIStatusError
 
 DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS = 60.0
-
-
-def build_openai_sdk_client(*, api_key: str, base_url: str) -> OpenAI:
-    return OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        default_headers=model_request_headers(),
-        timeout=DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
-        max_retries=0,
-    )
-
 
 def sdk_payload_to_dict(payload: object) -> dict[str, object]:
     if isinstance(payload, dict):

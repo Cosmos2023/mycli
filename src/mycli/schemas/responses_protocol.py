@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 from urllib.parse import urlparse
@@ -87,21 +86,6 @@ class ResponsesFunctionCallOutputPayload:
             body=fallback_text,
             content_items=tuple(content_items),
             structured_content=structured_content,
-            success=success,
-        )
-
-    @classmethod
-    def from_wire_output(
-        cls,
-        output: object,
-        *,
-        success: bool | None = None,
-    ) -> "ResponsesFunctionCallOutputPayload":
-        if isinstance(output, str):
-            return cls(body=output, success=success)
-        return cls(
-            body=json.dumps(output, ensure_ascii=False),
-            structured_content=(output,),
             success=success,
         )
 

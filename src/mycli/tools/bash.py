@@ -23,8 +23,6 @@ from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_
 from mycli.tools.shell_environment import create_shell_environment
 from mycli.tools.shell_safety import (
     ShellRiskLevel,
-    analyze_shell_command,
-    dedicated_tool_for_command,
     derive_command_pattern as _derive_command_pattern,
 )
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackend, ShellBackendRequest
@@ -35,25 +33,8 @@ from mycli.tools.shell_safety_adapters import analyze_shell_for_profile
 
 _background_processes = SHELL_REGISTRY.processes()
 
-
-def check_dangerous(command: str) -> tuple[bool, str]:
-    analysis = analyze_shell_command(command)
-    if analysis.risk_level in {ShellRiskLevel.CONFIRM, ShellRiskLevel.DENY}:
-        return True, analysis.reason
-    return False, ""
-
-
 def derive_command_pattern(args: list[str]) -> str:
     return _derive_command_pattern(args, " ".join(args))
-
-
-def check_forbidden(command: str) -> str | None:
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None
-
-    return dedicated_tool_for_command(tokens)
 
 
 class ShellCommandRuntime:

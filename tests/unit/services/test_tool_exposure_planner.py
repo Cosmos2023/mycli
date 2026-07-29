@@ -7,8 +7,8 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionScope,
     ToolContributionSource,
 )
-from mycli.domain.tool_exposure import ToolRouteKey
-from mycli.domain.tool_exposure import ToolRouteSource
+from mycli.domain.tooling.exposure import ToolRouteKey
+from mycli.domain.tooling.exposure import ToolRouteSource
 from mycli.tools.routing.tool_exposure_planner import (
     DIRECT_CONTRIBUTED_TOOL_THRESHOLD,
     HIDDEN_BY_DEFAULT_BUILTIN_TOOLS,
@@ -81,8 +81,6 @@ def test_tool_exposure_planner_hides_legacy_builtin_tools_by_default() -> None:
                 "Lint",
                 "AskUserQuestion",
                 "Plan",
-                "enter_plan_mode",
-                "exit_plan_mode",
                 "Task",
                 "SubagentOutput",
                 "SendMessage",

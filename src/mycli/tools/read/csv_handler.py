@@ -117,16 +117,6 @@ def read_file(
         **_snapshot_metadata(raw_content, stat),
     }
 
-
-def read_csv(
-    file_path: str,
-    offset: int = 1,
-    limit: int = HEAD_PREVIEW_ROWS,
-    pages: str | None = None,
-) -> dict[str, Any]:
-    return read_file(file_path, offset=offset, limit=limit, pages=pages)
-
-
 def _row_to_dict(headers: list[str], row: list[str]) -> dict[str, str]:
     return dict(zip(headers, row, strict=False))
 

@@ -45,6 +45,28 @@ class SandboxMode(StrEnum):
     DANGER_FULL_ACCESS = "danger-full-access"
 
 
+class PermissionProfile(StrEnum):
+    READ_ONLY = "read-only"
+    WORKSPACE = "workspace"
+    FULL_ACCESS = "full-access"
+
+    @property
+    def sandbox_mode(self) -> SandboxMode:
+        if self is PermissionProfile.READ_ONLY:
+            return SandboxMode.READ_ONLY
+        if self is PermissionProfile.FULL_ACCESS:
+            return SandboxMode.DANGER_FULL_ACCESS
+        return SandboxMode.WORKSPACE_WRITE
+
+    @classmethod
+    def from_sandbox_mode(cls, mode: SandboxMode) -> "PermissionProfile":
+        if mode is SandboxMode.READ_ONLY:
+            return cls.READ_ONLY
+        if mode is SandboxMode.DANGER_FULL_ACCESS:
+            return cls.FULL_ACCESS
+        return cls.WORKSPACE
+
+
 @dataclass(slots=True, frozen=True)
 class SandboxModePolicy:
     filesystem: FilesystemPolicy
@@ -323,10 +345,6 @@ class ToolRuntimeCoverageProfile:
                 self.diagnostics,
             )
         )
-
-    @property
-    def is_partial_runtime_lane(self) -> bool:
-        return not self.is_full_runtime_lane
 
     def to_diagnostic_payload(self) -> dict[str, object]:
         return {

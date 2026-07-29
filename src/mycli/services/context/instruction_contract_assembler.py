@@ -171,35 +171,6 @@ class InstructionContractAssembler:
             include_in_memory=False,
         )
 
-    def _fragment(
-        self,
-        *,
-        section: TurnContextSection,
-        kind: InstructionFragmentKind,
-        include_in_memory: bool,
-    ) -> InstructionFragment:
-        metadata = dict(section.metadata)
-        metadata.setdefault("cache_class", section.cache_class.value)
-        metadata.setdefault("durability", section.durability.value)
-        metadata.setdefault("scope", section.scope.value)
-        metadata.setdefault(
-            "model_visible",
-            section.durability is not CanonicalTimelineDurability.API_ONLY,
-        )
-        metadata.setdefault(
-            "replayable",
-            section.durability is CanonicalTimelineDurability.PERSISTENT
-            and section.scope.value == "transcript",
-        )
-        return InstructionFragment(
-            kind=kind,
-            title=section.title,
-            content=section.content,
-            source=section.source,
-            metadata=metadata,
-            include_in_memory=include_in_memory,
-        )
-
     def _directed_fragment(
         self,
         *,
@@ -208,25 +179,12 @@ class InstructionContractAssembler:
         include_in_memory: bool,
         prefix: str,
     ) -> InstructionFragment:
-        metadata = dict(section.metadata)
-        metadata.setdefault("cache_class", section.cache_class.value)
-        metadata.setdefault("durability", section.durability.value)
-        metadata.setdefault("scope", section.scope.value)
-        metadata.setdefault(
-            "model_visible",
-            section.durability is not CanonicalTimelineDurability.API_ONLY,
-        )
-        metadata.setdefault(
-            "replayable",
-            section.durability is CanonicalTimelineDurability.PERSISTENT
-            and section.scope.value == "transcript",
-        )
         return InstructionFragment(
             kind=kind,
             title=section.title,
             content=f"{prefix}\n{section.content}",
             source=section.source,
-            metadata=metadata,
+            metadata=self._section_metadata(section),
             include_in_memory=include_in_memory,
         )
 
@@ -247,6 +205,21 @@ class InstructionContractAssembler:
         )
 
     def _tool_exposure_fragment(self, section: TurnContextSection) -> InstructionFragment:
+        return InstructionFragment(
+            kind=InstructionFragmentKind.TOOL_EXPOSURE,
+            title=section.title,
+            content=(
+                "本轮只使用已暴露且可调用的工具。所有工具都属于同一个平等工具集；"
+                "能用专门工具解决时，优先不要退化成临时 shell 操作。\n"
+                f"{section.content}"
+            ),
+            source=section.source,
+            metadata=self._section_metadata(section),
+            include_in_memory=False,
+        )
+
+    @staticmethod
+    def _section_metadata(section: TurnContextSection) -> dict[str, object]:
         metadata = dict(section.metadata)
         metadata.setdefault("cache_class", section.cache_class.value)
         metadata.setdefault("durability", section.durability.value)
@@ -260,15 +233,4 @@ class InstructionContractAssembler:
             section.durability is CanonicalTimelineDurability.PERSISTENT
             and section.scope.value == "transcript",
         )
-        return InstructionFragment(
-            kind=InstructionFragmentKind.TOOL_EXPOSURE,
-            title=section.title,
-            content=(
-                "本轮只使用已暴露且可调用的工具。所有工具都属于同一个平等工具集；"
-                "能用专门工具解决时，优先不要退化成临时 shell 操作。\n"
-                f"{section.content}"
-            ),
-            source=section.source,
-            metadata=metadata,
-            include_in_memory=False,
-        )
+        return metadata

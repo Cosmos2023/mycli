@@ -1,7 +1,6 @@
 """Compatibility service exports with conversation tree helpers."""
 
 from mycli.domain.conversation import Conversation
-from mycli.services.conversation_tree import ConversationTree
 from mycli.state.session_service import SessionService as StateSessionService
 from mycli.state.session_serialization import deserialize_message
 
@@ -55,8 +54,7 @@ class SessionService(StateSessionService):
         return conversation
 
     def rewind_conversation(self, session_id: str, fork_point: int) -> Conversation:
-        tree = ConversationTree((self.load_conversation(session_id),))
-        conversation = tree.rewind(session_id, fork_point)
+        conversation = self.load_conversation(session_id).rewind(fork_point)
         self.save_conversation(conversation)
         return conversation
 
@@ -66,8 +64,9 @@ class SessionService(StateSessionService):
         new_session_id: str,
         fork_point: int | None = None,
     ) -> Conversation:
-        tree = ConversationTree((self.load_conversation(source_session_id),))
-        forked = tree.fork(source_session_id, new_session_id, fork_point)
+        if new_session_id == source_session_id:
+            raise ValueError(f"Conversation already exists: {new_session_id}")
+        forked = self.load_conversation(source_session_id).fork(new_session_id, fork_point)
         self.save_conversation(forked)
         return forked
 

@@ -64,21 +64,3 @@ def test_auth_store_ignores_malformed_or_non_api_key_credentials(tmp_path: Path)
     assert store.get_api_key("openai") is None
     assert store.get_api_key("deepseek") is None
     assert store.get_api_key("qwen") is None
-
-
-def test_auth_store_lists_only_usable_configured_providers(tmp_path: Path) -> None:
-    auth_path = tmp_path / ".mycli" / "auth.json"
-    auth_path.parent.mkdir(parents=True)
-    auth_path.write_text(
-        json.dumps(
-            {
-                "openai": {"type": "api_key", "key": "sk-openai"},
-                "deepseek": {"type": "api_key", "key": "  "},
-                "anthropic": {"type": "oauth", "access": "token"},
-                "qwen": {"type": "api_key", "key": "sk-qwen"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert AuthStore(auth_path).configured_providers() == ("openai", "qwen")

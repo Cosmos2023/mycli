@@ -11,7 +11,9 @@ from mycli.domain.runtime import (
     ExecPolicyRuleSet,
     ExecPolicySource,
     ExecutionPolicy,
+    PermissionProfile,
     PowerShellEdition,
+    SandboxMode,
     SandboxProfile,
     ShellKind,
     ShellProfile,
@@ -70,6 +72,102 @@ def test_runtime_policy_gate_carries_shell_profile_without_tracing_path(
     assert trace["shell_kind"] == "powershell"
     assert trace["shell_edition"] == "core"
     assert str(profile.executable) not in str(trace)
+
+
+def test_permission_profiles_map_to_legacy_sandbox_modes() -> None:
+    assert PermissionProfile.READ_ONLY.sandbox_mode is SandboxMode.READ_ONLY
+    assert PermissionProfile.WORKSPACE.sandbox_mode is SandboxMode.WORKSPACE_WRITE
+    assert PermissionProfile.FULL_ACCESS.sandbox_mode is SandboxMode.DANGER_FULL_ACCESS
+
+
+def test_full_access_skips_routine_approval_but_keeps_explicit_denies(tmp_path: Path) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        permission_profile=PermissionProfile.FULL_ACCESS,
+    )
+    call = ToolCall(
+        name="Shell",
+        arguments={"command": "python deploy.py"},
+        reason="deploy",
+    )
+
+    decision = gate.decide(call, effect_profile=ToolEffectProfile(process=True))
+
+    assert decision.kind is ToolRuntimeDecisionKind.ALLOWED
+    assert decision.policy == "permission_profile_full_access"
+
+    gate.set_execpolicy_rules(
+        ExecPolicyRuleSet(
+            rules=(
+                ExecPolicyRule(
+                    source=ExecPolicySource.PROJECT,
+                    index=0,
+                    pattern=("python", "deploy.py"),
+                    decision=ExecPolicyDecision.DENY,
+                ),
+            )
+        )
+    )
+
+    denied = gate.decide(call, effect_profile=ToolEffectProfile(process=True))
+
+    assert denied.kind is ToolRuntimeDecisionKind.DENIED
+    assert denied.policy == "execpolicy_prefix_rule"
+
+
+def test_approved_shell_options_escalate_beyond_restricted_profile(tmp_path: Path) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        permission_profile=PermissionProfile.WORKSPACE,
+    )
+
+    options = gate.shell_execution_options(policy_approved=True)
+
+    assert options.filesystem == "unrestricted"
+    assert options.network == "enabled"
+    assert options.shell == "enabled"
+
+
+def test_restricted_profiles_request_approval_for_escalatable_boundaries(tmp_path: Path) -> None:
+    workspace_gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        permission_profile=PermissionProfile.WORKSPACE,
+    )
+    network_call = ToolCall(
+        name="Shell",
+        arguments={"command": "curl https://example.com"},
+        reason="fetch release metadata",
+    )
+
+    network = workspace_gate.decide(
+        network_call,
+        effect_profile=ToolEffectProfile(network=True, process=True),
+    )
+
+    assert network.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+    assert network.reason_code == "network_disabled"
+    assert network.pending_approval is not None
+
+    read_only_gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        permission_profile=PermissionProfile.READ_ONLY,
+    )
+    write = read_only_gate.decide(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "approved later\n"},
+            reason="write notes",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="write"),
+    )
+
+    assert write.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+    assert write.reason_code == "filesystem_write_blocked_by_read_only"
+    assert write.pending_approval is not None
 
 
 def _read_only_gate(workspace_root: Path) -> RuntimePolicyGate:
@@ -319,21 +417,18 @@ def test_tool_policy_runtime_records_decision_and_builds_policy_result(tmp_path:
     )
 
     assert decision is not None
-    assert decision.kind is ToolRuntimeDecisionKind.DENIED
+    assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
     trace = trace_service.load("demo")
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
-    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["decision"] == "needs_approval"
     assert policy_trace.payload["policy"] == "sandbox_filesystem_policy"
     assert "blocked\n" not in str(policy_trace.payload)
 
     result = runtime.result_for_decision(decision)
 
     assert result.success is False
-    assert result.summary == (
-        "Tool denied by runtime policy: Write "
-        "(policy=sandbox_filesystem_policy, reason=filesystem_write_blocked_by_read_only)."
-    )
-    assert result.raw_payload["error_kind"] == "tool_denied_by_policy"
+    assert result.summary == "Tool needs approval before execution."
+    assert result.raw_payload["error_kind"] == "tool_needs_approval"
 
 
 def test_tool_policy_runtime_skips_decision_when_call_is_already_approved(tmp_path: Path) -> None:

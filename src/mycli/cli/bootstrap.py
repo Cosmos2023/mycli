@@ -10,7 +10,6 @@ from mycli.config.settings import resolve_config
 from mycli.domain.runtime import SandboxMode
 from mycli.llms.model_adapter_factory import build_model_adapter
 from mycli.services.storage_layout import MycliStorageLayout
-from mycli.services.filesystem import FileSystemRuntime
 from mycli.memory.memdir import ensure_memory_dir, memory_dir_for
 from mycli.services.mcp import (
     McpClient,
@@ -19,26 +18,7 @@ from mycli.services.mcp import (
     load_mcp_server_configs,
 )
 from mycli.services.skills import SkillRegistry
-from mycli.tools.ask_user_question import AskUserQuestionTool
-from mycli.tools.bash import BashTool, ShellTool
-from mycli.tools.bash_output import BashOutputTool
-from mycli.tools.edit import EditTool
-from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
-from mycli.tools.kill_shell import KillShellTool
-from mycli.tools.lint import LintTool
-from mycli.tools.ls import LSTool
-from mycli.tools.patch import PatchTool
-from mycli.tools.plan import PlanTool
-from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
-from mycli.tools.read import ReadTool
-from mycli.tools.registry import ToolRegistry
-from mycli.tools.shell_output import ShellOutputTool
-from mycli.tools.send_message import SendMessageTool
-from mycli.tools.subagent_output import SubagentOutputTool
-from mycli.tools.web_fetch import WebFetchTool
-from mycli.tools.web_search import WebSearchTool
-from mycli.tools.write_stdin import WriteStdinTool
-from mycli.tools.write import WriteTool
+from mycli.tools.registry import ToolRegistry, default_tools
 from mycli.utils.workspace_logger import WorkspaceLogService
 
 
@@ -75,43 +55,15 @@ def build_turn_service(
         config.session_id
     )
     allowed_roots = (memory_dir, task_output_dir)
-    unrestricted_filesystem = config.sandbox_mode == SandboxMode.DANGER_FULL_ACCESS
-    filesystem_runtime = FileSystemRuntime(
-        workspace_root=workspace_root,
-        allowed_roots=allowed_roots,
-        unrestricted=unrestricted_filesystem,
-    )
     tool_registry = ToolRegistry.from_tools(
-        [
-            ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            LSTool(
-                workspace_root,
-                allowed_roots=allowed_roots,
-                unrestricted=unrestricted_filesystem,
+        default_tools(
+            workspace_root,
+            allowed_roots=allowed_roots,
+            unrestricted_filesystem=(
+                config.sandbox_mode == SandboxMode.DANGER_FULL_ACCESS
             ),
-            ShellTool(workspace_root),
-            WriteStdinTool(),
-            ShellOutputTool(),
-            BashTool(workspace_root),
-            BashOutputTool(),
-            KillShellTool(),
-            WebSearchTool(),
-            WebFetchTool(),
-            LintTool(workspace_root),
-            GitStatusTool(workspace_root),
-            GitDiffTool(workspace_root),
-            GitLogTool(workspace_root),
-            GitShowTool(workspace_root),
-            AskUserQuestionTool(),
-            PlanTool(),
-            EnterPlanModeTool(workspace_root),
-            ExitPlanModeTool(workspace_root),
-            SubagentOutputTool(),
-            SendMessageTool(),
-        ]
+            include_task=False,
+        )
     )
     skill_registry = SkillRegistry(
         builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",

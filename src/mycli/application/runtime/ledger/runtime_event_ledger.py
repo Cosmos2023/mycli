@@ -173,20 +173,6 @@ class RuntimeEventLedger:
             )
         return committed
 
-    def provider_history_items_from_turn(
-        self,
-        turn: TurnRecord,
-    ) -> tuple[HistoryItem, ...]:
-        return tuple(
-            item
-            for item in self.history_items_from_turn(turn)
-            if item.type
-            not in {
-                HistoryItemType.PLAN_UPDATE,
-                HistoryItemType.CLARIFICATION_RESPONSE,
-            }
-        )
-
     def context_baseline_from_contract(
         self,
         contract: InstructionContract | None,

@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-import json
-import logging
-
 from mycli.services.observability import (
     AlertEvaluator,
-    JsonLogFormatter,
     MetricsRegistry,
-    ObservabilityService,
-    logging_level_name,
 )
 
 
@@ -129,59 +123,3 @@ def test_alert_evaluator_flags_cache_drop_consecutive_l4_and_ptl_rate() -> None:
     assert alerts[0].severity == "warning"
     assert alerts[1].observed == 3
     assert alerts[2].observed == 0.5
-
-
-def test_observability_service_emits_structured_log_record(caplog) -> None:  # type: ignore[no-untyped-def]
-    service = ObservabilityService(logger_name="mycli.test.observability")
-    service.metrics.record_cache_tokens(hit_tokens=1, miss_tokens=1)
-
-    with caplog.at_level(logging.INFO, logger="mycli.test.observability"):
-        service.log_event("metrics_snapshot", session_id="s1", turn_id="t1")
-
-    assert len(caplog.records) == 1
-    record = caplog.records[0]
-    assert record.event == "metrics_snapshot"
-    assert record.session_id == "s1"
-    assert record.turn_id == "t1"
-    assert record.cache_hit_rate == 0.5
-    assert record.logger == "mycli.test.observability"
-    assert record.level == "info"
-
-
-def test_observability_service_accepts_numeric_logging_levels(caplog) -> None:  # type: ignore[no-untyped-def]
-    service = ObservabilityService(logger_name="mycli.test.observability.numeric")
-
-    with caplog.at_level(logging.WARNING, logger="mycli.test.observability.numeric"):
-        service.log_event("alert", level=logging.WARNING)
-
-    assert len(caplog.records) == 1
-    assert caplog.records[0].levelname == "WARNING"
-    assert caplog.records[0].event == "alert"
-
-
-def test_logging_level_name_maps_standard_numeric_levels() -> None:
-    assert logging_level_name(logging.INFO) == "info"
-    assert logging_level_name(logging.WARNING) == "warning"
-
-
-def test_json_log_formatter_outputs_structured_json() -> None:
-    formatter = JsonLogFormatter()
-    record = logging.LogRecord(
-        name="mycli.test",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="hello",
-        args=(),
-        exc_info=None,
-    )
-    record.event = "demo"
-    record.session_id = "s1"
-
-    payload = json.loads(formatter.format(record))
-
-    assert payload["level"] == "INFO"
-    assert payload["logger"] == "mycli.test"
-    assert payload["message"] == "hello"
-    assert payload["event"] == "demo"
-    assert payload["session_id"] == "s1"

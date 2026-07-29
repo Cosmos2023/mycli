@@ -10,6 +10,8 @@ from mycli.domain.runtime import (
     ExecPolicyMatch,
     ExecPolicyRuleSet,
     ExecutionPolicy,
+    PermissionProfile,
+    PendingApproval,
     SandboxMode,
     SandboxProfile,
     ShellEnvironmentPolicy,
@@ -53,6 +55,7 @@ class RuntimePolicyGate:
         execpolicy_rules: ExecPolicyRuleSet | None = None,
         collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
         sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
+        permission_profile: PermissionProfile | None = None,
         shell_path: str | None = None,
         shell_profile: ShellProfile | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
@@ -64,7 +67,10 @@ class RuntimePolicyGate:
         self._denied_read_globs = tuple(denied_read_globs)
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
         self._collaboration_mode = collaboration_mode
-        self._sandbox_mode = sandbox_mode
+        self._permission_profile = permission_profile or PermissionProfile.from_sandbox_mode(
+            sandbox_mode
+        )
+        self._sandbox_mode = self._permission_profile.sandbox_mode
         self._shell_path = shell_path
         self._shell_profile = shell_profile
         self._shell_environment_policy = shell_environment_policy
@@ -138,10 +144,15 @@ class RuntimePolicyGate:
             self._collaboration_mode = collaboration_mode
         if sandbox_mode is not None:
             self._sandbox_mode = sandbox_mode
+            self._permission_profile = PermissionProfile.from_sandbox_mode(sandbox_mode)
         self._shell_environment_policy = shell_environment_policy
 
     def set_execpolicy_rules(self, rules: ExecPolicyRuleSet) -> None:
         self._execpolicy_rules = rules
+
+    def set_permission_profile(self, profile: PermissionProfile) -> None:
+        self._permission_profile = profile
+        self._sandbox_mode = profile.sandbox_mode
 
     def decide(
         self,
@@ -166,6 +177,26 @@ class RuntimePolicyGate:
             effect=runtime_effect,
         )
         if sandbox_decision is not None:
+            if self._is_escalatable_sandbox_decision(sandbox_decision):
+                return ToolRuntimeDecision.needs_approval(
+                    tool_call=call,
+                    policy=sandbox_decision.policy,
+                    risk_level=sandbox_decision.risk_level,
+                    reason_code=sandbox_decision.reason_code,
+                    pending_approval=PendingApproval(
+                        tool_call=call,
+                        reason=call.reason or "Permission profile escalation required.",
+                        preview=_approval_preview(call),
+                        metadata={
+                            "policy": sandbox_decision.policy,
+                            "risk_level": sandbox_decision.risk_level or "medium",
+                            "decision_kind": "needs_choice",
+                            "reason_code": sandbox_decision.reason_code or "sandbox_boundary",
+                        },
+                    ),
+                    sandbox=sandbox_decision.sandbox,
+                    effect=runtime_effect,
+                )
             return sandbox_decision
         execpolicy_decision = self._execpolicy_decision(
             call=call,
@@ -174,6 +205,14 @@ class RuntimePolicyGate:
         )
         if execpolicy_decision is not None:
             return execpolicy_decision
+        if self._permission_profile is PermissionProfile.FULL_ACCESS:
+            return ToolRuntimeDecision.allowed(
+                tool_call=call,
+                policy="permission_profile_full_access",
+                risk_level="low",
+                sandbox=resolved_policy.sandbox,
+                effect=runtime_effect,
+            )
         if self._is_contributed_tool(call, tool_exposure):
             return ToolRuntimeDecision.allowed(
                 tool_call=call,
@@ -232,24 +271,18 @@ class RuntimePolicyGate:
             effect=runtime_effect,
         )
 
-    def decide_execpolicy(
-        self,
-        call: ToolCall,
-        policy: ExecutionPolicy | None = None,
-        *,
-        effect_profile: ToolEffectProfile | ToolRuntimeEffect | None = None,
-    ) -> ToolRuntimeDecision | None:
-        resolved_policy = policy or self.default_policy()
-        return self._execpolicy_decision(
-            call=call,
-            sandbox=resolved_policy.sandbox,
-            effect=_runtime_effect(effect_profile),
-        )
-
     def shell_execution_options(
         self,
         policy: ExecutionPolicy | None = None,
+        *,
+        policy_approved: bool = False,
     ) -> ShellExecutionOptions:
+        if policy_approved:
+            root = self._workspace_root or Path.cwd()
+            policy = ExecutionPolicy.for_workspace(
+                root,
+                sandbox_mode=SandboxMode.DANGER_FULL_ACCESS,
+            )
         return ShellExecutionOptions.from_policy(
             policy or self.default_policy(),
             shell_path=self._shell_path,
@@ -361,6 +394,16 @@ class RuntimePolicyGate:
             )
         return None
 
+    def _is_escalatable_sandbox_decision(self, decision: ToolRuntimeDecision) -> bool:
+        if self._permission_profile is PermissionProfile.FULL_ACCESS:
+            return False
+        if decision.reason_code == "filesystem_unknown_blocked_by_read_only":
+            return False
+        return decision.policy in {
+            "sandbox_filesystem_policy",
+            "sandbox_network_policy",
+        }
+
     @staticmethod
     def _is_contributed_tool(
         call: ToolCall,
@@ -407,6 +450,14 @@ def _metadata_string(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _approval_preview(call: ToolCall) -> str:
+    for key in ("command", "file_path", "path", "target"):
+        value = call.arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:2_000]
+    return call.name
 
 
 def _denied_read_reason(

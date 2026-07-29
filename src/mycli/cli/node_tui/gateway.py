@@ -79,7 +79,7 @@ from mycli.domain.conversation import Conversation, Message
 from mycli.domain.model_catalog import ModelCatalogEntry, ModelSelection
 from mycli.domain.providers import ProviderId, parse_protocol, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
-from mycli.services.legacy_slash_output import legacy_slash_display
+from mycli.services.legacy_slash_output import is_legacy_slash_output
 from mycli.services.transcript_projection import project_history_items_for_tui
 
 PROTOCOL_VERSION = 1
@@ -179,6 +179,10 @@ class NodeTuiServiceLike(Protocol):
     def available_models(self) -> tuple[ModelCatalogEntry, ...]: ...
 
     def select_model(self, selection: ModelSelection) -> ModelCatalogEntry: ...
+
+    def permission_profile_payload(self) -> dict[str, object]: ...
+
+    def set_permission_profile(self, profile_id: str) -> dict[str, object]: ...
 
     def extension_manifest(self) -> dict[str, object]: ...
 
@@ -511,6 +515,13 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_model_list())
             if request.method == "model.select":
                 return result_response(request.id, self._handle_model_select(request.params))
+            if request.method == "permissions.list":
+                return result_response(request.id, self._permissions_payload())
+            if request.method == "permissions.update":
+                return result_response(
+                    request.id,
+                    self._handle_permissions_update(request.params),
+                )
             if request.method == "transcript.load":
                 return result_response(request.id, self._handle_transcript_load(request.params))
             if request.method == "decision.resolve":
@@ -629,25 +640,14 @@ class NodeTuiGateway:
             )
         payload = {
             "protocol_version": PROTOCOL_VERSION,
-            "session_id": self.service._config.session_id,
+            **self._runtime_identity_payload(),
             "workspace": str(self.service._config.workspace_root),
-            "model": self.service._config.model,
-            "collaboration_mode": self.service._config.collaboration_mode.value,
-            "reasoning_effort": str(getattr(self.service._config.reasoning_effort, "value", self.service._config.reasoning_effort)),
-            "thinking_effort": (
-                str(getattr(self.service._config.thinking_effort, "value", self.service._config.thinking_effort))
-                if self.service._config.thinking_effort is not None
-                else "off"
-            ),
-            "provider": (
-                f"{self.service._config.provider.value}/"
-                f"{self.service._config.protocol.value}"
-            ),
             "status": self._status_payload(),
             "background_shells": self._active_background_shells(),
             "welcome": self._welcome_payload(),
             "auth_providers": self._auth_providers_payload(),
             "models": self._models_payload(),
+            "permissions": self._permissions_payload(),
         }
         migration = self._legacy_user_queue_migration_payload()
         if migration is not None:
@@ -772,6 +772,26 @@ class NodeTuiGateway:
             "models": self._models_payload(),
         }
 
+    def _permissions_payload(self) -> dict[str, object]:
+        payload = self.service.permission_profile_payload()
+        if not isinstance(payload, dict):
+            raise ValueError("Permission profile payload is unavailable.")
+        return dict(payload)
+
+    def _handle_permissions_update(self, params: dict[str, object]) -> dict[str, object]:
+        profile = _required_str(params, "profile").strip()
+        if not profile:
+            raise ValueError("profile is required.")
+        selected = self.service.set_permission_profile(profile)
+        permissions = self._permissions_payload()
+        status = self._status_payload()
+        self._emit_event("status.changed", status)
+        return {
+            "selected": selected,
+            "permissions": permissions,
+            "status": status,
+        }
+
     def _handle_settings_load(self) -> dict[str, object]:
         settings = load_shell_settings(self._home_dir(), runtime_config=self.service._config)
         return {
@@ -828,20 +848,8 @@ class NodeTuiGateway:
         mark_name = str(getattr(self.service._config, "tui_startup_mark", "default") or "default")
         payload = {
             "version": "0.1.0",
-            "session_id": self.service._config.session_id,
+            **self._runtime_identity_payload(),
             "workspace": str(self.service._config.workspace_root),
-            "model": self.service._config.model,
-            "collaboration_mode": self.service._config.collaboration_mode.value,
-            "reasoning_effort": str(getattr(self.service._config.reasoning_effort, "value", self.service._config.reasoning_effort)),
-            "thinking_effort": (
-                str(getattr(self.service._config.thinking_effort, "value", self.service._config.thinking_effort))
-                if self.service._config.thinking_effort is not None
-                else "off"
-            ),
-            "provider": (
-                f"{self.service._config.provider.value}/"
-                f"{self.service._config.protocol.value}"
-            ),
             "context_window": self._status_payload()["context_window"],
             "startup_mark": {"name": mark_name, "text": startup_mark(mark_name)},
             "tips": ["/help", "/status context", "/status usage", "/session list"],
@@ -851,6 +859,23 @@ class NodeTuiGateway:
         if title:
             payload["session_title"] = title
         return payload
+
+    def _runtime_identity_payload(self) -> dict[str, object]:
+        config = self.service._config
+        return {
+            "session_id": config.session_id,
+            "model": config.model,
+            "collaboration_mode": config.collaboration_mode.value,
+            "reasoning_effort": str(
+                getattr(config.reasoning_effort, "value", config.reasoning_effort)
+            ),
+            "thinking_effort": (
+                str(getattr(config.thinking_effort, "value", config.thinking_effort))
+                if config.thinking_effort is not None
+                else "off"
+            ),
+            "provider": f"{config.provider.value}/{config.protocol.value}",
+        }
 
     def _handle_turn_submit(self, request: RpcRequest) -> RpcResponse:
         message = _required_str(request.params, "message").strip()
@@ -1351,46 +1376,10 @@ class NodeTuiGateway:
             if self._should_suppress_late_completion(client_turn_id, response):
                 self._emit_late_completion_suppressed(client_turn_id, response)
                 return
-            if response.pending_decision is not None:
-                self._emit_event(
-                    "approval.request",
-                    _approval_request_payload(client_turn_id, response.pending_decision),
-                )
-            assistant_message, proposed_plan = _split_proposed_plan(response.assistant_message)
-            if proposed_plan is not None:
-                self._emit_event(
-                    "plan.proposed",
-                    {
-                        "client_turn_id": client_turn_id,
-                        "text": proposed_plan,
-                        "source": "assistant_message",
-                    },
-                )
-            self._emit_event(
-                "turn.completed",
-                {
-                    "turn_id": turn_id,
-                    **self._turn_completed_payload(
-                        client_turn_id=client_turn_id,
-                        response=response,
-                        assistant_message=assistant_message,
-                    ),
-                },
-            )
-            turn_state = _turn_state_for_response(response)
-            self._emit_turn_status(
+            self._emit_turn_response_completion(
                 client_turn_id=client_turn_id,
-                state=turn_state,
-                message=_terminal_status_message(response, turn_state),
-            )
-            if turn_state == "completed":
-                self._emit_final_message_complete(client_turn_id, assistant_message)
-            self._emit_status_update(
-                client_turn_id=client_turn_id,
-                state=turn_state,
-                kind=turn_state,
-                text=_status_text_for_state(turn_state),
-                message=_terminal_status_message(response, turn_state),
+                turn_id=turn_id,
+                response=response,
             )
         finally:
             self._close_service_turn_mailbox(turn_id)
@@ -1402,6 +1391,56 @@ class NodeTuiGateway:
                     self._current_interrupt_token = None
             self._emit_event("status.changed", self._status_payload())
             self._queue_scheduler_event.set()
+
+    def _emit_turn_response_completion(
+        self,
+        *,
+        client_turn_id: str,
+        turn_id: str,
+        response: TurnResponse,
+    ) -> None:
+        if response.pending_decision is not None:
+            self._emit_event(
+                "approval.request",
+                _approval_request_payload(client_turn_id, response.pending_decision),
+            )
+        assistant_message, proposed_plan = _split_proposed_plan(response.assistant_message)
+        if proposed_plan is not None:
+            self._emit_event(
+                "plan.proposed",
+                {
+                    "client_turn_id": client_turn_id,
+                    "text": proposed_plan,
+                    "source": "assistant_message",
+                },
+            )
+        self._emit_event(
+            "turn.completed",
+            {
+                "turn_id": turn_id,
+                **self._turn_completed_payload(
+                    client_turn_id=client_turn_id,
+                    response=response,
+                    assistant_message=assistant_message,
+                ),
+            },
+        )
+        turn_state = _turn_state_for_response(response)
+        terminal_message = _terminal_status_message(response, turn_state)
+        self._emit_turn_status(
+            client_turn_id=client_turn_id,
+            state=turn_state,
+            message=terminal_message,
+        )
+        if turn_state == "completed":
+            self._emit_final_message_complete(client_turn_id, assistant_message)
+        self._emit_status_update(
+            client_turn_id=client_turn_id,
+            state=turn_state,
+            kind=turn_state,
+            text=_status_text_for_state(turn_state),
+            message=terminal_message,
+        )
 
     def _should_suppress_late_completion(
         self,
@@ -2048,46 +2087,10 @@ class NodeTuiGateway:
                 text="Failed",
             )
         else:
-            if response.pending_decision is not None:
-                self._emit_event(
-                    "approval.request",
-                    _approval_request_payload(client_turn_id, response.pending_decision),
-                )
-            assistant_message, proposed_plan = _split_proposed_plan(response.assistant_message)
-            if proposed_plan is not None:
-                self._emit_event(
-                    "plan.proposed",
-                    {
-                        "client_turn_id": client_turn_id,
-                        "text": proposed_plan,
-                        "source": "assistant_message",
-                    },
-                )
-            self._emit_event(
-                "turn.completed",
-                {
-                    "turn_id": turn_id,
-                    **self._turn_completed_payload(
-                        client_turn_id=client_turn_id,
-                        response=response,
-                        assistant_message=assistant_message,
-                    ),
-                },
-            )
-            turn_state = _turn_state_for_response(response)
-            self._emit_turn_status(
+            self._emit_turn_response_completion(
                 client_turn_id=client_turn_id,
-                state=turn_state,
-                message=_terminal_status_message(response, turn_state),
-            )
-            if turn_state == "completed":
-                self._emit_final_message_complete(client_turn_id, assistant_message)
-            self._emit_status_update(
-                client_turn_id=client_turn_id,
-                state=turn_state,
-                kind=turn_state,
-                text=_status_text_for_state(turn_state),
-                message=_terminal_status_message(response, turn_state),
+                turn_id=turn_id,
+                response=response,
             )
         finally:
             with self._turn_lock:
@@ -2437,20 +2440,8 @@ class NodeTuiGateway:
         suspended = self.service._session_service.load_suspended_turn(self.service._config.session_id)
         queue_payload = self._queue_payload()
         payload = {
-            "session_id": self.service._config.session_id,
+            **self._runtime_identity_payload(),
             "workspace": Path(self.service._config.workspace_root).name,
-            "model": self.service._config.model,
-            "collaboration_mode": self.service._config.collaboration_mode.value,
-            "reasoning_effort": str(getattr(self.service._config.reasoning_effort, "value", self.service._config.reasoning_effort)),
-            "thinking_effort": (
-                str(getattr(self.service._config.thinking_effort, "value", self.service._config.thinking_effort))
-                if self.service._config.thinking_effort is not None
-                else "off"
-            ),
-            "provider": (
-                f"{self.service._config.provider.value}/"
-                f"{self.service._config.protocol.value}"
-            ),
             "context_window": {
                 "used_tokens": _int_metric(
                     context_window.get("input_tokens") or context_window.get("total_tokens")
@@ -2470,6 +2461,7 @@ class NodeTuiGateway:
             "queue_activity": queue_payload["activity"],
             "trust": self._trust_status_payload(),
             "models": self._models_payload(),
+            "permissions": self._permissions_payload(),
         }
         if "queue_revision" in queue_payload:
             payload["queue_revision"] = queue_payload["queue_revision"]
@@ -2860,14 +2852,7 @@ def _filter_transient_command_items(
         if not isinstance(text, str):
             visible.append(item)
             continue
-        raw_metadata = item.get("metadata")
-        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
-        command = metadata.get("command")
-        display = legacy_slash_display(
-            command=command if isinstance(command, str) else "",
-            lines=tuple(text.splitlines()),
-        )
-        if display is None:
+        if not is_legacy_slash_output(tuple(text.splitlines())):
             visible.append(item)
     return tuple(visible)
 

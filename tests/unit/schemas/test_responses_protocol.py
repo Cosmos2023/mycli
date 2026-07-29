@@ -28,17 +28,6 @@ def test_responses_function_call_output_payload_round_trips_text_wire_value() ->
     assert payload.to_text() == "Tool returned no output."
 
 
-def test_responses_function_call_output_payload_round_trips_structured_metadata() -> None:
-    payload = ResponsesFunctionCallOutputPayload.from_wire_output(
-        {"path": "README.md", "exists": True},
-        success=True,
-    )
-
-    assert payload.to_text() == '{"path": "README.md", "exists": true}'
-    assert payload.structured_content == ({"path": "README.md", "exists": True},)
-    assert ResponsesFunctionCallOutputPayload.from_dict(payload.to_dict()) == payload
-
-
 def test_responses_function_call_output_payload_prefers_content_items_on_wire() -> None:
     payload = ResponsesFunctionCallOutputPayload.from_content_items(
         (

@@ -9,19 +9,10 @@ from mycli.domain.providers import ProviderId, ProtocolId
 from mycli.domain.runtime import AgentConfig, InstructionContract, InstructionFragment
 from mycli.application.runtime.request import (
     CacheShapeDiagnostics,
-    ProviderPayloadSnapshot,
-    ProviderRequestDryRun,
-    ProviderRequestDryRunRenderer,
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
 )
-from mycli.application.runtime.recovery import (
-    ErrorClassifier,
-    RecoveryPolicy,
-    recovery_diagnostic_metadata,
-)
 from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
-from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.llms.adapters.anthropic_messages_adapter import AnthropicMessagesModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.llms.clients.openai_chat import OpenAIChatClient
@@ -196,79 +187,14 @@ def main() -> int:
             api_key="test",
             base_url="https://example.invalid/v1",
             model="gpt-test",
-            max_output_tokens=128,
         )
         client._sdk_client = chat_sdk  # noqa: SLF001 - smoke injects fake transport.
         client.complete(chat_messages)
 
         chat_payload = chat_sdk.chat_completions.calls[-1]
-        dry_run = ProviderRequestDryRun.compare(
+        responses_cache_diagnostic = CacheShapeDiagnostics().build(
             previous=responses_shape,
             current=second_responses_shape,
-            recovery_counts={"invalid_encrypted_content": 1},
-            latest_recovery=recovery_diagnostic_metadata(
-                classification=ErrorClassifier().classify(
-                    ModelResponseError(
-                        "invalid encrypted_content: sk-do-not-print",
-                        failure_kind="invalid_encrypted_content",
-                    )
-                ),
-                decision=RecoveryPolicy().decide(
-                    ErrorClassifier().classify(
-                        ModelResponseError(
-                            "invalid encrypted_content",
-                            failure_kind="invalid_encrypted_content",
-                        )
-                    )
-                ),
-                attempt=1,
-            ),
-        ).to_dict()
-        dry_run_summary = ProviderRequestDryRunRenderer().render(
-            ProviderRequestDryRun.compare(
-                previous=responses_shape,
-                current=second_responses_shape,
-                recovery_counts={"invalid_encrypted_content": 1},
-                latest_recovery=dry_run["latest_recovery"],
-            ),
-            runtime_diagnostics={
-                "exposed_tools": ("Bash", "Read"),
-                "runtime_policy_events": (
-                    {
-                        "decision": "needs_approval",
-                        "policy": "shell_safety_analysis",
-                        "risk_level": "high",
-                        "argument_count": 1,
-                        "argument_keys": ["command"],
-                        "execpolicy_decision": "ask",
-                        "execpolicy_rule_source": "project",
-                        "execpolicy_rule_pattern_hash": "hash-only",
-                        "execpolicy_rule_pattern_length": 2,
-                        "execpolicy_rule_argument_count": 5,
-                        "sandbox": {
-                            "filesystem": "workspace_write",
-                            "network": "enabled",
-                            "shell": "restricted",
-                        },
-                        "arguments": {"command": "git push origin main sk-do-not-print"},
-                    },
-                ),
-                "tool_lifecycle_events": (
-                    {"phase": "planned", "status": "running"},
-                    {"phase": "needs_approval", "status": "needs_approval"},
-                ),
-                "session_continuity_events": (
-                    {
-                        "action": "resume",
-                        "result": "resolved",
-                        "lineage_switched": True,
-                        "raw_user_text": "do not print sk-do-not-print",
-                    },
-                ),
-            },
-        )
-        anthropic_snapshot = ProviderPayloadSnapshot.from_request_shape(
-            anthropic_shape
         ).to_dict()
         anthropic_cache_diagnostic = CacheShapeDiagnostics().build(
             current=anthropic_shape,
@@ -317,19 +243,12 @@ def main() -> int:
                 )
                 for message in chat_payload.get("messages", [])
             ),
-            "dry_run_cache_boundary_hash_stable": dry_run[
-                "cache_boundary_hash_stable"
-            ],
-            "dry_run_prompt_cache_key_hash_stable": dry_run[
-                "prompt_cache_key_hash_stable"
-            ],
-            "dry_run_first_changed_cache_class": dry_run[
+            "responses_cache_boundary_hash_stable": (
+                responses_shape.summary()["cacheable_prefix_hash"]
+                == second_responses_shape.summary()["cacheable_prefix_hash"]
+            ),
+            "responses_first_changed_cache_class": responses_cache_diagnostic[
                 "first_changed_cache_class"
-            ],
-            "dry_run_wire_hint_state": dry_run_summary["wire_hint_state"],
-            "dry_run_snapshot_counts": dry_run_summary["snapshot_counts"],
-            "anthropic_snapshot_cache_control_blocks": anthropic_snapshot[
-                "anthropic_cache_control_block_count"
             ],
             "anthropic_cache_usage_telemetry_status": (
                 anthropic_cache_diagnostic["metadata"]["provider_cache_usage"][
@@ -339,11 +258,6 @@ def main() -> int:
             "anthropic_provider_cached_tokens": (
                 anthropic_cache_diagnostic["metadata"]["provider_cached_tokens"]
             ),
-            "dry_run_recovery_counts": dry_run_summary["recovery_counts"],
-            "dry_run_latest_recovery": dry_run_summary["latest_recovery"],
-            "dry_run_runtime_diagnostics": dry_run_summary[
-                "runtime_diagnostics"
-            ],
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         ok = (
@@ -353,52 +267,10 @@ def main() -> int:
             and payload["anthropic_canonical_has_cache_control"] is False
             and isinstance(payload["chat_prompt_cache_key"], str)
             and payload["chat_messages_have_provider_private_fields"] is False
-            and payload["dry_run_cache_boundary_hash_stable"] is True
-            and payload["dry_run_prompt_cache_key_hash_stable"] is True
-            and payload["dry_run_first_changed_cache_class"] == "ephemeral"
-            and payload["dry_run_wire_hint_state"] == "enabled_and_emitted"
-            and payload["anthropic_snapshot_cache_control_blocks"] == 4
+            and payload["responses_cache_boundary_hash_stable"] is True
+            and payload["responses_first_changed_cache_class"] == "ephemeral"
             and payload["anthropic_cache_usage_telemetry_status"] == "present"
             and payload["anthropic_provider_cached_tokens"] == 80
-            and payload["dry_run_recovery_counts"] == {
-                "invalid_encrypted_content": 1
-            }
-            and payload["dry_run_latest_recovery"] == {
-                "error_class": "invalid_encrypted_content",
-                "action": "strip_encrypted_reasoning_retry",
-                "will_retry": True,
-            }
-            and payload["dry_run_runtime_diagnostics"]["exposed_tools"] == {
-                "count": 2,
-                "names": ["Bash", "Read"],
-            }
-            and payload["dry_run_runtime_diagnostics"]["approval_lane"] == {
-                "state": "needs_approval",
-                "needs_approval": 1,
-                "denied": 0,
-            }
-            and payload["dry_run_runtime_diagnostics"]["policy_decisions"][
-                "execpolicy"
-            ]
-            == {
-                "decisions": {"ask": 1},
-                "sources": {"project": 1},
-                "rule_summaries": 1,
-            }
-            and payload["dry_run_runtime_diagnostics"]["sandbox_lane"] == {
-                "filesystem": {"workspace_write": 1},
-                "network": {"enabled": 1},
-                "shell": {"restricted": 1},
-            }
-            and payload["dry_run_runtime_diagnostics"]["tool_lifecycle"][
-                "terminal"
-            ]
-            == 1
-            and payload["dry_run_runtime_diagnostics"]["session_continuity"][
-                "lineage_switched"
-            ]
-            == 1
-            and "sk-do-not-print" not in json.dumps(payload, ensure_ascii=False)
         )
         return 0 if ok else 1
 

@@ -25,7 +25,3 @@ def startup_mark(name: str | None) -> str:
         zodiac_names = tuple(name for name in _MARKS if name != "default")
         key = random.choice(zodiac_names)
     return _MARKS.get(key, _MARKS["default"])
-
-
-def startup_mark_names() -> tuple[str, ...]:
-    return tuple(sorted(_MARKS))

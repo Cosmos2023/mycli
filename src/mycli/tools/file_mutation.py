@@ -31,13 +31,6 @@ def unified_diff(
     )
 
 
-def backup_file(path: Path, content: str) -> None:
-    backup_dir = path.parent / ".mycli_backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / f"{path.name}.bak"
-    backup_path.write_text(content, encoding="utf-8")
-
-
 def contains_secret_like_content(value: str) -> bool:
     return any(pattern.search(value) is not None for pattern in SECRET_PATTERNS)
 

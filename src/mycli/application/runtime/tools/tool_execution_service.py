@@ -349,6 +349,7 @@ class ToolExecutionService:
             )
         execution_call = self._with_runtime_execution_options(
             normalized_call,
+            policy_approved=policy_approved,
             interrupt_token=interrupt_token,
         )
         snapshot_ids = self._runtime_orchestrator.snapshot_before_file_mutation(
@@ -479,34 +480,14 @@ class ToolExecutionService:
             tool_router=tool_router,
             tool_exposure=tool_exposure,
         )
-        turn_metadata = dict(metadata or {})
-        turn_metadata["arguments"] = normalized_call.arguments
-        turn_metadata["provider_id"] = provider_id
-        turn_metadata["display"] = self._tool_display_projector.project_start(
-            normalized_call
-        ).to_dict()
-        start_event = self._tool_activity_event(normalized_call, phase="start")
-        activity_events.append(start_event)
-        self._notify_lifecycle_sink(
-            lifecycle_sink,
-            self._tool_lifecycle_start_event(call=normalized_call, context=start_event.message),
-        )
-        self._append_tool_runtime_lifecycle_trace(
+        self._record_tool_start(
+            normalized_call=normalized_call,
             turn_id=turn_id,
-            call=normalized_call,
-            phase="started",
-            status="running",
-        )
-        self._append_turn_item(
-            turn_id=turn_id,
+            activity_events=activity_events,
             turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.TOOL_CALL,
-                text=start_event.message,
-                tool_name=normalized_call.name,
-                call_id=normalized_call.call_id,
-                metadata=turn_metadata,
-            ),
+            metadata=metadata,
+            provider_id=provider_id,
+            lifecycle_sink=lifecycle_sink,
         )
         try:
             _raise_if_interrupted(interrupt_token)
@@ -937,6 +918,7 @@ class ToolExecutionService:
         self,
         call: ToolCall,
         *,
+        policy_approved: bool,
         interrupt_token: RuntimeInterruptToken | None,
     ) -> ToolCall:
         if call.name in LOCAL_PROCESS_SANDBOX_TOOL_NAMES:
@@ -959,7 +941,9 @@ class ToolExecutionService:
             return call
         arguments = dict(call.arguments)
         if call.name in SHELL_TOOL_NAMES and self._policy_gate is not None:
-            arguments["_runtime_shell_options"] = self._policy_gate.shell_execution_options()
+            arguments["_runtime_shell_options"] = self._policy_gate.shell_execution_options(
+                policy_approved=policy_approved
+            )
         if interrupt_token is not None:
             arguments["_runtime_interrupt_token"] = interrupt_token
         if call.call_id:
@@ -1282,7 +1266,7 @@ class ToolExecutionService:
         return self._lifecycle_preview(skill_name)
 
     def _lifecycle_preview(self, value: str) -> str:
-        normalized = self._context_manager._normalize_whitespace(value)
+        normalized = _normalize_whitespace(value)
         if len(normalized) <= MAX_LIFECYCLE_PREVIEW_CHARS:
             return normalized
         return normalized[: MAX_LIFECYCLE_PREVIEW_CHARS - 3] + "..."
@@ -1896,7 +1880,7 @@ class ToolExecutionService:
     def _trace_preview(self, value: object, *, max_chars: int = 120) -> str | None:
         if not isinstance(value, str) or not value.strip():
             return None
-        normalized = self._context_manager._normalize_whitespace(value)
+        normalized = _normalize_whitespace(value)
         if len(normalized) <= max_chars:
             return normalized
         return normalized[: max_chars - 3] + "..."
@@ -1939,7 +1923,7 @@ class ToolExecutionService:
                 f"{prefix}_chars": 0,
                 f"{prefix}_truncated": False,
             }
-        normalized = self._context_manager._normalize_whitespace(value)
+        normalized = _normalize_whitespace(value)
         return {
             f"{prefix}_preview": self._trace_preview(value, max_chars=max_chars),
             f"{prefix}_chars": len(normalized),
@@ -1949,10 +1933,10 @@ class ToolExecutionService:
     def _trace_text_chars(self, value: object) -> int:
         if not isinstance(value, str) or not value.strip():
             return 0
-        return len(self._context_manager._normalize_whitespace(value))
+        return len(_normalize_whitespace(value))
 
     def _lifecycle_text_metadata(self, prefix: str, value: str) -> dict[str, object]:
-        normalized = self._context_manager._normalize_whitespace(value)
+        normalized = _normalize_whitespace(value)
         return {
             prefix: self._lifecycle_preview(value),
             f"{prefix}_chars": len(normalized),
@@ -2119,3 +2103,7 @@ def _line_count(value: str) -> int:
     if not stripped:
         return 0
     return stripped.count("\n") + 1
+
+
+def _normalize_whitespace(value: str) -> str:
+    return " ".join(value.split())

@@ -51,14 +51,6 @@ class CompactionRehydrationService:
             invoked_skills=self._build_skills(invoked_skills),
         )
 
-    def render(self, context: CompactionRehydrationContext) -> str:
-        parts: list[str] = []
-        if context.invoked_skills:
-            parts.append(self._render_skills(context.invoked_skills))
-        if context.files:
-            parts.append(self._render_files(context.files))
-        return "\n\n".join(parts)
-
     def _build_files(
         self,
         candidates: tuple[FileRehydrationCandidate, ...],
@@ -183,21 +175,3 @@ class CompactionRehydrationService:
             content = content[: max(1, int(len(content) * 0.8))]
             token_count = self._token_counter.count(content)
         return content.rstrip(), token_count, truncated
-
-    def _render_skills(self, skills: tuple[RehydratedSkill, ...]) -> str:
-        blocks = [
-            "[Invoked skills after compaction]",
-            "Continue to follow these skill instructions.",
-        ]
-        for skill in skills:
-            blocks.append(f"## {skill.name}\n{skill.body}")
-        return "\n\n".join(blocks)
-
-    def _render_files(self, files: tuple[RehydratedFile, ...]) -> str:
-        blocks = [
-            "[Compaction file rehydration]",
-            "Recent file snapshots are current disk content. Re-read files if exact content matters.",
-        ]
-        for item in files:
-            blocks.append(f"### {item.path}\n```text\n{item.content}\n```")
-        return "\n\n".join(blocks)

@@ -121,18 +121,3 @@ def test_planning_service_marks_single_task_completed() -> None:
 
     assert updated.items[0].status is PlanStatus.COMPLETED
     assert updated.items[1].status is PlanStatus.PENDING
-
-
-def test_planning_service_marks_single_task_in_progress() -> None:
-    service = PlanningService()
-    state = PlanState(
-        items=(
-            PlanItem(id="inspect", content="Inspect repo", status=PlanStatus.PENDING),
-            PlanItem(id="edit", content="Edit README", status=PlanStatus.PENDING),
-        )
-    )
-
-    updated = service.mark_in_progress(state, "inspect")
-
-    assert updated.items[0].status is PlanStatus.IN_PROGRESS
-    assert updated.items[1].status is PlanStatus.PENDING

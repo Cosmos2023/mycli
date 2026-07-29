@@ -50,7 +50,6 @@ class TokenCounter:
 
     def __init__(self, *, max_cache: int = 10_000) -> None:
         self._cache: OrderedDict[str, int] = OrderedDict()
-        self._cache_hits = 0
         self._max_cache = max_cache
         self._encoder = self._load_encoder()
 
@@ -60,7 +59,6 @@ class TokenCounter:
         key = hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
         cached = self._cache.get(key)
         if cached is not None:
-            self._cache_hits += 1
             self._cache.move_to_end(key)
             return cached
 
@@ -70,16 +68,8 @@ class TokenCounter:
             self._cache.popitem(last=False)
         return tokens
 
-    def count_fragment(self, fragment: Fragment) -> int:
-        if fragment.tokens > 0:
-            return fragment.tokens
-        return self.count(fragment.content)
-
     def count_message(self, message: Message) -> int:
         return self.count(self.render_message(message))
-
-    def count_all(self, fragments: list[Fragment]) -> int:
-        return len(fragments) * 4 + sum(self.count_fragment(fragment) for fragment in fragments)
 
     @staticmethod
     def render_message(message: Message) -> str:

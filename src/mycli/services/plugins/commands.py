@@ -94,9 +94,6 @@ class PluginCommandRegistry:
         ]
         return tuple(sorted(entries, key=lambda item: str(item["id"])))
 
-    def list_command_ids(self, *, plugin_id: str | None = None) -> tuple[str, ...]:
-        return tuple(str(item["id"]) for item in self.list_entries(plugin_id=plugin_id))
-
     def issues(self) -> tuple[str, ...]:
         return tuple(self._issues)
 

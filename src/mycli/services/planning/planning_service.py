@@ -53,9 +53,6 @@ class PlanningService:
     def mark_completed(self, state: PlanState, item_id: str) -> PlanState:
         return state.replace_item(item_id, PlanStatus.COMPLETED)
 
-    def mark_in_progress(self, state: PlanState, item_id: str) -> PlanState:
-        return state.replace_item(item_id, PlanStatus.IN_PROGRESS)
-
     def _normalize_item(self, item: dict[str, Any], *, index: int) -> PlanItem:
         raw_id = item.get("id")
         item_id = str(raw_id).strip() if raw_id is not None and str(raw_id).strip() else f"step-{index}"

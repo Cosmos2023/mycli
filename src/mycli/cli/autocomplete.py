@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import suppress
 from pathlib import Path
 
 
@@ -39,30 +37,6 @@ def path_completion_candidates(workspace_root: Path, token: str) -> tuple[str, .
         suffix = "/" if child.is_dir() else ""
         candidates.append(f"@{rel}{suffix}")
     return tuple(candidates)
-
-
-def install_path_autocomplete(*, workspace_root: Path) -> Callable[[], None]:
-    try:
-        import readline
-    except ImportError:
-        return lambda: None
-
-    previous_completer = readline.get_completer()
-
-    def completer(text: str, state: int) -> str | None:
-        candidates = path_completion_candidates(workspace_root, text)
-        if state < len(candidates):
-            return candidates[state]
-        return None
-
-    readline.set_completer(completer)
-    with suppress(Exception):
-        readline.parse_and_bind("tab: complete")
-
-    def cleanup() -> None:
-        readline.set_completer(previous_completer)
-
-    return cleanup
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

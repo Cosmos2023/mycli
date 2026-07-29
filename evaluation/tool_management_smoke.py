@@ -7,7 +7,12 @@ import tempfile
 from typing import Any, cast
 
 from mycli.application.turn_service import TurnService
-from mycli.cli.repl import build_command_handler
+from mycli.cli.slash_command_dispatch import dispatch_backend_slash_command
+from mycli.cli.slash_command_registry import (
+    SlashCommandContext,
+    SlashCommandSurface,
+    resolve_slash_command,
+)
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import AgentConfig, PlanState
 from mycli.domain.subagents import SubAgentResult
@@ -53,6 +58,12 @@ class FakeRuntime:
         return self._extension_manifest_service.manifest()
 
 
+def _dispatch_cli_command(service: TurnService, command: str) -> tuple[str, ...]:
+    context = SlashCommandContext(surface=SlashCommandSurface.CLI)
+    invocation = resolve_slash_command(command, context)
+    return dispatch_backend_slash_command(service, invocation).lines
+
+
 def main() -> int:
     report: dict[str, object] = {
         "run_id": f"tool-management-smoke-{datetime.now(tz=UTC).strftime('%Y%m%dT%H%M%SZ')}",
@@ -66,7 +77,6 @@ def main() -> int:
         home.mkdir()
         runtime = FakeRuntime(workspace)
         service = TurnService(config=runtime._config, home_dir=home, runtime=runtime)
-        handler = build_command_handler(service)
         manifest = service.extension_manifest()
         tool_manifest = cast(dict[str, Any], manifest["tool_manifest"])
         toolset_manifest = cast(dict[str, Any], manifest["toolset_manifest"])
@@ -78,18 +88,18 @@ def main() -> int:
             str(toolset["id"]): toolset
             for toolset in cast(list[dict[str, Any]], toolset_manifest["toolsets"])
         }
-        slash_tools = tuple(handler("/tools"))
-        slash_toolsets = tuple(handler("/toolsets"))
+        slash_tools = _dispatch_cli_command(service, "/tools")
+        slash_toolsets = _dispatch_cli_command(service, "/toolsets")
         success = (
             tools["Read"]["source"] == "builtin"
             and tools["subagent_explore"]["source"] == "subagent"
             and tools["subagent_explore"]["toolset"] == "external"
             and "subagent_explore" in toolsets["external"]["tools"]
-            and any("source=builtin" in line for line in slash_tools)
-            and any("source=subagent" in line for line in slash_tools)
-            and any("approval=auto_allow" in line for line in slash_tools)
-            and any(line.startswith("[toolset] external ") for line in slash_toolsets)
-            and any("sources=subagent" in line for line in slash_toolsets)
+            and any(line.startswith("Read  builtin  file") for line in slash_tools)
+            and any(line.startswith("Subagent explore  subagent  external") for line in slash_tools)
+            and any("Read  builtin  file  low  available  auto_allow" in line for line in slash_tools)
+            and any(line.startswith("External  true  subagent") for line in slash_toolsets)
+            and any("subagent_explore" in line for line in slash_toolsets)
         )
         checks: dict[str, object] = {
             "builtin_source": tools["Read"]["source"],

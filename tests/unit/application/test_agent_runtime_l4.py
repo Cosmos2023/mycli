@@ -22,6 +22,7 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAction, ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.llms import ModelResponseError
 from mycli.services.context.compaction import CompactPhase, CompactReason
+from mycli.services.context.compaction.budget import ContextBudget
 from mycli.tools.registry import ToolRegistry
 
 
@@ -38,6 +39,7 @@ class DoneAdapter(ModelAdapter):
 class RuntimeItemSummarizerAdapter:
     def __init__(self) -> None:
         self.seen_items: list[list[RuntimeItem]] = []
+        self.seen_tools: list[list[ModelToolDefinition]] = []
 
     def next_action(
         self,
@@ -54,8 +56,8 @@ class RuntimeItemSummarizerAdapter:
         items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
     ) -> ModelTurnResult:
-        del tools
         self.seen_items.append(items)
+        self.seen_tools.append(tools)
         return ModelTurnResult(
             items=(
                 RuntimeItem(
@@ -78,7 +80,7 @@ class SummarizingDoneAdapter(ModelAdapter):
         messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
     ) -> ModelAction:
-        if not tools and messages and "Summarize this conversation" in messages[0].content:
+        if messages and "Summarize this conversation" in messages[0].content:
             self.summarizer_prompts.append(messages[0].content)
             return ModelAction(
                 assistant_message="## 1. Primary Request\nFull-context L4 summary.",
@@ -100,7 +102,7 @@ class SummarizingToolThenDoneAdapter(ModelAdapter):
         messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
     ) -> ModelAction:
-        if not tools and messages and "Summarize this conversation" in messages[0].content:
+        if messages and "Summarize this conversation" in messages[0].content:
             self.summarizer_prompts.append(messages[0].content)
             return ModelAction(
                 assistant_message="## 1. Primary Request\nFull-context L4 summary.",
@@ -127,6 +129,9 @@ class ThinkingAwareSummarizingAdapter(ModelAdapter):
         self.current_thinking: tuple[bool, object] | None = None
         self.current_model = "deepseek-v4-flash"
         self.current_max_output_tokens = 8192
+        self.current_tool_choice: str | None = None
+        self.summarizer_tool_choices: list[str | None] = []
+        self.main_tool_choices: list[str | None] = []
         self.summarizer_requests: list[
             tuple[tuple[bool, object] | None, int, str, int]
         ] = []
@@ -144,13 +149,17 @@ class ThinkingAwareSummarizingAdapter(ModelAdapter):
     def reset_max_output_tokens(self) -> None:
         self.current_max_output_tokens = 8192
 
+    def set_tool_choice(self, value: str | None) -> None:
+        self.current_tool_choice = value
+
     def next_action(
         self,
         *,
         messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
     ) -> ModelAction:
-        if not tools and messages and "Summarize this conversation" in messages[0].content:
+        if messages and "Summarize this conversation" in messages[0].content:
+            self.summarizer_tool_choices.append(self.current_tool_choice)
             self.summarizer_requests.append(
                 (
                     self.current_thinking,
@@ -164,6 +173,7 @@ class ThinkingAwareSummarizingAdapter(ModelAdapter):
                 done=True,
             )
 
+        self.main_tool_choices.append(self.current_tool_choice)
         self.main_requests.append(
             (
                 self.current_thinking,
@@ -186,7 +196,7 @@ class ContextWindowThenReactiveSummaryAdapter(ModelAdapter):
         messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
     ) -> ModelAction:
-        if not tools and messages and "Summarize this conversation" in messages[0].content:
+        if messages and "Summarize this conversation" in messages[0].content:
             self.summarizer_prompts.append(messages[0].content)
             return ModelAction(
                 assistant_message="## 1. Primary Request\nReactive summary.",
@@ -420,13 +430,39 @@ def test_agent_runtime_compact_provider_sends_runtime_items(
         model_adapter=adapter,
     )
 
+    tool = ModelToolDefinition(name="Read", description="Read a file", parameters=())
     output = runtime._compact_service._provider.compact(
-        (Message(role="user", content="summarize this"),)
+        (
+            Message(role="user", content="summarize this"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"file_path": "README.md"},
+                        reason="inspect",
+                        call_id="call_compact",
+                    ),
+                ),
+            ),
+            Message(
+                role="tool",
+                content="README contents",
+                tool_call_id="call_compact",
+            ),
+        ),
+        tools=(tool,),
     )
 
     assert output[0].content == "summary"
     assert adapter.seen_items
-    assert adapter.seen_items[0]
+    assert adapter.seen_items[0][1].blocks[0].text == "summarize this"
+    assert adapter.seen_items[0][2].blocks[0].type == "tool_call"
+    assert adapter.seen_items[0][2].blocks[0].call_id == "call_compact"
+    assert adapter.seen_items[0][3].blocks[0].type == "tool_result"
+    assert adapter.seen_items[0][3].blocks[0].call_id == "call_compact"
+    assert adapter.seen_tools[0] == [tool]
     assert "Summarize this conversation" in (adapter.seen_items[0][0].blocks[0].text or "")
 
 
@@ -499,7 +535,10 @@ def test_agent_runtime_l4_triggers_from_full_provider_request_budget(
                 content=f"message {index} " + ("token " * 80),
             )
         )
-    conversation_budget = runtime._estimate_window_budget(conversation)
+    conversation_budget = ContextBudget.from_estimate(
+        max_tokens=runtime._config.max_prompt_tokens,
+        estimated_input_tokens=runtime._estimated_conversation_tokens(conversation),
+    )
     runtime._session_service.save_conversation(conversation)
 
     response = runtime.handle_user_turn("finish from the current context")
@@ -776,7 +815,7 @@ def test_agent_runtime_reactive_compacts_once_after_context_window_error(
     assert snapshot.l4_last_source == "reactive_error"
 
 
-def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
+def test_agent_runtime_l4_summarizer_disables_thinking_and_exposes_tool_schemas(
     tmp_path: Path,
 ) -> None:
     adapter = ThinkingAwareSummarizingAdapter()
@@ -809,12 +848,14 @@ def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
 
     assert response.assistant_message == "done"
     assert adapter.summarizer_requests
-    assert adapter.summarizer_requests[0] == (
-        (False, None),
-        0,
-        "deepseek-v4-flash",
-        600,
+    summary_thinking, summary_tool_count, summary_model, summary_max_output_tokens = (
+        adapter.summarizer_requests[0]
     )
+    assert summary_thinking == (False, None)
+    assert summary_tool_count > 0
+    assert summary_model == "deepseek-v4-flash"
+    assert summary_max_output_tokens == 600
+    assert adapter.summarizer_tool_choices == ["none"]
     assert adapter.main_requests
     main_thinking, main_tool_count, main_model, main_max_output_tokens = adapter.main_requests[0]
     assert main_thinking is not None
@@ -822,3 +863,4 @@ def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
     assert main_tool_count > 0
     assert main_model == "deepseek-v4-flash"
     assert main_max_output_tokens == 8192
+    assert adapter.main_tool_choices == [None]

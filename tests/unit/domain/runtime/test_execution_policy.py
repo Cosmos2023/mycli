@@ -186,7 +186,7 @@ def test_tool_runtime_coverage_profiles_name_all_tool_like_lanes() -> None:
         "background_job_control",
     }
     assert by_lane["shell_foreground"].is_full_runtime_lane is True
-    assert by_lane["hook_execution"].is_partial_runtime_lane is True
+    assert by_lane["hook_execution"].is_full_runtime_lane is False
     assert by_lane["subagent_job"].known_gap == (
         "delegated_actions_are_not_single_tool_runtime_lane"
     )
