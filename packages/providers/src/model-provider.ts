@@ -17,3 +17,10 @@ export interface ResponsesClient {
 		options: ProviderStreamOptions,
 	): Promise<AsyncIterable<unknown>>;
 }
+
+export interface ChatCompletionsClient {
+	create(
+		request: Readonly<Record<string, unknown>>,
+		options: ProviderStreamOptions,
+	): Promise<AsyncIterable<unknown>>;
+}
