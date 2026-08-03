@@ -675,7 +675,7 @@ git commit -m "test(node-cli): gate sidecar lifecycle"
 - Modify: `README.md`
 - Create: `docs/superpowers/reports/2026-08-03-node-runtime-m1-composition-root-smoke.md`
 
-- [ ] **Step 1: Document the explicit preview path**
+- [x] **Step 1: Document the explicit preview path**
 
 Document:
 
@@ -688,7 +688,7 @@ npm run mycli -- --runtime-backend python-sidecar
 State that `uv run mycli` remains the M1 rollback path, `python-sidecar` is the only implemented
 Node-parent backend, selecting `node` fails without fallback, and M1 still requires Python.
 
-- [ ] **Step 2: Run the complete M1 regression gate**
+- [x] **Step 2: Run the complete M1 regression gate**
 
 Run:
 
@@ -706,7 +706,7 @@ uv run mypy src/mycli
 
 Expected: supported-version gates pass with existing documented skips only.
 
-- [ ] **Step 3: Inspect the packed npm CLI**
+- [x] **Step 3: Inspect the packed npm CLI**
 
 Run:
 
@@ -717,14 +717,14 @@ npm pack --workspace @mycli/app --dry-run
 Expected: compiled CLI and required package metadata are present; source TypeScript, Python source,
 credentials, local environment files, and test fixtures are absent.
 
-- [ ] **Step 4: Record sanitized smoke evidence**
+- [x] **Step 4: Record sanitized smoke evidence**
 
 The report contains commit SHA, Node/npm/Python versions, exact command outcomes, handshake and
 lifecycle case counts, packed-file evidence, rollout/rollback commands, cross-platform CI scope,
 and the local Node 24 baseline when applicable. Record `Live API: not applicable` because M1 does
 not change provider traffic.
 
-- [ ] **Step 5: Commit docs and evidence**
+- [x] **Step 5: Commit docs and evidence**
 
 ```bash
 git add README.md docs/superpowers/reports/2026-08-03-node-runtime-m1-composition-root-smoke.md

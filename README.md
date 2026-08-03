@@ -69,6 +69,30 @@ uv run mycli --node-tui
 交互式会话需要 Node.js 22.19+，并且 stdin/stdout 必须连接到终端。
 `doctor`、`hooks`、`plugins`、`mcp`、`subagents` 和 `setup` 等管理命令仍可用于脚本和非 TTY 环境。
 
+### M1 Node-parent 预览
+
+M1 可让 Node CLI 持有 TTY、signal、exit code 和 child lifecycle，同时把现有 Python
+runtime 作为临时 JSON-RPC sidecar 启动：
+
+```bash
+npm ci
+npm run build
+npm run mycli -- --runtime-backend python-sidecar
+```
+
+`python-sidecar` 是 M1 唯一可用的 Node-parent backend，当前预览仍要求 Python 3.13
+和已安装的 `mycli` Python 环境。选择 `--runtime-backend node` 会以
+`runtime_backend_unavailable` 失败，不会自动回退或重放 turn。
+
+M1 的显式回滚路径仍是：
+
+```bash
+uv run mycli
+```
+
+管理命令也继续通过 Python CLI 运行；在对应能力迁移完成前，不要从 Node CLI 调用
+`doctor`、`hooks`、`plugins`、`mcp`、`subagents` 或 `setup`。
+
 ## 模型与认证
 
 ### 当前模型配置

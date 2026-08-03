@@ -903,3 +903,101 @@ if (action.method === "status.update") {
   return liveStatus ? { ...state, liveStatus } : state;
 }
 ```
+
+## Scenario: Node Composition Root With Python Sidecar
+
+### 1. Scope / Trigger
+- Trigger: Changes to `apps/mycli`, sidecar stdio startup, gateway transport
+  injection, process signals, package exports, or Node/Python process ownership.
+- During M1, Node owns the terminal and process lifecycle. Python is a
+  temporary JSON-RPC sidecar and must never inherit the TTY.
+
+### 2. Signatures
+- Node CLI: `mycli [--session <id>] [--model <model>] [--runtime-backend python-sidecar]`
+- Backend selector:
+  `selectRuntimeBackend({argv, env}) -> "python-sidecar"`
+- Sidecar controller:
+  `startPythonSidecar({cwd, env, args, ...}) -> PythonSidecar`
+- Sidecar command:
+  `<python> -m mycli.cli.sidecar [--session <id>] [--model <model>]`
+- Python entry point: `python -m mycli.cli.sidecar`
+- Gateway module startup: `gatewayStartup: Promise<void>`
+- Gateway module shutdown: `gatewayShutdown() -> Promise<void>`
+
+### 3. Contracts
+- `MYCLI_PYTHON` optionally overrides the Python executable. The default is
+  `python` on Windows and `python3` elsewhere.
+- `MYCLI_RUNTIME_BACKEND` may select `python-sidecar`; an explicit CLI value
+  takes precedence over the environment.
+- `MYCLI_SIDECAR_START_TIMEOUT_MS` controls readiness timeout and remains
+  bounded to 1-60 seconds.
+- Spawn uses `stdio: ["pipe", "pipe", "pipe"]`, `windowsHide: true`, and
+  `shell: false`. Child stdout is gateway input, child stdin is gateway output,
+  and child stderr is diagnostics only.
+- Startup order is `runtime.ready`, `extension.manifest` compatibility, then
+  `session.bootstrap(protocol_version=1)`. No turn may start first.
+- Sidecar stderr retained by Node is at most 8 KiB and redacts secret-like
+  assignments, bearer tokens, and API-key forms before display.
+- Graceful close ends child stdin, waits two seconds, sends termination, waits
+  two seconds, then performs one final kill. Close and final kill are
+  idempotent.
+- Production package exports and the `mycli` bin point only to compiled ESM and
+  declarations under `dist`; production execution never requires `tsx`.
+
+### 4. Validation & Error Matrix
+- `--help` / `--version` -> exit `0`, no TTY check, no Python process.
+- Normal TUI shutdown and sidecar exit `0` -> exit `0`.
+- Sidecar crash, protocol close, readiness timeout, or internal lifecycle
+  failure -> exit `1`, with no backend fallback or turn replay.
+- Invalid CLI/backend/config, unavailable native Node backend, synchronous
+  spawn failure, or missing protocol streams -> exit `2`.
+- SIGINT before TUI ownership -> bounded cleanup and exit `130`.
+- SIGINT after TUI ownership -> leave the first interrupt to the active TUI.
+- SIGTERM -> request gateway shutdown and apply bounded sidecar escalation.
+- Missing canonical manifest method/event or wrong schema version ->
+  `incompatible_protocol` before session bootstrap.
+
+### 5. Good/Base/Bad Cases
+- Good: Configure the sidecar transport before dynamically importing
+  `mycli-shell-tui/gateway`, then await its exported startup promise.
+- Good: An abnormal Node exit synchronously kills the still-running child and
+  a PID probe confirms no orphan remains.
+- Base: `uv run mycli` remains the explicit Python-parent rollback path during
+  M1.
+- Bad: Spawn a separate TUI child that owns terminal input; this breaks Windows
+  raw-TTY ownership and splits signal handling.
+- Bad: Forward sidecar stderr into `GatewayClient`; a diagnostic line can then
+  corrupt JSON-RPC framing or leak a credential.
+- Bad: Retry a failed Node operation through Python; model requests and tool
+  effects could be duplicated.
+
+### 6. Tests Required
+- Unit tests for POSIX/Windows command construction, piped streams, stable
+  spawn errors, bounded redaction, completion codes, close escalation, and
+  idempotent cleanup.
+- CLI tests proving help/version do not spawn, TTY validation precedes spawn,
+  transport configuration precedes TUI import, unavailable backends do not
+  fall back, and exit codes follow the matrix.
+- Handshake tests for ready timeout, schema mismatch, missing canonical RPCs,
+  missing canonical events, and additive future manifest names.
+- Real-process tests for timeout, crash before/after handshake, normal
+  shutdown, SIGTERM escalation, stderr separation, and orphan PID cleanup.
+- Build/package tests proving compiled help/version run without Python and
+  `npm pack --dry-run` excludes source, fixtures, credentials, and local files.
+- Run lifecycle tests on Node 22.19 across macOS, Linux, and Windows.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+const child = spawn("python3", args, { stdio: "inherit" });
+await import("mycli-shell-tui/gateway");
+```
+
+Correct:
+```typescript
+const sidecar = startPythonSidecar({ cwd, env, args });
+configureGatewayTransport(sidecar.transport);
+const { gatewayStartup } = await import("mycli-shell-tui/gateway");
+await gatewayStartup;
+```
