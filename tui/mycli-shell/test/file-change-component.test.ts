@@ -17,8 +17,7 @@ function stripAnsi(text: string): string {
 
 function renderThemeFixture(env: NodeJS.ProcessEnv): string {
 	const fixture = fileURLToPath(new URL("./fixtures/render-file-change-theme.ts", import.meta.url));
-	const tsx = fileURLToPath(new URL("../node_modules/tsx/dist/esm/index.mjs", import.meta.url));
-	const result = spawnSync(process.execPath, ["--import", tsx, fixture], {
+	const result = spawnSync(process.execPath, ["--import", "tsx", fixture], {
 		encoding: "utf8",
 		env: { ...process.env, ...env },
 	});

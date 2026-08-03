@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "demo": "node --import ./node_modules/tsx/dist/esm/index.mjs src/demo.ts",
-    "test": "node --import ./node_modules/tsx/dist/esm/index.mjs --test \"test/**/*.test.ts\" --test-reporter=dot",
+    "demo": "node --import tsx src/demo.ts",
+    "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
