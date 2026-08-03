@@ -180,7 +180,7 @@ test("abnormal parent exit synchronously kills a running sidecar", async () => {
 	assert.equal(fake.killCalls(), 1);
 });
 
-test("asynchronous TUI startup failure closes the sidecar and prints only sanitized diagnostics", async () => {
+test("asynchronous TUI startup failure exits one and prints only sanitized diagnostics", async () => {
 	const fake = fakeSidecar();
 	const startup = deferred<void>();
 	void startup.promise.catch(() => undefined);
@@ -196,11 +196,27 @@ test("asynchronous TUI startup failure closes the sidecar and prints only saniti
 		},
 	});
 
-	assert.equal(await runCli(harness.options), 2);
+	assert.equal(await runCli(harness.options), 1);
 	assert.equal(fake.closeCalls(), 1);
 	assert.match(harness.stderr.join(""), /tui_start_failed/);
 	assert.match(harness.stderr.join(""), /api_key=\[REDACTED\]/);
 	assert.doesNotMatch(harness.stderr.join(""), /private module path/);
+});
+
+test("SIGINT before TUI ownership closes the sidecar and returns 130", async () => {
+	const fake = fakeSidecar();
+	const harness = cliHarness({
+		startSidecar: () => fake.sidecar,
+		configureTransport: () => undefined,
+		importTui: async () => {
+			harness.hooks.emit("SIGINT");
+			fake.completion.resolve(0);
+			return { gatewayStartup: Promise.resolve() };
+		},
+	});
+
+	assert.equal(await runCli(harness.options), 130);
+	assert.equal(fake.closeCalls(), 1);
 });
 
 test("composition root can own a real child-process fixture", async () => {

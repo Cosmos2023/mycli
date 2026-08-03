@@ -28,7 +28,9 @@ type InputStream = { isTTY?: boolean };
 type OutputStream = { isTTY?: boolean; write(value: string): unknown };
 type ProcessHooks = {
 	once(event: "exit", listener: (code: number) => void): unknown;
+	once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 	off(event: "exit", listener: (code: number) => void): unknown;
+	off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 };
 
 export type RunCliOptions = {
@@ -92,6 +94,10 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 
 	let expectedShutdown = false;
 	let childCompleted = false;
+	let tuiOwned = false;
+	let requestedExitCode: 0 | 130 | null = null;
+	let gatewayShutdown: (() => Promise<unknown>) | null = null;
+	let shutdownPromise: Promise<unknown> | null = null;
 	const transport: GatewayTransport = {
 		...sidecar.transport,
 		close: async () => {
@@ -105,22 +111,40 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 			sidecar.kill();
 		}
 	};
+	const requestShutdown = (exitCode: 0 | 130): void => {
+		requestedExitCode ??= exitCode;
+		shutdownPromise ??= Promise.resolve(
+			gatewayShutdown ? gatewayShutdown() : transport.close?.(),
+		).catch(() => undefined);
+	};
+	const onSigint = (): void => {
+		if (!tuiOwned) {
+			requestShutdown(130);
+		}
+	};
+	const onSigterm = (): void => requestShutdown(0);
 	processHooks.once("exit", onProcessExit);
+	processHooks.once("SIGINT", onSigint);
+	processHooks.once("SIGTERM", onSigterm);
 
 	try {
 		(options.configureTransport ?? configureGatewayTransport)(transport);
 		const tuiModule = await (options.importTui ?? (() => import("mycli-shell-tui/gateway")))();
+		gatewayShutdown = gatewayShutdownFrom(tuiModule);
 		await gatewayStartupFrom(tuiModule);
+		tuiOwned = true;
 	} catch {
-		expectedShutdown = true;
 		await sidecar.close().catch(() => undefined);
-		processHooks.off("exit", onProcessExit);
+		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
+		if (requestedExitCode !== null) {
+			return requestedExitCode;
+		}
 		stderr.write("[mycli] tui_start_failed: unable to start terminal UI\n");
 		const diagnostic = sidecar.diagnostic().trim();
 		if (diagnostic) {
 			stderr.write(`[mycli-sidecar] ${diagnostic}\n`);
 		}
-		return 2;
+		return 1;
 	}
 
 	let exitCode: number;
@@ -130,7 +154,10 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		exitCode = 1;
 	} finally {
 		childCompleted = true;
-		processHooks.off("exit", onProcessExit);
+		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
+	}
+	if (requestedExitCode !== null) {
+		return requestedExitCode;
 	}
 	return expectedShutdown && exitCode === 0 ? 0 : 1;
 }
@@ -183,6 +210,27 @@ function gatewayStartupFrom(value: unknown): Promise<unknown> {
 	}
 	const startup = value.gatewayStartup;
 	return startup instanceof Promise ? startup : Promise.resolve();
+}
+
+function gatewayShutdownFrom(value: unknown): (() => Promise<unknown>) | null {
+	if (typeof value !== "object" || value === null || !("gatewayShutdown" in value)) {
+		return null;
+	}
+	const shutdown = value.gatewayShutdown;
+	return typeof shutdown === "function"
+		? () => Promise.resolve(shutdown())
+		: null;
+}
+
+function removeLifecycleHooks(
+	hooks: ProcessHooks,
+	onExit: (code: number) => void,
+	onSigint: () => void,
+	onSigterm: () => void,
+): void {
+	hooks.off("exit", onExit);
+	hooks.off("SIGINT", onSigint);
+	hooks.off("SIGTERM", onSigterm);
 }
 
 const entryPath = process.argv[1];

@@ -52,6 +52,8 @@ jobs:
       - run: npm run contracts:check
       - run: npm run lint
       - run: npm test
+      - name: Node sidecar lifecycle integration
+        run: node --import tsx --test apps/mycli/test/lifecycle.integration.test.ts
       - run: npm run typecheck
       - run: uv run pytest -q
       - run: uv run ruff check .

@@ -745,21 +745,22 @@ async function main(): Promise<void> {
 	runtime.start();
 }
 
-process.on("SIGINT", () => {
-	if (runtime?.isStarted()) {
-		return;
-	}
-	void interruptExit(130);
-});
-
-process.once("SIGTERM", () => {
-	void shutdown(0).finally(() => process.exit(0));
-});
-
 export const gatewayStartup = main();
+export async function gatewayShutdown(): Promise<void> {
+	await shutdown(0);
+}
 
 const entryPath = process.argv[1];
 if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
+	process.on("SIGINT", () => {
+		if (runtime?.isStarted()) {
+			return;
+		}
+		void interruptExit(130);
+	});
+	process.once("SIGTERM", () => {
+		void shutdown(0).finally(() => process.exit(0));
+	});
 	void gatewayStartup.catch((error: unknown) => {
 		const message = error instanceof Error ? error.message : "Unable to start mycli shell TUI.";
 		process.stderr.write(`[mycli-shell] ${message}\n`);

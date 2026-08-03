@@ -605,7 +605,7 @@ git commit -m "build(node-cli): compile publishable ESM"
 - Modify: `apps/mycli/src/cli.ts`
 - Modify: `.github/workflows/cross-platform.yml`
 
-- [ ] **Step 1: Write failing real-process lifecycle tests**
+- [x] **Step 1: Write failing real-process lifecycle tests**
 
 Spawn fixtures as real children and prove:
 
@@ -621,7 +621,7 @@ Spawn fixtures as real children and prove:
 Use temporary directories and PID files. Poll with a bounded deadline; never use an unbounded
 sleep.
 
-- [ ] **Step 2: Run the lifecycle tests and verify missing cases fail**
+- [x] **Step 2: Run the lifecycle tests and verify missing cases fail**
 
 Run:
 
@@ -632,7 +632,7 @@ node --import tsx --test apps/mycli/test/lifecycle.integration.test.ts
 Expected: at least timeout, crash propagation, and orphan cleanup tests fail before lifecycle
 hardening.
 
-- [ ] **Step 3: Implement lifecycle hardening**
+- [x] **Step 3: Implement lifecycle hardening**
 
 Keep signal ownership in the Node composition root. The first SIGINT is left to the active TUI so
 it can request turn interruption; SIGTERM and abnormal exits close the sidecar. Cleanup is
@@ -643,12 +643,12 @@ idempotent and bounded. Exit-code policy:
 - `2`: CLI/config/backend/spawn validation failure;
 - `130`: user interrupt before TUI ownership is established.
 
-- [ ] **Step 4: Add lifecycle tests to cross-platform CI**
+- [x] **Step 4: Add lifecycle tests to cross-platform CI**
 
 After root `npm test`, add a named command that runs the app lifecycle integration test on the
 existing macOS, Linux, and Windows matrix. Keep Python regression and shell lifecycle checks.
 
-- [ ] **Step 5: Run focused cross-language lifecycle verification**
+- [x] **Step 5: Run focused cross-language lifecycle verification**
 
 Run:
 
@@ -662,7 +662,7 @@ uv run mypy src/mycli
 
 Expected: all focused checks pass on the supported Node version.
 
-- [ ] **Step 6: Commit lifecycle gates**
+- [x] **Step 6: Commit lifecycle gates**
 
 ```bash
 git add apps/mycli/src apps/mycli/test .github/workflows/cross-platform.yml
