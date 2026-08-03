@@ -28,7 +28,7 @@ Windows 原生支持 PowerShell 7、Windows PowerShell 5.1 和 `cmd.exe`；Git B
 ```bash
 uv venv
 uv sync --dev
-npm ci --prefix tui/mycli-shell
+npm ci
 uv run mycli
 ```
 
@@ -66,7 +66,7 @@ uv run mycli --model gpt-5.4
 uv run mycli --node-tui
 ```
 
-交互式会话需要 Node.js 20+，并且 stdin/stdout 必须连接到终端。
+交互式会话需要 Node.js 22.19+，并且 stdin/stdout 必须连接到终端。
 `doctor`、`hooks`、`plugins`、`mcp`、`subagents` 和 `setup` 等管理命令仍可用于脚本和非 TTY 环境。
 
 ## 模型与认证
@@ -697,6 +697,7 @@ src/mycli/state/                  session service 和序列化
 src/mycli/memory/                 file memory、extraction、dream
 src/mycli/services/mcp/           MCP transport 和 discovery
 tui/mycli-shell/                  TypeScript Node TUI
+packages/contracts/               canonical JSON Schema、生成类型与边界验证
 ```
 
 更详细的模块边界见 [docs/architecture.md](docs/architecture.md)，当前上下文语义见 [docs/context/mycli-context-assembly-reference.md](docs/context/mycli-context-assembly-reference.md)。`docs/superpowers/` 中的 specs、plans 和 reports 是历史设计材料，不应覆盖当前源码与本 README 的产品说明。
@@ -711,12 +712,20 @@ uv run ruff check .
 uv run mypy src
 ```
 
-Node TUI：
+Node workspace：
 
 ```bash
-npm --prefix tui/mycli-shell run typecheck
-npm --prefix tui/mycli-shell test
+npm ci
+npm run contracts:check
+npm run lint
+npm test
+npm run typecheck
 ```
+
+网关 canonical schema 位于 `packages/contracts/schemas/`。`packages/contracts/src/generated/`
+中的 TypeScript 类型和 `src/mycli/schemas/generated/` 中的 Python 资源副本均为生成产物，
+不要直接编辑。修改 schema 后运行 `npm run contracts:generate`，并用
+`npm run contracts:check` 确认仓库中没有生成漂移。
 
 运行诊断：
 

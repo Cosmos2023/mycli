@@ -49,12 +49,13 @@ jobs:
           uv build --wheel --out-dir dist-windows
           uv run python -c "import pathlib,zipfile; wheel=next(pathlib.Path('dist-windows').glob('*win_amd64.whl')); archive=zipfile.ZipFile(wheel); names=archive.namelist(); assert 'mycli/native/windows/mycli-windows-sandbox.exe' in names; metadata=archive.read(next(name for name in names if name.endswith('.dist-info/WHEEL'))).decode(); assert 'Root-Is-Purelib: false' in metadata; print(wheel.name)"
       - run: npm ci
+      - run: npm run contracts:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
       - run: uv run pytest -q
       - run: uv run ruff check .
       - run: uv run mypy src/mycli
-      - run: npm test
-      - run: npm run typecheck
-      - run: npm run lint
       - name: Shell lifecycle smoke
         run: uv run pytest tests/integration/test_cross_platform_shell.py -q
 
