@@ -1,0 +1,43 @@
+[
+  {
+    "name": "valid turn started",
+    "valid": true,
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "turn.started",
+      "params": {"client_turn_id": "client-1", "turn_id": "turn-1"}
+    }
+  },
+  {
+    "name": "missing turn id",
+    "valid": false,
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "turn.started",
+      "params": {"client_turn_id": "client-1"}
+    }
+  },
+  {
+    "name": "valid gateway error",
+    "valid": true,
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "gateway.error",
+      "params": {"code": "invalid_params", "message": "invalid request"}
+    }
+  },
+  {
+    "name": "unknown gateway error code",
+    "valid": false,
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "gateway.error",
+      "params": {"code": "unknown_code", "message": "invalid request"}
+    }
+  },
+  {
+    "name": "unknown event method",
+    "valid": false,
+    "value": {"jsonrpc": "2.0", "method": "unknown.event", "params": {}}
+  }
+]
