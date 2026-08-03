@@ -146,7 +146,7 @@ git commit -m "refactor(tui): inject gateway transport"
 - Modify: `src/mycli/cli/node_tui/gateway.py`
 - Modify: `src/mycli/cli/node_tui/__init__.py`
 
-- [ ] **Step 1: Write failing stream-peer gateway tests**
+- [x] **Step 1: Write failing stream-peer gateway tests**
 
 Use `io.StringIO` to prove the sidecar emits `runtime.ready`, processes bootstrap and shutdown,
 returns zero, and never writes diagnostics to protocol stdout:
@@ -169,7 +169,7 @@ def test_run_stdio_gateway_processes_bootstrap_and_shutdown(tmp_path: Path) -> N
     assert '"id":"1"' in outgoing.getvalue()
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the API is absent**
+- [x] **Step 2: Run the focused tests and verify the API is absent**
 
 Run:
 
@@ -179,7 +179,7 @@ uv run pytest tests/unit/cli/node_tui/test_stdio.py tests/unit/cli/test_sidecar.
 
 Expected: FAIL because the stdio runner and sidecar entry point do not exist.
 
-- [ ] **Step 3: Extract the gateway loop behind the existing peer protocol**
+- [x] **Step 3: Extract the gateway loop behind the existing peer protocol**
 
 Keep `run_node_tui_gateway(service, process)` as a compatibility wrapper. Move the shared loop to
 a private function accepting the existing `start`, `read_line`, `write_line`, `wait`, and
@@ -198,7 +198,7 @@ class StdioGatewayPeer:
 
 Closing the peer must not close global `sys.stdin`, `sys.stdout`, or `sys.stderr` objects.
 
-- [ ] **Step 4: Implement the sidecar module entry point**
+- [x] **Step 4: Implement the sidecar module entry point**
 
 `python -m mycli.cli.sidecar` accepts only `--session` and `--model`, uses `Path.cwd()` and the
 normal environment, builds the existing `TurnService`, and serves stdin/stdout. Failures write one
@@ -214,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         service.close()
 ```
 
-- [ ] **Step 5: Verify Python compatibility paths**
+- [x] **Step 5: Verify Python compatibility paths**
 
 Run:
 
@@ -226,7 +226,7 @@ uv run mypy src/mycli
 
 Expected: all commands pass and the existing Python-parent Node launcher remains compatible.
 
-- [ ] **Step 6: Commit the Python sidecar**
+- [x] **Step 6: Commit the Python sidecar**
 
 ```bash
 git add src/mycli/cli/sidecar.py src/mycli/cli/node_tui/stdio.py src/mycli/cli/node_tui/gateway.py src/mycli/cli/node_tui/__init__.py tests/unit/cli/test_sidecar.py tests/unit/cli/node_tui/test_stdio.py

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.gateway import NodeTuiGateway as NodeTuiGateway
+from mycli.cli.node_tui.gateway import run_gateway_peer as run_gateway_peer
 from mycli.cli.node_tui.gateway import run_node_tui_gateway as run_node_tui_gateway
 from mycli.cli.node_tui.process import build_node_tui_process
 from mycli.cli.node_tui.process import NodeTuiProcessError as NodeTuiProcessError
@@ -22,4 +23,10 @@ def run_node_tui(
     return run_node_tui_gateway(service=service, process=process)
 
 
-__all__ = ["NodeTuiGateway", "NodeTuiProcessError", "run_node_tui", "run_node_tui_gateway"]
+__all__ = [
+    "NodeTuiGateway",
+    "NodeTuiProcessError",
+    "run_gateway_peer",
+    "run_node_tui",
+    "run_node_tui_gateway",
+]

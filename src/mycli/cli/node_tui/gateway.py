@@ -291,9 +291,9 @@ class _HandleUserTurnKwargs(TypedDict, total=False):
     client_user_message_id: str
 
 
-def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
-    process.start()
-    writer = _SerializedGatewayWriter(process)
+def run_gateway_peer(*, service: TurnService, peer: NodeTuiProcessLike) -> int:
+    peer.start()
+    writer = _SerializedGatewayWriter(peer)
 
     def emit(method: str, params: dict[str, object]) -> None:
         writer.write(notification(method, params))
@@ -302,10 +302,10 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
     emit("runtime.ready", gateway._status_payload())
     try:
         while True:
-            line = process.read_line()
+            line = peer.read_line()
             if not line:
                 gateway.wait_for_current_turn(timeout=None)
-                return process.wait()
+                return peer.wait()
             try:
                 message = decode_message(line)
             except JsonRpcError as exc:
@@ -320,15 +320,19 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
             response = gateway.handle_request(message)
             if not writer.write(response):
                 gateway.wait_for_current_turn(timeout=None)
-                return process.wait()
+                return peer.wait()
             if message.method == "shutdown":
                 gateway.wait_for_current_turn(timeout=None)
-                return process.wait()
+                return peer.wait()
     except KeyboardInterrupt:
         return 130
     finally:
         gateway.close()
-        process.terminate()
+        peer.terminate()
+
+
+def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
+    return run_gateway_peer(service=service, peer=process)
 
 
 class NodeTuiGateway:
