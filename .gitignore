@@ -16,6 +16,9 @@ hermes-agent/
 coding-agent/
 pi-tui/
 node_modules/
+apps/*/dist/
+packages/*/dist/
+tui/*/dist/
 tui/node/node_modules/
 tui/node/.npm-cache/
 log/

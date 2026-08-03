@@ -7,11 +7,13 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace mycli-shell-tui && npm run build --workspace @mycli/app",
     "contracts:generate": "npm run generate --workspace @mycli/contracts",
     "contracts:check": "npm run check --workspace @mycli/contracts",
     "dev": "node --import tsx apps/mycli/src/cli.ts",
     "lint": "eslint \"apps/**/*.ts\" \"packages/**/*.ts\"",
     "mycli": "node --import tsx apps/mycli/src/cli.ts",
+    "pretest": "npm run build",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

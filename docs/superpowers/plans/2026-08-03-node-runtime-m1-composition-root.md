@@ -517,13 +517,13 @@ git commit -m "feat(node-cli): add runtime composition root"
 - Modify: `tests/unit/cli/node_tui/test_package_scripts.py`
 - Create: `apps/mycli/test/package.test.ts`
 
-- [ ] **Step 1: Write failing production-entrypoint tests**
+- [x] **Step 1: Write failing production-entrypoint tests**
 
 Assert that the app bin targets `dist/cli.js`, every runtime workspace has a `build` script,
 package exports point to JavaScript/declarations under `dist`, and production manifests do not
 mention `tsx`, `--import`, or `.ts` entrypoints.
 
-- [ ] **Step 2: Run package tests and verify compiled metadata is absent**
+- [x] **Step 2: Run package tests and verify compiled metadata is absent**
 
 Run:
 
@@ -534,19 +534,19 @@ uv run pytest tests/unit/cli/node_tui/test_package_scripts.py -q
 
 Expected: FAIL because the build scripts and dist exports do not exist.
 
-- [ ] **Step 3: Add build configurations**
+- [x] **Step 3: Add build configurations**
 
 Each build config extends the package type-check config and sets `noEmit: false`, `declaration:
 true`, `rootDir: "src"`, `outDir: "dist"`, and `rewriteRelativeImportExtensions: true`. Exclude
 tests. Build order is contracts, TUI, then app.
 
-- [ ] **Step 4: Point runtime exports at compiled artifacts**
+- [x] **Step 4: Point runtime exports at compiled artifacts**
 
 Contracts exports `dist/index.js`; TUI exports `./gateway` and `./gateway-transport`; app exposes
 the `mycli` bin. Type declarations point to matching `dist/*.d.ts` files. Source-loaded test
 commands remain development-only.
 
-- [ ] **Step 5: Add deterministic root build and clean-pack checks**
+- [x] **Step 5: Add deterministic root build and clean-pack checks**
 
 Root scripts include:
 
@@ -560,7 +560,7 @@ Root scripts include:
 Do not introduce a platform shell cleanup command. TypeScript overwrites deterministic outputs;
 CI performs a clean checkout/install before build.
 
-- [ ] **Step 6: Build and run the compiled executable**
+- [x] **Step 6: Build and run the compiled executable**
 
 Run:
 
@@ -574,7 +574,7 @@ npm pack --workspace @mycli/app --dry-run
 Expected: build succeeds; help/version exit zero without Python; the package contains compiled JS,
 declarations, package metadata, and no TypeScript source-loader requirement.
 
-- [ ] **Step 7: Run workspace tests and type checks**
+- [x] **Step 7: Run workspace tests and type checks**
 
 Run:
 
@@ -588,7 +588,7 @@ npm run typecheck
 Expected: all supported Node 22.19 checks pass. Record the known Node 24 readline baseline if the
 local current-version TUI suite is used.
 
-- [ ] **Step 8: Commit compiled packaging**
+- [x] **Step 8: Commit compiled packaging**
 
 ```bash
 git add apps/mycli/tsconfig.build.json apps/mycli/package.json apps/mycli/test/package.test.ts packages/contracts/tsconfig.build.json packages/contracts/package.json tui/mycli-shell/tsconfig.build.json tui/mycli-shell/package.json package.json package-lock.json tests/unit/cli/node_tui/test_package_scripts.py

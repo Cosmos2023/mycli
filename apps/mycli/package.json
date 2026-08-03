@@ -6,7 +6,10 @@
   "bin": {
     "mycli": "dist/cli.js"
   },
+  "types": "./dist/cli.d.ts",
+  "files": ["dist"],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "typecheck": "tsc --noEmit"
   },

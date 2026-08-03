@@ -26,12 +26,20 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
 
     assert root_package["private"] is True
     assert root_package["type"] == "module"
-    assert root_package["workspaces"] == ["packages/*", "tui/*"]
+    assert root_package["workspaces"] == ["apps/*", "packages/*", "tui/*"]
     assert root_package["engines"]["node"] == ">=22.19.0"
     assert root_package["scripts"] == {
+        "build": (
+            "npm run build --workspace @mycli/contracts && "
+            "npm run build --workspace mycli-shell-tui && "
+            "npm run build --workspace @mycli/app"
+        ),
         "contracts:generate": "npm run generate --workspace @mycli/contracts",
         "contracts:check": "npm run check --workspace @mycli/contracts",
-        "lint": 'eslint "packages/**/*.ts"',
+        "dev": "node --import tsx apps/mycli/src/cli.ts",
+        "lint": 'eslint "apps/**/*.ts" "packages/**/*.ts"',
+        "mycli": "node --import tsx apps/mycli/src/cli.ts",
+        "pretest": "npm run build",
         "test": "npm run test --workspaces --if-present",
         "typecheck": "npm run typecheck --workspaces --if-present",
     }

@@ -3,12 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
   "exports": {
-    ".": "./src/index.ts",
-    "./gateway": "./src/gateway.ts",
-    "./gateway-transport": "./src/adapters/gateway-transport.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway.d.ts",
+      "import": "./dist/gateway.js"
+    },
+    "./gateway-transport": {
+      "types": "./dist/adapters/gateway-transport.d.ts",
+      "import": "./dist/adapters/gateway-transport.js"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "demo": "node --import tsx src/demo.ts",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "typecheck": "tsc --noEmit"
