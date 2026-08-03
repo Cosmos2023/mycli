@@ -2,8 +2,7 @@
 
 ## Status
 
-The design was approved in conversation on 2026-08-03. This written specification is pending the
-required final user review before implementation planning begins.
+Approved for implementation on 2026-08-03 after final user review.
 
 M2 is delivered and accepted as one complete end-to-end milestone. Work may proceed in dependency
 order, but no internal M2.x slice is considered a releasable milestone on its own.
