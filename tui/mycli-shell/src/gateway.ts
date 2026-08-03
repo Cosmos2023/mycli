@@ -40,6 +40,10 @@ import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
 import { clientActionFromResult, slashCommandsFromResult } from "./adapters/slash-commands.ts";
 import { commandResultFromGateway } from "./adapters/command-results.ts";
 import type { MycliShellCommandSpec } from "./model.ts";
+import {
+	closeGatewayTransport,
+	gatewayTransport,
+} from "./adapters/gateway-transport.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -52,9 +56,10 @@ type QueuedTurnInput = {
 
 const commandSurface = process.env.MYCLI_TUI_NATIVE === "1" ? "cli" : "tui";
 
+const rpcTransport = gatewayTransport();
 const client = new GatewayClient({
-	input: process.stdin,
-	output: process.stdout,
+	input: rpcTransport.input,
+	output: rpcTransport.output,
 	log: (event) => handleGatewayEvent(event),
 });
 
@@ -650,6 +655,7 @@ async function stopLocalRuntime(): Promise<void> {
 	ttyStreams?.close();
 	ttyStreams = null;
 	client.stop();
+	await closeGatewayTransport();
 }
 
 async function main(): Promise<void> {

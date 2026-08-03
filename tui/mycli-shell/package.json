@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gateway-transport": "./src/adapters/gateway-transport.ts"
+  },
   "scripts": {
     "demo": "node --import tsx src/demo.ts",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",

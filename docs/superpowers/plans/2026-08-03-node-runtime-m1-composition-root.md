@@ -53,7 +53,7 @@ or response behavior.
 - Modify: `tui/mycli-shell/src/gateway.ts`
 - Modify: `tui/mycli-shell/package.json`
 
-- [ ] **Step 1: Write failing one-time transport configuration tests**
+- [x] **Step 1: Write failing one-time transport configuration tests**
 
 Cover the default Python-parent streams, injected sidecar streams, injected close callback, and
 duplicate configuration rejection:
@@ -79,7 +79,7 @@ test("gateway transport accepts one sidecar stream pair", async () => {
 Expose a test-only reset function from an internal test export so tests do not leak singleton
 state. Production code must never reset or replace a configured transport.
 
-- [ ] **Step 2: Run the focused test and verify the adapter is absent**
+- [x] **Step 2: Run the focused test and verify the adapter is absent**
 
 Run:
 
@@ -89,7 +89,7 @@ node --import tsx --test tui/mycli-shell/test/gateway-transport.test.ts
 
 Expected: FAIL because `gateway-transport.ts` does not exist.
 
-- [ ] **Step 3: Implement the minimal transport registry**
+- [x] **Step 3: Implement the minimal transport registry**
 
 Use this public shape:
 
@@ -108,7 +108,7 @@ export async function closeGatewayTransport(): Promise<void>;
 The default is `{input: process.stdin, output: process.stdout}`. Configuration is one-shot and
 must happen before importing `gateway.ts` in Node-parent mode.
 
-- [ ] **Step 4: Switch the TUI gateway client to the registry**
+- [x] **Step 4: Switch the TUI gateway client to the registry**
 
 Replace direct `process.stdin` / `process.stdout` client construction with the resolved transport.
 Call `closeGatewayTransport()` from `stopLocalRuntime()` after the graceful `shutdown` response
@@ -116,7 +116,7 @@ and after `client.stop()`. Preserve the current Python-parent behavior when no t
 configured. Add a development export for `mycli-shell-tui/gateway-transport` so the composition
 root can configure the singleton without importing and starting `gateway.ts`.
 
-- [ ] **Step 5: Run transport and complete TUI tests**
+- [x] **Step 5: Run transport and complete TUI tests**
 
 Run:
 
@@ -129,7 +129,7 @@ npm run typecheck --workspace mycli-shell-tui
 Expected: transport tests pass; the existing Node 22.19 suite remains green. On Node 24, only the
 documented native-readline `ESC[1A` baseline may fail.
 
-- [ ] **Step 6: Commit injectable transport**
+- [x] **Step 6: Commit injectable transport**
 
 ```bash
 git add tui/mycli-shell/src/adapters/gateway-transport.ts tui/mycli-shell/test/gateway-transport.test.ts tui/mycli-shell/src/gateway.ts tui/mycli-shell/package.json
