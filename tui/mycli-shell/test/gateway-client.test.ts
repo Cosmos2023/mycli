@@ -9,6 +9,32 @@ import {
 	runtimeStateAfterCommandResult,
 } from "../src/adapters/runtime-state.ts";
 
+test("gateway client closes on an invalid JSON-RPC envelope", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const client = new GatewayClient({ input, output });
+	client.start();
+
+	const pending = client.send("status.inspect", {});
+	input.write('{"jsonrpc":"1.0","id":"1","result":{}}\n');
+
+	await assert.rejects(pending, /Invalid JSON-RPC message/);
+	client.stop();
+});
+
+test("gateway client rejects an invalid known event payload", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const client = new GatewayClient({ input, output });
+	client.start();
+
+	const event = client.waitForEvent("turn.started");
+	input.write('{"jsonrpc":"2.0","method":"turn.started","params":{}}\n');
+
+	await assert.rejects(event, /Invalid gateway event/);
+	client.stop();
+});
+
 test("gateway client rejects pending requests when output pipe closes", async () => {
 	const input = new PassThrough();
 	const output = new PassThrough();

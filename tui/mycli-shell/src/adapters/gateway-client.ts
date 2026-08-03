@@ -1,4 +1,11 @@
 import { createInterface, type Interface } from "node:readline";
+import {
+	ContractValidationError,
+	parseGatewayEvent,
+	parseJsonRpcMessage,
+	type GatewayEventNotification,
+	type JsonRpcMessage,
+} from "@mycli/contracts";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -9,22 +16,9 @@ type RpcRequest = {
 	params: JsonObject;
 };
 
-type RpcResponse = {
-	jsonrpc: "2.0";
-	id: string;
-	result?: JsonObject;
-	error?: { code: string; message: string; data?: JsonObject };
-};
+export type RpcMessage = JsonRpcMessage;
 
-type RpcNotification = {
-	jsonrpc: "2.0";
-	method: string;
-	params: JsonObject;
-};
-
-export type RpcMessage = RpcRequest | RpcResponse | RpcNotification;
-
-export type GatewayEvent = RpcNotification;
+export type GatewayEvent = GatewayEventNotification;
 
 type PendingRequest = {
 	method: string;
@@ -49,9 +43,10 @@ function encodeMessage(message: RpcMessage): string {
 }
 
 function decodeMessage(line: string): RpcMessage {
-	const message = JSON.parse(line) as RpcMessage;
-	if (message.jsonrpc !== "2.0") {
-		throw new Error("Unsupported JSON-RPC version");
+	const value: unknown = JSON.parse(line);
+	const message = parseJsonRpcMessage(value);
+	if ("method" in message && !("id" in message)) {
+		return parseGatewayEvent(message);
 	}
 	return message;
 }
@@ -173,7 +168,20 @@ export class GatewayClient {
 		if (this.closed) {
 			return;
 		}
-		const message = decodeMessage(line);
+		let message: RpcMessage;
+		try {
+			message = decodeMessage(line);
+		} catch (error) {
+			if (error instanceof ContractValidationError) {
+				this.closeFromError(error);
+				return;
+			}
+			if (error instanceof SyntaxError) {
+				this.closeFromError(new ContractValidationError("Invalid JSON-RPC message."));
+				return;
+			}
+			throw error;
+		}
 		if ("id" in message && this.pending.has(String(message.id))) {
 			const pending = this.pending.get(String(message.id));
 			this.pending.delete(String(message.id));
@@ -194,10 +202,11 @@ export class GatewayClient {
 			pending.resolve(("result" in message && message.result) || {});
 			return;
 		}
-		if ("method" in message) {
-			this.events.push(message);
-			this.options.log?.(message);
-			this.resolvePendingEvents(message);
+		if ("method" in message && !("id" in message)) {
+			const event = message as GatewayEvent;
+			this.events.push(event);
+			this.options.log?.(event);
+			this.resolvePendingEvents(event);
 		}
 	}
 

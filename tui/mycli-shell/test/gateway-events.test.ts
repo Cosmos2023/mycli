@@ -84,8 +84,8 @@ test("gateway event deduper commits direct and mirrored user lifecycle once", ()
 	assert.deepEqual(projectRuntimeState(state).messages.map((item) => item.text), ["inspect"]);
 });
 
-function event(method: string, params: Record<string, unknown>): GatewayEvent {
-	return { jsonrpc: "2.0", method, params };
+function event(method: GatewayEvent["method"], params: Record<string, unknown>): GatewayEvent {
+	return { jsonrpc: "2.0", method, params } as GatewayEvent;
 }
 
 function runtimeEvent(type: string, payload: Record<string, unknown>): GatewayEvent {

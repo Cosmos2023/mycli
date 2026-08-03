@@ -12,6 +12,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@mycli/contracts": "0.1.0",
     "cli-highlight": "2.1.11",
     "get-east-asian-width": "1.6.0",
     "marked": "15.0.12",
