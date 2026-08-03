@@ -583,12 +583,23 @@ export interface Turn2 {
 }
 export interface Turn3 {
   client_turn_id?: string;
+  code?:
+    | "config_error"
+    | "auth_error"
+    | "provider_error"
+    | "rate_limited"
+    | "context_window_exceeded"
+    | "retry_exhausted"
+    | "persistence_error"
+    | "interrupted"
+    | "unsupported_capability";
   message?: string;
   turn_id?: string;
   [k: string]: any;
 }
 export interface Turn4 {
   client_turn_id?: string;
+  code?: "interrupted";
   requested?: boolean;
   turn_id?: string;
   [k: string]: any;

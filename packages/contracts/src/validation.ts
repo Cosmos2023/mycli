@@ -4,6 +4,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { GatewayContractCatalog } from "./generated/catalog.ts";
 import type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
 import type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
+import type { RuntimeTurnRecord } from "./generated/runtime-turn-record.ts";
 
 const ajv = new Ajv2020({
 	allErrors: true,
@@ -21,6 +22,7 @@ function compile(name: string): ValidateFunction {
 const validateCatalog = compile("catalog.schema.json");
 const validateGatewayEvent = compile("gateway-events.schema.json");
 const validateJsonRpcMessage = compile("json-rpc.schema.json");
+const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
 
 export class ContractValidationError extends Error {
 	readonly errors: readonly ErrorObject[];
@@ -49,4 +51,8 @@ export function parseGatewayContractCatalog(value: unknown): GatewayContractCata
 
 export function parseJsonRpcMessage(value: unknown): JsonRpcMessage {
 	return parse(value, validateJsonRpcMessage, "JSON-RPC message");
+}
+
+export function parseRuntimeTurnRecord(value: unknown): RuntimeTurnRecord {
+	return parse(value, validateRuntimeTurnRecord, "runtime turn record");
 }

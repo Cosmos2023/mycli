@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/schemas/runtime-turn.schema.json",
+  "title": "RuntimeTurnRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "client_turn_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "turn_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]+$"
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/runtime_error_code"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "completed_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "session_id",
+    "client_turn_id",
+    "turn_id",
+    "request_fingerprint",
+    "status",
+    "error_code",
+    "result",
+    "started_at",
+    "completed_at"
+  ],
+  "$defs": {
+    "runtime_error_code": {
+      "enum": [
+        "config_error",
+        "auth_error",
+        "provider_error",
+        "rate_limited",
+        "context_window_exceeded",
+        "retry_exhausted",
+        "persistence_error",
+        "interrupted",
+        "unsupported_capability"
+      ],
+      "type": "string"
+    }
+  }
+}
