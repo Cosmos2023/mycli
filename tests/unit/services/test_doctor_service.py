@@ -353,8 +353,9 @@ def _insert_session(
 
 
 def _create_node_tui_dependencies(node_tui: Path) -> None:
+    node_tui.mkdir(parents=True, exist_ok=True)
     for marker in NODE_TUI_MARKERS:
-        path = node_tui / marker
+        path = node_tui.parents[1] / marker
         path.parent.mkdir(parents=True, exist_ok=True)
         if marker.startswith("node_modules/.bin/"):
             path.write_text("#!/usr/bin/env node\n", encoding="utf-8")
@@ -4553,9 +4554,42 @@ def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_cre
 
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
     assert dependency_check.status is DoctorStatus.WARNING
-    assert "npm --prefix tui/mycli-shell ci" in dependency_check.message
-    assert "rm -rf tui/mycli-shell/node_modules" not in dependency_check.message
+    assert "npm ci" in dependency_check.message
+    assert "rm -rf node_modules" not in dependency_check.message
     assert not (node_tui / "node_modules").exists()
+
+
+def test_doctor_service_accepts_root_workspace_node_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    repo_root = tmp_path / "repo"
+    node_tui = repo_root / "tui" / "mycli-shell"
+    node_tui.mkdir(parents=True)
+    for marker in NODE_TUI_MARKERS:
+        path = repo_root / marker
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if marker.startswith("node_modules/.bin/"):
+            path.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda _module: False,
+    ).run()
+
+    dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
+    assert dependency_check.status is DoctorStatus.OK
 
 
 def test_doctor_service_warns_when_node_tui_dependencies_are_incomplete(
@@ -4568,7 +4602,8 @@ def test_doctor_service_warns_when_node_tui_dependencies_are_incomplete(
     home.mkdir()
     _write_project_config(workspace)
     node_tui = tmp_path / "repo" / "tui" / "mycli-shell"
-    (node_tui / "node_modules" / "es-toolkit").mkdir(parents=True)
+    node_tui.mkdir(parents=True)
+    (node_tui.parents[1] / "node_modules" / "es-toolkit").mkdir(parents=True)
     monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
 
     report = DoctorService(
@@ -4582,6 +4617,6 @@ def test_doctor_service_warns_when_node_tui_dependencies_are_incomplete(
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
     assert dependency_check.status is DoctorStatus.WARNING
     assert "Node TUI dependencies incomplete" in dependency_check.message
-    assert "npm --prefix tui/mycli-shell ci" in dependency_check.message
-    assert "rm -rf tui/mycli-shell/node_modules" in dependency_check.message
+    assert "npm ci" in dependency_check.message
+    assert "rm -rf node_modules" in dependency_check.message
     assert "node_modules/.bin/tsx" in str(dependency_check.detail)

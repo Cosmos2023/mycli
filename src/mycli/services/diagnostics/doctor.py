@@ -1782,10 +1782,11 @@ class DoctorService:
         if node_tui_root.exists():
             checks.append(DoctorCheck("node_tui", DoctorStatus.OK, "source present tui/mycli-shell"))
             dependency_config = _node_tui_dependency_config(node_tui_root)
+            dependency_root = node_tui_root.parents[1]
             missing_markers = [
                 marker
                 for marker in dependency_config.required_paths
-                if not (node_tui_root / marker).exists()
+                if not (dependency_root / marker).exists()
             ]
             if not missing_markers:
                 checks.append(
@@ -1793,11 +1794,11 @@ class DoctorService:
                         "node_tui_dependencies",
                         DoctorStatus.OK,
                         "required Node TUI dependencies present",
-                        detail="tui/mycli-shell/node_modules",
+                        detail="node_modules",
                     )
                 )
             else:
-                node_modules = node_tui_root / "node_modules"
+                node_modules = dependency_root / "node_modules"
                 state = "incomplete" if node_modules.exists() else "missing"
                 detail = ", ".join(missing_markers[:3])
                 if len(missing_markers) > 3:
@@ -2436,8 +2437,8 @@ def _node_tui_dependency_config(node_tui_root: Path) -> _NodeTuiDependencyConfig
             "node_modules/tsx",
             "node_modules/typescript",
         ),
-        install_command="npm --prefix tui/mycli-shell ci",
-        cleanup_command="rm -rf tui/mycli-shell/node_modules",
+        install_command="npm ci",
+        cleanup_command="rm -rf node_modules",
     )
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))

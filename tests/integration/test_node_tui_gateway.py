@@ -13,7 +13,7 @@ from typing import Any, cast
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.runtime.user_input_mailbox import ActiveTurnMailbox
 from mycli.application.turn_service import TurnService
-from mycli.cli.node_tui.process import NodeTuiProcess
+from mycli.cli.node_tui.process import NodeTuiProcess, build_node_command
 from mycli.cli.node_tui.gateway import NodeTuiGateway, run_node_tui_gateway
 from mycli.cli.node_tui.protocol import RpcRequest
 from mycli.domain.conversation import Conversation
@@ -26,6 +26,7 @@ from mycli.domain.runtime import (
     ModelTurnResult,
     PendingDecision,
     PendingClarification,
+    QueueSnapshot,
     ReasoningEffort,
     RuntimeBlock,
     RuntimeItem,
@@ -45,10 +46,7 @@ from mycli.tools.write import WriteTool
 
 
 def node_scripted_client_args(repo_root: Path) -> list[str]:
-    return [
-        str(repo_root / "tui" / "mycli-shell" / "node_modules" / ".bin" / "tsx"),
-        str(repo_root / "tui" / "mycli-shell" / "test" / "support" / "scripted-client.ts"),
-    ]
+    return build_node_command(repo_root=repo_root, env={"MYCLI_NODE_TUI_SCRIPT": "[]"})
 
 
 def e2e_config(**overrides: object) -> SimpleNamespace:
@@ -105,6 +103,9 @@ class BrokenPipeNodeProcess(FakeNodeProcess):
 
 
 class _GatewayServiceStub:
+    def queue_snapshot(self) -> QueueSnapshot:
+        return QueueSnapshot(session_id=self._config.session_id)
+
     def permission_profile_payload(self) -> dict[str, object]:
         return {
             "active": "workspace",

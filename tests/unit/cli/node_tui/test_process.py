@@ -108,6 +108,17 @@ def test_build_node_command_defaults_to_mycli_shell_gateway(tmp_path: Path) -> N
     assert build_node_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(shell_entrypoint)]
 
 
+def test_build_node_command_uses_hoisted_workspace_tsx(tmp_path: Path) -> None:
+    tsx_bin = tmp_path / "node_modules" / ".bin" / "tsx"
+    shell_entrypoint = tmp_path / "tui" / "mycli-shell" / "src" / "gateway.ts"
+    tsx_bin.parent.mkdir(parents=True)
+    shell_entrypoint.parent.mkdir(parents=True)
+    tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    shell_entrypoint.write_text("export {}", encoding="utf-8")
+
+    assert build_node_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(shell_entrypoint)]
+
+
 def test_build_node_command_uses_tsx_cmd_on_windows(tmp_path: Path) -> None:
     node_root = tmp_path / "tui" / "mycli-shell"
     tsx_bin = node_root / "node_modules" / ".bin" / "tsx.cmd"

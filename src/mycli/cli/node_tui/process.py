@@ -132,21 +132,13 @@ def build_node_command(
     override = env.get("MYCLI_NODE_TUI_ENTRYPOINT")
     if override and not env.get("MYCLI_NODE_TUI_SCRIPT"):
         return ["node", str(Path(override).expanduser())]
-    node_root = repo_root / "tui" / "mycli-shell"
-    tsx_bin = node_root / "node_modules" / ".bin" / _tsx_name(platform_name)
     if env.get("MYCLI_NODE_TUI_SCRIPT"):
+        tsx_bin = _resolve_tsx_bin(repo_root=repo_root, platform_name=platform_name)
         entrypoint = resolve_node_entrypoint(repo_root=repo_root, env=env)
-        if not tsx_bin.is_file():
-            raise NodeTuiProcessError(
-                "Node TUI dependencies are not installed. Run: npm --prefix tui/mycli-shell install"
-            )
         return [str(tsx_bin), str(entrypoint)]
     backend = _node_tui_backend(env)
     entrypoint = _node_tui_entrypoint(repo_root=repo_root, backend=backend)
-    if not tsx_bin.is_file():
-        raise NodeTuiProcessError(
-            "Node TUI dependencies are not installed. Run: npm --prefix tui/mycli-shell install"
-        )
+    tsx_bin = _resolve_tsx_bin(repo_root=repo_root, platform_name=platform_name)
     if not entrypoint.is_file():
         if backend == "shell":
             raise NodeTuiProcessError(f"mycli-shell gateway entrypoint not found: {entrypoint}")
@@ -162,12 +154,8 @@ def build_node_setup_command(
 ) -> list[str]:
     override = env.get("MYCLI_NODE_SETUP_ENTRYPOINT")
     node_root = repo_root / "tui" / "mycli-shell"
-    tsx_bin = node_root / "node_modules" / ".bin" / _tsx_name(platform_name)
+    tsx_bin = _resolve_tsx_bin(repo_root=repo_root, platform_name=platform_name)
     entrypoint = Path(override).expanduser() if override else node_root / "src" / "setup.ts"
-    if not tsx_bin.is_file():
-        raise NodeTuiProcessError(
-            "Node TUI dependencies are not installed. Run: npm --prefix tui/mycli-shell install"
-        )
     if not entrypoint.is_file():
         raise NodeTuiProcessError(f"mycli setup TUI entrypoint not found: {entrypoint}")
     return [str(tsx_bin), str(entrypoint)]
@@ -175,6 +163,18 @@ def build_node_setup_command(
 
 def _tsx_name(platform_name: str) -> str:
     return "tsx.cmd" if platform_name == "win32" else "tsx"
+
+
+def _resolve_tsx_bin(*, repo_root: Path, platform_name: str) -> Path:
+    executable = _tsx_name(platform_name)
+    candidates = (
+        repo_root / "node_modules" / ".bin" / executable,
+        repo_root / "tui" / "mycli-shell" / "node_modules" / ".bin" / executable,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise NodeTuiProcessError("Node TUI dependencies are not installed. Run: npm ci")
 
 
 def build_node_tui_process(
