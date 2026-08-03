@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mycli/core": "0.1.0"
+    "@mycli/core": "0.1.0",
+    "smol-toml": "^1.7.1"
   },
   "devDependencies": {
     "tsx": "^4.22.4",
