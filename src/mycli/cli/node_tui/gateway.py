@@ -72,6 +72,7 @@ from mycli.domain.runtime import (
     UserMessageInput,
 )
 from mycli.domain.runtime.gateway_contract import (
+    PROTOCOL_VERSION,
     SUPPORTED_GATEWAY_EVENT_STREAMS,
     SUPPORTED_GATEWAY_RPC_METHODS,
 )
@@ -82,7 +83,6 @@ from mycli.infrastructure.providers import profile_for_provider
 from mycli.services.legacy_slash_output import is_legacy_slash_output
 from mycli.services.transcript_projection import project_history_items_for_tui
 
-PROTOCOL_VERSION = 1
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
 PROPOSED_PLAN_OPEN_TAG = "<proposed_plan>"
 PROPOSED_PLAN_CLOSE_TAG = "</proposed_plan>"

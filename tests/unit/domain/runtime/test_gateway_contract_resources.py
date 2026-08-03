@@ -35,3 +35,11 @@ def test_canonical_gateway_contract_matches_python_contract() -> None:
 def test_python_contract_resources_are_exact_generated_copies() -> None:
     for name in ("catalog.json", "gateway-events.schema.json"):
         assert (PYTHON_COPY_ROOT / name).read_bytes() == (CONTRACT_ROOT / name).read_bytes()
+
+
+def test_python_gateway_contract_is_loaded_from_packaged_resources() -> None:
+    source = Path("src/mycli/domain/runtime/gateway_contract.py").read_text(encoding="utf-8")
+
+    assert "load_gateway_contract_resources" in source
+    assert "GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict" not in source
+    assert "def _schema(" not in source
