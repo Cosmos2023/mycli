@@ -41,6 +41,7 @@
     "plan.updated",
     "reasoning.delta",
     "runtime.event",
+    "runtime.ready",
     "session.changed",
     "status.changed",
     "status.update",

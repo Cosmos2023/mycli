@@ -19,6 +19,7 @@ test("gateway client closes on an invalid JSON-RPC envelope", async () => {
 	input.write('{"jsonrpc":"1.0","id":"1","result":{}}\n');
 
 	await assert.rejects(pending, /Invalid JSON-RPC message/);
+	assert.equal(input.destroyed, true);
 	client.stop();
 });
 

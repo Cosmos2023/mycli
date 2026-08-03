@@ -82,6 +82,11 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "runtime.ready";
+      params: Runtime1;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "session.changed";
       params: Session;
     }
@@ -342,6 +347,10 @@ export interface Runtime {
   version: number;
   [k: string]: any;
 }
+export interface Runtime1 {
+  session_id: string;
+  [k: string]: any;
+}
 export interface Session {
   session_id: string;
   [k: string]: any;
@@ -428,7 +437,7 @@ export interface Status {
   queued_follow_up: any[];
   queued_follow_up_items?: {
     client_turn_id?: string;
-    kind?: "steering" | "follow_up";
+    kind?: "steering" | "rejected_steer" | "follow_up";
     local_images?: {
       path?: string;
       placeholder?: string;
@@ -442,7 +451,7 @@ export interface Status {
   queued_steering: any[];
   queued_steering_items?: {
     client_turn_id?: string;
-    kind?: "steering" | "follow_up";
+    kind?: "steering" | "rejected_steer" | "follow_up";
     local_images?: {
       path?: string;
       placeholder?: string;
@@ -596,7 +605,7 @@ export interface TurnQueue {
   follow_up: any[];
   follow_up_items?: {
     client_turn_id?: string;
-    kind?: "steering" | "follow_up";
+    kind?: "steering" | "rejected_steer" | "follow_up";
     local_images?: {
       path?: string;
       placeholder?: string;
@@ -672,7 +681,7 @@ export interface TurnQueue {
   steering: any[];
   steering_items?: {
     client_turn_id?: string;
-    kind?: "steering" | "follow_up";
+    kind?: "steering" | "rejected_steer" | "follow_up";
     local_images?: {
       path?: string;
       placeholder?: string;

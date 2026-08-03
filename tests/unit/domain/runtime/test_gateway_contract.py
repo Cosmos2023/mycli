@@ -132,6 +132,12 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
     assert schema["properties"]["queued_steering"] == {"type": "array"}
     assert schema["properties"]["queued_steering_items"]["type"] == "array"
     assert schema["properties"]["queued_follow_up_items"]["type"] == "array"
+    for field in ("queued_steering_items", "queued_follow_up_items"):
+        assert schema["properties"][field]["items"]["properties"]["kind"]["enum"] == [
+            "steering",
+            "rejected_steer",
+            "follow_up",
+        ]
     assert schema["properties"]["queued_follow_up"] == {"type": "array"}
     assert schema["properties"]["has_pending_input"] == {"type": "boolean"}
     assert schema["properties"]["queue_activity"]["properties"]["kind"]["enum"] == ["idle", "pending_input"]
@@ -160,7 +166,11 @@ def test_turn_queue_updated_schema_exposes_split_queue_snapshot() -> None:
     assert schema["properties"]["steering_items"]["type"] == "array"
     assert schema["properties"]["follow_up_items"]["type"] == "array"
     queued_item = schema["properties"]["steering_items"]["items"]
-    assert queued_item["properties"]["kind"]["enum"] == ["steering", "follow_up"]
+    assert queued_item["properties"]["kind"]["enum"] == [
+        "steering",
+        "rejected_steer",
+        "follow_up",
+    ]
     assert queued_item["properties"]["message"] == {"type": "string"}
     assert queued_item["properties"]["text"] == {"type": "string"}
     assert queued_item["properties"]["source"] == {"type": "string"}

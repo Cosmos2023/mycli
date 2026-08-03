@@ -514,6 +514,18 @@
       ],
       "type": "object"
     },
+    "runtime.ready": {
+      "name": "runtime.ready",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "session.changed": {
       "name": "session.changed",
       "properties": {
@@ -800,6 +812,7 @@
               "kind": {
                 "enum": [
                   "steering",
+                  "rejected_steer",
                   "follow_up"
                 ],
                 "type": "string"
@@ -844,6 +857,7 @@
               "kind": {
                 "enum": [
                   "steering",
+                  "rejected_steer",
                   "follow_up"
                 ],
                 "type": "string"
@@ -1377,6 +1391,7 @@
               "kind": {
                 "enum": [
                   "steering",
+                  "rejected_steer",
                   "follow_up"
                 ],
                 "type": "string"
@@ -1636,6 +1651,7 @@
               "kind": {
                 "enum": [
                   "steering",
+                  "rejected_steer",
                   "follow_up"
                 ],
                 "type": "string"
@@ -2078,6 +2094,26 @@
         },
         "params": {
           "$ref": "#/$defs/runtime.event"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "runtime.ready"
+        },
+        "params": {
+          "$ref": "#/$defs/runtime.ready"
         }
       },
       "required": [

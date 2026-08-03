@@ -248,5 +248,7 @@ export class GatewayClient {
 		this.rejectAll(error);
 		this.readline?.close();
 		this.readline = null;
+		const input = this.options.input as NodeJS.ReadableStream & { destroy?: () => void };
+		input.destroy?.();
 	}
 }

@@ -27,6 +27,15 @@
     }
   },
   {
+    "name": "valid runtime ready",
+    "valid": true,
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "runtime.ready",
+      "params": {"session_id": "demo"}
+    }
+  },
+  {
     "name": "unknown gateway error code",
     "valid": false,
     "value": {
