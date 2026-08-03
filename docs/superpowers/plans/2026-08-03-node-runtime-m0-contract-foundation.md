@@ -242,8 +242,9 @@ test("contracts workspace is available", () => {
 ```
 
 Change `tui/mycli-shell/tsconfig.json` to extend `../../tsconfig.base.json`, retaining only
-`allowImportingTsExtensions`, `typeRoots`, `include`, and `exclude` settings that are specific to
-the TUI package.
+`allowImportingTsExtensions`, `include`, and `exclude` settings that are specific to the TUI
+package. Remove the package-local `typeRoots` override so TypeScript can resolve the root
+workspace's hoisted `@types/node` package.
 
 - [ ] **Step 4: Move dependency locking to the workspace root**
 
