@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/json-rpc.schema.json",
+  "title": "JsonRpcMessage",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": ["string", "integer"]},
+        "method": {"type": "string", "minLength": 1},
+        "params": {"type": "object"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method", "params"],
+      "not": {"required": ["id"]},
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "method": {"type": "string", "minLength": 1},
+        "params": {"type": "object"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id"],
+      "oneOf": [{"required": ["result"]}, {"required": ["error"]}],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"type": ["string", "integer", "null"]},
+        "result": {"type": "object"},
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": {"type": "string"},
+            "message": {"type": "string"},
+            "data": {"type": "object"}
+          }
+        }
+      }
+    }
+  ]
+}

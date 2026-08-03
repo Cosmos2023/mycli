@@ -1,0 +1,2472 @@
+{
+  "$defs": {
+    "approval.request": {
+      "name": "approval.request",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "content_chars": {
+          "type": "integer"
+        },
+        "content_line_count": {
+          "type": "integer"
+        },
+        "content_preview": {
+          "type": "string"
+        },
+        "content_truncated": {
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "decision_id": {
+          "type": "string"
+        },
+        "diff": {
+          "type": "string"
+        },
+        "diff_chars": {
+          "type": "integer"
+        },
+        "diff_truncated": {
+          "type": "boolean"
+        },
+        "options": {
+          "items": {
+            "properties": {
+              "choice": {
+                "enum": [
+                  "approve_once",
+                  "reject",
+                  "allow_session",
+                  "always_allow"
+                ],
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "persistent_rule_preview": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "risk": {
+          "type": "string"
+        },
+        "risk_reason": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "preview",
+        "options"
+      ],
+      "type": "object"
+    },
+    "approval.respond": {
+      "name": "approval.respond",
+      "properties": {
+        "choice": {
+          "enum": [
+            "approve_once",
+            "reject",
+            "allow_session",
+            "always_allow"
+          ],
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "decision_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "choice"
+      ],
+      "type": "object"
+    },
+    "clarify.request": {
+      "name": "clarify.request",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        },
+        "multi_select": {
+          "type": "boolean"
+        },
+        "options": {
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "tool_id",
+        "call_id",
+        "tool_name",
+        "question",
+        "options",
+        "multi_select"
+      ],
+      "type": "object"
+    },
+    "clarify.respond": {
+      "name": "clarify.respond",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "response": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "response"
+      ],
+      "type": "object"
+    },
+    "compaction.completed": {
+      "name": "compaction.completed",
+      "properties": {
+        "after_tokens": {
+          "type": "integer"
+        },
+        "before_tokens": {
+          "type": "integer"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "duration_s": {
+          "type": "number"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "compressed",
+            "skipped",
+            "failed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "source",
+        "status",
+        "before_tokens",
+        "after_tokens",
+        "max_tokens",
+        "duration_s"
+      ],
+      "type": "object"
+    },
+    "compaction.started": {
+      "name": "compaction.started",
+      "properties": {
+        "before_tokens": {
+          "type": "integer"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "source",
+        "before_tokens",
+        "max_tokens"
+      ],
+      "type": "object"
+    },
+    "gateway.error": {
+      "name": "gateway.error",
+      "properties": {
+        "code": {
+          "enum": [
+            "internal_error",
+            "invalid_params",
+            "method_not_found",
+            "turn_in_progress",
+            "decision_not_pending",
+            "clarification_not_pending",
+            "incompatible_protocol",
+            "stale_turn",
+            "queue_conflict",
+            "queue_capacity",
+            "queue_worker_start_failed",
+            "no_active_turn",
+            "turn_id_mismatch",
+            "active_turn_not_steerable",
+            "input_too_large",
+            "message_id_conflict"
+          ],
+          "type": "string"
+        },
+        "data": {
+          "type": "object"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "item.completed": {
+      "name": "item.completed",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "item": {
+          "properties": {
+            "client_user_message_id": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "submit",
+                "steer"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "user_message"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "client_user_message_id",
+            "content",
+            "source"
+          ],
+          "type": "object"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "turn_id",
+        "item"
+      ],
+      "type": "object"
+    },
+    "item.started": {
+      "name": "item.started",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "item": {
+          "properties": {
+            "client_user_message_id": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "submit",
+                "steer"
+              ],
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "user_message"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "client_user_message_id",
+            "content",
+            "source"
+          ],
+          "type": "object"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "turn_id",
+        "item"
+      ],
+      "type": "object"
+    },
+    "message.complete": {
+      "name": "message.complete",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "final": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "message.delta": {
+      "name": "message.delta",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "message.reset": {
+      "name": "message.reset",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id"
+      ],
+      "type": "object"
+    },
+    "plan.proposed": {
+      "name": "plan.proposed",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "plan.updated": {
+      "name": "plan.updated",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "completed": {
+          "type": "integer"
+        },
+        "plan": {
+          "type": "object"
+        },
+        "plan_steps": {
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "plan_steps"
+      ],
+      "type": "object"
+    },
+    "reasoning.delta": {
+      "name": "reasoning.delta",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "runtime.event": {
+      "name": "runtime.event",
+      "properties": {
+        "payload": {
+          "type": "object"
+        },
+        "sequence": {
+          "type": "integer"
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "sequence",
+        "type",
+        "payload",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "session.changed": {
+      "name": "session.changed",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "status.changed": {
+      "name": "status.changed",
+      "properties": {
+        "context_window": {
+          "properties": {
+            "max_tokens": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            },
+            "used_tokens": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "has_pending_input": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string"
+        },
+        "pending_decision": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "queue_activity": {
+          "properties": {
+            "follow_up_count": {
+              "type": "integer"
+            },
+            "has_pending_input": {
+              "type": "boolean"
+            },
+            "kind": {
+              "enum": [
+                "idle",
+                "pending_input"
+              ],
+              "type": "string"
+            },
+            "steering_count": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "queue_items": {
+          "properties": {
+            "follow_ups": {
+              "items": {
+                "properties": {
+                  "client_turn_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "pending_steer",
+                      "rejected_steer",
+                      "follow_up"
+                    ],
+                    "type": "string"
+                  },
+                  "local_images": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "placeholder": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "accepted",
+                      "committed"
+                    ],
+                    "type": "string"
+                  },
+                  "target_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "pending_steers": {
+              "items": {
+                "properties": {
+                  "client_turn_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "pending_steer",
+                      "rejected_steer",
+                      "follow_up"
+                    ],
+                    "type": "string"
+                  },
+                  "local_images": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "placeholder": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "accepted",
+                      "committed"
+                    ],
+                    "type": "string"
+                  },
+                  "target_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "rejected_steers": {
+              "items": {
+                "properties": {
+                  "client_turn_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "pending_steer",
+                      "rejected_steer",
+                      "follow_up"
+                    ],
+                    "type": "string"
+                  },
+                  "local_images": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "placeholder": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "accepted",
+                      "committed"
+                    ],
+                    "type": "string"
+                  },
+                  "target_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "queue_revision": {
+          "type": "integer"
+        },
+        "queued_follow_up": {
+          "type": "array"
+        },
+        "queued_follow_up_items": {
+          "items": {
+            "properties": {
+              "client_turn_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "steering",
+                  "follow_up"
+                ],
+                "type": "string"
+              },
+              "local_images": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "placeholder": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "message": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "queued_steering": {
+          "type": "array"
+        },
+        "queued_steering_items": {
+          "items": {
+            "properties": {
+              "client_turn_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "steering",
+                  "follow_up"
+                ],
+                "type": "string"
+              },
+              "local_images": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "placeholder": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "message": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "suspended_turn": {
+          "type": "boolean"
+        },
+        "trust": {
+          "type": "object"
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_running": {
+          "type": "boolean"
+        },
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "workspace",
+        "model",
+        "provider",
+        "context_window",
+        "pending_decision",
+        "suspended_turn",
+        "turn_running",
+        "turn_id",
+        "queued_steering",
+        "queued_follow_up",
+        "has_pending_input",
+        "queue_activity",
+        "queue_revision",
+        "queue_items"
+      ],
+      "type": "object"
+    },
+    "status.update": {
+      "name": "status.update",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "running",
+            "waiting_approval",
+            "waiting_clarification",
+            "completed",
+            "failed",
+            "interrupted",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "stream.recovered": {
+      "name": "stream.recovered",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id"
+      ],
+      "type": "object"
+    },
+    "stream.retrying": {
+      "name": "stream.retrying",
+      "properties": {
+        "additional_details": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "delay_seconds": {
+          "type": "number"
+        },
+        "failure_kind": {
+          "type": "string"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "max_retries": {
+          "type": "integer"
+        },
+        "recovery_kind": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "text",
+        "attempt",
+        "max_retries",
+        "delay_seconds"
+      ],
+      "type": "object"
+    },
+    "thinking.delta": {
+      "name": "thinking.delta",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "tool.complete": {
+      "name": "tool.complete",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "duration_s": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "summary_chars": {
+          "type": "integer"
+        },
+        "summary_truncated": {
+          "type": "boolean"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "duration_s",
+        "summary",
+        "summary_chars",
+        "summary_truncated",
+        "success"
+      ],
+      "type": "object"
+    },
+    "tool.failed": {
+      "name": "tool.failed",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "duration_s": {
+          "type": "number"
+        },
+        "error": {
+          "type": "string"
+        },
+        "error_chars": {
+          "type": "integer"
+        },
+        "error_truncated": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "summary_chars": {
+          "type": "integer"
+        },
+        "summary_truncated": {
+          "type": "boolean"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "duration_s",
+        "summary",
+        "summary_chars",
+        "summary_truncated",
+        "success"
+      ],
+      "type": "object"
+    },
+    "tool.progress": {
+      "name": "tool.progress",
+      "properties": {
+        "args_preview": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "stage",
+        "message"
+      ],
+      "type": "object"
+    },
+    "tool.start": {
+      "name": "tool.start",
+      "properties": {
+        "args_preview": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tool_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "context"
+      ],
+      "type": "object"
+    },
+    "turn.completed": {
+      "name": "turn.completed",
+      "properties": {
+        "activity_events": {
+          "type": "array"
+        },
+        "assistant_message": {
+          "type": "string"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "input_rolled_back": {
+          "type": "boolean"
+        },
+        "pending_decision": {
+          "type": "boolean"
+        },
+        "plan_steps": {
+          "type": "array"
+        },
+        "progress_updates": {
+          "type": "array"
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "turn_state": {
+          "enum": [
+            "running",
+            "waiting_approval",
+            "waiting_clarification",
+            "completed",
+            "failed",
+            "interrupted",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "usage": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "turn_id",
+        "assistant_message",
+        "activity_events",
+        "progress_updates",
+        "plan_steps",
+        "pending_decision",
+        "turn_state",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "turn.completion_suppressed": {
+      "name": "turn.completion_suppressed",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "suppressed_state": {
+          "enum": [
+            "waiting_approval",
+            "waiting_clarification",
+            "completed",
+            "failed",
+            "interrupted",
+            "rejected"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "reason",
+        "suppressed_state"
+      ],
+      "type": "object"
+    },
+    "turn.event": {
+      "name": "turn.event",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "phase",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "turn.failed": {
+      "name": "turn.failed",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "turn.interrupted": {
+      "name": "turn.interrupted",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "requested": {
+          "type": "boolean"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "turn.queue.updated": {
+      "name": "turn.queue.updated",
+      "properties": {
+        "activity": {
+          "properties": {
+            "follow_up_count": {
+              "type": "integer"
+            },
+            "has_pending_input": {
+              "type": "boolean"
+            },
+            "kind": {
+              "enum": [
+                "idle",
+                "pending_input"
+              ],
+              "type": "string"
+            },
+            "steering_count": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "disposition": {
+          "enum": [
+            "accepted_for_turn",
+            "deferred_to_end_of_turn",
+            "queued_follow_up",
+            "duplicate"
+          ],
+          "type": "string"
+        },
+        "follow_up": {
+          "type": "array"
+        },
+        "follow_up_items": {
+          "items": {
+            "properties": {
+              "client_turn_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "steering",
+                  "follow_up"
+                ],
+                "type": "string"
+              },
+              "local_images": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "placeholder": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "message": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "has_pending_input": {
+          "type": "boolean"
+        },
+        "queue_items": {
+          "properties": {
+            "follow_ups": {
+              "items": {
+                "properties": {
+                  "client_turn_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "pending_steer",
+                      "rejected_steer",
+                      "follow_up"
+                    ],
+                    "type": "string"
+                  },
+                  "local_images": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "placeholder": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "accepted",
+                      "committed"
+                    ],
+                    "type": "string"
+                  },
+                  "target_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "pending_steers": {
+              "items": {
+                "properties": {
+                  "client_turn_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "pending_steer",
+                      "rejected_steer",
+                      "follow_up"
+                    ],
+                    "type": "string"
+                  },
+                  "local_images": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "placeholder": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "accepted",
+                      "committed"
+                    ],
+                    "type": "string"
+                  },
+                  "target_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "rejected_steers": {
+              "items": {
+                "properties": {
+                  "client_turn_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "pending_steer",
+                      "rejected_steer",
+                      "follow_up"
+                    ],
+                    "type": "string"
+                  },
+                  "local_images": {
+                    "items": {
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "placeholder": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "accepted",
+                      "committed"
+                    ],
+                    "type": "string"
+                  },
+                  "target_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "queue_revision": {
+          "type": "integer"
+        },
+        "steering": {
+          "type": "array"
+        },
+        "steering_items": {
+          "items": {
+            "properties": {
+              "client_turn_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "steering",
+                  "follow_up"
+                ],
+                "type": "string"
+              },
+              "local_images": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "placeholder": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "message": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "queue_revision",
+        "queue_items",
+        "steering",
+        "follow_up"
+      ],
+      "type": "object"
+    },
+    "turn.started": {
+      "name": "turn.started",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_turn_id",
+        "turn_id"
+      ],
+      "type": "object"
+    },
+    "turn.status": {
+      "name": "turn.status",
+      "properties": {
+        "client_turn_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "waiting_approval",
+            "waiting_clarification",
+            "completed",
+            "failed",
+            "interrupted",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "kind",
+        "text",
+        "terminal"
+      ],
+      "type": "object"
+    },
+    "workspace.trust.changed": {
+      "name": "workspace.trust.changed",
+      "properties": {
+        "enforced": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "requested_state": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "workspace",
+        "enforced"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://mycli.local/contracts/gateway-events.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "approval.request"
+        },
+        "params": {
+          "$ref": "#/$defs/approval.request"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "approval.respond"
+        },
+        "params": {
+          "$ref": "#/$defs/approval.respond"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "clarify.request"
+        },
+        "params": {
+          "$ref": "#/$defs/clarify.request"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "clarify.respond"
+        },
+        "params": {
+          "$ref": "#/$defs/clarify.respond"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "compaction.completed"
+        },
+        "params": {
+          "$ref": "#/$defs/compaction.completed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "compaction.started"
+        },
+        "params": {
+          "$ref": "#/$defs/compaction.started"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "gateway.error"
+        },
+        "params": {
+          "$ref": "#/$defs/gateway.error"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "item.completed"
+        },
+        "params": {
+          "$ref": "#/$defs/item.completed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "item.started"
+        },
+        "params": {
+          "$ref": "#/$defs/item.started"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "message.complete"
+        },
+        "params": {
+          "$ref": "#/$defs/message.complete"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "message.delta"
+        },
+        "params": {
+          "$ref": "#/$defs/message.delta"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "message.reset"
+        },
+        "params": {
+          "$ref": "#/$defs/message.reset"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "plan.proposed"
+        },
+        "params": {
+          "$ref": "#/$defs/plan.proposed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "plan.updated"
+        },
+        "params": {
+          "$ref": "#/$defs/plan.updated"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "reasoning.delta"
+        },
+        "params": {
+          "$ref": "#/$defs/reasoning.delta"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "runtime.event"
+        },
+        "params": {
+          "$ref": "#/$defs/runtime.event"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "session.changed"
+        },
+        "params": {
+          "$ref": "#/$defs/session.changed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "status.changed"
+        },
+        "params": {
+          "$ref": "#/$defs/status.changed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "status.update"
+        },
+        "params": {
+          "$ref": "#/$defs/status.update"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "stream.recovered"
+        },
+        "params": {
+          "$ref": "#/$defs/stream.recovered"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "stream.retrying"
+        },
+        "params": {
+          "$ref": "#/$defs/stream.retrying"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thinking.delta"
+        },
+        "params": {
+          "$ref": "#/$defs/thinking.delta"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "tool.complete"
+        },
+        "params": {
+          "$ref": "#/$defs/tool.complete"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "tool.failed"
+        },
+        "params": {
+          "$ref": "#/$defs/tool.failed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "tool.progress"
+        },
+        "params": {
+          "$ref": "#/$defs/tool.progress"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "tool.start"
+        },
+        "params": {
+          "$ref": "#/$defs/tool.start"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.completed"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.completed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.completion_suppressed"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.completion_suppressed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.event"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.event"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.failed"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.failed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.interrupted"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.interrupted"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.queue.updated"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.queue.updated"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.started"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.started"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "turn.status"
+        },
+        "params": {
+          "$ref": "#/$defs/turn.status"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "workspace.trust.changed"
+        },
+        "params": {
+          "$ref": "#/$defs/workspace.trust.changed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "GatewayEventNotification"
+}

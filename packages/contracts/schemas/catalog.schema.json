@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/catalog.schema.json",
+  "title": "GatewayContractCatalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocolVersion",
+    "rpcMethods",
+    "eventStreams",
+    "errorCodes",
+    "approvalDecisionChoices",
+    "terminalTurnStates"
+  ],
+  "properties": {
+    "$schema": {"type": "string"},
+    "protocolVersion": {"type": "integer", "minimum": 1},
+    "rpcMethods": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "eventStreams": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "errorCodes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "approvalDecisionChoices": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "terminalTurnStates": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+  }
+}
