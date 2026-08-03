@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "mycli": "dist/cli.js"
+  },
   "scripts": {
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "typecheck": "tsc --noEmit"

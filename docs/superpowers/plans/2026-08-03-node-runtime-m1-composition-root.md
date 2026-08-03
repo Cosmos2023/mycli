@@ -409,7 +409,7 @@ git commit -m "feat(node-cli): manage Python sidecar lifecycle"
 - Modify: `apps/mycli/package.json`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing backend selection tests**
+- [x] **Step 1: Write failing backend selection tests**
 
 Define one M1 backend and explicit failures:
 
@@ -429,14 +429,14 @@ test("native Node selection fails without fallback", () => {
 Support `--runtime-backend python-sidecar` and `MYCLI_RUNTIME_BACKEND=python-sidecar`. Reject
 conflicting or unknown values. Command-line selection wins over the environment.
 
-- [ ] **Step 2: Write failing CLI ownership tests**
+- [x] **Step 2: Write failing CLI ownership tests**
 
 Inject the sidecar starter and dynamic TUI importer. Assert that `--help` and `--version` do not
 start Python, interactive startup configures the sidecar transport before importing the TUI,
 spawn failure returns 2, unexpected sidecar exit returns 1, and unavailable Node backend returns
 2 without starting Python.
 
-- [ ] **Step 3: Run focused tests and verify the composition root is absent**
+- [x] **Step 3: Run focused tests and verify the composition root is absent**
 
 Run:
 
@@ -446,7 +446,7 @@ node --import tsx --test apps/mycli/test/backend-router.test.ts apps/mycli/test/
 
 Expected: FAIL because the router and CLI do not exist.
 
-- [ ] **Step 4: Implement the backend router**
+- [x] **Step 4: Implement the backend router**
 
 Use a closed string union:
 
@@ -461,7 +461,7 @@ export function selectRuntimeBackend(options: {
 Do not represent unavailable `node` as a valid `RuntimeBackend`; return a stable, user-facing
 selection error instead.
 
-- [ ] **Step 5: Implement the executable composition root**
+- [x] **Step 5: Implement the executable composition root**
 
 `cli.ts` has a Node shebang, validates TTY before sidecar startup, handles help/version locally,
 starts exactly one sidecar, calls `configureGatewayTransport`, and only then dynamically imports
@@ -471,7 +471,7 @@ while normal shutdown remains gateway RPC followed by `PythonSidecar.close()`.
 Do not print child stderr unless startup fails. When printed, use only the controller's bounded,
 redacted diagnostic summary.
 
-- [ ] **Step 6: Add root development commands**
+- [x] **Step 6: Add root development commands**
 
 Add:
 
@@ -486,7 +486,7 @@ Add:
 
 The package `bin` points to `dist/cli.js`; production never points to source or `tsx`.
 
-- [ ] **Step 7: Run app tests and a fake-sidecar process smoke**
+- [x] **Step 7: Run app tests and a fake-sidecar process smoke**
 
 Run:
 
@@ -497,7 +497,7 @@ npm run typecheck --workspace @mycli/app
 
 Expected: all app tests pass, including the real child-process fixture.
 
-- [ ] **Step 8: Commit composition root**
+- [x] **Step 8: Commit composition root**
 
 ```bash
 git add apps/mycli/src/backend-router.ts apps/mycli/src/cli.ts apps/mycli/test/backend-router.test.ts apps/mycli/test/cli.test.ts apps/mycli/package.json package.json package-lock.json

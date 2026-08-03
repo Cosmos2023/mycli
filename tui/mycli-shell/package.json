@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./gateway": "./src/gateway.ts",
     "./gateway-transport": "./src/adapters/gateway-transport.ts"
   },
   "scripts": {

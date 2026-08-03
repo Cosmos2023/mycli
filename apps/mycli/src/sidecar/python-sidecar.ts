@@ -56,6 +56,7 @@ export type PythonSidecar = {
 	completion: Promise<number>;
 	diagnostic: () => string;
 	close: () => Promise<void>;
+	kill: () => void;
 };
 
 const nativeTimers: SidecarTimers = {
@@ -106,6 +107,13 @@ export function startPythonSidecar(options: StartPythonSidecarOptions): PythonSi
 	});
 	const timers = options.timers ?? nativeTimers;
 	let closePromise: Promise<void> | null = null;
+	let killed = false;
+	const kill = (): void => {
+		if (!killed && !hasExited(child)) {
+			killed = true;
+			child.kill("SIGKILL");
+		}
+	};
 
 	const close = (): Promise<void> => {
 		closePromise ??= closeSidecar(child, completion, timers);
@@ -121,6 +129,7 @@ export function startPythonSidecar(options: StartPythonSidecarOptions): PythonSi
 		completion,
 		diagnostic: () => boundedDiagnostic(stderr.toString("utf8")),
 		close,
+		kill,
 	};
 }
 

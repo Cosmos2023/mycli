@@ -287,3 +287,20 @@ test("python sidecar cleanup is idempotent and shares one promise", async () => 
 
 	assert.deepEqual(child.kills, []);
 });
+
+test("python sidecar exposes an idempotent synchronous final kill", () => {
+	const child = new FakeSidecarProcess();
+	const recorder = spawnRecorder(child);
+	const sidecar = startPythonSidecar({
+		spawn: recorder.spawn,
+		platform: "linux",
+		env: {},
+		cwd: "/repo",
+		args: [],
+	});
+
+	sidecar.kill();
+	sidecar.kill();
+
+	assert.deepEqual(child.kills, ["SIGKILL"]);
+});

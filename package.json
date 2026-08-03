@@ -9,7 +9,9 @@
   "scripts": {
     "contracts:generate": "npm run generate --workspace @mycli/contracts",
     "contracts:check": "npm run check --workspace @mycli/contracts",
+    "dev": "node --import tsx apps/mycli/src/cli.ts",
     "lint": "eslint \"apps/**/*.ts\" \"packages/**/*.ts\"",
+    "mycli": "node --import tsx apps/mycli/src/cli.ts",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

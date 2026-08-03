@@ -1,4 +1,5 @@
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { GatewayClient, GatewayRequestError, type GatewayEvent } from "./adapters/gateway-client.ts";
 import {
 	initialRuntimeState,
@@ -755,14 +756,19 @@ process.once("SIGTERM", () => {
 	void shutdown(0).finally(() => process.exit(0));
 });
 
-main().catch((error: unknown) => {
-	const message = error instanceof Error ? error.message : "Unable to start mycli shell TUI.";
-	process.stderr.write(`[mycli-shell] ${message}\n`);
-	if (!bootstrapped) {
-		client.stop();
-	}
-	process.exit(1);
-});
+export const gatewayStartup = main();
+
+const entryPath = process.argv[1];
+if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
+	void gatewayStartup.catch((error: unknown) => {
+		const message = error instanceof Error ? error.message : "Unable to start mycli shell TUI.";
+		process.stderr.write(`[mycli-shell] ${message}\n`);
+		if (!bootstrapped) {
+			client.stop();
+		}
+		process.exitCode = 1;
+	});
+}
 
 function trustDecisionFromState(state: string | undefined): ProjectTrustDecision | null {
 	if (state === "trusted") return true;
