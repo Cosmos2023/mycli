@@ -82,12 +82,14 @@ export class GatewayClient {
 	private readonly events: GatewayEvent[] = [];
 	private readline: Interface | null = null;
 	private closed = false;
+	private closeExpected = false;
 
 	constructor(
 		private readonly options: {
 			input: NodeJS.ReadableStream;
 			output: NodeJS.WritableStream;
 			log?: (event: GatewayEvent) => void;
+			onClose?: (error: Error) => void;
 		},
 	) {}
 
@@ -113,6 +115,10 @@ export class GatewayClient {
 		this.readline?.close();
 		this.readline = null;
 		this.rejectAll(new Error("Gateway closed."));
+	}
+
+	expectClose(): void {
+		this.closeExpected = true;
 	}
 
 	send(method: string, params: JsonObject = {}): Promise<JsonObject> {
@@ -250,5 +256,8 @@ export class GatewayClient {
 		this.readline = null;
 		const input = this.options.input as NodeJS.ReadableStream & { destroy?: () => void };
 		input.destroy?.();
+		if (!this.closeExpected) {
+			this.options.onClose?.(error);
+		}
 	}
 }

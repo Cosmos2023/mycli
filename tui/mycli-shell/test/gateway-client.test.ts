@@ -56,6 +56,61 @@ test("gateway client rejects pending requests when output pipe closes", async ()
 	client.stop();
 });
 
+test("gateway client reports an unexpected pipe close once", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const closed: string[] = [];
+	const client = new GatewayClient({
+		input,
+		output,
+		onClose: (error) => closed.push(error.message),
+	});
+	client.start();
+
+	output.emit("error", new Error("sidecar pipe failed"));
+	input.emit("error", new Error("duplicate close"));
+	await setTimeout(10);
+
+	assert.deepEqual(closed, ["sidecar pipe failed"]);
+	client.stop();
+});
+
+test("gateway client stop does not report an unexpected close", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const closed: string[] = [];
+	const client = new GatewayClient({
+		input,
+		output,
+		onClose: (error) => closed.push(error.message),
+	});
+	client.start();
+
+	client.stop();
+	await setTimeout(10);
+
+	assert.deepEqual(closed, []);
+});
+
+test("gateway client does not report an expected remote close", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const closed: string[] = [];
+	const client = new GatewayClient({
+		input,
+		output,
+		onClose: (error) => closed.push(error.message),
+	});
+	client.start();
+	client.expectClose();
+
+	input.end();
+	await setTimeout(10);
+
+	assert.deepEqual(closed, []);
+	client.stop();
+});
+
 test("gateway client ignores input after closure", async () => {
 	const input = new PassThrough();
 	const output = new PassThrough();

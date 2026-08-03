@@ -242,7 +242,7 @@ git commit -m "feat(sidecar): serve runtime gateway over stdio"
 - Modify: `tui/mycli-shell/src/adapters/gateway-client.ts`
 - Modify: `tui/mycli-shell/test/gateway-client.test.ts`
 
-- [ ] **Step 1: Write failing handshake tests**
+- [x] **Step 1: Write failing handshake tests**
 
 Cover a compatible manifest, wrong schema version, missing RPC/event names, and timeout before
 `runtime.ready`. Error messages contain stable codes and counts only, never full manifests:
@@ -261,7 +261,7 @@ test("handshake rejects an incompatible schema version without dumping payload",
 });
 ```
 
-- [ ] **Step 2: Run tests and verify the handshake module is absent**
+- [x] **Step 2: Run tests and verify the handshake module is absent**
 
 Run:
 
@@ -271,7 +271,7 @@ node --import tsx --test tui/mycli-shell/test/gateway-handshake.test.ts
 
 Expected: FAIL because `gateway-handshake.ts` does not exist.
 
-- [ ] **Step 3: Implement bounded compatibility checks**
+- [x] **Step 3: Implement bounded compatibility checks**
 
 Export:
 
@@ -286,14 +286,14 @@ The manifest must contain the canonical M0 RPC and event names. Extra future nam
 The timeout defaults to 10 seconds, is bounded to 1-60 seconds, and may be overridden only by
 `MYCLI_SIDECAR_START_TIMEOUT_MS`.
 
-- [ ] **Step 4: Perform handshake before session bootstrap**
+- [x] **Step 4: Perform handshake before session bootstrap**
 
 After `GatewayClient.start()`, await canonical `runtime.ready`, request `extension.manifest`,
 verify it, then send `session.bootstrap(protocol_version=1)`. Add a close callback to
 `GatewayClient` so an unexpected input close stops the UI and exits nonzero; `client.stop()` must
 not trigger the unexpected-close callback.
 
-- [ ] **Step 5: Run handshake, client, and TUI tests**
+- [x] **Step 5: Run handshake, client, and TUI tests**
 
 Run:
 
@@ -304,7 +304,7 @@ npm run typecheck --workspace mycli-shell-tui
 
 Expected: all focused tests pass.
 
-- [ ] **Step 6: Commit startup handshake**
+- [x] **Step 6: Commit startup handshake**
 
 ```bash
 git add tui/mycli-shell/src/adapters/gateway-handshake.ts tui/mycli-shell/test/gateway-handshake.test.ts tui/mycli-shell/src/adapters/gateway-client.ts tui/mycli-shell/test/gateway-client.test.ts tui/mycli-shell/src/gateway.ts

@@ -44,6 +44,11 @@ import {
 	closeGatewayTransport,
 	gatewayTransport,
 } from "./adapters/gateway-transport.ts";
+import {
+	GATEWAY_PROTOCOL_VERSION,
+	sidecarStartupTimeoutMs,
+	verifyGatewayManifest,
+} from "./adapters/gateway-handshake.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -61,6 +66,9 @@ const client = new GatewayClient({
 	input: rpcTransport.input,
 	output: rpcTransport.output,
 	log: (event) => handleGatewayEvent(event),
+	onClose: (error) => {
+		if (bootstrapped) void handleUnexpectedGatewayClose(error);
+	},
 });
 
 let runtimeState: RuntimeShellState = initialRuntimeState();
@@ -192,8 +200,15 @@ async function send(
 
 async function bootstrap(): Promise<void> {
 	client.start();
+	await client.waitForEvent(
+		"runtime.ready",
+		() => true,
+		sidecarStartupTimeoutMs(process.env),
+	);
+	const manifest = await send("extension.manifest", {}, { recordErrors: false });
+	verifyGatewayManifest(manifest);
 	const bootstrapPayload = await send("session.bootstrap", {
-		protocol_version: 1,
+		protocol_version: GATEWAY_PROTOCOL_VERSION,
 		client: { name: "mycli-shell-tui", version: "0.1.0" },
 	});
 	setRuntimeState(runtimeStateFromBootstrap(runtimeState, bootstrapPayload));
@@ -630,6 +645,7 @@ async function clearPermissionAllowances(): Promise<MycliShellPermissionState> {
 
 async function shutdown(exitCode = 0): Promise<void> {
 	try {
+		client.expectClose();
 		await client.send("shutdown", {});
 	} catch {
 		// Best-effort shutdown.
@@ -643,6 +659,12 @@ async function interruptExit(exitCode = 130): Promise<void> {
 	await stopLocalRuntime();
 	process.exitCode = exitCode;
 	process.exit(exitCode);
+}
+
+async function handleUnexpectedGatewayClose(_error: Error): Promise<void> {
+	process.stderr.write("[mycli-shell] Runtime gateway closed unexpectedly.\n");
+	await stopLocalRuntime();
+	process.exitCode = 1;
 }
 
 async function stopLocalRuntime(): Promise<void> {
