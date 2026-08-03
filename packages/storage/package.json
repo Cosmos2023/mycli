@@ -17,9 +17,11 @@
   },
   "dependencies": {
     "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0"
+    "@mycli/core": "0.1.0",
+    "better-sqlite3": "^13.0.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"
   },
