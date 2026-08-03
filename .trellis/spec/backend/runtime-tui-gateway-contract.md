@@ -55,6 +55,13 @@
   `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/mycli-shell/test/support/scripted-client.ts`
 - Scripted smoke assertion action:
   `{"type":"turn.submit_expect","message":"...","expected_state":"failed"}`
+- Root Node workspace install and contract commands:
+  - `npm ci`
+  - `npm run contracts:generate`
+  - `npm run contracts:check`
+  - `npm run lint`
+  - `npm test`
+  - `npm run typecheck`
 
 ### 3. Contracts
 - `status.update` payload:
@@ -230,8 +237,9 @@
   - Existing method-name notifications remain the primary compatibility path.
     The gateway emits them unchanged and then emits the envelope mirror.
   - `runtime.event` must not recursively wrap another `runtime.event`.
-  - `runtime.ready` is not mirrored in this slice because it is emitted outside
-    the runtime event boundary during process bootstrap.
+  - `runtime.ready` is a canonical direct event whose payload requires
+    `session_id`. It is not mirrored in this slice because it is emitted
+    outside the runtime event boundary during process bootstrap.
 - Tool lifecycle notifications come from real tool execution, not model-side
   tool-call request streaming:
   - All `tool.*` lifecycle payloads must include `client_turn_id` so clients
@@ -382,9 +390,24 @@
   - Typed queue items include `kind`, `message`, `text`, `source`,
     optional `client_turn_id`, and optional `local_images`. New clients should
     prefer typed arrays and fall back to string arrays for older gateways.
+  - The persisted typed queue-item `kind` enum is `pending_steer`,
+    `rejected_steer`, or `follow_up`. Contract schemas must retain
+    `rejected_steer` because a steer rejected at an unsafe injection point is
+    preserved for a later server turn rather than discarded.
   - Emit after successful queue mutation and after runtime drains queued
     messages, so the footer and pending-message area stay synchronized with the
     backend instead of relying on local-only queue state.
+- Node workspace dependency layout:
+  - The repository root `package.json` is the workspace composition root for
+    `packages/*` and `tui/*`; the root `package-lock.json` is authoritative.
+  - Run `npm ci` from the repository root. Do not restore or depend on a nested
+    `tui/mycli-shell/package-lock.json`.
+  - Workspace tooling such as `tsx` and `typescript` may resolve from the root
+    `node_modules`; diagnostics and process launch code must recognize that
+    layout instead of requiring duplicate nested installations.
+  - Canonical hand-edited schemas live under `packages/contracts/schemas`.
+    Generated TypeScript declarations and Python JSON resources must be
+    regenerated together and must pass `npm run contracts:check`.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use
@@ -513,6 +536,16 @@
 - Any runtime event emitted through the gateway event boundary -> preserve the
   existing method-name notification and emit a `runtime.event` mirror with the
   next sequence number.
+- `runtime.ready` with a non-object payload or without non-empty `session_id`
+  -> reject at the Node process boundary as an invalid gateway notification;
+  do not expose raw payload content in the error.
+- Typed queue item with `kind=rejected_steer` -> accept and preserve it in the
+  rejected-steer collection; any unknown queue item kind -> contract validation
+  failure.
+- Generated schema or declaration differs from canonical output ->
+  `npm run contracts:check` exits non-zero without rewriting the worktree.
+- Root workspace dependencies absent -> Node launch/doctor diagnostics point
+  to root `npm ci`; do not require a nested TUI lockfile or nested-only `tsx`.
 - `trace.export` -> return bounded sanitized JSONL rows without mutating trace
   files or session state.
 - Turn returns `pending_decision` -> emit `approval.request`, then
@@ -618,6 +651,16 @@
 - Good: Future extension/ACP clients can subscribe to `turn.status` outcomes
   when they only need turn state, while current TUI clients keep rendering from
   existing terminal events and `status.update`.
+- Good: A bootstrap `runtime.ready` notification with `session_id` validates as
+  a direct event without producing a `runtime.event` mirror.
+- Good: A `rejected_steer` queue item survives schema validation and remains
+  available for the next server turn.
+- Base: `npm ci` at the repository root installs both `@mycli/contracts` and
+  `mycli-shell-tui` from the single root lockfile.
+- Bad: Editing a generated TypeScript declaration or Python schema copy by
+  hand causes the drift check to fail.
+- Bad: A `runtime.ready` notification without `session_id` is not forwarded to
+  the TUI reducer.
 - Good: TUI shows a compact running reasoning preview without mixing reasoning
   text into the final assistant answer.
 - Good: TUI records `message.complete` metadata on the active assistant stream
@@ -816,9 +859,17 @@
   running label when present.
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node
   `typecheck`, and Node tests for protocol/reducer/rendering changes.
-- Node TUI `test` and `typecheck` commands must run `npm run verify:deps`
-  first, so missing or partially installed `tui/mycli-shell/node_modules` produces an
-  actionable dependency message before `tsx` is imported.
+- Root Node `test` and `typecheck` commands must resolve workspace tooling from
+  the root installation. Direct TUI source launch may use its local `tsx` only
+  as a compatibility fallback; missing dependencies should produce an
+  actionable root `npm ci` message.
+- Contract catalog tests proving `runtime.ready` is present in the canonical
+  event list and its payload requires `session_id`.
+- Cross-language fixture tests proving valid `runtime.ready` and
+  `rejected_steer` payloads pass in Ajv and Python `jsonschema`, while malformed
+  boundary payloads fail without leaking their content.
+- Workspace tests proving the root lockfile owns both packages, no nested TUI
+  lockfile is required, and generated outputs pass `npm run contracts:check`.
 
 ### 7. Wrong vs Correct
 
