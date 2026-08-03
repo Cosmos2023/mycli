@@ -2,14 +2,14 @@
   "name": "mycli-workspace",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "tui/*"],
+  "workspaces": ["apps/*", "packages/*", "tui/*"],
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
     "contracts:generate": "npm run generate --workspace @mycli/contracts",
     "contracts:check": "npm run check --workspace @mycli/contracts",
-    "lint": "eslint \"packages/**/*.ts\"",
+    "lint": "eslint \"apps/**/*.ts\" \"packages/**/*.ts\"",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

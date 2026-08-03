@@ -322,7 +322,7 @@ git commit -m "feat(tui): verify sidecar handshake"
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Write failing process-controller tests**
+- [x] **Step 1: Write failing process-controller tests**
 
 Inject `spawn` and timers. Cover command construction on POSIX/Windows, piped protocol streams,
 bounded/redacted stderr, normal exit, crash exit, graceful shutdown, timeout escalation, and
@@ -337,7 +337,7 @@ test("python sidecar never inherits the terminal", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify the controller is absent**
+- [x] **Step 2: Run the focused test and verify the controller is absent**
 
 Run:
 
@@ -347,7 +347,7 @@ node --import tsx --test apps/mycli/test/python-sidecar.test.ts
 
 Expected: FAIL because the app workspace and controller do not exist.
 
-- [ ] **Step 3: Implement command resolution and sidecar ownership**
+- [x] **Step 3: Implement command resolution and sidecar ownership**
 
 Use `MYCLI_PYTHON` as an optional executable override and otherwise select `python` on Windows and
 `python3` elsewhere. The command is:
@@ -362,7 +362,7 @@ missing stdin/stdout as `sidecar_spawn_failed`.
 Register `apps/*` in the root workspace list and run `npm install --package-lock-only` so the app
 workspace is available to the focused test and type-check commands in this task.
 
-- [ ] **Step 4: Implement bounded lifecycle and diagnostics**
+- [x] **Step 4: Implement bounded lifecycle and diagnostics**
 
 Expose:
 
@@ -381,7 +381,7 @@ and never forward stderr into the RPC parser. `close()` closes stdin, waits up t
 sends termination, then uses a final kill only if the child still has not exited. Multiple closes
 share one promise.
 
-- [ ] **Step 5: Run controller tests and type checking**
+- [x] **Step 5: Run controller tests and type checking**
 
 Run:
 
@@ -392,7 +392,7 @@ npm run typecheck --workspace @mycli/app
 
 Expected: all focused tests pass.
 
-- [ ] **Step 6: Commit sidecar controller**
+- [x] **Step 6: Commit sidecar controller**
 
 ```bash
 git add apps/mycli/package.json apps/mycli/tsconfig.json apps/mycli/src/sidecar/python-sidecar.ts apps/mycli/test/python-sidecar.test.ts apps/mycli/test/fixtures/fake-sidecar.mjs package.json package-lock.json
