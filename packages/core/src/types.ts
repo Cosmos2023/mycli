@@ -16,6 +16,37 @@ export interface CanonicalMessage {
 	readonly content: string;
 }
 
+export interface ToolDefinition {
+	readonly id: string;
+	readonly name: string;
+	readonly description: string;
+	readonly inputSchema: Readonly<Record<string, unknown>>;
+}
+
+export interface CanonicalToolCall {
+	readonly callId: string;
+	readonly name: string;
+	readonly argumentsJson: string;
+}
+
+export interface CanonicalToolResult {
+	readonly callId: string;
+	readonly toolName: string;
+	readonly output: string;
+	readonly success: boolean;
+}
+
+export type CanonicalConversationItem =
+	| { readonly type: "user"; readonly text: string }
+	| { readonly type: "assistant"; readonly text: string }
+	| {
+		readonly type: "assistant_tool_calls";
+		readonly text: string;
+		readonly calls: readonly CanonicalToolCall[];
+		readonly responseId?: string;
+	}
+	| ({ readonly type: "tool_result" } & CanonicalToolResult);
+
 export interface ProviderRequestConfig {
 	readonly provider: ProviderId;
 	readonly protocol: ProtocolId;
@@ -28,7 +59,9 @@ export interface ProviderRequestConfig {
 export interface ProviderRequest extends ProviderRequestConfig {
 	readonly instructions: string;
 	readonly messages: readonly CanonicalMessage[];
-	readonly tools: readonly [];
+	readonly items?: readonly CanonicalConversationItem[];
+	readonly tools: readonly ToolDefinition[];
+	readonly previousResponseId?: string;
 }
 
 export type ProviderUsage = Readonly<Record<string, number>>;

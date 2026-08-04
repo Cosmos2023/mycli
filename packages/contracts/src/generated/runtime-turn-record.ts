@@ -8,7 +8,9 @@ export type RuntimeErrorCode =
   | "retry_exhausted"
   | "persistence_error"
   | "interrupted"
-  | "unsupported_capability";
+  | "unsupported_capability"
+  | "tool_budget_exceeded"
+  | "tool_protocol_error";
 
 export interface RuntimeTurnRecord {
   schema_version: 1;

@@ -35,6 +35,27 @@ test("accepts a typed turn.failed notification", () => {
 	}));
 });
 
+test("accepts M3 tool runtime failures in durable turns and gateway events", () => {
+	for (const code of ["tool_budget_exceeded", "tool_protocol_error"] as const) {
+		assert.doesNotThrow(() => contracts.parseRuntimeTurnRecord({
+			...completedTurn,
+			status: "failed",
+			error_code: code,
+			result: { message: "Tool turn failed." },
+		}));
+		assert.doesNotThrow(() => contracts.parseGatewayEvent({
+			jsonrpc: "2.0",
+			method: "turn.failed",
+			params: {
+				client_turn_id: "client-1",
+				turn_id: "turn-1",
+				message: "Tool turn failed.",
+				code,
+			},
+		}));
+	}
+});
+
 test("rejects an unknown turn.failed error code", () => {
 	assert.throws(() => contracts.parseGatewayEvent({
 		jsonrpc: "2.0",

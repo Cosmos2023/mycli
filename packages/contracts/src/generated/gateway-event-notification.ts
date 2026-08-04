@@ -592,7 +592,9 @@ export interface Turn3 {
     | "retry_exhausted"
     | "persistence_error"
     | "interrupted"
-    | "unsupported_capability";
+    | "unsupported_capability"
+    | "tool_budget_exceeded"
+    | "tool_protocol_error";
   message?: string;
   turn_id?: string;
   [k: string]: any;

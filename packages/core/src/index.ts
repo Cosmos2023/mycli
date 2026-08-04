@@ -1,8 +1,14 @@
 export { TurnTransitionError } from "./errors.ts";
 export { fingerprintSubmission } from "./fingerprint.ts";
 export type { TurnSubmissionFingerprintInput } from "./fingerprint.ts";
-export { projectNoToolRequest } from "./request-projection.ts";
-export type { NoToolRequestProjectionInput } from "./request-projection.ts";
+export {
+	projectNoToolRequest,
+	projectProviderRequest,
+} from "./request-projection.ts";
+export type {
+	NoToolRequestProjectionInput,
+	ProviderRequestProjectionInput,
+} from "./request-projection.ts";
 export {
 	completeTurn,
 	failTurn,
@@ -14,7 +20,10 @@ export type {
 	StartTurnInput,
 } from "./turn-state.ts";
 export type {
+	CanonicalConversationItem,
 	CanonicalMessage,
+	CanonicalToolCall,
+	CanonicalToolResult,
 	ClientTurnId,
 	ProtocolId,
 	ProviderEvent,
@@ -29,4 +38,5 @@ export type {
 	TurnId,
 	TurnSnapshot,
 	TurnStatus,
+	ToolDefinition,
 } from "./types.ts";
