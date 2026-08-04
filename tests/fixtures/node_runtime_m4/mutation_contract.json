@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "inventory": {
+    "tools": ["Read", "Edit", "Patch", "Write"],
+    "retired_tools": ["LS", "Glob", "Grep"],
+    "parameters": {
+      "Read": ["file_path", "offset", "limit", "pages"],
+      "Edit": ["file_path", "old_string", "new_string", "replace_all"],
+      "Patch": ["file_path", "old_string", "new_string", "replace_all"],
+      "Write": ["file_path", "content", "expected_sha256"]
+    }
+  },
+  "cases": [
+    {
+      "name": "write_created",
+      "tool": "Write",
+      "setup": {"kind": "missing", "path": "created.txt"},
+      "arguments": {"file_path": "created.txt", "content": "created\n"},
+      "expected": {"success": true, "status": "created", "error_kind": null, "matches": null, "receipt": "Success. Updated the following files:\nA created.txt", "change_kind": "add", "added_lines": 1, "removed_lines": 0, "preserved": false, "final_content": "created\n"}
+    },
+    {
+      "name": "write_overwritten",
+      "tool": "Write",
+      "setup": {"kind": "text", "path": "overwrite.txt", "content": "old\n"},
+      "arguments": {"file_path": "overwrite.txt", "content": "new\n"},
+      "expected": {"success": true, "status": "overwritten", "error_kind": null, "matches": null, "receipt": "Success. Updated the following files:\nM overwrite.txt", "change_kind": "update", "added_lines": 1, "removed_lines": 1, "preserved": false, "final_content": "new\n"}
+    },
+    {
+      "name": "write_unchanged",
+      "tool": "Write",
+      "setup": {"kind": "text", "path": "unchanged.txt", "content": "same\n"},
+      "arguments": {"file_path": "unchanged.txt", "content": "same\n"},
+      "expected": {"success": true, "status": "unchanged", "error_kind": null, "matches": null, "receipt": "No changes to unchanged.txt", "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "same\n"}
+    },
+    {
+      "name": "edit_requires_read",
+      "tool": "Edit",
+      "setup": {"kind": "text", "path": "missing-read.txt", "content": "old\n"},
+      "arguments": {"file_path": "missing-read.txt", "old_string": "old", "new_string": "new"},
+      "expected": {"success": false, "status": null, "error_kind": "missing_read_snapshot", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "old\n"}
+    },
+    {
+      "name": "edit_success",
+      "tool": "Edit",
+      "setup": {"kind": "text", "path": "edit.txt", "content": "alpha\nbeta\n"},
+      "pre_read": true,
+      "arguments": {"file_path": "edit.txt", "old_string": "beta", "new_string": "gamma"},
+      "expected": {"success": true, "status": "edited", "error_kind": null, "matches": 1, "receipt": "Success. Updated the following files:\nM edit.txt", "change_kind": "update", "added_lines": 1, "removed_lines": 1, "preserved": false, "final_content": "alpha\ngamma\n"}
+    },
+    {
+      "name": "patch_success",
+      "tool": "Patch",
+      "setup": {"kind": "text", "path": "patch.txt", "content": "value = 1\n"},
+      "pre_read": true,
+      "arguments": {"file_path": "patch.txt", "old_string": "value = 1", "new_string": "value = 2"},
+      "expected": {"success": true, "status": "patched", "error_kind": null, "matches": 1, "receipt": "Success. Updated the following files:\nM patch.txt", "change_kind": "update", "added_lines": 1, "removed_lines": 1, "preserved": false, "final_content": "value = 2\n"}
+    },
+    {
+      "name": "patch_multiple_matches",
+      "tool": "Patch",
+      "setup": {"kind": "text", "path": "repeated.txt", "content": "x = 1\nx = 1\n"},
+      "pre_read": true,
+      "arguments": {"file_path": "repeated.txt", "old_string": "x = 1", "new_string": "x = 2"},
+      "expected": {"success": false, "status": null, "error_kind": "multiple_matches", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "x = 1\nx = 1\n"}
+    },
+    {
+      "name": "edit_string_not_found",
+      "tool": "Edit",
+      "setup": {"kind": "text", "path": "not-found.txt", "content": "alpha\n"},
+      "pre_read": true,
+      "arguments": {"file_path": "not-found.txt", "old_string": "missing", "new_string": "new"},
+      "expected": {"success": false, "status": null, "error_kind": "string_not_found", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "alpha\n"}
+    },
+    {
+      "name": "edit_no_op",
+      "tool": "Edit",
+      "setup": {"kind": "text", "path": "no-op.txt", "content": "same\n"},
+      "pre_read": true,
+      "arguments": {"file_path": "no-op.txt", "old_string": "same", "new_string": "same"},
+      "expected": {"success": false, "status": null, "error_kind": "no_op", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "same\n"}
+    },
+    {
+      "name": "write_traversal_escape",
+      "tool": "Write",
+      "setup": {"kind": "outside_text", "path": "../outside.txt", "content": "protected\n"},
+      "arguments": {"file_path": "../outside.txt", "content": "changed\n"},
+      "expected": {"success": false, "status": null, "error_kind": "workspace_escape", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "protected\n"}
+    },
+    {
+      "name": "write_symlink_escape",
+      "tool": "Write",
+      "setup": {"kind": "symlink_escape", "path": "link/outside.txt", "content": "protected\n"},
+      "arguments": {"file_path": "link/outside.txt", "content": "changed\n"},
+      "expected": {"success": false, "status": null, "error_kind": "workspace_escape", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "protected\n"}
+    },
+    {
+      "name": "write_binary_target",
+      "tool": "Write",
+      "setup": {"kind": "binary", "path": "binary.bin"},
+      "arguments": {"file_path": "binary.bin", "content": "text\n"},
+      "expected": {"success": false, "status": null, "error_kind": "binary_file", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": null}
+    },
+    {
+      "name": "write_directory_target",
+      "tool": "Write",
+      "setup": {"kind": "directory", "path": "folder"},
+      "arguments": {"file_path": "folder", "content": "text\n"},
+      "expected": {"success": false, "status": null, "error_kind": "is_directory", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": null}
+    },
+    {
+      "name": "write_invalid_utf8_target",
+      "tool": "Write",
+      "setup": {"kind": "invalid_utf8", "path": "invalid.txt"},
+      "arguments": {"file_path": "invalid.txt", "content": "text\n"},
+      "expected": {"success": false, "status": null, "error_kind": "invalid_encoding", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": null}
+    },
+    {
+      "name": "write_oversized_content",
+      "tool": "Write",
+      "setup": {"kind": "missing", "path": "large-output.txt"},
+      "argument_factory": "oversized_content",
+      "arguments": {"file_path": "large-output.txt"},
+      "expected": {"success": false, "status": null, "error_kind": "content_too_large", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": null}
+    },
+    {
+      "name": "edit_oversized_file",
+      "tool": "Edit",
+      "setup": {"kind": "large_text", "path": "large-input.txt"},
+      "pre_read": true,
+      "arguments": {"file_path": "large-input.txt", "old_string": "x", "new_string": "y", "replace_all": true},
+      "expected": {"success": false, "status": null, "error_kind": "file_too_large", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": null}
+    },
+    {
+      "name": "write_secret_like_content",
+      "tool": "Write",
+      "setup": {"kind": "missing", "path": "secret.txt"},
+      "argument_factory": "secret_content",
+      "arguments": {"file_path": "secret.txt"},
+      "expected": {"success": false, "status": null, "error_kind": "secret_like_content", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": null}
+    },
+    {
+      "name": "edit_stale_read",
+      "tool": "Edit",
+      "setup": {"kind": "text", "path": "stale-read.txt", "content": "value = 1\n"},
+      "pre_read": true,
+      "after_read_content": "value = 3\n",
+      "arguments": {"file_path": "stale-read.txt", "old_string": "value = 3", "new_string": "value = 4"},
+      "expected": {"success": false, "status": null, "error_kind": "stale_read_snapshot", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "value = 3\n"}
+    },
+    {
+      "name": "write_stale_hash",
+      "tool": "Write",
+      "setup": {"kind": "text", "path": "stale-write.txt", "content": "value = 1\n"},
+      "pre_read": true,
+      "after_read_content": "value = 3\n",
+      "argument_factory": "snapshot_sha256",
+      "arguments": {"file_path": "stale-write.txt", "content": "value = 4\n"},
+      "expected": {"success": false, "status": null, "error_kind": "stale_write_snapshot", "matches": null, "receipt": null, "change_kind": null, "added_lines": null, "removed_lines": null, "preserved": true, "final_content": "value = 3\n"}
+    }
+  ],
+  "transcript": {
+    "session_id": "m4-parity",
+    "client_turn_id": "m4-client",
+    "turn_id": "m4-turn",
+    "response_id": "resp-write",
+    "call_id": "call-write-1",
+    "tool_name": "Write",
+    "arguments": {"file_path": "created.txt", "content": "created\n"},
+    "receipt": "Success. Updated the following files:\nA created.txt",
+    "summary": "Wrote created.txt",
+    "metadata": {
+      "path": "created.txt",
+      "status": "created",
+      "diff": "--- created.txt:before\n+++ created.txt:after\n+created\n",
+      "addedLines": 1,
+      "removedLines": 0,
+      "diffTruncated": false
+    },
+    "file_changes": [{"version": 1, "kind": "add", "path": "created.txt", "diff": "--- created.txt:before\n+++ created.txt:after\n+created\n", "added_lines": 1, "removed_lines": 0}],
+    "canonical_item_types": ["user", "assistant_tool_calls", "tool_result", "assistant"]
+  },
+  "failure_transcript": {
+    "session_id": "m4-parity-failure",
+    "client_turn_id": "m4-client-failure",
+    "turn_id": "m4-turn-failure",
+    "response_id": "resp-edit-failure",
+    "call_id": "call-edit-failure",
+    "tool_name": "Edit",
+    "arguments": {"file_path": "missing-read.txt", "old_string": "old", "new_string": "new"},
+    "receipt": "Edit failed\nPath: missing-read.txt\nError kind: missing_read_snapshot\nError: Read the target file before modifying it.",
+    "summary": "Failed to edit missing-read.txt",
+    "error_kind": "missing_read_snapshot",
+    "canonical_item_types": ["user", "assistant_tool_calls", "tool_result", "assistant"]
+  }
+}

@@ -48,6 +48,7 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         "pretest": "npm run build",
         "smoke:package": "node scripts/smoke_packed_cli.mjs",
         "smoke:m3": "node scripts/smoke_node_m3_read.mjs --protocol responses",
+        "smoke:m4": "node scripts/smoke_node_m4_mutation.mjs --protocol responses",
         "test": "npm run test --workspaces --if-present",
         "test:m2": (
             "npm run build && node --import tsx --test "
@@ -59,6 +60,11 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
             "npm run build && node --import tsx --test "
             "apps/mycli/test/m3-read-turn.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m3_parity.py -q"
+        ),
+        "test:m4": (
+            "npm run build && node --import tsx --test "
+            "apps/mycli/test/m4-file-mutation.integration.test.ts && "
+            "uv run pytest tests/integration/test_node_runtime_m4_parity.py -q"
         ),
         "typecheck": "npm run typecheck --workspaces --if-present",
     }

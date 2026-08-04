@@ -17,6 +17,8 @@ Apply this contract when changing:
 - file history integration
 - mutation tool formatter output
 - registry/manifest metadata for file mutation tools
+- Node mutation code under `packages/tools`
+- Node tool-result persistence or gateway projection
 
 ## Contracts
 
@@ -64,3 +66,70 @@ Required tests for mutation tool changes:
 - Write secret-like, binary, and stale expected-hash failures.
 - Registry manifest includes `Patch` as a medium-risk file tool.
 - Registry mutation targets include Patch paths for file-history integration.
+
+## Scenario: Node M4 Workspace Mutation Runtime
+
+### 1. Scope / Trigger
+
+- Trigger: changing Node `Read`, `Edit`, `Patch`, `Write`, mutation path policy, provider tool
+  continuation, SQLite tool-result metadata, or gateway mutation events.
+- M4 is a preview-backend slice. Python remains the default backend and is an explicit rollback
+  selection only; a failed Node turn must never fall back to Python.
+
+### 2. Signatures
+
+- Shared snapshot store: `FileSnapshotStore.record(snapshot)` and `latest(path)`.
+- Mutation kernel: `FileMutationRuntime({workspaceRoot, snapshots})`.
+- Adapters: `ReadTool({workspaceRoot, snapshots})`, `EditTool(runtime)`, `PatchTool(runtime)`, and
+  `WriteTool({runtime})`.
+- Durable input: `AppendToolResultInput.metadata?: Readonly<Record<string, unknown>>`.
+- Stable provider order: `Read`, `Edit`, `Patch`, `Write`.
+
+### 3. Contracts
+
+- One process-local snapshot store is shared by all four adapters for the lifetime of a Node
+  backend instance. Restarting the process clears snapshots; persisted hashes do not silently
+  become current Read authorization.
+- `Edit` and `Patch` require a current full-file Read snapshot. Missing and changed snapshots fail
+  as `missing_read_snapshot` and `stale_read_snapshot` without writing.
+- `Write` may omit `expected_sha256`; when supplied it must match the current existing file or fail
+  as `stale_write_snapshot` without writing.
+- Writable targets are resolved against the real workspace root. Traversal, absolute outside
+  paths, and existing or parent symlink escapes fail as `workspace_escape` before mutation.
+- Workspace-local mutations auto-allow in M4. Interactive approval request/resume and external
+  writable roots are deferred; an escape is denied rather than paused for approval.
+- Existing binary-looking files, directories, invalid UTF-8, files or submitted UTF-8 content over
+  1,000,000 bytes, and secret-like submitted content fail closed with stable error kinds.
+- Writes use a temporary sibling, flush it, preserve an existing target mode, revalidate the path
+  and baseline, then rename. Failure or interruption removes the temporary sibling.
+- Model-visible mutation output is at most 8,000 characters and contains a compact receipt or a
+  stable corrective error. It never contains submitted content, hashes, or an absolute path.
+- Mutation metadata paths are relative and at most 240 characters. Unified diffs are at most
+  200,000 characters and 5,000 lines; full added/removed counts may describe omitted lines.
+- Storage derives at most one Python-compatible `file_changes` row from allowlisted flat metadata.
+  Raw arrays, nested metadata, content, hashes, absolute/traversal paths, oversized diffs, and
+  unknown statuses are ignored. Provider replay keeps the compact receipt, not the diff.
+- Gateway `tool.complete`, `tool.failed`, and mirrored `turn.event` payloads expose only bounded
+  lifecycle fields plus allowlisted `path`, `status`, `matches`, `file_changes`, and `error_kind`.
+
+### 4. Validation & Error Matrix
+
+- Current Read plus unique Edit/Patch match -> one atomic update and `edited`/`patched` status.
+- Missing/stale Read, stale Write hash, repeated match without `replace_all`, missing string, or
+  identical replacement -> stable failure and unchanged bytes.
+- Traversal/symlink escape, binary, directory, invalid encoding, size, or secret failure -> stable
+  failure and unchanged bytes.
+- Successful create/overwrite -> `add`/`update` file-change kind, bounded diff, compact receipt,
+  durable call/result order, and no Python process.
+
+### 5. Required Parity Cases
+
+- Inventory and parameter order for all four tools; continued absence of `LS`, `Glob`, and `Grep`.
+- Write create, overwrite, unchanged, stale hash, binary, directory, invalid UTF-8, oversized
+  content, secret-like content, traversal, and symlink escape.
+- Edit success, missing/stale Read, oversized file, missing string, identical strings, and Patch
+  success/repeated match.
+- Compact receipts, statuses, error kinds, match counts, file-change kinds/counts, final file
+  contents, and preservation after every failure.
+- Python reads Node mutation transcripts and Node reads Python mutation transcripts, including call
+  id, tool name, receipt, success/error kind, and bounded `file_changes` metadata.
