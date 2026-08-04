@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "sessions": [
+    {
+      "session_id": "parity-completed",
+      "workspace_root": "/workspace",
+      "thread_id": "thread-completed",
+      "client_turn_id": "client-completed",
+      "turn_id": "turn-completed",
+      "request_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "started_at": "2026-08-04T00:00:00.000Z",
+      "completed_at": "2026-08-04T00:00:01.000Z",
+      "user_text": "检查 café.txt",
+      "assistant_text": "完成。",
+      "response_id": "resp-stable",
+      "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+      "status": "completed",
+      "error_code": null,
+      "stop_reason": "assistant_completed"
+    },
+    {
+      "session_id": "parity-interrupted",
+      "workspace_root": "/workspace",
+      "thread_id": "thread-interrupted",
+      "client_turn_id": "client-interrupted",
+      "turn_id": "turn-interrupted",
+      "request_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "started_at": "2026-08-04T00:01:00.000Z",
+      "completed_at": "2026-08-04T00:01:01.000Z",
+      "user_text": "wait",
+      "assistant_text": null,
+      "response_id": null,
+      "usage": {},
+      "status": "interrupted",
+      "error_code": "interrupted",
+      "stop_reason": "interrupted"
+    }
+  ]
+}

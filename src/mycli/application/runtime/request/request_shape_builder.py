@@ -490,12 +490,15 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderMessageShape, ...]:
-        messages: list[ProviderMessageShape] = [
-            ProviderMessageShape(
-                role="system",
-                content=self._transcript_stable_system_content(contract),
-            ),
-        ]
+        stable_system = self._transcript_stable_system_content(contract)
+        messages: list[ProviderMessageShape] = []
+        if stable_system:
+            messages.append(
+                ProviderMessageShape(
+                    role="system",
+                    content=stable_system,
+                )
+            )
         dynamic_context = self._transcript_dynamic_context(contract)
         if dynamic_context:
             messages.append(
@@ -803,17 +806,15 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
-        items: list[ProviderRuntimeItemShape] = [
-            ProviderRuntimeItemShape(
-                role="system",
-                blocks=(
-                    RuntimeBlock(
-                        type="text",
-                        text=self._transcript_stable_system_content(contract),
-                    ),
-                ),
+        stable_system = self._transcript_stable_system_content(contract)
+        items: list[ProviderRuntimeItemShape] = []
+        if stable_system:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="system",
+                    blocks=(RuntimeBlock(type="text", text=stable_system),),
+                )
             )
-        ]
         dynamic_context = self._transcript_dynamic_context(contract)
         if dynamic_context:
             items.append(

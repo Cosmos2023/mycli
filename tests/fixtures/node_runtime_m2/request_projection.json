@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "responses_unicode_reasoning",
+      "input": {
+        "config": {
+          "provider": "openai",
+          "protocol": "responses",
+          "model": "gpt-test",
+          "reasoningEffort": "medium"
+        },
+        "instructions": "You are mycli.",
+        "history": [
+          {"role": "user", "content": "检查 README"},
+          {"role": "assistant", "content": "已检查。"}
+        ],
+        "userText": "Summarize café.txt"
+      },
+      "expected": {
+        "provider": "openai",
+        "protocol": "responses",
+        "model": "gpt-test",
+        "reasoningEffort": "medium",
+        "instructions": "You are mycli.",
+        "messages": [
+          {"role": "user", "content": "检查 README"},
+          {"role": "assistant", "content": "已检查。"},
+          {"role": "user", "content": "Summarize café.txt"}
+        ],
+        "tools": []
+      }
+    },
+    {
+      "name": "chat_empty_optional_values",
+      "input": {
+        "config": {
+          "provider": "compatible",
+          "protocol": "chat_completions",
+          "model": "chat-test",
+          "reasoningEffort": "none"
+        },
+        "instructions": "",
+        "history": [],
+        "userText": "hello"
+      },
+      "expected": {
+        "provider": "compatible",
+        "protocol": "chat_completions",
+        "model": "chat-test",
+        "reasoningEffort": "none",
+        "instructions": "",
+        "messages": [
+          {"role": "user", "content": "hello"}
+        ],
+        "tools": []
+      }
+    },
+    {
+      "name": "chat_nonempty_instructions",
+      "input": {
+        "config": {
+          "provider": "compatible",
+          "protocol": "chat_completions",
+          "model": "chat-test",
+          "reasoningEffort": "high"
+        },
+        "instructions": "You are chat mycli.",
+        "history": [
+          {"role": "assistant", "content": "Ready."}
+        ],
+        "userText": "continue"
+      },
+      "expected": {
+        "provider": "compatible",
+        "protocol": "chat_completions",
+        "model": "chat-test",
+        "reasoningEffort": "high",
+        "instructions": "You are chat mycli.",
+        "messages": [
+          {"role": "assistant", "content": "Ready."},
+          {"role": "user", "content": "continue"}
+        ],
+        "tools": []
+      }
+    }
+  ]
+}

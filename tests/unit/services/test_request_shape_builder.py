@@ -260,6 +260,30 @@ def test_request_shape_builder_keeps_chat_completions_prompt_as_system_message(
     assert shape.provider_messages[0].content == "Stable system rules."
 
 
+def test_request_shape_builder_omits_empty_chat_system_projection(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="compatible",
+            protocol="chat_completions",
+            model="chat-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="",
+            current_user_request="hello",
+        ),
+        tools=(),
+    )
+
+    assert shape.stable_system == ""
+    assert [(message.role, message.content) for message in shape.provider_messages] == [
+        ("user", "hello"),
+    ]
+    assert [item.role for item in shape.provider_runtime_items] == ["user"]
+
+
 def test_request_shape_builder_keeps_anthropic_prompt_as_system_runtime_item(
     tmp_path: Path,
 ) -> None:

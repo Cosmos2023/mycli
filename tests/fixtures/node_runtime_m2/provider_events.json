@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "responses_reasoning_unicode",
+      "protocol": "responses",
+      "raw": [
+        {"type": "response.reasoning_summary_text.delta", "delta": "检查中"},
+        {"type": "response.output_text.delta", "delta": "完成 café"},
+        {"type": "response.completed", "response": {"id": "resp-stable", "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}}}
+      ],
+      "expected": [
+        {"type": "reasoning_delta", "text": "检查中"},
+        {"type": "text_delta", "text": "完成 café"},
+        {"type": "usage", "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}},
+        {"type": "completed", "responseId": "resp-stable"}
+      ]
+    },
+    {
+      "name": "chat_reasoning_and_finish",
+      "protocol": "chat_completions",
+      "raw": [
+        {"choices": [{"delta": {"reasoning_content": "thinking"}, "finish_reason": null}]},
+        {"choices": [{"delta": {"content": "done"}, "finish_reason": null}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}, "id": "chat-stable"}
+      ],
+      "expected": [
+        {"type": "reasoning_delta", "text": "thinking"},
+        {"type": "text_delta", "text": "done"},
+        {"type": "usage", "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4}},
+        {"type": "completed", "responseId": "chat-stable"}
+      ]
+    },
+    {
+      "name": "responses_empty_optional_completion",
+      "protocol": "responses",
+      "raw": [
+        {"type": "response.completed", "response": {}}
+      ],
+      "expected": [
+        {"type": "completed"}
+      ]
+    },
+    {
+      "name": "chat_empty_optional_completion",
+      "protocol": "chat_completions",
+      "raw": [
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+      ],
+      "expected": [
+        {"type": "completed"}
+      ]
+    }
+  ]
+}
