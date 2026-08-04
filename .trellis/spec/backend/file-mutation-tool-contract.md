@@ -122,7 +122,17 @@ Required tests for mutation tool changes:
 - Successful create/overwrite -> `add`/`update` file-change kind, bounded diff, compact receipt,
   durable call/result order, and no Python process.
 
-### 5. Required Parity Cases
+### 5. Good/Base/Bad Cases
+
+- Good: One shared snapshot store records a successful Read, Edit consumes that snapshot, the
+  atomic replacement succeeds, and storage/gateway expose the same bounded file-change row.
+- Base: Write creates a workspace-local UTF-8 file without a prior Read and returns an add receipt.
+- Bad: Each adapter owns a separate snapshot store; provider-visible Read succeeds but the next
+  Edit always reports `missing_read_snapshot`.
+- Bad: Persist raw mutation metadata directly; submitted content, hashes, nested objects, or an
+  oversized diff can then leak through history or gateway events.
+
+### 6. Tests Required
 
 - Inventory and parameter order for all four tools; continued absence of `LS`, `Glob`, and `Grep`.
 - Write create, overwrite, unchanged, stale hash, binary, directory, invalid UTF-8, oversized
@@ -133,3 +143,35 @@ Required tests for mutation tool changes:
   contents, and preservation after every failure.
 - Python reads Node mutation transcripts and Node reads Python mutation transcripts, including call
   id, tool name, receipt, success/error kind, and bounded `file_changes` metadata.
+- Responses integration asserts Read/Edit continuation, same-turn recovery after a missing Read,
+  durable item order, and `python_started=false`.
+- Chat integration asserts Write execution and matching ordered `tool_call_id` replay.
+- Storage and gateway tests inject content, hashes, nested fields, malformed file-change arrays,
+  oversized paths, and oversized diffs, then assert those values are absent from safe projections.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```typescript
+const read = new ReadTool({ workspaceRoot });
+const edit = new EditTool(new FileMutationRuntime({
+  workspaceRoot,
+  snapshots: new FileSnapshotStore(),
+}));
+store.appendToolResult({ ...input, metadata: rawProviderOrToolMetadata });
+```
+
+Correct:
+
+```typescript
+const snapshots = new FileSnapshotStore();
+const mutations = new FileMutationRuntime({ workspaceRoot, snapshots });
+const adapters = [
+  new ReadTool({ workspaceRoot, snapshots }),
+  new EditTool(mutations),
+  new PatchTool(mutations),
+  new WriteTool({ runtime: mutations }),
+];
+const safe = projectMutationMetadata(result.metadata, result.success);
+```
