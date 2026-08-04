@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -10,49 +10,41 @@ import { resolveConfig } from "@mycli/config";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import { NodeTurnRuntime } from "@mycli/runtime";
 import { SQLiteSessionStore } from "@mycli/storage";
+import {
+	builtinToolManifest,
+	planToolExposure,
+	ReadTool,
+	ToolRouter,
+} from "@mycli/tools";
 
 const MAX_OUTPUT_TOKENS = 64;
 const TIMEOUT_MS = 45_000;
 const SKIP_EXIT_CODE = 77;
 const PROTOCOLS = new Set(["responses", "chat_completions"]);
 
-const HELP = `Usage: node scripts/smoke_node_m2.mjs --protocol <protocol> [--dry-run]
-
-Options:
-  --protocol <protocol>  responses or chat_completions
-  --dry-run              Validate configuration without calling a provider
-  -h, --help             Show help
-`;
-
 async function main() {
 	let values;
 	try {
 		({ values } = parseArgs({
 			options: {
-				protocol: { type: "string" },
+				protocol: { type: "string", default: "responses" },
 				"dry-run": { type: "boolean", default: false },
-				help: { type: "boolean", short: "h", default: false },
 			},
 			strict: true,
 			allowPositionals: false,
 		}));
 	} catch {
-		process.stderr.write("smoke_usage_error: use --protocol responses|chat_completions\n");
+		writeSummary("unknown", "usage_error", 0, 0, false);
 		return 64;
-	}
-	if (values.help) {
-		process.stdout.write(HELP);
-		return 0;
 	}
 	const protocol = values.protocol;
 	if (typeof protocol !== "string" || !PROTOCOLS.has(protocol)) {
-		process.stderr.write("smoke_usage_error: use --protocol responses|chat_completions\n");
+		writeSummary("unknown", "usage_error", 0, 0, false);
 		return 64;
 	}
 
 	const homeDir = process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || homedir();
-	const workspaceRoot = process.cwd();
-	const sessionId = `m2-smoke-${randomUUID()}`;
+	const sessionId = `m3-smoke-${randomUUID()}`;
 	const boundedEnv = {
 		...process.env,
 		MYCLI_PROTOCOL: protocol,
@@ -64,49 +56,36 @@ async function main() {
 	try {
 		config = await resolveConfig({
 			homeDir,
-			workspaceRoot,
+			workspaceRoot: process.cwd(),
 			env: boundedEnv,
 			overrides: { session: sessionId },
 		});
 	} catch {
-		writeSummary({
-			protocol,
-			status: "failed",
-			event_counts: {},
-			persisted: false,
-			credential: "unknown",
-		});
+		writeSummary(protocol, "failed", 0, 0, false);
 		return 1;
 	}
 	if (!config.apiKey) {
-		writeSummary({
-			protocol,
-			status: "skipped",
-			event_counts: {},
-			persisted: false,
-			credential: "missing",
-		});
+		writeSummary(protocol, "skipped", 0, 0, false);
 		return SKIP_EXIT_CODE;
 	}
 	if (values["dry-run"]) {
-		writeSummary({
-			protocol,
-			status: "ready",
-			event_counts: {},
-			persisted: false,
-			credential: "configured",
-		});
+		writeSummary(protocol, "ready", 0, 0, false);
 		return 0;
 	}
 
-	const tempRoot = await mkdtemp(join(tmpdir(), "mycli-node-m2-smoke-"));
+	const tempRoot = await mkdtemp(join(tmpdir(), "mycli-node-m3-smoke-"));
 	const dbPath = join(tempRoot, "sessions.db");
 	let store;
 	try {
+		await writeFile(join(tempRoot, "README.md"), "alpha\nbeta\n", "utf8");
 		store = new SQLiteSessionStore({ dbPath });
+		const exposure = planToolExposure(builtinToolManifest());
+		const readTool = new ReadTool({ workspaceRoot: tempRoot });
+		const toolRouter = new ToolRouter({ adapters: [readTool], exposure });
 		const registry = new OpenAIProviderRegistry();
 		const runtimeConfig = {
 			...config,
+			workspaceRoot: tempRoot,
 			protocol,
 			sessionId,
 			sessionsDbPath: dbPath,
@@ -117,46 +96,42 @@ async function main() {
 		};
 		const runtime = new NodeTurnRuntime({
 			sessionId,
-			workspaceRoot,
+			workspaceRoot: tempRoot,
 			threadId: sessionId,
-			instructions: "You are mycli. Complete this bounded smoke request without tools.",
+			instructions: "Use Read on README.md, then answer with exactly OK.",
 			store,
 			resolveConfig: () => runtimeConfig,
 			createProvider: (resolved) => registry.create(resolved),
 			createTurnId: randomUUID,
 			clock: () => new Date().toISOString(),
 			maxOutputTokens: MAX_OUTPUT_TOKENS,
+			planTools: () => exposure,
+			toolRouter,
 		});
 		const events = [];
 		const clientTurnId = `client-${randomUUID()}`;
 		const result = await runtime.submit({
 			clientTurnId,
-			message: "Reply with exactly OK and no other text.",
+			message: "Read README.md with offset 1 and limit 2, then reply with exactly OK.",
 			reasoningEffort: "none",
 		}, (event) => { events.push(event); }, {
 			signal: AbortSignal.timeout(TIMEOUT_MS),
 		});
-		const stored = store.loadTurn(sessionId, clientTurnId);
-		const conversation = store.loadConversation(sessionId);
-		const persisted = stored?.status === "completed"
-			&& conversation.some((message) => message.role === "assistant" && message.content.length > 0);
-		writeSummary({
+		const itemTypes = store.loadConversationItems(sessionId).map((item) => item.type);
+		const persisted = result.status === "completed"
+			&& itemTypes.includes("assistant_tool_calls")
+			&& itemTypes.includes("tool_result")
+			&& itemTypes.at(-1) === "assistant";
+		writeSummary(
 			protocol,
-			status: result.status,
-			event_counts: eventCounts(events),
+			result.status,
+			countEvents(events, "tool_execution_started"),
+			countEvents(events, "tool_execution_completed"),
 			persisted,
-			credential: "configured",
-			...(result.error_code ? { error_code: result.error_code } : {}),
-		});
+		);
 		return result.status === "completed" && persisted ? 0 : 1;
 	} catch {
-		writeSummary({
-			protocol,
-			status: "failed",
-			event_counts: {},
-			persisted: false,
-			credential: "configured",
-		});
+		writeSummary(protocol, "failed", 0, 0, false);
 		return 1;
 	} finally {
 		store?.close();
@@ -164,20 +139,19 @@ async function main() {
 	}
 }
 
-function eventCounts(events) {
-	const counts = {};
-	for (const event of events) {
-		let key;
-		if (event.type === "reasoning_delta") key = "reasoning_delta";
-		if (event.type === "text_delta") key = "text_delta";
-		if (event.type === "turn_completed") key = "completed";
-		if (key) counts[key] = (counts[key] ?? 0) + 1;
-	}
-	return counts;
+function countEvents(events, type) {
+	return events.filter((event) => event.type === type).length;
 }
 
-function writeSummary(summary) {
-	process.stdout.write(`${JSON.stringify(summary)}\n`);
+function writeSummary(protocol, status, toolStart, toolComplete, persisted) {
+	process.stdout.write(`${JSON.stringify({
+		protocol,
+		status,
+		tool_start: toolStart,
+		tool_complete: toolComplete,
+		persisted,
+		python_started: false,
+	})}\n`);
 }
 
 process.exitCode = await main();

@@ -4,7 +4,7 @@ import test from "node:test";
 import { parseGatewayEvent, parseJsonRpcMessage } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import { fingerprintSubmission, type RuntimeEvent } from "@mycli/core";
-import type { NoToolSubmission } from "@mycli/runtime";
+import type { TurnSubmission } from "@mycli/runtime";
 import { createNodeGateway } from "../src/node-runtime/node-gateway.ts";
 
 type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
@@ -12,7 +12,7 @@ type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
 function gatewayHarness(options: {
 	conversation?: readonly { role: "user" | "assistant"; content: string }[];
 	existingTurn?: RuntimeTurnRecord;
-	reserve?: (submission: NoToolSubmission) => {
+	reserve?: (submission: TurnSubmission) => {
 		readonly kind: "reserved" | "existing";
 		readonly turn: RuntimeTurnRecord;
 	};
@@ -23,9 +23,9 @@ function gatewayHarness(options: {
 	let runtimeSettled = false;
 	let releaseTurn!: () => void;
 	const turnReleased = new Promise<void>((resolve) => { releaseTurn = resolve; });
-	const submissions: NoToolSubmission[] = [];
+	const submissions: TurnSubmission[] = [];
 	const runtime = {
-		reserve: options.reserve ?? ((submission: NoToolSubmission) => {
+		reserve: options.reserve ?? ((submission: TurnSubmission) => {
 			const fingerprint = fingerprintSubmission({
 				message: submission.message,
 				localImages: submission.localImages,
@@ -41,7 +41,7 @@ function gatewayHarness(options: {
 				turn: turnRecord(submission, "in_progress"),
 			};
 		}),
-		submit: async (submission: NoToolSubmission, emit: (event: RuntimeEvent) => void, options: { signal: AbortSignal }) => {
+		submit: async (submission: TurnSubmission, emit: (event: RuntimeEvent) => void, options: { signal: AbortSignal }) => {
 			submissions.push(submission);
 			emitRuntime = emit;
 			signal = options.signal;
@@ -55,6 +55,7 @@ function gatewayHarness(options: {
 		workspaceRoot: "/repo",
 		provider: "openai",
 		model: "gpt-test",
+		toolNames: ["Read"],
 		runtime,
 		loadConversation: () => options.conversation ?? [],
 		close: () => { closeCalls += 1; },
@@ -110,6 +111,13 @@ test("node gateway boots the real TUI startup sequence", async () => {
 				{ id: "session-node:message:2", type: "assistant_final", text: "answer", folded: false, metadata: {} },
 			]);
 		}
+		if (method === "extension.manifest" && "result" in response) {
+			assert.deepEqual(response.result.capabilities, {
+				no_tool_turns: true,
+				tools: true,
+				tool_names: ["Read"],
+			});
+		}
 	}
 	await harness.gateway.close();
 });
@@ -158,6 +166,83 @@ test("turn submission responds immediately and emits validated direct events bef
 	await harness.gateway.close();
 });
 
+test("projects bounded tool lifecycle events without file contents or arguments", async () => {
+	const harness = gatewayHarness();
+	const fileContents = "private file contents";
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "read README",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	harness.emit({
+		type: "tool_execution_started",
+		callId: "call-1",
+		toolName: "Read",
+	});
+	harness.emit({
+		type: "tool_execution_completed",
+		callId: "call-1",
+		toolName: "Read",
+		summary: "Read README.md",
+		durationMs: 125,
+		metadata: {
+			path: "README.md",
+			actualStartLine: 1,
+			actualEndLine: 2,
+			truncated: false,
+			content: fileContents,
+		},
+	});
+	harness.emit({
+		type: "tool_execution_failed",
+		callId: "call-2",
+		toolName: "Read",
+		summary: "Failed to read missing.txt",
+		durationMs: 5,
+		errorKind: "not_found",
+		metadata: {
+			path: "missing.txt",
+			argumentsJson: "{\"file_path\":\"private\"}",
+		},
+	});
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+	const direct = harness.messages.filter((message) =>
+		"method" in message
+		&& !("id" in message)
+		&& ["tool.start", "tool.complete", "tool.failed"].includes(message.method),
+	);
+	assert.deepEqual(direct.map((message) => "method" in message ? message.method : ""), [
+		"tool.start",
+		"tool.complete",
+		"tool.failed",
+	]);
+	assert.deepEqual(direct.map((message) => "method" in message ? message.params.tool_id : ""), [
+		"call-1",
+		"call-1",
+		"call-2",
+	]);
+	for (const message of direct) parseGatewayEvent(message);
+	const turnEvents = harness.messages.filter((message) =>
+		"method" in message && !("id" in message) && message.method === "turn.event",
+	);
+	assert.deepEqual(turnEvents.map((message) => message.params.kind), [
+		"tool_start",
+		"tool_complete",
+		"tool_failed",
+	]);
+	assert.equal(turnEvents[0]?.params.tool_name, "Read");
+	assert.equal(turnEvents[0]?.params.metadata.call_id, "call-1");
+	const serialized = JSON.stringify([...direct, ...turnEvents]);
+	assert.equal(serialized.includes(fileContents), false);
+	assert.equal(serialized.includes("argumentsJson"), false);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
 test("turn submission rejects a conflicting client turn id before accepting it", async () => {
 	const harness = gatewayHarness({
 		existingTurn: {
@@ -191,7 +276,7 @@ test("turn submission rejects a conflicting client turn id before accepting it",
 
 test("two gateways atomically reject a conflicting concurrent client turn id", async () => {
 	let reserved: RuntimeTurnRecord | undefined;
-	const reserve = (submission: NoToolSubmission) => {
+	const reserve = (submission: TurnSubmission) => {
 		const fingerprint = fingerprintSubmission({
 			message: submission.message,
 			localImages: submission.localImages,
@@ -311,7 +396,7 @@ async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 1_000):
 }
 
 function turnRecord(
-	submission: NoToolSubmission,
+	submission: TurnSubmission,
 	status: "in_progress" | "completed" | "interrupted",
 ): RuntimeTurnRecord {
 	return {

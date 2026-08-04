@@ -12,8 +12,8 @@ import {
 	type RuntimeEvent,
 } from "@mycli/core";
 import type {
-	NoToolSubmission,
 	SubmitTurnOptions,
+	TurnSubmission,
 } from "@mycli/runtime";
 import type { TurnReservation } from "@mycli/storage";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
@@ -22,9 +22,9 @@ type JsonObject = Record<string, unknown>;
 type RpcId = string | number | null;
 
 export interface NodeGatewayRuntime {
-	reserve(submission: NoToolSubmission): TurnReservation;
+	reserve(submission: TurnSubmission): TurnReservation;
 	submit(
-		submission: NoToolSubmission,
+		submission: TurnSubmission,
 		emit: (event: RuntimeEvent) => void,
 		options: SubmitTurnOptions,
 	): Promise<RuntimeTurnRecord>;
@@ -35,6 +35,7 @@ export interface CreateNodeGatewayOptions {
 	readonly workspaceRoot: string;
 	readonly provider: string;
 	readonly model: string;
+	readonly toolNames?: readonly string[];
 	readonly maxPromptTokens?: number;
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
@@ -166,7 +167,7 @@ class InProcessNodeGateway implements NodeGateway {
 			case "status.get":
 				return this.#status();
 			case "extension.manifest":
-				return extensionManifest();
+				return extensionManifest(this.#options.toolNames ?? []);
 			case "session.bootstrap":
 				return this.#bootstrap(request.params);
 			case "transcript.load":
@@ -243,7 +244,7 @@ class InProcessNodeGateway implements NodeGateway {
 			"client_user_message_id",
 		);
 		const localImages = stringArray(params.local_images, "local_images");
-		const submission: NoToolSubmission = {
+		const submission: TurnSubmission = {
 			clientTurnId,
 			turnId: this.#options.createTurnId?.()
 				?? `turn_${randomUUID().replaceAll("-", "")}`,
@@ -275,7 +276,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	async #runTurn(
 		active: ActiveTurn,
-		submission: NoToolSubmission,
+		submission: TurnSubmission,
 		reservation: TurnReservation,
 	): Promise<void> {
 		try {
@@ -353,6 +354,29 @@ class InProcessNodeGateway implements NodeGateway {
 					...(event.responseId ? { response_id: event.responseId } : {}),
 				});
 				break;
+			case "tool_call_accepted":
+				break;
+			case "tool_execution_started": {
+				const callId = boundedString(event.callId, 256);
+				const toolName = boundedString(event.toolName, 128) || "Tool";
+				this.#emitRuntime("tool.start", {
+					client_turn_id: active.clientTurnId,
+					tool_id: toolLifecycleId(callId, toolName),
+					call_id: callId,
+					name: toolName,
+					context: `Executing ${toolName}`,
+				});
+				this.#emitTurnEvent(active, "tool_execution", "tool_start", "", {
+					call_id: callId,
+				}, toolName);
+				break;
+			}
+			case "tool_execution_completed":
+				this.#emitToolFinished(active, event, true);
+				break;
+			case "tool_execution_failed":
+				this.#emitToolFinished(active, event, false);
+				break;
 			case "turn_completed":
 				active.terminalEmitted = true;
 				if (active.controller.signal.aborted) {
@@ -375,6 +399,56 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#emitInterrupted(active);
 				break;
 		}
+	}
+
+	#emitToolFinished(
+		active: ActiveTurn,
+		event: Extract<RuntimeEvent, {
+			readonly type: "tool_execution_completed" | "tool_execution_failed";
+		}>,
+		success: boolean,
+	): void {
+		const callId = boundedString(event.callId, 256);
+		const toolName = boundedString(event.toolName, 128) || "Tool";
+		const summary = boundedString(event.summary, 512);
+		const errorKind = event.type === "tool_execution_failed"
+			? boundedString(event.errorKind ?? "", 128)
+			: "";
+		const durationMs = boundedDurationMs(event.durationMs);
+		const durationSeconds = durationMs / 1000;
+		const method = success ? "tool.complete" : "tool.failed";
+		this.#emitRuntime(method, {
+			client_turn_id: active.clientTurnId,
+			tool_id: toolLifecycleId(callId, toolName),
+			call_id: callId,
+			name: toolName,
+			duration_s: durationSeconds,
+			summary,
+			summary_chars: summary.length,
+			summary_truncated: false,
+			success,
+			...(errorKind
+				? {
+					error: errorKind,
+					error_chars: errorKind.length,
+					error_truncated: false,
+				}
+				: {}),
+		});
+		this.#emitTurnEvent(
+			active,
+			"tool_execution",
+			success ? "tool_complete" : "tool_failed",
+			summary,
+			{
+				call_id: callId,
+				duration_ms: durationMs,
+				success,
+				...safeToolMetadata(event.metadata),
+				...(errorKind ? { error_kind: errorKind } : {}),
+			},
+			toolName,
+		);
 	}
 
 	#projectStoredTerminal(active: ActiveTurn, record: RuntimeTurnRecord): void {
@@ -477,13 +551,14 @@ class InProcessNodeGateway implements NodeGateway {
 		kind: string,
 		text: string,
 		metadata: JsonObject = {},
+		toolName: string | null = null,
 	): void {
 		this.#emitRuntime("turn.event", {
 			client_turn_id: active.clientTurnId,
 			phase,
 			kind,
 			text,
-			tool_name: null,
+			tool_name: toolName,
 			metadata,
 		});
 	}
@@ -543,13 +618,17 @@ function gatewayFailure(error: unknown): GatewayFailure {
 	return new GatewayFailure("internal_error", "Gateway request failed.");
 }
 
-function extensionManifest(): JsonObject {
+function extensionManifest(toolNames: readonly string[]): JsonObject {
 	return {
 		schema_version: 1,
 		agent: { name: "mycli", version: "0.1.0", runtime: "node" },
 		rpc_methods: gatewayContractCatalog.rpcMethods.map((name) => ({ name })),
 		event_streams: gatewayContractCatalog.eventStreams.map((name) => ({ name })),
-		capabilities: { no_tool_turns: true, tools: false },
+		capabilities: {
+			no_tool_turns: true,
+			tools: toolNames.length > 0,
+			tool_names: toolNames,
+		},
 	};
 }
 
@@ -607,4 +686,61 @@ function numberRecord(value: JsonObject): Readonly<Record<string, number>> {
 	return Object.fromEntries(
 		Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
 	);
+}
+
+const SAFE_TOOL_METADATA_KEYS = new Set([
+	"actualEndLine",
+	"actualStartLine",
+	"columns",
+	"dedup",
+	"effectiveLimit",
+	"limitClamped",
+	"nextOffset",
+	"offset",
+	"requestedLimit",
+	"rows",
+	"shownLines",
+	"totalLines",
+	"truncated",
+]);
+
+function safeToolMetadata(metadata: Readonly<Record<string, unknown>>): JsonObject {
+	const safe: JsonObject = {};
+	for (const [key, value] of Object.entries(metadata)) {
+		if (key === "path" && typeof value === "string") {
+			const path = safeWorkspacePath(value);
+			if (path) safe.path = path;
+			continue;
+		}
+		if (!SAFE_TOOL_METADATA_KEYS.has(key)) continue;
+		if (typeof value === "boolean") safe[key] = value;
+		if (typeof value === "number" && Number.isFinite(value)) safe[key] = value;
+	}
+	return safe;
+}
+
+function safeWorkspacePath(value: string): string | undefined {
+	const bounded = boundedString(value, 240);
+	if (
+		!bounded
+		|| bounded.startsWith("/")
+		|| /^[A-Za-z]:[\\/]/u.test(bounded)
+		|| bounded.split(/[\\/]/u).includes("..")
+	) {
+		return undefined;
+	}
+	return bounded;
+}
+
+function toolLifecycleId(callId: string, toolName: string): string {
+	return callId || `builtin:${toolName}`.slice(0, 256);
+}
+
+function boundedDurationMs(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(86_400_000, Math.max(0, Math.round(value)));
+}
+
+function boundedString(value: string, limit: number): string {
+	return value.slice(0, limit);
 }

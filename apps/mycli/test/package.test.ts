@@ -71,6 +71,27 @@ test("TUI production exports target compiled JavaScript and declarations", () =>
 	assertRuntimeMetadataUsesDist(manifest);
 });
 
+test("packed CLI smoke includes every local app and runtime dependency", () => {
+	const app = readManifest(packages[0].root);
+	const runtime = readManifest(new URL("../../../packages/runtime/", import.meta.url));
+	const smoke = readFileSync(
+		new URL("../../../scripts/smoke_packed_cli.mjs", import.meta.url),
+		"utf8",
+	);
+	const localDependencies = new Set([
+		...Object.keys(app.dependencies ?? {}),
+		...Object.keys(runtime.dependencies ?? {}),
+	].filter((name) => name.startsWith("@mycli/") || name === "mycli-shell-tui"));
+
+	for (const dependency of localDependencies) {
+		assert.equal(
+			smoke.includes(`"${dependency}"`),
+			true,
+			`pack smoke is missing ${dependency}`,
+		);
+	}
+});
+
 function readManifest(root: URL): PackageManifest {
 	return JSON.parse(readFileSync(new URL("package.json", root), "utf8")) as PackageManifest;
 }

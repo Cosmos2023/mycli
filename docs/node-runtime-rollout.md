@@ -1,10 +1,10 @@
-# Node Runtime M2 Rollout
+# Node Runtime M3 Rollout
 
 ## Current Status
 
-The Node runtime is an explicit preview backend for text-only, no-tool turns. The default remains
-`python-sidecar`. Do not promote Node to the default until both provider live smokes and the
-Node 22.19 macOS, Linux, and Windows matrix pass for the release candidate.
+The Node runtime is an explicit preview backend for text turns and the built-in `Read` tool. The
+default remains `python-sidecar`. Do not promote Node to the default until the M3 live smoke and
+the Node 22.19 macOS, Linux, and Windows matrix pass for the release candidate.
 
 Select the preview backend for a new turn:
 
@@ -15,7 +15,7 @@ mycli --runtime-backend=node
 Use `--model <name>` and `--session <id>` with the same precedence and session semantics as the
 existing CLI. The selected backend owns the complete turn before provider IO begins.
 
-## Supported M2 Scope
+## Supported M3 Scope
 
 - OpenAI Responses and OpenAI-compatible Chat Completions
 - streamed text and reasoning events
@@ -23,10 +23,16 @@ existing CLI. The selected backend owns the complete turn before provider IO beg
 - append-compatible SQLite conversation, history, rollout, and idempotency records
 - duplicate `client_turn_id` protection
 - startup recovery for orphaned running turns
+- one Node-native `Read` tool for bounded UTF-8 text and CSV/TSV files
+- workspace confinement with traversal and symlink escape protection
+- Responses and Chat Completions tool continuation
+- ordered, durable assistant tool calls and tool results
+- bounded `tool.start`, `tool.complete`, `tool.failed`, and `turn.event` projection
 
-M2 does not support tools, approvals, local images, shell execution, MCP, plugins, hooks,
-subagents, compaction, memory, queues, or steering in the Node backend. A provider tool call or
-local image fails with `unsupported_capability`; it is never delegated to Python.
+`LS`, `Glob`, and `Grep` are retired and are neither advertised nor implemented by the Node
+backend. M3 does not support mutation tools, approvals, local images, shell execution, MCP,
+plugins, hooks, subagents, compaction, memory, queues, or steering. An unsupported capability
+fails explicitly and is never delegated to Python.
 
 ## Failure And Rollback
 
@@ -39,33 +45,32 @@ Rollback is operator-controlled and applies before a later turn:
 mycli --runtime-backend=python-sidecar --session <id>
 ```
 
-Both backends read the shared SQLite schema. Sessions written by the M2 Node slice remain readable
+Both backends read the shared SQLite schema. Sessions written by the M3 Node slice remain readable
 by Python, and Node reopening a database preserves Python-compatible records.
 
 ## Verification
 
-Run the deterministic M2 gate after a clean build:
+Run the deterministic M3 gate after a clean build:
 
 ```bash
-npm run test:m2
+npm run test:m3
 npm run smoke:package
 ```
 
-Live smoke is opt-in and uses existing config/auth without printing credentials, endpoint data,
-prompt text, or response text:
+Live M3 smoke is opt-in and uses a disposable workspace. It prints only protocol, terminal status,
+tool lifecycle counts, persistence state, and `python_started=false`:
 
 ```bash
-node scripts/smoke_node_m2.mjs --protocol responses --dry-run
-node scripts/smoke_node_m2.mjs --protocol chat_completions --dry-run
-node scripts/smoke_node_m2.mjs --protocol responses
-node scripts/smoke_node_m2.mjs --protocol chat_completions
+node scripts/smoke_node_m3_read.mjs --protocol responses --dry-run
+node scripts/smoke_node_m3_read.mjs --protocol responses
 ```
 
-The runner uses a temporary session database, no tools, zero retries, a 64-token output cap, and a
-45-second deadline. Missing credentials exit with code `77`. CI runs deterministic M2 and packed
-CLI smokes on Node 22.19 across macOS, Linux, and Windows. Live requests run only after the matrix
-passes on a `main` branch push, through the protected `node-m2-live` GitHub Environment, when its
-secret is configured.
+The runner uses a temporary session database, one small public file, zero retries, a 64-token
+output cap, and a 45-second deadline. Missing credentials exit with code `77`. CI runs deterministic
+M3 and packed CLI smokes on Node 22.19 across macOS, Linux, and Windows. Live requests run only
+after the matrix passes on a `main` branch push, through a protected live-test environment when
+its secret is configured.
 
-See `docs/superpowers/reports/2026-08-03-node-runtime-m2-no-tool-turn-smoke.md` for the current
-evidence and unresolved live-provider gate.
+The current configured provider account has no usable billing credit, so the M3 live request is
+recorded as `not_run=provider_billing_unavailable`. Offline gates remain authoritative until a
+usable account is configured; do not repeatedly retry the billed endpoint.

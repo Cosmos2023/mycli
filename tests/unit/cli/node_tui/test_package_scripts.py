@@ -33,6 +33,7 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
             "npm run build --workspace @mycli/contracts && "
             "npm run build --workspace @mycli/core && "
             "npm run build --workspace @mycli/config && "
+            "npm run build --workspace @mycli/tools && "
             "npm run build --workspace @mycli/providers && "
             "npm run build --workspace @mycli/storage && "
             "npm run build --workspace @mycli/runtime && "
@@ -46,12 +47,18 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         "mycli": "node --import tsx apps/mycli/src/cli.ts",
         "pretest": "npm run build",
         "smoke:package": "node scripts/smoke_packed_cli.mjs",
+        "smoke:m3": "node scripts/smoke_node_m3_read.mjs --protocol responses",
         "test": "npm run test --workspaces --if-present",
         "test:m2": (
             "npm run build && node --import tsx --test "
             "apps/mycli/test/node-backend.integration.test.ts "
             "apps/mycli/test/m2-smoke-runner.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m2_parity.py -q"
+        ),
+        "test:m3": (
+            "npm run build && node --import tsx --test "
+            "apps/mycli/test/m3-read-turn.integration.test.ts && "
+            "uv run pytest tests/integration/test_node_runtime_m3_parity.py -q"
         ),
         "typecheck": "npm run typecheck --workspaces --if-present",
     }

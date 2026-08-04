@@ -12,6 +12,7 @@ const WORKSPACES = [
 	"@mycli/contracts",
 	"@mycli/core",
 	"@mycli/config",
+	"@mycli/tools",
 	"@mycli/providers",
 	"@mycli/storage",
 	"@mycli/runtime",

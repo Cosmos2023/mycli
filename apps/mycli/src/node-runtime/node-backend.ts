@@ -2,8 +2,14 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolveConfig } from "@mycli/config";
 import { OpenAIProviderRegistry } from "@mycli/providers";
-import { NoToolRuntime } from "@mycli/runtime";
+import { NodeTurnRuntime } from "@mycli/runtime";
 import { SQLiteSessionStore } from "@mycli/storage";
+import {
+	builtinToolManifest,
+	planToolExposure,
+	ReadTool,
+	ToolRouter,
+} from "@mycli/tools";
 import {
 	createNodeGateway,
 	type NodeGateway,
@@ -28,7 +34,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	});
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
 	const registry = new OpenAIProviderRegistry();
-	const runtime = new NoToolRuntime({
+	const readTool = new ReadTool({ workspaceRoot: config.workspaceRoot });
+	const toolExposure = planToolExposure(builtinToolManifest());
+	const toolRouter = new ToolRouter({ adapters: [readTool], exposure: toolExposure });
+	const runtime = new NodeTurnRuntime({
 		sessionId: config.sessionId,
 		workspaceRoot: config.workspaceRoot,
 		threadId: config.sessionId,
@@ -46,6 +55,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		createProvider: (resolved) => registry.create(resolved),
 		createTurnId: randomUUID,
 		clock: () => new Date().toISOString(),
+		planTools: () => toolExposure,
+		toolRouter,
 	});
 	try {
 		return createNodeGateway({
@@ -53,6 +64,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot: config.workspaceRoot,
 			provider: config.provider,
 			model: config.model,
+			toolNames: toolExposure.map((tool) => tool.name),
 			maxPromptTokens: config.maxPromptTokens,
 			runtime,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
