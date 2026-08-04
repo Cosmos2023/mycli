@@ -1,4 +1,18 @@
 export { TurnTransitionError } from "./errors.ts";
+export {
+	ApprovalConflictError,
+	createWaitingApproval,
+	transitionApproval,
+} from "./approval-continuation.ts";
+export type {
+	ApprovalResolution,
+	ApprovalTransition,
+} from "./approval-continuation.ts";
+export { decideCompaction } from "./compaction-policy.ts";
+export type {
+	CompactionDecision,
+	CompactionDecisionInput,
+} from "./compaction-policy.ts";
 export { fingerprintSubmission } from "./fingerprint.ts";
 export type { TurnSubmissionFingerprintInput } from "./fingerprint.ts";
 export {
@@ -9,6 +23,34 @@ export type {
 	NoToolRequestProjectionInput,
 	ProviderRequestProjectionInput,
 } from "./request-projection.ts";
+export {
+	DEFAULT_QUEUE_CAPACITY,
+	QueueCapacityError,
+	QueueConflictError,
+	claimPendingSteers,
+	clearQueue,
+	enqueueFollowUp,
+	enqueueSteer,
+	markQueuedInputStarted,
+	nextQueuedInput,
+	popLastFollowUp,
+	rejectPendingSteers,
+	restoreQueue,
+} from "./queue-state.ts";
+export type {
+	EnqueueFollowUpInput,
+	EnqueueSteerInput,
+	QueueCapacity,
+	QueueClearResult,
+	QueueDeliveryState,
+	QueueDisposition,
+	QueueItemKind,
+	QueueMutation,
+	QueueRemoval,
+	QueueSnapshot,
+	QueuedInput,
+	RestoreQueueInput,
+} from "./queue-state.ts";
 export {
 	completeTurn,
 	failTurn,
