@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import type { ProviderEvent, ProviderRequest } from "@mycli/core";
+import type {
+	ProviderEvent,
+	ProviderRequest,
+	ToolDefinition,
+} from "@mycli/core";
 import * as providers from "../src/index.ts";
 
 type ChatCompletionsClient = {
@@ -87,6 +91,74 @@ test("rejects a Chat stream that ends without a finish reason", async () => {
 	);
 });
 
+test("serializes Read and canonical tool results for Chat continuation", async () => {
+	const ChatProvider = Reflect.get(providers, "ChatProvider") as ChatProviderConstructor | undefined;
+	assert.equal(typeof ChatProvider, "function");
+	let capturedRequest: Record<string, unknown> | undefined;
+	const client: ChatCompletionsClient = {
+		create: async (body) => {
+			capturedRequest = body;
+			return events([{
+				id: "chatcmpl-final",
+				choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+			}]);
+		},
+	};
+
+	await collect(new ChatProvider!({ client }).stream(toolRequest(), {
+		signal: new AbortController().signal,
+	}));
+
+	assert.deepEqual(capturedRequest?.tools, [{
+		type: "function",
+		function: {
+			name: "Read",
+			description: READ_TOOL.description,
+			parameters: READ_TOOL.inputSchema,
+			strict: true,
+		},
+	}]);
+	assert.deepEqual(capturedRequest?.messages, [
+		{ role: "system", content: "You are mycli." },
+		{ role: "user", content: "Read README.md" },
+		{
+			role: "assistant",
+			content: "",
+			tool_calls: [{
+				id: "call-1",
+				type: "function",
+				function: { name: "Read", arguments: READ_ARGUMENTS },
+			}],
+		},
+		{ role: "tool", tool_call_id: "call-1", content: READ_OUTPUT },
+	]);
+});
+
+test("rejects a completed Chat tool call without a call id", async () => {
+	const ChatProvider = Reflect.get(providers, "ChatProvider") as ChatProviderConstructor | undefined;
+	assert.equal(typeof ChatProvider, "function");
+	const client: ChatCompletionsClient = {
+		create: async () => events([{
+			id: "chatcmpl-tool",
+			choices: [{
+				index: 0,
+				delta: { tool_calls: [{ index: 0, function: {
+					name: "Read", arguments: READ_ARGUMENTS,
+				} }] },
+				finish_reason: "tool_calls",
+			}],
+		}]),
+	};
+
+	await assert.rejects(
+		() => collect(new ChatProvider!({ client }).stream(toolRequest(), {
+			signal: new AbortController().signal,
+		})),
+		(error: unknown) => error instanceof Error
+			&& error.message === "tool_protocol_error: Chat tool call is missing a call id",
+	);
+});
+
 function request(): ProviderRequest {
 	return {
 		provider: "compatible",
@@ -115,4 +187,45 @@ async function collect(stream: AsyncIterable<ProviderEvent>): Promise<ProviderEv
 		collected.push(event);
 	}
 	return collected;
+}
+
+const READ_ARGUMENTS = "{\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}";
+const READ_OUTPUT = "Read succeeded\nPath: README.md";
+const READ_TOOL: ToolDefinition = {
+	id: "builtin:Read",
+	name: "Read",
+	description: "Read a bounded file range from the workspace.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			file_path: { type: "string" },
+			offset: { type: "integer" },
+			limit: { type: "integer" },
+		},
+		required: ["file_path", "offset", "limit"],
+		additionalProperties: false,
+	},
+};
+
+function toolRequest(): ProviderRequest {
+	return {
+		...request(),
+		items: [
+			{ type: "user", text: "Read README.md" },
+			{
+				type: "assistant_tool_calls",
+				text: "",
+				calls: [{ callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS }],
+				responseId: "chatcmpl-tool",
+			},
+			{
+				type: "tool_result",
+				callId: "call-1",
+				toolName: "Read",
+				output: READ_OUTPUT,
+				success: true,
+			},
+		],
+		tools: [READ_TOOL],
+	};
 }

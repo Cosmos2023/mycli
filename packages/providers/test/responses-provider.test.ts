@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import type { ProviderEvent, ProviderRequest } from "@mycli/core";
+import type {
+	ProviderEvent,
+	ProviderRequest,
+	ToolDefinition,
+} from "@mycli/core";
 import * as providers from "../src/index.ts";
 
 type ResponsesClient = {
@@ -79,6 +83,135 @@ test("surfaces a provider tool call without executing it", async () => {
 	}]);
 });
 
+test("serializes Read for an initial Responses request", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	let capturedRequest: Record<string, unknown> | undefined;
+	const client: ResponsesClient = {
+		create: async (body) => {
+			capturedRequest = body;
+			return events([completedResponse("resp-tools-1")]);
+		},
+	};
+
+	await collect(new ResponsesProvider!({ client }).stream(toolRequest(), {
+		signal: new AbortController().signal,
+	}));
+
+	assert.deepEqual(capturedRequest?.tools, [{
+		type: "function",
+		name: "Read",
+		description: READ_TOOL.description,
+		parameters: READ_TOOL.inputSchema,
+		strict: true,
+	}]);
+	assert.deepEqual(capturedRequest?.input, [{ role: "user", content: "Read README.md" }]);
+	assert.equal("previous_response_id" in (capturedRequest ?? {}), false);
+});
+
+test("serializes only trailing function outputs for a Responses continuation", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	let capturedRequest: Record<string, unknown> | undefined;
+	const client: ResponsesClient = {
+		create: async (body) => {
+			capturedRequest = body;
+			return events([completedResponse("resp-tools-2")]);
+		},
+	};
+	const continuation: ProviderRequest = {
+		...toolRequest(),
+		previousResponseId: "resp-tools-1",
+		items: [
+			{ type: "user", text: "Read README.md" },
+			{
+				type: "assistant_tool_calls",
+				text: "",
+				calls: [{
+					callId: "call-1",
+					name: "Read",
+					argumentsJson: READ_ARGUMENTS,
+				}],
+				responseId: "resp-tools-1",
+			},
+			{
+				type: "tool_result",
+				callId: "call-1",
+				toolName: "Read",
+				output: READ_OUTPUT,
+				success: true,
+			},
+		],
+	};
+
+	await collect(new ResponsesProvider!({ client }).stream(continuation, {
+		signal: new AbortController().signal,
+	}));
+
+	assert.equal(capturedRequest?.previous_response_id, "resp-tools-1");
+	assert.deepEqual(capturedRequest?.input, [{
+		type: "function_call_output",
+		call_id: "call-1",
+		output: READ_OUTPUT,
+	}]);
+});
+
+test("preserves assistant text alongside historical Responses tool calls", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	let capturedRequest: Record<string, unknown> | undefined;
+	const client: ResponsesClient = {
+		create: async (body) => {
+			capturedRequest = body;
+			return events([completedResponse("resp-next")]);
+		},
+	};
+	const historical: ProviderRequest = {
+		...toolRequest(),
+		items: [
+			{ type: "user", text: "Read README.md" },
+			{
+				type: "assistant_tool_calls",
+				text: "Checking the file.",
+				calls: [{ callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS }],
+			},
+			{ type: "tool_result", callId: "call-1", toolName: "Read", output: READ_OUTPUT, success: true },
+			{ type: "user", text: "What did it say?" },
+		],
+	};
+
+	await collect(new ResponsesProvider!({ client }).stream(historical, {
+		signal: new AbortController().signal,
+	}));
+
+	assert.deepEqual(capturedRequest?.input, [
+		{ role: "user", content: "Read README.md" },
+		{ role: "assistant", content: "Checking the file." },
+		{ type: "function_call", call_id: "call-1", name: "Read", arguments: READ_ARGUMENTS },
+		{ type: "function_call_output", call_id: "call-1", output: READ_OUTPUT },
+		{ role: "user", content: "What did it say?" },
+	]);
+});
+
+test("rejects a Responses tool call without a call id", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	const client: ResponsesClient = {
+		create: async () => events([{
+			type: "response.output_item.done",
+			item: { type: "function_call", name: "Read", arguments: READ_ARGUMENTS },
+		}]),
+	};
+
+	await assert.rejects(
+		() => collect(new ResponsesProvider!({ client }).stream(toolRequest(), {
+			signal: new AbortController().signal,
+		})),
+		(error: unknown) => error instanceof Error
+			&& error.message === "tool_protocol_error: Responses tool call is missing a call id",
+	);
+});
+
 test("rejects malformed Responses events with a stable provider failure", async () => {
 	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
 	assert.equal(typeof ResponsesProvider, "function");
@@ -119,4 +252,35 @@ async function collect(stream: AsyncIterable<ProviderEvent>): Promise<ProviderEv
 		collected.push(event);
 	}
 	return collected;
+}
+
+const READ_ARGUMENTS = "{\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}";
+const READ_OUTPUT = "Read succeeded\nPath: README.md";
+const READ_TOOL: ToolDefinition = {
+	id: "builtin:Read",
+	name: "Read",
+	description: "Read a bounded file range from the workspace.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			file_path: { type: "string" },
+			offset: { type: "integer" },
+			limit: { type: "integer" },
+		},
+		required: ["file_path", "offset", "limit"],
+		additionalProperties: false,
+	},
+};
+
+function toolRequest(): ProviderRequest {
+	return {
+		...request(),
+		messages: [{ role: "user", content: "Read README.md" }],
+		items: [{ type: "user", text: "Read README.md" }],
+		tools: [READ_TOOL],
+	};
+}
+
+function completedResponse(id: string): Record<string, unknown> {
+	return { type: "response.completed", response: { id, usage: {} } };
 }

@@ -1,7 +1,9 @@
 import type {
+	CanonicalConversationItem,
 	ProviderEvent,
 	ProviderRequest,
 	ProviderUsage,
+	ToolDefinition,
 } from "@mycli/core";
 import {
 	classifyProviderError,
@@ -57,11 +59,14 @@ function requestBody(request: ProviderRequest): Readonly<Record<string, unknown>
 	return {
 		model: request.model,
 		instructions: request.instructions,
-		input: request.messages.map((message) => ({
-			role: message.role,
-			content: message.content,
-		})),
+		input: responsesInput(request),
 		stream: true,
+		...(request.tools.length > 0
+			? { tools: request.tools.map(responsesTool) }
+			: {}),
+		...(request.previousResponseId
+			? { previous_response_id: request.previousResponseId }
+			: {}),
 		...(request.reasoningEffort && request.reasoningEffort !== "none"
 			? { reasoning: { effort: request.reasoningEffort } }
 			: {}),
@@ -70,6 +75,76 @@ function requestBody(request: ProviderRequest): Readonly<Record<string, unknown>
 			: { max_output_tokens: request.maxOutputTokens }),
 		...(request.promptCacheKey ? { prompt_cache_key: request.promptCacheKey } : {}),
 	};
+}
+
+function responsesInput(request: ProviderRequest): readonly Readonly<Record<string, unknown>>[] {
+	if (!request.items) {
+		return request.messages.map((message) => ({
+			role: message.role,
+			content: message.content,
+		}));
+	}
+	if (request.previousResponseId) {
+		const lastCalls = findLastToolCallIndex(request.items);
+		const outputs = request.items.slice(lastCalls + 1)
+			.filter((item) => item.type === "tool_result")
+			.map((item) => ({
+				type: "function_call_output",
+				call_id: item.callId,
+				output: item.output,
+			}));
+		if (lastCalls < 0 || outputs.length === 0) {
+			throw new ProviderFailure({
+				code: "tool_protocol_error",
+				message: "Responses continuation is missing tool results",
+			});
+		}
+		return outputs;
+	}
+	return request.items.flatMap(responsesItem);
+}
+
+function responsesItem(item: CanonicalConversationItem): readonly Readonly<Record<string, unknown>>[] {
+	switch (item.type) {
+		case "user":
+		case "assistant":
+			return [{ role: item.type, content: item.text }];
+		case "assistant_tool_calls":
+			return [
+				...(item.text ? [{ role: "assistant", content: item.text }] : []),
+				...item.calls.map((call) => ({
+					type: "function_call",
+					call_id: call.callId,
+					name: call.name,
+					arguments: call.argumentsJson,
+				})),
+			];
+		case "tool_result":
+			return [{
+				type: "function_call_output",
+				call_id: item.callId,
+				output: item.output,
+			}];
+	}
+}
+
+function responsesTool(tool: ToolDefinition): Readonly<Record<string, unknown>> {
+	return {
+		type: "function",
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.inputSchema,
+		strict: true,
+	};
+}
+
+function findLastToolCallIndex(items: readonly CanonicalConversationItem[]): number {
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		if (items[index]?.type === "assistant_tool_calls") {
+			return index;
+		}
+	}
+	return -1;
 }
 
 function mapEvent(rawEvent: unknown): readonly ProviderEvent[] {
@@ -121,9 +196,15 @@ function toolCallEvent(item: unknown): readonly ProviderEvent[] {
 			message: "malformed Responses tool call",
 		});
 	}
+	if (typeof item.call_id !== "string" || !item.call_id) {
+		throw new ProviderFailure({
+			code: "tool_protocol_error",
+			message: "Responses tool call is missing a call id",
+		});
+	}
 	return [{
 		type: "tool_call",
-		...(typeof item.call_id === "string" ? { callId: item.call_id } : {}),
+		callId: item.call_id,
 		name: item.name,
 		argumentsJson: item.arguments,
 	}];

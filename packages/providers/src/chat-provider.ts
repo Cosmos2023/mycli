@@ -1,7 +1,9 @@
 import type {
+	CanonicalConversationItem,
 	ProviderEvent,
 	ProviderRequest,
 	ProviderUsage,
+	ToolDefinition,
 } from "@mycli/core";
 import {
 	classifyProviderError,
@@ -96,18 +98,55 @@ function requestBody(request: ProviderRequest): Readonly<Record<string, unknown>
 			...(request.instructions
 				? [{ role: "system", content: request.instructions }]
 				: []),
-			...request.messages.map((message) => ({
-				role: message.role,
-				content: message.content,
-			})),
+			...(request.items
+				? request.items.map(chatMessage)
+				: request.messages.map((message) => ({
+					role: message.role,
+					content: message.content,
+				}))),
 		],
 		stream: true,
 		stream_options: { include_usage: true },
 		temperature: 0,
+		...(request.tools.length > 0
+			? { tools: request.tools.map(chatTool) }
+			: {}),
 		...(request.maxOutputTokens === undefined
 			? {}
 			: { max_completion_tokens: request.maxOutputTokens }),
 		...(request.promptCacheKey ? { prompt_cache_key: request.promptCacheKey } : {}),
+	};
+}
+
+function chatMessage(item: CanonicalConversationItem): Readonly<Record<string, unknown>> {
+	switch (item.type) {
+		case "user":
+		case "assistant":
+			return { role: item.type, content: item.text };
+		case "assistant_tool_calls":
+			return {
+				role: "assistant",
+				content: item.text,
+				tool_calls: item.calls.map((call) => ({
+					id: call.callId,
+					type: "function",
+					function: { name: call.name, arguments: call.argumentsJson },
+				})),
+			};
+		case "tool_result":
+			return { role: "tool", tool_call_id: item.callId, content: item.output };
+	}
+}
+
+function chatTool(tool: ToolDefinition): Readonly<Record<string, unknown>> {
+	return {
+		type: "function",
+		function: {
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.inputSchema,
+			strict: true,
+		},
 	};
 }
 
@@ -205,9 +244,15 @@ function toolCallEvents(toolCalls: ReadonlyMap<number, BufferedToolCall>): reado
 			if (!call.name || !call.argumentsJson) {
 				throw malformedToolCall();
 			}
+			if (!call.id) {
+				throw new ProviderFailure({
+					code: "tool_protocol_error",
+					message: "Chat tool call is missing a call id",
+				});
+			}
 			return {
 				type: "tool_call" as const,
-				...(call.id ? { callId: call.id } : {}),
+				callId: call.id,
 				name: call.name,
 				argumentsJson: call.argumentsJson,
 			};

@@ -73,7 +73,7 @@ export type ProviderEvent =
 	| { readonly type: "completed"; readonly responseId?: string }
 	| {
 		readonly type: "tool_call";
-		readonly callId?: string;
+		readonly callId: string;
 		readonly name: string;
 		readonly argumentsJson: string;
 	};
