@@ -9,14 +9,18 @@ import {
 import type { RuntimeErrorCode, RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	type CanonicalMessage,
+	type QueuedInput,
 	type RuntimeEvent,
 } from "@mycli/core";
 import type {
+	PendingSessionApproval,
+	SessionCoordinator,
+	SessionGenerationContext,
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "@mycli/runtime";
 import { projectMutationMetadata } from "@mycli/storage";
-import type { TurnReservation } from "@mycli/storage";
+import type { TranscriptItem, TurnReservation } from "@mycli/storage";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 
 type JsonObject = Record<string, unknown>;
@@ -40,6 +44,7 @@ export interface CreateNodeGatewayOptions {
 	readonly maxPromptTokens?: number;
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
+	readonly sessionCoordinator?: SessionCoordinator<NodeGatewayRuntime>;
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
 	readonly clock?: () => number;
@@ -57,6 +62,8 @@ interface ActiveTurn {
 	readonly clientTurnId: string;
 	readonly clientUserMessageId: string;
 	readonly controller: AbortController;
+	readonly context: SessionGenerationContext;
+	readonly runtime: NodeGatewayRuntime;
 	turnId?: string;
 	terminalEmitted: boolean;
 }
@@ -96,7 +103,7 @@ class InProcessNodeGateway implements NodeGateway {
 		lines.on("line", (line) => { this.#handleLine(line); });
 		lines.on("error", () => { void this.close(); });
 		this.#clientOutput.on("error", () => { void this.close(); });
-		this.#emitDirect("runtime.ready", { session_id: options.sessionId });
+		this.#emitDirect("runtime.ready", { session_id: this.#sessionId() });
 	}
 
 	close(): Promise<void> {
@@ -146,22 +153,20 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		try {
 			const result = this.#handleRequest(request);
-			this.#writeResult(request.id, result);
-			if (request.method === "shutdown") {
-				queueMicrotask(() => { void this.close(); });
+			if (result instanceof Promise) {
+				void result.then(
+					(value) => { this.#completeRequest(request, value); },
+					(error: unknown) => { this.#failRequest(request, error); },
+				);
+			} else {
+				this.#completeRequest(request, result);
 			}
 		} catch (error) {
-			const failure = gatewayFailure(error);
-			this.#writeError(request.id, failure.code, failure.message);
-			this.#emitRuntime("gateway.error", {
-				code: failure.code,
-				message: failure.message,
-				method: request.method,
-			});
+			this.#failRequest(request, error);
 		}
 	}
 
-	#handleRequest(request: RpcRequest): JsonObject {
+	#handleRequest(request: RpcRequest): JsonObject | Promise<JsonObject> {
 		switch (request.method) {
 			case "initialize":
 				return this.#bootstrap({ protocol_version: request.params.protocol_version ?? 1 });
@@ -178,14 +183,11 @@ class InProcessNodeGateway implements NodeGateway {
 			case "settings.load":
 				return { settings: {}, source: "defaults" };
 			case "session.list":
-				return {
-					sessions: [{
-						id: this.#options.sessionId,
-						workspace: this.#options.workspaceRoot,
-						cwd: this.#options.workspaceRoot,
-						current: true,
-					}],
-				};
+				return this.#sessionList();
+			case "session.resume":
+				return this.#sessionResume(request.params);
+			case "session.tree":
+				return this.#sessionTree(request.params);
 			case "turn.submit":
 				return this.#submit(request.params);
 			case "turn.interrupt":
@@ -197,14 +199,31 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 	}
 
+	#completeRequest(request: RpcRequest, result: JsonObject): void {
+		this.#writeResult(request.id, result);
+		if (request.method === "shutdown") {
+			queueMicrotask(() => { void this.close(); });
+		}
+	}
+
+	#failRequest(request: RpcRequest, error: unknown): void {
+		const failure = gatewayFailure(error);
+		this.#writeError(request.id, failure.code, failure.message);
+		this.#emitRuntime("gateway.error", {
+			code: failure.code,
+			message: failure.message,
+			method: request.method,
+		});
+	}
+
 	#bootstrap(params: JsonObject): JsonObject {
 		if (params.protocol_version !== 1) {
 			throw new GatewayFailure("incompatible_protocol", "Unsupported gateway protocol version.");
 		}
 		return {
 			protocol_version: 1,
-			session_id: this.#options.sessionId,
-			workspace: this.#options.workspaceRoot,
+			session_id: this.#sessionId(),
+			workspace: this.#workspaceRoot(),
 			provider: this.#options.provider,
 			model: this.#options.model,
 			status: this.#status(),
@@ -214,14 +233,33 @@ class InProcessNodeGateway implements NodeGateway {
 			permissions: {},
 			welcome: {
 				startup_mark: { text: "mycli" },
-				workspace: this.#options.workspaceRoot,
+				workspace: this.#workspaceRoot(),
 			},
 		};
 	}
 
-	#transcript(params: JsonObject): JsonObject {
-		const sessionId = optionalString(params.session_id) ?? this.#options.sessionId;
-		if (sessionId !== this.#options.sessionId) {
+	async #transcript(params: JsonObject): Promise<JsonObject> {
+		const sessionId = optionalString(params.session_id) ?? this.#sessionId();
+		if (this.#options.sessionCoordinator) {
+			const prepared = await this.#options.sessionCoordinator.inspect(sessionId);
+			const projected = prepared.transcript.map(gatewayTranscriptItem);
+			const before = optionalString(params.before);
+			const beforeIndex = before
+				? projected.findIndex((item) => item.id === before)
+				: projected.length;
+			const end = beforeIndex < 0 ? projected.length : beforeIndex;
+			const limit = positiveInteger(params.limit);
+			const selected = limit === undefined
+				? projected.slice(0, end)
+				: projected.slice(Math.max(0, end - limit), end);
+			return {
+				session_id: sessionId,
+				items: selected,
+				next_before: selected.length < end ? selected[0]?.id ?? null : null,
+				read_only: prepared.readOnly,
+			};
+		}
+		if (sessionId !== this.#sessionId()) {
 			throw new GatewayFailure("invalid_params", "Unknown session.");
 		}
 		const items = this.#options.loadConversation(sessionId).map((message, index) => ({
@@ -234,9 +272,99 @@ class InProcessNodeGateway implements NodeGateway {
 		return { session_id: sessionId, items, next_before: null };
 	}
 
+	#sessionList(): JsonObject {
+		const coordinator = this.#options.sessionCoordinator;
+		if (!coordinator) {
+			return {
+				sessions: [{
+					id: this.#sessionId(),
+					workspace: this.#workspaceRoot(),
+					cwd: this.#workspaceRoot(),
+					current: true,
+				}],
+			};
+		}
+		const activeSessionId = coordinator.snapshot().sessionId;
+		return {
+			sessions: coordinator.listSessions({ limit: 20 }).map((item) => ({
+				id: item.sessionId,
+				workspace: item.workspaceRoot,
+				cwd: item.workspaceRoot,
+				created: item.createdAt,
+				updated: item.updatedAt,
+				last_active: item.lastActiveAt,
+				modified: item.lastActiveAt,
+				message_count: item.messageCount,
+				current: item.sessionId === activeSessionId,
+			})),
+		};
+	}
+
+	async #sessionResume(params: JsonObject): Promise<JsonObject> {
+		const coordinator = this.#options.sessionCoordinator;
+		if (!coordinator) throw new GatewayFailure("method_not_found", "Session resume is unavailable.");
+		if (this.#activeTurn !== null) {
+			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
+		}
+		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
+		this.#emitDirect("session.changed", {
+			session_id: snapshot.sessionId,
+			generation: snapshot.generation,
+		});
+		this.#emitRuntime("status.changed", this.#status());
+		if (snapshot.pendingApproval) {
+			this.#emitRuntime("approval.request", approvalRequest(snapshot.pendingApproval, snapshot.generation));
+		}
+		return {
+			session_id: snapshot.sessionId,
+			generation: snapshot.generation,
+			read_only: snapshot.readOnly,
+			lines: [],
+		};
+	}
+
+	#sessionTree(params: JsonObject): JsonObject {
+		const coordinator = this.#options.sessionCoordinator;
+		if (!coordinator) throw new GatewayFailure("method_not_found", "Session tree is unavailable.");
+		const active = coordinator.snapshot();
+		const requested = optionalString(params.session_id) ?? active.sessionId;
+		coordinator.loadSessionLineage(requested);
+		const activePath = coordinator.loadSessionLineage(active.sessionId)
+			.map((item) => item.sessionId);
+		const nodes = coordinator.listSessions({ limit: positiveInteger(params.limit) ?? 100 })
+			.map((item) => {
+				const lineage = coordinator.loadSessionLineage(item.sessionId);
+				const own = lineage.at(-1);
+				return {
+					id: `session:${item.sessionId}`,
+					kind: "session",
+					session_id: item.sessionId,
+					parent_id: own?.parentId ? `session:${own.parentId}` : null,
+					depth: Math.max(0, lineage.length - 1),
+					role: "session",
+					summary: item.sessionId,
+					timestamp: item.lastActiveAt,
+					label: "",
+					message_index: null,
+					tool_name: "",
+					active: item.sessionId === active.sessionId,
+					on_active_path: activePath.includes(item.sessionId),
+					message_count: item.messageCount,
+					preview: "",
+				};
+			});
+		return { session_id: active.sessionId, active_path: activePath, nodes };
+	}
+
 	#submit(params: JsonObject): JsonObject {
 		if (this.#activeTurn !== null) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
+		}
+		if (this.#options.sessionCoordinator?.snapshot().readOnly) {
+			throw new GatewayFailure(
+				"session_state_invalid",
+				"Session is available for read-only replay only.",
+			);
 		}
 		const message = requiredString(params.message, "message");
 		const clientTurnId = requiredString(params.client_turn_id, "client_turn_id");
@@ -252,12 +380,26 @@ class InProcessNodeGateway implements NodeGateway {
 			message,
 			localImages,
 		};
-		const reservation = this.#options.runtime.reserve(submission);
+		const context = this.#sessionContext();
+		const runtime = this.#runtime();
+		const coordinator = this.#options.sessionCoordinator;
+		if (coordinator && !coordinator.markExecuting(context, true)) {
+			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
+		}
+		let reservation: TurnReservation;
+		try {
+			reservation = runtime.reserve(submission);
+		} catch (error) {
+			coordinator?.markExecuting(context, false);
+			throw error;
+		}
 		const turnId = reservation.turn.turn_id;
 		const active: ActiveTurn = {
 			clientTurnId,
 			clientUserMessageId,
 			controller: new AbortController(),
+			context,
+			runtime,
 			turnId,
 			terminalEmitted: false,
 		};
@@ -281,12 +423,14 @@ class InProcessNodeGateway implements NodeGateway {
 		reservation: TurnReservation,
 	): Promise<void> {
 		try {
-			const record = await this.#options.runtime.submit(
+			const record = await active.runtime.submit(
 				submission,
-				(event) => { this.#projectRuntimeEvent(active, event); },
+				(event) => {
+					if (this.#isCurrent(active)) this.#projectRuntimeEvent(active, event);
+				},
 				{ signal: active.controller.signal, reservation },
 			);
-			if (!active.terminalEmitted) {
+			if (!active.terminalEmitted && this.#isCurrent(active)) {
 				this.#projectStoredTerminal(active, record);
 			}
 		} catch {
@@ -294,11 +438,14 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
 			}
 		} finally {
+			this.#options.sessionCoordinator?.markExecuting(active.context, false);
 			if (this.#activeTurn === active) {
 				this.#activeTurn = null;
 				this.#activeTurnTask = null;
 			}
-			if (!this.#closed) this.#emitRuntime("status.changed", this.#status());
+			if (!this.#closed && this.#isCurrent(active)) {
+				this.#emitRuntime("status.changed", this.#status());
+			}
 		}
 	}
 
@@ -517,9 +664,17 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#status(): JsonObject {
+		const session = this.#options.sessionCoordinator?.snapshot();
+		const queue = session?.queue;
+		const steering = queue?.pendingSteers ?? [];
+		const rejectedSteers = queue?.rejectedSteers ?? [];
+		const followUps = queue?.followUps ?? [];
+		const deferredInputs = [...rejectedSteers, ...followUps];
+		const pendingInputCount = steering.length + deferredInputs.length;
 		return {
-			session_id: this.#options.sessionId,
-			workspace: this.#options.workspaceRoot,
+			session_id: this.#sessionId(),
+			...(session ? { generation: session.generation } : {}),
+			workspace: this.#workspaceRoot(),
 			provider: this.#options.provider,
 			model: this.#options.model,
 			context_window: {
@@ -527,26 +682,48 @@ class InProcessNodeGateway implements NodeGateway {
 				max_tokens: this.#options.maxPromptTokens ?? 0,
 				source: "unknown",
 			},
-			pending_decision: false,
-			suspended_turn: false,
+			pending_decision: session?.pendingApproval !== undefined,
+			suspended_turn: session?.suspendedTurn ?? false,
 			turn_running: this.#activeTurn !== null,
 			turn_id: this.#activeTurn?.turnId ?? null,
-			queued_steering: [],
-			queued_follow_up: [],
-			has_pending_input: false,
+			queued_steering: steering.map((item) => item.text),
+			queued_follow_up: deferredInputs.map((item) => item.text),
+			has_pending_input: pendingInputCount > 0,
 			queue_activity: {
-				kind: "idle",
-				has_pending_input: false,
-				steering_count: 0,
-				follow_up_count: 0,
+				kind: pendingInputCount > 0 ? "pending_input" : "idle",
+				has_pending_input: pendingInputCount > 0,
+				steering_count: steering.length,
+				follow_up_count: deferredInputs.length,
 			},
-			queue_revision: 0,
+			queue_revision: queue?.revision ?? 0,
 			queue_items: {
-				pending_steers: [],
-				rejected_steers: [],
-				follow_ups: [],
+				pending_steers: queue?.pendingSteers.map(gatewayQueueItem) ?? [],
+				rejected_steers: rejectedSteers.map(gatewayQueueItem),
+				follow_ups: followUps.map(gatewayQueueItem),
 			},
 		};
+	}
+
+	#sessionId(): string {
+		return this.#options.sessionCoordinator?.snapshot().sessionId ?? this.#options.sessionId;
+	}
+
+	#workspaceRoot(): string {
+		return this.#options.sessionCoordinator?.snapshot().workspaceRoot
+			?? this.#options.workspaceRoot;
+	}
+
+	#runtime(): NodeGatewayRuntime {
+		return this.#options.sessionCoordinator?.snapshot().binding ?? this.#options.runtime;
+	}
+
+	#sessionContext(): SessionGenerationContext {
+		return this.#options.sessionCoordinator?.context()
+			?? Object.freeze({ sessionId: this.#options.sessionId, generation: 1 });
+	}
+
+	#isCurrent(active: ActiveTurn): boolean {
+		return this.#options.sessionCoordinator?.isCurrent(active.context) ?? true;
 	}
 
 	#emitTurnEvent(
@@ -610,6 +787,21 @@ class GatewayFailure extends Error {
 
 function gatewayFailure(error: unknown): GatewayFailure {
 	if (error instanceof GatewayFailure) return error;
+	if (isObject(error) && error.code === "session_state_invalid") {
+		return new GatewayFailure("session_state_invalid", "Persisted session state is invalid.");
+	}
+	if (isObject(error) && error.code === "session_state_version_unsupported") {
+		return new GatewayFailure(
+			"session_state_version_unsupported",
+			"Persisted session state version is unsupported.",
+		);
+	}
+	if (isObject(error) && error.code === "session_not_found") {
+		return new GatewayFailure("session_not_found", "Session was not found.");
+	}
+	if (isObject(error) && error.code === "turn_in_progress") {
+		return new GatewayFailure("turn_in_progress", "A turn is already running.");
+	}
 	if (isObject(error) && error.code === "message_id_conflict") {
 		return new GatewayFailure(
 			"message_id_conflict",
@@ -620,6 +812,103 @@ function gatewayFailure(error: unknown): GatewayFailure {
 		return new GatewayFailure("persistence_error", "Session persistence failed.");
 	}
 	return new GatewayFailure("internal_error", "Gateway request failed.");
+}
+
+function gatewayTranscriptItem(item: TranscriptItem): JsonObject {
+	const type = {
+		user_message: "user",
+		assistant_message: "assistant_final",
+		reasoning_summary: "reasoning",
+		tool: "tool_summary",
+		warning: "warning",
+		status: "system_notice",
+		file_change: "system_notice",
+		plan_update: "plan_update",
+	}[item.type];
+	const metadata: JsonObject = { ...(item.metadata ?? {}) };
+	if (item.type === "tool") {
+		if (item.tool_name) metadata.tool_name = item.tool_name;
+		if (item.call_id) metadata.call_id = item.call_id;
+		if (item.command) metadata.command = item.command;
+		if (item.exit_code !== undefined) metadata.exit_code = item.exit_code;
+		if (item.duration_ms !== undefined) metadata.duration_ms = item.duration_ms;
+		if (item.truncated) metadata.truncated = true;
+		if (item.omitted_chars !== undefined) metadata.omitted_chars = item.omitted_chars;
+		if (item.status) {
+			metadata.status = item.status === "completed" ? "done" : item.status;
+			if (item.status === "completed" && metadata.success === undefined) metadata.success = true;
+		}
+		if (item.output) metadata.output_preview = item.output;
+	}
+	return {
+		id: item.id,
+		type,
+		text: item.text ?? (item.type === "tool" ? item.tool_name ?? "Tool" : ""),
+		created_at: item.created_at ?? "",
+		folded: false,
+		metadata,
+	};
+}
+
+function approvalRequest(
+	approval: PendingSessionApproval,
+	generation: number,
+): JsonObject {
+	return {
+		session_id: approval.sessionId,
+		generation,
+		client_turn_id: approval.clientTurnId,
+		turn_id: approval.turnId,
+		decision_id: approval.decisionId,
+		call_id: approval.callId,
+		preview: approval.preview,
+		reason: approval.reason,
+		tool_name: approval.toolName,
+		action: approval.toolName,
+		options: approval.options.map((choice) => ({
+			choice,
+			label: approvalChoiceLabel(choice),
+		})),
+	};
+}
+
+function approvalChoiceLabel(choice: PendingSessionApproval["options"][number]): string {
+	return {
+		approve_once: "Approve once",
+		reject: "Reject",
+		allow_session: "Allow for session",
+		always_allow: "Always allow",
+	}[choice];
+}
+
+function gatewayQueueItem(item: QueuedInput): JsonObject {
+	return {
+		queue_id: item.queueId,
+		session_id: item.sessionId,
+		client_turn_id: item.clientTurnId,
+		target_turn_id: item.targetTurnId,
+		kind: item.kind,
+		state: item.state,
+		message: item.text,
+		text: item.text,
+		source: item.source,
+		created_at: item.createdAt,
+		updated_at: item.updatedAt,
+		...(item.imagePaths.length > 0 ? {
+			local_images: item.imagePaths.map((path, index) => ({
+				path,
+				placeholder: `[image #${index + 1}]`,
+			})),
+		} : {}),
+	};
+}
+
+function positiveInteger(value: unknown): number | undefined {
+	return typeof value === "number"
+		&& Number.isSafeInteger(value)
+		&& value > 0
+		? value
+		: undefined;
 }
 
 function extensionManifest(toolNames: readonly string[]): JsonObject {

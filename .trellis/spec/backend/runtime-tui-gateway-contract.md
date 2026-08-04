@@ -1001,3 +1001,103 @@ configureGatewayTransport(sidecar.transport);
 const { gatewayStartup } = await import("mycli-shell-tui/gateway");
 await gatewayStartup;
 ```
+
+## Scenario: Atomic Node Session Resume
+
+### 1. Scope / Trigger
+- Trigger: Changes to Node `session.list`, `session.resume`, `session.tree`,
+  `transcript.load`, session-scoped status projection, or turn acceptance.
+- This boundary coordinates SQLite state preparation, runtime binding, and TUI
+  visibility. A target session must never become partially visible.
+
+### 2. Signatures
+- `SessionCoordinator.resume(sessionId) -> Promise<ActiveSessionSnapshot>`
+- `SessionCoordinator.markExecuting(context, executing) -> boolean`
+- Gateway RPCs: `session.list`, `session.resume`, `session.tree`,
+  `transcript.load`, and `turn.submit`.
+- Gateway events: `session.changed`, `status.changed`, and
+  `approval.request`.
+
+### 3. Contracts
+- Resume uses prepare/commit: load and validate transcript, queue, suspended
+  approval, compaction state, continuation state, workspace, and runtime
+  binding before incrementing the active generation.
+- The coordinator holds a transition claim across the entire asynchronous
+  prepare. A gateway turn must acquire the matching generation's execution
+  claim before reserving a durable turn. Reservation failure releases the
+  execution claim.
+- Successful resume emits `session.changed` first, one complete
+  `status.changed` snapshot second, then the pending `approval.request` when
+  present. Failed preparation emits none of these target-session events.
+- A readable snapshot without usable canonical SQLite state is display-only;
+  `turn.submit` fails closed and the snapshot is never provider context.
+- Legacy queue text arrays project pending steers as `queued_steering` and
+  rejected steers plus ordinary follow-ups as `queued_follow_up`. Typed
+  `queue_items` preserves separate `pending_steers`, `rejected_steers`, and
+  `follow_ups` arrays.
+- Runtime callbacks carry `{sessionId, generation}` and stale callbacks do not
+  mutate or emit active-session TUI state.
+
+### 4. Validation & Error Matrix
+- Missing resume target -> `session_not_found`; do not create a session.
+- Invalid or cross-session queue, suspended turn, approval, transcript, or
+  continuation identity -> `session_state_invalid` with a fixed message.
+- Unsupported persisted state version ->
+  `session_state_version_unsupported` with a fixed message.
+- Executing turn, concurrent resume, or turn submission during prepare ->
+  `turn_in_progress` before a new reservation is written.
+- Snapshot-only degraded session turn submission -> `session_state_invalid`.
+- Same-session idle resume -> return the current generation without preparing
+  or incrementing it.
+
+### 5. Good/Base/Bad Cases
+- Good: Claim transition, prepare target state, commit one generation, then
+  emit the ordered target snapshot events.
+- Good: Claim execution for the current generation, reserve the turn, and
+  release the claim if reservation fails.
+- Base: A configured but not-yet-persisted initial session is an empty virtual
+  session and becomes durable on its first accepted turn.
+- Bad: Check `executing` before `await prepare` but allow a turn to reserve
+  during the await; the resumed generation can then replace a running source.
+- Bad: Merge rejected steers into legacy steering text; the TUI displays a
+  deferred input as if it can still steer the active turn.
+
+### 6. Tests Required
+- Pure coordinator tests for failed prepare, same-session idempotency,
+  monotonic generation, stale context rejection, executing-turn rejection,
+  and transition/execution mutual exclusion across an async prepare.
+- Gateway tests for session catalog/tree/transcript responses, ordered resume
+  events, sanitized state errors, read-only turn rejection, stale callback
+  filtering, and no reservation during target preparation.
+- Queue projection tests must assert legacy text arrays and counts plus all
+  three typed `queue_items` arrays.
+- Backend integration must use real SQLite state to prove target runtime
+  rebinding, v1 snapshot import, invalid-state atomicity, and provider context
+  sourced from the target's canonical conversation.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+if (!coordinator.executing()) {
+  const prepared = await prepare(sessionId);
+  coordinator.commit(prepared);
+}
+runtime.reserve(submission);
+coordinator.markExecuting(context, true);
+```
+
+Correct:
+```typescript
+const resume = coordinator.resume(sessionId); // holds the transition claim
+
+if (!coordinator.markExecuting(context, true)) {
+  throw new GatewayFailure("turn_in_progress", "Session transition in progress.");
+}
+try {
+  runtime.reserve(submission);
+} catch (error) {
+  coordinator.markExecuting(context, false);
+  throw error;
+}
+```

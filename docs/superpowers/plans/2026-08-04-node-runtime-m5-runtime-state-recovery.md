@@ -58,7 +58,7 @@
 - Test: `packages/contracts/test/catalog.test.ts`
 - Test: `packages/contracts/test/fixtures.test.ts`
 
-- [ ] **Step 1: Write failing contract and drift tests**
+- [x] **Step 1: Write failing contract and drift tests**
 
 Add fixtures that accept Python-compatible queue, pending approval, suspended turn, effect
 checkpoint, compact checkpoint, and Responses continuation payloads, then reject cross-session
@@ -92,13 +92,13 @@ Also assert the catalog contains `session_not_found`, `session_state_invalid`,
 `session_state_version_unsupported`, `approval_not_pending`, and `approval_conflict`, and that all
 generated files are drift-checked.
 
-- [ ] **Step 2: Run the contract tests and verify the missing parser failure**
+- [x] **Step 2: Run the contract tests and verify the missing parser failure**
 
 Run: `node --import tsx --test packages/contracts/test/runtime-state.test.ts packages/contracts/test/catalog.test.ts packages/contracts/test/fixtures.test.ts`
 
 Expected: FAIL because `runtime-state.schema.json` and `parseRuntimeState` do not exist.
 
-- [ ] **Step 3: Add the canonical schema and generator target**
+- [x] **Step 3: Add the canonical schema and generator target**
 
 Define one tagged validation envelope with closed variants and bounded strings/arrays:
 
@@ -139,7 +139,7 @@ the existing `state_key` to `kind`, infers or reads version 1, validates
 `{kind, version, payload: rawPayload}`, then stores `rawPayload` unchanged so Python continues to
 read `input_queue`, `suspended_turn`, and other established keys.
 
-- [ ] **Step 4: Compile, export, and validate the schema**
+- [x] **Step 4: Compile, export, and validate the schema**
 
 Add the validator and export:
 
@@ -156,13 +156,13 @@ Update the event schema so `session.changed`, `turn.queue.updated`, `approval.re
 revision, decision, checkpoint, and count fields while retaining compatible optional legacy
 fields.
 
-- [ ] **Step 5: Generate contracts and run the package gate**
+- [x] **Step 5: Generate contracts and run the package gate**
 
 Run: `npm run contracts:generate && npm run test --workspace @mycli/contracts && npm run contracts:check && npm run typecheck --workspace @mycli/contracts`
 
 Expected: generated TypeScript/Python files are stable; tests and drift check pass.
 
-- [ ] **Step 6: Commit the M5 contract boundary**
+- [x] **Step 6: Commit the M5 contract boundary**
 
 ```bash
 git add packages/contracts src/mycli/schemas/generated
@@ -181,7 +181,7 @@ git commit -m "feat(node-contracts): define M5 runtime state"
 - Test: `packages/core/test/approval-continuation.test.ts`
 - Test: `packages/core/test/compaction-policy.test.ts`
 
-- [ ] **Step 1: Write failing queue transition tests**
+- [x] **Step 1: Write failing queue transition tests**
 
 ```ts
 test("accepts a steer only for the expected active turn", () => {
@@ -206,7 +206,7 @@ Cover duplicate/same-payload success, duplicate/different-payload conflict, stal
 rejected-before-follow-up priority, capacity, pop-last-follow-up, clear, terminal rejection,
 revision increments, and cross-session rejection.
 
-- [ ] **Step 2: Write failing approval and compaction decision tests**
+- [x] **Step 2: Write failing approval and compaction decision tests**
 
 ```ts
 test("effect claims cannot return to approved", () => {
@@ -222,13 +222,13 @@ test("compacts only when the usable input budget is crossed", () => {
 });
 ```
 
-- [ ] **Step 3: Run the core tests and verify missing-module failures**
+- [x] **Step 3: Run the core tests and verify missing-module failures**
 
 Run: `node --import tsx --test packages/core/test/queue-state.test.ts packages/core/test/approval-continuation.test.ts packages/core/test/compaction-policy.test.ts`
 
 Expected: FAIL because the three modules are missing.
 
-- [ ] **Step 4: Implement immutable state transitions and bounds**
+- [x] **Step 4: Implement immutable state transitions and bounds**
 
 Use frozen records and pure functions. The public queue result shape is:
 
@@ -250,13 +250,13 @@ Approval states are `waiting`, `approved`, `executing`, `completed`, and `reject
 documented transitions are accepted. Compaction decisions use finite non-negative integers,
 clamped ratios, and never compact a fresh suffix.
 
-- [ ] **Step 5: Run core tests and typecheck**
+- [x] **Step 5: Run core tests and typecheck**
 
 Run: `npm run test --workspace @mycli/core && npm run typecheck --workspace @mycli/core`
 
 Expected: all core tests pass.
 
-- [ ] **Step 6: Commit the pure M5 state machines**
+- [x] **Step 6: Commit the pure M5 state machines**
 
 ```bash
 git add packages/core
@@ -273,7 +273,7 @@ git commit -m "feat(node-core): model recoverable runtime state"
 - Test: `packages/storage/test/session-state.test.ts`
 - Test: `packages/storage/test/sqlite-session-store.test.ts`
 
-- [ ] **Step 1: Write failing catalog, state, summary, and transaction tests**
+- [x] **Step 1: Write failing catalog, state, summary, and transaction tests**
 
 ```ts
 test("lists sessions by last activity with compatible counts", (t) => {
@@ -296,13 +296,13 @@ Also test state save/load/delete, wrong-root rejection, unknown-field preservati
 lineage, committed queue IDs, approval compare-and-set, effect claim/result, compact replacement,
 and an existing Python-created schema-v2 database.
 
-- [ ] **Step 2: Run storage tests and verify interface failures**
+- [x] **Step 2: Run storage tests and verify interface failures**
 
 Run: `node --import tsx --test packages/storage/test/session-state.test.ts packages/storage/test/sqlite-session-store.test.ts`
 
 Expected: FAIL because the M5 `SessionStore` methods do not exist.
 
-- [ ] **Step 3: Define focused storage interfaces**
+- [x] **Step 3: Define focused storage interfaces**
 
 Add typed methods without exposing SQL rows:
 
@@ -325,7 +325,7 @@ export interface SessionStateStore {
 `RuntimeStateKey` includes the existing Python keys plus additive `node_effect_checkpoint`; Python
 may ignore that key, but Node recovery must consult it before exposing a pending approval.
 
-- [ ] **Step 4: Implement `SQLiteSessionStateRepository` and delegate from the store**
+- [x] **Step 4: Implement `SQLiteSessionStateRepository` and delegate from the store**
 
 Construct the repository with the initialized `better-sqlite3` handle and the existing clock. Use
 `BEGIN IMMEDIATE` only through the store's shared transaction wrapper. Parse JSON with source-key
@@ -337,13 +337,13 @@ remove those exact pending records. The compaction transaction replaces only
 `conversation_messages`, appends `session_summaries`, saves `compact_checkpoint`, and invalidates
 Responses continuation.
 
-- [ ] **Step 5: Run storage tests, schema tests, and typecheck**
+- [x] **Step 5: Run storage tests, schema tests, and typecheck**
 
 Run: `npm run test --workspace @mycli/storage && npm run typecheck --workspace @mycli/storage`
 
 Expected: all storage tests pass without schema version drift.
 
-- [ ] **Step 6: Commit the M5 state repository**
+- [x] **Step 6: Commit the M5 state repository**
 
 ```bash
 git add packages/storage
@@ -361,7 +361,7 @@ git commit -m "feat(node-storage): add atomic session state APIs"
 - Test: `packages/storage/test/transcript-projector.test.ts`
 - Test: `packages/storage/test/transcript-snapshot-store.test.ts`
 
-- [ ] **Step 1: Write failing projection and approval normalization tests**
+- [x] **Step 1: Write failing projection and approval normalization tests**
 
 ```ts
 test("suppresses only legacy synthetic approval-resume user rows", () => {
@@ -380,7 +380,7 @@ test("keeps independent repeated and queued user messages", () => {
 Cover stable tool IDs, file changes, 8,000-character head/tail bounds, raw reasoning exclusion,
 unknown visible fallback, pagination after normalization, and provider metadata exclusion.
 
-- [ ] **Step 2: Write failing snapshot atomicity and migration tests**
+- [x] **Step 2: Write failing snapshot atomicity and migration tests**
 
 ```ts
 test("rebuilds a corrupt v2 snapshot from SQLite", async (t) => {
@@ -395,13 +395,13 @@ test("rebuilds a corrupt v2 snapshot from SQLite", async (t) => {
 Also prove SQLite failure exposes snapshot history as read-only, v1 imports only when canonical
 data is absent, failed migration preserves v1 bytes, and temp-write failure preserves the old v2.
 
-- [ ] **Step 3: Run targeted tests and verify missing-module failures**
+- [x] **Step 3: Run targeted tests and verify missing-module failures**
 
 Run: `node --import tsx --test packages/storage/test/transcript-projector.test.ts packages/storage/test/transcript-snapshot-store.test.ts`
 
 Expected: FAIL because both modules are missing.
 
-- [ ] **Step 4: Implement the projector and atomic snapshot store**
+- [x] **Step 4: Implement the projector and atomic snapshot store**
 
 Expose a bounded display contract independent of provider history:
 
@@ -421,13 +421,13 @@ export interface TranscriptSnapshotV2 {
 Write UTF-8 `JSON.stringify(snapshot, null, 2) + "\n"` to an exclusive sibling temp file, sync,
 rename, and clean up on failure. Never read the snapshot to construct provider context.
 
-- [ ] **Step 5: Run storage and snapshot tests**
+- [x] **Step 5: Run storage and snapshot tests**
 
 Run: `npm run test --workspace @mycli/storage && npm run typecheck --workspace @mycli/storage`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit transcript replay and snapshots**
+- [x] **Step 6: Commit transcript replay and snapshots**
 
 ```bash
 git add packages/storage
@@ -444,7 +444,7 @@ git commit -m "feat(node-storage): restore bounded session transcripts"
 - Test: `packages/runtime/test/session-coordinator.test.ts`
 - Test: `apps/mycli/test/node-gateway.test.ts`
 
-- [ ] **Step 1: Write failing prepare/commit generation tests**
+- [x] **Step 1: Write failing prepare/commit generation tests**
 
 ```ts
 test("failed target preparation leaves the source session active", async () => {
@@ -466,19 +466,19 @@ test("a successful resume replaces all session-scoped state in one generation", 
 Cover same-session idempotency, unknown session, active-turn rejection, read-only degraded replay,
 stale generation filtering, and lineage/tree loading.
 
-- [ ] **Step 2: Write failing gateway session RPC tests**
+- [x] **Step 2: Write failing gateway session RPC tests**
 
 Exercise `session.list`, `session.resume`, `session.tree`, `transcript.load`, and bootstrap. Assert
 one `session.changed` precedes the target queue/approval projection and no target event is emitted
 when preparation fails.
 
-- [ ] **Step 3: Run runtime and gateway tests and verify missing coordinator failures**
+- [x] **Step 3: Run runtime and gateway tests and verify missing coordinator failures**
 
 Run: `node --import tsx --test packages/runtime/test/session-coordinator.test.ts apps/mycli/test/node-gateway.test.ts`
 
 Expected: FAIL because `SessionCoordinator` and M5 RPC handlers do not exist.
 
-- [ ] **Step 4: Implement prepare/commit resume and generation guards**
+- [x] **Step 4: Implement prepare/commit resume and generation guards**
 
 ```ts
 export class SessionCoordinator {
@@ -497,13 +497,13 @@ export class SessionCoordinator {
 Gateway event callbacks capture `{sessionId, generation}` and ignore late mismatches. Make
 `#options.sessionId` dynamic through the coordinator rather than mutating the original options.
 
-- [ ] **Step 5: Run gateway, app, and runtime gates**
+- [x] **Step 5: Run gateway, app, and runtime gates**
 
 Run: `npm run test --workspace @mycli/runtime && npm run test --workspace @mycli/app && npm run typecheck --workspace @mycli/runtime && npm run typecheck --workspace @mycli/app`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit atomic session resume**
+- [x] **Step 6: Commit atomic session resume**
 
 ```bash
 git add packages/runtime apps/mycli

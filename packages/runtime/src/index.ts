@@ -12,3 +12,16 @@ export type {
 	RetryDecision,
 	RetryDecisionInput,
 } from "./retry-policy.ts";
+export {
+	SessionCoordinator,
+	SessionTransitionError,
+} from "./session-coordinator.ts";
+export type {
+	ActiveSessionSnapshot,
+	PendingApprovalChoice,
+	PendingSessionApproval,
+	PreparedSession,
+	SessionCoordinatorOptions,
+	SessionGenerationContext,
+	SessionTransitionErrorCode,
+} from "./session-coordinator.ts";

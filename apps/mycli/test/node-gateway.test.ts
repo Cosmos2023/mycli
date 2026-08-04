@@ -3,9 +3,17 @@ import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseGatewayEvent, parseJsonRpcMessage } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import { fingerprintSubmission, type RuntimeEvent } from "@mycli/core";
-import type { TurnSubmission } from "@mycli/runtime";
-import { createNodeGateway } from "../src/node-runtime/node-gateway.ts";
+import { fingerprintSubmission, type QueueSnapshot, type RuntimeEvent } from "@mycli/core";
+import {
+	SessionCoordinator,
+	type PreparedSession,
+	type TurnSubmission,
+} from "@mycli/runtime";
+import type { SessionOverview, TranscriptItem } from "@mycli/storage";
+import {
+	createNodeGateway,
+	type NodeGatewayRuntime,
+} from "../src/node-runtime/node-gateway.ts";
 
 type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
 
@@ -15,6 +23,12 @@ function gatewayHarness(options: {
 	reserve?: (submission: TurnSubmission) => {
 		readonly kind: "reserved" | "existing";
 		readonly turn: RuntimeTurnRecord;
+	};
+	sessions?: {
+		readonly targetFailure?: string;
+		readonly targetReadOnly?: boolean;
+		readonly prepareTarget?: () => Promise<void>;
+		readonly targetQueue?: QueueSnapshot;
 	};
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
@@ -50,6 +64,9 @@ function gatewayHarness(options: {
 			return turnRecord(submission, options.signal.aborted ? "interrupted" : "completed");
 		},
 	};
+	const sessionCoordinator = options.sessions
+		? gatewaySessionCoordinator(runtime, options.sessions)
+		: undefined;
 	const gateway = createNodeGateway({
 		sessionId: "session-node",
 		workspaceRoot: "/repo",
@@ -58,6 +75,7 @@ function gatewayHarness(options: {
 		toolNames: ["Read"],
 		runtime,
 		loadConversation: () => options.conversation ?? [],
+		...(sessionCoordinator ? { sessionCoordinator } : {}),
 		close: () => { closeCalls += 1; },
 		createTurnId: () => "turn-node",
 		clock: () => 1_700_000_000,
@@ -81,6 +99,7 @@ function gatewayHarness(options: {
 		releaseTurn,
 		closeCalls: () => closeCalls,
 		runtimeSettled: () => runtimeSettled,
+		sessionCoordinator,
 	};
 }
 
@@ -119,6 +138,188 @@ test("node gateway boots the real TUI startup sequence", async () => {
 			});
 		}
 	}
+	await harness.gateway.close();
+});
+
+test("session RPCs atomically resume and publish one target generation", async () => {
+	const harness = gatewayHarness({ sessions: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const listed = await harness.send("session.list", {});
+	assert.ok("result" in listed);
+	assert.deepEqual(
+		"result" in listed
+			? listed.result.sessions.map((item: { id: string; current: boolean }) => [item.id, item.current])
+			: [],
+		[["target", false], ["session-node", true]],
+	);
+	const tree = await harness.send("session.tree", { session_id: "target" });
+	assert.deepEqual("result" in tree ? tree.result.active_path : null, ["session-node"]);
+
+	const resumed = await harness.send("session.resume", { session_id: "target" });
+	assert.deepEqual("result" in resumed ? resumed.result : null, {
+		session_id: "target",
+		generation: 2,
+		read_only: false,
+		lines: [],
+	});
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "target");
+
+	const changed = await waitFor(() => notificationForSession(
+		harness.messages,
+		"session.changed",
+		"target",
+	));
+	const status = await waitFor(() => notificationForSession(
+		harness.messages,
+		"status.changed",
+		"target",
+	));
+	const approval = await waitFor(() => notificationForSession(
+		harness.messages,
+		"approval.request",
+		"target",
+	));
+	assert.ok(harness.messages.indexOf(changed) < harness.messages.indexOf(status));
+	assert.ok(harness.messages.indexOf(status) < harness.messages.indexOf(approval));
+	assert.equal(changed.params.generation, 2);
+	assert.equal(approval.params.decision_id, "decision-target");
+	parseGatewayEvent(changed);
+	parseGatewayEvent(status);
+	parseGatewayEvent(approval);
+
+	const transcript = await harness.send("transcript.load", {
+		session_id: "target",
+		before: null,
+	});
+	assert.deepEqual("result" in transcript ? transcript.result : null, {
+		session_id: "target",
+		items: [{
+			id: "target:user:1",
+			type: "user",
+			text: "target",
+			created_at: "",
+			folded: false,
+			metadata: {},
+		}],
+		next_before: null,
+		read_only: false,
+	});
+	await harness.gateway.close();
+});
+
+test("failed session preparation keeps the source active and emits no target state", async () => {
+	const harness = gatewayHarness({ sessions: { targetFailure: "session_state_invalid" } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("session.resume", { session_id: "target" });
+
+	assert.equal("error" in response ? response.error.code : null, "session_state_invalid");
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "session-node");
+	assert.equal(notificationForSession(harness.messages, "session.changed", "target"), undefined);
+	await harness.gateway.close();
+});
+
+test("read-only session replay rejects turn submission", async () => {
+	const harness = gatewayHarness({ sessions: { targetReadOnly: true } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const resumed = await harness.send("session.resume", { session_id: "target" });
+	assert.equal("result" in resumed ? resumed.result.read_only : false, true);
+
+	const submitted = await harness.send("turn.submit", {
+		message: "must not run",
+		client_turn_id: "read-only-turn",
+		client_user_message_id: "read-only-message",
+		local_images: [],
+	});
+
+	assert.equal("error" in submitted ? submitted.error.code : null, "session_state_invalid");
+	assert.deepEqual(harness.submissions, []);
+	await harness.gateway.close();
+});
+
+test("status projects rejected steers as deferred follow-up input", async () => {
+	const harness = gatewayHarness({ sessions: { targetQueue: populatedQueue("target") } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("session.resume", { session_id: "target" });
+	const status = await waitFor(() => notificationForSession(
+		harness.messages,
+		"status.changed",
+		"target",
+	));
+
+	assert.deepEqual(status.params.queued_steering, ["steer now"]);
+	assert.deepEqual(status.params.queued_follow_up, ["deferred steer", "follow later"]);
+	assert.deepEqual(status.params.queue_activity, {
+		kind: "pending_input",
+		has_pending_input: true,
+		steering_count: 1,
+		follow_up_count: 2,
+	});
+	assert.deepEqual(
+		status.params.queue_items.rejected_steers.map((item: { queue_id: string }) => item.queue_id),
+		["queue-rejected"],
+	);
+	await harness.gateway.close();
+});
+
+test("turn submission cannot reserve the source while target preparation is pending", async () => {
+	let preparationStarted!: () => void;
+	let releasePreparation!: () => void;
+	const started = new Promise<void>((resolve) => { preparationStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releasePreparation = resolve; });
+	const harness = gatewayHarness({
+		sessions: {
+			prepareTarget: async () => {
+				preparationStarted();
+				await released;
+			},
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const resume = harness.send("session.resume", { session_id: "target" });
+	await started;
+
+	const submitted = await harness.send("turn.submit", {
+		message: "must not reserve source",
+		client_turn_id: "racing-turn",
+		client_user_message_id: "racing-message",
+		local_images: [],
+	});
+	releasePreparation();
+	const resumed = await resume;
+	if ("result" in submitted) harness.releaseTurn();
+
+	assert.equal(
+		"error" in submitted ? submitted.error.code : null,
+		"turn_in_progress",
+		JSON.stringify(submitted),
+	);
+	assert.ok("result" in resumed);
+	assert.deepEqual(harness.submissions, []);
+	await harness.gateway.close();
+});
+
+test("session resume rejects an executing turn and ignores stale generation callbacks", async () => {
+	const harness = gatewayHarness({ sessions: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "hello",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	const blocked = await harness.send("session.resume", { session_id: "target" });
+	assert.equal("error" in blocked ? blocked.error.code : null, "turn_in_progress");
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "session-node");
+
+	harness.releaseTurn();
+	await waitFor(() => notification(harness.messages, "turn.completed"));
+	await harness.send("session.resume", { session_id: "target" });
+	const before = notificationCount(harness.messages, "message.delta");
+	harness.emit({ type: "text_delta", text: "late source event" });
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	assert.equal(notificationCount(harness.messages, "message.delta"), before);
 	await harness.gateway.close();
 });
 
@@ -431,6 +632,147 @@ test("unsupported methods return a stable error and observable gateway event", a
 
 function notification(messages: RpcMessage[], method: string) {
 	return messages.find((message) => "method" in message && !("id" in message) && message.method === method);
+}
+
+function notificationForSession(messages: RpcMessage[], method: string, sessionId: string) {
+	return messages.find((message) => "method" in message
+		&& !("id" in message)
+		&& message.method === method
+		&& message.params.session_id === sessionId);
+}
+
+function notificationCount(messages: RpcMessage[], method: string): number {
+	return messages.filter((message) => "method" in message
+		&& !("id" in message)
+		&& message.method === method).length;
+}
+
+function gatewaySessionCoordinator(
+	runtime: NodeGatewayRuntime,
+	options: {
+		readonly targetFailure?: string;
+		readonly targetReadOnly?: boolean;
+		readonly prepareTarget?: () => Promise<void>;
+		readonly targetQueue?: QueueSnapshot;
+	},
+): SessionCoordinator<NodeGatewayRuntime> {
+	return new SessionCoordinator({
+		initial: preparedGatewaySession("session-node", runtime),
+		prepare: async (sessionId) => {
+			await options.prepareTarget?.();
+			if (options.targetFailure) {
+				throw Object.assign(new Error("target preparation failed"), {
+					code: options.targetFailure,
+				});
+			}
+			return preparedGatewaySession(
+				sessionId,
+				runtime,
+				options.targetReadOnly ?? false,
+				options.targetQueue,
+			);
+		},
+		listSessions: () => [
+			sessionOverview("target", "2026-08-04T00:00:01.000Z"),
+			sessionOverview("session-node", "2026-08-04T00:00:00.000Z"),
+		],
+		loadSessionLineage: (sessionId) => sessionId === "target"
+			? [
+				{ sessionId: "session-node" },
+				{ sessionId: "target", parentId: "session-node", forkPoint: 1 },
+			]
+			: [{ sessionId }],
+	});
+}
+
+function preparedGatewaySession(
+	sessionId: string,
+	runtime: NodeGatewayRuntime,
+	readOnly = false,
+	queue: QueueSnapshot = emptyQueue(sessionId),
+): PreparedSession<NodeGatewayRuntime> {
+	return {
+		sessionId,
+		workspaceRoot: "/repo",
+		threadId: sessionId,
+		transcript: [transcriptItem(sessionId)],
+		queue,
+		pendingApproval: {
+			sessionId,
+			clientTurnId: `client-${sessionId}`,
+			turnId: `turn-${sessionId}`,
+			decisionId: `decision-${sessionId}`,
+			callId: `call-${sessionId}`,
+			toolName: "Write",
+			preview: "Write notes.txt",
+			reason: "Approval required",
+			options: ["approve_once", "reject"],
+		},
+		suspendedTurn: true,
+		readOnly,
+		binding: runtime,
+	};
+}
+
+function transcriptItem(sessionId: string): TranscriptItem {
+	return { id: `${sessionId}:user:1`, type: "user_message", text: sessionId };
+}
+
+function emptyQueue(sessionId: string): QueueSnapshot {
+	return Object.freeze({
+		sessionId,
+		revision: 0,
+		pendingSteers: Object.freeze([]),
+		rejectedSteers: Object.freeze([]),
+		followUps: Object.freeze([]),
+	});
+}
+
+function populatedQueue(sessionId: string): QueueSnapshot {
+	return Object.freeze({
+		sessionId,
+		revision: 3,
+		pendingSteers: Object.freeze([queuedInput(sessionId, "queue-pending", "pending_steer", "steer now")]),
+		rejectedSteers: Object.freeze([
+			queuedInput(sessionId, "queue-rejected", "rejected_steer", "deferred steer"),
+		]),
+		followUps: Object.freeze([queuedInput(sessionId, "queue-follow", "follow_up", "follow later")]),
+	});
+}
+
+function queuedInput(
+	sessionId: string,
+	queueId: string,
+	kind: "pending_steer" | "rejected_steer" | "follow_up",
+	text: string,
+) {
+	return Object.freeze({
+		queueId,
+		sessionId,
+		clientTurnId: `client-${queueId}`,
+		targetTurnId: kind === "follow_up" ? null : "turn-target",
+		kind,
+		state: kind === "pending_steer" ? "accepted" as const : "queued" as const,
+		text,
+		imagePaths: Object.freeze([]),
+		source: "user",
+		createdAt: "2026-08-04T00:00:00.000Z",
+		updatedAt: "2026-08-04T00:00:00.000Z",
+	});
+}
+
+function sessionOverview(sessionId: string, lastActiveAt: string): SessionOverview {
+	return {
+		sessionId,
+		workspaceRoot: "/repo",
+		threadId: sessionId,
+		createdAt: lastActiveAt,
+		updatedAt: lastActiveAt,
+		lastActiveAt,
+		status: "active",
+		messageCount: 1,
+		summaryCount: 0,
+	};
 }
 
 async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 1_000): Promise<T> {
