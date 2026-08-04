@@ -85,6 +85,43 @@ After implementation:
 
 ---
 
+## Atomic Acceptance And Durable Ownership
+
+When an API or gateway accepts work that depends on a durable reservation, the
+reservation is part of the acceptance boundary.
+
+### Checklist: Accepting Idempotent Work
+
+- [ ] Perform the fingerprint check and reservation in one atomic storage
+  operation before returning success
+- [ ] Do not use `load` followed by a later `reserve`; that creates a TOCTOU
+  window across processes
+- [ ] Carry the exact reservation result into asynchronous execution instead
+  of reserving a second time
+- [ ] Map reservation conflicts to request-level errors before publishing an
+  accepted response
+- [ ] Test two independent callers sharing the real or equivalent atomic
+  reservation boundary; require exactly one acceptance
+
+### Checklist: Recovering In-Progress Work
+
+- [ ] Persist enough owner identity to distinguish orphaned work from another
+  live process's work
+- [ ] Recover only unowned work or work whose owner is known to be dead
+- [ ] Release only the current owner's records during graceful shutdown
+- [ ] Test concurrent live owners and dead-owner recovery separately
+- [ ] Keep recovery and terminal-state writes in short atomic transactions
+
+**Real-world example**: The Node runtime gateway initially returned `accepted`
+after a non-atomic pre-read, while the runtime reserved the turn later. Two
+processes could both accept a conflicting `client_turn_id`. Startup recovery
+also treated every `in_progress` row as orphaned, so a second CLI could
+interrupt a live first CLI. The fix made reservation part of synchronous
+gateway acceptance, passed that reservation into asynchronous execution, and
+recorded store owner identity for liveness-aware recovery.
+
+---
+
 ## Cross-Platform Template Consistency
 
 In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.

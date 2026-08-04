@@ -17,7 +17,7 @@ import type { ModelProvider } from "@mycli/providers";
 import {
 	StorageFailure,
 } from "@mycli/storage";
-import type { SessionStore } from "@mycli/storage";
+import type { SessionStore, TurnReservation } from "@mycli/storage";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	decideRetry,
@@ -52,6 +52,7 @@ export interface NoToolRuntimeOptions {
 
 export interface SubmitTurnOptions {
 	readonly signal: AbortSignal;
+	readonly reservation?: TurnReservation;
 }
 
 interface NormalizedFailure {
@@ -74,14 +75,9 @@ export class NoToolRuntime {
 		this.#options = options;
 	}
 
-	async submit(
-		submission: NoToolSubmission,
-		emit: (event: RuntimeEvent) => void,
-		options: SubmitTurnOptions,
-	): Promise<RuntimeTurnRecord> {
+	reserve(submission: NoToolSubmission): TurnReservation {
 		const turnId = submission.turnId ?? this.#options.createTurnId();
-		const startedAt = this.#options.clock();
-		const reservation = this.#options.store.reserveTurn({
+		return this.#options.store.reserveTurn({
 			sessionId: this.#options.sessionId,
 			clientTurnId: submission.clientTurnId,
 			turnId,
@@ -94,11 +90,20 @@ export class NoToolRuntime {
 			workspaceRoot: this.#options.workspaceRoot,
 			threadId: this.#options.threadId,
 			userText: submission.message,
-			startedAt,
+			startedAt: this.#options.clock(),
 		});
+	}
+
+	async submit(
+		submission: NoToolSubmission,
+		emit: (event: RuntimeEvent) => void,
+		options: SubmitTurnOptions,
+	): Promise<RuntimeTurnRecord> {
+		const reservation = options.reservation ?? this.reserve(submission);
 		if (reservation.kind === "existing") {
 			return reservation.turn;
 		}
+		const turnId = reservation.turn.turn_id;
 		emit({
 			type: "turn_started",
 			clientTurnId: submission.clientTurnId,

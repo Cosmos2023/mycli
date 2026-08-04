@@ -23,6 +23,9 @@ interface Store {
 type StoreConstructor = new (options: {
 	readonly dbPath: string;
 	readonly clock?: () => string;
+	readonly ownerId?: string;
+	readonly processId?: number;
+	readonly isProcessAlive?: (processId: number) => boolean;
 }) => Store;
 
 test("reopening the store interrupts orphaned running turns without changing completed turns", async (t) => {
@@ -52,6 +55,36 @@ test("reopening the store interrupts orphaned running turns without changing com
 	assert.equal(interrupted?.completed_at, RECOVERED);
 	assert.equal(completed?.status, "completed");
 	assert.equal(reopened.recoverInterruptedTurns(), 0);
+});
+
+test("opening a concurrent store does not interrupt a turn owned by a live process", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-live-"));
+	t.after(async () => rm(root, { recursive: true, force: true }));
+	const dbPath = join(root, ".mycli", "sessions.db");
+	const liveProcesses = new Set([101, 202]);
+	const first = new SQLiteSessionStore({
+		dbPath,
+		ownerId: "owner-1",
+		processId: 101,
+		isProcessAlive: (processId) => liveProcesses.has(processId),
+	});
+	const second = new SQLiteSessionStore({
+		dbPath,
+		ownerId: "owner-2",
+		processId: 202,
+		isProcessAlive: (processId) => liveProcesses.has(processId),
+	});
+	t.after(() => first.close());
+	t.after(() => second.close());
+
+	first.reserveTurn(submission(root, "client-running", "turn-running"));
+	assert.equal(second.recoverInterruptedTurns(), 0);
+	assert.equal(second.loadTurn("session-1", "client-running")?.status, "in_progress");
+
+	liveProcesses.delete(101);
+	assert.equal(second.recoverInterruptedTurns(), 1);
+	assert.equal(second.loadTurn("session-1", "client-running")?.status, "interrupted");
 });
 
 const NOW = "2026-08-03T00:00:00+00:00";

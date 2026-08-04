@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseRuntimeTurnRecord } from "@mycli/contracts";
@@ -25,6 +26,9 @@ export interface SQLiteSessionStoreOptions {
 	readonly dbPath: string;
 	readonly clock?: () => string;
 	readonly busyTimeoutMs?: number;
+	readonly ownerId?: string;
+	readonly processId?: number;
+	readonly isProcessAlive?: (processId: number) => boolean;
 }
 
 interface RuntimeTurnRow {
@@ -37,6 +41,8 @@ interface RuntimeTurnRow {
 	readonly result_json: unknown;
 	readonly started_at: unknown;
 	readonly completed_at: unknown;
+	readonly owner_id: unknown;
+	readonly owner_pid: unknown;
 }
 
 const RUNTIME_TURN_COLUMNS = `
@@ -48,17 +54,25 @@ status,
 error_code,
 result_json,
 started_at,
-completed_at
+completed_at,
+owner_id,
+owner_pid
 `;
 
 export class SQLiteSessionStore implements SessionStore {
 	readonly #database: Database.Database;
 	readonly #clock: () => string;
+	readonly #ownerId: string;
+	readonly #processId: number;
+	readonly #isProcessAlive: (processId: number) => boolean;
 	#closed = false;
 
 	constructor(options: SQLiteSessionStoreOptions) {
 		mkdirSync(dirname(options.dbPath), { recursive: true });
 		this.#clock = options.clock ?? utcTimestamp;
+		this.#ownerId = options.ownerId ?? randomUUID();
+		this.#processId = options.processId ?? process.pid;
+		this.#isProcessAlive = options.isProcessAlive ?? processIsAlive;
 		try {
 			this.#database = new Database(options.dbPath, {
 				timeout: options.busyTimeoutMs ?? 1000,
@@ -152,7 +166,8 @@ export class SQLiteSessionStore implements SessionStore {
 			this.#appendRollout(input.sessionId, completedRollout(running, input, threadId));
 			this.#database.prepare(`
 				UPDATE runtime_turns
-				SET status = 'completed', error_code = NULL, result_json = ?, completed_at = ?
+				SET status = 'completed', error_code = NULL, result_json = ?, completed_at = ?,
+					owner_id = NULL, owner_pid = NULL
 				WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
 			`).run(stableJson(result), input.completedAt, input.sessionId, input.clientTurnId);
 			this.#touchExistingSession(input.sessionId, input.completedAt);
@@ -170,7 +185,8 @@ export class SQLiteSessionStore implements SessionStore {
 			);
 			this.#database.prepare(`
 				UPDATE runtime_turns
-				SET status = ?, error_code = ?, result_json = ?, completed_at = ?
+				SET status = ?, error_code = ?, result_json = ?, completed_at = ?,
+					owner_id = NULL, owner_pid = NULL
 				WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
 			`).run(
 				status,
@@ -193,7 +209,8 @@ export class SQLiteSessionStore implements SessionStore {
 				WHERE status = 'in_progress'
 				ORDER BY session_id, client_turn_id
 			`).all() as readonly RuntimeTurnRow[];
-			for (const row of running) {
+			const orphaned = running.filter((row) => !ownedByLiveProcess(row, this.#isProcessAlive));
+			for (const row of orphaned) {
 				const turn = runtimeTurnFromRow(row);
 				const completedAt = this.#clock();
 				this.#appendRollout(
@@ -203,7 +220,7 @@ export class SQLiteSessionStore implements SessionStore {
 				this.#database.prepare(`
 					UPDATE runtime_turns
 					SET status = 'interrupted', error_code = 'interrupted',
-						result_json = ?, completed_at = ?
+						result_json = ?, completed_at = ?, owner_id = NULL, owner_pid = NULL
 					WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
 				`).run(
 					stableJson({ message: "turn interrupted during process restart" }),
@@ -213,14 +230,24 @@ export class SQLiteSessionStore implements SessionStore {
 				);
 				this.#touchExistingSession(turn.session_id, completedAt);
 			}
-			return running.length;
+			return orphaned.length;
 		});
 	}
 
 	close(): void {
 		if (!this.#closed) {
-			this.#database.close();
-			this.#closed = true;
+			try {
+				this.#write(() => {
+					this.#database.prepare(`
+						UPDATE runtime_turns
+						SET owner_id = NULL, owner_pid = NULL
+						WHERE status = 'in_progress' AND owner_id = ?
+					`).run(this.#ownerId);
+				});
+			} finally {
+				this.#database.close();
+				this.#closed = true;
+			}
 		}
 	}
 
@@ -257,10 +284,24 @@ export class SQLiteSessionStore implements SessionStore {
 				}
 			}
 			this.#database.exec(SCHEMA_V2_SQL);
+			this.#ensureRuntimeTurnOwnershipColumns();
 			this.#database.exec(BACKFILL_SEARCH_SQL);
 			this.#database.prepare("DELETE FROM schema_version").run();
 			this.#database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
 		});
+	}
+
+	#ensureRuntimeTurnOwnershipColumns(): void {
+		const columns = new Set(
+			(this.#database.prepare("PRAGMA table_info(runtime_turns)").all() as readonly { name: unknown }[])
+				.map((row) => String(row.name)),
+		);
+		if (!columns.has("owner_id")) {
+			this.#database.exec("ALTER TABLE runtime_turns ADD COLUMN owner_id TEXT");
+		}
+		if (!columns.has("owner_pid")) {
+			this.#database.exec("ALTER TABLE runtime_turns ADD COLUMN owner_pid INTEGER");
+		}
 	}
 
 	#write<Result>(operation: () => Result): Result {
@@ -313,7 +354,7 @@ export class SQLiteSessionStore implements SessionStore {
 	#insertRuntimeTurn(turn: RuntimeTurnRecord): void {
 		this.#database.prepare(`
 			INSERT INTO runtime_turns (${RUNTIME_TURN_COLUMNS})
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`).run(
 			turn.session_id,
 			turn.client_turn_id,
@@ -324,6 +365,8 @@ export class SQLiteSessionStore implements SessionStore {
 			turn.result === null ? null : stableJson(turn.result),
 			turn.started_at,
 			turn.completed_at,
+			this.#ownerId,
+			this.#processId,
 		);
 	}
 
@@ -604,6 +647,29 @@ function sortJson(value: unknown): unknown {
 
 function utcTimestamp(): string {
 	return new Date().toISOString().replace("Z", "+00:00");
+}
+
+function ownedByLiveProcess(
+	row: RuntimeTurnRow,
+	isProcessAlive: (processId: number) => boolean,
+): boolean {
+	return typeof row.owner_id === "string"
+		&& row.owner_id.length > 0
+		&& typeof row.owner_pid === "number"
+		&& Number.isSafeInteger(row.owner_pid)
+		&& row.owner_pid > 0
+		&& isProcessAlive(row.owner_pid);
+}
+
+function processIsAlive(processId: number): boolean {
+	try {
+		process.kill(processId, 0);
+		return true;
+	} catch (error) {
+		return error instanceof Error
+			&& "code" in error
+			&& error.code === "EPERM";
+	}
 }
 
 function storageError(error: unknown): Error {

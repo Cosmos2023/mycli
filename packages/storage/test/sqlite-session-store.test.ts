@@ -92,6 +92,10 @@ test("initializes the complete schema-v2 shape plus runtime turn reservations", 
 		"history_items_fts_update",
 	]);
 	assert.equal((database.prepare("SELECT version FROM schema_version").get() as { version: number }).version, 2);
+	const runtimeTurnColumns = database.prepare("PRAGMA table_info(runtime_turns)").all()
+		.map((row) => String((row as { name: unknown }).name));
+	assert.ok(runtimeTurnColumns.includes("owner_id"));
+	assert.ok(runtimeTurnColumns.includes("owner_pid"));
 });
 
 test("opens an existing schema-v2 database additively without changing existing messages", async (t) => {
@@ -100,6 +104,21 @@ test("opens an existing schema-v2 database additively without changing existing 
 	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
 	const database = await openDatabase(fixture.dbPath);
 	database.exec("DROP TABLE runtime_turns");
+	database.exec(`
+		CREATE TABLE runtime_turns (
+			session_id TEXT NOT NULL,
+			client_turn_id TEXT NOT NULL,
+			turn_id TEXT NOT NULL,
+			request_fingerprint TEXT NOT NULL,
+			status TEXT NOT NULL,
+			error_code TEXT,
+			result_json TEXT,
+			started_at TEXT NOT NULL,
+			completed_at TEXT,
+			PRIMARY KEY (session_id, client_turn_id),
+			FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+		)
+	`);
 	database.prepare(`
 		INSERT INTO sessions (
 			session_id, workspace_root, thread_id, created_at, updated_at, last_active_at, status
@@ -117,6 +136,12 @@ test("opens an existing schema-v2 database additively without changing existing 
 	assert.deepEqual(reopened.loadConversation("legacy"), [
 		{ role: "user", content: "legacy message" },
 	]);
+	const migrated = await openDatabase(fixture.dbPath);
+	t.after(() => migrated.close());
+	const runtimeTurnColumns = migrated.prepare("PRAGMA table_info(runtime_turns)").all()
+		.map((row) => String((row as { name: unknown }).name));
+	assert.ok(runtimeTurnColumns.includes("owner_id"));
+	assert.ok(runtimeTurnColumns.includes("owner_pid"));
 });
 
 test("reserves a turn atomically and deduplicates the same fingerprint", async (t) => {

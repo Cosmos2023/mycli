@@ -7,17 +7,22 @@ import {
 	parseJsonRpcMessage,
 } from "@mycli/contracts";
 import type { RuntimeErrorCode, RuntimeTurnRecord } from "@mycli/contracts";
-import type { CanonicalMessage, RuntimeEvent } from "@mycli/core";
+import {
+	type CanonicalMessage,
+	type RuntimeEvent,
+} from "@mycli/core";
 import type {
 	NoToolSubmission,
 	SubmitTurnOptions,
 } from "@mycli/runtime";
+import type { TurnReservation } from "@mycli/storage";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 
 type JsonObject = Record<string, unknown>;
 type RpcId = string | number | null;
 
 export interface NodeGatewayRuntime {
+	reserve(submission: NoToolSubmission): TurnReservation;
 	submit(
 		submission: NoToolSubmission,
 		emit: (event: RuntimeEvent) => void,
@@ -33,7 +38,6 @@ export interface CreateNodeGatewayOptions {
 	readonly maxPromptTokens?: number;
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
-	readonly loadTurn?: (sessionId: string, clientTurnId: string) => RuntimeTurnRecord | undefined;
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
 	readonly clock?: () => number;
@@ -239,10 +243,15 @@ class InProcessNodeGateway implements NodeGateway {
 			"client_user_message_id",
 		);
 		const localImages = stringArray(params.local_images, "local_images");
-		const existing = this.#options.loadTurn?.(this.#options.sessionId, clientTurnId);
-		const turnId = existing?.turn_id
-			?? this.#options.createTurnId?.()
-			?? `turn_${randomUUID().replaceAll("-", "")}`;
+		const submission: NoToolSubmission = {
+			clientTurnId,
+			turnId: this.#options.createTurnId?.()
+				?? `turn_${randomUUID().replaceAll("-", "")}`,
+			message,
+			localImages,
+		};
+		const reservation = this.#options.runtime.reserve(submission);
+		const turnId = reservation.turn.turn_id;
 		const active: ActiveTurn = {
 			clientTurnId,
 			clientUserMessageId,
@@ -253,12 +262,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#activeTurn = active;
 		this.#activeTurnTask = new Promise<void>((resolve) => {
 			queueMicrotask(() => {
-				void this.#runTurn(active, {
-					clientTurnId,
-					turnId,
-					message,
-					localImages,
-				}).then(resolve);
+				void this.#runTurn(active, submission, reservation).then(resolve);
 			});
 		});
 		return {
@@ -269,12 +273,16 @@ class InProcessNodeGateway implements NodeGateway {
 		};
 	}
 
-	async #runTurn(active: ActiveTurn, submission: NoToolSubmission): Promise<void> {
+	async #runTurn(
+		active: ActiveTurn,
+		submission: NoToolSubmission,
+		reservation: TurnReservation,
+	): Promise<void> {
 		try {
 			const record = await this.#options.runtime.submit(
 				submission,
 				(event) => { this.#projectRuntimeEvent(active, event); },
-				{ signal: active.controller.signal },
+				{ signal: active.controller.signal, reservation },
 			);
 			if (!active.terminalEmitted) {
 				this.#projectStoredTerminal(active, record);
@@ -522,9 +530,17 @@ class GatewayFailure extends Error {
 }
 
 function gatewayFailure(error: unknown): GatewayFailure {
-	return error instanceof GatewayFailure
-		? error
-		: new GatewayFailure("internal_error", "Gateway request failed.");
+	if (error instanceof GatewayFailure) return error;
+	if (isObject(error) && error.code === "message_id_conflict") {
+		return new GatewayFailure(
+			"message_id_conflict",
+			"client_turn_id already has a different payload.",
+		);
+	}
+	if (isObject(error) && error.code === "persistence_error") {
+		return new GatewayFailure("persistence_error", "Session persistence failed.");
+	}
+	return new GatewayFailure("internal_error", "Gateway request failed.");
 }
 
 function extensionManifest(): JsonObject {

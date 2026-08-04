@@ -56,7 +56,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			maxPromptTokens: config.maxPromptTokens,
 			runtime,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
-			loadTurn: (sessionId, clientTurnId) => store.loadTurn(sessionId, clientTurnId),
 			close: () => store.close(),
 		});
 	} catch (error) {

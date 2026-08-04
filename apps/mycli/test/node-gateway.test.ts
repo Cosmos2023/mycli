@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseGatewayEvent, parseJsonRpcMessage } from "@mycli/contracts";
-import type { RuntimeEvent } from "@mycli/core";
+import type { RuntimeTurnRecord } from "@mycli/contracts";
+import { fingerprintSubmission, type RuntimeEvent } from "@mycli/core";
 import type { NoToolSubmission } from "@mycli/runtime";
 import { createNodeGateway } from "../src/node-runtime/node-gateway.ts";
 
@@ -10,6 +11,11 @@ type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
 
 function gatewayHarness(options: {
 	conversation?: readonly { role: "user" | "assistant"; content: string }[];
+	existingTurn?: RuntimeTurnRecord;
+	reserve?: (submission: NoToolSubmission) => {
+		readonly kind: "reserved" | "existing";
+		readonly turn: RuntimeTurnRecord;
+	};
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -18,32 +24,38 @@ function gatewayHarness(options: {
 	let releaseTurn!: () => void;
 	const turnReleased = new Promise<void>((resolve) => { releaseTurn = resolve; });
 	const submissions: NoToolSubmission[] = [];
+	const runtime = {
+		reserve: options.reserve ?? ((submission: NoToolSubmission) => {
+			const fingerprint = fingerprintSubmission({
+				message: submission.message,
+				localImages: submission.localImages,
+			});
+			if (options.existingTurn) {
+				if (options.existingTurn.request_fingerprint !== fingerprint) {
+					throw Object.assign(new Error("conflicting payload"), { code: "message_id_conflict" });
+				}
+				return { kind: "existing" as const, turn: options.existingTurn };
+			}
+			return {
+				kind: "reserved" as const,
+				turn: turnRecord(submission, "in_progress"),
+			};
+		}),
+		submit: async (submission: NoToolSubmission, emit: (event: RuntimeEvent) => void, options: { signal: AbortSignal }) => {
+			submissions.push(submission);
+			emitRuntime = emit;
+			signal = options.signal;
+			await turnReleased;
+			runtimeSettled = true;
+			return turnRecord(submission, options.signal.aborted ? "interrupted" : "completed");
+		},
+	};
 	const gateway = createNodeGateway({
 		sessionId: "session-node",
 		workspaceRoot: "/repo",
 		provider: "openai",
 		model: "gpt-test",
-		runtime: {
-			submit: async (submission, emit, options) => {
-				submissions.push(submission);
-				emitRuntime = emit;
-				signal = options.signal;
-				await turnReleased;
-				runtimeSettled = true;
-				return {
-					schema_version: 1,
-					session_id: "session-node",
-					client_turn_id: submission.clientTurnId,
-					turn_id: "turn-node",
-					request_fingerprint: "fingerprint",
-					status: options.signal.aborted ? "interrupted" : "completed",
-					error_code: options.signal.aborted ? "interrupted" : null,
-					result: null,
-					started_at: "2026-08-04T00:00:00.000Z",
-					completed_at: "2026-08-04T00:00:01.000Z",
-				};
-			},
-		},
+		runtime,
 		loadConversation: () => options.conversation ?? [],
 		close: () => { closeCalls += 1; },
 		createTurnId: () => "turn-node",
@@ -146,6 +158,80 @@ test("turn submission responds immediately and emits validated direct events bef
 	await harness.gateway.close();
 });
 
+test("turn submission rejects a conflicting client turn id before accepting it", async () => {
+	const harness = gatewayHarness({
+		existingTurn: {
+			schema_version: 1,
+			session_id: "session-node",
+			client_turn_id: "client-turn",
+			turn_id: "existing-turn",
+			request_fingerprint: fingerprintSubmission({ message: "original", localImages: [] }),
+			status: "completed",
+			error_code: null,
+			result: { assistant_text: "done", usage: {} },
+			started_at: "2026-08-04T00:00:00.000Z",
+			completed_at: "2026-08-04T00:00:01.000Z",
+		},
+	});
+	try {
+		const response = await harness.send("turn.submit", {
+			message: "different",
+			client_turn_id: "client-turn",
+			client_user_message_id: "client-message",
+			local_images: [],
+		});
+		assert.ok("error" in response);
+		assert.equal("error" in response ? response.error.code : null, "message_id_conflict");
+		assert.equal(harness.submissions.length, 0);
+	} finally {
+		harness.releaseTurn();
+		await harness.gateway.close();
+	}
+});
+
+test("two gateways atomically reject a conflicting concurrent client turn id", async () => {
+	let reserved: RuntimeTurnRecord | undefined;
+	const reserve = (submission: NoToolSubmission) => {
+		const fingerprint = fingerprintSubmission({
+			message: submission.message,
+			localImages: submission.localImages,
+		});
+		if (!reserved) {
+			reserved = { ...turnRecord(submission, "in_progress"), request_fingerprint: fingerprint };
+			return { kind: "reserved" as const, turn: reserved };
+		}
+		if (reserved.request_fingerprint !== fingerprint) {
+			throw Object.assign(new Error("conflicting payload"), { code: "message_id_conflict" });
+		}
+		return { kind: "existing" as const, turn: reserved };
+	};
+	const first = gatewayHarness({ reserve });
+	const second = gatewayHarness({ reserve });
+	try {
+		const [firstResponse, secondResponse] = await Promise.all([
+			first.send("turn.submit", {
+				message: "first",
+				client_turn_id: "shared-client-turn",
+				client_user_message_id: "first-message",
+			}),
+			second.send("turn.submit", {
+				message: "second",
+				client_turn_id: "shared-client-turn",
+				client_user_message_id: "second-message",
+			}),
+		]);
+		const responses = [firstResponse, secondResponse];
+		assert.equal(responses.filter((response) => "result" in response).length, 1);
+		const conflict = responses.find((response) => "error" in response);
+		assert.equal(conflict && "error" in conflict ? conflict.error.code : null, "message_id_conflict");
+		assert.equal(first.submissions.length + second.submissions.length, 1);
+	} finally {
+		first.releaseTurn();
+		second.releaseTurn();
+		await Promise.all([first.gateway.close(), second.gateway.close()]);
+	}
+});
+
 test("turn interrupt aborts the active request and shutdown closes resources", async () => {
 	const harness = gatewayHarness();
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
@@ -222,4 +308,25 @@ async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 1_000):
 		await new Promise((resolve) => setTimeout(resolve, 1));
 	}
 	throw new Error("timed out waiting for gateway message");
+}
+
+function turnRecord(
+	submission: NoToolSubmission,
+	status: "in_progress" | "completed" | "interrupted",
+): RuntimeTurnRecord {
+	return {
+		schema_version: 1,
+		session_id: "session-node",
+		client_turn_id: submission.clientTurnId,
+		turn_id: submission.turnId ?? "turn-node",
+		request_fingerprint: fingerprintSubmission({
+			message: submission.message,
+			localImages: submission.localImages,
+		}),
+		status,
+		error_code: status === "interrupted" ? "interrupted" : null,
+		result: null,
+		started_at: "2026-08-04T00:00:00.000Z",
+		completed_at: status === "in_progress" ? null : "2026-08-04T00:00:01.000Z",
+	};
 }

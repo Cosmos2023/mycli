@@ -10,6 +10,21 @@ const gateway = createNodeGateway({
 	provider: "openai",
 	model: "gpt-smoke",
 	runtime: {
+		reserve: (submission) => ({
+			kind: "reserved",
+			turn: {
+				schema_version: 1,
+				session_id: "smoke-session",
+				client_turn_id: submission.clientTurnId,
+				turn_id: "smoke-turn",
+				request_fingerprint: "smoke",
+				status: "in_progress",
+				error_code: null,
+				result: null,
+				started_at: "2026-08-04T00:00:00.000Z",
+				completed_at: null,
+			},
+		}),
 		submit: async (submission, emit) => {
 			providerCalls += 1;
 			emit({ type: "turn_started", clientTurnId: submission.clientTurnId, turnId: "smoke-turn" });

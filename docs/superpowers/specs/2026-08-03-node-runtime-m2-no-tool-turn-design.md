@@ -238,6 +238,8 @@ CREATE TABLE IF NOT EXISTS runtime_turns (
   result_json TEXT,
   started_at TEXT NOT NULL,
   completed_at TEXT,
+  owner_id TEXT,
+  owner_pid INTEGER,
   PRIMARY KEY (session_id, client_turn_id),
   FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
@@ -257,10 +259,13 @@ payload shapes. The schema version is not bumped for the additive private reserv
 a new database, Node creates the complete existing schema-v2 structure plus this table, so a fresh
 Node installation never depends on Python to initialize storage.
 
-When the Node store opens, it marks its orphaned `in_progress` rows `interrupted` in a short
-transaction and records a terminal rollout if one is not already present. Recovery never issues a
-provider request. Python/Node compatibility tests prove that both implementations can read the
-canonical records written by the other.
+Each running reservation records an internal store owner ID and process ID. When the Node store
+opens, it marks only unowned rows or rows whose owner process is no longer alive as `interrupted`
+in a short transaction and records a terminal rollout if one is not already present. A second
+live CLI process must not interrupt another process's active turn. Ownership columns are added
+additively to an existing private `runtime_turns` table and ignored by Python. Recovery never
+issues a provider request. Python/Node compatibility tests prove that both implementations can
+read the canonical records written by the other.
 
 ## Retry, Cancellation, And Errors
 

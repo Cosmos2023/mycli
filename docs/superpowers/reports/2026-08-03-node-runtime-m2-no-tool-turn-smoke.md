@@ -33,15 +33,17 @@ and this candidate must not be promoted as a fully accepted M2 release.
 | `npm run build` | Passed for all runtime workspaces and the app |
 | `npm run lint` | Passed |
 | `npm run typecheck` | Passed for all workspaces |
-| `npm test` | 483 passed |
+| `npm test` | 486 passed |
 | `npm run test:m2` | Passed: Node backend/smoke integration plus Python parity |
 | `npm run smoke:package` | Passed: 8 tarballs installed and `.bin/mycli --help` executed |
 | `uv run ruff check .` | Passed |
 | `uv run mypy src/mycli` | Passed for 321 source files |
 | `uv run pytest -q` | 2463 passed, 30 skipped |
 
-The Node total is app 51, config 9, contracts 14, core 7, providers 11, runtime 12, storage 9,
-and TUI 370. The prior Node 24 false positive was an over-broad test regex that classified
+The Node total is app 53, config 9, contracts 14, core 7, providers 11, runtime 12, storage 10,
+and TUI 370. Final review added coverage for request-level atomic duplicate rejection and for
+protecting a live process's running turn from another store's startup recovery. The prior Node 24
+false positive was an over-broad test regex that classified
 readline's single-line `ESC[1A` redraw as a fullscreen control sequence; the test continues to
 reject alternate-screen, mouse-capture, and clear-screen sequences.
 

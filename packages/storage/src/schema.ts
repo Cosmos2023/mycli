@@ -138,6 +138,8 @@ CREATE TABLE IF NOT EXISTS runtime_turns (
     result_json TEXT,
     started_at TEXT NOT NULL,
     completed_at TEXT,
+    owner_id TEXT,
+    owner_pid INTEGER,
     PRIMARY KEY (session_id, client_turn_id),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
