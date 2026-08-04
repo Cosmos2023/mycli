@@ -72,7 +72,7 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	assert.deepEqual(
 		(capture.requestBody?.tools as Array<Record<string, unknown>> | undefined)
 			?.map((tool) => tool.name),
-		["Read"],
+		["Read", "Edit", "Patch", "Write"],
 	);
 	assert.equal(existsSync(join(home, ".mycli", "sessions.db")), true);
 	await waitFor(() => event(messages, "status.changed"));

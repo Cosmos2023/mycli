@@ -6,9 +6,14 @@ import { NodeTurnRuntime } from "@mycli/runtime";
 import { SQLiteSessionStore } from "@mycli/storage";
 import {
 	builtinToolManifest,
+	EditTool,
+	FileMutationRuntime,
+	FileSnapshotStore,
+	PatchTool,
 	planToolExposure,
 	ReadTool,
 	ToolRouter,
+	WriteTool,
 } from "@mycli/tools";
 import {
 	createNodeGateway,
@@ -34,9 +39,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	});
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
 	const registry = new OpenAIProviderRegistry();
-	const readTool = new ReadTool({ workspaceRoot: config.workspaceRoot });
+	const snapshots = new FileSnapshotStore();
+	const mutationRuntime = new FileMutationRuntime({
+		workspaceRoot: config.workspaceRoot,
+		snapshots,
+	});
+	const adapters = [
+		new ReadTool({ workspaceRoot: config.workspaceRoot, snapshots }),
+		new EditTool(mutationRuntime),
+		new PatchTool(mutationRuntime),
+		new WriteTool({ runtime: mutationRuntime }),
+	];
 	const toolExposure = planToolExposure(builtinToolManifest());
-	const toolRouter = new ToolRouter({ adapters: [readTool], exposure: toolExposure });
+	const toolRouter = new ToolRouter({ adapters, exposure: toolExposure });
 	const runtime = new NodeTurnRuntime({
 		sessionId: config.sessionId,
 		workspaceRoot: config.workspaceRoot,
