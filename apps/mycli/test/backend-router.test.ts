@@ -24,14 +24,14 @@ test("command-line backend selection wins over the environment", () => {
 	}), "python-sidecar");
 });
 
-test("native Node selection fails without fallback", () => {
-	assert.throws(
-		() => selectRuntimeBackend({ argv: ["--runtime-backend", "node"], env: {} }),
-		/runtime_backend_unavailable/,
+test("native Node selection is available without fallback", () => {
+	assert.equal(
+		selectRuntimeBackend({ argv: ["--runtime-backend", "node"], env: {} }),
+		"node",
 	);
-	assert.throws(
-		() => selectRuntimeBackend({ argv: [], env: { MYCLI_RUNTIME_BACKEND: "node" } }),
-		/runtime_backend_unavailable/,
+	assert.equal(
+		selectRuntimeBackend({ argv: [], env: { MYCLI_RUNTIME_BACKEND: "node" } }),
+		"node",
 	);
 });
 

@@ -8,6 +8,11 @@ import {
 } from "mycli-shell-tui/gateway-transport";
 import { selectRuntimeBackend } from "./backend-router.ts";
 import {
+	startNodeBackend,
+	type NodeBackend,
+	type StartNodeBackendOptions,
+} from "./node-runtime/node-backend.ts";
+import {
 	startPythonSidecar,
 	type PythonSidecar,
 	type StartPythonSidecarOptions,
@@ -19,7 +24,7 @@ const HELP = `Usage: mycli [options]
 Options:
   --session <id>                    Resume or create a session
   --model <model>                   Override the configured model
-  --runtime-backend python-sidecar  Select the M1 compatibility runtime
+  --runtime-backend <backend>       Select python-sidecar or node
   -h, --help                        Show help
   -V, --version                     Show version
 `;
@@ -42,6 +47,7 @@ export type RunCliOptions = {
 	stderr?: OutputStream;
 	processHooks?: ProcessHooks;
 	startSidecar?: (options: StartPythonSidecarOptions) => PythonSidecar;
+	startNodeBackend?: (options: StartNodeBackendOptions) => NodeBackend | Promise<NodeBackend>;
 	configureTransport?: (transport: GatewayTransport) => void;
 	importTui?: () => Promise<unknown>;
 };
@@ -63,16 +69,17 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		return 0;
 	}
 
+	let selectedBackend;
 	try {
-		selectRuntimeBackend({ argv, env });
+		selectedBackend = selectRuntimeBackend({ argv, env });
 	} catch (error) {
 		stderr.write(`[mycli] ${stableMessage(error, "runtime_backend_invalid")}\n`);
 		return 2;
 	}
 
-	let sidecarArgs: readonly string[];
+	let backendArgs: readonly string[];
 	try {
-		sidecarArgs = parseSidecarArguments(argv);
+		backendArgs = parseRuntimeArguments(argv);
 	} catch (error) {
 		stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
 		return 2;
@@ -83,12 +90,16 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		return 2;
 	}
 
-	const starter = options.startSidecar ?? startPythonSidecar;
-	let sidecar: PythonSidecar;
+	let backend: PythonSidecar | NodeBackend;
 	try {
-		sidecar = starter({ cwd, env, args: sidecarArgs });
+		backend = selectedBackend === "node"
+			? await (options.startNodeBackend ?? startNodeBackend)({ cwd, env, args: backendArgs })
+			: (options.startSidecar ?? startPythonSidecar)({ cwd, env, args: backendArgs });
 	} catch (error) {
-		stderr.write(`[mycli] ${stableMessage(error, "sidecar_spawn_failed")}\n`);
+		const fallback = selectedBackend === "node"
+			? "node_backend_start_failed"
+			: "sidecar_spawn_failed";
+		stderr.write(`[mycli] ${stableMessage(error, fallback)}\n`);
 		return 2;
 	}
 
@@ -99,16 +110,16 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	let gatewayShutdown: (() => Promise<unknown>) | null = null;
 	let shutdownPromise: Promise<unknown> | null = null;
 	const transport: GatewayTransport = {
-		...sidecar.transport,
+		...backend.transport,
 		close: async () => {
 			expectedShutdown = true;
-			await sidecar.close();
+			await backend.close();
 		},
 	};
 	const processHooks = options.processHooks ?? process;
 	const onProcessExit = (): void => {
 		if (!childCompleted) {
-			sidecar.kill();
+			backend.kill();
 		}
 	};
 	const requestShutdown = (exitCode: 0 | 130): void => {
@@ -134,22 +145,23 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		await gatewayStartupFrom(tuiModule);
 		tuiOwned = true;
 	} catch {
-		await sidecar.close().catch(() => undefined);
+		await backend.close().catch(() => undefined);
 		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
 		if (requestedExitCode !== null) {
 			return requestedExitCode;
 		}
 		stderr.write("[mycli] tui_start_failed: unable to start terminal UI\n");
-		const diagnostic = sidecar.diagnostic().trim();
+		const diagnostic = backend.diagnostic().trim();
 		if (diagnostic) {
-			stderr.write(`[mycli-sidecar] ${diagnostic}\n`);
+			const prefix = selectedBackend === "node" ? "mycli-node" : "mycli-sidecar";
+			stderr.write(`[${prefix}] ${diagnostic}\n`);
 		}
 		return 1;
 	}
 
 	let exitCode: number;
 	try {
-		exitCode = await sidecar.completion;
+		exitCode = await backend.completion;
 	} catch {
 		exitCode = 1;
 	} finally {
@@ -162,8 +174,8 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	return expectedShutdown && exitCode === 0 ? 0 : 1;
 }
 
-function parseSidecarArguments(argv: readonly string[]): readonly string[] {
-	const sidecarArgs: string[] = [];
+function parseRuntimeArguments(argv: readonly string[]): readonly string[] {
+	const runtimeArgs: string[] = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
 		if (argument === "--runtime-backend") {
@@ -178,7 +190,7 @@ function parseSidecarArguments(argv: readonly string[]): readonly string[] {
 			if (value === undefined) {
 				throw new Error(`invalid_arguments: ${argument} requires a value`);
 			}
-			sidecarArgs.push(argument, value);
+			runtimeArgs.push(argument, value);
 			index += 1;
 			continue;
 		}
@@ -189,12 +201,12 @@ function parseSidecarArguments(argv: readonly string[]): readonly string[] {
 			if (!value) {
 				throw new Error(`invalid_arguments: ${flag} requires a value`);
 			}
-			sidecarArgs.push(flag, value);
+			runtimeArgs.push(flag, value);
 			continue;
 		}
 		throw new Error("invalid_arguments: unsupported command or option");
 	}
-	return sidecarArgs;
+	return runtimeArgs;
 }
 
 function stableMessage(error: unknown, fallback: string): string {

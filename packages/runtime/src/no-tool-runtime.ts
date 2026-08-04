@@ -26,6 +26,7 @@ import {
 
 export interface NoToolSubmission {
 	readonly clientTurnId: string;
+	readonly turnId?: string;
 	readonly message: string;
 	readonly localImages?: readonly string[];
 	readonly modelOverride?: string;
@@ -77,7 +78,7 @@ export class NoToolRuntime {
 		emit: (event: RuntimeEvent) => void,
 		options: SubmitTurnOptions,
 	): Promise<RuntimeTurnRecord> {
-		const turnId = this.#options.createTurnId();
+		const turnId = submission.turnId ?? this.#options.createTurnId();
 		const startedAt = this.#options.clock();
 		const reservation = this.#options.store.reserveTurn({
 			sessionId: this.#options.sessionId,

@@ -1,4 +1,4 @@
-export type RuntimeBackend = "python-sidecar";
+export type RuntimeBackend = "python-sidecar" | "node";
 
 export function selectRuntimeBackend(options: {
 	argv: readonly string[];
@@ -15,7 +15,7 @@ export function selectRuntimeBackend(options: {
 		return "python-sidecar";
 	}
 	if (selected === "node") {
-		throw new Error("runtime_backend_unavailable: native Node runtime is not available in M1");
+		return "node";
 	}
 	throw new Error("runtime_backend_invalid: unknown runtime backend");
 }

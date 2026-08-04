@@ -17,6 +17,12 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@mycli/config": "0.1.0",
+    "@mycli/contracts": "0.1.0",
+    "@mycli/core": "0.1.0",
+    "@mycli/providers": "0.1.0",
+    "@mycli/runtime": "0.1.0",
+    "@mycli/storage": "0.1.0",
     "mycli-shell-tui": "0.1.0"
   },
   "devDependencies": {

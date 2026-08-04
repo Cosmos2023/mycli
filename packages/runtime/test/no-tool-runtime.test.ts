@@ -21,6 +21,7 @@ import * as runtime from "../src/index.ts";
 
 interface Submission {
 	readonly clientTurnId: string;
+	readonly turnId?: string;
 	readonly message: string;
 	readonly localImages?: readonly string[];
 	readonly modelOverride?: string;
@@ -81,13 +82,14 @@ test("persists before provider IO and completes in normalized event order", asyn
 	});
 	const emitted: RuntimeEvent[] = [];
 
-	const result = await instance.submit(submission(), (event) => {
+	const result = await instance.submit({ ...submission(), turnId: "accepted-turn" }, (event) => {
 		trace.push(event.type === "turn_started" ? "turn.started" : `event.${event.type}`);
 		emitted.push(event);
 	}, { signal: new AbortController().signal });
 
 	assert.deepEqual(trace.slice(0, 3), ["reserve", "turn.started", "provider.stream"]);
 	assert.equal(result.status, "completed");
+	assert.equal(result.turn_id, "accepted-turn");
 	assert.deepEqual(emitted.map((event) => event.type), [
 		"turn_started",
 		"reasoning_delta",

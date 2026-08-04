@@ -7,6 +7,7 @@ import test from "node:test";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
 import type { PythonSidecar } from "../src/sidecar/python-sidecar.ts";
+import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 
 type Deferred<T> = {
 	promise: Promise<T>;
@@ -141,16 +142,28 @@ test("spawn failure returns two with a stable message", async () => {
 	assert.doesNotMatch(harness.stderr.join(""), /private|ENOENT/);
 });
 
-test("unavailable Node backend returns two without starting Python", async () => {
-	let starts = 0;
+test("Node backend configures transport without starting Python", async () => {
+	let sidecarStarts = 0;
+	let nodeStarts = 0;
+	const fake = fakeSidecar();
+	let configured: GatewayTransport | null = null;
 	const harness = cliHarness({
 		argv: ["--runtime-backend", "node"],
-		startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+		startSidecar: () => { sidecarStarts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: async (): Promise<NodeBackend> => {
+			nodeStarts += 1;
+			return fake.sidecar;
+		},
+		configureTransport: (transport: GatewayTransport) => { configured = transport; },
+		importTui: async () => {
+			await configured?.close?.();
+			fake.completion.resolve(0);
+		},
 	});
 
-	assert.equal(await runCli(harness.options), 2);
-	assert.equal(starts, 0);
-	assert.match(harness.stderr.join(""), /runtime_backend_unavailable/);
+	assert.equal(await runCli(harness.options), 0);
+	assert.equal(sidecarStarts, 0);
+	assert.equal(nodeStarts, 1);
 });
 
 test("unexpected sidecar exit returns one without printing its diagnostic", async () => {
