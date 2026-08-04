@@ -20,9 +20,9 @@ import {
 	type TurnReservation,
 } from "@mycli/storage";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import * as runtime from "../src/index.ts";
+import { NodeTurnRuntime } from "../src/index.ts";
 
-interface Submission {
+interface TurnSubmission {
 	readonly clientTurnId: string;
 	readonly turnId?: string;
 	readonly message: string;
@@ -30,13 +30,15 @@ interface Submission {
 	readonly modelOverride?: string;
 }
 
-interface RuntimeOptions {
+interface NodeTurnRuntimeOptions {
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly instructions: string;
 	readonly store: SessionStore;
-	readonly resolveConfig: (submission: Submission) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
+	readonly resolveConfig: (
+		submission: TurnSubmission,
+	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
 	readonly createProvider: (config: NodeRuntimeConfig) => ModelProvider;
 	readonly createTurnId: () => string;
 	readonly clock: () => string;
@@ -44,14 +46,6 @@ interface RuntimeOptions {
 	readonly random: () => number;
 	readonly maxOutputTokens?: number;
 }
-
-type RuntimeConstructor = new (options: RuntimeOptions) => {
-	submit(
-		submission: Submission,
-		emit: (event: RuntimeEvent) => void,
-		options: { signal: AbortSignal },
-	): Promise<RuntimeTurnRecord>;
-};
 
 test("persists before provider IO and completes in normalized event order", async () => {
 	const trace: string[] = [];
@@ -463,13 +457,11 @@ function createRuntime(overrides: {
 	readonly provider: ModelProvider;
 	readonly trace?: string[];
 	readonly config?: NodeRuntimeConfig;
-	readonly resolveConfig?: RuntimeOptions["resolveConfig"];
-	readonly sleep?: RuntimeOptions["sleep"];
-	readonly maxOutputTokens?: RuntimeOptions["maxOutputTokens"];
+	readonly resolveConfig?: NodeTurnRuntimeOptions["resolveConfig"];
+	readonly sleep?: NodeTurnRuntimeOptions["sleep"];
+	readonly maxOutputTokens?: NodeTurnRuntimeOptions["maxOutputTokens"];
 }) {
-	const NoToolRuntime = Reflect.get(runtime, "NoToolRuntime") as RuntimeConstructor | undefined;
-	assert.equal(typeof NoToolRuntime, "function");
-	return new NoToolRuntime!({
+	return new NodeTurnRuntime({
 		sessionId: "session-1",
 		workspaceRoot: "/workspace",
 		threadId: "session-1",
@@ -487,7 +479,7 @@ function createRuntime(overrides: {
 	});
 }
 
-function submission(): Submission {
+function submission(): TurnSubmission {
 	return { clientTurnId: "client-1", message: "current" };
 }
 

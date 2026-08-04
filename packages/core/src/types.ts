@@ -85,6 +85,25 @@ export type RuntimeEvent =
 	| { readonly type: "stream_retrying"; readonly attempt: number; readonly delayMs: number }
 	| { readonly type: "stream_recovered" }
 	| { readonly type: "message_complete"; readonly responseId?: string }
+	| { readonly type: "tool_call_accepted"; readonly callId: string; readonly toolName: string }
+	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string }
+	| {
+		readonly type: "tool_execution_completed";
+		readonly callId: string;
+		readonly toolName: string;
+		readonly summary: string;
+		readonly durationMs: number;
+		readonly metadata: Readonly<Record<string, unknown>>;
+	}
+	| {
+		readonly type: "tool_execution_failed";
+		readonly callId: string;
+		readonly toolName: string;
+		readonly summary: string;
+		readonly durationMs: number;
+		readonly errorKind?: string;
+		readonly metadata: Readonly<Record<string, unknown>>;
+	}
 	| { readonly type: "turn_completed"; readonly assistantText: string; readonly usage: ProviderUsage }
 	| { readonly type: "turn_failed"; readonly code: RuntimeErrorCode; readonly message: string }
 	| { readonly type: "turn_interrupted"; readonly message: string };
