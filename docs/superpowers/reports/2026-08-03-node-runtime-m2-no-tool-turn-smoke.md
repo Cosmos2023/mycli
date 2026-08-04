@@ -10,10 +10,10 @@ The deterministic M2 implementation, parity, packaging, and local cross-platform
 pass. The installed npm CLI path now includes runtime JSON Schemas and starts correctly through
 its generated `.bin/mycli` symlink.
 
-Live Chat Completions completed and persisted successfully. The local Responses credential/path
-did not produce a valid stream event and terminated as `retry_exhausted` with runtime retries set
-to zero. Therefore the M2 live acceptance gate is incomplete, Python remains the default backend,
-and this candidate must not be promoted as a fully accepted M2 release.
+Live Chat Completions and Responses both completed and persisted successfully. The successful
+Responses rerun used `gpt-5.5` on an authorized compatible endpoint after the earlier environment
+returned `retry_exhausted`. The M2 live protocol gate is now complete. Python remains the default
+backend until the Node 22.19 three-platform CI matrix passes for this candidate.
 
 ## Environment
 
@@ -61,11 +61,11 @@ Chat Completions:
 Responses:
 
 ```json
-{"protocol":"responses","status":"failed","event_counts":{},"persisted":false,"credential":"configured","error_code":"retry_exhausted"}
+{"protocol":"responses","status":"completed","event_counts":{"text_delta":1,"completed":1},"persisted":true,"credential":"configured"}
 ```
 
-The Responses failure occurred before the first valid provider event. No automatic retry or
-Python fallback occurred. Raw provider errors, headers, endpoint data, prompts, responses, and
+The successful Responses request used the same bounded runner and did not automatically retry or
+fall back to Python. Raw provider errors, headers, endpoint data, prompts, responses, and
 credentials were not printed or stored in this report.
 
 ## Rollout Decision
@@ -74,5 +74,5 @@ credentials were not printed or stored in this report.
 - Allow explicit `--runtime-backend=node` preview use for supported text-only no-tool turns.
 - Do not silently retry a failed Node turn through Python.
 - Roll back by selecting `python-sidecar` before a later turn.
-- Require a successful sanitized Responses live smoke and the Node 22.19 three-platform CI matrix
-  before declaring M2 complete or changing the default backend.
+- Require the Node 22.19 three-platform CI matrix before declaring M2 complete or changing the
+  default backend; both sanitized live protocol smokes now pass.
