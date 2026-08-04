@@ -7,6 +7,7 @@ import type {
 	CanonicalConversationItem,
 	CanonicalToolCall,
 	ProviderRequest,
+	ProviderRequestConfig,
 	ProviderUsage,
 	ReasoningEffort,
 	RuntimeErrorCode,
@@ -18,6 +19,7 @@ import {
 } from "@mycli/providers";
 import type { ModelProvider } from "@mycli/providers";
 import type {
+	ApprovalPolicyDecision,
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
@@ -31,6 +33,12 @@ import {
 	sleepWithSignal,
 } from "./retry-policy.ts";
 import type { QueueCoordinator } from "./queue-coordinator.ts";
+import type {
+	ApprovalChoice,
+	ApprovalSuspensionInput,
+	PendingApprovalContinuation,
+} from "./approval-continuation-coordinator.ts";
+import { ApprovalNotPendingError } from "./approval-continuation-coordinator.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -59,7 +67,41 @@ export interface NodeTurnRuntimeOptions {
 	readonly monotonicClock?: () => number;
 	readonly planTools?: () => readonly ToolDefinition[];
 	readonly toolRouter?: ToolRouterContract;
+	readonly approvalPolicy?: ApprovalPolicyContract;
+	readonly approvalCoordinator?: ApprovalContinuationContract;
 	readonly queueCoordinator?: QueueCoordinator;
+}
+
+export interface ApprovalPolicyContract {
+	evaluate(call: CanonicalToolCall): ApprovalPolicyDecision;
+}
+
+export interface ApprovalContinuationContract {
+	suspend(input: ApprovalSuspensionInput): PendingApprovalContinuation;
+	pending(): PendingApprovalContinuation | undefined;
+	resolve(input: {
+		readonly decisionId: string;
+		readonly choice: ApprovalChoice;
+		readonly signal: AbortSignal;
+		readonly onExecutionStart?: () => void;
+	}): Promise<ApprovalRuntimeResolution>;
+	finish(decisionId: string): void;
+}
+
+export type ApprovalRuntimeResolution =
+	| {
+		readonly status: "completed" | "rejected";
+		readonly continuation?: PendingApprovalContinuation;
+		readonly toolResult?: ToolExecutionResult;
+	}
+	| {
+		readonly status: "interrupted";
+		readonly turn: RuntimeTurnRecord;
+	};
+
+export interface ResolveApprovalInput {
+	readonly decisionId: string;
+	readonly choice: ApprovalChoice;
 }
 
 export interface SubmitTurnOptions {
@@ -79,6 +121,31 @@ interface ProviderStepResult {
 	readonly usage: ProviderUsage;
 	readonly responseId?: string;
 	readonly toolCalls: readonly CanonicalToolCall[];
+}
+
+interface TurnExecutionContext {
+	readonly submission: TurnSubmission;
+	readonly turnId: string;
+	readonly config: NodeRuntimeConfig;
+	readonly provider: ModelProvider;
+	readonly tools: readonly ToolDefinition[];
+	readonly requestConfig: ProviderRequestConfig;
+	readonly emit: (event: RuntimeEvent) => void;
+	readonly signal: AbortSignal;
+}
+
+interface PendingToolBatch {
+	readonly calls: readonly CanonicalToolCall[];
+	readonly assistantText: string;
+	readonly responseId?: string;
+}
+
+interface ProviderLoopState {
+	readonly history: readonly CanonicalConversationItem[];
+	readonly previousResponseId?: string;
+	readonly accumulatedUsage: ProviderUsage;
+	readonly pendingBatch?: PendingToolBatch;
+	readonly approvalDecisionId?: string;
 }
 
 export class NodeTurnRuntime {
@@ -133,40 +200,10 @@ export class NodeTurnRuntime {
 			}, emit);
 		}
 
-		let config: NodeRuntimeConfig;
-		let provider: ModelProvider;
-		let tools: readonly ToolDefinition[];
-		try {
-			assertNotAborted(options.signal);
-			config = await this.#options.resolveConfig(submission);
-			if (config.sessionId !== this.#options.sessionId) {
-				throw configFailure("resolved session does not match runtime session");
-			}
-			provider = this.#options.createProvider(config);
-			tools = this.#options.planTools?.() ?? [];
-		} catch (error) {
-			return this.#finalizeFailure(
-				submission,
-				normalizeFailure(error, options.signal, "config_error"),
-				emit,
-			);
-		}
-
-		const requestConfig = {
-			provider: config.provider,
-			protocol: config.protocol,
-			model: submission.modelOverride ?? config.model,
-			reasoningEffort: submission.reasoningEffort
-				?? (config.thinkingEnabled ? config.reasoningEffort : "none"),
-			...(config.promptCacheKeyEnabled
-				? { promptCacheKey: this.#options.sessionId }
-				: {}),
-			...(this.#options.maxOutputTokens === undefined
-				? {}
-				: { maxOutputTokens: this.#options.maxOutputTokens }),
-		};
+		let context: TurnExecutionContext;
 		let history: readonly CanonicalConversationItem[];
 		try {
+			context = await this.#executionContext(submission, turnId, emit, options.signal);
 			history = this.#conversationForCurrentSubmission(submission.message);
 		} catch (error) {
 			return this.#finalizeFailure(
@@ -176,20 +213,164 @@ export class NodeTurnRuntime {
 			);
 		}
 
-		let previousResponseId: string | undefined;
-		let accumulatedUsage: ProviderUsage = {};
+		return this.#runProviderLoop(context, { history, accumulatedUsage: {} });
+	}
+
+	async resolveApproval(
+		input: ResolveApprovalInput,
+		emit: (event: RuntimeEvent) => void,
+		options: Pick<SubmitTurnOptions, "signal">,
+	): Promise<RuntimeTurnRecord> {
+		const coordinator = this.#options.approvalCoordinator;
+		const pending = coordinator?.pending();
+		if (!coordinator || !pending) throw new ApprovalNotPendingError();
+		const submission: TurnSubmission = {
+			clientTurnId: pending.clientTurnId,
+			turnId: pending.turnId,
+			message: pending.userMessage,
+			...(pending.modelOverride ? { modelOverride: pending.modelOverride } : {}),
+			...(pending.reasoningEffort ? { reasoningEffort: pending.reasoningEffort } : {}),
+		};
+		const context = await this.#executionContext(
+			submission,
+			pending.turnId,
+			emit,
+			options.signal,
+			pending.providerProtocol,
+		);
+		let startedAt: number | undefined;
+		const resolution = await coordinator.resolve({
+			...input,
+			signal: options.signal,
+			onExecutionStart: () => {
+				startedAt = this.#options.monotonicClock?.() ?? performance.now();
+				emit({
+					type: "tool_execution_started",
+					callId: boundedCallId(pending.callId),
+					toolName: boundedToolName(pending.toolName),
+				});
+			},
+		});
+		if (resolution.status === "interrupted") {
+			emit({ type: "turn_interrupted", message: "turn interrupted" });
+			return resolution.turn;
+		}
+		if (!resolution.continuation) {
+			const existing = this.#options.store.loadTurn(
+				this.#options.sessionId,
+				pending.clientTurnId,
+			);
+			if (existing && existing.status !== "in_progress") return existing;
+			throw new ApprovalNotPendingError();
+		}
+		if (resolution.toolResult) {
+			const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
+			emitToolResult(
+				resolution.toolResult,
+				startedAt === undefined ? 0 : boundedDurationMs(startedAt, finishedAt),
+				emit,
+			);
+		}
+		const continuation = resolution.continuation;
+		return this.#runProviderLoop(context, {
+			history: this.#options.store.loadConversationItems(this.#options.sessionId),
+			...(continuation.responseId ? { previousResponseId: continuation.responseId } : {}),
+			accumulatedUsage: continuation.usage,
+			approvalDecisionId: continuation.decisionId,
+			...(continuation.remainingCalls.length > 0 ? {
+				pendingBatch: {
+					calls: continuation.remainingCalls,
+					assistantText: continuation.assistantText,
+					...(continuation.responseId ? { responseId: continuation.responseId } : {}),
+				},
+			} : {}),
+		});
+	}
+
+	async #executionContext(
+		submission: TurnSubmission,
+		turnId: string,
+		emit: (event: RuntimeEvent) => void,
+		signal: AbortSignal,
+		expectedProtocol?: NodeRuntimeConfig["protocol"],
+	): Promise<TurnExecutionContext> {
+		assertNotAborted(signal);
+		const config = await this.#options.resolveConfig(submission);
+		if (config.sessionId !== this.#options.sessionId) {
+			throw configFailure("resolved session does not match runtime session");
+		}
+		if (expectedProtocol && config.protocol !== expectedProtocol) {
+			throw configFailure("resolved provider protocol does not match suspended turn");
+		}
+		return {
+			submission,
+			turnId,
+			config,
+			provider: this.#options.createProvider(config),
+			tools: this.#options.planTools?.() ?? [],
+			requestConfig: {
+				provider: config.provider,
+				protocol: config.protocol,
+				model: submission.modelOverride ?? config.model,
+				reasoningEffort: submission.reasoningEffort
+					?? (config.thinkingEnabled ? config.reasoningEffort : "none"),
+				...(config.promptCacheKeyEnabled
+					? { promptCacheKey: this.#options.sessionId }
+					: {}),
+				...(this.#options.maxOutputTokens === undefined
+					? {}
+					: { maxOutputTokens: this.#options.maxOutputTokens }),
+			},
+			emit,
+			signal,
+		};
+	}
+
+	async #runProviderLoop(
+		context: TurnExecutionContext,
+		initial: ProviderLoopState,
+	): Promise<RuntimeTurnRecord> {
+		const { submission, turnId, config, provider, tools, requestConfig, emit, signal } = context;
+		let history = initial.history;
+		let previousResponseId = initial.previousResponseId;
+		let accumulatedUsage = initial.accumulatedUsage;
+		let pendingBatch = initial.pendingBatch;
+		let approvalDecisionId = initial.approvalDecisionId;
 		while (true) {
+			if (approvalDecisionId) {
+				this.#options.approvalCoordinator?.finish(approvalDecisionId);
+				approvalDecisionId = undefined;
+			}
+			if (pendingBatch) {
+				try {
+					const suspended = await this.#processToolBatch(
+						context,
+						pendingBatch,
+						accumulatedUsage,
+					);
+					if (suspended) return suspended;
+					history = this.#options.store.loadConversationItems(this.#options.sessionId);
+					pendingBatch = undefined;
+					assertNotAborted(signal);
+				} catch (error) {
+					return this.#finalizeFailure(
+						submission,
+						normalizeFailure(error, signal, "persistence_error"),
+						emit,
+					);
+				}
+			}
 			try {
-				assertNotAborted(options.signal);
+				assertNotAborted(signal);
 				const committed = this.queueCoordinator?.commitPending(turnId) ?? [];
 				if (committed.length > 0) {
 					history = this.#options.store.loadConversationItems(this.#options.sessionId);
 				}
-				assertNotAborted(options.signal);
+				assertNotAborted(signal);
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, options.signal, "persistence_error"),
+					normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
 			}
@@ -205,7 +386,7 @@ export class NodeTurnRuntime {
 				request,
 				config.streamMaxRetries,
 				emit,
-				options.signal,
+				signal,
 				Boolean(this.#options.toolRouter),
 			);
 			if ("failure" in stepResult) {
@@ -215,13 +396,13 @@ export class NodeTurnRuntime {
 
 			if (stepResult.toolCalls.length === 0) {
 				try {
-					assertNotAborted(options.signal);
+					assertNotAborted(signal);
 					this.queueCoordinator?.rejectPending(turnId);
-					assertNotAborted(options.signal);
+					assertNotAborted(signal);
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
-						normalizeFailure(error, options.signal, "persistence_error"),
+							normalizeFailure(error, signal, "persistence_error"),
 						emit,
 					);
 				}
@@ -231,7 +412,7 @@ export class NodeTurnRuntime {
 					accumulatedUsage,
 					stepResult.responseId,
 					emit,
-					options.signal,
+					signal,
 				);
 			}
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
@@ -242,13 +423,12 @@ export class NodeTurnRuntime {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
 
-			const router = this.#options.toolRouter;
-			if (!router) {
+			if (!this.#options.toolRouter) {
 				return this.#finalizeFailure(submission, unsupportedToolFailure(), emit);
 			}
 
 			try {
-				assertNotAborted(options.signal);
+				assertNotAborted(signal);
 				this.#options.store.appendAssistantToolCalls({
 					sessionId: this.#options.sessionId,
 					clientTurnId: submission.clientTurnId,
@@ -256,7 +436,7 @@ export class NodeTurnRuntime {
 					calls: stepResult.toolCalls,
 					...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
 				});
-				assertNotAborted(options.signal);
+				assertNotAborted(signal);
 				for (const call of stepResult.toolCalls) {
 					emit({
 						type: "tool_call_accepted",
@@ -264,51 +444,129 @@ export class NodeTurnRuntime {
 						toolName: boundedToolName(call.name),
 					});
 				}
-				for (const call of stepResult.toolCalls) {
-					assertNotAborted(options.signal);
-					const startedAt = this.#options.monotonicClock?.() ?? performance.now();
-					emit({
-						type: "tool_execution_started",
-						callId: boundedCallId(call.callId),
-						toolName: boundedToolName(call.name),
-					});
-					let result: ToolExecutionResult;
-					try {
-						result = await router.execute(call, { signal: options.signal });
-					} catch (error) {
-						if (error instanceof Error && error.name === "AbortError") {
-							throw error;
-						}
-						assertNotAborted(options.signal);
-						throw new ProviderFailure({
-							code: "provider_error",
-							message: "tool execution failed",
-							diagnostics: { tool_name: boundedToolName(call.name) },
-						});
-					}
-					const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
-					emitToolResult(result, boundedDurationMs(startedAt, finishedAt), emit);
-					this.#options.store.appendToolResult({
-						sessionId: this.#options.sessionId,
-						clientTurnId: submission.clientTurnId,
-						result: toCanonicalResult(result),
-						summary: result.summary,
-						metadata: result.metadata,
-						...(result.errorKind ? { errorKind: result.errorKind } : {}),
-					});
-					assertNotAborted(options.signal);
-				}
-				history = this.#options.store.loadConversationItems(this.#options.sessionId);
-				assertNotAborted(options.signal);
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, options.signal, "persistence_error"),
+					normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
 			}
 			previousResponseId = stepResult.responseId;
+			pendingBatch = {
+				calls: stepResult.toolCalls,
+				assistantText: stepResult.assistantText,
+				...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
+			};
 		}
+	}
+
+	async #processToolBatch(
+		context: TurnExecutionContext,
+		batch: PendingToolBatch,
+		accumulatedUsage: ProviderUsage,
+	): Promise<RuntimeTurnRecord | undefined> {
+		const { submission, turnId, config, emit, signal } = context;
+		for (const [index, call] of batch.calls.entries()) {
+			assertNotAborted(signal);
+			const policy = this.#options.approvalPolicy?.evaluate(call);
+			if (policy?.kind === "request") {
+				const coordinator = this.#options.approvalCoordinator;
+				if (!coordinator) {
+					throw new ProviderFailure({
+						code: "unsupported_capability",
+						message: "approval continuation is not configured",
+					});
+				}
+				const pending = coordinator.suspend({
+					clientTurnId: submission.clientTurnId,
+					turnId,
+					userMessage: submission.message,
+					providerProtocol: config.protocol,
+					call,
+					remainingCalls: batch.calls.slice(index + 1),
+					conversation: this.#options.store.loadConversation(this.#options.sessionId),
+					assistantText: batch.assistantText,
+					...(batch.responseId ? { responseId: batch.responseId } : {}),
+					usage: accumulatedUsage,
+					...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
+					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
+					preview: policy.preview,
+					reason: policy.reason,
+				});
+				emit({
+					type: "approval_requested",
+					clientTurnId: pending.clientTurnId,
+					turnId: pending.turnId,
+					decisionId: pending.decisionId,
+					callId: boundedCallId(pending.callId),
+					toolName: boundedToolName(pending.toolName),
+					preview: pending.preview,
+					reason: pending.reason,
+					options: pending.options,
+				});
+				return this.#runningTurn(pending.clientTurnId);
+			}
+
+			const result = policy?.kind === "deny"
+				? policyDeniedResult(call, policy)
+				: await this.#executeTool(call, signal, emit);
+			if (policy?.kind === "deny") emitToolResult(result, 0, emit);
+			this.#persistToolResult(submission.clientTurnId, result);
+			assertNotAborted(signal);
+		}
+		return undefined;
+	}
+
+	async #executeTool(
+		call: CanonicalToolCall,
+		signal: AbortSignal,
+		emit: (event: RuntimeEvent) => void,
+	): Promise<ToolExecutionResult> {
+		const router = this.#options.toolRouter;
+		if (!router) throw new ProviderFailure({
+			code: "unsupported_capability",
+			message: "tool execution is not configured",
+		});
+		const startedAt = this.#options.monotonicClock?.() ?? performance.now();
+		emit({
+			type: "tool_execution_started",
+			callId: boundedCallId(call.callId),
+			toolName: boundedToolName(call.name),
+		});
+		let result: ToolExecutionResult;
+		try {
+			result = await router.execute(call, { signal });
+		} catch (error) {
+			if (error instanceof Error && error.name === "AbortError") throw error;
+			assertNotAborted(signal);
+			throw new ProviderFailure({
+				code: "provider_error",
+				message: "tool execution failed",
+				diagnostics: { tool_name: boundedToolName(call.name) },
+			});
+		}
+		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
+		emitToolResult(result, boundedDurationMs(startedAt, finishedAt), emit);
+		return result;
+	}
+
+	#persistToolResult(clientTurnId: string, result: ToolExecutionResult): void {
+		this.#options.store.appendToolResult({
+			sessionId: this.#options.sessionId,
+			clientTurnId,
+			result: toCanonicalResult(result),
+			summary: result.summary,
+			metadata: result.metadata,
+			...(result.errorKind ? { errorKind: result.errorKind } : {}),
+		});
+	}
+
+	#runningTurn(clientTurnId: string): RuntimeTurnRecord {
+		const turn = this.#options.store.loadTurn(this.#options.sessionId, clientTurnId);
+		if (!turn || turn.status !== "in_progress") {
+			throw new StorageFailure("approval suspension has no running turn");
+		}
+		return turn;
 	}
 
 	async #streamWithRetry(
@@ -587,6 +845,25 @@ function toolProtocolFailure(): NormalizedFailure {
 		message: "provider tool protocol failed",
 		retryable: false,
 	};
+}
+
+function policyDeniedResult(
+	call: CanonicalToolCall,
+	decision: Extract<ApprovalPolicyDecision, { readonly kind: "deny" }>,
+): ToolExecutionResult {
+	const toolName = boundedToolName(call.name) || "Tool";
+	const errorKind = decision.reason.includes("outside the workspace")
+		? "workspace_escape"
+		: "approval_rejected";
+	return Object.freeze({
+		callId: call.callId,
+		toolName: call.name,
+		success: false,
+		modelOutput: `${toolName} denied\nError kind: ${errorKind}`,
+		summary: `${toolName} denied`,
+		errorKind,
+		metadata: Object.freeze({}),
+	});
 }
 
 function addUsage(left: ProviderUsage, right: ProviderUsage): ProviderUsage {

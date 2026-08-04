@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
-import { parseJsonRpcMessage } from "@mycli/contracts";
+import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
 import { fingerprintSubmission } from "@mycli/core";
 import { SQLiteSessionStore } from "@mycli/storage";
 import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
@@ -103,9 +103,10 @@ test("Node backend atomically resumes complete persisted session state", async (
 	const dbPath = join(home, ".mycli", "sessions.db");
 	const seed = new SQLiteSessionStore({ dbPath });
 	try {
-		seedCompletedSession(seed, workspace, "source", "source question", "source answer");
-		seedCompletedSession(seed, workspace, "approval", "approval question", "approval answer");
-		seedCompletedSession(seed, workspace, "target", "target question", "target answer");
+			seedCompletedSession(seed, workspace, "source", "source question", "source answer");
+			seedCompletedSession(seed, workspace, "approval", "approval question", "approval answer");
+			seedWaitingApproval(seed, workspace, "approval", "call-approval");
+			seedCompletedSession(seed, workspace, "target", "target question", "target answer");
 		seedCompletedSession(seed, workspace, "invalid", "invalid question", "invalid answer");
 		seedCompletedSession(
 			seed,
@@ -114,20 +115,6 @@ test("Node backend atomically resumes complete persisted session state", async (
 			"invalid suspended question",
 			"invalid suspended answer",
 		);
-		seed.saveState({
-			sessionId: "approval",
-			workspaceRoot: workspace,
-			threadId: "approval",
-			key: "pending_decision",
-			payload: pendingDecision("call-approval"),
-		});
-		seed.saveState({
-			sessionId: "approval",
-			workspaceRoot: workspace,
-			threadId: "approval",
-			key: "suspended_turn",
-			payload: suspendedApproval("approval", "call-approval"),
-		});
 		seed.saveState({
 			sessionId: "target",
 			workspaceRoot: workspace,
@@ -221,6 +208,17 @@ test("Node backend atomically resumes complete persisted session state", async (
 	assert.equal(resultValue(approvalResume, "session_id"), "approval");
 	const approvalEvent = await waitFor(() => sessionEvent(messages, "approval.request", "approval"));
 	assert.equal(paramValue(approvalEvent, "decision_id"), "call-approval");
+	writeRequest(backend, "approval-reject", "approval.respond", {
+		decision_id: "call-approval",
+		choice: "reject",
+	});
+	const approvalRejected = await waitFor(() => response(messages, "approval-reject"));
+	assert.equal(resultValue(approvalRejected, "accepted"), true);
+	await waitFor(() => messages.find((message) => {
+		if (message.method !== "turn.completed") return false;
+		const params = message.params as Record<string, unknown> | undefined;
+		return params?.client_turn_id === "approval-client-approval";
+	}));
 
 	writeRequest(backend, "invalid-resume", "session.resume", { session_id: "invalid" });
 	const invalidResume = await waitFor(() => response(messages, "invalid-resume"));
@@ -259,11 +257,13 @@ test("Node backend atomically resumes complete persisted session state", async (
 	await waitFor(() => messages.find((message) => {
 		if (message.method !== "message.complete") return false;
 		const params = message.params as Record<string, unknown> | undefined;
-		return params?.final === true && params.text === "target resumed";
+		return params?.final === true
+			&& params.text === "target resumed"
+			&& params.client_turn_id === "target-client-turn";
 	}));
-	assert.equal(requests.length, 1);
-	assert.match(JSON.stringify(requests[0]?.input), /target question/);
-	assert.doesNotMatch(JSON.stringify(requests[0]?.input), /source question/);
+	assert.equal(requests.length, 2);
+	assert.match(JSON.stringify(requests[1]?.input), /target question/);
+	assert.doesNotMatch(JSON.stringify(requests[1]?.input), /source question/);
 
 	writeRequest(backend, "shutdown", "shutdown", {});
 	assert.equal(await backend.completion, 0);
@@ -271,6 +271,118 @@ test("Node backend atomically resumes complete persisted session state", async (
 	try {
 		assert.ok(reopened.loadTurn("target", "target-client-turn"));
 		assert.equal(reopened.loadTurn("source", "target-client-turn"), undefined);
+	} finally {
+		reopened.close();
+	}
+});
+
+test("Node backend interrupts an orphaned claimed approval effect without replay", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-approval-recovery-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await mkdir(home);
+	await mkdir(workspace);
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const dbPath = join(home, ".mycli", "sessions.db");
+	const seed = new SQLiteSessionStore({ dbPath });
+	try {
+		seed.reserveTurn({
+			sessionId: "approval-recovery",
+			clientTurnId: "approval-client",
+			turnId: "approval-turn",
+			requestFingerprint: fingerprintSubmission({ message: "write notes", localImages: [] }),
+			workspaceRoot: workspace,
+			threadId: "approval-recovery",
+			userText: "write notes",
+			startedAt: "2026-08-04T00:00:00.000Z",
+		});
+		seed.appendAssistantToolCalls({
+			sessionId: "approval-recovery",
+			clientTurnId: "approval-client",
+			assistantText: "",
+			calls: [{
+				callId: "call-write",
+				name: "Write",
+				argumentsJson: JSON.stringify({ file_path: "notes.txt", content: "hello" }),
+			}],
+			responseId: "resp-tools",
+		});
+		seed.saveApprovalSuspension({
+			sessionId: "approval-recovery",
+			workspaceRoot: workspace,
+			threadId: "approval-recovery",
+			pendingDecision: {
+				kind: "pending_decision",
+				version: 1,
+				payload: pendingDecision("call-write") as Extract<RuntimeStateRecord, {
+					kind: "pending_decision";
+				}>["payload"],
+			},
+			suspendedTurn: {
+				kind: "suspended_turn",
+				version: 1,
+				payload: {
+					...suspendedApproval("approval-recovery", "call-write"),
+					client_turn_id: "approval-client",
+					turn_id: "approval-turn",
+					conversation: [{ role: "user", content: "write notes" }],
+				} as Extract<RuntimeStateRecord, { kind: "suspended_turn" }>["payload"],
+			},
+			turnRecord: {
+				turn_id: "approval-turn",
+				client_turn_id: "approval-client",
+				user_message: "write notes",
+				status: "waiting_approval",
+				stop_reason: "approval_required",
+				updated_at: "2026-08-04T00:00:00.000Z",
+			},
+			checkpoint: {
+				sessionId: "approval-recovery",
+				clientTurnId: "approval-client",
+				turnId: "approval-turn",
+				decisionId: "call-write",
+				callId: "call-write",
+				toolName: "Write",
+				status: "waiting",
+				updatedAt: "2026-08-04T00:00:00.000Z",
+			},
+		});
+		seed.compareAndSetApproval({
+			sessionId: "approval-recovery",
+			expectedStatus: "waiting",
+			transition: { type: "approve_once" },
+		});
+		seed.compareAndSetApproval({
+			sessionId: "approval-recovery",
+			expectedStatus: "approved",
+			transition: { type: "claim_effect", fingerprint: "sha256:claimed" },
+		});
+	} finally {
+		seed.close();
+	}
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "approval-recovery", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	writeRequest(backend, "shutdown", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+
+	const reopened = new SQLiteSessionStore({ dbPath });
+	try {
+		const turn = reopened.loadTurn("approval-recovery", "approval-client");
+		assert.equal(turn?.status, "interrupted");
+		assert.equal((turn?.result as Record<string, unknown> | null)?.error_kind, "effect_outcome_unknown");
+		assert.equal(reopened.loadState("approval-recovery", "pending_decision"), undefined);
 	} finally {
 		reopened.close();
 	}
@@ -403,6 +515,84 @@ function seedCompletedSession(
 		assistantText,
 		usage: {},
 		completedAt: "2026-08-04T00:00:01.000Z",
+	});
+}
+
+function seedWaitingApproval(
+	store: SQLiteSessionStore,
+	workspaceRoot: string,
+	sessionId: string,
+	callId: string,
+): void {
+	const clientTurnId = `approval-client-${sessionId}`;
+	const turnId = `approval-turn-${sessionId}`;
+	const userText = "update the notes";
+	store.reserveTurn({
+		sessionId,
+		clientTurnId,
+		turnId,
+		requestFingerprint: fingerprintSubmission({ message: userText, localImages: [] }),
+		workspaceRoot,
+		threadId: sessionId,
+		userText,
+		startedAt: "2026-08-04T00:00:02.000Z",
+	});
+	store.appendAssistantToolCalls({
+		sessionId,
+		clientTurnId,
+		assistantText: "",
+		calls: [{
+			callId,
+			name: "Write",
+			argumentsJson: JSON.stringify({ file_path: "notes.txt", content: "hello" }),
+		}],
+		responseId: "resp-tools",
+	});
+	store.saveApprovalSuspension({
+		sessionId,
+		workspaceRoot,
+		threadId: sessionId,
+		pendingDecision: {
+			kind: "pending_decision",
+			version: 1,
+			payload: pendingDecision(callId) as Extract<RuntimeStateRecord, {
+				kind: "pending_decision";
+			}>["payload"],
+		},
+		suspendedTurn: {
+			kind: "suspended_turn",
+			version: 1,
+			payload: {
+				...suspendedApproval(sessionId, callId),
+				user_message: userText,
+				client_turn_id: clientTurnId,
+				turn_id: turnId,
+				conversation: [{ role: "user", content: userText }],
+				continuation: {
+					assistant_text: "",
+					response_id: "resp-tools",
+					usage: {},
+				},
+			} as Extract<RuntimeStateRecord, { kind: "suspended_turn" }>["payload"],
+		},
+		turnRecord: {
+			turn_id: turnId,
+			client_turn_id: clientTurnId,
+			user_message: userText,
+			status: "waiting_approval",
+			stop_reason: "approval_required",
+			updated_at: "2026-08-04T00:00:02.000Z",
+		},
+		checkpoint: {
+			sessionId,
+			clientTurnId,
+			turnId,
+			decisionId: callId,
+			callId,
+			toolName: "Write",
+			status: "waiting",
+			updatedAt: "2026-08-04T00:00:02.000Z",
+		},
 	});
 }
 

@@ -36,10 +36,13 @@ function gatewayHarness(options: {
 		readonly targetReadOnly?: boolean;
 		readonly prepareTarget?: () => Promise<void>;
 		readonly targetQueue?: QueueSnapshot;
+		readonly initialPendingApproval?: boolean;
+		readonly targetPendingApproval?: boolean;
 	};
 	queue?: {
 		readonly initial?: QueueSnapshot;
 	};
+	approvalFailure?: Error;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -48,6 +51,10 @@ function gatewayHarness(options: {
 	let releaseTurn!: () => void;
 	const turnReleased = new Promise<void>((resolve) => { releaseTurn = resolve; });
 	const submissions: TurnSubmission[] = [];
+	const approvalResolutions: Array<{
+		readonly decisionId: string;
+		readonly choice: "approve_once" | "reject";
+	}> = [];
 	const reservedClientTurnIds: string[] = [];
 	const queue = options.queue
 		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
@@ -73,6 +80,23 @@ function gatewayHarness(options: {
 		reserve: (submission: TurnSubmission) => {
 			reservedClientTurnIds.push(submission.clientTurnId);
 			return reserve(submission);
+		},
+		resolveApproval: async (
+			input: { readonly decisionId: string; readonly choice: "approve_once" | "reject" },
+			emit: (event: RuntimeEvent) => void,
+			runtimeOptions: { readonly signal: AbortSignal },
+		) => {
+			approvalResolutions.push(input);
+			emitRuntime = emit;
+			signal = runtimeOptions.signal;
+			if (options.approvalFailure) throw options.approvalFailure;
+			await turnReleased;
+			runtimeSettled = true;
+			return turnRecord({
+				clientTurnId: "client-session-node",
+				turnId: "turn-session-node",
+				message: "original",
+			}, runtimeOptions.signal.aborted ? "interrupted" : "completed");
 		},
 		submit: async (submission: TurnSubmission, emit: (event: RuntimeEvent) => void, options: { signal: AbortSignal }) => {
 			submissions.push(submission);
@@ -113,6 +137,7 @@ function gatewayHarness(options: {
 		messages,
 		submissions,
 		reservedClientTurnIds,
+		approvalResolutions,
 		send,
 		emit: (event: RuntimeEvent) => emitRuntime?.(event),
 		signal: () => signal,
@@ -163,7 +188,7 @@ test("node gateway boots the real TUI startup sequence", async () => {
 });
 
 test("session RPCs atomically resume and publish one target generation", async () => {
-	const harness = gatewayHarness({ sessions: {} });
+	const harness = gatewayHarness({ sessions: { targetPendingApproval: true } });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
 
 	const listed = await harness.send("session.list", {});
@@ -226,6 +251,118 @@ test("session RPCs atomically resume and publish one target generation", async (
 		next_before: null,
 		read_only: false,
 	});
+	await harness.gateway.close();
+});
+
+test("approval respond resumes the owning turn without reserving a new turn", async () => {
+	const harness = gatewayHarness({ sessions: { initialPendingApproval: true } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("approval.respond", {
+		decision_id: "decision-session-node",
+		choice: "approve_once",
+		session_id: "session-node",
+		generation: 1,
+	});
+
+	assert.ok("result" in response, JSON.stringify(response));
+	assert.deepEqual("result" in response ? response.result : null, {
+		accepted: true,
+		decision_id: "decision-session-node",
+		client_turn_id: "client-session-node",
+		turn_id: "turn-session-node",
+		session_id: "session-node",
+		generation: 1,
+	});
+	assert.deepEqual(harness.approvalResolutions, [{
+		decisionId: "decision-session-node",
+		choice: "approve_once",
+	}]);
+	assert.deepEqual(harness.reservedClientTurnIds, []);
+	const projected = await waitFor(() => notification(harness.messages, "approval.respond"));
+	assert.equal(projected.params.generation, 1);
+	parseGatewayEvent(projected);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("approval respond rejects unsupported choices stale generations and wrong decisions", async () => {
+	const harness = gatewayHarness({ sessions: { initialPendingApproval: true } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	for (const params of [
+		{ decision_id: "decision-session-node", choice: "allow_session", generation: 1 },
+		{ decision_id: "decision-session-node", choice: "approve_once", generation: 2 },
+		{ decision_id: "wrong", choice: "approve_once", generation: 1 },
+	]) {
+		const response = await harness.send("approval.respond", params);
+		assert.ok("error" in response);
+		assert.equal(
+			"error" in response ? response.error.code : null,
+			params.choice === "allow_session" ? "invalid_params" : "approval_not_pending",
+		);
+	}
+	assert.deepEqual(harness.approvalResolutions, []);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("approval resolution failure restores the pending request without terminating the turn", async () => {
+	const harness = gatewayHarness({
+		approvalFailure: new StorageFailure("approval persistence failed"),
+		sessions: { initialPendingApproval: true },
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const approvalRequestCount = notificationCount(harness.messages, "approval.request");
+
+	const response = await harness.send("approval.respond", {
+		decision_id: "decision-session-node",
+		choice: "approve_once",
+		generation: 1,
+	});
+
+	assert.ok("result" in response, JSON.stringify(response));
+	await waitFor(() => notificationCount(harness.messages, "approval.request") === approvalRequestCount + 1);
+	const approvalRequests = harness.messages.filter((message) =>
+		"method" in message && !("id" in message) && message.method === "approval.request",
+	);
+	assert.equal(approvalRequests.at(-1)?.params.decision_id, "decision-session-node");
+	assert.equal(harness.sessionCoordinator?.snapshot().pendingApproval?.decisionId, "decision-session-node");
+	assert.equal(notificationCount(harness.messages, "turn.failed"), 0);
+	const statusUpdates = harness.messages.filter((message) =>
+		"method" in message && !("id" in message) && message.method === "status.update",
+	);
+	assert.equal(statusUpdates.at(-1)?.params.state, "waiting_approval");
+	const error = await waitFor(() => notification(harness.messages, "gateway.error"));
+	assert.deepEqual(error.params, {
+		code: "internal_error",
+		message: "Session persistence failed.",
+		method: "approval.respond",
+	});
+	await harness.gateway.close();
+});
+
+test("approval resolution excludes normal turns and session transitions", async () => {
+	const harness = gatewayHarness({ sessions: { initialPendingApproval: true } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("approval.respond", {
+		decision_id: "decision-session-node",
+		choice: "reject",
+		generation: 1,
+	});
+
+	const submitted = await harness.send("turn.submit", {
+		message: "must wait",
+		client_turn_id: "new-client",
+		client_user_message_id: "new-user",
+	});
+	const resumed = await harness.send("session.resume", { session_id: "target" });
+	assert.equal("error" in submitted ? submitted.error.code : null, "turn_in_progress");
+	assert.equal("error" in resumed ? resumed.error.code : null, "turn_in_progress");
+
+	harness.releaseTurn();
 	await harness.gateway.close();
 });
 
@@ -878,10 +1015,18 @@ function gatewaySessionCoordinator(
 		readonly targetReadOnly?: boolean;
 		readonly prepareTarget?: () => Promise<void>;
 		readonly targetQueue?: QueueSnapshot;
+		readonly initialPendingApproval?: boolean;
+		readonly targetPendingApproval?: boolean;
 	},
 ): SessionCoordinator<NodeGatewayRuntime> {
 	return new SessionCoordinator({
-		initial: preparedGatewaySession("session-node", runtime),
+		initial: preparedGatewaySession(
+			"session-node",
+			runtime,
+			false,
+			emptyQueue("session-node"),
+			options.initialPendingApproval ?? false,
+		),
 		prepare: async (sessionId) => {
 			await options.prepareTarget?.();
 			if (options.targetFailure) {
@@ -894,6 +1039,7 @@ function gatewaySessionCoordinator(
 				runtime,
 				options.targetReadOnly ?? false,
 				options.targetQueue,
+				options.targetPendingApproval ?? false,
 			);
 		},
 		listSessions: () => [
@@ -914,6 +1060,7 @@ function preparedGatewaySession(
 	runtime: NodeGatewayRuntime,
 	readOnly = false,
 	queue: QueueSnapshot = emptyQueue(sessionId),
+	pendingApproval = false,
 ): PreparedSession<NodeGatewayRuntime> {
 	return {
 		sessionId,
@@ -921,7 +1068,7 @@ function preparedGatewaySession(
 		threadId: sessionId,
 		transcript: [transcriptItem(sessionId)],
 		queue,
-		pendingApproval: {
+		...(pendingApproval ? { pendingApproval: {
 			sessionId,
 			clientTurnId: `client-${sessionId}`,
 			turnId: `turn-${sessionId}`,
@@ -931,8 +1078,8 @@ function preparedGatewaySession(
 			preview: "Write notes.txt",
 			reason: "Approval required",
 			options: ["approve_once", "reject"],
-		},
-		suspendedTurn: true,
+		} } : {}),
+		suspendedTurn: pendingApproval,
 		readOnly,
 		binding: runtime,
 	};

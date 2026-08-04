@@ -1,4 +1,4 @@
-import type { RuntimeTurnRecord } from "@mycli/contracts";
+import type { RuntimeStateRecord, RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	ApprovalResolution,
 	ApprovalTransition,
@@ -162,6 +162,37 @@ export interface ApprovalTransitionInput {
 	readonly transition: ApprovalTransition;
 }
 
+export interface SaveApprovalSuspensionInput {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly pendingDecision: Extract<RuntimeStateRecord, { kind: "pending_decision" }>;
+	readonly suspendedTurn: Extract<RuntimeStateRecord, { kind: "suspended_turn" }>;
+	readonly turnRecord: Readonly<Record<string, unknown>>;
+	readonly checkpoint: ApprovalCheckpoint;
+}
+
+export interface CommitApprovalResultInput {
+	readonly sessionId: string;
+	readonly expectedStatus: ApprovalResolution["status"];
+	readonly transition: ApprovalTransition;
+	readonly toolResult: AppendToolResultInput;
+}
+
+export interface FinalizeApprovalContinuationInput {
+	readonly sessionId: string;
+	readonly decisionId: string;
+}
+
+export interface InterruptAmbiguousApprovalInput {
+	readonly sessionId: string;
+	readonly clientTurnId: string;
+	readonly callId: string;
+	readonly toolName: string;
+	readonly errorKind: "effect_outcome_unknown";
+	readonly completedAt: string;
+}
+
 export interface CommitCompactionInput {
 	readonly sessionId: string;
 	readonly replacementMessages: readonly Readonly<Record<string, unknown>>[];
@@ -192,6 +223,8 @@ export interface SessionStateStore {
 	loadCommittedQueueIds(sessionId: string): ReadonlySet<string>;
 	commitQueuedInputs(input: CommitQueuedInputsInput): QueueSnapshot;
 	compareAndSetApproval(input: ApprovalTransitionInput): ApprovalCheckpoint;
+	saveApprovalSuspension(input: SaveApprovalSuspensionInput): ApprovalCheckpoint;
+	finalizeApprovalContinuation(input: FinalizeApprovalContinuationInput): void;
 	commitCompaction(input: CommitCompactionInput): void;
 }
 
@@ -297,7 +330,10 @@ export interface TurnStore {
 	close(): void;
 }
 
-export interface SessionStore extends TurnStore, SessionStateStore {}
+export interface SessionStore extends TurnStore, SessionStateStore {
+	commitApprovalResult(input: CommitApprovalResultInput): ApprovalCheckpoint;
+	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord;
+}
 
 type DiagnosticValue = string | number | boolean | null;
 

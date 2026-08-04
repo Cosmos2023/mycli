@@ -606,7 +606,7 @@ git commit -m "feat(node-runtime): persist queue and steering state"
 - Test: `packages/runtime/test/node-turn-runtime.test.ts`
 - Test: `apps/mycli/test/node-gateway.test.ts`
 
-- [ ] **Step 1: Write failing policy tests**
+- [x] **Step 1: Write failing policy tests**
 
 ```ts
 test("default policy auto-allows a valid workspace mutation", () => {
@@ -621,7 +621,7 @@ test("strict-medium requests one-time approval without allowing workspace escape
 
 Assert content previews are bounded and secret-like bodies, hashes, and real paths are absent.
 
-- [ ] **Step 2: Write failing suspension, resolution, and crash tests**
+- [x] **Step 2: Write failing suspension, resolution, and crash tests**
 
 ```ts
 test("restores an unambiguous waiting approval after restart", () => {
@@ -643,13 +643,13 @@ Cover approve once, reject, repeat-identical response, conflicting response, wro
 multiple approvals in one batch, original-user dedupe, completed effect, and interrupt during tool
 execution.
 
-- [ ] **Step 3: Run approval tests and verify missing components**
+- [x] **Step 3: Run approval tests and verify missing components**
 
 Run: `node --import tsx --test packages/tools/test/approval-policy.test.ts packages/runtime/test/approval-continuation-coordinator.test.ts packages/runtime/test/node-turn-runtime.test.ts apps/mycli/test/node-gateway.test.ts`
 
 Expected: FAIL because policy and continuation coordinator are missing.
 
-- [ ] **Step 4: Implement suspension and effect checkpoints**
+- [x] **Step 4: Implement suspension and effect checkpoints**
 
 ```ts
 export type ApprovalResolution =
@@ -666,19 +666,19 @@ executing, invoke the existing router once, then append result and mark complete
 transaction. On orphaned executing state, append an interrupted result/rollout and never call the
 router.
 
-- [ ] **Step 5: Implement `approval.respond` and provider batch continuation**
+- [x] **Step 5: Implement `approval.respond` and provider batch continuation**
 
 Gateway accepts only `approve_once` and `reject` for Node M5, locks to the active generation and
 owning backend, emits the existing approval events, and lets `NodeTurnRuntime` resume remaining
 calls in their original order without appending another user message.
 
-- [ ] **Step 6: Run tool, runtime, gateway, and M4 regressions**
+- [x] **Step 6: Run tool, runtime, gateway, and M4 regressions**
 
 Run: `npm run test --workspace @mycli/tools && npm run test --workspace @mycli/runtime && npm run test --workspace @mycli/app && npm run test:m4`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit approval continuation**
+- [x] **Step 7: Commit approval continuation**
 
 ```bash
 git add packages/tools packages/runtime apps/mycli

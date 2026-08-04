@@ -86,6 +86,17 @@ export type RuntimeEvent =
 	| { readonly type: "stream_recovered" }
 	| { readonly type: "message_complete"; readonly responseId?: string }
 	| { readonly type: "tool_call_accepted"; readonly callId: string; readonly toolName: string }
+	| {
+		readonly type: "approval_requested";
+		readonly clientTurnId: string;
+		readonly turnId: string;
+		readonly decisionId: string;
+		readonly callId: string;
+		readonly toolName: string;
+		readonly preview: string;
+		readonly reason: string;
+		readonly options: readonly ["approve_once", "reject"];
+	}
 	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string }
 	| {
 		readonly type: "tool_execution_completed";

@@ -17,6 +17,7 @@ import {
 import type {
 	PendingSessionApproval,
 	QueueCoordinator,
+	ResolveApprovalInput,
 	SessionCoordinator,
 	SessionGenerationContext,
 	SubmitTurnOptions,
@@ -32,6 +33,11 @@ type RpcId = string | number | null;
 export interface NodeGatewayRuntime {
 	readonly queueCoordinator?: QueueCoordinator;
 	reserve(submission: TurnSubmission): TurnReservation;
+	resolveApproval(
+		input: ResolveApprovalInput,
+		emit: (event: RuntimeEvent) => void,
+		options: Pick<SubmitTurnOptions, "signal">,
+	): Promise<RuntimeTurnRecord>;
 	submit(
 		submission: TurnSubmission,
 		emit: (event: RuntimeEvent) => void,
@@ -198,6 +204,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#sessionTree(request.params);
 			case "turn.submit":
 				return this.#submit(request.params);
+			case "approval.respond":
+				return this.#approvalRespond(request.params);
 			case "turn.steer":
 				return this.#steer(request.params);
 			case "turn.follow_up":
@@ -330,6 +338,9 @@ class InProcessNodeGateway implements NodeGateway {
 		if (this.#activeTurn !== null) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
+		if (coordinator.snapshot().pendingApproval) {
+			throw new GatewayFailure("turn_in_progress", "An approval continuation owns the session.");
+		}
 		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
 		this.#bindQueue();
 		this.#emitDirect("session.changed", {
@@ -385,6 +396,9 @@ class InProcessNodeGateway implements NodeGateway {
 		if (this.#activeTurn !== null) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
+		if (this.#options.sessionCoordinator?.snapshot().pendingApproval) {
+			throw new GatewayFailure("turn_in_progress", "An approval continuation owns the session.");
+		}
 		if (this.#options.sessionCoordinator?.snapshot().readOnly) {
 			throw new GatewayFailure(
 				"session_state_invalid",
@@ -439,6 +453,75 @@ class InProcessNodeGateway implements NodeGateway {
 			client_turn_id: clientTurnId,
 			client_user_message_id: clientUserMessageId,
 			turn_id: turnId,
+		};
+	}
+
+	#approvalRespond(params: JsonObject): JsonObject {
+		const coordinator = this.#options.sessionCoordinator;
+		if (!coordinator) {
+			throw new GatewayFailure("approval_not_pending", "No pending approval is available.");
+		}
+		if (this.#activeTurn !== null) {
+			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
+		}
+		const snapshot = coordinator.snapshot();
+		const pending = snapshot.pendingApproval;
+		if (!pending) {
+			throw new GatewayFailure("approval_not_pending", "No pending approval is available.");
+		}
+		const choice = requiredString(params.choice, "choice");
+		if (choice !== "approve_once" && choice !== "reject") {
+			throw new GatewayFailure("invalid_params", "Unsupported approval choice.");
+		}
+		const decisionId = requiredString(params.decision_id, "decision_id");
+		const requestedSessionId = optionalString(params.session_id);
+		const requestedGeneration = params.generation === undefined
+			? snapshot.generation
+			: positiveInteger(params.generation);
+		if (requestedGeneration === undefined) {
+			throw new GatewayFailure("invalid_params", "generation must be a positive integer.");
+		}
+		if (decisionId !== pending.decisionId
+			|| requestedSessionId !== undefined && requestedSessionId !== snapshot.sessionId
+			|| requestedGeneration !== snapshot.generation) {
+			throw new GatewayFailure("approval_not_pending", "No pending approval matches the request.");
+		}
+		const context = coordinator.context();
+		if (!coordinator.markExecuting(context, true)) {
+			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
+		}
+		const active: ActiveTurn = {
+			clientTurnId: pending.clientTurnId,
+			clientUserMessageId: pending.clientTurnId,
+			controller: new AbortController(),
+			context,
+			runtime: snapshot.binding,
+			turnId: pending.turnId,
+			terminalEmitted: false,
+		};
+		this.#activeTurn = active;
+		coordinator.updatePendingApproval(context, undefined);
+		this.#emitRuntime("approval.respond", {
+			session_id: snapshot.sessionId,
+			generation: snapshot.generation,
+			client_turn_id: pending.clientTurnId,
+			turn_id: pending.turnId,
+			decision_id: pending.decisionId,
+			choice,
+		});
+		this.#emitRuntime("status.update", statusPayload("running", pending.clientTurnId));
+		this.#activeTurnTask = new Promise<void>((resolve) => {
+			queueMicrotask(() => {
+				void this.#runApproval(active, { decisionId, choice }, pending).then(resolve);
+			});
+		});
+		return {
+			accepted: true,
+			decision_id: pending.decisionId,
+			client_turn_id: pending.clientTurnId,
+			turn_id: pending.turnId,
+			session_id: snapshot.sessionId,
+			generation: snapshot.generation,
 		};
 	}
 
@@ -518,6 +601,58 @@ class InProcessNodeGateway implements NodeGateway {
 		} catch {
 			if (!active.terminalEmitted) {
 				this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
+			}
+		} finally {
+			this.#options.sessionCoordinator?.markExecuting(active.context, false);
+			if (this.#activeTurn === active) {
+				this.#activeTurn = null;
+				this.#activeTurnTask = null;
+			}
+			if (!this.#closed && this.#isCurrent(active)) {
+				this.#emitRuntime("status.changed", this.#status());
+			}
+			if (scheduleNext && !this.#closed && this.#isCurrent(active)) {
+				this.#scheduleNextQueuedTurn();
+			}
+		}
+	}
+
+	async #runApproval(
+		active: ActiveTurn,
+		input: ResolveApprovalInput,
+		pending: PendingSessionApproval,
+	): Promise<void> {
+		let scheduleNext = false;
+		try {
+			const record = await active.runtime.resolveApproval(
+				input,
+				(event) => {
+					if (this.#isCurrent(active)) this.#projectRuntimeEvent(active, event);
+				},
+				{ signal: active.controller.signal },
+			);
+			if (!active.terminalEmitted && this.#isCurrent(active)) {
+				this.#projectStoredTerminal(active, record);
+			}
+			scheduleNext = record.status === "completed";
+		} catch (error) {
+			const restored = this.#options.sessionCoordinator
+				?.updatePendingApproval(active.context, pending);
+			if (restored !== false && !active.terminalEmitted && this.#isCurrent(active)) {
+				const failure = gatewayFailure(error);
+				this.#emitRuntime("gateway.error", {
+					code: failure.code === "persistence_error" ? "internal_error" : failure.code,
+					message: failure.message,
+					method: "approval.respond",
+				});
+				this.#emitRuntime(
+					"approval.request",
+					approvalRequest(pending, active.context.generation),
+				);
+				this.#emitRuntime(
+					"status.update",
+					statusPayload("waiting_approval", active.clientTurnId),
+				);
 			}
 		} finally {
 			this.#options.sessionCoordinator?.markExecuting(active.context, false);
@@ -639,6 +774,31 @@ class InProcessNodeGateway implements NodeGateway {
 				break;
 			case "tool_call_accepted":
 				break;
+			case "approval_requested": {
+				const approval: PendingSessionApproval = {
+					sessionId: active.context.sessionId,
+					clientTurnId: event.clientTurnId,
+					turnId: event.turnId,
+					decisionId: event.decisionId,
+					callId: event.callId,
+					toolName: event.toolName,
+					preview: event.preview,
+					reason: event.reason,
+					options: event.options,
+				};
+				if (this.#options.sessionCoordinator?.updatePendingApproval(active.context, approval) === false) {
+					break;
+				}
+				this.#emitRuntime("approval.request", approvalRequest(
+					approval,
+					active.context.generation,
+				));
+				this.#emitRuntime(
+					"status.update",
+					statusPayload("waiting_approval", active.clientTurnId),
+				);
+				break;
+			}
 			case "tool_execution_started": {
 				const callId = boundedString(event.callId, 256);
 				const toolName = boundedString(event.toolName, 128) || "Tool";
@@ -980,6 +1140,12 @@ function gatewayFailure(error: unknown): GatewayFailure {
 	if (isObject(error) && error.code === "queue_capacity") {
 		return new GatewayFailure("queue_capacity", "Queued input exceeds the queue capacity.");
 	}
+	if (isObject(error) && error.code === "approval_not_pending") {
+		return new GatewayFailure("approval_not_pending", "No pending approval is available.");
+	}
+	if (isObject(error) && error.code === "approval_conflict") {
+		return new GatewayFailure("approval_conflict", "Approval state conflicts with the request.");
+	}
 	return new GatewayFailure("internal_error", "Gateway request failed.");
 }
 
@@ -1217,7 +1383,15 @@ function statusPayload(state: string, clientTurnId: string, message?: string): J
 	return {
 		state,
 		kind: state,
-		text: state === "running" ? "Running" : state === "completed" ? "Completed" : state === "interrupted" ? "Interrupted" : "Failed",
+		text: state === "running"
+			? "Running"
+			: state === "waiting_approval"
+				? "Waiting approval"
+				: state === "completed"
+					? "Completed"
+					: state === "interrupted"
+						? "Interrupted"
+						: "Failed",
 		client_turn_id: clientTurnId,
 		...(message ? { message } : {}),
 	};

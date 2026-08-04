@@ -1210,3 +1210,144 @@ try {
   throw error;
 }
 ```
+
+## Scenario: Durable Node One-Time Approval Continuation
+
+### 1. Scope / Trigger
+
+- Trigger: Changes to Node tool approval policy, `approval.respond`, suspended
+  tool batches, effect recovery, or the `pending_decision`, `suspended_turn`,
+  `turn_record`, and `node_effect_checkpoint` SQLite state keys.
+- This flow crosses tool policy, runtime orchestration, SQLite transactions,
+  session-generation ownership, provider continuation, and TUI events.
+
+### 2. Signatures
+
+- Policy: `ApprovalPolicy.evaluate(call) -> ApprovalPolicyDecision`.
+- Runtime: `ApprovalContinuationCoordinator.suspend(input)`, `pending()`,
+  `resolve(input)`, `recover()`, and `finish(decisionId)`.
+- Storage: `saveApprovalSuspension(input)`,
+  `compareAndSetApproval(input)`, `commitApprovalResult(input)`,
+  `interruptAmbiguousApproval(input)`, and
+  `finalizeApprovalContinuation(input)`.
+- Gateway RPC: `approval.respond` with `decision_id`, `choice`, optional
+  `session_id`, and optional `generation`.
+- Node M5 choices: `approve_once` and `reject` only.
+
+### 3. Contracts
+
+- `autoApproveMedium=true` remains the default Python-compatible behavior.
+  Strict policy requests one-time approval for a valid workspace-local medium
+  risk mutation and denies workspace escape before suspension.
+- Persist the assistant tool-call batch before policy evaluation. When approval
+  is required, atomically save `pending_decision`, `suspended_turn`,
+  `turn_record`, and a `waiting` effect checkpoint before emitting
+  `approval.request`.
+- The tool call id is the stable `decision_id`. Gateway acceptance requires the
+  active session, generation, backend binding, and decision id to match. A
+  pending approval blocks ordinary `turn.submit` and `session.resume`.
+- Approval transitions are monotonic: `waiting -> approved -> executing ->
+  completed`. Persist `executing` before invoking a mutation. Append the tool
+  result and move to `completed` in one SQLite transaction.
+- Emit `tool.start` only after the `executing` claim is durable and immediately
+  before router execution. A rejection or idempotent retry of an already
+  completed checkpoint must not emit a false execution start.
+- Rejection appends one model-visible `approval_rejected` tool result and moves
+  directly from `waiting` to `rejected` without executing the tool.
+- A completed or rejected checkpoint keeps its suspension payload until the
+  runtime atomically finalizes the continuation before any later tool or
+  provider IO. The original provider batch then resumes in order without
+  reserving another turn or appending the original user message again. A crash
+  after finalization explicitly interrupts the turn instead of replaying later
+  calls from the old continuation.
+- An orphaned `executing` checkpoint becomes an interrupted turn with
+  `effect_outcome_unknown`. Commit the synthetic result and interrupted turn,
+  then clear every continuation row including the effect checkpoint in the
+  same transaction. The claimed mutation is never executed or recovered again.
+- If asynchronous approval resolution fails while the continuation remains
+  retryable, restore the same session snapshot, emit sanitized `gateway.error`,
+  re-emit the same `approval.request`, then emit
+  `status.update(state=waiting_approval)`. Do not emit terminal `turn.failed`
+  for a turn that still owns durable pending approval state.
+
+### 4. Validation & Error Matrix
+
+- Missing pending approval, wrong decision id, stale generation, or wrong
+  session -> `approval_not_pending`; do not mutate the checkpoint.
+- Choice other than `approve_once` or `reject` -> `invalid_params`.
+- A different response after a durable resolution -> `approval_conflict`;
+  an identical response is idempotent and never repeats the tool effect.
+- Malformed tool arguments, unsupported tools, or workspace escape -> policy
+  denial; do not create a pending approval for an unsafe target.
+- SQLite failure before a committed transition -> sanitized
+  `persistence_error` at the runtime boundary and an actionable restored
+  approval at the gateway/TUI boundary.
+- Continuation finalization failure -> keep the turn running and the durable
+  completed/rejected approval retryable; do not call `failTurn` or emit
+  terminal turn failure.
+- Restart with `waiting`, `completed`, or `rejected` -> restore the same
+  continuation. Restart with `executing` -> interrupt with
+  `effect_outcome_unknown` and execute zero tools.
+- Ordinary turn submission or session resume while approval owns the session ->
+  `turn_in_progress` before a new reservation or generation is created.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Approve `Write`, commit its result once, execute later calls from the
+  same provider batch in order, finalize the checkpoint, then continue the
+  provider request.
+- Good: A resolution persistence failure shows a bounded error and immediately
+  restores the same actionable approval prompt.
+- Base: Default policy auto-allows a workspace-local mutation and creates no
+  approval continuation.
+- Bad: Delete pending state before provider IO; a crash then loses the only
+  safe continuation point.
+- Bad: Retry an orphaned `executing` effect; the original mutation may already
+  have reached the filesystem.
+- Bad: Emit terminal `turn.failed` while restoring pending approval; the TUI
+  clears the decision details and cannot perform the safe retry.
+
+### 6. Tests Required
+
+- Policy unit tests for default allow, strict request, escape denial, malformed
+  calls, and bounded previews without content, hashes, or absolute paths.
+- Runtime tests for approve, reject, identical/conflicting responses, multiple
+  approvals in one batch, original-user dedupe, completed effect reuse, and
+  interruption during claimed execution. Assert lifecycle start precedes the
+  router call and lifecycle completion follows it.
+- Storage tests proving suspension rows and tool-result/checkpoint commits roll
+  back together at failpoints.
+- Gateway tests for decision/session/generation ownership, pending-state
+  exclusion, sanitized resolution failure, re-emitted approval, and absence of
+  terminal failure while retry remains possible.
+- Backend restart integration proving `executing` becomes
+  `effect_outcome_unknown` without provider IO or tool replay, and a second
+  restart finds no approval continuation to recover.
+- Run tools, runtime, storage, app, M4 Node integration, and Python parity
+  suites when this boundary changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await router.execute(call, { signal });
+store.saveState({ key: "node_effect_checkpoint", payload: { status: "completed" } });
+```
+
+#### Correct
+
+```typescript
+store.compareAndSetApproval({
+	sessionId,
+	expectedStatus: "approved",
+	transition: { type: "claim_effect", fingerprint },
+});
+const result = await router.execute(call, { signal });
+store.commitApprovalResult({
+	sessionId,
+	expectedStatus: "executing",
+	transition: { type: "complete_effect", resultCallId: result.callId },
+	toolResult,
+});
+```

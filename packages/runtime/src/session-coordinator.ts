@@ -120,6 +120,21 @@ export class SessionCoordinator<Binding> {
 		return true;
 	}
 
+	updatePendingApproval(
+		context: SessionGenerationContext,
+		pendingApproval: PendingSessionApproval | undefined,
+	): boolean {
+		if (!this.isCurrent(context)) return false;
+		if (pendingApproval && pendingApproval.sessionId !== context.sessionId) return false;
+		const snapshot = { ...this.#snapshot };
+		delete snapshot.pendingApproval;
+		this.#snapshot = Object.freeze({
+			...snapshot,
+			...(pendingApproval ? { pendingApproval: freezePendingApproval(pendingApproval) } : {}),
+		});
+		return true;
+	}
+
 	listSessions(query: SessionListQuery = {}): readonly SessionOverview[] {
 		return this.#listSessions(query);
 	}
@@ -189,12 +204,14 @@ function freezePrepared<Binding>(prepared: PreparedSession<Binding>): PreparedSe
 		threadId: requiredString(prepared.threadId, "threadId"),
 		transcript: Object.freeze(prepared.transcript.map((item) => Object.freeze({ ...item }))),
 		queue: freezeQueue(prepared.queue),
-		...(prepared.pendingApproval ? {
-			pendingApproval: Object.freeze({
-				...prepared.pendingApproval,
-				options: Object.freeze([...prepared.pendingApproval.options]),
-			}),
-		} : {}),
+		...(prepared.pendingApproval ? { pendingApproval: freezePendingApproval(prepared.pendingApproval) } : {}),
+	});
+}
+
+function freezePendingApproval(approval: PendingSessionApproval): PendingSessionApproval {
+	return Object.freeze({
+		...approval,
+		options: Object.freeze([...approval.options]),
 	});
 }
 

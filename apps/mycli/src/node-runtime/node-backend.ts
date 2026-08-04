@@ -5,6 +5,7 @@ import { resolveConfig } from "@mycli/config";
 import type { QueueSnapshot, QueuedInput } from "@mycli/core";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
+	ApprovalContinuationCoordinator,
 	NodeTurnRuntime,
 	QueueCoordinator,
 	SessionCoordinator,
@@ -28,6 +29,7 @@ import type {
 	TranscriptSnapshotV2,
 } from "@mycli/storage";
 import {
+	ApprovalPolicy,
 	builtinToolManifest,
 	EditTool,
 	FileMutationRuntime,
@@ -79,6 +81,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
 		];
+		const toolRouter = new ToolRouter({ adapters, exposure: toolExposure });
+		const approvalCoordinator = new ApprovalContinuationCoordinator({
+			sessionId,
+			workspaceRoot,
+			threadId,
+			store,
+			toolRouter,
+			clock: () => new Date().toISOString(),
+		});
+		approvalCoordinator.recover();
 		const queueCoordinator = new QueueCoordinator({
 			initial: initialQueue,
 			store: {
@@ -115,7 +127,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			createTurnId: randomUUID,
 			clock: () => new Date().toISOString(),
 			planTools: () => toolExposure,
-			toolRouter: new ToolRouter({ adapters, exposure: toolExposure }),
+			toolRouter,
+			approvalPolicy: new ApprovalPolicy({ workspaceRoot, autoApproveMedium: true }),
+			approvalCoordinator,
 			queueCoordinator,
 		});
 	};
@@ -235,6 +249,7 @@ async function prepareStoredSession(
 	}
 
 	const queue = loadQueue(store, sessionId);
+	const binding = createRuntime(sessionId, overview.workspaceRoot, overview.threadId, queue);
 	const approvalState = loadApprovalState(store, sessionId);
 	const compactionState = store.loadState(sessionId, "compact_checkpoint");
 	const responsesContinuation = loadResponsesContinuation(store, sessionId);
@@ -277,7 +292,7 @@ async function prepareStoredSession(
 		...(compactionState === undefined ? {} : { compactionState }),
 		...(responsesContinuation === undefined ? {} : { responsesContinuation }),
 		readOnly: false,
-		binding: createRuntime(sessionId, overview.workspaceRoot, overview.threadId, queue),
+		binding,
 	};
 }
 

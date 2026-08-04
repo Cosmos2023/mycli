@@ -1,9 +1,29 @@
 export { NodeTurnRuntime } from "./node-turn-runtime.ts";
 export type {
+	ApprovalContinuationContract,
+	ApprovalPolicyContract,
+	ApprovalRuntimeResolution,
 	NodeTurnRuntimeOptions,
+	ResolveApprovalInput,
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "./node-turn-runtime.ts";
+export {
+	ApprovalContinuationCoordinator,
+	ApprovalNotPendingError,
+} from "./approval-continuation-coordinator.ts";
+export type {
+	ApprovalChoice,
+	ApprovalContinuationCoordinatorOptions,
+	ApprovalContinuationResult,
+	ApprovalContinuationStore,
+	ApprovalSuspensionInput,
+	CommitApprovalResultInput,
+	FinalizeApprovalContinuationInput,
+	InterruptAmbiguousApprovalInput,
+	PendingApprovalContinuation,
+	SaveApprovalSuspensionInput,
+} from "./approval-continuation-coordinator.ts";
 export { QueueCoordinator } from "./queue-coordinator.ts";
 export type {
 	LegacyQueueMigration,

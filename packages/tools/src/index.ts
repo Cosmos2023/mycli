@@ -59,6 +59,14 @@ export type { ReadToolOptions } from "./read-tool.ts";
 export { WriteTool } from "./write-tool.ts";
 export type { WriteToolOptions } from "./write-tool.ts";
 export { ToolRouter } from "./router.ts";
+export { ApprovalPolicy } from "./approval-policy.ts";
+export type {
+	ApprovalPolicyAllow,
+	ApprovalPolicyDecision,
+	ApprovalPolicyDeny,
+	ApprovalPolicyOptions,
+	ApprovalPolicyRequest,
+} from "./approval-policy.ts";
 export type {
 	BuiltInToolManifest,
 	ToolAdapter,

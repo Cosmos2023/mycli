@@ -18,11 +18,15 @@ import type {
 	AppendSessionSummaryInput,
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
+	CommitApprovalResultInput,
 	CommitCompactionInput,
 	CommitQueuedInputsInput,
+	FinalizeApprovalContinuationInput,
 	ImportLegacyConversationInput,
+	InterruptAmbiguousApprovalInput,
 	RuntimeStateKey,
 	SaveQueueSnapshotInput,
+	SaveApprovalSuspensionInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,
@@ -350,21 +354,145 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 	}
 
 	compareAndSetApproval(input: ApprovalTransitionInput): ApprovalCheckpoint {
+		return this.#writeTransaction(() => this.#transitionApproval(input));
+	}
+
+	saveApprovalSuspension(input: SaveApprovalSuspensionInput): ApprovalCheckpoint {
+		const sessionId = nonEmpty(input.sessionId, "sessionId");
+		const pending = validateStatePayload("pending_decision", input.pendingDecision.payload);
+		const suspended = validateStatePayload("suspended_turn", input.suspendedTurn.payload);
+		const turnRecord = validateStatePayload("turn_record", input.turnRecord);
+		const effect = validateStatePayload(
+			"node_effect_checkpoint",
+			approvalCheckpointPayload(input.checkpoint),
+		);
+		if (input.checkpoint.status !== "waiting"
+			|| input.checkpoint.sessionId !== sessionId
+			|| input.checkpoint.callId !== input.checkpoint.decisionId
+			|| recordValue(pending).tool_call === undefined
+			|| requiredString(recordValue(recordValue(pending).tool_call).call_id, "call_id")
+				!== input.checkpoint.callId
+			|| requiredString(recordValue(suspended).session_id, "session_id") !== sessionId
+			|| requiredString(recordValue(suspended).client_turn_id, "client_turn_id")
+				!== input.checkpoint.clientTurnId
+			|| requiredString(recordValue(suspended).turn_id, "turn_id") !== input.checkpoint.turnId) {
+			throw new SessionStateError("session_state_invalid", "node_effect_checkpoint");
+		}
 		return this.#writeTransaction(() => {
-			const raw = this.#requiredStateObject(input.sessionId, "node_effect_checkpoint");
-			const checkpoint = approvalCheckpointFromPayload(raw);
-			const currentResolution = approvalResolution(checkpoint);
+			this.#touchSession(sessionId, input.workspaceRoot, input.threadId);
+			this.#upsertState(sessionId, "pending_decision", pending);
+			this.#upsertState(sessionId, "suspended_turn", suspended);
+			this.#upsertState(sessionId, "turn_record", turnRecord);
+			this.#upsertState(sessionId, "node_effect_checkpoint", effect);
+			this.#failpoint("approval_suspend_after_states");
+			return approvalCheckpointFromPayload(recordValue(effect));
+		});
+	}
+
+	commitApprovalResult(
+		input: CommitApprovalResultInput,
+		commitToolResult: () => void,
+	): ApprovalCheckpoint {
+		return this.#writeTransaction(() => {
+			const current = approvalCheckpointFromPayload(
+				this.#requiredStateObject(input.sessionId, "node_effect_checkpoint"),
+			);
+			const currentResolution = approvalResolution(current);
 			const nextResolution = transitionApproval(currentResolution, input.transition);
-			if (nextResolution === currentResolution) return checkpoint;
-			if (checkpoint.status !== input.expectedStatus) {
-				throw new ApprovalConflictError(checkpoint.status, input.transition.type);
+			if (nextResolution === currentResolution) return current;
+			if (current.status !== input.expectedStatus) {
+				throw new ApprovalConflictError(current.status, input.transition.type);
 			}
-			const updatedAt = this.#clock();
-			const payload = effectPayload(raw, nextResolution, updatedAt);
+			commitToolResult();
+			this.#failpoint("approval_result_after_tool");
+			const payload = effectPayload(
+				approvalCheckpointPayload(current),
+				nextResolution,
+				this.#clock(),
+			);
 			this.#upsertState(input.sessionId, "node_effect_checkpoint", payload);
 			this.#touchExistingSession(input.sessionId);
 			return approvalCheckpointFromPayload(payload);
 		});
+	}
+
+	finalizeApprovalContinuation(input: FinalizeApprovalContinuationInput): void {
+		this.#writeTransaction(() => {
+			const checkpoint = approvalCheckpointFromPayload(
+				this.#requiredStateObject(input.sessionId, "node_effect_checkpoint"),
+			);
+			if (checkpoint.decisionId !== nonEmpty(input.decisionId, "decisionId")
+				|| checkpoint.status !== "completed" && checkpoint.status !== "rejected") {
+				throw new ApprovalConflictError(checkpoint.status, "complete_effect");
+			}
+			this.#deleteApprovalContinuation(input.sessionId, true);
+			this.#touchExistingSession(input.sessionId);
+		});
+	}
+
+	interruptAmbiguousApproval(
+		input: InterruptAmbiguousApprovalInput,
+		commitInterruption: () => void,
+	): void {
+		this.#writeTransaction(() => {
+			const checkpoint = approvalCheckpointFromPayload(
+				this.#requiredStateObject(input.sessionId, "node_effect_checkpoint"),
+			);
+			if (checkpoint.status !== "executing"
+				|| checkpoint.clientTurnId !== input.clientTurnId
+				|| checkpoint.callId !== input.callId
+				|| checkpoint.toolName !== input.toolName) {
+				throw new ApprovalConflictError(checkpoint.status, "complete_effect");
+			}
+			commitInterruption();
+			this.#failpoint("approval_interrupt_after_result");
+			this.#deleteApprovalContinuation(input.sessionId, true);
+			this.#touchExistingSession(input.sessionId);
+		});
+	}
+
+	isApprovalContinuationTurn(
+		sessionId: string,
+		clientTurnId: string,
+		turnId: string,
+	): boolean {
+		const rows = this.#database.prepare(`
+			SELECT state_key, payload_json FROM session_state
+			WHERE session_id = ? AND state_key IN (
+				'pending_decision', 'suspended_turn', 'node_effect_checkpoint'
+			)
+		`).all(sessionId) as readonly { state_key: RuntimeStateKey; payload_json: unknown }[];
+		if (rows.length === 0) return false;
+		const states = new Map(rows.map((row) => [
+			row.state_key,
+			parseStateJson(row.payload_json, row.state_key),
+		]));
+		const pending = recordValue(states.get("pending_decision"));
+		const suspended = recordValue(states.get("suspended_turn"));
+		const effect = states.get("node_effect_checkpoint");
+		if (states.size !== 3 || !isRecord(effect)) {
+			throw new SessionStateError("session_state_invalid", "suspended_turn");
+		}
+		const checkpoint = approvalCheckpointFromPayload(effect);
+		const pendingCallId = requiredString(
+			recordValue(recordValue(pending).tool_call).call_id,
+			"call_id",
+		);
+		return requiredString(suspended.session_id, "session_id") === sessionId
+			&& requiredString(suspended.client_turn_id, "client_turn_id") === clientTurnId
+			&& requiredString(suspended.turn_id, "turn_id") === turnId
+			&& checkpoint.sessionId === sessionId
+			&& checkpoint.clientTurnId === clientTurnId
+			&& checkpoint.turnId === turnId
+			&& checkpoint.callId === pendingCallId
+			&& new Set<ApprovalResolution["status"]>([
+				"waiting",
+				"approved",
+				"executing",
+				"completed",
+				"rejected",
+			])
+				.has(checkpoint.status);
 	}
 
 	commitCompaction(input: CommitCompactionInput): void {
@@ -413,6 +541,31 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		const payload = parseStateJson(row.payload_json, key);
 		if (!isRecord(payload)) throw new SessionStateError("session_state_invalid", key);
 		return payload;
+	}
+
+	#transitionApproval(input: ApprovalTransitionInput): ApprovalCheckpoint {
+		const raw = this.#requiredStateObject(input.sessionId, "node_effect_checkpoint");
+		const checkpoint = approvalCheckpointFromPayload(raw);
+		const currentResolution = approvalResolution(checkpoint);
+		const nextResolution = transitionApproval(currentResolution, input.transition);
+		if (nextResolution === currentResolution) return checkpoint;
+		if (checkpoint.status !== input.expectedStatus) {
+			throw new ApprovalConflictError(checkpoint.status, input.transition.type);
+		}
+		const payload = effectPayload(raw, nextResolution, this.#clock());
+		this.#upsertState(input.sessionId, "node_effect_checkpoint", payload);
+		this.#touchExistingSession(input.sessionId);
+		return approvalCheckpointFromPayload(payload);
+	}
+
+	#deleteApprovalContinuation(sessionId: string, includeCheckpoint = false): void {
+		this.#database.prepare(`
+			DELETE FROM session_state
+			WHERE session_id = ? AND state_key IN (
+				'pending_decision', 'suspended_turn', 'turn_record'
+				${includeCheckpoint ? ", 'node_effect_checkpoint'" : ""}
+			)
+		`).run(sessionId);
 	}
 
 	#loadObjectRows(
@@ -911,6 +1064,27 @@ function effectPayload(
 		...(resolution.status === "completed"
 			? { result_call_id: resolution.resultCallId }
 			: {}),
+	};
+}
+
+function approvalCheckpointPayload(
+	checkpoint: ApprovalCheckpoint,
+): Readonly<Record<string, unknown>> {
+	return {
+		session_id: checkpoint.sessionId,
+		client_turn_id: checkpoint.clientTurnId,
+		turn_id: checkpoint.turnId,
+		decision_id: checkpoint.decisionId,
+		call_id: checkpoint.callId,
+		tool_name: checkpoint.toolName,
+		status: checkpoint.status,
+		...(checkpoint.status === "executing" || checkpoint.status === "completed"
+			? { fingerprint: checkpoint.fingerprint }
+			: {}),
+		...(checkpoint.status === "completed"
+			? { result_call_id: checkpoint.resultCallId }
+			: {}),
+		updated_at: checkpoint.updatedAt,
 	};
 }
 

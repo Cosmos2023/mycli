@@ -32,14 +32,18 @@ import type {
 	AppendToolResultInput,
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
+	CommitApprovalResultInput,
 	CommitCompactionInput,
 	CommitQueuedInputsInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
+	FinalizeApprovalContinuationInput,
 	ImportLegacyConversationInput,
+	InterruptAmbiguousApprovalInput,
 	ReserveTurnInput,
 	RuntimeStateKey,
 	SaveQueueSnapshotInput,
+	SaveApprovalSuspensionInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,
@@ -320,7 +324,12 @@ export class SQLiteSessionStore implements SessionStore {
 				WHERE status = 'in_progress'
 				ORDER BY session_id, client_turn_id
 			`).all() as readonly RuntimeTurnRow[];
-			const orphaned = running.filter((row) => !ownedByLiveProcess(row, this.#isProcessAlive));
+			const orphaned = running.filter((row) => !ownedByLiveProcess(row, this.#isProcessAlive)
+				&& !this.#stateRepository.isApprovalContinuationTurn(
+					String(row.session_id),
+					String(row.client_turn_id),
+					String(row.turn_id),
+				));
 			for (const row of orphaned) {
 				const turn = runtimeTurnFromRow(row);
 				const completedAt = this.#clock();
@@ -425,6 +434,71 @@ export class SQLiteSessionStore implements SessionStore {
 
 	compareAndSetApproval(input: ApprovalTransitionInput): ApprovalCheckpoint {
 		return this.#stateRepository.compareAndSetApproval(input);
+	}
+
+	saveApprovalSuspension(input: SaveApprovalSuspensionInput): ApprovalCheckpoint {
+		return this.#stateRepository.saveApprovalSuspension(input);
+	}
+
+	commitApprovalResult(input: CommitApprovalResultInput): ApprovalCheckpoint {
+		return this.#stateRepository.commitApprovalResult(input, () => {
+			const running = this.#requireRunningTurn(input.sessionId, input.toolResult.clientTurnId);
+			const expected = this.#pendingToolCalls(input.sessionId)[0];
+			if (!expected
+				|| expected.callId !== input.toolResult.result.callId
+				|| expected.name !== input.toolResult.result.toolName) {
+				throw new StorageFailure("approval tool result does not match pending call");
+			}
+			this.#appendToolResultRecords(running, input.toolResult);
+		});
+	}
+
+	finalizeApprovalContinuation(input: FinalizeApprovalContinuationInput): void {
+		this.#stateRepository.finalizeApprovalContinuation(input);
+	}
+
+	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord {
+		this.#stateRepository.interruptAmbiguousApproval(input, () => {
+			const running = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
+			const expected = this.#pendingToolCalls(input.sessionId)[0];
+			if (!expected || expected.callId !== input.callId || expected.name !== input.toolName) {
+				throw new StorageFailure("ambiguous approval call does not match pending call");
+			}
+			this.#appendToolResultRecords(running, {
+				sessionId: input.sessionId,
+				clientTurnId: input.clientTurnId,
+				result: {
+					callId: input.callId,
+					toolName: input.toolName,
+					output: "Tool effect outcome is unknown after interruption.",
+					success: false,
+				},
+				summary: `${input.toolName.slice(0, 128) || "Tool"} outcome unknown`,
+				errorKind: input.errorKind,
+			});
+			this.#appendRollout(input.sessionId, failedRollout(running, {
+				sessionId: input.sessionId,
+				clientTurnId: input.clientTurnId,
+				code: "interrupted",
+				message: "tool effect outcome is unknown",
+				completedAt: input.completedAt,
+			}, "interrupted", this.#threadId(input.sessionId)));
+			this.#database.prepare(`
+				UPDATE runtime_turns
+				SET status = 'interrupted', error_code = 'interrupted', result_json = ?,
+					completed_at = ?, owner_id = NULL, owner_pid = NULL
+				WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
+			`).run(
+				stableJson({
+					message: "tool effect outcome is unknown",
+					error_kind: input.errorKind,
+				}),
+				input.completedAt,
+				input.sessionId,
+				input.clientTurnId,
+			);
+		});
+		return this.#requiredTurn(input.sessionId, input.clientTurnId);
 	}
 
 	commitCompaction(input: CommitCompactionInput): void {

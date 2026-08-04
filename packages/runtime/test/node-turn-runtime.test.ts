@@ -10,6 +10,7 @@ import type {
 	QueueSnapshot,
 	QueuedInput,
 	RuntimeEvent,
+	ToolDefinition,
 } from "@mycli/core";
 import { ProviderFailure, type ModelProvider } from "@mycli/providers";
 import type {
@@ -24,9 +25,11 @@ import type {
 import { StorageFailure } from "@mycli/storage";
 import {
 	READ_TOOL_DEFINITION,
+	WRITE_TOOL_DEFINITION,
 	type ToolExecutionResult,
 	type ToolRouterContract,
 } from "@mycli/tools";
+import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
 import {
 	NodeTurnRuntime,
 	QueueCoordinator,
@@ -294,6 +297,160 @@ test("executes multiple calls sequentially in provider order", async () => {
 		"provider:2",
 		"complete",
 	]);
+});
+
+test("strict mutation policy durably suspends before requesting approval", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+		{ type: "completed", responseId: "resp-tools" },
+	]]);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const emitted: RuntimeEvent[] = [];
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [READ_TOOL_DEFINITION, WRITE_TOOL_DEFINITION],
+	}).submit(submission(), emitted.push.bind(emitted), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "in_progress");
+	assert.equal(router.calls, 0);
+	assert.deepEqual(trace, ["reserve", "provider:1", "persist:calls", "approval:suspend"]);
+	const request = emitted.find((event) => event.type === "approval_requested");
+	assert.ok(request);
+	assert.equal("decisionId" in request ? request.decisionId : undefined, "call-write");
+	assert.equal("preview" in request ? request.preview : "", "Write notes.txt");
+});
+
+test("approval resolution continues the original turn without reserving or duplicating the user", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[
+			{ type: "text_delta", text: "Mutation and read completed." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const instance = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [READ_TOOL_DEFINITION, WRITE_TOOL_DEFINITION],
+	});
+	await instance.submit(submission(), () => {}, { signal: new AbortController().signal });
+	const userCountBefore = store.items.filter((item) => item.type === "user").length;
+
+	const result = await resolveApproval(instance, {
+		decisionId: "call-write",
+		choice: "approve_once",
+	}, (event) => { trace.push(`event:${event.type}`); }, new AbortController().signal);
+
+	assert.equal(result.status, "completed");
+	assert.equal(trace.filter((item) => item === "reserve").length, 1);
+	assert.equal(store.items.filter((item) => item.type === "user").length, userCountBefore);
+	assert.ok(trace.indexOf("approval:resolve:call-write") < trace.indexOf("tool:call-read"));
+	assert.ok(trace.indexOf("event:tool_execution_started") < trace.indexOf("tool:call-write"));
+	assert.ok(trace.indexOf("tool:call-write") < trace.indexOf("event:tool_execution_completed"));
+	assert.ok(trace.indexOf("approval:finish:call-write") < trace.indexOf("tool:call-read"));
+	assert.ok(trace.indexOf("tool:call-read") < trace.indexOf("provider:2"));
+});
+
+test("approval finalization failure preserves the running turn for retry", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+		{ type: "completed", responseId: "resp-tools" },
+	]]);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store, { finishFailure: true });
+	const instance = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+	});
+	await instance.submit(submission(), () => {}, { signal: new AbortController().signal });
+	const emitted: RuntimeEvent[] = [];
+
+	await assert.rejects(resolveApproval(instance, {
+		decisionId: "call-write",
+		choice: "approve_once",
+	}, emitted.push.bind(emitted), new AbortController().signal), StorageFailure);
+
+	assert.equal(store.turn?.status, "in_progress");
+	assert.equal(emitted.some((event) => event.type === "turn_failed"), false);
+});
+
+test("one provider batch can pause for multiple approvals in original order", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const secondWrite = JSON.stringify({ file_path: "second.txt", content: "second" });
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-write-1", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+			{ type: "tool_call", callId: "call-write-2", name: "Write", argumentsJson: secondWrite },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[{ type: "completed", responseId: "resp-final" }],
+	]);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const instance = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+	});
+
+	await instance.submit(submission(), () => {}, { signal: new AbortController().signal });
+	const first = await resolveApproval(instance, {
+		decisionId: "call-write-1",
+		choice: "approve_once",
+	}, () => {}, new AbortController().signal);
+	assert.equal(first.status, "in_progress");
+	assert.equal(approvals.pending()?.decisionId, "call-write-2");
+
+	const completed = await resolveApproval(instance, {
+		decisionId: "call-write-2",
+		choice: "reject",
+	}, () => {}, new AbortController().signal);
+
+	assert.equal(completed.status, "completed");
+	assert.deepEqual(trace.filter((item) => item.startsWith("approval:")), [
+		"approval:suspend",
+		"approval:resolve:call-write-1",
+		"approval:finish:call-write-1",
+		"approval:suspend",
+		"approval:resolve:call-write-2",
+		"approval:finish:call-write-2",
+	]);
+	assert.deepEqual(store.items.filter((item) => item.type === "tool_result").map((item) => item.callId), [
+		"call-write-1",
+		"call-write-2",
+	]);
+	assert.equal(router.calls, 1);
 });
 
 test("interrupts after a durable tool result without requesting a continuation", async () => {
@@ -610,6 +767,9 @@ function createRuntime(options: {
 	readonly toolRouter: ToolRouterContract;
 	readonly queueCoordinator?: QueueCoordinator;
 	readonly monotonicClock?: () => number;
+	readonly approvalPolicy?: ApprovalPolicy;
+	readonly approvalCoordinator?: ApprovalCoordinatorFixture;
+	readonly toolDefinitions?: readonly ToolDefinition[];
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
 		sessionId: "session-1",
@@ -623,11 +783,129 @@ function createRuntime(options: {
 		clock: clockSequence(),
 		sleep: async () => {},
 		random: () => 0.5,
-		planTools: () => [READ_TOOL_DEFINITION],
+		planTools: () => options.toolDefinitions ?? [READ_TOOL_DEFINITION],
 		toolRouter: options.toolRouter,
+		...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
+		...(options.approvalCoordinator ? { approvalCoordinator: options.approvalCoordinator } : {}),
 		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),
 		...(options.monotonicClock ? { monotonicClock: options.monotonicClock } : {}),
 	});
+}
+
+interface ApprovalRequestFixture {
+	readonly sessionId: string;
+	readonly decisionId: string;
+	readonly callId: string;
+	readonly toolName: string;
+	readonly options: readonly ["approve_once", "reject"];
+	readonly clientTurnId: string;
+	readonly turnId: string;
+	readonly call: CanonicalToolCall;
+	readonly remainingCalls: readonly CanonicalToolCall[];
+	readonly userMessage: string;
+	readonly providerProtocol: "responses" | "chat_completions";
+	readonly assistantText: string;
+	readonly responseId?: string;
+	readonly usage: Readonly<Record<string, number>>;
+	readonly preview: string;
+	readonly reason: string;
+}
+
+interface ApprovalCoordinatorFixture {
+	suspend(input: Omit<ApprovalRequestFixture, "sessionId" | "decisionId" | "callId" | "toolName" | "options">): ApprovalRequestFixture;
+	pending(): ApprovalRequestFixture | undefined;
+	resolve(input: {
+		readonly decisionId: string;
+		readonly choice: "approve_once" | "reject";
+		readonly signal: AbortSignal;
+		readonly onExecutionStart?: () => void;
+	}): Promise<{
+		readonly status: "completed" | "rejected";
+		readonly continuation: ApprovalRequestFixture;
+		readonly toolResult: ToolExecutionResult;
+	}>;
+	finish(decisionId: string): void;
+}
+
+function approvalRuntimeFixture(
+	trace: string[],
+	router: ToolRouterContract,
+	store: FakeStore,
+	options: { readonly finishFailure?: boolean } = {},
+) {
+	let current: ApprovalRequestFixture | undefined;
+	const coordinator: ApprovalCoordinatorFixture = {
+		suspend: (input) => {
+			trace.push("approval:suspend");
+			const pending: ApprovalRequestFixture = Object.freeze({
+				...input,
+				sessionId: "session-1",
+				decisionId: input.call.callId,
+				callId: input.call.callId,
+				toolName: input.call.name,
+				options: Object.freeze(["approve_once", "reject"] as const),
+			});
+			current = pending;
+			return pending;
+		},
+		pending: () => current,
+		resolve: async (input) => {
+			assert.ok(current);
+			assert.equal(input.decisionId, current.decisionId);
+			trace.push(`approval:resolve:${input.decisionId}`);
+			const continuation = current;
+			let toolResult: ToolExecutionResult;
+			if (input.choice === "approve_once") {
+				input.onExecutionStart?.();
+				toolResult = await router.execute(continuation.call, { signal: input.signal });
+			} else {
+				toolResult = {
+					callId: continuation.call.callId,
+					toolName: continuation.call.name,
+					success: false,
+					modelOutput: "Tool denied\nError kind: approval_rejected",
+					summary: "Tool rejected",
+					errorKind: "approval_rejected",
+					metadata: {},
+				};
+			}
+			store.appendToolResult({
+				sessionId: "session-1",
+				clientTurnId: continuation.clientTurnId,
+				result: {
+					callId: toolResult.callId,
+					toolName: toolResult.toolName,
+					output: toolResult.modelOutput,
+					success: toolResult.success,
+				},
+				summary: toolResult.summary,
+				metadata: toolResult.metadata,
+				...(toolResult.errorKind ? { errorKind: toolResult.errorKind } : {}),
+			});
+			return {
+				status: input.choice === "approve_once" ? "completed" : "rejected",
+				continuation,
+				toolResult,
+				};
+		},
+		finish: (decisionId) => {
+			trace.push(`approval:finish:${decisionId}`);
+			if (options.finishFailure) throw new StorageFailure("approval finalization failed");
+			if (current?.decisionId === decisionId) current = undefined;
+		},
+		};
+	return { coordinator, pending: () => current };
+}
+
+async function resolveApproval(
+	runtime: NodeTurnRuntime,
+	input: { readonly decisionId: string; readonly choice: "approve_once" | "reject" },
+	emit: (event: RuntimeEvent) => void,
+	signal: AbortSignal,
+): Promise<RuntimeTurnRecord> {
+	const method = Reflect.get(runtime, "resolveApproval");
+	assert.equal(typeof method, "function", "NodeTurnRuntime.resolveApproval must exist");
+	return method.call(runtime, input, emit, { signal }) as Promise<RuntimeTurnRecord>;
 }
 
 function queueFixture(store: FakeStore, trace: string[]) {
@@ -894,6 +1172,7 @@ function clockSequence(): () => string {
 }
 
 const READ_ARGUMENTS = "{\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}";
+const WRITE_ARGUMENTS = "{\"file_path\":\"notes.txt\",\"content\":\"hello\"}";
 const READ_OUTPUT = "Read succeeded\nPath: README.md";
 const CALL: CanonicalToolCall = {
 	callId: "call-1",

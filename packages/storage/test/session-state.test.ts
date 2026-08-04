@@ -3,7 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ApprovalTransition, QueueSnapshot, QueuedInput } from "@mycli/core";
+import type { RuntimeStateRecord } from "@mycli/contracts";
+import type {
+	ApprovalResolution,
+	ApprovalTransition,
+	CanonicalConversationItem,
+	CanonicalToolCall,
+	QueueSnapshot,
+	QueuedInput,
+} from "@mycli/core";
 import * as storage from "../src/index.ts";
 
 interface M5Store {
@@ -16,6 +24,18 @@ interface M5Store {
 		readonly completedAt: string;
 	}): unknown;
 	loadConversation(sessionId: string): readonly { readonly role: string; readonly content: string }[];
+	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
+	loadTurn(sessionId: string, clientTurnId: string): {
+		readonly status: string;
+		readonly result: Readonly<Record<string, unknown>> | null;
+	} | undefined;
+	appendAssistantToolCalls(input: {
+		readonly sessionId: string;
+		readonly clientTurnId: string;
+		readonly assistantText: string;
+		readonly calls: readonly CanonicalToolCall[];
+		readonly responseId?: string;
+	}): void;
 	listSessions(query?: { readonly workspaceRoot?: string; readonly limit?: number }): readonly {
 		readonly sessionId: string;
 		readonly messageCount: number;
@@ -61,6 +81,28 @@ interface M5Store {
 		readonly expectedStatus: string;
 		readonly transition: ApprovalTransition;
 	}): { readonly status: string; readonly decisionId: string };
+	saveApprovalSuspension(input: ApprovalSuspensionFixture): {
+		readonly status: string;
+		readonly decisionId: string;
+	};
+	commitApprovalResult(input: {
+		readonly sessionId: string;
+		readonly expectedStatus: ApprovalResolution["status"];
+		readonly transition: ApprovalTransition;
+		readonly toolResult: ReturnType<typeof successfulWriteResult>;
+	}): { readonly status: string; readonly decisionId: string };
+	finalizeApprovalContinuation(input: {
+		readonly sessionId: string;
+		readonly decisionId: string;
+	}): void;
+	interruptAmbiguousApproval(input: {
+		readonly sessionId: string;
+		readonly clientTurnId: string;
+		readonly callId: string;
+		readonly toolName: string;
+		readonly errorKind: "effect_outcome_unknown";
+		readonly completedAt: string;
+	}): { readonly status: string; readonly result: Readonly<Record<string, unknown>> | null };
 	commitCompaction(input: {
 		readonly sessionId: string;
 		readonly replacementMessages: readonly Readonly<Record<string, unknown>>[];
@@ -467,6 +509,124 @@ test("compare-and-set approval transitions are monotonic and idempotent", async 
 	});
 });
 
+test("saves approval suspension state in one transaction", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+	prepareApprovalTurn(store, fixture.root);
+
+	const checkpoint = store.saveApprovalSuspension(approvalSuspension(fixture.root));
+
+	assert.equal(checkpoint.status, "waiting");
+	assert.equal(checkpoint.decisionId, "call-1");
+	assert.equal((store.loadState("s1", "pending_decision") as { preview: string }).preview, "Write notes.txt");
+	assert.equal((store.loadState("s1", "suspended_turn") as { turn_id: string }).turn_id, "turn-s1");
+	assert.equal((store.loadState("s1", "turn_record") as { status: string }).status, "waiting_approval");
+	assert.equal((store.loadState("s1", "node_effect_checkpoint") as { status: string }).status, "waiting");
+});
+
+test("rolls back every approval suspension row when its transaction fails", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath, (name) => {
+		if (name === "approval_suspend_after_states") throw new Error("failpoint");
+	});
+	t.after(() => store.close());
+	prepareApprovalTurn(store, fixture.root);
+
+	assert.throws(() => store.saveApprovalSuspension(approvalSuspension(fixture.root)));
+	for (const key of ["pending_decision", "suspended_turn", "turn_record", "node_effect_checkpoint"]) {
+		assert.equal(store.loadState("s1", key), undefined);
+	}
+});
+
+test("commits an approval tool result and completed effect atomically", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+	prepareApprovalTurn(store, fixture.root);
+	store.saveApprovalSuspension(approvalSuspension(fixture.root));
+	store.compareAndSetApproval({
+		sessionId: "s1",
+		expectedStatus: "waiting",
+		transition: { type: "approve_once" },
+	});
+	store.compareAndSetApproval({
+		sessionId: "s1",
+		expectedStatus: "approved",
+		transition: { type: "claim_effect", fingerprint: "sha256:effect" },
+	});
+
+	const completed = store.commitApprovalResult({
+		sessionId: "s1",
+		expectedStatus: "executing",
+		transition: { type: "complete_effect", resultCallId: "call-1" },
+		toolResult: successfulWriteResult(),
+	});
+
+	assert.equal(completed.status, "completed");
+	assert.notEqual(store.loadState("s1", "pending_decision"), undefined);
+	assert.notEqual(store.loadState("s1", "suspended_turn"), undefined);
+	assert.equal((store.loadState("s1", "node_effect_checkpoint") as { status: string }).status, "completed");
+	assert.deepEqual(store.loadConversationItems("s1").at(-1), {
+		type: "tool_result",
+		callId: "call-1",
+		toolName: "Write",
+		output: "Write completed",
+		success: true,
+	});
+
+	store.finalizeApprovalContinuation({ sessionId: "s1", decisionId: "call-1" });
+	assert.equal(store.loadState("s1", "pending_decision"), undefined);
+	assert.equal(store.loadState("s1", "suspended_turn"), undefined);
+	assert.equal(store.loadState("s1", "node_effect_checkpoint"), undefined);
+});
+
+test("restart retains waiting approval but interrupts an orphaned executing effect once", async (t) => {
+	const fixture = await databaseFixture(t);
+	const first = createStore(fixture.dbPath);
+	prepareApprovalTurn(first, fixture.root);
+	first.saveApprovalSuspension(approvalSuspension(fixture.root));
+	first.close();
+
+	const waiting = createStore(fixture.dbPath);
+	assert.equal(waiting.loadTurn("s1", "client-s1")?.status, "in_progress");
+	waiting.compareAndSetApproval({
+		sessionId: "s1",
+		expectedStatus: "waiting",
+		transition: { type: "approve_once" },
+	});
+	waiting.compareAndSetApproval({
+		sessionId: "s1",
+		expectedStatus: "approved",
+		transition: { type: "claim_effect", fingerprint: "sha256:effect" },
+	});
+	waiting.close();
+
+	const reopened = createStore(fixture.dbPath);
+	t.after(() => reopened.close());
+	assert.equal(reopened.loadTurn("s1", "client-s1")?.status, "in_progress");
+	const interrupted = reopened.interruptAmbiguousApproval({
+		sessionId: "s1",
+		clientTurnId: "client-s1",
+		callId: "call-1",
+		toolName: "Write",
+		errorKind: "effect_outcome_unknown",
+		completedAt: NOW,
+	});
+
+	assert.equal(interrupted.status, "interrupted");
+	assert.equal(interrupted.result?.error_kind, "effect_outcome_unknown");
+	assert.equal(reopened.loadState("s1", "pending_decision"), undefined);
+	assert.equal(reopened.loadState("s1", "suspended_turn"), undefined);
+	assert.equal(reopened.loadState("s1", "node_effect_checkpoint"), undefined);
+	assert.equal(
+		reopened.loadConversationItems("s1").filter(
+			(item) => item.type === "tool_result" && item.callId === "call-1",
+		).length,
+		1,
+	);
+});
+
 test("commits compact replacement, summary, checkpoint, and continuation together", async (t) => {
 	const fixture = await databaseFixture(t);
 	const store = createStore(fixture.dbPath);
@@ -542,6 +702,109 @@ function submission(workspaceRoot: string, sessionId: string, startedAt: string)
 		threadId: sessionId,
 		userText: `message-${sessionId}`,
 		startedAt,
+	};
+}
+
+interface ApprovalSuspensionFixture {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly pendingDecision: Extract<RuntimeStateRecord, { kind: "pending_decision" }>;
+	readonly suspendedTurn: Extract<RuntimeStateRecord, { kind: "suspended_turn" }>;
+	readonly turnRecord: Readonly<Record<string, unknown>>;
+	readonly checkpoint: {
+		readonly sessionId: string;
+		readonly clientTurnId: string;
+		readonly turnId: string;
+		readonly decisionId: string;
+		readonly callId: string;
+		readonly toolName: string;
+		readonly status: "waiting";
+		readonly updatedAt: string;
+	};
+}
+
+function prepareApprovalTurn(store: M5Store, workspaceRoot: string): void {
+	store.reserveTurn(submission(workspaceRoot, "s1", NOW));
+	store.appendAssistantToolCalls({
+		sessionId: "s1",
+		clientTurnId: "client-s1",
+		assistantText: "",
+		calls: [{
+			callId: "call-1",
+			name: "Write",
+			argumentsJson: JSON.stringify({ file_path: "notes.txt", content: "hello" }),
+		}],
+		responseId: "resp-1",
+	});
+}
+
+function approvalSuspension(workspaceRoot: string): ApprovalSuspensionFixture {
+	const toolCall = {
+		name: "Write",
+		arguments: { file_path: "notes.txt", content: "hello" },
+		reason: "",
+		call_id: "call-1",
+	};
+	return {
+		sessionId: "s1",
+		workspaceRoot,
+		threadId: "s1",
+		pendingDecision: {
+			kind: "pending_decision",
+			version: 1,
+			payload: {
+				tool_call: toolCall,
+				kind: "needs_choice",
+				reason: "Approval required",
+				preview: "Write notes.txt",
+				options: ["approve_once", "reject"],
+			},
+		},
+		suspendedTurn: {
+			kind: "suspended_turn",
+			version: 1,
+			payload: {
+				user_message: "message-s1",
+				conversation: [pythonMessage("user", "message-s1")],
+				suspend_reason: "approval_required",
+				pending_approval: { tool_call: toolCall, reason: "Approval required", preview: "Write notes.txt" },
+				session_id: "s1",
+				client_turn_id: "client-s1",
+				turn_id: "turn-s1",
+				provider_protocol: "responses",
+				remaining_tool_calls: [],
+				continuation: { assistant_text: "", response_id: "resp-1", usage: {} },
+			},
+		},
+		turnRecord: {
+			turn_id: "turn-s1",
+			client_turn_id: "client-s1",
+			user_message: "message-s1",
+			status: "waiting_approval",
+			stop_reason: "approval_required",
+			updated_at: NOW,
+		},
+		checkpoint: {
+			sessionId: "s1",
+			clientTurnId: "client-s1",
+			turnId: "turn-s1",
+			decisionId: "call-1",
+			callId: "call-1",
+			toolName: "Write",
+			status: "waiting",
+			updatedAt: NOW,
+		},
+	};
+}
+
+function successfulWriteResult() {
+	return {
+		sessionId: "s1",
+		clientTurnId: "client-s1",
+		result: { callId: "call-1", toolName: "Write", output: "Write completed", success: true },
+		summary: "Write completed",
+		metadata: { path: "notes.txt", status: "created" },
 	};
 }
 
