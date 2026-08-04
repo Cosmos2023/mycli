@@ -62,15 +62,19 @@ test("surfaces a provider tool call without executing it", async () => {
 	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
 	assert.equal(typeof ResponsesProvider, "function");
 	const client: ResponsesClient = {
-		create: async () => events([{
-			type: "response.output_item.done",
-			item: {
-				type: "function_call",
-				call_id: "call_1",
-				name: "Read",
-				arguments: "{\"path\":\"README.md\"}",
+		create: async () => events([
+			{ type: "response.function_call_arguments.delta", delta: "{\"file_path\":" },
+			{ type: "response.function_call_arguments.done", arguments: "{\"file_path\":\"README.md\"}" },
+			{
+				type: "response.output_item.done",
+				item: {
+					type: "function_call",
+					call_id: "call_1",
+					name: "Read",
+					arguments: "{\"path\":\"README.md\"}",
+				},
 			},
-		}]),
+		]),
 	};
 
 	assert.deepEqual(await collect(new ResponsesProvider!({ client }).stream(request(), {
@@ -83,7 +87,7 @@ test("surfaces a provider tool call without executing it", async () => {
 	}]);
 });
 
-test("serializes Read for an initial Responses request", async () => {
+test("serializes optional Read parameters without strict mode", async () => {
 	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
 	assert.equal(typeof ResponsesProvider, "function");
 	let capturedRequest: Record<string, unknown> | undefined;
@@ -103,13 +107,12 @@ test("serializes Read for an initial Responses request", async () => {
 		name: "Read",
 		description: READ_TOOL.description,
 		parameters: READ_TOOL.inputSchema,
-		strict: true,
 	}]);
 	assert.deepEqual(capturedRequest?.input, [{ role: "user", content: "Read README.md" }]);
 	assert.equal("previous_response_id" in (capturedRequest ?? {}), false);
 });
 
-test("serializes only trailing function outputs for a Responses continuation", async () => {
+test("replays the canonical tool transcript for a Responses continuation", async () => {
 	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
 	assert.equal(typeof ResponsesProvider, "function");
 	let capturedRequest: Record<string, unknown> | undefined;
@@ -148,12 +151,12 @@ test("serializes only trailing function outputs for a Responses continuation", a
 		signal: new AbortController().signal,
 	}));
 
-	assert.equal(capturedRequest?.previous_response_id, "resp-tools-1");
-	assert.deepEqual(capturedRequest?.input, [{
-		type: "function_call_output",
-		call_id: "call-1",
-		output: READ_OUTPUT,
-	}]);
+	assert.equal("previous_response_id" in (capturedRequest ?? {}), false);
+	assert.deepEqual(capturedRequest?.input, [
+		{ role: "user", content: "Read README.md" },
+		{ type: "function_call", call_id: "call-1", name: "Read", arguments: READ_ARGUMENTS },
+		{ type: "function_call_output", call_id: "call-1", output: READ_OUTPUT },
+	]);
 });
 
 test("preserves assistant text alongside historical Responses tool calls", async () => {
@@ -266,6 +269,7 @@ const READ_TOOL: ToolDefinition = {
 			file_path: { type: "string" },
 			offset: { type: "integer" },
 			limit: { type: "integer" },
+			pages: { type: "string" },
 		},
 		required: ["file_path", "offset", "limit"],
 		additionalProperties: false,

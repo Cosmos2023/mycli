@@ -145,7 +145,6 @@ function chatTool(tool: ToolDefinition): Readonly<Record<string, unknown>> {
 			name: tool.name,
 			description: tool.description,
 			parameters: tool.inputSchema,
-			strict: true,
 		},
 	};
 }

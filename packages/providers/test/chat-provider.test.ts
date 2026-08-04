@@ -91,7 +91,7 @@ test("rejects a Chat stream that ends without a finish reason", async () => {
 	);
 });
 
-test("serializes Read and canonical tool results for Chat continuation", async () => {
+test("serializes optional Read parameters without strict mode for Chat continuation", async () => {
 	const ChatProvider = Reflect.get(providers, "ChatProvider") as ChatProviderConstructor | undefined;
 	assert.equal(typeof ChatProvider, "function");
 	let capturedRequest: Record<string, unknown> | undefined;
@@ -115,7 +115,6 @@ test("serializes Read and canonical tool results for Chat continuation", async (
 			name: "Read",
 			description: READ_TOOL.description,
 			parameters: READ_TOOL.inputSchema,
-			strict: true,
 		},
 	}]);
 	assert.deepEqual(capturedRequest?.messages, [
@@ -201,6 +200,7 @@ const READ_TOOL: ToolDefinition = {
 			file_path: { type: "string" },
 			offset: { type: "integer" },
 			limit: { type: "integer" },
+			pages: { type: "string" },
 		},
 		required: ["file_path", "offset", "limit"],
 		additionalProperties: false,

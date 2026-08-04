@@ -71,6 +71,7 @@ M3 and packed CLI smokes on Node 22.19 across macOS, Linux, and Windows. Live re
 after the matrix passes on a `main` branch push, through a protected live-test environment when
 its secret is configured.
 
-The current configured provider account has no usable billing credit, so the M3 live request is
-recorded as `not_run=provider_billing_unavailable`. Offline gates remain authoritative until a
-usable account is configured; do not repeatedly retry the billed endpoint.
+The sanitized M3 Responses smoke completed against an authorized OpenAI-compatible endpoint with
+`gpt-5.5`: one Read execution started and completed, the canonical tool transcript persisted, and
+no Python process started. Credentials, endpoint data, prompts, tool arguments, file contents, and
+model text were not printed or stored.

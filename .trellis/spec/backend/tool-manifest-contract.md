@@ -126,6 +126,73 @@ Required tests for manifest changes:
   local tools.
 - Existing tool tests continue to pass.
 
+## Scenario: OpenAI-Compatible Tool Projection
+
+### 1. Scope / Trigger
+
+- Trigger: Changing a provider-visible tool schema, Responses/Chat tool serialization, streamed
+  function-call events, or provider continuation projection.
+
+### 2. Signatures
+
+- Node provider input: `ProviderRequest.tools: readonly ToolDefinition[]` and canonical
+  `ProviderRequest.items`.
+- Responses output: `{type: "function", name, description, parameters}`.
+- Chat output: `{type: "function", function: {name, description, parameters}}`.
+
+### 3. Contracts
+
+- A schema with optional properties must use ordinary function-schema mode. Do not set
+  `strict: true` unless every property is listed in `required` and optional values have an
+  explicitly supported nullable encoding.
+- `response.function_call_arguments.delta` and `.done` are non-terminal stream fragments.
+  `response.output_item.done.item.arguments` is the authoritative complete argument string.
+- HTTP/SSE Responses continuation replays canonical user, function-call, and function-output
+  items. Do not send `previous_response_id` unless the selected transport and endpoint explicitly
+  advertise that capability.
+- Compatibility-only arguments such as `Read.pages` may be ignored for supported file types, but
+  must not cause an otherwise valid text read to fail.
+
+### 4. Validation & Error Matrix
+
+- Optional property plus `strict: true` -> provider rejects `invalid_function_parameters`.
+- Unknown terminal Responses event -> bounded `provider_error` with event type only.
+- Function call without a non-empty `call_id` -> `tool_protocol_error` before execution.
+- Endpoint without HTTP/SSE previous-response support -> full canonical replay, no
+  `previous_response_id`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A Read schema with optional `pages` is sent without strict mode; streamed argument
+  fragments are ignored; `output_item.done` produces one tool call.
+- Base: A continuation resends the bounded canonical tool transcript and preserves call ordering.
+- Bad: Sending `strict: true` with `required` missing `pages`, or unconditionally sending
+  `previous_response_id` to a compatible endpoint.
+
+### 6. Tests Required
+
+- Provider unit tests assert optional schemas omit `strict` for Responses and Chat.
+- A Responses stream test includes argument delta/done before `output_item.done` and asserts one
+  parsed tool call.
+- A continuation test asserts no `previous_response_id` and ordered function call/output replay.
+- The Node M3 integration test asserts the same request shape, successful Read lifecycle, durable
+  transcript, and `python_started=false` in live smoke output.
+
+### 7. Wrong vs Correct
+
+Wrong:
+
+```ts
+{ type: "function", parameters: readSchema, strict: true, previous_response_id: responseId }
+```
+
+Correct:
+
+```ts
+{ type: "function", parameters: readSchema }
+// Continuation input replays the canonical function_call and function_call_output items.
+```
+
 ## Non-goals
 
 This manifest does not productize ACP, subagents, browser, or computer-use.

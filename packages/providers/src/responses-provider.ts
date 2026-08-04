@@ -25,6 +25,8 @@ const IGNORED_EVENT_TYPES = new Set([
 	"response.output_item.added",
 	"response.content_part.added",
 	"response.content_part.done",
+	"response.function_call_arguments.delta",
+	"response.function_call_arguments.done",
 	"response.output_text.done",
 	"response.reasoning_summary_part.added",
 	"response.reasoning_summary_part.done",
@@ -64,9 +66,6 @@ function requestBody(request: ProviderRequest): Readonly<Record<string, unknown>
 		...(request.tools.length > 0
 			? { tools: request.tools.map(responsesTool) }
 			: {}),
-		...(request.previousResponseId
-			? { previous_response_id: request.previousResponseId }
-			: {}),
 		...(request.reasoningEffort && request.reasoningEffort !== "none"
 			? { reasoning: { effort: request.reasoningEffort } }
 			: {}),
@@ -83,23 +82,6 @@ function responsesInput(request: ProviderRequest): readonly Readonly<Record<stri
 			role: message.role,
 			content: message.content,
 		}));
-	}
-	if (request.previousResponseId) {
-		const lastCalls = findLastToolCallIndex(request.items);
-		const outputs = request.items.slice(lastCalls + 1)
-			.filter((item) => item.type === "tool_result")
-			.map((item) => ({
-				type: "function_call_output",
-				call_id: item.callId,
-				output: item.output,
-			}));
-		if (lastCalls < 0 || outputs.length === 0) {
-			throw new ProviderFailure({
-				code: "tool_protocol_error",
-				message: "Responses continuation is missing tool results",
-			});
-		}
-		return outputs;
 	}
 	return request.items.flatMap(responsesItem);
 }
@@ -134,17 +116,7 @@ function responsesTool(tool: ToolDefinition): Readonly<Record<string, unknown>> 
 		name: tool.name,
 		description: tool.description,
 		parameters: tool.inputSchema,
-		strict: true,
 	};
-}
-
-function findLastToolCallIndex(items: readonly CanonicalConversationItem[]): number {
-	for (let index = items.length - 1; index >= 0; index -= 1) {
-		if (items[index]?.type === "assistant_tool_calls") {
-			return index;
-		}
-	}
-	return -1;
 }
 
 function mapEvent(rawEvent: unknown): readonly ProviderEvent[] {

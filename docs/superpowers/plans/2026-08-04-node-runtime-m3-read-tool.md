@@ -428,15 +428,13 @@ assert.deepEqual(initial.tools, [{
 	name: "Read",
 	description: readTool.description,
 	parameters: readTool.inputSchema,
-	strict: true,
 }]);
 
-assert.equal(continued.previous_response_id, "resp-tools-1");
-assert.deepEqual(continued.input, [{
-	type: "function_call_output",
-	call_id: "call-1",
-	output: "Read succeeded\nPath: README.md",
-}]);
+assert.equal("previous_response_id" in continued, false);
+assert.deepEqual(continued.input.slice(-2), [
+	{ type: "function_call", call_id: "call-1", name: "Read", arguments: readArguments },
+	{ type: "function_call_output", call_id: "call-1", output: readOutput },
+]);
 ```
 
 Also assert missing/empty `call_id` produces `tool_protocol_error` before runtime execution.
@@ -452,7 +450,6 @@ assert.deepEqual(body.tools, [{
 		name: "Read",
 		description: readTool.description,
 		parameters: readTool.inputSchema,
-		strict: true,
 	},
 }]);
 assert.deepEqual(body.messages.slice(-2), [
@@ -477,10 +474,11 @@ Expected: FAIL because request serialization ignores tools and continuation item
 
 - [ ] **Step 4: Implement provider-neutral projection**
 
-Responses maps canonical items to ordinary input only for an initial request; when
-`previousResponseId` is present it sends only the new tool-result items with
-`previous_response_id`. Chat maps every canonical item to ordered system/user/assistant/tool
-messages. Both adapters serialize the same ordered definitions and preserve tool call order.
+Responses maps canonical items to ordered HTTP/SSE input and replays the complete tool transcript
+for continuation without `previous_response_id`. Chat maps every canonical item to ordered
+system/user/assistant/tool messages. Both adapters serialize the same ordered definitions and
+preserve tool call order. Optional tool properties keep ordinary JSON Schema semantics, so neither
+adapter enables strict function-schema mode unless every property is encoded as required.
 
 Make tool-call parsing require a non-empty call ID and map violations to `ProviderFailure` with
 code `tool_protocol_error`. Do not include arguments JSON in diagnostics.

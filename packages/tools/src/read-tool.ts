@@ -77,7 +77,7 @@ export class ReadTool implements ToolAdapter {
 		}
 
 		const extension = extname(target).toLowerCase();
-		if (pages !== undefined || UNSUPPORTED_STRUCTURED_EXTENSIONS.has(extension)) {
+		if (UNSUPPORTED_STRUCTURED_EXTENSIONS.has(extension)) {
 			return failure(path, "unsupported_file_type", "File type is not supported in Node M3.");
 		}
 

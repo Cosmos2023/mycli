@@ -46,6 +46,22 @@ test("returns bounded model-visible text with range and continuation", async (t)
 	});
 });
 
+test("ignores the compatibility pages argument for supported text files", async (t) => {
+	const fixture = await workspaceFixture(t);
+	await writeFile(join(fixture.root, "README.md"), "alpha\nbeta\n", "utf8");
+	const read = createReadTool(fixture.root);
+
+	const result = await read.execute({
+		file_path: "README.md",
+		offset: 1,
+		limit: 2,
+		pages: "1",
+	}, { signal: new AbortController().signal });
+
+	assert.equal(result.success, true);
+	assert.equal(result.summary, "Read README.md");
+});
+
 test("deduplicates an unchanged range without repeating file content", async (t) => {
 	const fixture = await workspaceFixture(t);
 	await writeFile(join(fixture.root, "notes.txt"), "private repeated content\n", "utf8");

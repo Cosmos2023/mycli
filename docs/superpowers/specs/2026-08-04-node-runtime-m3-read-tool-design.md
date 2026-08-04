@@ -222,9 +222,10 @@ because quoted fields and embedded newlines are valid input. Structured CSV/TSV 
 to 8 MiB per file and returns `file_too_large` above that boundary. Text-mode streaming remains
 available for ordinary non-CSV text files.
 
-`pages` remains in the schema for compatibility but is rejected with `unsupported_file_type` for
-M3 because PDF handling is out of scope. `.xlsx`, `.xls`, `.pdf`, `.docx`, and `.ipynb` return a
-bounded unsupported-type result rather than being decoded as text.
+`pages` remains in the schema for compatibility and is ignored for supported text, CSV, and TSV
+files, matching the Python Read behavior. `.xlsx`, `.xls`, `.pdf`, `.docx`, and `.ipynb` return a
+bounded unsupported-type result rather than being decoded as text because paged-document handling
+is out of scope for M3.
 
 ## Provider Boundary And Continuation
 
@@ -236,7 +237,9 @@ For Responses:
 
 - initial requests send the ordered `tools` array;
 - a completed response that contains calls exposes its response ID and ordered calls;
-- continuation sends `previous_response_id` plus ordered `function_call_output` items;
+- HTTP/SSE continuation replays the canonical user, function-call, and function-output items;
+- `previous_response_id` is not sent because compatible endpoints may reserve it for another
+  transport, such as Responses WebSocket v2;
 - each output uses the original provider `call_id` and bounded `modelOutput`;
 - tool definitions remain stable across every request in the turn.
 
