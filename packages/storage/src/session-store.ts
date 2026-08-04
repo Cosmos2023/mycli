@@ -1,10 +1,14 @@
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import type {
+	ApprovalResolution,
+	ApprovalTransition,
 	CanonicalConversationItem,
 	CanonicalMessage,
 	CanonicalToolCall,
 	CanonicalToolResult,
 	ProviderUsage,
+	QueueSnapshot,
+	QueuedInput,
 	RuntimeErrorCode,
 } from "@mycli/core";
 
@@ -74,6 +78,105 @@ export interface ProjectedMutationMetadata {
 	readonly status?: "created" | "overwritten" | "edited" | "patched" | "unchanged";
 	readonly matches?: number;
 	readonly file_changes?: readonly ProjectedFileChange[];
+}
+
+export type RuntimeStateKey =
+	| "input_queue"
+	| "pending_decision"
+	| "suspended_turn"
+	| "turn_record"
+	| "compact_checkpoint"
+	| "context_baseline"
+	| "responses_continuation_state"
+	| "provider_timeline"
+	| "node_effect_checkpoint";
+
+export type SessionStateSource = RuntimeStateKey | "session_lineage";
+
+export interface SessionListQuery {
+	readonly workspaceRoot?: string;
+	readonly limit?: number;
+	readonly offset?: number;
+}
+
+export interface SessionOverview {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly createdAt: string;
+	readonly updatedAt: string;
+	readonly lastActiveAt: string;
+	readonly status: string;
+	readonly messageCount: number;
+	readonly summaryCount: number;
+	readonly parentId?: string;
+	readonly forkPoint?: number;
+}
+
+export interface SessionLineageNode {
+	readonly sessionId: string;
+	readonly parentId?: string;
+	readonly forkPoint?: number;
+}
+
+export interface SaveStateInput {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly key: RuntimeStateKey;
+	readonly payload: unknown;
+}
+
+export interface AppendSessionSummaryInput {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly summary: string;
+}
+
+export interface CommitQueuedInputsInput {
+	readonly sessionId: string;
+	readonly turnId: string;
+	readonly records: readonly QueuedInput[];
+}
+
+export type ApprovalCheckpoint = ApprovalResolution & {
+	readonly sessionId: string;
+	readonly clientTurnId: string;
+	readonly turnId: string;
+	readonly callId: string;
+	readonly toolName: string;
+	readonly updatedAt: string;
+};
+
+export interface ApprovalTransitionInput {
+	readonly sessionId: string;
+	readonly expectedStatus: ApprovalResolution["status"];
+	readonly transition: ApprovalTransition;
+}
+
+export interface CommitCompactionInput {
+	readonly sessionId: string;
+	readonly replacementMessages: readonly Readonly<Record<string, unknown>>[];
+	readonly summary: string;
+	readonly checkpoint: Readonly<Record<string, unknown>>;
+}
+
+export interface SessionStateStore {
+	listSessions(query?: SessionListQuery): readonly SessionOverview[];
+	loadSession(sessionId: string): SessionOverview | undefined;
+	loadSessionLineage(sessionId: string): readonly SessionLineageNode[];
+	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined;
+	saveState(input: SaveStateInput): void;
+	deleteState(sessionId: string, key: RuntimeStateKey): void;
+	appendSessionSummary(input: AppendSessionSummaryInput): void;
+	loadSessionSummaries(sessionId: string): readonly string[];
+	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	loadCommittedQueueIds(sessionId: string): ReadonlySet<string>;
+	commitQueuedInputs(input: CommitQueuedInputsInput): QueueSnapshot;
+	compareAndSetApproval(input: ApprovalTransitionInput): ApprovalCheckpoint;
+	commitCompaction(input: CommitCompactionInput): void;
 }
 
 const MAX_MUTATION_PATH_CHARS = 240;
@@ -165,7 +268,7 @@ function boundedDiff(value: unknown): string | undefined {
 	return value.split("\n").length <= MAX_MUTATION_DIFF_LINES ? value : undefined;
 }
 
-export interface SessionStore {
+export interface SessionStore extends SessionStateStore {
 	reserveTurn(input: ReserveTurnInput): TurnReservation;
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
@@ -197,5 +300,21 @@ export class MessageIdConflictError extends Error {
 	constructor() {
 		super("message_id_conflict: client_turn_id already has a different payload");
 		this.name = "MessageIdConflictError";
+	}
+}
+
+export type SessionStateErrorCode =
+	| "session_state_invalid"
+	| "session_state_version_unsupported";
+
+export class SessionStateError extends Error {
+	readonly code: SessionStateErrorCode;
+	readonly stateKey: SessionStateSource;
+
+	constructor(code: SessionStateErrorCode, stateKey: SessionStateSource) {
+		super(`${code}: persisted ${stateKey} state is not usable`);
+		this.name = "SessionStateError";
+		this.code = code;
+		this.stateKey = stateKey;
 	}
 }

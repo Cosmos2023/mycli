@@ -3,10 +3,15 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseRuntimeTurnRecord } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
+import {
+	ApprovalConflictError,
+	QueueConflictError,
+} from "@mycli/core";
 import type {
 	CanonicalConversationItem,
 	CanonicalMessage,
 	CanonicalToolCall,
+	QueueSnapshot,
 	RuntimeErrorCode,
 } from "@mycli/core";
 import Database from "better-sqlite3";
@@ -18,17 +23,30 @@ import {
 import {
 	MessageIdConflictError,
 	projectMutationMetadata,
+	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
 import type {
+	AppendSessionSummaryInput,
 	AppendAssistantToolCallsInput,
 	AppendToolResultInput,
+	ApprovalCheckpoint,
+	ApprovalTransitionInput,
+	CommitCompactionInput,
+	CommitQueuedInputsInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
 	ReserveTurnInput,
+	RuntimeStateKey,
+	SaveStateInput,
+	SessionLineageNode,
+	SessionListQuery,
+	SessionOverview,
 	SessionStore,
 	TurnReservation,
 } from "./session-store.ts";
+import { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
+import { stableJson } from "./stable-json.ts";
 
 export interface SQLiteSessionStoreOptions {
 	readonly dbPath: string;
@@ -37,6 +55,7 @@ export interface SQLiteSessionStoreOptions {
 	readonly ownerId?: string;
 	readonly processId?: number;
 	readonly isProcessAlive?: (processId: number) => boolean;
+	readonly stateFailpoint?: (name: string) => void;
 }
 
 interface RuntimeTurnRow {
@@ -73,6 +92,7 @@ export class SQLiteSessionStore implements SessionStore {
 	readonly #ownerId: string;
 	readonly #processId: number;
 	readonly #isProcessAlive: (processId: number) => boolean;
+	readonly #stateRepository: SQLiteSessionStateRepository;
 	#closed = false;
 
 	constructor(options: SQLiteSessionStoreOptions) {
@@ -87,6 +107,12 @@ export class SQLiteSessionStore implements SessionStore {
 			});
 			this.#configure(options.busyTimeoutMs ?? 1000);
 			this.#initialize();
+			this.#stateRepository = new SQLiteSessionStateRepository({
+				database: this.#database,
+				clock: this.#clock,
+				write: <Result>(operation: () => Result) => this.#write(operation),
+				...(options.stateFailpoint ? { failpoint: options.stateFailpoint } : {}),
+			});
 			this.recoverInterruptedTurns();
 		} catch (error) {
 			throw storageError(error);
@@ -337,6 +363,62 @@ export class SQLiteSessionStore implements SessionStore {
 			}
 			return orphaned.length;
 		});
+	}
+
+	listSessions(query: SessionListQuery = {}): readonly SessionOverview[] {
+		return this.#stateRepository.listSessions(query);
+	}
+
+	loadSession(sessionId: string): SessionOverview | undefined {
+		return this.#stateRepository.loadSession(sessionId);
+	}
+
+	loadSessionLineage(sessionId: string): readonly SessionLineageNode[] {
+		return this.#stateRepository.loadSessionLineage(sessionId);
+	}
+
+	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined {
+		return this.#stateRepository.loadState(sessionId, key);
+	}
+
+	saveState(input: SaveStateInput): void {
+		this.#stateRepository.saveState(input);
+	}
+
+	deleteState(sessionId: string, key: RuntimeStateKey): void {
+		this.#stateRepository.deleteState(sessionId, key);
+	}
+
+	appendSessionSummary(input: AppendSessionSummaryInput): void {
+		this.#stateRepository.appendSessionSummary(input);
+	}
+
+	loadSessionSummaries(sessionId: string): readonly string[] {
+		return this.#stateRepository.loadSessionSummaries(sessionId);
+	}
+
+	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
+		return this.#stateRepository.loadHistoryItems(sessionId);
+	}
+
+	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
+		return this.#stateRepository.loadTurnRollouts(sessionId);
+	}
+
+	loadCommittedQueueIds(sessionId: string): ReadonlySet<string> {
+		return this.#stateRepository.loadCommittedQueueIds(sessionId);
+	}
+
+	commitQueuedInputs(input: CommitQueuedInputsInput): QueueSnapshot {
+		return this.#stateRepository.commitQueuedInputs(input);
+	}
+
+	compareAndSetApproval(input: ApprovalTransitionInput): ApprovalCheckpoint {
+		return this.#stateRepository.compareAndSetApproval(input);
+	}
+
+	commitCompaction(input: CommitCompactionInput): void {
+		this.#stateRepository.commitCompaction(input);
 	}
 
 	close(): void {
@@ -1039,24 +1121,6 @@ function parseObjectJson(value: unknown, source: string): Record<string, unknown
 	}
 }
 
-function stableJson(value: unknown): string {
-	return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-	if (Array.isArray(value)) {
-		return value.map(sortJson);
-	}
-	if (typeof value === "object" && value !== null) {
-		return Object.fromEntries(
-			Object.entries(value)
-				.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-				.map(([key, item]) => [key, sortJson(item)]),
-		);
-	}
-	return value;
-}
-
 function utcTimestamp(): string {
 	return new Date().toISOString().replace("Z", "+00:00");
 }
@@ -1085,7 +1149,13 @@ function processIsAlive(processId: number): boolean {
 }
 
 function storageError(error: unknown): Error {
-	if (error instanceof StorageFailure || error instanceof MessageIdConflictError) {
+	if (
+		error instanceof StorageFailure
+		|| error instanceof MessageIdConflictError
+		|| error instanceof SessionStateError
+		|| error instanceof QueueConflictError
+		|| error instanceof ApprovalConflictError
+	) {
 		return error;
 	}
 	const code = sqliteCode(error);

@@ -119,6 +119,7 @@ test("initializes the complete schema-v2 shape plus runtime turn reservations", 
 		.map((row) => String((row as { name: unknown }).name));
 	assert.ok(runtimeTurnColumns.includes("owner_id"));
 	assert.ok(runtimeTurnColumns.includes("owner_pid"));
+	assert.equal(storage.SCHEMA_VERSION, 2);
 });
 
 test("opens an existing schema-v2 database additively without changing existing messages", async (t) => {
