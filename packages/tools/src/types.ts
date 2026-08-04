@@ -52,12 +52,20 @@ export interface ToolExecutionResult {
 	readonly metadata: Readonly<Record<string, unknown>>;
 }
 
+export interface ToolAdapterResult {
+	readonly success: boolean;
+	readonly modelOutput: string;
+	readonly summary: string;
+	readonly errorKind?: string;
+	readonly metadata: Readonly<Record<string, unknown>>;
+}
+
 export interface ToolAdapter {
 	readonly definition: ToolDefinition;
 	execute(
 		argumentsValue: Readonly<Record<string, unknown>>,
 		options: ToolExecutionOptions,
-	): Promise<ToolExecutionResult>;
+	): Promise<ToolAdapterResult>;
 }
 
 export interface ToolRouterContract {

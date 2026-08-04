@@ -54,7 +54,12 @@ export class ToolRouter implements ToolRouterContract {
 		if (!argumentsValue || !route.validate(argumentsValue)) {
 			return failure(call, "invalid_arguments", "Invalid tool arguments.");
 		}
-		return route.adapter.execute(argumentsValue, options);
+		const result = await route.adapter.execute(argumentsValue, options);
+		return {
+			...result,
+			callId: call.callId,
+			toolName: call.name,
+		};
 	}
 }
 
