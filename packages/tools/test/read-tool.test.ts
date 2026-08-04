@@ -80,6 +80,26 @@ test("deduplicates an unchanged range without repeating file content", async (t)
 	assert.equal(second.metadata.dedup, true);
 });
 
+test("records and refreshes the shared mutation snapshot on successful reads", async (t) => {
+	const fixture = await workspaceFixture(t);
+	await writeFile(join(fixture.root, "README.md"), "first\n", "utf8");
+	const snapshots = createSnapshotStore();
+	const read = createReadTool(fixture.root, snapshots);
+
+	await read.execute({ file_path: "README.md", offset: 1, limit: 20 }, {
+		signal: new AbortController().signal,
+	});
+	const first = snapshots.latest("README.md");
+	assert.equal(typeof first?.sha256, "string");
+
+	await writeFile(join(fixture.root, "README.md"), "changed\n", "utf8");
+	await read.execute({ file_path: "README.md", offset: 1, limit: 20 }, {
+		signal: new AbortController().signal,
+	});
+
+	assert.notEqual(snapshots.latest("README.md")?.sha256, first?.sha256);
+});
+
 test("classifies workspace escape and unsupported structured types", async (t) => {
 	const fixture = await workspaceFixture(t);
 	await writeFile(join(fixture.root, "report.pdf"), "%PDF-private", "utf8");
@@ -141,12 +161,36 @@ interface ReadAdapter {
 	): Promise<AdapterResult>;
 }
 
-type ReadToolConstructor = new (options: { readonly workspaceRoot: string }) => ReadAdapter;
+interface SnapshotStore {
+	record(snapshot: {
+		readonly path: string;
+		readonly sha256: string;
+		readonly mtimeNs: string;
+		readonly size: number;
+		readonly capturedAt: string;
+	}): void;
+	latest(path: string): {
+		readonly sha256: string;
+	} | undefined;
+}
 
-function createReadTool(workspaceRoot: string): ReadAdapter {
+type ReadToolConstructor = new (options: {
+	readonly workspaceRoot: string;
+	readonly snapshots?: SnapshotStore;
+}) => ReadAdapter;
+
+type SnapshotStoreConstructor = new () => SnapshotStore;
+
+function createReadTool(workspaceRoot: string, snapshots?: SnapshotStore): ReadAdapter {
 	const ReadTool = Reflect.get(tools, "ReadTool") as ReadToolConstructor | undefined;
 	assert.equal(typeof ReadTool, "function", "ReadTool must be exported");
-	return new ReadTool!({ workspaceRoot });
+	return new ReadTool!({ workspaceRoot, ...(snapshots ? { snapshots } : {}) });
+}
+
+function createSnapshotStore(): SnapshotStore {
+	const Constructor = Reflect.get(tools, "FileSnapshotStore") as SnapshotStoreConstructor | undefined;
+	assert.equal(typeof Constructor, "function", "FileSnapshotStore must be exported");
+	return new Constructor!();
 }
 
 function assertString(value: unknown): boolean {

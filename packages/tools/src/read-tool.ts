@@ -15,6 +15,7 @@ import {
 	DelimitedReadError,
 	readDelimitedFile,
 } from "./read-delimited.ts";
+import { FileSnapshotStore } from "./file-snapshot-store.ts";
 import { READ_TOOL_DEFINITION } from "./manifest.ts";
 import {
 	resolveReadableWorkspaceFile,
@@ -42,15 +43,18 @@ interface Snapshot {
 
 export interface ReadToolOptions {
 	readonly workspaceRoot: string;
+	readonly snapshots?: FileSnapshotStore;
 }
 
 export class ReadTool implements ToolAdapter {
 	readonly definition = READ_TOOL_DEFINITION;
 	readonly #workspaceRoot: string;
 	readonly #readRanges = new Map<string, Snapshot>();
+	readonly #snapshots: FileSnapshotStore;
 
 	constructor(options: ReadToolOptions) {
 		this.#workspaceRoot = options.workspaceRoot;
+		this.#snapshots = options.snapshots ?? new FileSnapshotStore();
 	}
 
 	async execute(
@@ -85,11 +89,16 @@ export class ReadTool implements ToolAdapter {
 			const payload = extension === ".csv" || extension === ".tsv"
 				? await readDelimitedFile(target, { offset, limit, signal: options.signal })
 				: await readTextWindow(target, { offset, limit, signal: options.signal });
-			const snapshot = {
-				sha256: payload.sha256,
-				mtimeNs: payload.mtimeNs,
-				size: payload.size,
-			};
+				const snapshot = {
+					sha256: payload.sha256,
+					mtimeNs: payload.mtimeNs,
+					size: payload.size,
+				};
+				this.#snapshots.record({
+					path,
+					...snapshot,
+					capturedAt: payload.capturedAt,
+				});
 			const rangeKey = `${path}\0${offset}\0${payload.effectiveLimit}\0${pages ?? ""}`;
 			const previous = this.#readRanges.get(rangeKey);
 			const metadata = readMetadata(path, offset, payload);
