@@ -37,6 +37,31 @@ export const READ_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	inputSchema: READ_INPUT_SCHEMA,
 });
 
+const WRITE_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
+	{ name: "file_path", type: "string", required: true },
+	{ name: "content", type: "string", required: true },
+	{ name: "expected_sha256", type: "string", required: false },
+]);
+
+export const WRITE_TOOL_DEFINITION: ToolDefinition = deepFreeze({
+	id: "builtin:Write",
+	name: "Write",
+	description: "Write complete UTF-8 text content to a workspace file.",
+	inputSchema: {
+		type: "object",
+		properties: Object.fromEntries(WRITE_PARAMETERS.map((parameter) => [
+			parameter.name,
+			parameter.name === "file_path" || parameter.name === "expected_sha256"
+				? { type: parameter.type, minLength: 1 }
+				: { type: parameter.type },
+		])),
+		required: WRITE_PARAMETERS
+			.filter((parameter) => parameter.required)
+			.map((parameter) => parameter.name),
+		additionalProperties: false,
+	},
+});
+
 const READ_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	...READ_TOOL_DEFINITION,
 	source: "builtin",

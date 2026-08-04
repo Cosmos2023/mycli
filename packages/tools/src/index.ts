@@ -1,6 +1,7 @@
 export {
 	builtinToolManifest,
 	READ_TOOL_DEFINITION,
+	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
 export { planToolExposure } from "./exposure-planner.ts";
 export { FileSnapshotStore } from "./file-snapshot-store.ts";
@@ -17,6 +18,15 @@ export type {
 	MutationErrorKind,
 	MutationOutcome,
 } from "./file-mutation-runtime.ts";
+export {
+	displayMutationPath,
+	mutationFailure,
+	mutationSuccess,
+} from "./mutation-result.ts";
+export type {
+	MutationStatus,
+	MutationToolName,
+} from "./mutation-result.ts";
 export {
 	resolveReadableWorkspaceFile,
 	resolveWritableWorkspaceFile,
@@ -42,6 +52,8 @@ export type {
 } from "./read-delimited.ts";
 export { ReadTool } from "./read-tool.ts";
 export type { ReadToolOptions } from "./read-tool.ts";
+export { WriteTool } from "./write-tool.ts";
+export type { WriteToolOptions } from "./write-tool.ts";
 export { ToolRouter } from "./router.ts";
 export type {
 	BuiltInToolManifest,
