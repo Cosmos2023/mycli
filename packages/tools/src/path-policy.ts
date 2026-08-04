@@ -3,6 +3,8 @@ import {
 	stat,
 } from "node:fs/promises";
 import {
+	basename,
+	dirname,
 	isAbsolute,
 	relative,
 	resolve,
@@ -24,6 +26,13 @@ export class WorkspacePathError extends Error {
 		this.name = "WorkspacePathError";
 		this.kind = kind;
 	}
+}
+
+export interface WritableWorkspaceFile {
+	readonly workspaceRoot: string;
+	readonly target: string;
+	readonly relativePath: string;
+	readonly existed: boolean;
 }
 
 export async function resolveReadableWorkspaceFile(
@@ -64,6 +73,102 @@ export async function resolveReadableWorkspaceFile(
 		throw classifyPathError(error);
 	}
 	return realTarget;
+}
+
+export async function resolveWritableWorkspaceFile(
+	workspaceRoot: string,
+	rawPath: string,
+): Promise<WritableWorkspaceFile> {
+	if (!rawPath.trim()) {
+		throw new WorkspacePathError("invalid_path");
+	}
+	let realRoot: string;
+	try {
+		realRoot = await realpath(resolve(workspaceRoot));
+	} catch (error) {
+		throw classifyPathError(error);
+	}
+	const unresolvedRoot = resolve(workspaceRoot);
+	const candidate = isAbsolute(rawPath) ? resolve(rawPath) : resolve(unresolvedRoot, rawPath);
+	if (isOutside(unresolvedRoot, candidate)) {
+		throw new WorkspacePathError("workspace_escape");
+	}
+	if (candidate === unresolvedRoot) {
+		throw new WorkspacePathError("is_directory");
+	}
+
+	const located = await locateWritableTarget(candidate);
+	if (isOutside(realRoot, located.target)) {
+		throw new WorkspacePathError("workspace_escape");
+	}
+	return {
+		workspaceRoot: realRoot,
+		target: located.target,
+		relativePath: relative(realRoot, located.target).split(sep).join("/"),
+		existed: located.existed,
+	};
+}
+
+export async function revalidateWritableWorkspaceFile(
+	workspaceRoot: string,
+	rawPath: string,
+	expectedTarget: string,
+): Promise<WritableWorkspaceFile> {
+	const current = await resolveWritableWorkspaceFile(workspaceRoot, rawPath);
+	if (current.target !== resolve(expectedTarget)) {
+		throw new WorkspacePathError("workspace_escape");
+	}
+	return current;
+}
+
+async function locateWritableTarget(candidate: string): Promise<{
+	readonly target: string;
+	readonly existed: boolean;
+}> {
+	try {
+		const target = await realpath(candidate);
+		const targetStat = await stat(target);
+		if (!targetStat.isFile()) {
+			throw new WorkspacePathError("is_directory");
+		}
+		return { target, existed: true };
+	} catch (error) {
+		if (error instanceof WorkspacePathError) {
+			throw error;
+		}
+		if (!hasCode(error, "ENOENT")) {
+			throw classifyPathError(error);
+		}
+	}
+
+	const missingSegments: string[] = [];
+	let ancestor = candidate;
+	while (true) {
+		const parent = dirname(ancestor);
+		if (parent === ancestor) {
+			throw new WorkspacePathError("invalid_path");
+		}
+		missingSegments.unshift(basename(ancestor));
+		ancestor = parent;
+		try {
+			const realAncestor = await realpath(ancestor);
+			const ancestorStat = await stat(realAncestor);
+			if (!ancestorStat.isDirectory()) {
+				throw new WorkspacePathError("invalid_path");
+			}
+			return {
+				target: resolve(realAncestor, ...missingSegments),
+				existed: false,
+			};
+		} catch (error) {
+			if (error instanceof WorkspacePathError) {
+				throw error;
+			}
+			if (!hasCode(error, "ENOENT")) {
+				throw classifyPathError(error);
+			}
+		}
+	}
 }
 
 function isOutside(root: string, candidate: string): boolean {

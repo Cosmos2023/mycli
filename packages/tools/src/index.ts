@@ -7,8 +7,11 @@ export { FileSnapshotStore } from "./file-snapshot-store.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
 export {
 	resolveReadableWorkspaceFile,
+	resolveWritableWorkspaceFile,
+	revalidateWritableWorkspaceFile,
 	WorkspacePathError,
 } from "./path-policy.ts";
+export type { WritableWorkspaceFile } from "./path-policy.ts";
 export {
 	ReadContentError,
 	readTextWindow,
