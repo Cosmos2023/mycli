@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import type { CanonicalMessage, ProviderUsage, RuntimeErrorCode } from "@mycli/core";
+import type {
+	CanonicalConversationItem,
+	CanonicalMessage,
+	CanonicalToolCall,
+	CanonicalToolResult,
+	ProviderUsage,
+	RuntimeErrorCode,
+} from "@mycli/core";
 import * as storage from "../src/index.ts";
 
 interface ReserveTurnInput {
@@ -42,6 +49,21 @@ interface Store {
 	};
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
+	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
+	appendAssistantToolCalls(input: {
+		readonly sessionId: string;
+		readonly clientTurnId: string;
+		readonly assistantText: string;
+		readonly calls: readonly CanonicalToolCall[];
+		readonly responseId?: string;
+	}): void;
+	appendToolResult(input: {
+		readonly sessionId: string;
+		readonly clientTurnId: string;
+		readonly result: CanonicalToolResult;
+		readonly summary: string;
+		readonly errorKind?: string;
+	}): void;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;
 	close(): void;
@@ -219,6 +241,110 @@ test("completes a turn with one assistant message, history item, and rollout", a
 	assert.equal(rollout.stop_reason, "assistant_completed");
 	assert.equal(rollout.thread_id, "thread-1");
 	assert.equal(assistantHistory.thread_id, "thread-1");
+});
+
+test("persists ordered Python-compatible tool calls and results", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
+	const calls: readonly CanonicalToolCall[] = [
+		{
+			callId: "call-1",
+			name: "Read",
+			argumentsJson: "{\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}",
+		},
+		{
+			callId: "call-2",
+			name: "Read",
+			argumentsJson: "{\"file_path\":\"package.json\",\"offset\":1,\"limit\":20}",
+		},
+	];
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "Checking both files.",
+		calls,
+		responseId: "resp-tools-1",
+	});
+
+	assert.throws(() => store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: {
+			callId: "call-2",
+			toolName: "Read",
+			output: "package",
+			success: true,
+		},
+		summary: "Read package.json",
+	}), /persistence_error: tool results must preserve call order/);
+
+	for (const [index, call] of calls.entries()) {
+		store.appendToolResult({
+			sessionId: "session-1",
+			clientTurnId: "client-1",
+			result: {
+				callId: call.callId,
+				toolName: call.name,
+				output: index === 0 ? "readme" : "package",
+				success: true,
+			},
+			summary: index === 0 ? "Read README.md" : "Read package.json",
+		});
+	}
+
+	assert.deepEqual(store.loadConversationItems("session-1"), [
+		{ type: "user", text: "inspect the repository" },
+		{
+			type: "assistant_tool_calls",
+			text: "Checking both files.",
+			calls: [
+				{ ...calls[0]!, argumentsJson: "{\"file_path\":\"README.md\",\"limit\":20,\"offset\":1}" },
+				{ ...calls[1]!, argumentsJson: "{\"file_path\":\"package.json\",\"limit\":20,\"offset\":1}" },
+			],
+			responseId: "resp-tools-1",
+		},
+		{ type: "tool_result", callId: "call-1", toolName: "Read", output: "readme", success: true },
+		{ type: "tool_result", callId: "call-2", toolName: "Read", output: "package", success: true },
+	]);
+
+	const database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	const rawMessages = database.prepare(`
+		SELECT payload_json FROM conversation_messages
+		WHERE session_id = ? ORDER BY message_index
+	`).all("session-1").map((row) => JSON.parse(String(
+		(row as { payload_json: unknown }).payload_json,
+	)) as Record<string, unknown>);
+	const assistant = rawMessages[1] as Record<string, unknown>;
+	const firstResult = rawMessages[2] as Record<string, unknown>;
+	assert.equal(assistant.role, "assistant");
+	assert.deepEqual(assistant.tool_calls, [
+		{
+			name: "Read",
+			arguments: { file_path: "README.md", offset: 1, limit: 20 },
+			reason: "model requested tool",
+			call_id: "call-1",
+		},
+		{
+			name: "Read",
+			arguments: { file_path: "package.json", offset: 1, limit: 20 },
+			reason: "model requested tool",
+			call_id: "call-2",
+		},
+	]);
+	assert.equal(firstResult.role, "tool");
+	assert.equal(firstResult.tool_call_id, "call-1");
+	assert.equal(firstResult.content, "readme");
+	assert.equal(JSON.stringify(rawMessages).includes("argumentsJson"), false);
+
+	const historyTypes = database.prepare(`
+		SELECT json_extract(payload_json, '$.type') AS type
+		FROM history_items WHERE session_id = ? ORDER BY sequence_no
+	`).all("session-1").map((row) => (row as { type: unknown }).type);
+	assert.deepEqual(historyTypes, ["user_message", "tool_call", "tool_call", "tool_result", "tool_result"]);
 });
 
 test("persists a failed turn without adding partial assistant content", async (t) => {

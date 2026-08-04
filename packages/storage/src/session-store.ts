@@ -1,6 +1,9 @@
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import type {
+	CanonicalConversationItem,
 	CanonicalMessage,
+	CanonicalToolCall,
+	CanonicalToolResult,
 	ProviderUsage,
 	RuntimeErrorCode,
 } from "@mycli/core";
@@ -38,10 +41,29 @@ export interface FailStoredTurnInput {
 	readonly completedAt: string;
 }
 
+export interface AppendAssistantToolCallsInput {
+	readonly sessionId: string;
+	readonly clientTurnId: string;
+	readonly assistantText: string;
+	readonly calls: readonly CanonicalToolCall[];
+	readonly responseId?: string;
+}
+
+export interface AppendToolResultInput {
+	readonly sessionId: string;
+	readonly clientTurnId: string;
+	readonly result: CanonicalToolResult;
+	readonly summary: string;
+	readonly errorKind?: string;
+}
+
 export interface SessionStore {
 	reserveTurn(input: ReserveTurnInput): TurnReservation;
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
+	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
+	appendAssistantToolCalls(input: AppendAssistantToolCallsInput): void;
+	appendToolResult(input: AppendToolResultInput): void;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;
 	recoverInterruptedTurns(): number;

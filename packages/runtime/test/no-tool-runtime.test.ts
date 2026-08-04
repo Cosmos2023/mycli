@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { NodeRuntimeConfig } from "@mycli/config";
 import type {
+	CanonicalConversationItem,
 	CanonicalMessage,
 	ProviderEvent,
 	ProviderRequest,
@@ -10,6 +11,8 @@ import type {
 import { ProviderFailure, type ModelProvider } from "@mycli/providers";
 import {
 	StorageFailure,
+	type AppendAssistantToolCallsInput,
+	type AppendToolResultInput,
 	type CompleteStoredTurnInput,
 	type FailStoredTurnInput,
 	type ReserveTurnInput,
@@ -401,6 +404,23 @@ class FakeStore implements SessionStore {
 			throw new StorageFailure("history read failed");
 		}
 		return this.conversation;
+	}
+
+	loadConversationItems(): readonly CanonicalConversationItem[] {
+		return this.loadConversation().map((message) => ({
+			type: message.role,
+			text: message.content,
+		}));
+	}
+
+	appendAssistantToolCalls(input: AppendAssistantToolCallsInput): void {
+		void input;
+		throw new Error("no-tool runtime must not persist tool calls");
+	}
+
+	appendToolResult(input: AppendToolResultInput): void {
+		void input;
+		throw new Error("no-tool runtime must not persist tool results");
 	}
 
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord {

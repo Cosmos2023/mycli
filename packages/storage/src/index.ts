@@ -3,6 +3,8 @@ export {
 	StorageFailure,
 } from "./session-store.ts";
 export type {
+	AppendAssistantToolCallsInput,
+	AppendToolResultInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
 	ReserveTurnInput,

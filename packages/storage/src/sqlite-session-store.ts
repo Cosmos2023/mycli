@@ -3,7 +3,12 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseRuntimeTurnRecord } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import type { CanonicalMessage, RuntimeErrorCode } from "@mycli/core";
+import type {
+	CanonicalConversationItem,
+	CanonicalMessage,
+	CanonicalToolCall,
+	RuntimeErrorCode,
+} from "@mycli/core";
 import Database from "better-sqlite3";
 import {
 	BACKFILL_SEARCH_SQL,
@@ -15,6 +20,8 @@ import {
 	StorageFailure,
 } from "./session-store.ts";
 import type {
+	AppendAssistantToolCallsInput,
+	AppendToolResultInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
 	ReserveTurnInput,
@@ -123,6 +130,21 @@ export class SQLiteSessionStore implements SessionStore {
 	}
 
 	loadConversation(sessionId: string): readonly CanonicalMessage[] {
+		return this.loadConversationItems(sessionId).flatMap((item): CanonicalMessage[] => {
+			if (item.type === "user") {
+				return [{ role: "user", content: item.text }];
+			}
+			if (item.type === "assistant") {
+				return [{ role: "assistant", content: item.text }];
+			}
+			if (item.type === "assistant_tool_calls" && item.text) {
+				return [{ role: "assistant", content: item.text }];
+			}
+			return [];
+		});
+	}
+
+	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[] {
 		try {
 			const rows = this.#database.prepare(`
 				SELECT payload_json
@@ -131,19 +153,79 @@ export class SQLiteSessionStore implements SessionStore {
 				ORDER BY message_index
 			`).all(sessionId) as readonly { payload_json: unknown }[];
 			if (rows.length > 0) {
-				return rows.map((row) => canonicalMessage(row.payload_json, "conversation_messages"));
+				return rows.map((row) => canonicalConversationItem(
+					row.payload_json,
+					"conversation_messages",
+				));
 			}
 			const historyRows = this.#database.prepare(`
 				SELECT payload_json
 				FROM history_items
 				WHERE session_id = ?
-				  AND json_extract(payload_json, '$.type') IN ('user_message', 'assistant_message')
+				  AND json_extract(payload_json, '$.type') IN (
+				    'user_message', 'assistant_message', 'tool_call', 'tool_result'
+				  )
 				ORDER BY sequence_no
 			`).all(sessionId) as readonly { payload_json: unknown }[];
-			return historyRows.map((row) => canonicalHistoryMessage(row.payload_json));
+			return historyRows.map((row) => canonicalHistoryItem(row.payload_json));
 		} catch (error) {
 			throw storageError(error);
 		}
+	}
+
+	appendAssistantToolCalls(input: AppendAssistantToolCallsInput): void {
+		this.#write(() => {
+			const running = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
+			if (input.calls.length === 0) {
+				throw new StorageFailure("assistant tool call batch is empty");
+			}
+			if (this.#pendingToolCalls(input.sessionId).length > 0) {
+				throw new StorageFailure("previous tool calls are still pending");
+			}
+			const knownIds = this.#knownToolCallIds(input.sessionId);
+			const batchIds = new Set<string>();
+			for (const call of input.calls) {
+				if (!call.callId || !call.name || batchIds.has(call.callId) || knownIds.has(call.callId)) {
+					throw new StorageFailure("invalid or duplicate tool call id");
+				}
+				batchIds.add(call.callId);
+			}
+			const parsedCalls = input.calls.map((call) => ({
+				call,
+				argumentsValue: toolArguments(call.argumentsJson),
+			}));
+			this.#appendConversationMessage(
+				input.sessionId,
+				assistantToolCallMessage(running, input, parsedCalls),
+			);
+			const threadId = this.#threadId(input.sessionId);
+			for (const parsed of parsedCalls) {
+				this.#appendHistoryItem(
+					input.sessionId,
+					toolCallHistoryItem(running, input, parsed, threadId),
+				);
+			}
+			this.#touchExistingSession(input.sessionId, this.#clock());
+		});
+	}
+
+	appendToolResult(input: AppendToolResultInput): void {
+		this.#write(() => {
+			const running = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
+			if (input.result.output.length > 8_000) {
+				throw new StorageFailure("tool result exceeds output limit");
+			}
+			const pending = this.#pendingToolCalls(input.sessionId);
+			const expected = pending[0];
+			if (!expected || expected.callId !== input.result.callId) {
+				throw new StorageFailure("tool results must preserve call order");
+			}
+			if (expected.name !== input.result.toolName) {
+				throw new StorageFailure("tool result name does not match call");
+			}
+			this.#appendToolResultRecords(running, input);
+			this.#touchExistingSession(input.sessionId, this.#clock());
+		});
 	}
 
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord {
@@ -213,6 +295,28 @@ export class SQLiteSessionStore implements SessionStore {
 			for (const row of orphaned) {
 				const turn = runtimeTurnFromRow(row);
 				const completedAt = this.#clock();
+				let pendingCalls: readonly CanonicalToolCall[] = [];
+				try {
+					pendingCalls = this.#pendingToolCalls(turn.session_id);
+				} catch (error) {
+					if (!(error instanceof StorageFailure)) {
+						throw error;
+					}
+				}
+				for (const call of pendingCalls) {
+					this.#appendToolResultRecords(turn, {
+						sessionId: turn.session_id,
+						clientTurnId: turn.client_turn_id,
+						result: {
+							callId: call.callId,
+							toolName: call.name,
+							output: "Tool call interrupted before it completed.",
+							success: false,
+						},
+						summary: `${call.name} interrupted`,
+						errorKind: "tool_interrupted",
+					});
+				}
 				this.#appendRollout(
 					turn.session_id,
 					recoveryRollout(turn, completedAt, this.#threadId(turn.session_id)),
@@ -407,6 +511,63 @@ export class SQLiteSessionStore implements SessionStore {
 		return turn;
 	}
 
+	#knownToolCallIds(sessionId: string): Set<string> {
+		const ids = new Set<string>();
+		for (const item of this.#conversationItems(sessionId)) {
+			if (item.type === "assistant_tool_calls") {
+				for (const call of item.calls) {
+					ids.add(call.callId);
+				}
+			}
+		}
+		return ids;
+	}
+
+	#pendingToolCalls(sessionId: string): CanonicalToolCall[] {
+		const pending: CanonicalToolCall[] = [];
+		for (const item of this.#conversationItems(sessionId)) {
+			if (item.type === "assistant_tool_calls") {
+				pending.push(...item.calls);
+				continue;
+			}
+			if (item.type === "tool_result") {
+				const index = pending.findIndex((call) => call.callId === item.callId);
+				if (index >= 0) {
+					pending.splice(index, 1);
+				}
+			}
+		}
+		return pending;
+	}
+
+	#conversationItems(sessionId: string): readonly CanonicalConversationItem[] {
+		const rows = this.#database.prepare(`
+			SELECT payload_json
+			FROM conversation_messages
+			WHERE session_id = ?
+			ORDER BY message_index
+		`).all(sessionId) as readonly { payload_json: unknown }[];
+		return rows.map((row) => canonicalConversationItem(
+			row.payload_json,
+			"conversation_messages",
+		));
+	}
+
+	#appendToolResultRecords(
+		turn: RuntimeTurnRecord,
+		input: AppendToolResultInput,
+	): void {
+		const threadId = this.#threadId(input.sessionId);
+		this.#appendConversationMessage(
+			input.sessionId,
+			toolResultMessage(turn, input),
+		);
+		this.#appendHistoryItem(
+			input.sessionId,
+			toolResultHistoryItem(turn, input, threadId),
+		);
+	}
+
 	#appendConversationMessage(sessionId: string, payload: Readonly<Record<string, unknown>>): void {
 		const row = this.#database.prepare(`
 			SELECT COALESCE(MAX(message_index), -1) + 1 AS next_index
@@ -479,6 +640,126 @@ function assistantMessage(
 		metadata: { turn_id: turn.turn_id, source: "node_runtime" },
 		blocks: [],
 		tool_calls: [],
+	};
+}
+
+interface ParsedToolCall {
+	readonly call: CanonicalToolCall;
+	readonly argumentsValue: Readonly<Record<string, unknown>>;
+}
+
+function assistantToolCallMessage(
+	turn: RuntimeTurnRecord,
+	input: AppendAssistantToolCallsInput,
+	calls: readonly ParsedToolCall[],
+): Readonly<Record<string, unknown>> {
+	return {
+		role: "assistant",
+		content: input.assistantText,
+		tool_call_id: null,
+		response_id: input.responseId ?? null,
+		metadata: { turn_id: turn.turn_id, source: "node_runtime" },
+		blocks: calls.map(({ call, argumentsValue }) => ({
+			type: "tool_call",
+			text: null,
+			tool_name: call.name,
+			tool_arguments: argumentsValue,
+			call_id: call.callId,
+			provider_id: null,
+			metadata: {},
+		})),
+		tool_calls: calls.map(({ call, argumentsValue }) => ({
+			name: call.name,
+			arguments: argumentsValue,
+			reason: "model requested tool",
+			call_id: call.callId,
+		})),
+	};
+}
+
+function toolCallHistoryItem(
+	turn: RuntimeTurnRecord,
+	input: AppendAssistantToolCallsInput,
+	parsed: ParsedToolCall,
+	threadId: string,
+): Readonly<Record<string, unknown>> {
+	return {
+		id: `${turn.turn_id}:tool-call:${parsed.call.callId}`,
+		thread_id: threadId,
+		turn_id: turn.turn_id,
+		type: "tool_call",
+		text: input.assistantText,
+		tool_name: parsed.call.name,
+		call_id: parsed.call.callId,
+		metadata: {
+			arguments: parsed.argumentsValue,
+			source: "node_runtime",
+			...(input.responseId ? { response_id: input.responseId } : {}),
+		},
+	};
+}
+
+function toolResultMessage(
+	turn: RuntimeTurnRecord,
+	input: AppendToolResultInput,
+): Readonly<Record<string, unknown>> {
+	const metadata = toolResultMetadata(turn, input);
+	return {
+		role: "tool",
+		content: input.result.output,
+		tool_call_id: input.result.callId,
+		response_id: null,
+		metadata,
+		blocks: [{
+			type: "tool_result",
+			text: input.result.output,
+			tool_name: input.result.toolName,
+			tool_arguments: null,
+			call_id: input.result.callId,
+			provider_id: null,
+			metadata: {
+				success: input.result.success,
+				...(input.errorKind ? { error_kind: input.errorKind } : {}),
+			},
+		}],
+		tool_calls: [],
+	};
+}
+
+function toolResultHistoryItem(
+	turn: RuntimeTurnRecord,
+	input: AppendToolResultInput,
+	threadId: string,
+): Readonly<Record<string, unknown>> {
+	return {
+		id: `${turn.turn_id}:tool-result:${input.result.callId}`,
+		thread_id: threadId,
+		turn_id: turn.turn_id,
+		type: "tool_result",
+		text: input.summary.slice(0, 500),
+		tool_name: input.result.toolName,
+		call_id: input.result.callId,
+		metadata: {
+			...toolResultMetadata(turn, input),
+			transcript_content: input.result.output,
+		},
+	};
+}
+
+function toolResultMetadata(
+	turn: RuntimeTurnRecord,
+	input: AppendToolResultInput,
+): Readonly<Record<string, unknown>> {
+	return {
+		turn_id: turn.turn_id,
+		source: "node_runtime",
+		tool_name: input.result.toolName,
+		success: input.result.success,
+		summary: input.summary.slice(0, 500),
+		...(input.errorKind ? { error_kind: input.errorKind } : {}),
+		...(input.errorKind === "tool_interrupted"
+			? { synthetic: true, append_only: true }
+			: {}),
 	};
 }
 
@@ -576,25 +857,147 @@ function stopReason(code: RuntimeErrorCode): string {
 	}
 }
 
-function canonicalMessage(payloadJson: unknown, source: string): CanonicalMessage {
+function canonicalConversationItem(
+	payloadJson: unknown,
+	source: string,
+): CanonicalConversationItem {
 	const payload = parseObjectJson(payloadJson, source);
-	if ((payload.role !== "user" && payload.role !== "assistant") || typeof payload.content !== "string") {
-		throw new StorageFailure(`invalid canonical message in ${source}`);
+	if (payload.role === "user" && typeof payload.content === "string") {
+		return { type: "user", text: payload.content };
 	}
-	return { role: payload.role, content: payload.content };
+	if (payload.role === "assistant" && typeof payload.content === "string") {
+		const calls = canonicalToolCalls(payload.tool_calls, source);
+		if (calls.length > 0) {
+			return {
+				type: "assistant_tool_calls",
+				text: payload.content,
+				calls,
+				...(typeof payload.response_id === "string"
+					? { responseId: payload.response_id }
+					: {}),
+			};
+		}
+		return { type: "assistant", text: payload.content };
+	}
+	if (payload.role === "tool" && typeof payload.content === "string"
+		&& typeof payload.tool_call_id === "string" && payload.tool_call_id) {
+		const metadata = recordValue(payload.metadata);
+		const block = firstBlock(payload.blocks, "tool_result");
+		const blockMetadata = recordValue(block?.metadata);
+		const toolName = stringValue(metadata.tool_name)
+			?? stringValue(block?.tool_name)
+			?? "Tool";
+		const success = booleanValue(metadata.success)
+			?? booleanValue(blockMetadata.success)
+			?? true;
+		return {
+			type: "tool_result",
+			callId: payload.tool_call_id,
+			toolName,
+			output: payload.content,
+			success,
+		};
+	}
+	throw new StorageFailure(`invalid canonical message in ${source}`);
 }
 
-function canonicalHistoryMessage(payloadJson: unknown): CanonicalMessage {
-	const payload = parseObjectJson(payloadJson, "history_items");
-	const role = payload.type === "user_message"
-		? "user"
-		: payload.type === "assistant_message"
-			? "assistant"
-			: undefined;
-	if (!role || typeof payload.text !== "string") {
-		throw new StorageFailure("invalid canonical message in history_items");
+function canonicalToolCalls(value: unknown, source: string): readonly CanonicalToolCall[] {
+	if (value === undefined || value === null) {
+		return [];
 	}
-	return { role, content: payload.text };
+	if (!Array.isArray(value)) {
+		throw new StorageFailure(`invalid canonical message in ${source}`);
+	}
+	return value.map((raw) => {
+		const call = recordValue(raw);
+		const name = stringValue(call.name);
+		const callId = stringValue(call.call_id);
+		if (!name || !callId) {
+			throw new StorageFailure(`invalid canonical message in ${source}`);
+		}
+		return {
+			callId,
+			name,
+			argumentsJson: stableJson(recordValue(call.arguments)),
+		};
+	});
+}
+
+function canonicalHistoryItem(payloadJson: unknown): CanonicalConversationItem {
+	const payload = parseObjectJson(payloadJson, "history_items");
+	if (payload.type === "user_message" && typeof payload.text === "string") {
+		return { type: "user", text: payload.text };
+	}
+	if (payload.type === "assistant_message" && typeof payload.text === "string") {
+		return { type: "assistant", text: payload.text };
+	}
+	const metadata = recordValue(payload.metadata);
+	if (payload.type === "tool_call") {
+		const name = stringValue(payload.tool_name);
+		const callId = stringValue(payload.call_id);
+		if (!name || !callId) {
+			throw new StorageFailure("invalid canonical message in history_items");
+		}
+		return {
+			type: "assistant_tool_calls",
+			text: stringValue(payload.text) ?? "",
+			calls: [{
+				callId,
+				name,
+				argumentsJson: stableJson(recordValue(metadata.arguments)),
+			}],
+			...(stringValue(metadata.response_id)
+				? { responseId: stringValue(metadata.response_id) }
+				: {}),
+		};
+	}
+	if (payload.type === "tool_result") {
+		const name = stringValue(payload.tool_name);
+		const callId = stringValue(payload.call_id);
+		const output = stringValue(metadata.transcript_content) ?? stringValue(payload.text);
+		if (!name || !callId || output === undefined) {
+			throw new StorageFailure("invalid canonical message in history_items");
+		}
+		return {
+			type: "tool_result",
+			callId,
+			toolName: name,
+			output,
+			success: booleanValue(metadata.success) ?? true,
+		};
+	}
+	throw new StorageFailure("invalid canonical message in history_items");
+}
+
+function toolArguments(value: string): Readonly<Record<string, unknown>> {
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		return recordValue(parsed);
+	} catch {
+		return {};
+	}
+}
+
+function firstBlock(value: unknown, type: string): Readonly<Record<string, unknown>> | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	return value.map(recordValue).find((block) => block.type === type);
+}
+
+function recordValue(value: unknown): Readonly<Record<string, unknown>> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return {};
+	}
+	return value as Readonly<Record<string, unknown>>;
+}
+
+function stringValue(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+	return typeof value === "boolean" ? value : undefined;
 }
 
 function runtimeTurnFromRow(row: RuntimeTurnRow): RuntimeTurnRecord {
