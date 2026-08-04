@@ -52,6 +52,10 @@ jobs:
       - run: npm run contracts:check
       - run: npm run lint
       - run: npm test
+      - name: Node M2 no-tool integration
+        run: npm run test:m2
+      - name: Packed npm CLI smoke
+        run: npm run smoke:package
       - name: Node sidecar lifecycle integration
         run: node --import tsx --test apps/mycli/test/lifecycle.integration.test.ts
       - run: npm run typecheck
@@ -60,6 +64,34 @@ jobs:
       - run: uv run mypy src/mycli
       - name: Shell lifecycle smoke
         run: uv run pytest tests/integration/test_cross_platform_shell.py -q
+
+  node-m2-live-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: node-m2-live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Node M2 live provider smoke
+        env:
+          MYCLI_API_KEY: ${{ secrets.MYCLI_API_KEY }}
+          MYCLI_BASE_URL: ${{ secrets.MYCLI_BASE_URL }}
+          MYCLI_MODEL: ${{ secrets.MYCLI_MODEL }}
+          MYCLI_PROVIDER: openai
+        run: |
+          if [ -z "$MYCLI_API_KEY" ]; then
+            echo "Node M2 live provider smoke skipped: credential not configured"
+            exit 0
+          fi
+          node scripts/smoke_node_m2.mjs --protocol responses
+          node scripts/smoke_node_m2.mjs --protocol chat_completions
 
   windows-shell-smoke:
     strategy:

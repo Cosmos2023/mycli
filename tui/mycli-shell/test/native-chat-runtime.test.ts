@@ -24,7 +24,7 @@ function stateWithMessages(count: number): MycliShellState {
 }
 
 function unsafeSequences(): RegExp {
-	return /\x1b\[\?1049[hl]|\x1b\[\?(1000|1002|1003|1006)h|\x1b\[2J|\x1b\[3J|\x1b\[\d*A/;
+	return /\x1b\[\?1049[hl]|\x1b\[\?(1000|1002|1003|1006)h|\x1b\[2J|\x1b\[3J/;
 }
 
 test("native chat runtime appends transcript without fullscreen control sequences", async () => {

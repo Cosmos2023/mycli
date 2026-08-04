@@ -31,6 +31,11 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
     assert root_package["scripts"] == {
         "build": (
             "npm run build --workspace @mycli/contracts && "
+            "npm run build --workspace @mycli/core && "
+            "npm run build --workspace @mycli/config && "
+            "npm run build --workspace @mycli/providers && "
+            "npm run build --workspace @mycli/storage && "
+            "npm run build --workspace @mycli/runtime && "
             "npm run build --workspace mycli-shell-tui && "
             "npm run build --workspace @mycli/app"
         ),
@@ -40,7 +45,14 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         "lint": 'eslint "apps/**/*.ts" "packages/**/*.ts"',
         "mycli": "node --import tsx apps/mycli/src/cli.ts",
         "pretest": "npm run build",
+        "smoke:package": "node scripts/smoke_packed_cli.mjs",
         "test": "npm run test --workspaces --if-present",
+        "test:m2": (
+            "npm run build && node --import tsx --test "
+            "apps/mycli/test/node-backend.integration.test.ts "
+            "apps/mycli/test/m2-smoke-runner.integration.test.ts && "
+            "uv run pytest tests/integration/test_node_runtime_m2_parity.py -q"
+        ),
         "typecheck": "npm run typecheck --workspaces --if-present",
     }
     assert Path("package-lock.json").is_file()

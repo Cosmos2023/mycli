@@ -2,7 +2,11 @@
   "name": "mycli-workspace",
   "private": true,
   "type": "module",
-  "workspaces": ["apps/*", "packages/*", "tui/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "tui/*"
+  ],
   "engines": {
     "node": ">=22.19.0"
   },
@@ -14,7 +18,9 @@
     "lint": "eslint \"apps/**/*.ts\" \"packages/**/*.ts\"",
     "mycli": "node --import tsx apps/mycli/src/cli.ts",
     "pretest": "npm run build",
+    "smoke:package": "node scripts/smoke_packed_cli.mjs",
     "test": "npm run test --workspaces --if-present",
+    "test:m2": "npm run build && node --import tsx --test apps/mycli/test/node-backend.integration.test.ts apps/mycli/test/m2-smoke-runner.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m2_parity.py -q",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
@@ -24,5 +30,15 @@
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.0.0"
+  },
+  "dependencies": {
+    "@mycli/app": "^0.1.0",
+    "@mycli/config": "^0.1.0",
+    "@mycli/contracts": "^0.1.0",
+    "@mycli/core": "^0.1.0",
+    "@mycli/providers": "^0.1.0",
+    "@mycli/runtime": "^0.1.0",
+    "@mycli/storage": "^0.1.0",
+    "mycli-shell-tui": "^0.1.0"
   }
 }

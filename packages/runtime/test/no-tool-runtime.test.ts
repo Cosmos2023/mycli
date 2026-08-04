@@ -39,6 +39,7 @@ interface RuntimeOptions {
 	readonly clock: () => string;
 	readonly sleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
 	readonly random: () => number;
+	readonly maxOutputTokens?: number;
 }
 
 type RuntimeConstructor = new (options: RuntimeOptions) => {
@@ -110,6 +111,27 @@ test("persists before provider IO and completes in normalized event order", asyn
 	});
 	assert.equal(providerCalls, 1, "duplicate client_turn_id must not call provider twice");
 	assert.equal(configCalls, 1, "duplicate client_turn_id must not resolve provider config");
+});
+
+test("projects a bounded max output token limit into the provider request", async () => {
+	const store = new FakeStore([]);
+	let request: ProviderRequest | undefined;
+	const instance = createRuntime({
+		store,
+		maxOutputTokens: 64,
+		provider: {
+			stream: (value) => {
+				request = value;
+				return providerEvents([{ type: "completed" }]);
+			},
+		},
+	});
+
+	await instance.submit(submission(), () => {}, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(request?.maxOutputTokens, 64);
 });
 
 test("retries a retryable failure before the first provider event", async () => {
@@ -423,6 +445,7 @@ function createRuntime(overrides: {
 	readonly config?: NodeRuntimeConfig;
 	readonly resolveConfig?: RuntimeOptions["resolveConfig"];
 	readonly sleep?: RuntimeOptions["sleep"];
+	readonly maxOutputTokens?: RuntimeOptions["maxOutputTokens"];
 }) {
 	const NoToolRuntime = Reflect.get(runtime, "NoToolRuntime") as RuntimeConstructor | undefined;
 	assert.equal(typeof NoToolRuntime, "function");
@@ -438,6 +461,9 @@ function createRuntime(overrides: {
 		clock: clockSequence(),
 		sleep: overrides.sleep ?? (async () => {}),
 		random: () => 0.5,
+		...(overrides.maxOutputTokens === undefined
+			? {}
+			: { maxOutputTokens: overrides.maxOutputTokens }),
 	});
 }
 

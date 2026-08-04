@@ -45,6 +45,7 @@ export interface NoToolRuntimeOptions {
 	readonly createProvider: (config: NodeRuntimeConfig) => ModelProvider;
 	readonly createTurnId: () => string;
 	readonly clock: () => string;
+	readonly maxOutputTokens?: number;
 	readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 	readonly random?: () => number;
 }
@@ -142,6 +143,9 @@ export class NoToolRuntime {
 					...(config.promptCacheKeyEnabled
 						? { promptCacheKey: this.#options.sessionId }
 						: {}),
+					...(this.#options.maxOutputTokens === undefined
+						? {}
+						: { maxOutputTokens: this.#options.maxOutputTokens }),
 				},
 				instructions: this.#options.instructions,
 				history,

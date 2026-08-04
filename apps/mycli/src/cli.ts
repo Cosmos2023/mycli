@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
 	configureGatewayTransport,
 	type GatewayTransport,
@@ -246,8 +247,16 @@ function removeLifecycleHooks(
 }
 
 const entryPath = process.argv[1];
-if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
+if (entryPath && isEntrypoint(entryPath)) {
 	void runCli().then((exitCode) => {
 		process.exitCode = exitCode;
 	});
+}
+
+function isEntrypoint(entryPath: string): boolean {
+	try {
+		return realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url));
+	} catch {
+		return false;
+	}
 }

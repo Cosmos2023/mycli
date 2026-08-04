@@ -6,6 +6,7 @@ type PackageManifest = {
 	bin?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	exports?: unknown;
+	files?: string[];
 	scripts?: Record<string, string>;
 	types?: string;
 };
@@ -38,6 +39,7 @@ test("app production bin targets compiled JavaScript", () => {
 test("contracts production export targets compiled JavaScript and declarations", () => {
 	const manifest = readManifest(packages[1].root);
 
+	assert.deepEqual(manifest.files, ["dist", "schemas"]);
 	assert.deepEqual(manifest.exports, {
 		".": {
 			types: "./dist/index.d.ts",
