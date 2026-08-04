@@ -39,6 +39,7 @@ import type {
 	ImportLegacyConversationInput,
 	ReserveTurnInput,
 	RuntimeStateKey,
+	SaveQueueSnapshotInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,
@@ -384,6 +385,10 @@ export class SQLiteSessionStore implements SessionStore {
 
 	saveState(input: SaveStateInput): void {
 		this.#stateRepository.saveState(input);
+	}
+
+	saveQueueSnapshot(input: SaveQueueSnapshotInput): QueueSnapshot {
+		return this.#stateRepository.saveQueueSnapshot(input);
 	}
 
 	deleteState(sessionId: string, key: RuntimeStateKey): void {

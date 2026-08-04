@@ -127,6 +127,13 @@ export interface SaveStateInput {
 	readonly payload: unknown;
 }
 
+export interface SaveQueueSnapshotInput {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly snapshot: QueueSnapshot;
+}
+
 export interface AppendSessionSummaryInput {
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
@@ -175,6 +182,7 @@ export interface SessionStateStore {
 	loadSessionLineage(sessionId: string): readonly SessionLineageNode[];
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined;
 	saveState(input: SaveStateInput): void;
+	saveQueueSnapshot(input: SaveQueueSnapshotInput): QueueSnapshot;
 	deleteState(sessionId: string, key: RuntimeStateKey): void;
 	appendSessionSummary(input: AppendSessionSummaryInput): void;
 	loadSessionSummaries(sessionId: string): readonly string[];

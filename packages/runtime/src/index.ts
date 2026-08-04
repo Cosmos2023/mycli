@@ -4,6 +4,15 @@ export type {
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "./node-turn-runtime.ts";
+export { QueueCoordinator } from "./queue-coordinator.ts";
+export type {
+	LegacyQueueMigration,
+	QueueCoordinatorOptions,
+	QueueCoordinatorStore,
+	QueueFollowUpInput,
+	QueueListener,
+	QueueSteerInput,
+} from "./queue-coordinator.ts";
 export {
 	decideRetry,
 	sleepWithSignal,

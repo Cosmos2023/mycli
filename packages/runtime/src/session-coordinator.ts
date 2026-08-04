@@ -108,6 +108,18 @@ export class SessionCoordinator<Binding> {
 		return true;
 	}
 
+	updateQueue(context: SessionGenerationContext, queue: QueueSnapshot): boolean {
+		if (!this.isCurrent(context) || queue.sessionId !== context.sessionId) return false;
+		if (queue.revision <= this.#snapshot.queue.revision && queue !== this.#snapshot.queue) {
+			return false;
+		}
+		this.#snapshot = Object.freeze({
+			...this.#snapshot,
+			queue: freezeQueue(queue),
+		});
+		return true;
+	}
+
 	listSessions(query: SessionListQuery = {}): readonly SessionOverview[] {
 		return this.#listSessions(query);
 	}
@@ -176,18 +188,28 @@ function freezePrepared<Binding>(prepared: PreparedSession<Binding>): PreparedSe
 		workspaceRoot: requiredString(prepared.workspaceRoot, "workspaceRoot"),
 		threadId: requiredString(prepared.threadId, "threadId"),
 		transcript: Object.freeze(prepared.transcript.map((item) => Object.freeze({ ...item }))),
-		queue: Object.freeze({
-			...prepared.queue,
-			pendingSteers: Object.freeze([...prepared.queue.pendingSteers]),
-			rejectedSteers: Object.freeze([...prepared.queue.rejectedSteers]),
-			followUps: Object.freeze([...prepared.queue.followUps]),
-		}),
+		queue: freezeQueue(prepared.queue),
 		...(prepared.pendingApproval ? {
 			pendingApproval: Object.freeze({
 				...prepared.pendingApproval,
 				options: Object.freeze([...prepared.pendingApproval.options]),
 			}),
 		} : {}),
+	});
+}
+
+function freezeQueue(queue: QueueSnapshot): QueueSnapshot {
+	if (Object.isFrozen(queue)
+		&& Object.isFrozen(queue.pendingSteers)
+		&& Object.isFrozen(queue.rejectedSteers)
+		&& Object.isFrozen(queue.followUps)) {
+		return queue;
+	}
+	return Object.freeze({
+		...queue,
+		pendingSteers: Object.freeze([...queue.pendingSteers]),
+		rejectedSteers: Object.freeze([...queue.rejectedSteers]),
+		followUps: Object.freeze([...queue.followUps]),
 	});
 }
 

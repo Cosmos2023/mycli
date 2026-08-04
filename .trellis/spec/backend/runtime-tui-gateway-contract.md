@@ -367,14 +367,19 @@
     clients to respond because they need the stable `decision_id` or
     `request_id`.
 - Running-turn queue RPCs:
-  - `turn.steer` accepts `{message, client_turn_id?, local_images?}` only while
-    a turn is running. It queues steering input that the runtime may inject
-    before the next model request in the active turn.
-  - `turn.follow_up` accepts `{message, client_turn_id?, local_images?}` only
-    while a turn is running. It queues a follow-up user input after the active
-    assistant answer finishes.
+  - `turn.steer` accepts `{message, expected_turn_id, client_turn_id?,
+    client_user_message_id?, local_images?}`. A matching active turn produces
+    `pending_steer`; a stale or no-longer-active target produces a durable
+    `rejected_steer` for the next server turn instead of losing the input.
+  - `turn.follow_up` accepts `{message, client_turn_id?,
+    client_user_message_id?, local_images?}` and may race terminal completion.
+    Once accepted, it remains durable until a later turn reservation succeeds.
+  - `turn.queue.pop` removes only the newest ordinary follow-up and returns the
+    removed structured item plus the new revision.
   - `turn.queue.clear` accepts `{}` and returns the cleared steering and
     follow-up messages so the TUI can restore them into the editor.
+  - `turn.queue.migration.ack` accepts a bootstrap migration `token` and removes
+    exactly the matching visible user records. A stale token is `queue_conflict`.
   - `local_images` is an array of `{path, placeholder}` local image attachment
     descriptors. Runtime-compatible clients must keep these descriptors with
     queued inputs instead of treating `[image #n]` as plain text only.
@@ -397,6 +402,110 @@
   - Emit after successful queue mutation and after runtime drains queued
     messages, so the footer and pending-message area stay synchronized with the
     backend instead of relying on local-only queue state.
+  - Structured events include the active `session_id`, `generation`, and
+    monotonic `queue_revision`. Legacy arrays and item arrays are projections of
+    the same structured snapshot; `task_notification` records remain durable but
+    are hidden from visible legacy projections.
+
+## Scenario: Durable Node Queue And Steering
+
+### 1. Scope / Trigger
+
+- Trigger: any Node runtime change to steering, follow-up input, queue replay,
+  terminal queue draining, or queue RPC/event projection.
+- This flow crosses TUI RPC, gateway generation ownership, runtime orchestration,
+  and SQLite state/history transactions.
+
+### 2. Signatures
+
+- Gateway RPCs: `turn.steer`, `turn.follow_up`, `turn.queue.pop`,
+  `turn.queue.clear`, and `turn.queue.migration.ack`.
+- Runtime: `QueueCoordinator.enqueueSteer()`, `enqueueFollowUp()`,
+  `commitPending(turnId)`, `rejectPending(turnId)`, `next()`, and
+  `markStarted(queueId)`.
+- Storage:
+  `SessionStore.saveQueueSnapshot({sessionId, workspaceRoot, threadId, snapshot}) -> QueueSnapshot`
+  and
+  `SessionStore.commitQueuedInputs({sessionId, turnId, records}) -> QueueSnapshot`.
+
+### 3. Contracts
+
+- Every mutation increments a safe integer revision exactly once. A duplicate
+  lost-response retry with the same `client_turn_id` and payload returns the
+  existing record/revision without another write or event.
+- The first persisted snapshot for a session must have revision one. Later
+  writes accept only an identical idempotent payload or exactly `current + 1`.
+- Persist the candidate before replacing the in-memory snapshot, emitting
+  `turn.queue.updated`, or returning RPC success.
+- Before every provider request, atomically append matching pending steers to
+  canonical conversation/history and remove them from `input_queue` by
+  `queue_id`; then reload canonical provider history.
+- On normal completion, persist remaining matching pending steers as
+  `rejected_steer` before terminal success. Interruption retains pending steers.
+- After a completed turn, inspect at most one rejected steer/follow-up. Reuse
+  its `clientTurnId` as the reservation idempotency key, reserve first, and call
+  `markStarted()` only after reservation succeeds.
+- Queue callbacks carry the captured session generation. Old-generation
+  callbacks cannot replace or publish the new active session queue.
+- Preserve unknown compatible Python root and record fields when rewriting the
+  `input_queue` payload.
+
+### 4. Validation & Error Matrix
+
+- Missing/blank message, expected turn id, migration token, or malformed image
+  descriptor -> `invalid_params`; no queue write.
+- Same client id with different payload -> `queue_conflict`; original record
+  remains.
+- Record/text/attachment bounds exceeded -> `queue_capacity`; no event.
+- Snapshot session mismatch or stale revision -> `queue_conflict`.
+- SQLite write/transaction failure -> RPC `persistence_error` with a bounded
+  message; do not expose paths, SQL, payloads, or exception text.
+- Next-turn reservation failure -> retain the record and emit bounded
+  `queue_worker_start_failed`; do not start provider IO.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a steer arriving during a tool step is committed once and appears in
+  the next provider request after the tool result.
+- Base: an empty queue has revision zero, empty structured arrays, and no
+  legacy migration payload.
+- Good: a follow-up racing turn completion is persisted, reserved with its own
+  client id, then removed and run once.
+- Bad: deleting a queued record before reservation or publishing a revision
+  before SQLite commit, because a crash can lose input or expose phantom state.
+
+### 6. Tests Required
+
+- Core/runtime tests for restore reconciliation, rejected-first order, capacity,
+  idempotency, session isolation, terminal rejection, interrupt retention, and
+  commit-before-provider ordering.
+- Storage tests proving queue history append plus pending removal roll back
+  together and Python optional fields survive snapshot CAS writes.
+- Gateway tests asserting event-before-response only after persistence, stale
+  steer deferral, queue RPC revisions, sanitized errors, generation fencing,
+  reservation-before-removal, and reservation-failure retention.
+- Backend restart integration proving a queued record is readable after process
+  restart without provider IO.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+queue.markStarted(record.queueId);
+const reservation = runtime.reserve(submission);
+```
+
+#### Correct
+
+```ts
+const reservation = runtime.reserve({
+	...submission,
+	clientTurnId: record.clientTurnId,
+});
+queue.markStarted(record.queueId);
+```
+
 - Node workspace dependency layout:
   - The repository root `package.json` is the workspace composition root for
     `packages/*` and `tui/*`; the root `package-lock.json` is authoritative.

@@ -30,6 +30,12 @@ interface M5Store {
 		readonly payload: unknown;
 	}): void;
 	loadState(sessionId: string, key: string): unknown | undefined;
+	saveQueueSnapshot(input: {
+		readonly sessionId: string;
+		readonly workspaceRoot: string;
+		readonly threadId: string;
+		readonly snapshot: QueueSnapshot;
+	}): QueueSnapshot;
 	deleteState(sessionId: string, key: string): void;
 	appendSessionSummary(input: {
 		readonly sessionId: string;
@@ -133,6 +139,94 @@ test("stores raw Python-compatible state and preserves unknown optional fields",
 
 	store.deleteState("s1", "input_queue");
 	assert.equal(store.loadState("s1", "input_queue"), undefined);
+});
+
+test("saves queue snapshots without dropping Python optional fields", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+	store.saveState({
+		sessionId: "s1",
+		workspaceRoot: fixture.root,
+		threadId: "s1",
+		key: "input_queue",
+		payload: queuePayload(),
+	});
+	const followUp: QueuedInput = {
+		queueId: "q-follow",
+		sessionId: "s1",
+		clientTurnId: "client-follow",
+		targetTurnId: null,
+		kind: "follow_up",
+		state: "queued",
+		text: "continue later",
+		imagePaths: [],
+		source: "user",
+		createdAt: NOW,
+		updatedAt: NOW,
+	};
+
+	const saved = store.saveQueueSnapshot({
+		sessionId: "s1",
+		workspaceRoot: fixture.root,
+		threadId: "s1",
+		snapshot: {
+			sessionId: "s1",
+			revision: 2,
+			pendingSteers: [queuedRecord()],
+			rejectedSteers: [],
+			followUps: [followUp],
+		},
+	});
+
+	assert.equal(saved.revision, 2);
+	const raw = store.loadState("s1", "input_queue") as ReturnType<typeof queuePayload>;
+	assert.equal(raw.python_optional_field, "keep-me");
+	assert.equal(raw.follow_ups[0]?.python_record_optional, "keep-record-field");
+});
+
+test("queue snapshot writes enforce monotonic revision CAS and idempotency", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+	const initial: QueueSnapshot = {
+		sessionId: "s1",
+		revision: 1,
+		pendingSteers: [],
+		rejectedSteers: [],
+		followUps: [],
+	};
+
+	assert.equal(store.saveQueueSnapshot({
+		sessionId: "s1",
+		workspaceRoot: fixture.root,
+		threadId: "s1",
+		snapshot: initial,
+	}).revision, 1);
+	assert.equal(store.saveQueueSnapshot({
+		sessionId: "s1",
+		workspaceRoot: fixture.root,
+		threadId: "s1",
+		snapshot: initial,
+	}).revision, 1);
+	assert.throws(() => store.saveQueueSnapshot({
+		sessionId: "s1",
+		workspaceRoot: fixture.root,
+		threadId: "s1",
+		snapshot: { ...initial, revision: 3 },
+	}), (error: unknown) => hasCode(error, "queue_conflict"));
+	assert.throws(() => store.saveQueueSnapshot({
+		sessionId: "new-session",
+		workspaceRoot: fixture.root,
+		threadId: "new-session",
+		snapshot: {
+			sessionId: "new-session",
+			revision: 2,
+			pendingSteers: [],
+			rejectedSteers: [],
+			followUps: [],
+		},
+	}), (error: unknown) => hasCode(error, "queue_conflict"));
 });
 
 test("fails closed for malformed and unsupported persisted state", async (t) => {

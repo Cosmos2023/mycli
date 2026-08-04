@@ -8,18 +8,21 @@ import {
 } from "@mycli/contracts";
 import type { RuntimeErrorCode, RuntimeTurnRecord } from "@mycli/contracts";
 import {
+	type QueueMutation,
+	type QueueSnapshot,
 	type CanonicalMessage,
 	type QueuedInput,
 	type RuntimeEvent,
 } from "@mycli/core";
 import type {
 	PendingSessionApproval,
+	QueueCoordinator,
 	SessionCoordinator,
 	SessionGenerationContext,
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "@mycli/runtime";
-import { projectMutationMetadata } from "@mycli/storage";
+import { projectMutationMetadata, StorageFailure } from "@mycli/storage";
 import type { TranscriptItem, TurnReservation } from "@mycli/storage";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 
@@ -27,6 +30,7 @@ type JsonObject = Record<string, unknown>;
 type RpcId = string | number | null;
 
 export interface NodeGatewayRuntime {
+	readonly queueCoordinator?: QueueCoordinator;
 	reserve(submission: TurnSubmission): TurnReservation;
 	submit(
 		submission: TurnSubmission,
@@ -87,6 +91,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#sequence = 0;
 	#closed = false;
 	#closePromise: Promise<void> | null = null;
+	#unsubscribeQueue: (() => void) | null = null;
 
 	constructor(options: CreateNodeGatewayOptions) {
 		this.#options = options;
@@ -103,6 +108,7 @@ class InProcessNodeGateway implements NodeGateway {
 		lines.on("line", (line) => { this.#handleLine(line); });
 		lines.on("error", () => { void this.close(); });
 		this.#clientOutput.on("error", () => { void this.close(); });
+		this.#bindQueue();
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionId() });
 	}
 
@@ -110,6 +116,8 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#closePromise ??= (async () => {
 			if (this.#closed) return;
 			this.#closed = true;
+			this.#unsubscribeQueue?.();
+			this.#unsubscribeQueue = null;
 			this.#activeTurn?.controller.abort();
 			let exitCode = 0;
 			try {
@@ -190,6 +198,16 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#sessionTree(request.params);
 			case "turn.submit":
 				return this.#submit(request.params);
+			case "turn.steer":
+				return this.#steer(request.params);
+			case "turn.follow_up":
+				return this.#followUp(request.params);
+			case "turn.queue.pop":
+				return this.#queuePop();
+			case "turn.queue.clear":
+				return this.#queueClear();
+			case "turn.queue.migration.ack":
+				return this.#queueMigrationAck(request.params);
 			case "turn.interrupt":
 				return this.#interrupt();
 			case "shutdown":
@@ -210,7 +228,7 @@ class InProcessNodeGateway implements NodeGateway {
 		const failure = gatewayFailure(error);
 		this.#writeError(request.id, failure.code, failure.message);
 		this.#emitRuntime("gateway.error", {
-			code: failure.code,
+			code: failure.code === "persistence_error" ? "internal_error" : failure.code,
 			message: failure.message,
 			method: request.method,
 		});
@@ -220,7 +238,7 @@ class InProcessNodeGateway implements NodeGateway {
 		if (params.protocol_version !== 1) {
 			throw new GatewayFailure("incompatible_protocol", "Unsupported gateway protocol version.");
 		}
-		return {
+		const payload: JsonObject = {
 			protocol_version: 1,
 			session_id: this.#sessionId(),
 			workspace: this.#workspaceRoot(),
@@ -236,6 +254,12 @@ class InProcessNodeGateway implements NodeGateway {
 				workspace: this.#workspaceRoot(),
 			},
 		};
+		const migration = this.#queueCoordinator()?.legacyMigration();
+		if (migration) payload.legacy_user_queue_migration = {
+			token: migration.token,
+			records: migration.records.map(legacyMigrationRecord),
+		};
+		return payload;
 	}
 
 	async #transcript(params: JsonObject): Promise<JsonObject> {
@@ -307,6 +331,7 @@ class InProcessNodeGateway implements NodeGateway {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
 		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
+		this.#bindQueue();
 		this.#emitDirect("session.changed", {
 			session_id: snapshot.sessionId,
 			generation: snapshot.generation,
@@ -417,11 +442,67 @@ class InProcessNodeGateway implements NodeGateway {
 		};
 	}
 
+	#steer(params: JsonObject): JsonObject {
+		const queue = this.#requiredQueueCoordinator();
+		const expectedTurnId = requiredString(params.expected_turn_id, "expected_turn_id");
+		const active = this.#activeTurn;
+		const mutation = queue.enqueueSteer({
+			sessionId: this.#sessionId(),
+			clientTurnId: queueClientTurnId(params, "steer"),
+			expectedTurnId,
+			activeTurnId: active?.turnId ?? null,
+			steerable: active !== null && !active.controller.signal.aborted,
+			text: requiredString(params.message, "message"),
+			imagePaths: localImagePaths(params.local_images),
+			source: "user",
+		});
+		return queueMutationResponse(mutation);
+	}
+
+	#followUp(params: JsonObject): JsonObject {
+		const mutation = this.#requiredQueueCoordinator().enqueueFollowUp({
+			sessionId: this.#sessionId(),
+			clientTurnId: queueClientTurnId(params, "follow"),
+			text: requiredString(params.message, "message"),
+			imagePaths: localImagePaths(params.local_images),
+			source: "user",
+		});
+		return queueMutationResponse(mutation);
+	}
+
+	#queuePop(): JsonObject {
+		const removal = this.#requiredQueueCoordinator().popLastFollowUp();
+		return {
+			...queueProjection(removal.snapshot),
+			item: removal.record ? gatewayQueueItem(removal.record) : null,
+		};
+	}
+
+	#queueClear(): JsonObject {
+		const result = this.#requiredQueueCoordinator().clear();
+		const steering = result.records.filter((record) => record.kind === "pending_steer");
+		const followUps = result.records.filter((record) => record.kind !== "pending_steer");
+		return {
+			...queueProjection(result.snapshot),
+			steering: steering.map((record) => record.text),
+			follow_up: followUps.map((record) => record.text),
+			steering_items: steering.map(legacyQueueItem),
+			follow_up_items: followUps.map(legacyQueueItem),
+		};
+	}
+
+	#queueMigrationAck(params: JsonObject): JsonObject {
+		const token = requiredString(params.token, "token");
+		const snapshot = this.#requiredQueueCoordinator().acknowledgeLegacyMigration(token);
+		return { acknowledged: true, token, ...queueProjection(snapshot) };
+	}
+
 	async #runTurn(
 		active: ActiveTurn,
 		submission: TurnSubmission,
 		reservation: TurnReservation,
 	): Promise<void> {
+		let scheduleNext = false;
 		try {
 			const record = await active.runtime.submit(
 				submission,
@@ -433,6 +514,7 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!active.terminalEmitted && this.#isCurrent(active)) {
 				this.#projectStoredTerminal(active, record);
 			}
+			scheduleNext = record.status === "completed";
 		} catch {
 			if (!active.terminalEmitted) {
 				this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
@@ -446,7 +528,60 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!this.#closed && this.#isCurrent(active)) {
 				this.#emitRuntime("status.changed", this.#status());
 			}
+			if (scheduleNext && !this.#closed && this.#isCurrent(active)) {
+				this.#scheduleNextQueuedTurn();
+			}
 		}
+	}
+
+	#scheduleNextQueuedTurn(): void {
+		if (this.#activeTurn !== null) return;
+		const queue = this.#queueCoordinator();
+		const record = queue?.next();
+		if (!queue || !record) return;
+		const context = this.#sessionContext();
+		const runtime = this.#runtime();
+		const coordinator = this.#options.sessionCoordinator;
+		if (coordinator && !coordinator.markExecuting(context, true)) return;
+		const proposed: TurnSubmission = {
+			clientTurnId: record.clientTurnId,
+			turnId: this.#options.createTurnId?.()
+				?? `turn_${randomUUID().replaceAll("-", "")}`,
+			message: record.text,
+			localImages: record.imagePaths,
+		};
+		let reservation: TurnReservation;
+		try {
+			reservation = runtime.reserve(proposed);
+			queue.markStarted(record.queueId);
+		} catch {
+			coordinator?.markExecuting(context, false);
+			this.#emitRuntime("gateway.error", {
+				code: "queue_worker_start_failed",
+				message: "Queued turn could not be reserved.",
+				method: "turn.submit",
+			});
+			return;
+		}
+		const submission: TurnSubmission = {
+			...proposed,
+			turnId: reservation.turn.turn_id,
+		};
+		const active: ActiveTurn = {
+			clientTurnId: submission.clientTurnId,
+			clientUserMessageId: submission.clientTurnId,
+			controller: new AbortController(),
+			context,
+			runtime,
+			turnId: reservation.turn.turn_id,
+			terminalEmitted: false,
+		};
+		this.#activeTurn = active;
+		this.#activeTurnTask = new Promise<void>((resolve) => {
+			queueMicrotask(() => {
+				void this.#runTurn(active, submission, reservation).then(resolve);
+			});
+		});
 	}
 
 	#interrupt(): JsonObject {
@@ -665,7 +800,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#status(): JsonObject {
 		const session = this.#options.sessionCoordinator?.snapshot();
-		const queue = session?.queue;
+		const queue = this.#queueCoordinator()?.snapshot() ?? session?.queue;
 		const steering = queue?.pendingSteers ?? [];
 		const rejectedSteers = queue?.rejectedSteers ?? [];
 		const followUps = queue?.followUps ?? [];
@@ -715,6 +850,34 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#runtime(): NodeGatewayRuntime {
 		return this.#options.sessionCoordinator?.snapshot().binding ?? this.#options.runtime;
+	}
+
+	#queueCoordinator(): QueueCoordinator | undefined {
+		return this.#runtime().queueCoordinator;
+	}
+
+	#requiredQueueCoordinator(): QueueCoordinator {
+		const queue = this.#queueCoordinator();
+		if (!queue) throw new GatewayFailure("method_not_found", "Queue operations are unavailable.");
+		return queue;
+	}
+
+	#bindQueue(): void {
+		this.#unsubscribeQueue?.();
+		this.#unsubscribeQueue = null;
+		const queue = this.#queueCoordinator();
+		if (!queue) return;
+		const context = this.#sessionContext();
+		this.#unsubscribeQueue = queue.subscribe((snapshot) => {
+			if (this.#closed) return;
+			const sessions = this.#options.sessionCoordinator;
+			if (sessions) {
+				if (!sessions.updateQueue(context, snapshot)) return;
+			} else if (snapshot.sessionId !== context.sessionId) {
+				return;
+			}
+			this.#emitRuntime("turn.queue.updated", queueEventPayload(snapshot, context));
+		});
 	}
 
 	#sessionContext(): SessionGenerationContext {
@@ -808,8 +971,14 @@ function gatewayFailure(error: unknown): GatewayFailure {
 			"client_turn_id already has a different payload.",
 		);
 	}
-	if (isObject(error) && error.code === "persistence_error") {
+	if (error instanceof StorageFailure || (isObject(error) && error.code === "persistence_error")) {
 		return new GatewayFailure("persistence_error", "Session persistence failed.");
+	}
+	if (isObject(error) && error.code === "queue_conflict") {
+		return new GatewayFailure("queue_conflict", "Queued input conflicts with current state.");
+	}
+	if (isObject(error) && error.code === "queue_capacity") {
+		return new GatewayFailure("queue_capacity", "Queued input exceeds the queue capacity.");
 	}
 	return new GatewayFailure("internal_error", "Gateway request failed.");
 }
@@ -901,6 +1070,106 @@ function gatewayQueueItem(item: QueuedInput): JsonObject {
 			})),
 		} : {}),
 	};
+}
+
+function queueMutationResponse(mutation: QueueMutation): JsonObject {
+	return {
+		accepted: true,
+		disposition: mutation.disposition,
+		record: gatewayQueueItem(mutation.record),
+		...queueProjection(mutation.snapshot),
+	};
+}
+
+function queueEventPayload(
+	snapshot: QueueSnapshot,
+	context: SessionGenerationContext,
+): JsonObject {
+	return {
+		session_id: snapshot.sessionId,
+		generation: context.generation,
+		revision: snapshot.revision,
+		...queueProjection(snapshot),
+	};
+}
+
+function queueProjection(snapshot: QueueSnapshot): JsonObject {
+	const pending = snapshot.pendingSteers.filter(isVisibleQueueItem);
+	const deferred = [...snapshot.rejectedSteers, ...snapshot.followUps].filter(isVisibleQueueItem);
+	const hasPendingInput = pending.length + deferred.length > 0;
+	return {
+		queue_revision: snapshot.revision,
+		queue_items: {
+			pending_steers: snapshot.pendingSteers.map(gatewayQueueItem),
+			rejected_steers: snapshot.rejectedSteers.map(gatewayQueueItem),
+			follow_ups: snapshot.followUps.map(gatewayQueueItem),
+		},
+		steering: pending.map((item) => item.text),
+		follow_up: deferred.map((item) => item.text),
+		steering_items: pending.map(legacyQueueItem),
+		follow_up_items: deferred.map(legacyQueueItem),
+		has_pending_input: hasPendingInput,
+		steering_count: pending.length,
+		follow_up_count: deferred.length,
+		activity: {
+			kind: hasPendingInput ? "pending_input" : "idle",
+			has_pending_input: hasPendingInput,
+			steering_count: pending.length,
+			follow_up_count: deferred.length,
+		},
+	};
+}
+
+function legacyQueueItem(item: QueuedInput): JsonObject {
+	return {
+		client_turn_id: item.clientTurnId,
+		kind: item.kind === "pending_steer" ? "steering" : item.kind,
+		message: item.text,
+		text: item.text,
+		source: item.source,
+		...(item.imagePaths.length > 0 ? {
+			local_images: item.imagePaths.map((path, index) => ({
+				path,
+				placeholder: `[image #${index + 1}]`,
+			})),
+		} : {}),
+	};
+}
+
+function legacyMigrationRecord(item: QueuedInput): JsonObject {
+	return {
+		queue_id: item.queueId,
+		kind: item.kind,
+		text: item.text,
+		...(item.imagePaths.length > 0 ? {
+			local_images: item.imagePaths.map((path, index) => ({
+				path,
+				placeholder: `[image #${index + 1}]`,
+			})),
+		} : {}),
+	};
+}
+
+function isVisibleQueueItem(item: QueuedInput): boolean {
+	return item.source !== "task_notification";
+}
+
+function queueClientTurnId(params: JsonObject, prefix: string): string {
+	return optionalString(params.client_turn_id)
+		?? optionalString(params.client_user_message_id)
+		?? `${prefix}_${randomUUID().replaceAll("-", "")}`;
+}
+
+function localImagePaths(value: unknown): readonly string[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) {
+		throw new GatewayFailure("invalid_params", "local_images must be an array.");
+	}
+	return value.map((item) => {
+		if (typeof item === "string" && item.trim()) return item;
+		if (isObject(item) && typeof item.path === "string" && item.path.trim()) return item.path;
+		throw new GatewayFailure("invalid_params", "local_images contains an invalid path.");
+	});
 }
 
 function positiveInteger(value: unknown): number | undefined {

@@ -6,6 +6,7 @@ import type { QueueSnapshot, QueuedInput } from "@mycli/core";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
 	NodeTurnRuntime,
+	QueueCoordinator,
 	SessionCoordinator,
 	SessionTransitionError,
 } from "@mycli/runtime";
@@ -68,6 +69,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		sessionId: string,
 		workspaceRoot: string,
 		threadId: string,
+		initialQueue: QueueSnapshot,
 	): NodeGatewayRuntime => {
 		const fileSnapshots = new FileSnapshotStore();
 		const mutationRuntime = new FileMutationRuntime({ workspaceRoot, snapshots: fileSnapshots });
@@ -77,6 +79,23 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
 		];
+		const queueCoordinator = new QueueCoordinator({
+			initial: initialQueue,
+			store: {
+				loadCommittedQueueIds: () => store.loadCommittedQueueIds(sessionId),
+				saveSnapshot: (snapshot) => {
+					store.saveQueueSnapshot({ sessionId, workspaceRoot, threadId, snapshot });
+				},
+				commitPending: (turnId, records) => store.commitQueuedInputs({
+					sessionId,
+					turnId,
+					records,
+				}),
+			},
+			activeTurnId: null,
+			createQueueId: randomUUID,
+			clock: () => new Date().toISOString(),
+		});
 		return new NodeTurnRuntime({
 			sessionId,
 			workspaceRoot,
@@ -97,6 +116,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			clock: () => new Date().toISOString(),
 			planTools: () => toolExposure,
 			toolRouter: new ToolRouter({ adapters, exposure: toolExposure }),
+			queueCoordinator,
 		});
 	};
 	try {
@@ -157,6 +177,7 @@ interface PrepareStoredSessionOptions {
 		sessionId: string,
 		workspaceRoot: string,
 		threadId: string,
+		initialQueue: QueueSnapshot,
 	) => NodeGatewayRuntime;
 }
 
@@ -202,6 +223,7 @@ async function prepareStoredSession(
 					sessionId,
 					importedOverview.workspaceRoot,
 					importedOverview.threadId,
+					emptyQueue(sessionId),
 				),
 			};
 		} catch (error) {
@@ -255,7 +277,7 @@ async function prepareStoredSession(
 		...(compactionState === undefined ? {} : { compactionState }),
 		...(responsesContinuation === undefined ? {} : { responsesContinuation }),
 		readOnly: false,
-		binding: createRuntime(sessionId, overview.workspaceRoot, overview.threadId),
+		binding: createRuntime(sessionId, overview.workspaceRoot, overview.threadId, queue),
 	};
 }
 
@@ -272,7 +294,7 @@ function virtualSession(
 		queue: emptyQueue(sessionId),
 		suspendedTurn: false,
 		readOnly: false,
-		binding: createRuntime(sessionId, workspaceRoot, sessionId),
+		binding: createRuntime(sessionId, workspaceRoot, sessionId, emptyQueue(sessionId)),
 	};
 }
 
@@ -361,7 +383,12 @@ function preparedFromReadOnlySnapshot(
 		queue: emptyQueue(snapshot.session_id),
 		suspendedTurn: snapshot.state === "waiting_approval" || snapshot.state === "interrupted",
 		readOnly: true,
-		binding: createRuntime(snapshot.session_id, snapshot.cwd, snapshot.session_id),
+		binding: createRuntime(
+			snapshot.session_id,
+			snapshot.cwd,
+			snapshot.session_id,
+			emptyQueue(snapshot.session_id),
+		),
 	};
 }
 

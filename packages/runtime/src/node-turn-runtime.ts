@@ -30,6 +30,7 @@ import {
 	decideRetry,
 	sleepWithSignal,
 } from "./retry-policy.ts";
+import type { QueueCoordinator } from "./queue-coordinator.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -58,6 +59,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly monotonicClock?: () => number;
 	readonly planTools?: () => readonly ToolDefinition[];
 	readonly toolRouter?: ToolRouterContract;
+	readonly queueCoordinator?: QueueCoordinator;
 }
 
 export interface SubmitTurnOptions {
@@ -81,9 +83,11 @@ interface ProviderStepResult {
 
 export class NodeTurnRuntime {
 	readonly #options: NodeTurnRuntimeOptions;
+	readonly queueCoordinator: QueueCoordinator | undefined;
 
 	constructor(options: NodeTurnRuntimeOptions) {
 		this.#options = options;
+		this.queueCoordinator = options.queueCoordinator;
 	}
 
 	reserve(submission: TurnSubmission): TurnReservation {
@@ -175,6 +179,20 @@ export class NodeTurnRuntime {
 		let previousResponseId: string | undefined;
 		let accumulatedUsage: ProviderUsage = {};
 		while (true) {
+			try {
+				assertNotAborted(options.signal);
+				const committed = this.queueCoordinator?.commitPending(turnId) ?? [];
+				if (committed.length > 0) {
+					history = this.#options.store.loadConversationItems(this.#options.sessionId);
+				}
+				assertNotAborted(options.signal);
+			} catch (error) {
+				return this.#finalizeFailure(
+					submission,
+					normalizeFailure(error, options.signal, "persistence_error"),
+					emit,
+				);
+			}
 			const request = projectProviderRequest({
 				config: requestConfig,
 				instructions: this.#options.instructions,
@@ -196,6 +214,17 @@ export class NodeTurnRuntime {
 			accumulatedUsage = addUsage(accumulatedUsage, stepResult.usage);
 
 			if (stepResult.toolCalls.length === 0) {
+				try {
+					assertNotAborted(options.signal);
+					this.queueCoordinator?.rejectPending(turnId);
+					assertNotAborted(options.signal);
+				} catch (error) {
+					return this.#finalizeFailure(
+						submission,
+						normalizeFailure(error, options.signal, "persistence_error"),
+						emit,
+					);
+				}
 				return this.#completeTurn(
 					submission,
 					stepResult.assistantText,

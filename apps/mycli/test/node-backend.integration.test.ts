@@ -276,6 +276,59 @@ test("Node backend atomically resumes complete persisted session state", async (
 	}
 });
 
+test("Node backend restores a durably queued follow-up without provider IO", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-queue-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await mkdir(home);
+	await mkdir(workspace);
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "queue-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "queue", "turn.follow_up", {
+		message: "persist across restart",
+		client_turn_id: "queued-client",
+	});
+	const queued = await waitFor(() => response(firstMessages, "queue"));
+	assert.equal(resultValue(queued, "queue_revision"), 1);
+	writeRequest(first, "shutdown-first", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
+	const bootstrap = await waitFor(() => response(secondMessages, "bootstrap"));
+	const status = resultValue(bootstrap, "status") as Record<string, unknown>;
+	assert.equal(status.queue_revision, 1);
+	assert.deepEqual(status.queued_follow_up, ["persist across restart"]);
+	const migration = resultValue(bootstrap, "legacy_user_queue_migration") as Record<string, unknown>;
+	assert.equal((migration.records as Array<Record<string, unknown>>)[0]?.text, "persist across restart");
+	writeRequest(second, "shutdown-second", "shutdown", {});
+	assert.equal(await second.completion, 0);
+});
+
 function writeRequest(
 	backend: Awaited<ReturnType<typeof startNodeBackend>>,
 	id: string,

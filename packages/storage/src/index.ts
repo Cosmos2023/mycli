@@ -19,6 +19,7 @@ export type {
 	ProjectedMutationMetadata,
 	ReserveTurnInput,
 	RuntimeStateKey,
+	SaveQueueSnapshotInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,

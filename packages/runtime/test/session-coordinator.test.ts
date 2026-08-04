@@ -48,6 +48,19 @@ test("same-session resume is idempotent and does not prepare twice", async () =>
 	assert.deepEqual(prepared, []);
 });
 
+test("updates queue state only for the active session generation", () => {
+	const coordinator = fixture();
+	const context = coordinator.context();
+	const updated = queue("source", 1);
+
+	assert.equal(coordinator.updateQueue(context, updated), true);
+	assert.strictEqual(coordinator.snapshot().queue, updated);
+	assert.equal(coordinator.snapshot().generation, 1);
+	assert.equal(coordinator.updateQueue({ ...context, generation: 2 }, queue("source", 2)), false);
+	assert.equal(coordinator.updateQueue(context, queue("target", 2)), false);
+	assert.strictEqual(coordinator.snapshot().queue, updated);
+});
+
 test("rejects cross-session resume while the current generation is executing", async () => {
 	const coordinator = fixture();
 	const context = coordinator.context();
@@ -176,10 +189,10 @@ function transcriptItem(sessionId: string): TranscriptItem {
 	};
 }
 
-function queue(sessionId: string): QueueSnapshot {
+function queue(sessionId: string, revision = 0): QueueSnapshot {
 	return Object.freeze({
 		sessionId,
-		revision: 0,
+		revision,
 		pendingSteers: Object.freeze([]),
 		rejectedSteers: Object.freeze([]),
 		followUps: Object.freeze([]),

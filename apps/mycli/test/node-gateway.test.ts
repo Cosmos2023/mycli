@@ -3,12 +3,19 @@ import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseGatewayEvent, parseJsonRpcMessage } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import { fingerprintSubmission, type QueueSnapshot, type RuntimeEvent } from "@mycli/core";
 import {
+	fingerprintSubmission,
+	type QueueSnapshot,
+	type RuntimeEvent,
+} from "@mycli/core";
+import {
+	QueueCoordinator,
 	SessionCoordinator,
 	type PreparedSession,
+	type QueueCoordinatorStore,
 	type TurnSubmission,
 } from "@mycli/runtime";
+import { StorageFailure } from "@mycli/storage";
 import type { SessionOverview, TranscriptItem } from "@mycli/storage";
 import {
 	createNodeGateway,
@@ -30,6 +37,9 @@ function gatewayHarness(options: {
 		readonly prepareTarget?: () => Promise<void>;
 		readonly targetQueue?: QueueSnapshot;
 	};
+	queue?: {
+		readonly initial?: QueueSnapshot;
+	};
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -38,23 +48,32 @@ function gatewayHarness(options: {
 	let releaseTurn!: () => void;
 	const turnReleased = new Promise<void>((resolve) => { releaseTurn = resolve; });
 	const submissions: TurnSubmission[] = [];
-	const runtime = {
-		reserve: options.reserve ?? ((submission: TurnSubmission) => {
-			const fingerprint = fingerprintSubmission({
-				message: submission.message,
-				localImages: submission.localImages,
-			});
-			if (options.existingTurn) {
-				if (options.existingTurn.request_fingerprint !== fingerprint) {
-					throw Object.assign(new Error("conflicting payload"), { code: "message_id_conflict" });
-				}
-				return { kind: "existing" as const, turn: options.existingTurn };
+	const reservedClientTurnIds: string[] = [];
+	const queue = options.queue
+		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
+		: undefined;
+	const reserve = options.reserve ?? ((submission: TurnSubmission) => {
+		const fingerprint = fingerprintSubmission({
+			message: submission.message,
+			localImages: submission.localImages,
+		});
+		if (options.existingTurn) {
+			if (options.existingTurn.request_fingerprint !== fingerprint) {
+				throw Object.assign(new Error("conflicting payload"), { code: "message_id_conflict" });
 			}
-			return {
-				kind: "reserved" as const,
-				turn: turnRecord(submission, "in_progress"),
-			};
-		}),
+			return { kind: "existing" as const, turn: options.existingTurn };
+		}
+		return {
+			kind: "reserved" as const,
+			turn: turnRecord(submission, "in_progress"),
+		};
+	});
+	const runtime = {
+		...(queue ? { queueCoordinator: queue.coordinator } : {}),
+		reserve: (submission: TurnSubmission) => {
+			reservedClientTurnIds.push(submission.clientTurnId);
+			return reserve(submission);
+		},
 		submit: async (submission: TurnSubmission, emit: (event: RuntimeEvent) => void, options: { signal: AbortSignal }) => {
 			submissions.push(submission);
 			emitRuntime = emit;
@@ -93,6 +112,7 @@ function gatewayHarness(options: {
 		gateway,
 		messages,
 		submissions,
+		reservedClientTurnIds,
 		send,
 		emit: (event: RuntimeEvent) => emitRuntime?.(event),
 		signal: () => signal,
@@ -100,6 +120,7 @@ function gatewayHarness(options: {
 		closeCalls: () => closeCalls,
 		runtimeSettled: () => runtimeSettled,
 		sessionCoordinator,
+		queue,
 	};
 }
 
@@ -260,6 +281,209 @@ test("status projects rejected steers as deferred follow-up input", async () => 
 		status.params.queue_items.rejected_steers.map((item: { queue_id: string }) => item.queue_id),
 		["queue-rejected"],
 	);
+	await harness.gateway.close();
+});
+
+test("queue RPCs persist before publication and deduplicate lost responses", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "inspect",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+
+	const first = await harness.send("turn.steer", {
+		message: "also inspect package.json",
+		client_user_message_id: "steer-message-1",
+		expected_turn_id: "turn-node",
+		local_images: [{ path: "/tmp/context.png", placeholder: "[image #1]" }],
+	});
+	const updated = await waitFor(() => notification(harness.messages, "turn.queue.updated"));
+
+	assert.equal("result" in first ? first.result.disposition : null, "accepted_for_turn");
+	assert.equal("result" in first ? first.result.queue_revision : null, 1);
+	assert.equal("result" in first ? first.result.record.queue_id : null, "queue-1");
+	assert.deepEqual(harness.queue?.persistedRevisions, [1]);
+	assert.equal(updated.params.queue_revision, 1);
+	assert.deepEqual(updated.params.steering, ["also inspect package.json"]);
+	assert.equal(updated.params.queue_items.pending_steers[0].local_images[0].path, "/tmp/context.png");
+	parseGatewayEvent(updated);
+	const responseIndex = harness.messages.indexOf(first);
+	assert.ok(harness.messages.indexOf(updated) < responseIndex);
+
+	const eventCount = notificationCount(harness.messages, "turn.queue.updated");
+	const duplicate = await harness.send("turn.steer", {
+		message: "also inspect package.json",
+		client_user_message_id: "steer-message-1",
+		expected_turn_id: "turn-node",
+		local_images: [{ path: "/tmp/context.png", placeholder: "[image #1]" }],
+	});
+
+	assert.equal("result" in duplicate ? duplicate.result.disposition : null, "duplicate");
+	assert.equal("result" in duplicate ? duplicate.result.record.queue_id : null, "queue-1");
+	assert.equal("result" in duplicate ? duplicate.result.queue_revision : null, 1);
+	assert.deepEqual(harness.queue?.persistedRevisions, [1]);
+	assert.equal(notificationCount(harness.messages, "turn.queue.updated"), eventCount);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("stale steers are durably deferred instead of losing user input", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "inspect",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+
+	const response = await harness.send("turn.steer", {
+		message: "use a newer turn",
+		client_turn_id: "stale-steer",
+		expected_turn_id: "turn-old",
+	});
+
+	assert.equal("result" in response ? response.result.disposition : null, "deferred_to_end_of_turn");
+	assert.equal("result" in response ? response.result.record.kind : null, "rejected_steer");
+	assert.deepEqual(
+		harness.queue?.coordinator.snapshot().rejectedSteers.map((item) => item.text),
+		["use a newer turn"],
+	);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("follow-up input racing terminal completion remains durably queued", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "inspect",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+
+	const followUp = harness.send("turn.follow_up", {
+		message: "summarize afterward",
+		client_turn_id: "follow-up-1",
+	});
+	harness.releaseTurn();
+	const response = await followUp;
+	await waitFor(() => notification(harness.messages, "turn.completed"));
+	await waitFor(() => harness.submissions.length >= 2);
+
+	assert.equal("result" in response ? response.result.disposition : null, "queued_follow_up");
+	assert.equal(harness.queue?.persistedRevisions.includes(1), true);
+	assert.equal(harness.submissions[1]?.message, "summarize afterward");
+	await harness.gateway.close();
+});
+
+test("reserves one queued next turn before removing its queue record", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "first turn",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	await harness.send("turn.follow_up", {
+		message: "queued next turn",
+		client_turn_id: "queued-client-id",
+	});
+
+	harness.releaseTurn();
+	await waitFor(() => harness.submissions.length >= 2);
+
+	assert.deepEqual(harness.reservedClientTurnIds, ["client-turn", "queued-client-id"]);
+	assert.deepEqual(harness.submissions[1], {
+		clientTurnId: "queued-client-id",
+		turnId: "turn-node",
+		message: "queued next turn",
+		localImages: [],
+	});
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+	await harness.gateway.close();
+});
+
+test("retains queued input when the next-turn reservation fails", async () => {
+	const harness = gatewayHarness({
+		queue: {},
+		reserve: (submission) => {
+			if (submission.clientTurnId === "queued-client-id") {
+				throw new StorageFailure("private reservation failure");
+			}
+			return { kind: "reserved", turn: turnRecord(submission, "in_progress") };
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "first turn",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	await harness.send("turn.follow_up", {
+		message: "keep queued",
+		client_turn_id: "queued-client-id",
+	});
+
+	harness.releaseTurn();
+	await waitFor(() => harness.reservedClientTurnIds.includes("queued-client-id"));
+	const failure = await waitFor(() => notification(harness.messages, "gateway.error"));
+
+	assert.deepEqual(
+		harness.queue?.coordinator.snapshot().followUps.map((item) => item.text),
+		["keep queued"],
+	);
+	assert.equal(failure.params.code, "queue_worker_start_failed");
+	assert.equal(JSON.stringify(failure).includes("private reservation failure"), false);
+	await harness.gateway.close();
+});
+
+test("queue pop, clear, and legacy migration ack return durable revisions", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.follow_up", { message: "first", client_turn_id: "follow-1" });
+	await harness.send("turn.follow_up", { message: "second", client_turn_id: "follow-2" });
+
+	const popped = await harness.send("turn.queue.pop");
+	assert.equal("result" in popped ? popped.result.item.text : null, "second");
+	assert.equal("result" in popped ? popped.result.queue_revision : null, 3);
+	const cleared = await harness.send("turn.queue.clear");
+	assert.deepEqual("result" in cleared ? cleared.result.follow_up : null, ["first"]);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+
+	await harness.send("turn.follow_up", { message: "legacy", client_turn_id: "legacy-1" });
+	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
+	const migration = "result" in bootstrap ? bootstrap.result.legacy_user_queue_migration : undefined;
+	assert.equal(migration.records[0].text, "legacy");
+	const acknowledged = await harness.send("turn.queue.migration.ack", { token: migration.token });
+	assert.equal("result" in acknowledged ? acknowledged.result.acknowledged : false, true);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+	await harness.gateway.close();
+});
+
+test("queue storage failures return sanitized errors without publishing", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	if (harness.queue) harness.queue.failSave = true;
+	const before = notificationCount(harness.messages, "turn.queue.updated");
+
+	const response = await harness.send("turn.follow_up", {
+		message: "must persist",
+		client_turn_id: "follow-secret",
+	});
+
+	assert.deepEqual("error" in response ? response.error : null, {
+		code: "persistence_error",
+		message: "Session persistence failed.",
+	});
+	assert.equal(notificationCount(harness.messages, "turn.queue.updated"), before);
+	assert.equal(JSON.stringify(harness.messages).includes("private sqlite path"), false);
 	await harness.gateway.close();
 });
 
@@ -759,6 +983,47 @@ function queuedInput(
 		createdAt: "2026-08-04T00:00:00.000Z",
 		updatedAt: "2026-08-04T00:00:00.000Z",
 	});
+}
+
+function gatewayQueueFixture(initial: QueueSnapshot) {
+	let durable = initial;
+	let nextQueueId = 0;
+	const persistedRevisions: number[] = [];
+	const fixture = {
+		failSave: false,
+		persistedRevisions,
+		coordinator: undefined as unknown as QueueCoordinator,
+	};
+	const store: QueueCoordinatorStore = {
+		loadCommittedQueueIds: () => new Set(),
+		saveSnapshot: (snapshot) => {
+			if (fixture.failSave) {
+				throw new StorageFailure("private sqlite path /Users/example/.mycli/sessions.db");
+			}
+			durable = snapshot;
+			persistedRevisions.push(snapshot.revision);
+		},
+		commitPending: (_turnId, records) => {
+			const ids = new Set(records.map((record) => record.queueId));
+			durable = Object.freeze({
+				...durable,
+				revision: durable.revision + 1,
+				pendingSteers: Object.freeze(durable.pendingSteers.filter(
+					(record) => !ids.has(record.queueId),
+				)),
+			});
+			persistedRevisions.push(durable.revision);
+			return durable;
+		},
+	};
+	fixture.coordinator = new QueueCoordinator({
+		initial,
+		store,
+		activeTurnId: null,
+		createQueueId: () => `queue-${++nextQueueId}`,
+		clock: () => "2026-08-04T00:00:00.000Z",
+	});
+	return fixture;
 }
 
 function sessionOverview(sessionId: string, lastActiveAt: string): SessionOverview {

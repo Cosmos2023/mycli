@@ -7,6 +7,8 @@ import type {
 	CanonicalToolCall,
 	ProviderEvent,
 	ProviderRequest,
+	QueueSnapshot,
+	QueuedInput,
 	RuntimeEvent,
 } from "@mycli/core";
 import { ProviderFailure, type ModelProvider } from "@mycli/providers";
@@ -19,12 +21,17 @@ import type {
 	TurnStore,
 	TurnReservation,
 } from "@mycli/storage";
+import { StorageFailure } from "@mycli/storage";
 import {
 	READ_TOOL_DEFINITION,
 	type ToolExecutionResult,
 	type ToolRouterContract,
 } from "@mycli/tools";
-import { NodeTurnRuntime } from "../src/index.ts";
+import {
+	NodeTurnRuntime,
+	QueueCoordinator,
+	type QueueCoordinatorStore,
+} from "../src/index.ts";
 
 test("persists and executes Read before continuing the same Responses turn", async () => {
 	const trace: string[] = [];
@@ -410,10 +417,198 @@ test("passes mutation metadata unchanged to durable tool-result storage", async 
 	assert.strictEqual(store.toolResults[0]?.metadata, metadata);
 });
 
+test("commits accepted steers before the next provider request", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const queue = queueFixture(store, trace);
+	const requests: ProviderRequest[] = [];
+	let step = 0;
+	const provider: ModelProvider = {
+		stream: (request) => {
+			requests.push(request);
+			trace.push(`provider:${++step}`);
+			if (step === 1) {
+				queue.coordinator.enqueueSteer({
+					clientTurnId: "client-steer",
+					expectedTurnId: "turn-1",
+					activeTurnId: "turn-1",
+					steerable: true,
+					text: "Also inspect package.json",
+				});
+				return providerEvents([
+					{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+					{ type: "completed", responseId: "resp-tools" },
+				]);
+			}
+			return providerEvents([
+				{ type: "text_delta", text: "Both files inspected." },
+				{ type: "completed", responseId: "resp-final" },
+			]);
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		queueCoordinator: queue.coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.ok(trace.indexOf("queue:commit") < trace.indexOf("provider:2"));
+	assert.deepEqual(requests[1]?.items?.at(-1), {
+		type: "user",
+		text: "Also inspect package.json",
+	});
+	assert.deepEqual(queue.committedQueueIds, ["queue-1"]);
+});
+
+test("rejects unconsumed steers before normal terminal completion", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const queue = queueFixture(store, trace);
+	const provider: ModelProvider = {
+		stream: () => {
+			queue.coordinator.enqueueSteer({
+				clientTurnId: "client-steer",
+				expectedTurnId: "turn-1",
+				activeTurnId: "turn-1",
+				steerable: true,
+				text: "Too late for this request",
+			});
+			return providerEvents([
+				{ type: "text_delta", text: "Done." },
+				{ type: "completed", responseId: "resp-final" },
+			]);
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		queueCoordinator: queue.coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(queue.coordinator.snapshot().pendingSteers.length, 0);
+	assert.equal(queue.coordinator.snapshot().rejectedSteers[0]?.kind, "rejected_steer");
+	assert.ok(trace.lastIndexOf("queue:save") < trace.indexOf("complete"));
+});
+
+test("retains pending steers when a turn is interrupted", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const queue = queueFixture(store, trace);
+	const controller = new AbortController();
+	const provider: ModelProvider = {
+		stream: () => {
+			queue.coordinator.enqueueSteer({
+				clientTurnId: "client-steer",
+				expectedTurnId: "turn-1",
+				activeTurnId: "turn-1",
+				steerable: true,
+				text: "Keep this steer",
+			});
+			controller.abort();
+			return providerEvents([{ type: "completed", responseId: "resp-final" }]);
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		queueCoordinator: queue.coordinator,
+	}).submit(submission(), () => {}, { signal: controller.signal });
+
+	assert.equal(result.status, "interrupted");
+	assert.equal(queue.coordinator.snapshot().pendingSteers[0]?.text, "Keep this steer");
+	assert.equal(queue.coordinator.snapshot().rejectedSteers.length, 0);
+});
+
+test("does not continue the provider when committing a steer fails", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const queue = queueFixture(store, trace);
+	const requests: ProviderRequest[] = [];
+	let step = 0;
+	const provider: ModelProvider = {
+		stream: (request) => {
+			requests.push(request);
+			step += 1;
+			if (step > 1) {
+				return providerEvents([
+					{ type: "text_delta", text: "Continued without the steer." },
+					{ type: "completed", responseId: "resp-final" },
+				]);
+			}
+			queue.coordinator.enqueueSteer({
+				clientTurnId: "client-steer",
+				expectedTurnId: "turn-1",
+				activeTurnId: "turn-1",
+				steerable: true,
+				text: "Persist me first",
+			});
+			queue.failCommit = true;
+			return providerEvents([
+				{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+				{ type: "completed", responseId: "resp-tools" },
+			]);
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		queueCoordinator: queue.coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "persistence_error");
+	assert.equal(requests.length, 1);
+	assert.equal(trace.includes("complete"), false);
+});
+
+test("does not report terminal success when queue rejection persistence fails", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const queue = queueFixture(store, trace);
+	const provider: ModelProvider = {
+		stream: () => {
+			queue.coordinator.enqueueSteer({
+				clientTurnId: "client-steer",
+				expectedTurnId: "turn-1",
+				activeTurnId: "turn-1",
+				steerable: true,
+				text: "Persist terminal transition",
+			});
+			queue.failSave = true;
+			return providerEvents([
+				{ type: "text_delta", text: "Done." },
+				{ type: "completed", responseId: "resp-final" },
+			]);
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		queueCoordinator: queue.coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "persistence_error");
+	assert.equal(trace.includes("complete"), false);
+});
+
 function createRuntime(options: {
 	readonly store: TurnStore;
 	readonly provider: ModelProvider;
 	readonly toolRouter: ToolRouterContract;
+	readonly queueCoordinator?: QueueCoordinator;
 	readonly monotonicClock?: () => number;
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
@@ -430,7 +625,65 @@ function createRuntime(options: {
 		random: () => 0.5,
 		planTools: () => [READ_TOOL_DEFINITION],
 		toolRouter: options.toolRouter,
+		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),
 		...(options.monotonicClock ? { monotonicClock: options.monotonicClock } : {}),
+	});
+}
+
+function queueFixture(store: FakeStore, trace: string[]) {
+	let durable = emptyQueue();
+	const committedQueueIds: string[] = [];
+	const fixture = {
+		failCommit: false,
+		failSave: false,
+		committedQueueIds,
+		coordinator: undefined as unknown as QueueCoordinator,
+	};
+	const queueStore: QueueCoordinatorStore = {
+		loadCommittedQueueIds: () => new Set(committedQueueIds),
+		saveSnapshot: (snapshot) => {
+			if (fixture.failSave) throw new StorageFailure("queue save failed");
+			durable = snapshot;
+			trace.push("queue:save");
+		},
+		commitPending: (_turnId, records) => {
+			if (fixture.failCommit) throw new StorageFailure("queue commit failed");
+			for (const record of records) {
+				if (!committedQueueIds.includes(record.queueId)) {
+					committedQueueIds.push(record.queueId);
+					store.items.push({ type: "user", text: record.text });
+				}
+			}
+			const ids = new Set(records.map((record) => record.queueId));
+			durable = Object.freeze({
+				...durable,
+				revision: durable.revision + 1,
+				pendingSteers: Object.freeze(durable.pendingSteers.filter(
+					(record) => !ids.has(record.queueId),
+				)),
+			});
+			trace.push("queue:commit");
+			return durable;
+		},
+	};
+	let nextQueueId = 0;
+	fixture.coordinator = new QueueCoordinator({
+		initial: durable,
+		store: queueStore,
+		activeTurnId: null,
+		createQueueId: () => `queue-${++nextQueueId}`,
+		clock: () => "2026-08-04T00:00:00.000Z",
+	});
+	return fixture;
+}
+
+function emptyQueue(): QueueSnapshot {
+	return Object.freeze({
+		sessionId: "session-1",
+		revision: 0,
+		pendingSteers: Object.freeze([] as QueuedInput[]),
+		rejectedSteers: Object.freeze([] as QueuedInput[]),
+		followUps: Object.freeze([] as QueuedInput[]),
 	});
 }
 

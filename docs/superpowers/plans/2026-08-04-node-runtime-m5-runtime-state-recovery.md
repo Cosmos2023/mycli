@@ -521,7 +521,7 @@ git commit -m "feat(node-runtime): add atomic session resume"
 - Test: `packages/runtime/test/node-turn-runtime.test.ts`
 - Test: `apps/mycli/test/node-gateway.test.ts`
 
-- [ ] **Step 1: Write failing coordinator persistence tests**
+- [x] **Step 1: Write failing coordinator persistence tests**
 
 ```ts
 test("does not publish a queue revision before persistence", () => {
@@ -542,20 +542,20 @@ test("commits accepted steers to history exactly once", () => {
 Cover restore normalization, terminal rejection, interrupt retention, rejected-first draining,
 session isolation, duplicate lost-response retry, pop, clear, migration ack, and capacity errors.
 
-- [ ] **Step 2: Write failing gateway queue RPC/event tests**
+- [x] **Step 2: Write failing gateway queue RPC/event tests**
 
 Verify `turn.steer`, `turn.follow_up`, follow-up submission racing with turn completion, `turn.queue.pop`,
 `turn.queue.clear`, and migration ack return matching revisions and structured snapshots. Assert
 legacy arrays are projections and stale expected turn IDs become rejected records rather than lost
 input.
 
-- [ ] **Step 3: Run targeted tests and verify missing coordinator failures**
+- [x] **Step 3: Run targeted tests and verify missing coordinator failures**
 
 Run: `node --import tsx --test packages/runtime/test/queue-coordinator.test.ts packages/runtime/test/node-turn-runtime.test.ts apps/mycli/test/node-gateway.test.ts`
 
 Expected: FAIL because queue orchestration is not wired.
 
-- [ ] **Step 4: Implement persistent queue orchestration**
+- [x] **Step 4: Implement persistent queue orchestration**
 
 ```ts
 export class QueueCoordinator {
@@ -579,13 +579,13 @@ export class QueueCoordinator {
 Commit steers before request projection, preserve the freshly committed records outside compaction
 summary input, and reserve at most one queued next turn after terminal completion.
 
-- [ ] **Step 5: Run queue, runtime, gateway, and TUI regression tests**
+- [x] **Step 5: Run queue, runtime, gateway, and TUI regression tests**
 
 Run: `npm run test --workspace @mycli/runtime && npm run test --workspace @mycli/app && npm run test --workspace mycli-shell-tui`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit durable queue and steering**
+- [x] **Step 6: Commit durable queue and steering**
 
 ```bash
 git add packages/runtime apps/mycli

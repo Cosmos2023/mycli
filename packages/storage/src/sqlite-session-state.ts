@@ -22,6 +22,7 @@ import type {
 	CommitQueuedInputsInput,
 	ImportLegacyConversationInput,
 	RuntimeStateKey,
+	SaveQueueSnapshotInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,
@@ -182,6 +183,40 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		this.#writeTransaction(() => {
 			this.#touchSession(input.sessionId, input.workspaceRoot, input.threadId);
 			this.#upsertState(input.sessionId, input.key, payload);
+		});
+	}
+
+	saveQueueSnapshot(input: SaveQueueSnapshotInput): QueueSnapshot {
+		const sessionId = nonEmpty(input.sessionId, "sessionId");
+		if (input.snapshot.sessionId !== sessionId) {
+			throw new QueueConflictError("queue snapshot session does not match save session");
+		}
+		return this.#writeTransaction(() => {
+			const row = this.#database.prepare(`
+				SELECT payload_json FROM session_state
+				WHERE session_id = ? AND state_key = 'input_queue'
+			`).get(sessionId) as { readonly payload_json: unknown } | undefined;
+			const previous = row
+				? parseStateJson(row.payload_json, "input_queue")
+				: {};
+			if (!isRecord(previous)) {
+				throw new SessionStateError("session_state_invalid", "input_queue");
+			}
+			const current = row ? queueSnapshotFromPayload(previous) : undefined;
+			const payload = queuePayload(input.snapshot, previous);
+			const candidate = queueSnapshotFromPayload(payload);
+			if (!current && candidate.revision !== 1) {
+				throw new QueueConflictError("initial queue snapshot revision must be one");
+			}
+			if (current) {
+				if (stableJson(payload) === stableJson(previous)) return current;
+				if (candidate.revision !== increment(current.revision, "queue revision")) {
+					throw new QueueConflictError("queue snapshot revision is stale");
+				}
+			}
+			this.#touchSession(sessionId, input.workspaceRoot, input.threadId);
+			this.#upsertState(sessionId, "input_queue", payload);
+			return candidate;
 		});
 	}
 
