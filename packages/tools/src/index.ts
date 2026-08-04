@@ -5,6 +5,18 @@ export {
 export { planToolExposure } from "./exposure-planner.ts";
 export { FileSnapshotStore } from "./file-snapshot-store.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
+export { createBoundedUnifiedDiff } from "./file-diff.ts";
+export type { BoundedFileDiff } from "./file-diff.ts";
+export {
+	FileMutationError,
+	FileMutationRuntime,
+	isAbortError,
+} from "./file-mutation-runtime.ts";
+export type {
+	FileMutationRuntimeOptions,
+	MutationErrorKind,
+	MutationOutcome,
+} from "./file-mutation-runtime.ts";
 export {
 	resolveReadableWorkspaceFile,
 	resolveWritableWorkspaceFile,
