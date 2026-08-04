@@ -1,0 +1,30 @@
+{
+  "name": "@mycli/tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mycli/core": "0.1.0",
+    "ajv": "^8.17.1",
+    "csv-parse": "^6.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

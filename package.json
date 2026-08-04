@@ -11,7 +11,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace @mycli/core && npm run build --workspace @mycli/config && npm run build --workspace @mycli/providers && npm run build --workspace @mycli/storage && npm run build --workspace @mycli/runtime && npm run build --workspace mycli-shell-tui && npm run build --workspace @mycli/app",
+    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace @mycli/core && npm run build --workspace @mycli/config && npm run build --workspace @mycli/tools && npm run build --workspace @mycli/providers && npm run build --workspace @mycli/storage && npm run build --workspace @mycli/runtime && npm run build --workspace mycli-shell-tui && npm run build --workspace @mycli/app",
     "contracts:generate": "npm run generate --workspace @mycli/contracts",
     "contracts:check": "npm run check --workspace @mycli/contracts",
     "dev": "node --import tsx apps/mycli/src/cli.ts",
@@ -39,6 +39,7 @@
     "@mycli/providers": "^0.1.0",
     "@mycli/runtime": "^0.1.0",
     "@mycli/storage": "^0.1.0",
+    "@mycli/tools": "^0.1.0",
     "mycli-shell-tui": "^0.1.0"
   }
 }
