@@ -28,6 +28,7 @@ existing CLI. The selected backend owns the complete turn before provider IO beg
 - Responses and Chat Completions tool continuation
 - ordered, durable assistant tool calls and tool results
 - bounded `tool.start`, `tool.complete`, `tool.failed`, and `turn.event` projection
+- no fixed per-turn provider-step or total tool-call ceiling, matching Python behavior
 
 `LS`, `Glob`, and `Grep` are retired and are neither advertised nor implemented by the Node
 backend. M3 does not support mutation tools, approvals, local images, shell execution, MCP,

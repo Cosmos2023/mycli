@@ -79,9 +79,6 @@ interface ProviderStepResult {
 	readonly toolCalls: readonly CanonicalToolCall[];
 }
 
-const MAX_PROVIDER_STEPS = 8;
-const MAX_TOOL_CALLS = 16;
-
 export class NodeTurnRuntime {
 	readonly #options: NodeTurnRuntimeOptions;
 
@@ -176,9 +173,8 @@ export class NodeTurnRuntime {
 		}
 
 		let previousResponseId: string | undefined;
-		let totalToolCalls = 0;
 		let accumulatedUsage: ProviderUsage = {};
-		for (let providerStep = 1; providerStep <= MAX_PROVIDER_STEPS; providerStep += 1) {
+		while (true) {
 			const request = projectProviderRequest({
 				config: requestConfig,
 				instructions: this.#options.instructions,
@@ -213,12 +209,6 @@ export class NodeTurnRuntime {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
 
-			if (
-				providerStep >= MAX_PROVIDER_STEPS
-				|| totalToolCalls + stepResult.toolCalls.length > MAX_TOOL_CALLS
-			) {
-				return this.#finalizeFailure(submission, toolBudgetFailure(), emit);
-			}
 			if (config.protocol === "responses" && !stepResult.responseId) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
@@ -287,11 +277,8 @@ export class NodeTurnRuntime {
 					emit,
 				);
 			}
-			totalToolCalls += stepResult.toolCalls.length;
 			previousResponseId = stepResult.responseId;
 		}
-
-		return this.#finalizeFailure(submission, toolBudgetFailure(), emit);
 	}
 
 	async #streamWithRetry(
@@ -560,14 +547,6 @@ function unsupportedToolFailure(): NormalizedFailure {
 	return {
 		code: "unsupported_capability",
 		message: "provider requested an unsupported capability",
-		retryable: false,
-	};
-}
-
-function toolBudgetFailure(): NormalizedFailure {
-	return {
-		code: "tool_budget_exceeded",
-		message: "tool turn budget exceeded",
 		retryable: false,
 	};
 }

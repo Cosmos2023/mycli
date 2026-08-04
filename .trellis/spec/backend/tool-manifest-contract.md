@@ -152,6 +152,9 @@ Required tests for manifest changes:
   advertise that capability.
 - Compatibility-only arguments such as `Read.pages` may be ignored for supported file types, but
   must not cause an otherwise valid text read to fail.
+- The Node tool loop has no fixed provider-step or total tool-call ceiling by default. It stops on
+  a final provider answer, interruption, request timeout/retry exhaustion, protocol failure, or
+  persistence failure. Historical `tool_budget_exceeded` records remain decodable.
 
 ### 4. Validation & Error Matrix
 
@@ -160,6 +163,8 @@ Required tests for manifest changes:
 - Function call without a non-empty `call_id` -> `tool_protocol_error` before execution.
 - Endpoint without HTTP/SSE previous-response support -> full canonical replay, no
   `previous_response_id`.
+- More than eight provider steps or sixteen tool calls -> continue normally while the turn remains
+  valid and not interrupted.
 
 ### 5. Good/Base/Bad Cases
 
@@ -168,6 +173,7 @@ Required tests for manifest changes:
 - Base: A continuation resends the bounded canonical tool transcript and preserves call ordering.
 - Bad: Sending `strict: true` with `required` missing `pages`, or unconditionally sending
   `previous_response_id` to a compatible endpoint.
+- Bad: Introducing a Node-only hard call ceiling that terminates a turn Python would continue.
 
 ### 6. Tests Required
 
@@ -175,6 +181,7 @@ Required tests for manifest changes:
 - A Responses stream test includes argument delta/done before `output_item.done` and asserts one
   parsed tool call.
 - A continuation test asserts no `previous_response_id` and ordered function call/output replay.
+- Runtime tests assert successful completion beyond eight provider steps and sixteen tool calls.
 - The Node M3 integration test asserts the same request shape, successful Read lifecycle, durable
   transcript, and `python_started=false` in live smoke output.
 

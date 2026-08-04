@@ -634,10 +634,11 @@ step, collect text/reasoning/usage/tool calls until exactly one completion, pers
 calls sequentially, append durable results, then project a continuation request. Accumulate usage
 and final assistant text across steps without treating pre-tool text as final.
 
-Enforce `MAX_PROVIDER_STEPS = 8` and `MAX_TOOL_CALLS = 16` before starting more work. Tool results,
-including expected failures, continue the loop. Provider protocol errors, persistence failures,
-budget exhaustion, and interruption terminate with stable codes. Retain the M2 pre-event retry
-rule independently for each provider step.
+Keep the provider/tool loop unbounded by default to match Python behavior. Tool results, including
+expected failures, continue the loop. Provider protocol errors, persistence failures, request
+retry exhaustion, and interruption terminate with stable codes. Retain the M2 pre-event retry
+rule independently for each provider step, and test successful turns beyond eight provider steps
+and sixteen tool calls.
 
 - [ ] **Step 5: Add a temporary compatibility export and run gates**
 

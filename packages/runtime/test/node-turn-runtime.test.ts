@@ -143,10 +143,10 @@ test("does not misclassify an unexpected tool exception as a persistence failure
 	assert.deepEqual(result.result, { message: "provider request failed" });
 });
 
-test("fails before a ninth provider step", async () => {
+test("continues beyond eight provider steps", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
-	const steps = Array.from({ length: 8 }, (_, index): ProviderEvent[] => [
+	const steps = Array.from({ length: 9 }, (_, index): ProviderEvent[] => [
 		{
 			type: "tool_call",
 			callId: `call-${index + 1}`,
@@ -155,19 +155,22 @@ test("fails before a ninth provider step", async () => {
 		},
 		{ type: "completed", responseId: `resp-${index + 1}` },
 	]);
+	steps.push([
+		{ type: "text_delta", text: "Finished after a long tool chain." },
+		{ type: "completed", responseId: "resp-final" },
+	]);
 	const provider = scriptedProvider(trace, [], steps);
 	const router = new SequencedRouter(trace);
 
 	const result = await createRuntime({ store, provider, toolRouter: router })
 		.submit(submission(), () => {}, { signal: new AbortController().signal });
 
-	assert.equal(result.status, "failed");
-	assert.equal(result.error_code, "tool_budget_exceeded");
-	assert.equal(trace.filter((item) => item.startsWith("provider:")).length, 8);
-	assert.equal(router.calls, 7);
+	assert.equal(result.status, "completed");
+	assert.equal(trace.filter((item) => item.startsWith("provider:")).length, 10);
+	assert.equal(router.calls, 9);
 });
 
-test("rejects a provider batch above sixteen calls before persistence or execution", async () => {
+test("executes a provider batch above sixteen calls", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
 	const calls = Array.from({ length: 17 }, (_, index): ProviderEvent => ({
@@ -176,19 +179,24 @@ test("rejects a provider batch above sixteen calls before persistence or executi
 		name: "Read",
 		argumentsJson: READ_ARGUMENTS,
 	}));
-	const provider = scriptedProvider(trace, [], [[
-		...calls,
-		{ type: "completed", responseId: "resp-too-many" },
-	]]);
+	const provider = scriptedProvider(trace, [], [
+		[
+			...calls,
+			{ type: "completed", responseId: "resp-many-tools" },
+		],
+		[
+			{ type: "text_delta", text: "All ranges inspected." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
 	const router = new SequencedRouter(trace);
 
 	const result = await createRuntime({ store, provider, toolRouter: router })
 		.submit(submission(), () => {}, { signal: new AbortController().signal });
 
-	assert.equal(result.status, "failed");
-	assert.equal(result.error_code, "tool_budget_exceeded");
-	assert.equal(router.calls, 0);
-	assert.equal(trace.includes("persist:calls"), false);
+	assert.equal(result.status, "completed");
+	assert.equal(router.calls, 17);
+	assert.equal(trace.includes("persist:calls"), true);
 });
 
 test("rejects duplicate call IDs before persistence or execution", async () => {

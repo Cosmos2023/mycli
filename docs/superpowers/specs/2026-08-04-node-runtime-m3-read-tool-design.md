@@ -269,16 +269,19 @@ reserve turn
   -> execute calls sequentially in provider order
   -> persist each bounded tool result
   -> continue the same provider turn
-  -> repeat until final answer or budget/error/interruption
+  -> repeat until final answer, error, or interruption
 ```
 
 M3 executes calls sequentially even if a future manifest marks a tool parallel-safe. This gives
 deterministic event and persistence order. Parallel scheduling is a later, separately approved
 optimization.
 
-The loop permits at most 8 provider steps and 16 tool calls per user turn. The limits are internal
-constants in M3, covered by tests, and may become compatible configuration fields later. Exceeding
-either limit terminates with `tool_budget_exceeded` and never sends another provider request.
+The loop has no fixed provider-step or total tool-call ceiling, matching the Python runtime. Long
+tool chains continue until the provider returns a final answer, the user interrupts, a request
+times out or exhausts its retry budget, or a protocol/persistence error terminates the turn. Tests
+cover more than eight provider steps and more than sixteen tool calls. The canonical
+`tool_budget_exceeded` value remains decodable for historical persisted turns and gateway events,
+but the Node M3 runtime no longer emits it.
 
 Transport retry remains allowed only before the first valid event of the current provider step.
 Once that step emits text, reasoning, a tool call, usage, or completion, the runtime does not replay
@@ -342,10 +345,9 @@ M3 changes no layout, interaction, keyboard shortcut, or visual hierarchy.
 
 ## Error Handling
 
-M3 adds stable runtime failures where the whole turn cannot continue:
-
-- `tool_budget_exceeded`
-- `tool_protocol_error`
+M3 uses `tool_protocol_error` where the whole turn cannot continue. The canonical
+`tool_budget_exceeded` value remains accepted only for backward compatibility with historical
+records; the default Node runtime does not impose or emit a total tool budget.
 
 Expected tool-level failures such as missing files, invalid paths, invalid argument types,
 workspace escape, binary content, invalid UTF-8, and unsupported file types are returned to the
