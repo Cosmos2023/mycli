@@ -166,9 +166,10 @@ test("turn submission responds immediately and emits validated direct events bef
 	await harness.gateway.close();
 });
 
-test("projects bounded tool lifecycle events without file contents or arguments", async () => {
+test("projects bounded tool and mutation lifecycle events without sensitive fields", async () => {
 	const harness = gatewayHarness();
 	const fileContents = "private file contents";
+	const privateHash = `sha256:${"f".repeat(64)}`;
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
 	await harness.send("turn.submit", {
 		message: "read README",
@@ -179,31 +180,39 @@ test("projects bounded tool lifecycle events without file contents or arguments"
 	harness.emit({
 		type: "tool_execution_started",
 		callId: "call-1",
-		toolName: "Read",
+		toolName: "Edit",
 	});
 	harness.emit({
 		type: "tool_execution_completed",
 		callId: "call-1",
-		toolName: "Read",
-		summary: "Read README.md",
+		toolName: "Edit",
+		summary: "Edited src/a.ts",
 		durationMs: 125,
 		metadata: {
-			path: "README.md",
-			actualStartLine: 1,
-			actualEndLine: 2,
-			truncated: false,
+			path: "src/a.ts",
+			status: "edited",
+			matches: 1,
+			diff: "--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n",
+			addedLines: 1,
+			removedLines: 1,
+			diffTruncated: false,
 			content: fileContents,
+			sha256: privateHash,
+			argumentsJson: "{\"content\":\"private\"}",
 		},
 	});
 	harness.emit({
 		type: "tool_execution_failed",
 		callId: "call-2",
-		toolName: "Read",
-		summary: "Failed to read missing.txt",
+		toolName: "Edit",
+		summary: "Failed to edit missing.txt",
 		durationMs: 5,
 		errorKind: "not_found",
 		metadata: {
 			path: "missing.txt",
+			errorKind: "not_found",
+			content: fileContents,
+			sha256: privateHash,
 			argumentsJson: "{\"file_path\":\"private\"}",
 		},
 	});
@@ -233,10 +242,49 @@ test("projects bounded tool lifecycle events without file contents or arguments"
 		"tool_complete",
 		"tool_failed",
 	]);
-	assert.equal(turnEvents[0]?.params.tool_name, "Read");
+	assert.equal(turnEvents[0]?.params.tool_name, "Edit");
 	assert.equal(turnEvents[0]?.params.metadata.call_id, "call-1");
+	const complete = direct[1]!;
+	assert.equal("method" in complete ? complete.params.path : undefined, "src/a.ts");
+	assert.equal("method" in complete ? complete.params.status : undefined, "edited");
+	assert.equal("method" in complete ? complete.params.matches : undefined, 1);
+	assert.deepEqual("method" in complete ? complete.params.file_changes : undefined, [{
+		version: 1,
+		kind: "update",
+		path: "src/a.ts",
+		diff: "--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n",
+		added_lines: 1,
+		removed_lines: 1,
+	}]);
+	const failed = direct[2]!;
+	assert.equal("method" in failed ? failed.params.path : undefined, "missing.txt");
+	assert.equal("method" in failed ? failed.params.error_kind : undefined, "not_found");
+	assert.deepEqual(turnEvents[1]?.params.metadata, {
+		call_id: "call-1",
+		duration_ms: 125,
+		success: true,
+		path: "src/a.ts",
+		status: "edited",
+		matches: 1,
+		file_changes: [{
+			version: 1,
+			kind: "update",
+			path: "src/a.ts",
+			diff: "--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n",
+			added_lines: 1,
+			removed_lines: 1,
+		}],
+	});
+	assert.deepEqual(turnEvents[2]?.params.metadata, {
+		call_id: "call-2",
+		duration_ms: 5,
+		success: false,
+		path: "missing.txt",
+		error_kind: "not_found",
+	});
 	const serialized = JSON.stringify([...direct, ...turnEvents]);
 	assert.equal(serialized.includes(fileContents), false);
+	assert.equal(serialized.includes(privateHash), false);
 	assert.equal(serialized.includes("argumentsJson"), false);
 
 	harness.releaseTurn();

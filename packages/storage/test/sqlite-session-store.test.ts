@@ -62,6 +62,7 @@ interface Store {
 		readonly clientTurnId: string;
 		readonly result: CanonicalToolResult;
 		readonly summary: string;
+		readonly metadata?: Readonly<Record<string, unknown>>;
 		readonly errorKind?: string;
 	}): void;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
@@ -345,6 +346,137 @@ test("persists ordered Python-compatible tool calls and results", async (t) => {
 		FROM history_items WHERE session_id = ? ORDER BY sequence_no
 	`).all("session-1").map((row) => (row as { type: unknown }).type);
 	assert.deepEqual(historyTypes, ["user_message", "tool_call", "tool_call", "tool_result", "tool_result"]);
+});
+
+test("persists only bounded Python-compatible mutation file changes", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "Updating the file.",
+		calls: [{
+			callId: "call-write",
+			name: "Write",
+			argumentsJson: "{\"file_path\":\"src/a.ts\",\"content\":\"submitted secret\"}",
+		}],
+	});
+	store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: {
+			callId: "call-write",
+			toolName: "Write",
+			output: "Success. Updated the following files:\nM src/a.ts",
+			success: true,
+		},
+		summary: "Wrote src/a.ts",
+		metadata: {
+			path: "src/a.ts",
+			status: "overwritten",
+			diff: "--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n",
+			addedLines: 1,
+			removedLines: 1,
+			diffTruncated: false,
+			content: "submitted secret",
+			sha256: `sha256:${"f".repeat(64)}`,
+			nested: { raw: "submitted secret" },
+			file_changes: [{ path: "injected.ts" }, { path: "second.ts" }],
+		},
+	});
+
+	const database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	const conversation = JSON.parse(String((database.prepare(`
+		SELECT payload_json FROM conversation_messages
+		WHERE session_id = ? AND json_extract(payload_json, '$.role') = 'tool'
+	`).get("session-1") as { payload_json: unknown }).payload_json)) as {
+		metadata: Record<string, unknown>;
+		blocks: Array<{ metadata: Record<string, unknown> }>;
+	};
+	const history = JSON.parse(String((database.prepare(`
+		SELECT payload_json FROM history_items
+		WHERE session_id = ? AND json_extract(payload_json, '$.type') = 'tool_result'
+	`).get("session-1") as { payload_json: unknown }).payload_json)) as {
+		metadata: Record<string, unknown>;
+	};
+	const expected = [{
+		version: 1,
+		kind: "update",
+		path: "src/a.ts",
+		diff: "--- a/src/a.ts\n+++ b/src/a.ts\n-old\n+new\n",
+		added_lines: 1,
+		removed_lines: 1,
+	}];
+	assert.deepEqual(conversation.metadata.file_changes, expected);
+	assert.deepEqual(conversation.blocks[0]?.metadata.file_changes, expected);
+	assert.deepEqual(history.metadata.file_changes, expected);
+	const serializedMetadata = JSON.stringify({
+		conversation: conversation.metadata,
+		block: conversation.blocks[0]?.metadata,
+		history: history.metadata,
+	});
+	assert.equal(serializedMetadata.includes("submitted secret"), false);
+	assert.equal(serializedMetadata.includes("sha256"), false);
+	assert.equal(serializedMetadata.includes("injected.ts"), false);
+});
+
+test("excludes malformed or oversized mutation metadata", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	store.reserveTurn(submission(fixture.root));
+	const metadataCases: readonly Readonly<Record<string, unknown>>[] = [
+		{ path: "a".repeat(241), status: "edited", diff: "-a\n+b\n", addedLines: 1, removedLines: 1 },
+		{ path: "src/a.ts", status: "edited", diff: "x".repeat(200_001), addedLines: 1, removedLines: 1 },
+		{ path: "../escape.ts", status: "edited", diff: "-a\n+b\n", addedLines: 1, removedLines: 1 },
+		{ file_changes: [{ path: "a.ts" }, { path: "b.ts" }], nested: { content: "private" } },
+	];
+	const calls = metadataCases.map((_, index) => ({
+		callId: `call-${index + 1}`,
+		name: "Edit",
+		argumentsJson: "{\"file_path\":\"src/a.ts\",\"old_string\":\"a\",\"new_string\":\"b\"}",
+	}));
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "Trying invalid metadata cases.",
+		calls,
+	});
+	for (const [index, metadata] of metadataCases.entries()) {
+		store.appendToolResult({
+			sessionId: "session-1",
+			clientTurnId: "client-1",
+			result: {
+				callId: calls[index]!.callId,
+				toolName: "Edit",
+				output: "Edit failed",
+				success: false,
+			},
+			summary: "Edit failed",
+			metadata,
+			errorKind: "invalid_arguments",
+		});
+	}
+
+	const database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	const payloads = database.prepare(`
+		SELECT payload_json FROM conversation_messages
+		WHERE session_id = ? AND json_extract(payload_json, '$.role') = 'tool'
+		ORDER BY message_index
+	`).all("session-1").map((row) => JSON.parse(String(
+		(row as { payload_json: unknown }).payload_json,
+	)) as { metadata: Record<string, unknown>; blocks: Array<{ metadata: Record<string, unknown> }> });
+	for (const payload of payloads) {
+		assert.equal("file_changes" in payload.metadata, false);
+		assert.equal("file_changes" in payload.blocks[0]!.metadata, false);
+	}
+	assert.equal(JSON.stringify(payloads).includes("private"), false);
 });
 
 test("persists a failed turn without adding partial assistant content", async (t) => {

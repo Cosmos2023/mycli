@@ -264,6 +264,7 @@ export class NodeTurnRuntime {
 						clientTurnId: submission.clientTurnId,
 						result: toCanonicalResult(result),
 						summary: result.summary,
+						metadata: result.metadata,
 						...(result.errorKind ? { errorKind: result.errorKind } : {}),
 					});
 					assertNotAborted(options.signal);

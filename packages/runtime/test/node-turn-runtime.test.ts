@@ -380,6 +380,36 @@ test("reports bounded tool execution duration from a monotonic clock", async () 
 	assert.equal("durationMs" in completion ? completion.durationMs : undefined, 25);
 });
 
+test("passes mutation metadata unchanged to durable tool-result storage", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const metadata = {
+		path: "src/a.ts",
+		status: "edited",
+		matches: 1,
+		diff: "-old\n+new\n",
+		addedLines: 1,
+		removedLines: 1,
+		diffTruncated: false,
+	};
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[{ type: "completed", responseId: "resp-final" }],
+	]);
+	const result = { ...successResult("call-1"), metadata };
+
+	await createRuntime({
+		store,
+		provider,
+		toolRouter: new FakeRouter(trace, result),
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.strictEqual(store.toolResults[0]?.metadata, metadata);
+});
+
 function createRuntime(options: {
 	readonly store: SessionStore;
 	readonly provider: ModelProvider;
@@ -407,6 +437,7 @@ function createRuntime(options: {
 class FakeStore implements SessionStore {
 	readonly trace: string[];
 	readonly items: CanonicalConversationItem[] = [];
+	readonly toolResults: AppendToolResultInput[] = [];
 	turn: RuntimeTurnRecord | undefined;
 	afterResultPersisted?: () => void;
 
@@ -447,6 +478,7 @@ class FakeStore implements SessionStore {
 
 	appendToolResult(input: AppendToolResultInput): void {
 		this.trace.push(`persist:result:${input.result.callId}`);
+		this.toolResults.push(input);
 		this.items.push({ type: "tool_result", ...input.result });
 		this.afterResultPersisted?.();
 	}

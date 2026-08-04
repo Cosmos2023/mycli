@@ -15,6 +15,7 @@ import type {
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "@mycli/runtime";
+import { projectMutationMetadata } from "@mycli/storage";
 import type { TurnReservation } from "@mycli/storage";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 
@@ -417,6 +418,7 @@ class InProcessNodeGateway implements NodeGateway {
 		const durationMs = boundedDurationMs(event.durationMs);
 		const durationSeconds = durationMs / 1000;
 		const method = success ? "tool.complete" : "tool.failed";
+		const metadata = safeToolMetadata(event.metadata, success);
 		this.#emitRuntime(method, {
 			client_turn_id: active.clientTurnId,
 			tool_id: toolLifecycleId(callId, toolName),
@@ -427,8 +429,10 @@ class InProcessNodeGateway implements NodeGateway {
 			summary_chars: summary.length,
 			summary_truncated: false,
 			success,
+			...metadata,
 			...(errorKind
 				? {
+					error_kind: errorKind,
 					error: errorKind,
 					error_chars: errorKind.length,
 					error_truncated: false,
@@ -444,7 +448,7 @@ class InProcessNodeGateway implements NodeGateway {
 				call_id: callId,
 				duration_ms: durationMs,
 				success,
-				...safeToolMetadata(event.metadata),
+				...metadata,
 				...(errorKind ? { error_kind: errorKind } : {}),
 			},
 			toolName,
@@ -704,32 +708,23 @@ const SAFE_TOOL_METADATA_KEYS = new Set([
 	"truncated",
 ]);
 
-function safeToolMetadata(metadata: Readonly<Record<string, unknown>>): JsonObject {
+function safeToolMetadata(
+	metadata: Readonly<Record<string, unknown>>,
+	success: boolean,
+): JsonObject {
 	const safe: JsonObject = {};
+	const mutation = projectMutationMetadata(metadata, success);
+	if (mutation.path) safe.path = mutation.path;
+	if (mutation.status) safe.status = mutation.status;
+	if (mutation.matches !== undefined) safe.matches = mutation.matches;
+	if (mutation.file_changes) safe.file_changes = mutation.file_changes;
 	for (const [key, value] of Object.entries(metadata)) {
-		if (key === "path" && typeof value === "string") {
-			const path = safeWorkspacePath(value);
-			if (path) safe.path = path;
-			continue;
-		}
+		if (key === "path" || key === "status" || key === "matches") continue;
 		if (!SAFE_TOOL_METADATA_KEYS.has(key)) continue;
 		if (typeof value === "boolean") safe[key] = value;
 		if (typeof value === "number" && Number.isFinite(value)) safe[key] = value;
 	}
 	return safe;
-}
-
-function safeWorkspacePath(value: string): string | undefined {
-	const bounded = boundedString(value, 240);
-	if (
-		!bounded
-		|| bounded.startsWith("/")
-		|| /^[A-Za-z]:[\\/]/u.test(bounded)
-		|| bounded.split(/[\\/]/u).includes("..")
-	) {
-		return undefined;
-	}
-	return bounded;
 }
 
 function toolLifecycleId(callId: string, toolName: string): string {

@@ -1,5 +1,6 @@
 export {
 	MessageIdConflictError,
+	projectMutationMetadata,
 	StorageFailure,
 } from "./session-store.ts";
 export type {
@@ -7,6 +8,8 @@ export type {
 	AppendToolResultInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
+	ProjectedFileChange,
+	ProjectedMutationMetadata,
 	ReserveTurnInput,
 	SessionStore,
 	TurnReservation,

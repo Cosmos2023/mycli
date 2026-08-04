@@ -17,6 +17,7 @@ import {
 } from "./schema.ts";
 import {
 	MessageIdConflictError,
+	projectMutationMetadata,
 	StorageFailure,
 } from "./session-store.ts";
 import type {
@@ -704,6 +705,7 @@ function toolResultMessage(
 	input: AppendToolResultInput,
 ): Readonly<Record<string, unknown>> {
 	const metadata = toolResultMetadata(turn, input);
+	const mutationMetadata = projectMutationMetadata(input.metadata, input.result.success);
 	return {
 		role: "tool",
 		content: input.result.output,
@@ -720,6 +722,9 @@ function toolResultMessage(
 			metadata: {
 				success: input.result.success,
 				...(input.errorKind ? { error_kind: input.errorKind } : {}),
+				...(mutationMetadata.file_changes
+					? { file_changes: mutationMetadata.file_changes }
+					: {}),
 			},
 		}],
 		tool_calls: [],
@@ -750,6 +755,7 @@ function toolResultMetadata(
 	turn: RuntimeTurnRecord,
 	input: AppendToolResultInput,
 ): Readonly<Record<string, unknown>> {
+	const mutationMetadata = projectMutationMetadata(input.metadata, input.result.success);
 	return {
 		turn_id: turn.turn_id,
 		source: "node_runtime",
@@ -759,6 +765,9 @@ function toolResultMetadata(
 		...(input.errorKind ? { error_kind: input.errorKind } : {}),
 		...(input.errorKind === "tool_interrupted"
 			? { synthetic: true, append_only: true }
+			: {}),
+		...(mutationMetadata.file_changes
+			? { file_changes: mutationMetadata.file_changes }
 			: {}),
 	};
 }
