@@ -20,6 +20,7 @@ import type {
 	ApprovalTransitionInput,
 	CommitCompactionInput,
 	CommitQueuedInputsInput,
+	ImportLegacyConversationInput,
 	RuntimeStateKey,
 	SaveStateInput,
 	SessionLineageNode,
@@ -218,6 +219,30 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#loadObjectRows("turn_rollouts", "sequence_no", sessionId);
+	}
+
+	importLegacyConversation(input: ImportLegacyConversationInput): boolean {
+		const sessionId = nonEmpty(input.sessionId, "sessionId");
+		const messages = input.messages.map(validateLegacyConversationMessage);
+		if (messages.length === 0) {
+			throw new StorageFailure("invalid legacy conversation message");
+		}
+		return this.#writeTransaction(() => {
+			const existing = this.#database.prepare(`
+				SELECT 1 FROM conversation_messages
+				WHERE session_id = ? LIMIT 1
+			`).get(sessionId);
+			if (existing) return false;
+			this.#touchSession(sessionId, input.workspaceRoot, input.threadId);
+			const insert = this.#database.prepare(`
+				INSERT INTO conversation_messages (session_id, message_index, payload_json)
+				VALUES (?, ?, ?)
+			`);
+			for (const [index, message] of messages.entries()) {
+				insert.run(sessionId, index, stableJson(message));
+			}
+			return true;
+		});
 	}
 
 	loadCommittedQueueIds(sessionId: string): ReadonlySet<string> {
@@ -696,6 +721,33 @@ function freezeQueueSnapshot(snapshot: QueueSnapshot): QueueSnapshot {
 
 function activeQueueRecords(snapshot: QueueSnapshot): readonly QueuedInput[] {
 	return [...snapshot.pendingSteers, ...snapshot.rejectedSteers, ...snapshot.followUps];
+}
+
+function validateLegacyConversationMessage(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	const role = value.role;
+	if (typeof value.content !== "string") {
+		throw new StorageFailure("invalid legacy conversation message");
+	}
+	if (role === "user") return Object.freeze({ ...value, role, content: value.content });
+	if (role === "assistant") {
+		if (value.tool_calls !== undefined && value.tool_calls !== null) {
+			if (!Array.isArray(value.tool_calls) || value.tool_calls.some((raw) => {
+				const call = recordValue(raw);
+				return typeof call.name !== "string" || !call.name
+					|| typeof call.call_id !== "string" || !call.call_id
+					|| !isRecord(call.arguments);
+			})) {
+				throw new StorageFailure("invalid legacy conversation message");
+			}
+		}
+		return Object.freeze({ ...value, role, content: value.content });
+	}
+	if (role === "tool" && typeof value.tool_call_id === "string" && value.tool_call_id) {
+		return Object.freeze({ ...value, role, content: value.content });
+	}
+	throw new StorageFailure("invalid legacy conversation message");
 }
 
 function queueRecordsEqual(left: QueuedInput, right: QueuedInput): boolean {

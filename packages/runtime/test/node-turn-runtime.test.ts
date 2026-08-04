@@ -16,7 +16,7 @@ import type {
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
 	ReserveTurnInput,
-	SessionStore,
+	TurnStore,
 	TurnReservation,
 } from "@mycli/storage";
 import {
@@ -411,7 +411,7 @@ test("passes mutation metadata unchanged to durable tool-result storage", async 
 });
 
 function createRuntime(options: {
-	readonly store: SessionStore;
+	readonly store: TurnStore;
 	readonly provider: ModelProvider;
 	readonly toolRouter: ToolRouterContract;
 	readonly monotonicClock?: () => number;
@@ -434,7 +434,7 @@ function createRuntime(options: {
 	});
 }
 
-class FakeStore implements SessionStore {
+class FakeStore implements TurnStore {
 	readonly trace: string[];
 	readonly items: CanonicalConversationItem[] = [];
 	readonly toolResults: AppendToolResultInput[] = [];

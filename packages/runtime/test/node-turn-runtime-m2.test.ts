@@ -16,7 +16,7 @@ import {
 	type CompleteStoredTurnInput,
 	type FailStoredTurnInput,
 	type ReserveTurnInput,
-	type SessionStore,
+	type TurnStore,
 	type TurnReservation,
 } from "@mycli/storage";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
@@ -35,7 +35,7 @@ interface NodeTurnRuntimeOptions {
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly instructions: string;
-	readonly store: SessionStore;
+	readonly store: TurnStore;
 	readonly resolveConfig: (
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
@@ -366,7 +366,7 @@ test("finalizes an accepted turn when canonical history cannot be loaded", async
 	assert.deepEqual(emitted.map((event) => event.type), ["turn_started", "turn_failed"]);
 });
 
-class FakeStore implements SessionStore {
+class FakeStore implements TurnStore {
 	readonly trace: string[];
 	readonly conversation: CanonicalMessage[];
 	turn: RuntimeTurnRecord | undefined;
@@ -453,7 +453,7 @@ class FakeStore implements SessionStore {
 }
 
 function createRuntime(overrides: {
-	readonly store: SessionStore;
+	readonly store: TurnStore;
 	readonly provider: ModelProvider;
 	readonly trace?: string[];
 	readonly config?: NodeRuntimeConfig;

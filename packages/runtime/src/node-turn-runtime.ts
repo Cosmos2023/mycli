@@ -24,7 +24,7 @@ import type {
 import {
 	StorageFailure,
 } from "@mycli/storage";
-import type { SessionStore, TurnReservation } from "@mycli/storage";
+import type { TurnReservation, TurnStore } from "@mycli/storage";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	decideRetry,
@@ -45,7 +45,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly instructions: string;
-	readonly store: SessionStore;
+	readonly store: TurnStore;
 	readonly resolveConfig: (
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;

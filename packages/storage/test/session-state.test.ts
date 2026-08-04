@@ -39,6 +39,12 @@ interface M5Store {
 	}): void;
 	loadSessionSummaries(sessionId: string): readonly string[];
 	loadSessionLineage(sessionId: string): readonly { readonly sessionId: string }[];
+	importLegacyConversation(input: {
+		readonly sessionId: string;
+		readonly workspaceRoot: string;
+		readonly threadId: string;
+		readonly messages: readonly Readonly<Record<string, unknown>>[];
+	}): boolean;
 	commitQueuedInputs(input: {
 		readonly sessionId: string;
 		readonly turnId: string;
@@ -195,6 +201,52 @@ test("loads summaries and lineage in stable order", async (t) => {
 		reopened.loadSessionLineage("child").map((item) => item.sessionId),
 		["root", "child"],
 	);
+});
+
+test("imports legacy conversation only while canonical SQLite data is absent", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+
+	const imported = store.importLegacyConversation({
+		sessionId: "legacy",
+		workspaceRoot: fixture.root,
+		threadId: "legacy",
+		messages: [
+			{ role: "user", content: "hello" },
+			{ role: "assistant", content: "hi" },
+		],
+	});
+	const duplicate = store.importLegacyConversation({
+		sessionId: "legacy",
+		workspaceRoot: fixture.root,
+		threadId: "legacy",
+		messages: [{ role: "user", content: "stale replacement" }],
+	});
+
+	assert.equal(imported, true);
+	assert.equal(duplicate, false);
+	assert.deepEqual(store.loadConversation("legacy"), [
+		{ role: "user", content: "hello" },
+		{ role: "assistant", content: "hi" },
+	]);
+});
+
+test("rolls back an invalid legacy conversation import", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+
+	assert.throws(() => store.importLegacyConversation({
+		sessionId: "legacy",
+		workspaceRoot: fixture.root,
+		threadId: "legacy",
+		messages: [
+			{ role: "user", content: "valid prefix" },
+			{ role: "assistant", content: 42 },
+		],
+	}), /invalid legacy conversation message/u);
+	assert.deepEqual(store.loadConversation("legacy"), []);
 });
 
 test("commits queued history and pending removal exactly once", async (t) => {

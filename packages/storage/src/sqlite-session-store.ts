@@ -36,6 +36,7 @@ import type {
 	CommitQueuedInputsInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
+	ImportLegacyConversationInput,
 	ReserveTurnInput,
 	RuntimeStateKey,
 	SaveStateInput,
@@ -403,6 +404,10 @@ export class SQLiteSessionStore implements SessionStore {
 
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#stateRepository.loadTurnRollouts(sessionId);
+	}
+
+	importLegacyConversation(input: ImportLegacyConversationInput): boolean {
+		return this.#stateRepository.importLegacyConversation(input);
 	}
 
 	loadCommittedQueueIds(sessionId: string): ReadonlySet<string> {

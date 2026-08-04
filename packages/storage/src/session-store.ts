@@ -162,6 +162,13 @@ export interface CommitCompactionInput {
 	readonly checkpoint: Readonly<Record<string, unknown>>;
 }
 
+export interface ImportLegacyConversationInput {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly messages: readonly Readonly<Record<string, unknown>>[];
+}
+
 export interface SessionStateStore {
 	listSessions(query?: SessionListQuery): readonly SessionOverview[];
 	loadSession(sessionId: string): SessionOverview | undefined;
@@ -173,6 +180,7 @@ export interface SessionStateStore {
 	loadSessionSummaries(sessionId: string): readonly string[];
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	importLegacyConversation(input: ImportLegacyConversationInput): boolean;
 	loadCommittedQueueIds(sessionId: string): ReadonlySet<string>;
 	commitQueuedInputs(input: CommitQueuedInputsInput): QueueSnapshot;
 	compareAndSetApproval(input: ApprovalTransitionInput): ApprovalCheckpoint;
@@ -268,7 +276,7 @@ function boundedDiff(value: unknown): string | undefined {
 	return value.split("\n").length <= MAX_MUTATION_DIFF_LINES ? value : undefined;
 }
 
-export interface SessionStore extends SessionStateStore {
+export interface TurnStore {
 	reserveTurn(input: ReserveTurnInput): TurnReservation;
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
@@ -280,6 +288,8 @@ export interface SessionStore extends SessionStateStore {
 	recoverInterruptedTurns(): number;
 	close(): void;
 }
+
+export interface SessionStore extends TurnStore, SessionStateStore {}
 
 type DiagnosticValue = string | number | boolean | null;
 
