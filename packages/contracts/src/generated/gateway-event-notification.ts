@@ -193,11 +193,72 @@ export interface Approval {
   diff?: string;
   diff_chars?: number;
   diff_truncated?: boolean;
-  options: {
-    choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
-    label?: string;
-    [k: string]: any;
-  }[];
+  /**
+   * @maxItems 4
+   */
+  options:
+    | []
+    | [
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        }
+      ]
+    | [
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        },
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        }
+      ]
+    | [
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        },
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        },
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        }
+      ]
+    | [
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        },
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        },
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        },
+        {
+          choice?: "approve_once" | "reject" | "allow_session" | "always_allow";
+          label?: string;
+          [k: string]: any;
+        }
+      ];
+  session_id?: string;
+  generation?: number;
+  checkpoint_status?: "waiting" | "rejected" | "approved" | "executing" | "completed";
   persistent_rule_preview?: string;
   preview: string;
   reason?: string;
@@ -210,6 +271,9 @@ export interface Approval1 {
   choice: "approve_once" | "reject" | "allow_session" | "always_allow";
   client_turn_id?: string;
   decision_id: string;
+  session_id?: string;
+  generation?: number;
+  checkpoint_status?: "waiting" | "rejected" | "approved" | "executing" | "completed";
   [k: string]: any;
 }
 export interface Clarify {
@@ -234,6 +298,10 @@ export interface Compaction {
   after_tokens: number;
   before_tokens: number;
   client_turn_id: string;
+  session_id?: string;
+  generation?: number;
+  checkpoint_id?: string;
+  compacted_item_count?: number;
   duration_s: number;
   max_tokens: number;
   source: string;
@@ -243,6 +311,9 @@ export interface Compaction {
 export interface Compaction1 {
   before_tokens: number;
   client_turn_id: string;
+  session_id?: string;
+  generation?: number;
+  checkpoint_id?: string;
   max_tokens: number;
   source: string;
   [k: string]: any;
@@ -264,7 +335,12 @@ export interface Gateway {
     | "turn_id_mismatch"
     | "active_turn_not_steerable"
     | "input_too_large"
-    | "message_id_conflict";
+    | "message_id_conflict"
+    | "session_not_found"
+    | "session_state_invalid"
+    | "session_state_version_unsupported"
+    | "approval_not_pending"
+    | "approval_conflict";
   data?: {
     [k: string]: any;
   };
@@ -353,6 +429,7 @@ export interface Runtime1 {
 }
 export interface Session {
   session_id: string;
+  generation?: number;
   [k: string]: any;
 }
 export interface Status {
@@ -607,6 +684,11 @@ export interface Turn4 {
   [k: string]: any;
 }
 export interface TurnQueue {
+  session_id?: string;
+  generation?: number;
+  revision?: number;
+  steering_count?: number;
+  follow_up_count?: number;
   activity?: {
     follow_up_count?: number;
     has_pending_input?: boolean;

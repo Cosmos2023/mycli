@@ -17,3 +17,15 @@ for (const fixture of fixtures) {
 		}
 	});
 }
+
+test("Python receives the canonical runtime-state schema byte-for-byte", () => {
+	const canonical = readFileSync(
+		new URL("../schemas/runtime-state.schema.json", import.meta.url),
+		"utf8",
+	);
+	const pythonCopy = readFileSync(
+		new URL("../../../src/mycli/schemas/generated/runtime-state.schema.json", import.meta.url),
+		"utf8",
+	);
+	assert.equal(pythonCopy, canonical);
+});

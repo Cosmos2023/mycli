@@ -30,6 +30,7 @@ const targets = [
 	["json-rpc.schema.json", "json-rpc-message.ts"],
 	["gateway-events.schema.json", "gateway-event-notification.ts"],
 	["runtime-turn.schema.json", "runtime-turn-record.ts"],
+	["runtime-state.schema.json", "runtime-state-record.ts"],
 ];
 
 for (const [schemaName, outputName] of targets) {
@@ -41,7 +42,12 @@ for (const [schemaName, outputName] of targets) {
 	await writeOrCheck(resolve(generatedRoot, outputName), banner + generated, check);
 }
 
-for (const name of ["catalog.json", "gateway-events.schema.json", "runtime-turn.schema.json"]) {
+for (const name of [
+	"catalog.json",
+	"gateway-events.schema.json",
+	"runtime-state.schema.json",
+	"runtime-turn.schema.json",
+]) {
 	const content = await readFile(resolve(schemaRoot, name), "utf8");
 	await writeOrCheck(resolve(pythonRoot, name), content, check);
 }

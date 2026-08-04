@@ -4,11 +4,13 @@ export {
 	parseGatewayContractCatalog,
 	parseGatewayEvent,
 	parseJsonRpcMessage,
+	parseRuntimeState,
 	parseRuntimeTurnRecord,
 } from "./validation.ts";
 export type { GatewayContractCatalog } from "./generated/catalog.ts";
 export type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
 export type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
+export type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
 export type {
 	RuntimeErrorCode,
 	RuntimeTurnRecord,

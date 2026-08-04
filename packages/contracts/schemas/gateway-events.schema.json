@@ -25,6 +25,8 @@
           "type": "string"
         },
         "decision_id": {
+          "maxLength": 256,
+          "minLength": 1,
           "type": "string"
         },
         "diff": {
@@ -37,6 +39,7 @@
           "type": "boolean"
         },
         "options": {
+          "maxItems": 4,
           "items": {
             "properties": {
               "choice": {
@@ -55,6 +58,26 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "checkpoint_status": {
+          "enum": [
+            "waiting",
+            "rejected",
+            "approved",
+            "executing",
+            "completed"
+          ],
+          "type": "string"
         },
         "persistent_rule_preview": {
           "type": "string"
@@ -98,6 +121,28 @@
           "type": "string"
         },
         "decision_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "checkpoint_status": {
+          "enum": [
+            "waiting",
+            "rejected",
+            "approved",
+            "executing",
+            "completed"
+          ],
           "type": "string"
         }
       },
@@ -180,6 +225,26 @@
         "client_turn_id": {
           "type": "string"
         },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "checkpoint_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "compacted_item_count": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
         "duration_s": {
           "type": "number"
         },
@@ -218,6 +283,21 @@
         "client_turn_id": {
           "type": "string"
         },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "checkpoint_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
         "max_tokens": {
           "type": "integer"
         },
@@ -253,7 +333,12 @@
             "turn_id_mismatch",
             "active_turn_not_steerable",
             "input_too_large",
-            "message_id_conflict"
+            "message_id_conflict",
+            "session_not_found",
+            "session_state_invalid",
+            "session_state_version_unsupported",
+            "approval_not_pending",
+            "approval_conflict"
           ],
           "type": "string"
         },
@@ -530,7 +615,14 @@
       "name": "session.changed",
       "properties": {
         "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
           "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "required": [
@@ -1368,6 +1460,31 @@
     "turn.queue.updated": {
       "name": "turn.queue.updated",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "revision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "steering_count": {
+          "maximum": 128,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "follow_up_count": {
+          "maximum": 128,
+          "minimum": 0,
+          "type": "integer"
+        },
         "activity": {
           "properties": {
             "follow_up_count": {

@@ -4,6 +4,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { GatewayContractCatalog } from "./generated/catalog.ts";
 import type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
 import type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
+import type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
 import type { RuntimeTurnRecord } from "./generated/runtime-turn-record.ts";
 
 const ajv = new Ajv2020({
@@ -22,6 +23,7 @@ function compile(name: string): ValidateFunction {
 const validateCatalog = compile("catalog.schema.json");
 const validateGatewayEvent = compile("gateway-events.schema.json");
 const validateJsonRpcMessage = compile("json-rpc.schema.json");
+const validateRuntimeState = compile("runtime-state.schema.json");
 const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
 
 export class ContractValidationError extends Error {
@@ -55,4 +57,19 @@ export function parseJsonRpcMessage(value: unknown): JsonRpcMessage {
 
 export function parseRuntimeTurnRecord(value: unknown): RuntimeTurnRecord {
 	return parse(value, validateRuntimeTurnRecord, "runtime turn record");
+}
+
+export function parseRuntimeState(value: unknown): RuntimeStateRecord {
+	const state = parse<RuntimeStateRecord>(value, validateRuntimeState, "runtime state");
+	if (state.kind === "input_queue") {
+		const records = [
+			...state.payload.pending_steers,
+			...state.payload.rejected_steers,
+			...state.payload.follow_ups,
+		];
+		if (records.some((record) => record.session_id !== state.payload.session_id)) {
+			throw new ContractValidationError("Invalid runtime state: queue session mismatch.");
+		}
+	}
+	return state;
 }

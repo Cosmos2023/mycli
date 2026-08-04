@@ -10,3 +10,15 @@ test("catalog exposes the versioned current gateway surface", () => {
 	assert.ok(gatewayContractCatalog.eventStreams.includes("runtime.ready"));
 	assert.ok(gatewayContractCatalog.errorCodes.includes("incompatible_protocol"));
 });
+
+test("catalog exposes M5 session and approval failures", () => {
+	for (const code of [
+		"session_not_found",
+		"session_state_invalid",
+		"session_state_version_unsupported",
+		"approval_not_pending",
+		"approval_conflict",
+	]) {
+		assert.ok(gatewayContractCatalog.errorCodes.includes(code), code);
+	}
+});
