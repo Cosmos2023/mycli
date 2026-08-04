@@ -87,7 +87,7 @@ test("surfaces a provider tool call without executing it", async () => {
 	}]);
 });
 
-test("serializes optional Read parameters without strict mode", async () => {
+test("serializes optional file-tool parameters without strict mode", async () => {
 	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
 	assert.equal(typeof ResponsesProvider, "function");
 	let capturedRequest: Record<string, unknown> | undefined;
@@ -102,12 +102,13 @@ test("serializes optional Read parameters without strict mode", async () => {
 		signal: new AbortController().signal,
 	}));
 
-	assert.deepEqual(capturedRequest?.tools, [{
+	assert.deepEqual(capturedRequest?.tools, FILE_TOOLS.map((tool) => ({
 		type: "function",
-		name: "Read",
-		description: READ_TOOL.description,
-		parameters: READ_TOOL.inputSchema,
-	}]);
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.inputSchema,
+	})));
+	assert.equal(JSON.stringify(capturedRequest?.tools).includes("strict"), false);
 	assert.deepEqual(capturedRequest?.input, [{ role: "user", content: "Read README.md" }]);
 	assert.equal("previous_response_id" in (capturedRequest ?? {}), false);
 });
@@ -276,12 +277,50 @@ const READ_TOOL: ToolDefinition = {
 	},
 };
 
+const EDIT_TOOL = exactReplacementTool("Edit");
+const PATCH_TOOL = exactReplacementTool("Patch");
+const WRITE_TOOL: ToolDefinition = {
+	id: "builtin:Write",
+	name: "Write",
+	description: "Write complete UTF-8 text content to a workspace file.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			file_path: { type: "string" },
+			content: { type: "string" },
+			expected_sha256: { type: "string" },
+		},
+		required: ["file_path", "content"],
+		additionalProperties: false,
+	},
+};
+const FILE_TOOLS = [READ_TOOL, EDIT_TOOL, PATCH_TOOL, WRITE_TOOL] as const;
+
 function toolRequest(): ProviderRequest {
 	return {
 		...request(),
 		messages: [{ role: "user", content: "Read README.md" }],
 		items: [{ type: "user", text: "Read README.md" }],
-		tools: [READ_TOOL],
+		tools: FILE_TOOLS,
+	};
+}
+
+function exactReplacementTool(name: "Edit" | "Patch"): ToolDefinition {
+	return {
+		id: `builtin:${name}`,
+		name,
+		description: `${name} a recently read workspace file.`,
+		inputSchema: {
+			type: "object",
+			properties: {
+				file_path: { type: "string" },
+				old_string: { type: "string" },
+				new_string: { type: "string" },
+				replace_all: { type: "boolean" },
+			},
+			required: ["file_path", "old_string", "new_string"],
+			additionalProperties: false,
+		},
 	};
 }
 

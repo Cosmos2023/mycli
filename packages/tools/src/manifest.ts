@@ -62,6 +62,41 @@ export const WRITE_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	},
 });
 
+const EXACT_REPLACE_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
+	{ name: "file_path", type: "string", required: true },
+	{ name: "old_string", type: "string", required: true },
+	{ name: "new_string", type: "string", required: true },
+	{ name: "replace_all", type: "boolean", required: false },
+]);
+
+const EXACT_REPLACE_INPUT_SCHEMA = deepFreeze({
+	type: "object",
+	properties: Object.fromEntries(EXACT_REPLACE_PARAMETERS.map((parameter) => [
+		parameter.name,
+		parameter.name === "file_path"
+			? { type: parameter.type, minLength: 1 }
+			: { type: parameter.type },
+	])),
+	required: EXACT_REPLACE_PARAMETERS
+		.filter((parameter) => parameter.required)
+		.map((parameter) => parameter.name),
+	additionalProperties: false,
+});
+
+export const EDIT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
+	id: "builtin:Edit",
+	name: "Edit",
+	description: "Apply an exact old_string/new_string edit to a recently read workspace file.",
+	inputSchema: EXACT_REPLACE_INPUT_SCHEMA,
+});
+
+export const PATCH_TOOL_DEFINITION: ToolDefinition = deepFreeze({
+	id: "builtin:Patch",
+	name: "Patch",
+	description: "Apply an exact replacement patch to a recently read workspace file.",
+	inputSchema: EXACT_REPLACE_INPUT_SCHEMA,
+});
+
 const READ_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	...READ_TOOL_DEFINITION,
 	source: "builtin",
@@ -75,11 +110,50 @@ const READ_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	availability: { status: "available" },
 });
 
+const EDIT_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
+	...EDIT_TOOL_DEFINITION,
+	source: "builtin",
+	toolset: "file",
+	parameters: EXACT_REPLACE_PARAMETERS,
+	risk_level: "medium",
+	supports_parallel_tool_calls: false,
+	approval_policy: "auto_allow_or_request",
+	capability_tags: ["file", "edit", "mutation", "snapshot_guard", "diff"],
+	effects: { filesystem: "write", network: false, process: false },
+	availability: { status: "available" },
+});
+
+const PATCH_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
+	...PATCH_TOOL_DEFINITION,
+	source: "builtin",
+	toolset: "file",
+	parameters: EXACT_REPLACE_PARAMETERS,
+	risk_level: "medium",
+	supports_parallel_tool_calls: false,
+	approval_policy: "auto_allow_or_request",
+	capability_tags: ["file", "patch", "mutation", "snapshot_guard", "diff"],
+	effects: { filesystem: "write", network: false, process: false },
+	availability: { status: "available" },
+});
+
+const WRITE_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
+	...WRITE_TOOL_DEFINITION,
+	source: "builtin",
+	toolset: "file",
+	parameters: WRITE_PARAMETERS,
+	risk_level: "medium",
+	supports_parallel_tool_calls: false,
+	approval_policy: "auto_allow_or_request",
+	capability_tags: ["file", "write", "mutation", "conflict_guard", "diff"],
+	effects: { filesystem: "write", network: false, process: false },
+	availability: { status: "available" },
+});
+
 const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 	schema_version: 1,
 	source: "builtin",
-	toolsets: [{ id: "file", tool_count: 1 }],
-	tools: [READ_MANIFEST_ENTRY],
+	toolsets: [{ id: "file", tool_count: 4 }],
+	tools: [READ_MANIFEST_ENTRY, EDIT_MANIFEST_ENTRY, PATCH_MANIFEST_ENTRY, WRITE_MANIFEST_ENTRY],
 });
 
 export function builtinToolManifest(): BuiltInToolManifest {

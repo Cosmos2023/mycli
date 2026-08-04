@@ -91,7 +91,7 @@ test("rejects a Chat stream that ends without a finish reason", async () => {
 	);
 });
 
-test("serializes optional Read parameters without strict mode for Chat continuation", async () => {
+test("serializes optional file-tool parameters without strict mode for Chat continuation", async () => {
 	const ChatProvider = Reflect.get(providers, "ChatProvider") as ChatProviderConstructor | undefined;
 	assert.equal(typeof ChatProvider, "function");
 	let capturedRequest: Record<string, unknown> | undefined;
@@ -109,14 +109,15 @@ test("serializes optional Read parameters without strict mode for Chat continuat
 		signal: new AbortController().signal,
 	}));
 
-	assert.deepEqual(capturedRequest?.tools, [{
+	assert.deepEqual(capturedRequest?.tools, FILE_TOOLS.map((tool) => ({
 		type: "function",
 		function: {
-			name: "Read",
-			description: READ_TOOL.description,
-			parameters: READ_TOOL.inputSchema,
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.inputSchema,
 		},
-	}]);
+	})));
+	assert.equal(JSON.stringify(capturedRequest?.tools).includes("strict"), false);
 	assert.deepEqual(capturedRequest?.messages, [
 		{ role: "system", content: "You are mycli." },
 		{ role: "user", content: "Read README.md" },
@@ -131,6 +132,39 @@ test("serializes optional Read parameters without strict mode for Chat continuat
 		},
 		{ role: "tool", tool_call_id: "call-1", content: READ_OUTPUT },
 	]);
+});
+
+test("decodes an Edit tool call with its provider call id", async () => {
+	const ChatProvider = Reflect.get(providers, "ChatProvider") as ChatProviderConstructor | undefined;
+	assert.equal(typeof ChatProvider, "function");
+	const client: ChatCompletionsClient = {
+		create: async () => events([{
+			id: "chatcmpl-edit",
+			choices: [{
+				index: 0,
+				delta: { tool_calls: [{
+					index: 0,
+					id: "call-edit",
+					function: {
+						name: "Edit",
+						arguments: "{\"file_path\":\"a.ts\",\"old_string\":\"1\",\"new_string\":\"2\"}",
+					},
+				}] },
+				finish_reason: "tool_calls",
+			}],
+		}]),
+	};
+
+	const result = await collect(new ChatProvider!({ client }).stream(toolRequest(), {
+		signal: new AbortController().signal,
+	}));
+
+	assert.deepEqual(result[0], {
+		type: "tool_call",
+		callId: "call-edit",
+		name: "Edit",
+		argumentsJson: "{\"file_path\":\"a.ts\",\"old_string\":\"1\",\"new_string\":\"2\"}",
+	});
 });
 
 test("rejects a completed Chat tool call without a call id", async () => {
@@ -207,6 +241,25 @@ const READ_TOOL: ToolDefinition = {
 	},
 };
 
+const EDIT_TOOL = exactReplacementTool("Edit");
+const PATCH_TOOL = exactReplacementTool("Patch");
+const WRITE_TOOL: ToolDefinition = {
+	id: "builtin:Write",
+	name: "Write",
+	description: "Write complete UTF-8 text content to a workspace file.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			file_path: { type: "string" },
+			content: { type: "string" },
+			expected_sha256: { type: "string" },
+		},
+		required: ["file_path", "content"],
+		additionalProperties: false,
+	},
+};
+const FILE_TOOLS = [READ_TOOL, EDIT_TOOL, PATCH_TOOL, WRITE_TOOL] as const;
+
 function toolRequest(): ProviderRequest {
 	return {
 		...request(),
@@ -226,6 +279,25 @@ function toolRequest(): ProviderRequest {
 				success: true,
 			},
 		],
-		tools: [READ_TOOL],
+		tools: FILE_TOOLS,
+	};
+}
+
+function exactReplacementTool(name: "Edit" | "Patch"): ToolDefinition {
+	return {
+		id: `builtin:${name}`,
+		name,
+		description: `${name} a recently read workspace file.`,
+		inputSchema: {
+			type: "object",
+			properties: {
+				file_path: { type: "string" },
+				old_string: { type: "string" },
+				new_string: { type: "string" },
+				replace_all: { type: "boolean" },
+			},
+			required: ["file_path", "old_string", "new_string"],
+			additionalProperties: false,
+		},
 	};
 }

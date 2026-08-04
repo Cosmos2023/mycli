@@ -1,5 +1,7 @@
 export {
 	builtinToolManifest,
+	EDIT_TOOL_DEFINITION,
+	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
@@ -23,6 +25,8 @@ export {
 	mutationFailure,
 	mutationSuccess,
 } from "./mutation-result.ts";
+export { EditTool } from "./edit-tool.ts";
+export { PatchTool } from "./patch-tool.ts";
 export type {
 	MutationStatus,
 	MutationToolName,
