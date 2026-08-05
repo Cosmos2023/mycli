@@ -60,3 +60,27 @@ test("rejects duplicate manifest ids and provider routes", () => {
 		/duplicate_tool_route/,
 	);
 });
+
+test("projects one stable Skill route instead of one route per discovered skill", () => {
+	const combined = combinedToolManifest(builtinToolManifest(), [{
+		id: "skill:Skill",
+		source: "skill",
+		definition: {
+			id: "skill:Skill",
+			name: "Skill",
+			description: "Load one discovered skill.",
+			inputSchema: {
+				type: "object",
+				properties: { name: { type: "string" } },
+				required: ["name"],
+				additionalProperties: false,
+			},
+		},
+		originMetadata: { skill: "catalog" },
+	}]);
+
+	assert.deepEqual(
+		combined.tools.filter((tool) => tool.source === "skill").map((tool) => tool.name),
+		["Skill"],
+	);
+});

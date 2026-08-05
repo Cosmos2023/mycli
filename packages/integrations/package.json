@@ -21,7 +21,9 @@
     "@mycli/contracts": "0.1.0",
     "@mycli/core": "0.1.0",
     "@mycli/storage": "0.1.0",
-    "@mycli/tools": "0.1.0"
+    "@mycli/tools": "0.1.0",
+    "smol-toml": "^1.7.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "tsx": "^4.22.4",

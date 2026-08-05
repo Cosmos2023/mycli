@@ -17,3 +17,21 @@ export type {
 } from "./foundation/lifecycle.ts";
 export { defineIntegrationRegistration } from "./foundation/registration.ts";
 export type { IntegrationRegistration } from "./foundation/registration.ts";
+export { renderSkillCatalog } from "./skills/catalog.ts";
+export type { RenderSkillCatalogOptions } from "./skills/catalog.ts";
+export { SkillRegistry } from "./skills/registry.ts";
+export type { SkillRegistryOptions } from "./skills/registry.ts";
+export {
+	createSkillToolRegistration,
+	SKILL_TOOL_DEFINITION,
+	skillInvocationArtifactFromMetadata,
+	SkillTool,
+} from "./skills/skill-tool.ts";
+export type { SkillToolOptions } from "./skills/skill-tool.ts";
+export type {
+	SkillDefinition,
+	SkillDiagnosticIssue,
+	SkillInvocationArtifact,
+	SkillRegistryDiagnostics,
+	SkillSourceKind,
+} from "./skills/types.ts";
