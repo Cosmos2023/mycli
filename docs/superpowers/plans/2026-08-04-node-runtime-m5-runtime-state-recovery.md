@@ -805,6 +805,7 @@ git commit -m "feat(node-runtime): compact recoverable session context"
 
 **Files:**
 - Create: `packages/runtime/src/memory-store.ts`
+- Create: `packages/runtime/src/memory-ordering.ts`
 - Create: `packages/runtime/src/memory-selector.ts`
 - Create: `packages/runtime/src/memory-context-service.ts`
 - Modify: `packages/runtime/src/index.ts`
@@ -813,7 +814,7 @@ git commit -m "feat(node-runtime): compact recoverable session context"
 - Test: `packages/runtime/test/memory-selector.test.ts`
 - Test: `packages/runtime/test/memory-context-service.test.ts`
 
-- [ ] **Step 1: Write failing memory layout, bounds, and escape tests**
+- [x] **Step 1: Write failing memory layout, bounds, and escape tests**
 
 ```ts
 test("derives the Python-compatible memory directory from the real workspace", async (t) => {
@@ -835,7 +836,7 @@ Cover 200 topics, 200/25,000 index bounds, 30-line frontmatter, valid kinds, UTF
 atomic topic/index writes, temp cleanup, exact forget, bounded relevant forget, and no secret body
 logging.
 
-- [ ] **Step 2: Write failing selection, fallback, and injection tests**
+- [x] **Step 2: Write failing selection, fallback, and injection tests**
 
 ```ts
 test("falls back to deterministic local selection on invalid model JSON", async () => {
@@ -854,7 +855,7 @@ test("deduplicates file memory and session summaries", async () => {
 Assert no selector call for empty memory/query, at most five validated filenames, disabled mode,
 bounded token injection, and memory fragments absent from canonical history.
 
-- [ ] **Step 3: Write failing explicit remember/forget tests**
+- [x] **Step 3: Write failing explicit remember/forget tests**
 
 ```ts
 test("handles explicit remember only after a successful turn", async () => {
@@ -866,13 +867,13 @@ test("handles explicit remember only after a successful turn", async () => {
 });
 ```
 
-- [ ] **Step 4: Run memory tests and verify missing modules**
+- [x] **Step 4: Run memory tests and verify missing modules**
 
 Run: `node --import tsx --test packages/runtime/test/memory-store.test.ts packages/runtime/test/memory-selector.test.ts packages/runtime/test/memory-context-service.test.ts`
 
 Expected: FAIL because the memory modules do not exist.
 
-- [ ] **Step 5: Implement the dedicated memory adapter and selector**
+- [x] **Step 5: Implement the dedicated memory adapter and selector**
 
 ```ts
 export interface MemoryRecord {
@@ -888,13 +889,13 @@ model-returned paths to filesystem APIs, write sibling temp files with sync/rena
 the Python weighted token/recency fallback. Use the existing provider interface for JSON-only model
 selection and cap output at 512 tokens.
 
-- [ ] **Step 6: Integrate summaries, request fragments, and explicit actions**
+- [x] **Step 6: Integrate summaries, request fragments, and explicit actions**
 
 Load summaries through `SessionStore`, dedupe normalized triples, inject bounded memory after
 rehydration and before fresh input, then perform direct explicit remember/forget only after a
 successful terminal turn. Do not create background jobs or subagents.
 
-- [ ] **Step 7: Run runtime memory tests and typecheck**
+- [x] **Step 7: Run runtime memory tests and typecheck**
 
 Run: `npm run test --workspace @mycli/runtime && npm run typecheck --workspace @mycli/runtime`
 

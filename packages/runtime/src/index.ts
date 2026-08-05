@@ -45,6 +45,45 @@ export type {
 export { fallbackTokenEstimate, TokenCounter } from "./token-counter.ts";
 export type { TokenCounterOptions, TokenEncoder } from "./token-counter.ts";
 export {
+	MemoryStore,
+	MemoryStoreError,
+} from "./memory-store.ts";
+export type {
+	EntrypointContent,
+	FileMemory,
+	FileMemoryKind,
+	ForgetMemoryResult,
+	MemoryAtomicFileHandle,
+	MemoryAtomicOperations,
+	MemoryStoreErrorKind,
+	MemoryStoreOptions,
+	RememberMemoryInput,
+} from "./memory-store.ts";
+export {
+	deterministicMemorySelection,
+	MemorySelector,
+} from "./memory-selector.ts";
+export type {
+	MemorySelectionContract,
+	MemorySelectionOptions,
+	MemorySelectorOptions,
+} from "./memory-selector.ts";
+export {
+	extractExplicitMemoryRequest,
+	MemoryContextService,
+} from "./memory-context-service.ts";
+export type {
+	ExplicitMemoryActionInput,
+	ExplicitMemoryRequest,
+	MemoryContextInput,
+	MemoryContextResult,
+	MemoryContextServiceContract,
+	MemoryContextServiceOptions,
+	MemoryRecord,
+	MemoryRecordKind,
+	MemoryStoreContract,
+} from "./memory-context-service.ts";
+export {
 	CompactionCoordinator,
 	summarizeCompactionWithProvider,
 } from "./compaction-coordinator.ts";

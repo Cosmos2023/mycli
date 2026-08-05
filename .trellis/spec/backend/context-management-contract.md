@@ -1158,3 +1158,107 @@ chat_message = sanitize_provider_private(chat_message)
 - Unit test recursive tool-call argument truncation keeps dict/list structure.
 - Existing compaction transcript validity and cache stability regression tests
   must pass.
+
+## Scenario: Node Workspace Memory Projection And Mutation
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node workspace memory discovery, selection, context
+  projection, explicit remember/forget actions, or memory-file mutation safety.
+- The flow crosses `MemoryStore`, `MemorySelector`, `MemoryContextService`,
+  `SessionStateStore`, `NodeTurnRuntime`, and provider request projection.
+
+### 2. Signatures
+
+- Store:
+  `MemoryStore({ homeDir, workspaceRoot, ...lockOptions })`
+- Selection:
+  `MemorySelector.select(query, memories, { limit, signal? })`
+- Context:
+  `MemoryContextService.collect({ userMessage, sessionId, enabled, signal? })`
+- Explicit action:
+  `MemoryContextService.applyExplicitActions({ userMessage, enabled })`
+- Runtime injection:
+  `NodeTurnRuntimeOptions.memoryContextService?: MemoryContextServiceContract`
+
+### 3. Contracts
+
+- Memory is rooted at
+  `~/.mycli/projects/<python-compatible-real-workspace-key>/memory`.
+- `MEMORY.md` and topic reads use strict UTF-8 and realpath confinement. Model
+  selected filenames are resolved only through the in-memory scan allowlist.
+- Topic and index writes use synced sibling temporary files and atomic rename.
+  A directory-scoped lock serializes remember/forget read-modify-write sequences
+  across runtime instances and processes.
+- Lock release, stale-lock recovery, and failed-write cleanup require matching
+  ownership metadata and file identity. If ownership cannot be proved after a
+  path swap, cleanup leaves the file in place rather than unlinking an unrelated
+  path.
+- Selector fallback uses Python-compatible token weights, recency, and Unicode
+  code-point filename ordering. Provider selection has no tools, is capped at
+  512 output tokens, and receives the active turn abort signal.
+- File memory is omitted when the current request says `ignore memory`,
+  `do not use memory`, or `not use memory`; session summaries remain eligible.
+- Provider-visible memory is token-bounded, fenced as reference content, placed
+  after compaction rehydration and before fresh input, and never persisted into
+  canonical history.
+- Explicit remember/forget runs only after durable successful turn completion.
+
+### 4. Validation & Error Matrix
+
+- Escaping topic or `MEMORY.md` symlink -> `memory_path_escape`; no body in the
+  error or diagnostics.
+- Invalid UTF-8 -> `memory_invalid_utf8` with bounded filename metadata only.
+- Live directory lock past bounded wait -> `memory_write_failed` with
+  `operation=memory_lock_timeout`; the other owner's lock remains unchanged.
+- Old lock with a live PID -> do not steal; time out normally.
+- Old lock with a dead PID and matching identity -> remove and retry.
+- Root swap during write/cleanup -> fail closed and never unlink the new
+  external same-name file.
+- Selector provider/JSON/empty-selection failure -> deterministic local
+  fallback; an empty query or memory set makes no selector provider request.
+- Disabled memory -> no scan, summary load, selector request, injection, or
+  explicit mutation.
+
+### 5. Good/Base/Bad Cases
+
+- Good: twelve runtime instances remember the same title concurrently and
+  produce twelve unique topics plus twelve `MEMORY.md` entries.
+- Good: context includes a fenced session summary but omits file memory after an
+  explicit `ignore memory` request.
+- Base: an empty memory directory produces no memory fragment and no failure.
+- Bad: trusting a model-returned relative path, following an escaping entrypoint
+  symlink, or unlinking a lexical cleanup path after its parent was swapped.
+
+### 6. Tests Required
+
+- Unit tests for workspace-key parity, 200-topic discovery, entrypoint
+  line/byte bounds, frontmatter bounds, strict UTF-8, and valid kinds.
+- Symlink tests for topics, `MEMORY.md`, root swaps before rename, and
+  ownership-safe cleanup after rename.
+- Concurrent same-instance and multi-instance remember tests asserting unique
+  topics and complete index entries.
+- Lock tests for dead stale recovery, live-owner timeout, and old live-owner
+  preservation.
+- Selector tests for JSON validation, allowlisting, five-file bounds, Python
+  ordering, deterministic fallback, and AbortSignal propagation.
+- Runtime tests for placement after rehydration, absence from durable history,
+  disabled/failed/interrupted behavior, and post-success explicit actions.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const selectedPath = join(memoryRoot, modelFilename);
+await readFile(selectedPath);
+await unlink(topicPath); // lexical path may now point outside the owned root
+```
+
+#### Correct
+
+```ts
+const selected = scannedByFilename.get(modelFilename);
+await withDirectoryLock(async () => updateMemory(selected));
+await unlinkOnlyWhenContainedAndIdentityMatches(ownedFile);
+```

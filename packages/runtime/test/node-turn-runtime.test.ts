@@ -39,9 +39,109 @@ import {
 	type CompactInput,
 	type CompactionCoordinatorContract,
 	type CompactionResult,
+	type MemoryContextServiceContract,
 	type NodeTurnRuntimeOptions,
 	type QueueCoordinatorStore,
 } from "../src/index.ts";
+
+test("injects dynamic memory after compaction and before fresh input without persisting it", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "text_delta", text: "done" },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const compacted: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "[compact-summary]\nEarlier work." },
+		{ type: "user", text: "Read README.md" },
+	];
+	const memory = memoryContextFixture(trace);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: new ScriptedCompactionCoordinator(trace, [
+			compactionResult("compressed", compacted),
+		]),
+		memoryContextService: memory.service,
+	});
+
+	const signal = new AbortController().signal;
+	const result = await runtime.submit(submission(), () => {}, { signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(requests[0]?.items, [
+		{ type: "user", text: "[compact-summary]\nEarlier work." },
+		{ type: "user", text: "<memory-reference>\nnot current input\n</memory-reference>" },
+		{ type: "user", text: "Read README.md" },
+	]);
+	assert.equal(store.items.some((item) => item.type === "user" && item.text.includes("memory-reference")), false);
+	assert.deepEqual(memory.actions, ["Read README.md"]);
+	assert.equal(memory.collectSignals[0], signal);
+	assert.equal(trace.indexOf("complete") < trace.indexOf("memory:action"), true);
+});
+
+test("memory_enabled=false bypasses runtime collection and explicit actions", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[{ type: "completed", responseId: "resp-final" }]]);
+	const memory = memoryContextFixture(trace);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		memoryContextService: memory.service,
+		runtimeConfig: config({ memoryEnabled: false }),
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(memory.collectCalls, 0);
+	assert.deepEqual(memory.actions, []);
+});
+
+test("failed turns do not run explicit memory actions", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const memory = memoryContextFixture(trace);
+	const provider: ModelProvider = {
+		stream: async function* () {
+			yield await Promise.reject<ProviderEvent>(
+				new ProviderFailure({ code: "provider_error", message: "failed" }),
+			);
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		memoryContextService: memory.service,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "failed");
+	assert.deepEqual(memory.actions, []);
+});
+
+test("memory action failures do not rewrite an already completed provider turn", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[{ type: "completed", responseId: "resp-final" }]]);
+	const memory = memoryContextFixture(trace, true);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		memoryContextService: memory.service,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(memory.actions, ["Read README.md"]);
+	assert.equal(trace.filter((event) => event === "complete").length, 1);
+	assert.equal(trace.includes("fail"), false);
+});
 
 test("persists and executes Read before continuing the same Responses turn", async () => {
 	const trace: string[] = [];
@@ -923,6 +1023,8 @@ function createRuntime(options: {
 	readonly toolDefinitions?: readonly ToolDefinition[];
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
+	readonly memoryContextService?: MemoryContextServiceContract;
+	readonly runtimeConfig?: NodeRuntimeConfig;
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
 		sessionId: "session-1",
@@ -930,7 +1032,7 @@ function createRuntime(options: {
 		threadId: "session-1",
 		instructions: "You are mycli.",
 		store: options.store,
-		resolveConfig: () => config(),
+		resolveConfig: () => options.runtimeConfig ?? config(),
 		createProvider: () => options.provider,
 		createTurnId: () => "turn-1",
 		clock: clockSequence(),
@@ -948,7 +1050,45 @@ function createRuntime(options: {
 		...(options.createCompactionCoordinator ? {
 			createCompactionCoordinator: options.createCompactionCoordinator,
 		} : {}),
+		...(options.memoryContextService ? {
+			memoryContextService: options.memoryContextService,
+		} : {}),
 	});
+}
+
+function memoryContextFixture(trace: string[], failAction = false): {
+	readonly service: MemoryContextServiceContract;
+	readonly actions: string[];
+	readonly collectCalls: number;
+	readonly collectSignals: (AbortSignal | undefined)[];
+} {
+	const state = {
+		collectCalls: 0,
+		actions: [] as string[],
+		collectSignals: [] as (AbortSignal | undefined)[],
+	};
+	return {
+		get collectCalls() { return state.collectCalls; },
+		actions: state.actions,
+		collectSignals: state.collectSignals,
+		service: {
+			collect: async (input) => {
+				state.collectCalls += 1;
+				state.collectSignals.push(input.signal);
+				trace.push("memory:collect");
+				return {
+					records: [],
+					item: { type: "user", text: "<memory-reference>\nnot current input\n</memory-reference>" },
+				};
+			},
+			applyExplicitActions: async ({ userMessage }) => {
+				state.actions.push(userMessage);
+				trace.push("memory:action");
+				if (failAction) throw new Error("memory body must stay private");
+				return [];
+			},
+		},
+	};
 }
 
 class ScriptedCompactionCoordinator implements CompactionCoordinatorContract {
@@ -1320,7 +1460,7 @@ function submission() {
 	return { clientTurnId: "client-1", message: "Read README.md" };
 }
 
-function config(): NodeRuntimeConfig {
+function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 	return {
 		...NODE_RUNTIME_CONTEXT_DEFAULTS,
 		workspaceRoot: "/workspace",
@@ -1339,6 +1479,7 @@ function config(): NodeRuntimeConfig {
 		reasoningEffort: "medium",
 		thinkingEnabled: true,
 		promptCacheKeyEnabled: true,
+		...overrides,
 	};
 }
 

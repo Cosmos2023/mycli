@@ -43,6 +43,7 @@ import type {
 	CompactInput,
 	CompactionResult,
 } from "./compaction-coordinator.ts";
+import type { MemoryContextServiceContract } from "./memory-context-service.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -78,6 +79,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly createCompactionCoordinator?: (
 		config: NodeRuntimeConfig,
 	) => CompactionCoordinatorContract;
+	readonly memoryContextService?: MemoryContextServiceContract;
 }
 
 export interface CompactionCoordinatorContract {
@@ -439,10 +441,11 @@ export class NodeTurnRuntime {
 					previousResponseId = undefined;
 				}
 			}
+			const providerHistory = await this.#providerHistoryWithMemory(context, history);
 			const request = projectProviderRequest({
 				config: requestConfig,
 				instructions: this.#options.instructions,
-				history,
+				history: providerHistory,
 				tools,
 				...(previousResponseId ? { previousResponseId } : {}),
 			});
@@ -506,13 +509,14 @@ export class NodeTurnRuntime {
 						emit,
 					);
 				}
-				return this.#completeTurn(
+				return await this.#completeTurn(
 					submission,
 					stepResult.assistantText,
 					accumulatedUsage,
 					stepResult.responseId,
 					emit,
 					signal,
+					config.memoryEnabled,
 				);
 			}
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
@@ -577,6 +581,30 @@ export class NodeTurnRuntime {
 			emit: context.emit,
 			signal: context.signal,
 		});
+	}
+
+	async #providerHistoryWithMemory(
+		context: TurnExecutionContext,
+		history: readonly CanonicalConversationItem[],
+	): Promise<readonly CanonicalConversationItem[]> {
+		const service = this.#options.memoryContextService;
+		if (!service || !context.config.memoryEnabled) return history;
+		try {
+			const memory = await service.collect({
+				userMessage: context.submission.message,
+				sessionId: this.#options.sessionId,
+				enabled: true,
+				signal: context.signal,
+			});
+			if (!memory.item) return history;
+			return insertMemoryBeforeCurrentInput(
+				history,
+				memory.item,
+				context.submission.message,
+			);
+		} catch {
+			return history;
+		}
 	}
 
 	async #processToolBatch(
@@ -819,14 +847,15 @@ export class NodeTurnRuntime {
 		return conversation;
 	}
 
-	#completeTurn(
+	async #completeTurn(
 		submission: TurnSubmission,
 		assistantText: string,
 		usage: ProviderUsage,
 		responseId: string | undefined,
 		emit: (event: RuntimeEvent) => void,
 		signal: AbortSignal,
-	): RuntimeTurnRecord {
+		memoryEnabled: boolean,
+	): Promise<RuntimeTurnRecord> {
 		try {
 			assertNotAborted(signal);
 			const completed = this.#options.store.completeTurn({
@@ -838,6 +867,16 @@ export class NodeTurnRuntime {
 				completedAt: this.#options.clock(),
 			});
 			emit({ type: "turn_completed", assistantText, usage });
+			if (memoryEnabled && this.#options.memoryContextService) {
+				try {
+					await this.#options.memoryContextService.applyExplicitActions({
+						userMessage: submission.message,
+						enabled: true,
+					});
+				} catch {
+					// Memory is auxiliary and cannot rewrite an already completed turn.
+				}
+			}
 			return completed;
 		} catch (error) {
 			return this.#finalizeFailure(
@@ -912,6 +951,30 @@ function normalizeFailure(
 		};
 	}
 	return { code: fallbackCode, message: publicMessage(fallbackCode), retryable: false };
+}
+
+function insertMemoryBeforeCurrentInput(
+	history: readonly CanonicalConversationItem[],
+	memory: Extract<CanonicalConversationItem, { readonly type: "user" }>,
+	currentInput: string,
+): readonly CanonicalConversationItem[] {
+	let insertionIndex = -1;
+	for (let index = history.length - 1; index >= 0; index -= 1) {
+		const item = history[index];
+		if (item?.type === "user" && item.text === currentInput) {
+			insertionIndex = index;
+			break;
+		}
+	}
+	if (insertionIndex < 0) {
+		insertionIndex = history.findLastIndex((item) => item.type === "user");
+	}
+	if (insertionIndex < 0) return history;
+	return Object.freeze([
+		...history.slice(0, insertionIndex),
+		Object.freeze({ ...memory }),
+		...history.slice(insertionIndex),
+	]);
 }
 
 function publicMessage(code: RuntimeErrorCode): string {
