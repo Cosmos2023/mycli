@@ -3,6 +3,7 @@ import type {
 	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
+import type { ExecutionPolicy } from "./execution-policy.ts";
 
 export interface ToolEffectProfile {
 	readonly filesystem: "none" | "read" | "write";
@@ -45,6 +46,7 @@ export interface ToolExecutionOptions {
 	readonly ownerSessionId: string;
 	readonly callId: string;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
+	readonly executionPolicy?: ExecutionPolicy;
 }
 
 export interface ToolExecutionResult {

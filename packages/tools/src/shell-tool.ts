@@ -7,6 +7,16 @@ import {
 	sep,
 } from "node:path";
 import { formatShellResult } from "./shell-result.ts";
+import {
+	createShellEnvironment,
+	type ShellEnvironmentResult,
+} from "./shell-environment.ts";
+import {
+	prepareSandboxedProcess,
+	ProcessSandboxError,
+	type ProcessSandboxProbes,
+	type SandboxedProcessLaunch,
+} from "./process-sandbox.ts";
 import type {
 	ShellSessionSnapshot,
 	ShellStartRequest,
@@ -46,6 +56,7 @@ export interface ShellToolOptions {
 	readonly rows?: number;
 	readonly columns?: number;
 	readonly createChunkId?: () => string;
+	readonly processSandboxProbes?: ProcessSandboxProbes;
 }
 
 interface ShellInvocation {
@@ -70,6 +81,7 @@ export class ShellTool implements ToolAdapter {
 	readonly #rows: number;
 	readonly #columns: number;
 	readonly #createChunkId: () => string;
+	readonly #processSandboxProbes: ProcessSandboxProbes;
 
 	constructor(options: ShellToolOptions) {
 		if (!options.workspaceRoot.trim()) throw new TypeError("workspaceRoot must be non-empty");
@@ -93,6 +105,7 @@ export class ShellTool implements ToolAdapter {
 		this.#rows = positiveInteger(options.rows ?? DEFAULT_ROWS, "rows");
 		this.#columns = positiveInteger(options.columns ?? DEFAULT_COLUMNS, "columns");
 		this.#createChunkId = options.createChunkId ?? defaultChunkId;
+		this.#processSandboxProbes = Object.freeze({ ...options.processSandboxProbes });
 	}
 
 	async execute(
@@ -160,14 +173,38 @@ export class ShellTool implements ToolAdapter {
 	): Promise<ToolAdapterResult> {
 		const cwd = await resolveShellCwd(this.#workspaceRoot, invocation.cwd);
 		if (typeof cwd !== "string") return cwd;
+		if (!options.executionPolicy) {
+			return shellFailure("sandbox_unavailable", "Shell execution policy is unavailable.");
+		}
+		let launch: SandboxedProcessLaunch;
+		let environment: ShellEnvironmentResult;
+		try {
+			environment = createShellEnvironment({ cwd, sourceEnv: this.#env });
+			launch = prepareSandboxedProcess([
+				this.#profile.executable,
+				...this.#profile.execArgv(invocation.command),
+			], {
+				...options.executionPolicy,
+				workspaceRoot: this.#workspaceRoot,
+				cwd,
+			}, {
+				...this.#processSandboxProbes,
+				platform: this.#platform,
+			});
+		} catch (error: unknown) {
+			if (error instanceof ProcessSandboxError) {
+				return shellFailure(error.kind, "Required process sandbox is unavailable.");
+			}
+			return shellFailure("sandbox_unavailable", "Shell execution policy could not be applied.");
+		}
 		const request: ShellStartRequest = {
 			ownerSessionId: options.ownerSessionId,
 			callId: options.callId,
 			command: invocation.command,
-			executable: this.#profile.executable,
-			args: this.#profile.execArgv(invocation.command),
+			executable: launch.executable,
+			args: launch.args,
 			cwd,
-			env: this.#env,
+			env: environment.env,
 			platform: this.#platform,
 			tty: invocation.tty,
 			rows: this.#rows,

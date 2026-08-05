@@ -5,19 +5,26 @@
 ## Scenario: Durable Workspace Trust
 
 ### 1. Scope / Trigger
-- Trigger: changes to the TUI trust selector, `workspace.trust.*` RPCs, Node
-  runtime bootstrap/status payloads, or workspace trust persistence.
+- Trigger: changes to the TUI trust or permission selectors, `workspace.trust.*`
+  or `permissions.*` RPCs, Node runtime bootstrap/status payloads, workspace
+  trust persistence, or provider-visible process-tool exposure.
 - Trust is runtime-owned durable state. The TUI must not treat its local footer
   state as proof that a workspace is trusted.
 
 ### 2. Signatures
 - Request: `workspace.trust.set({state})`
 - Query: `workspace.trust.status({})`
+- Request: `permissions.update({profile})`
+- Query: `permissions.list({})`
 - Notification: `workspace.trust.changed({state, workspace, source, enforced})`
 - Node store:
   `WorkspaceTrustStore.load(workspaceRoot) -> Promise<WorkspaceTrustState>`
 - Node store:
   `WorkspaceTrustStore.save(workspaceRoot, state) -> Promise<void>`
+- Runtime policy:
+  `configureExecutionPolicy({trust, permission}) -> void`
+- Turn policy:
+  `ExecutionPolicyCoordinator.beginTurn(turnId) -> {toolsEnabled, profile}`
 - TUI callback:
   `onTrustSelect(trusted: boolean) -> void | Promise<void>`
 
@@ -28,9 +35,29 @@
   itself because repository content is inside the boundary being evaluated.
 - Stored records contain schema version, canonical workspace, and decision.
   They are written through a mode-`0600` temporary file and atomic rename.
+- Permission profile is exactly `read-only`, `workspace`, or `full-access`.
+  Bootstrap, status, and `permissions.list` expose the active profile, all
+  three selector rows, and the bounded session command-allowance count.
 - Node bootstrap and status payloads expose `source: user_store` when the user
-  store is configured. `enforced` remains `false` until runtime tool policy
-  independently enforces untrusted-mode capability limits.
+  store is configured. `enforced=true` means the active Node binding has the
+  execution-policy coordinator and enforces trust for process-tool exposure;
+  it does not claim that every non-process mutation has become read-only.
+- The gateway configures the runtime after initial trust load, after successful
+  trust or permission updates, and after loading trust for a resumed session.
+- A trusted workspace plus a valid permission profile exposes `Shell` and
+  `WriteStdin`. Unknown/untrusted workspace state or missing/invalid permission
+  state keeps process tools out of the provider request.
+- A turn calls `beginTurn(turnId)` once and reuses that immutable profile and
+  tool list for every provider step and approval continuation. A later trust or
+  permission update affects the next turn only. Terminal completion releases
+  the frozen turn; a waiting approval retains it.
+- The frozen provider tool list is also an execution authorization set. A
+  provider call for an unexposed tool fails with `tool_protocol_error` before
+  assistant tool-call persistence or adapter execution.
+- Permission mapping is fixed: `read-only` uses read-only filesystem and no
+  network/writable roots; `workspace` uses workspace-write with the canonical
+  workspace writable and no network; `full-access` uses explicit
+  danger-full-access with unrestricted filesystem and network.
 - The TUI waits for `workspace.trust.set` to succeed before mounting the main
   interface. Only `trusted` dismisses the startup gate. Persisted `untrusted`
   remains gated because Node mutation tools do not yet enforce a read-only
@@ -41,21 +68,32 @@
 ### 4. Validation & Error Matrix
 - Missing or unsupported `state` -> JSON-RPC `invalid_params`.
 - Missing trust record -> `unknown`.
+- Missing/invalid runtime policy configuration -> no process-tool exposure.
+- Unsupported permission profile -> JSON-RPC `invalid_params`; preserve the
+  prior active profile and do not reconfigure the runtime.
 - Invalid JSON, schema, state, workspace mismatch, or unreadable record ->
   `unknown` (fail closed).
 - Workspace canonicalization failure during load -> `unknown`.
 - Workspace canonicalization or atomic write failure during save -> reject the
   RPC; do not update in-memory trust, keep the gate mounted, and show a stable
   error without raw filesystem details.
+- Restricted Shell profile with a missing platform wrapper or unsafe protected
+  metadata symlink -> `sandbox_unavailable` before transport start.
 
 ### 5. Good/Base/Bad Cases
 - Good: choose Trust once, restart the same workspace, and enter the main TUI
   without another prompt.
+- Good: submit while trust is unknown and send only file tools; set trust to
+  trusted and expose `Shell`/`WriteStdin` on the next provider request.
+- Good: switch an active turn from workspace to full access and keep the
+  already-frozen workspace sandbox for that turn.
 - Base: a new workspace returns `unknown` and renders the trust selector.
 - Bad: write `.mycli/config.toml` inside a repository to mark that repository
   trusted.
 - Bad: dismiss the gate before the runtime confirms durable persistence.
-- Bad: let persisted `untrusted` enter a write-capable Node runtime.
+- Bad: let persisted `untrusted` expose process tools in a Node provider request.
+- Bad: treat provider tool schemas as the only authorization boundary and route
+  an unexposed `Shell` call returned by the provider.
 
 ### 6. Tests Required
 - Config unit test: unknown, trusted round trip, corrupted record fail-closed,
@@ -67,6 +105,16 @@
   not.
 - Node integration test: set trusted, close the backend, create a new backend
   with the same home/workspace, and assert bootstrap reports trusted.
+- Runtime unit tests: fail-closed initial coordinator state, immutable turn
+  profile across reconfiguration, terminal release, and rejection of an
+  unexposed provider tool call before persistence/execution.
+- Gateway tests: permission list/update payloads, invalid-profile rejection,
+  trust reconfiguration, and complete permission state in bootstrap/status.
+- Backend integration: compare provider tool names before and after durable
+  trust and assert only the later turn receives `Shell`/`WriteStdin`.
+- Tool tests: exact permission mapping, secret-free environment diagnostics,
+  fixed platform wrapper argv, protected metadata, and missing-wrapper failure
+  before manager/transport start.
 - Real PTY smoke: first launch saves Trust; second launch skips the selector and
   terminal shutdown restores cursor/input modes.
 

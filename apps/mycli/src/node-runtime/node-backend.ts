@@ -15,6 +15,7 @@ import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
 	CompactionCoordinator,
+	ExecutionPolicyCoordinator,
 	MemoryContextService,
 	MemorySelector,
 	MemoryStore,
@@ -91,7 +92,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new OpenAIProviderRegistry();
-	const toolExposure = planToolExposure(builtinToolManifest(), { shell: false });
+	const toolManifest = builtinToolManifest();
+	const allToolExposure = planToolExposure(toolManifest, { shell: true });
 	const shellManager = new ShellSessionManager({ transportFactory: startPipeTransport });
 	const shellLifecycle = new ShellLifecycleProjector({ store });
 	const publishLifecycle: (event: ShellLifecycleEvent) => void = (event) => {
@@ -107,6 +109,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		initialContinuation?: unknown,
 	): NodeGatewayRuntime => {
 		const fileSnapshots = new FileSnapshotStore();
+		const executionPolicyCoordinator = new ExecutionPolicyCoordinator({ workspaceRoot });
 		const mutationRuntime = new FileMutationRuntime({ workspaceRoot, snapshots: fileSnapshots });
 		const shellProfile = resolveShellProfile({ env: options.env });
 		const execPolicyStore = new ExecPolicyStore({ homeDir, workspaceRoot });
@@ -140,7 +143,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new BashOutputTool({ manager: shellManager }),
 			new KillShellTool({ manager: shellManager }),
 		];
-		const toolRouter = new ToolRouter({ adapters, exposure: toolExposure });
+		const toolRouter = new ToolRouter({ adapters, exposure: allToolExposure });
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
 			sessionId,
 			workspaceRoot,
@@ -227,7 +230,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			createTurnId: randomUUID,
 			clock: () => new Date().toISOString(),
 			publishLifecycle,
-			planTools: () => toolExposure,
+			executionPolicyCoordinator,
+			planTools: (capabilities) => planToolExposure(toolManifest, capabilities),
 			toolRouter,
 			approvalPolicy: {
 				evaluate: async (call) => {
@@ -258,7 +262,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					threadId,
 					store,
 					tokenCounter,
-					baseContext: `${runtimeInstructions}\n${JSON.stringify(toolExposure)}`,
+					baseContext: `${runtimeInstructions}\n${JSON.stringify(allToolExposure)}`,
 					tokenLimit: totalCompactionBudget(
 						compactionThreshold,
 						resolved.compactionReservedOutputTokens,
@@ -331,7 +335,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot: config.workspaceRoot,
 			provider: config.provider,
 			model: config.model,
-			toolNames: toolExposure.map((tool) => tool.name),
+			toolNames: allToolExposure.map((tool) => tool.name),
 			maxPromptTokens: config.maxPromptTokens,
 			runtime: initial.binding,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),

@@ -32,7 +32,7 @@ import {
 	StorageFailure,
 } from "@mycli/storage";
 import type { TranscriptItem, TurnReservation } from "@mycli/storage";
-import type { ShellSessionSnapshot } from "@mycli/tools";
+import type { PermissionProfile, ShellSessionSnapshot } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 
 type JsonObject = Record<string, unknown>;
@@ -40,6 +40,10 @@ type RpcId = string | number | null;
 
 export interface NodeGatewayRuntime {
 	readonly queueCoordinator?: QueueCoordinator;
+	configureExecutionPolicy?(input: {
+		readonly trust: WorkspaceTrustState;
+		readonly permission: PermissionProfile;
+	}): void;
 	reserve(submission: TurnSubmission): TurnReservation;
 	resolveApproval(
 		input: ResolveApprovalInput,
@@ -121,11 +125,13 @@ class InProcessNodeGateway implements NodeGateway {
 	#unsubscribeQueue: (() => void) | null = null;
 	#unsubscribeShell: (() => void) | null = null;
 	#trustState: WorkspaceTrustState;
+	#permissionProfile: PermissionProfile = "workspace";
 
 	constructor(options: CreateNodeGatewayOptions) {
 		this.#options = options;
 		this.#clock = options.clock ?? (() => Date.now() / 1000);
 		this.#trustState = options.workspaceTrust?.initialState ?? "unknown";
+		this.#configureExecutionPolicy();
 		let resolveCompletion!: (code: number) => void;
 		this.completion = new Promise<number>((resolve) => { resolveCompletion = resolve; });
 		this.#resolveCompletion = resolveCompletion;
@@ -220,6 +226,10 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#trustStatus();
 			case "workspace.trust.set":
 				return this.#setWorkspaceTrust(request.params);
+			case "permissions.list":
+				return this.#permissions();
+			case "permissions.update":
+				return this.#updatePermissions(request.params);
 			case "extension.manifest":
 				return extensionManifest(this.#options.toolNames ?? []);
 			case "session.bootstrap":
@@ -299,7 +309,7 @@ class InProcessNodeGateway implements NodeGateway {
 				shellSnapshotPayload(snapshot, this.#sessionContext())),
 			auth_providers: [],
 			models: [],
-			permissions: {},
+			permissions: this.#permissions(),
 			welcome: {
 				startup_mark: { text: "mycli" },
 				workspace: this.#workspaceRoot(),
@@ -414,6 +424,7 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
 		this.#trustState = await this.#loadWorkspaceTrust(snapshot.workspaceRoot);
+		this.#configureExecutionPolicy(snapshot.binding);
 		this.#bindQueue();
 		this.#emitDirect("session.changed", {
 			session_id: snapshot.sessionId,
@@ -1123,6 +1134,7 @@ class InProcessNodeGateway implements NodeGateway {
 			background_shells: this.#activeShells().map((snapshot) =>
 				shellSnapshotPayload(snapshot, this.#sessionContext())),
 			trust: this.#trustStatus(),
+			permissions: this.#permissions(),
 		};
 	}
 
@@ -1131,7 +1143,7 @@ class InProcessNodeGateway implements NodeGateway {
 			state: this.#trustState,
 			workspace: this.#workspaceRoot(),
 			source: this.#options.workspaceTrust ? "user_store" : "runtime",
-			enforced: false,
+			enforced: this.#runtime().configureExecutionPolicy !== undefined,
 		};
 	}
 
@@ -1139,10 +1151,31 @@ class InProcessNodeGateway implements NodeGateway {
 		const state = workspaceTrustState(params.state);
 		await this.#options.workspaceTrust?.save(this.#workspaceRoot(), state);
 		this.#trustState = state;
+		this.#configureExecutionPolicy();
 		const payload = this.#trustStatus();
 		this.#emitRuntime("workspace.trust.changed", payload);
 		this.#emitRuntime("status.changed", this.#status());
 		return payload;
+	}
+
+	#permissions(): JsonObject {
+		return permissionPayload(this.#permissionProfile);
+	}
+
+	#updatePermissions(params: JsonObject): JsonObject {
+		this.#permissionProfile = permissionProfile(params.profile);
+		this.#configureExecutionPolicy();
+		const permissions = this.#permissions();
+		const status = this.#status();
+		this.#emitRuntime("status.changed", status);
+		return { permissions, status };
+	}
+
+	#configureExecutionPolicy(runtime: NodeGatewayRuntime = this.#runtime()): void {
+		runtime.configureExecutionPolicy?.({
+			trust: this.#trustState,
+			permission: this.#permissionProfile,
+		});
 	}
 
 	async #loadWorkspaceTrust(workspaceRoot: string): Promise<WorkspaceTrustState> {
@@ -1713,6 +1746,40 @@ function positiveInteger(value: unknown): number | undefined {
 		&& value > 0
 		? value
 		: undefined;
+}
+
+function permissionProfile(value: unknown): PermissionProfile {
+	if (value === "read-only" || value === "workspace" || value === "full-access") {
+		return value;
+	}
+	throw new GatewayFailure("invalid_params", "Unsupported permission profile.");
+}
+
+function permissionPayload(active: PermissionProfile): JsonObject {
+	return {
+		active,
+		command_allowance_count: 0,
+		profiles: [
+			{
+				id: "workspace",
+				label: "Ask for approval",
+				description: "Read and edit the current workspace; ask before network or outside access.",
+				current: active === "workspace",
+			},
+			{
+				id: "full-access",
+				label: "Full Access",
+				description: "Access files and network without approval.",
+				current: active === "full-access",
+			},
+			{
+				id: "read-only",
+				label: "Read Only",
+				description: "Read workspace files; ask before edits or network.",
+				current: active === "read-only",
+			},
+		],
+	};
 }
 
 function extensionManifest(toolNames: readonly string[]): JsonObject {

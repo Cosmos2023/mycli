@@ -11,6 +11,14 @@ import { fingerprintSubmission } from "@mycli/core";
 import { SQLiteSessionStore } from "@mycli/storage";
 import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
 
+function finalMessageCount(messages: readonly Record<string, unknown>[]): number {
+	return messages.filter((message) => {
+		if (message.method !== "message.complete") return false;
+		const params = message.params as Record<string, unknown> | undefined;
+		return params?.final === true;
+	}).length;
+}
+
 test("Node backend composes config, provider streaming, gateway, and SQLite", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-backend-"));
 	const home = join(root, "home");
@@ -136,6 +144,77 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	}
 });
 
+test("Node backend exposes Shell only on turns accepted after workspace trust", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-shell-policy-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const requestTools: string[][] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			const payload = JSON.parse(body) as Record<string, unknown>;
+			requestTools.push(
+				(payload.tools as Array<Record<string, unknown>> | undefined)
+					?.map((tool) => String(tool.name)) ?? [],
+			);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n");
+			response.write(`data: {"type":"response.completed","response":{"id":"resp_${requestTools.length}"}}\n\n`);
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(root, { recursive: true, force: true });
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "shell-policy-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "turn-untrusted", "turn.submit", {
+		message: "first",
+		client_turn_id: "turn-untrusted",
+		client_user_message_id: "message-untrusted",
+	});
+	await waitFor(() => finalMessageCount(messages) === 1);
+	writeRequest(backend, "trust-shell", "workspace.trust.set", { state: "trusted" });
+	await waitFor(() => response(messages, "trust-shell"));
+	writeRequest(backend, "permission-shell", "permissions.update", { profile: "read-only" });
+	await waitFor(() => response(messages, "permission-shell"));
+	writeRequest(backend, "turn-trusted", "turn.submit", {
+		message: "second",
+		client_turn_id: "turn-trusted",
+		client_user_message_id: "message-trusted",
+	});
+	await waitFor(() => finalMessageCount(messages) === 2);
+
+	assert.deepEqual(requestTools[0], ["Read", "Edit", "Patch", "Write"]);
+	assert.deepEqual(requestTools[1], ["Read", "Edit", "Patch", "Write", "Shell", "WriteStdin"]);
+	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
 test("Node backend persists workspace trust across process restarts", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-trust-"));
 	const home = join(root, "home");
@@ -169,7 +248,7 @@ test("Node backend persists workspace trust across process restarts", async (t) 
 		state: "trusted",
 		workspace,
 		source: "user_store",
-		enforced: false,
+		enforced: true,
 	});
 	writeRequest(first, "shutdown-first", "shutdown", {});
 	assert.equal(await first.completion, 0);
@@ -187,7 +266,7 @@ test("Node backend persists workspace trust across process restarts", async (t) 
 		state: "trusted",
 		workspace,
 		source: "user_store",
-		enforced: false,
+		enforced: true,
 	});
 	writeRequest(second, "shutdown-second", "shutdown", {});
 	assert.equal(await second.completion, 0);

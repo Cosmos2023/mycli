@@ -7,6 +7,33 @@ export {
 } from "./manifest.ts";
 export { planToolExposure } from "./exposure-planner.ts";
 export type { ToolExposureCapabilities } from "./exposure-planner.ts";
+export { executionPolicy } from "./execution-policy.ts";
+export type {
+	ExecutionPolicy,
+	FilesystemPolicy,
+	NetworkPolicy,
+	PermissionProfile,
+	SandboxMode,
+	SandboxProfile,
+} from "./execution-policy.ts";
+export { createShellEnvironment } from "./shell-environment.ts";
+export type {
+	ShellEnvironmentDiagnostics,
+	ShellEnvironmentInput,
+	ShellEnvironmentResult,
+} from "./shell-environment.ts";
+export {
+	prepareSandboxedProcess,
+	ProcessSandboxError,
+} from "./process-sandbox.ts";
+export type {
+	ProcessIsolation,
+	ProcessSandboxProbes,
+	SandboxedProcessLaunch,
+} from "./process-sandbox.ts";
+export { MACOS_SEATBELT_EXECUTABLE } from "./sandbox/macos-seatbelt.ts";
+export { LINUX_BUBBLEWRAP_EXECUTABLES } from "./sandbox/linux-bubblewrap.ts";
+export { WINDOWS_SANDBOX_PROTOCOL_VERSION } from "./sandbox/windows-restricted-token.ts";
 export {
 	BASH_OUTPUT_TOOL_DEFINITION,
 	BASH_TOOL_DEFINITION,

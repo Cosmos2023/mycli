@@ -27,6 +27,33 @@ import {
 
 type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
 
+function permissionPayload(active: "read-only" | "workspace" | "full-access") {
+	return {
+		active,
+		command_allowance_count: 0,
+		profiles: [
+			{
+				id: "workspace",
+				label: "Ask for approval",
+				description: "Read and edit the current workspace; ask before network or outside access.",
+				current: active === "workspace",
+			},
+			{
+				id: "full-access",
+				label: "Full Access",
+				description: "Access files and network without approval.",
+				current: active === "full-access",
+			},
+			{
+				id: "read-only",
+				label: "Read Only",
+				description: "Read workspace files; ask before edits or network.",
+				current: active === "read-only",
+			},
+		],
+	};
+}
+
 function gatewayHarness(options: {
 	conversation?: readonly { role: "user" | "assistant"; content: string }[];
 	existingTurn?: RuntimeTurnRecord;
@@ -48,6 +75,7 @@ function gatewayHarness(options: {
 	};
 	approvalFailure?: Error;
 	shell?: boolean;
+	workspaceTrust?: boolean;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -61,6 +89,10 @@ function gatewayHarness(options: {
 		readonly choice: PendingApprovalChoice;
 	}> = [];
 	const reservedClientTurnIds: string[] = [];
+	const policyConfigurations: Array<{
+		readonly trust: "trusted" | "untrusted" | "unknown";
+		readonly permission: "read-only" | "workspace" | "full-access";
+	}> = [];
 	const queue = options.queue
 		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
 		: undefined;
@@ -86,6 +118,9 @@ function gatewayHarness(options: {
 		reserve: (submission: TurnSubmission) => {
 			reservedClientTurnIds.push(submission.clientTurnId);
 			return reserve(submission);
+		},
+		configureExecutionPolicy: (input: typeof policyConfigurations[number]) => {
+			policyConfigurations.push(input);
 		},
 		resolveApproval: async (
 			input: { readonly decisionId: string; readonly choice: PendingApprovalChoice },
@@ -129,6 +164,13 @@ function gatewayHarness(options: {
 			shellManager: shell.manager,
 			shellLifecycle: shell.lifecycle,
 		} : {}),
+		...(options.workspaceTrust ? {
+			workspaceTrust: {
+				initialState: "unknown" as const,
+				load: async () => "unknown" as const,
+				save: async () => undefined,
+			},
+		} : {}),
 		close: () => { closeCalls += 1; },
 		createTurnId: () => "turn-node",
 		clock: () => 1_700_000_000,
@@ -147,6 +189,7 @@ function gatewayHarness(options: {
 		messages,
 		submissions,
 		reservedClientTurnIds,
+		policyConfigurations,
 		approvalResolutions,
 		send,
 		emit: (event: RuntimeEvent) => emitRuntime?.(event),
@@ -195,6 +238,40 @@ test("node gateway boots the real TUI startup sequence", async () => {
 			});
 		}
 	}
+	await harness.gateway.close();
+});
+
+test("gateway owns permission selection and reconfigures runtime trust policy", async () => {
+	const harness = gatewayHarness({ workspaceTrust: true });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const listed = await harness.send("permissions.list");
+	assert.ok("result" in listed);
+	assert.deepEqual("result" in listed ? listed.result : {}, permissionPayload("workspace"));
+	assert.deepEqual(harness.policyConfigurations, [{
+		trust: "unknown",
+		permission: "workspace",
+	}]);
+
+	const trusted = await harness.send("workspace.trust.set", { state: "trusted" });
+	assert.equal("result" in trusted ? trusted.result.enforced : null, true);
+	const updated = await harness.send("permissions.update", { profile: "full-access" });
+	assert.ok("result" in updated);
+	assert.deepEqual(
+		"result" in updated ? updated.result.permissions : {},
+		permissionPayload("full-access"),
+	);
+	assert.deepEqual(harness.policyConfigurations.slice(-2), [
+		{ trust: "trusted", permission: "workspace" },
+		{ trust: "trusted", permission: "full-access" },
+	]);
+
+	const invalid = await harness.send("permissions.update", { profile: "invalid" });
+	assert.equal("error" in invalid ? invalid.error.code : null, "invalid_params");
+	assert.deepEqual(harness.policyConfigurations.at(-1), {
+		trust: "trusted",
+		permission: "full-access",
+	});
 	await harness.gateway.close();
 });
 

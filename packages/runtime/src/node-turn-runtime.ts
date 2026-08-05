@@ -21,6 +21,7 @@ import {
 import type { ModelProvider } from "@mycli/providers";
 import type {
 	ApprovalPolicyDecision,
+	ExecutionPolicy,
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
@@ -45,6 +46,11 @@ import type {
 	CompactionResult,
 } from "./compaction-coordinator.ts";
 import type { MemoryContextServiceContract } from "./memory-context-service.ts";
+import type {
+	ExecutionPolicyConfiguration,
+	ExecutionPolicySnapshot,
+	TurnExecutionPolicy,
+} from "./execution-policy-coordinator.ts";
 import {
 	buildProviderRequestSignature,
 	type ContinuationDecision,
@@ -76,7 +82,8 @@ export interface NodeTurnRuntimeOptions {
 	readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 	readonly random?: () => number;
 	readonly monotonicClock?: () => number;
-	readonly planTools?: () => readonly ToolDefinition[];
+	readonly planTools?: (capabilities: { readonly shell: boolean }) => readonly ToolDefinition[];
+	readonly executionPolicyCoordinator?: ExecutionPolicyCoordinatorContract;
 	readonly toolRouter?: ToolRouterContract;
 	readonly approvalPolicy?: ApprovalPolicyContract;
 	readonly approvalCoordinator?: ApprovalContinuationContract;
@@ -104,11 +111,19 @@ export interface ApprovalContinuationContract {
 	pending(): PendingApprovalContinuation | undefined;
 	resolve(input: {
 		readonly decisionId: string;
-	readonly choice: ApprovalChoice;
-	readonly signal: AbortSignal;
-	readonly onExecutionStart?: () => void;
+		readonly choice: ApprovalChoice;
+		readonly signal: AbortSignal;
+		readonly onExecutionStart?: () => void;
+		readonly executionPolicy?: ExecutionPolicy;
 	}): Promise<ApprovalRuntimeResolution>;
 	finish(decisionId: string): void;
+}
+
+export interface ExecutionPolicyCoordinatorContract {
+	configure(input: ExecutionPolicyConfiguration): void;
+	snapshot(): ExecutionPolicySnapshot;
+	beginTurn(turnId: string): TurnExecutionPolicy;
+	finishTurn(turnId: string): void;
 }
 
 export interface ProviderContinuationContract {
@@ -163,6 +178,7 @@ interface TurnExecutionContext {
 	readonly config: NodeRuntimeConfig;
 	readonly provider: ModelProvider;
 	readonly tools: readonly ToolDefinition[];
+	readonly executionPolicy?: ExecutionPolicy;
 	readonly requestConfig: ProviderRequestConfig;
 	readonly emit: (event: RuntimeEvent) => void;
 	readonly signal: AbortSignal;
@@ -200,6 +216,10 @@ export class NodeTurnRuntime {
 		this.queueCoordinator = options.queueCoordinator;
 	}
 
+	configureExecutionPolicy(input: ExecutionPolicyConfiguration): void {
+		this.#options.executionPolicyCoordinator?.configure(input);
+	}
+
 	reserve(submission: TurnSubmission): TurnReservation {
 		const turnId = submission.turnId ?? this.#options.createTurnId();
 		return this.#options.store.reserveTurn({
@@ -235,26 +255,34 @@ export class NodeTurnRuntime {
 			turnId,
 		});
 
-		if ((submission.localImages?.length ?? 0) > 0) {
-			return this.#finalizeFailure(submission, {
-				code: "unsupported_capability",
-				message: "local images are not supported by the Node runtime",
-				retryable: false,
-			}, emit);
-		}
-
-		let prepared: PreparedTurn;
+		let retainPolicy = false;
 		try {
-			prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
-		} catch (error) {
-			return this.#finalizeFailure(
-				submission,
-				normalizeFailure(error, options.signal, "config_error"),
-				emit,
-			);
-		}
+			if ((submission.localImages?.length ?? 0) > 0) {
+				const failed = await this.#finalizeFailure(submission, {
+					code: "unsupported_capability",
+					message: "local images are not supported by the Node runtime",
+					retryable: false,
+				}, emit);
+				return failed;
+			}
 
-		return this.#runProviderLoop(prepared.context, prepared.initial);
+			let prepared: PreparedTurn;
+			try {
+				prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
+			} catch (error) {
+				return await this.#finalizeFailure(
+					submission,
+					normalizeFailure(error, options.signal, "config_error"),
+					emit,
+				);
+			}
+
+			const result = await this.#runProviderLoop(prepared.context, prepared.initial);
+			retainPolicy = result.status === "in_progress";
+			return result;
+		} finally {
+			if (!retainPolicy) this.#options.executionPolicyCoordinator?.finishTurn(turnId);
+		}
 	}
 
 	async resolveApproval(
@@ -291,10 +319,12 @@ export class NodeTurnRuntime {
 					toolName: boundedToolName(pending.toolName),
 				});
 			},
+			...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
 		});
 		if (resolution.status === "interrupted") {
 			await this.#writeTerminalSnapshot(resolution.turn);
 			emit({ type: "turn_interrupted", message: "turn interrupted" });
+			this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
 			return resolution.turn;
 		}
 		if (!resolution.continuation) {
@@ -302,7 +332,10 @@ export class NodeTurnRuntime {
 				this.#options.sessionId,
 				pending.clientTurnId,
 			);
-			if (existing && existing.status !== "in_progress") return existing;
+			if (existing && existing.status !== "in_progress") {
+				this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+				return existing;
+			}
 			throw new ApprovalNotPendingError();
 		}
 		if (resolution.toolResult) {
@@ -314,7 +347,7 @@ export class NodeTurnRuntime {
 			);
 		}
 		const continuation = resolution.continuation;
-		return this.#runProviderLoop(context, {
+		const resumed = await this.#runProviderLoop(context, {
 			history: this.#options.store.loadConversationItems(this.#options.sessionId),
 			freshItemIds: new Set([
 				`${pending.turnId}:user:${pending.clientTurnId}`,
@@ -331,6 +364,10 @@ export class NodeTurnRuntime {
 				},
 			} : {}),
 		});
+		if (resumed.status !== "in_progress") {
+			this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+		}
+		return resumed;
 	}
 
 	async #prepareTurn(
@@ -359,6 +396,7 @@ export class NodeTurnRuntime {
 		expectedProtocol?: NodeRuntimeConfig["protocol"],
 	): Promise<TurnExecutionContext> {
 		assertNotAborted(signal);
+		const turnPolicy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
 		const config = await this.#options.resolveConfig(submission);
 		if (config.sessionId !== this.#options.sessionId) {
 			throw configFailure("resolved session does not match runtime session");
@@ -371,7 +409,8 @@ export class NodeTurnRuntime {
 			turnId,
 			config,
 			provider: this.#options.createProvider(config),
-			tools: this.#options.planTools?.() ?? [],
+			tools: this.#options.planTools?.({ shell: turnPolicy?.toolsEnabled ?? false }) ?? [],
+			...(turnPolicy ? { executionPolicy: turnPolicy.profile } : {}),
 			requestConfig: {
 				provider: config.provider,
 				protocol: config.protocol,
@@ -576,6 +615,10 @@ export class NodeTurnRuntime {
 			}
 
 			if (config.protocol === "responses" && !stepResult.responseId) {
+				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
+			}
+			const exposedToolNames = new Set(tools.map((tool) => tool.name));
+			if (stepResult.toolCalls.some((call) => !exposedToolNames.has(call.name))) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
 
@@ -798,7 +841,7 @@ export class NodeTurnRuntime {
 
 			const result = policy?.kind === "deny"
 				? policyDeniedResult(call, policy)
-				: await this.#executeTool(call, signal, emit);
+				: await this.#executeTool(call, context);
 			if (policy?.kind === "deny") emitToolResult(result, 0, emit);
 			this.#persistToolResult(submission.clientTurnId, result);
 			assertNotAborted(signal);
@@ -808,9 +851,9 @@ export class NodeTurnRuntime {
 
 	async #executeTool(
 		call: CanonicalToolCall,
-		signal: AbortSignal,
-		emit: (event: RuntimeEvent) => void,
+		context: TurnExecutionContext,
 	): Promise<ToolExecutionResult> {
+		const { emit, signal } = context;
 		const router = this.#options.toolRouter;
 		if (!router) throw new ProviderFailure({
 			code: "unsupported_capability",
@@ -829,6 +872,7 @@ export class NodeTurnRuntime {
 				ownerSessionId: this.#options.sessionId,
 				callId: call.callId,
 				publishLifecycle: this.#options.publishLifecycle,
+				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
 			});
 		} catch (error) {
 			if (error instanceof Error && error.name === "AbortError") throw error;

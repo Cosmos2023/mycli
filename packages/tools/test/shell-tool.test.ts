@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ShellLifecycleEvent } from "@mycli/core";
 import {
+	executionPolicy,
 	resolveShellProfile,
 	ShellTool,
 	type ShellSessionSnapshot,
@@ -30,6 +31,7 @@ test("Shell defaults cwd and forwards immutable execution context", async (t) =>
 		ownerSessionId: "session-a",
 		callId: "call-shell-1",
 		publishLifecycle,
+		executionPolicy: executionPolicy("full-access", root),
 	});
 
 	assert.equal(manager.starts.length, 1);
@@ -74,7 +76,7 @@ test("Shell resolves an in-workspace cwd and clamps yield and output budget", as
 		tty: true,
 		yield_time_ms: 1,
 		max_output_tokens: 50_000,
-	}, executionOptions());
+	}, executionOptions(root));
 
 	assert.equal(manager.starts[0]?.cwd, await realpath(work));
 	assert.equal(manager.starts[0]?.tty, true);
@@ -96,14 +98,80 @@ test("Shell rejects escaped cwd and invalid output budget before manager start",
 		createChunkId: () => "chunk-3",
 	});
 
-	const escaped = await tool.execute({ command: "pwd", cwd: outside }, executionOptions());
+	const escaped = await tool.execute({ command: "pwd", cwd: outside }, executionOptions(root));
 	const invalidBudget = await tool.execute({
 		command: "pwd",
 		max_output_tokens: 0,
-	}, executionOptions());
+	}, executionOptions(root));
 
 	assert.equal(escaped.errorKind, "workspace_escape");
 	assert.equal(invalidBudget.errorKind, "invalid_output_budget");
+	assert.equal(manager.starts.length, 0);
+});
+
+test("Shell sanitizes environment and applies the frozen sandbox before manager start", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const canonicalRoot = await realpath(root);
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({
+		workspaceRoot: root,
+		manager,
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/sh" }),
+		platform: "linux",
+		env: {
+			HOME: "/home/demo",
+			PATH: "/usr/bin",
+			MYCLI_TOKEN: "must-not-reach-child",
+			CUSTOM: "drop-me",
+		},
+		processSandboxProbes: {
+			platform: "linux",
+			isExecutable: (path) => path === "/usr/bin/bwrap",
+		},
+	});
+
+	const result = await tool.execute({ command: "printf ready" }, {
+		...executionOptions(root),
+		executionPolicy: executionPolicy("workspace", root),
+	});
+
+	assert.equal(result.success, true);
+	assert.equal(manager.starts[0]?.executable, "/usr/bin/bwrap");
+	assert.deepEqual(manager.starts[0]?.args.slice(0, 5), [
+		"--new-session",
+		"--die-with-parent",
+		"--ro-bind",
+		"/",
+		"/",
+	]);
+	assert.deepEqual(manager.starts[0]?.env, {
+		HOME: "/home/demo",
+		MYCLI_CI: "1",
+		PATH: "/usr/bin",
+		PWD: canonicalRoot,
+	});
+	assert.equal(JSON.stringify(manager.starts[0]?.env).includes("must-not-reach-child"), false);
+});
+
+test("Shell fails before manager start when a restricted sandbox is unavailable", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({
+		workspaceRoot: root,
+		manager,
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/sh" }),
+		platform: "linux",
+		processSandboxProbes: { platform: "linux", isExecutable: () => false },
+	});
+
+	const result = await tool.execute({ command: "true" }, {
+		...executionOptions(root),
+		executionPolicy: executionPolicy("workspace", root),
+	});
+
+	assert.equal(result.errorKind, "sandbox_unavailable");
 	assert.equal(manager.starts.length, 0);
 });
 
@@ -119,12 +187,13 @@ class StartManager {
 
 }
 
-function executionOptions() {
+function executionOptions(workspaceRoot: string) {
 	return {
 		signal: new AbortController().signal,
 		ownerSessionId: "session-a",
 		callId: "call-shell-1",
 		publishLifecycle: (): void => undefined,
+		executionPolicy: executionPolicy("full-access", workspaceRoot),
 	};
 }
 

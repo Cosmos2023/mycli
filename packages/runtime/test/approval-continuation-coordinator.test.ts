@@ -90,6 +90,26 @@ test("approval execution uses the coordinator-owned lifecycle publisher", async 
 	assert.deepEqual(events, [shellLifecycleEvent()]);
 });
 
+test("approval execution forwards the frozen execution policy", async () => {
+	const fixture = approvalFixture();
+	fixture.coordinator.suspend(suspension(true));
+	const executionPolicy = Object.freeze({
+		mode: "read-only" as const,
+		filesystem: "read_only" as const,
+		network: "disabled" as const,
+		writableRoots: Object.freeze([] as string[]),
+	});
+
+	await fixture.coordinator.resolve({
+		decisionId: "call-1",
+		choice: "approve_once",
+		signal: new AbortController().signal,
+		executionPolicy,
+	});
+
+	assert.equal(fixture.executionOptions?.executionPolicy, executionPolicy);
+});
+
 test("reject commits a denied result without executing the tool", async () => {
 	const fixture = approvalFixture();
 	fixture.coordinator.suspend(suspension());
@@ -242,6 +262,7 @@ interface CoordinatorContract {
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
+		readonly executionPolicy?: ToolExecutionOptions["executionPolicy"];
 	}): Promise<{ readonly status: string; readonly continuation?: PendingContract }>;
 	finish(decisionId: string): void;
 	recover(): Promise<RuntimeTurnRecord | undefined> | RuntimeTurnRecord | undefined;

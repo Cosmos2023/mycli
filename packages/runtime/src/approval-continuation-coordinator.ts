@@ -25,6 +25,7 @@ import type {
 	RuntimeStateKey,
 } from "@mycli/storage";
 import type {
+	ExecutionPolicy,
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
@@ -231,6 +232,7 @@ export class ApprovalContinuationCoordinator {
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
+		readonly executionPolicy?: ExecutionPolicy;
 	}): Promise<ApprovalContinuationResult> {
 		const checkpoint = this.#checkpoint();
 		if (!checkpoint || checkpoint.decisionId !== input.decisionId.trim()) {
@@ -309,6 +311,7 @@ export class ApprovalContinuationCoordinator {
 				ownerSessionId: this.#sessionId,
 				callId: pending.call.callId,
 				publishLifecycle: this.#publishLifecycle,
+				...(input.executionPolicy ? { executionPolicy: input.executionPolicy } : {}),
 			});
 		} catch {
 			return this.#interruptUnknown(executing);

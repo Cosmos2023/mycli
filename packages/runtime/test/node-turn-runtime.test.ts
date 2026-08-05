@@ -29,6 +29,7 @@ import type {
 import { StorageFailure } from "@mycli/storage";
 import {
 	READ_TOOL_DEFINITION,
+	SHELL_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 	type ToolExecutionResult,
 	type ToolExecutionOptions,
@@ -1215,6 +1216,77 @@ test("does not report terminal success when queue rejection persistence fails", 
 	assert.equal(trace.includes("complete"), false);
 });
 
+test("freezes execution policy tools for the provider loop and releases terminal turns", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "text_delta", text: "done" },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const calls: string[] = [];
+	const executionPolicyCoordinator = {
+		configure: () => undefined,
+		snapshot: () => ({
+			trusted: true,
+			valid: true,
+			profile: executionProfile(),
+		}),
+		beginTurn: (turnId: string) => {
+			calls.push(`begin:${turnId}`);
+			return { toolsEnabled: true, profile: executionProfile() };
+		},
+		finishTurn: (turnId: string) => { calls.push(`finish:${turnId}`); },
+	};
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		executionPolicyCoordinator,
+		planTools: ({ shell }) => shell
+			? [READ_TOOL_DEFINITION, SHELL_TOOL_DEFINITION]
+			: [READ_TOOL_DEFINITION],
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["Read", "Shell"]);
+	assert.deepEqual(calls, ["begin:turn-1", "finish:turn-1"]);
+});
+
+test("rejects provider calls for tools outside the frozen turn exposure", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new SequencedRouter(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{
+			type: "tool_call",
+			callId: "call-shell-untrusted",
+			name: "Shell",
+			argumentsJson: "{\"command\":\"printf unsafe\"}",
+		},
+		{ type: "completed", responseId: "resp-shell-untrusted" },
+	]]);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [READ_TOOL_DEFINITION],
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "tool_protocol_error");
+	assert.equal(router.calls, 0);
+	assert.equal(trace.includes("persist:calls"), false);
+});
+
 function createRuntime(options: {
 	readonly store: TurnStore;
 	readonly provider: ModelProvider;
@@ -1231,6 +1303,8 @@ function createRuntime(options: {
 	readonly writeTerminalSnapshot?: NodeTurnRuntimeOptions["writeTerminalSnapshot"];
 	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 	readonly runtimeConfig?: NodeRuntimeConfig;
+	readonly executionPolicyCoordinator?: NodeTurnRuntimeOptions["executionPolicyCoordinator"];
+	readonly planTools?: NonNullable<NodeTurnRuntimeOptions["planTools"]>;
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
 		sessionId: "session-1",
@@ -1244,7 +1318,7 @@ function createRuntime(options: {
 		clock: clockSequence(),
 		sleep: async () => {},
 		random: () => 0.5,
-		planTools: () => options.toolDefinitions ?? [READ_TOOL_DEFINITION],
+		planTools: options.planTools ?? (() => options.toolDefinitions ?? [READ_TOOL_DEFINITION]),
 		toolRouter: options.toolRouter,
 		publishLifecycle: options.publishLifecycle ?? (() => undefined),
 		...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
@@ -1266,6 +1340,18 @@ function createRuntime(options: {
 		...(options.writeTerminalSnapshot ? {
 			writeTerminalSnapshot: options.writeTerminalSnapshot,
 		} : {}),
+		...(options.executionPolicyCoordinator ? {
+			executionPolicyCoordinator: options.executionPolicyCoordinator,
+		} : {}),
+	});
+}
+
+function executionProfile() {
+	return Object.freeze({
+		mode: "workspace-write" as const,
+		filesystem: "workspace_write" as const,
+		network: "disabled" as const,
+		writableRoots: Object.freeze(["/workspace"]),
 	});
 }
 

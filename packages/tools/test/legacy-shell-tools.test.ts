@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	BashOutputTool,
 	BashTool,
+	executionPolicy,
 	KillShellTool,
 	resolveShellProfile,
 	ShellOutputTool,
@@ -89,6 +90,7 @@ function executionOptions() {
 		ownerSessionId: "session-a",
 		callId: "call-legacy-1",
 		publishLifecycle: (): void => undefined,
+		executionPolicy: executionPolicy("full-access", process.cwd()),
 	};
 }
 
