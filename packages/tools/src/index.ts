@@ -17,6 +17,15 @@ export {
 	WRITE_STDIN_TOOL_DEFINITION,
 } from "./shell-manifest.ts";
 export { FileSnapshotStore } from "./file-snapshot-store.ts";
+export { ShellOutputBuffer } from "./shell-output-buffer.ts";
+export type { ShellOutputRead } from "./shell-output-buffer.ts";
+export { TerminalOutputNormalizer } from "./terminal-output-normalizer.ts";
+export type { NormalizedOutput } from "./terminal-output-normalizer.ts";
+export { formatShellResult } from "./shell-result.ts";
+export type {
+	FormattedShellResult,
+	ShellResultInput,
+} from "./shell-result.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";
 export type { BoundedFileDiff } from "./file-diff.ts";
