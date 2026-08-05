@@ -96,7 +96,7 @@ export interface CompactionCoordinatorContract {
 }
 
 export interface ApprovalPolicyContract {
-	evaluate(call: CanonicalToolCall): ApprovalPolicyDecision;
+	evaluate(call: CanonicalToolCall): ApprovalPolicyDecision | Promise<ApprovalPolicyDecision>;
 }
 
 export interface ApprovalContinuationContract {
@@ -751,7 +751,7 @@ export class NodeTurnRuntime {
 		const { submission, turnId, config, emit, signal } = context;
 		for (const [index, call] of batch.calls.entries()) {
 			assertNotAborted(signal);
-			const policy = this.#options.approvalPolicy?.evaluate(call);
+			const policy = await this.#options.approvalPolicy?.evaluate(call);
 			if (policy?.kind === "request") {
 				const coordinator = this.#options.approvalCoordinator;
 				if (!coordinator) {
@@ -775,6 +775,10 @@ export class NodeTurnRuntime {
 					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
 					preview: policy.preview,
 					reason: policy.reason,
+					...(policy.commandPattern ? { commandPattern: policy.commandPattern } : {}),
+					...(policy.proposedExecPolicyPattern ? {
+						proposedExecPolicyPattern: policy.proposedExecPolicyPattern,
+					} : {}),
 				});
 				emit({
 					type: "approval_requested",

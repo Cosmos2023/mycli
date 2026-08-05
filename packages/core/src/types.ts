@@ -114,7 +114,7 @@ export type RuntimeEvent =
 		readonly toolName: string;
 		readonly preview: string;
 		readonly reason: string;
-		readonly options: readonly ["approve_once", "reject"];
+		readonly options: readonly ApprovalChoice[];
 	}
 	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string }
 	| {
@@ -137,6 +137,22 @@ export type RuntimeEvent =
 	| { readonly type: "turn_completed"; readonly assistantText: string; readonly usage: ProviderUsage }
 	| { readonly type: "turn_failed"; readonly code: RuntimeErrorCode; readonly message: string }
 	| { readonly type: "turn_interrupted"; readonly message: string };
+
+export type ApprovalChoice =
+	| "approve_once"
+	| "reject"
+	| "allow_session"
+	| "always_allow";
+
+export type ExecPolicyDecision = "allow" | "ask" | "deny";
+export type ExecPolicySource = "user" | "project" | "session";
+
+export interface ExecPolicyRule {
+	readonly source: ExecPolicySource;
+	readonly index: number;
+	readonly pattern: readonly string[];
+	readonly decision: ExecPolicyDecision;
+}
 
 export interface TurnSnapshot {
 	readonly sessionId: string;

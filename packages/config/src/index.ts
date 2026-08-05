@@ -17,3 +17,17 @@ export type {
 	WorkspaceTrustState,
 	WorkspaceTrustStoreOptions,
 } from "./workspace-trust-store.ts";
+export {
+	ExecPolicyStore,
+	ExecPolicyStoreError,
+} from "./exec-policy-store.ts";
+export type {
+	ExecPolicyStoreErrorKind,
+	ExecPolicyStoreOptions,
+	ExecPolicyWriteResult,
+} from "./exec-policy-store.ts";
+export type {
+	ExecPolicyDecision,
+	ExecPolicyRule,
+	ExecPolicySource,
+} from "@mycli/core";

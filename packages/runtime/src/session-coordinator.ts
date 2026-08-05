@@ -1,4 +1,4 @@
-import type { QueueSnapshot } from "@mycli/core";
+import type { ApprovalChoice, QueueSnapshot } from "@mycli/core";
 import type {
 	SessionLineageNode,
 	SessionListQuery,
@@ -8,11 +8,7 @@ import type {
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
-export type PendingApprovalChoice =
-	| "approve_once"
-	| "reject"
-	| "allow_session"
-	| "always_allow";
+export type PendingApprovalChoice = ApprovalChoice;
 
 export interface PendingSessionApproval {
 	readonly sessionId: string;

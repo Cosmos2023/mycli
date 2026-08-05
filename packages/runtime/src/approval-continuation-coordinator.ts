@@ -9,10 +9,12 @@ import {
 	createWaitingApproval,
 } from "@mycli/core";
 import type {
+	ApprovalChoice as CoreApprovalChoice,
 	ApprovalResolution,
 	ApprovalTransition,
 	CanonicalMessage,
 	CanonicalToolCall,
+	ExecPolicyRule,
 	ProviderUsage,
 	ReasoningEffort,
 	ShellLifecycleEvent,
@@ -29,7 +31,7 @@ import type {
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
-export type ApprovalChoice = "approve_once" | "reject";
+export type ApprovalChoice = CoreApprovalChoice;
 
 export interface ApprovalSuspensionInput {
 	readonly clientTurnId: string;
@@ -46,6 +48,8 @@ export interface ApprovalSuspensionInput {
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly preview: string;
 	readonly reason: string;
+	readonly commandPattern?: readonly string[];
+	readonly proposedExecPolicyPattern?: readonly string[];
 }
 
 export interface PendingApprovalContinuation {
@@ -57,7 +61,9 @@ export interface PendingApprovalContinuation {
 	readonly toolName: string;
 	readonly preview: string;
 	readonly reason: string;
-	readonly options: readonly ["approve_once", "reject"];
+	readonly options: readonly ApprovalChoice[];
+	readonly commandPattern?: readonly string[];
+	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly providerProtocol: "responses" | "chat_completions";
 	readonly userMessage: string;
 	readonly call: CanonicalToolCall;
@@ -134,6 +140,12 @@ export interface ApprovalContinuationCoordinatorOptions {
 	readonly toolRouter: ToolRouterContract;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly clock: () => string;
+	readonly ruleStore?: {
+		allow(pattern: readonly string[]): Promise<unknown>;
+		load(): Promise<readonly ExecPolicyRule[]>;
+	};
+	readonly publishExecPolicyRules?: (rules: readonly ExecPolicyRule[]) => void;
+	readonly allowSession?: (pattern: readonly string[]) => void;
 	readonly failpoint?: RuntimeFailpointHook;
 }
 
@@ -154,6 +166,9 @@ export class ApprovalContinuationCoordinator {
 	readonly #toolRouter: ToolRouterContract;
 	readonly #publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly #clock: () => string;
+	readonly #ruleStore: ApprovalContinuationCoordinatorOptions["ruleStore"];
+	readonly #publishExecPolicyRules: ApprovalContinuationCoordinatorOptions["publishExecPolicyRules"];
+	readonly #allowSession: ApprovalContinuationCoordinatorOptions["allowSession"];
 	readonly #failpoint: RuntimeFailpointHook;
 
 	constructor(options: ApprovalContinuationCoordinatorOptions) {
@@ -164,6 +179,9 @@ export class ApprovalContinuationCoordinator {
 		this.#toolRouter = options.toolRouter;
 		this.#publishLifecycle = options.publishLifecycle;
 		this.#clock = options.clock;
+		this.#ruleStore = options.ruleStore;
+		this.#publishExecPolicyRules = options.publishExecPolicyRules;
+		this.#allowSession = options.allowSession;
 		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
 
@@ -222,20 +240,23 @@ export class ApprovalContinuationCoordinator {
 			return this.#interruptUnknown(checkpoint);
 		}
 		if (checkpoint.status === "completed") {
-			if (input.choice !== "approve_once") {
-				throw new ApprovalConflictError(checkpoint.status, input.choice);
+			if (!isApprovingChoice(input.choice)) {
+				throw new ApprovalConflictError(checkpoint.status, "reject");
 			}
 			return { status: "completed", checkpoint, continuation: this.pending() };
 		}
 		if (checkpoint.status === "rejected") {
 			if (input.choice !== "reject") {
-				throw new ApprovalConflictError(checkpoint.status, input.choice);
+				throw new ApprovalConflictError(checkpoint.status, "approve_once");
 			}
 			return { status: "rejected", checkpoint, continuation: this.pending() };
 		}
 		const pending = this.pending();
 		if (!pending || pending.decisionId !== checkpoint.decisionId) {
 			throw new ApprovalNotPendingError();
+		}
+		if (!pending.options.includes(input.choice)) {
+			throw new ApprovalConflictError(checkpoint.status, input.choice === "reject" ? "reject" : "approve_once");
 		}
 		if (input.choice === "reject") {
 			const result = rejectedResult(pending.call);
@@ -246,6 +267,22 @@ export class ApprovalContinuationCoordinator {
 				toolResult: storedToolResult(this.#sessionId, pending.clientTurnId, result),
 			});
 			return { status: "rejected", checkpoint: rejected, continuation: pending, toolResult: result };
+		}
+		if (input.choice === "always_allow") {
+			const pattern = requiredPattern(pending.proposedExecPolicyPattern, "persistent approval");
+			if (!this.#ruleStore || !this.#publishExecPolicyRules) {
+				throw new ApprovalPersistenceError("Persistent Shell approval is not configured.");
+			}
+			await this.#ruleStore.allow(pattern);
+			const rules = await this.#ruleStore.load();
+			this.#publishExecPolicyRules(rules);
+		}
+		if (input.choice === "allow_session") {
+			const pattern = requiredPattern(pending.commandPattern, "session approval");
+			if (!this.#allowSession) {
+				throw new ApprovalPersistenceError("Session Shell approval is not configured.");
+			}
+			this.#allowSession(pattern);
 		}
 
 		const approved = this.#store.compareAndSetApproval({
@@ -330,6 +367,15 @@ export class ApprovalContinuationCoordinator {
 	}
 }
 
+export class ApprovalPersistenceError extends Error {
+	readonly code = "persistence_error" as const;
+
+	constructor(message: string) {
+		super(`persistence_error: ${message}`);
+		this.name = "ApprovalPersistenceError";
+	}
+}
+
 function pendingFromInput(
 	sessionId: string,
 	input: ApprovalSuspensionInput,
@@ -345,7 +391,11 @@ function pendingFromInput(
 		toolName: nonEmpty(input.call.name, "toolName"),
 		preview: bounded(input.preview, 512),
 		reason: bounded(input.reason, 512),
-		options: Object.freeze(["approve_once", "reject"] as const),
+		options: approvalOptions(input.commandPattern, input.proposedExecPolicyPattern),
+		...(input.commandPattern ? { commandPattern: requiredPattern(input.commandPattern, "command") } : {}),
+		...(input.proposedExecPolicyPattern ? {
+			proposedExecPolicyPattern: requiredPattern(input.proposedExecPolicyPattern, "persistent approval"),
+		} : {}),
 		providerProtocol: input.providerProtocol,
 		userMessage: input.userMessage,
 		call: freezeCall(input.call),
@@ -373,6 +423,15 @@ function pendingFromStates(
 		throw new ApprovalNotPendingError();
 	}
 	const continuation = record(payload.continuation);
+	const metadata = record(pending.payload.metadata);
+	const commandPattern = optionalPattern(metadata.command_pattern_tokens);
+	const proposedExecPolicyPattern = optionalPattern(pending.payload.proposed_execpolicy_pattern);
+	const suspendedProposal = optionalPattern(
+		suspended.payload.pending_approval?.proposed_execpolicy_pattern,
+	);
+	if (!equalOptionalPatterns(proposedExecPolicyPattern, suspendedProposal)) {
+		throw new ApprovalNotPendingError();
+	}
 	return Object.freeze({
 		sessionId,
 		clientTurnId: nonEmpty(String(payload.client_turn_id ?? ""), "clientTurnId"),
@@ -382,7 +441,9 @@ function pendingFromStates(
 		toolName: call.name,
 		preview: bounded(pending.payload.preview, 512),
 		reason: bounded(pending.payload.reason, 512),
-		options: Object.freeze(["approve_once", "reject"] as const),
+		options: restoredApprovalOptions(pending.payload.options, commandPattern, proposedExecPolicyPattern),
+		...(commandPattern ? { commandPattern } : {}),
+		...(proposedExecPolicyPattern ? { proposedExecPolicyPattern } : {}),
 		providerProtocol: payload.provider_protocol === "chat_completions"
 			? "chat_completions"
 			: "responses",
@@ -414,8 +475,17 @@ function pendingDecisionState(
 			kind: "needs_choice",
 			reason: pending.reason,
 			preview: pending.preview,
-			options: ["approve_once", "reject"],
-			metadata: { source: "node_runtime" },
+			options: persistedOptions(pending.options),
+			...(pending.commandPattern ? { command_pattern: pending.commandPattern.join(" ") } : {}),
+			...(pending.proposedExecPolicyPattern ? {
+				proposed_execpolicy_pattern: tuplePattern(pending.proposedExecPolicyPattern),
+			} : {}),
+			metadata: {
+				source: "node_runtime",
+				...(pending.commandPattern ? {
+					command_pattern_tokens: [...pending.commandPattern],
+				} : {}),
+			},
 		},
 	};
 }
@@ -428,7 +498,14 @@ function suspendedTurnState(
 		tool_call: storedToolCall(pending.call),
 		reason: pending.reason,
 		preview: pending.preview,
-		metadata: { source: "node_runtime" },
+		...(pending.commandPattern ? { command_pattern: pending.commandPattern.join(" ") } : {}),
+		...(pending.proposedExecPolicyPattern ? {
+			proposed_execpolicy_pattern: tuplePattern(pending.proposedExecPolicyPattern),
+		} : {}),
+		metadata: {
+			source: "node_runtime",
+			...(pending.commandPattern ? { command_pattern_tokens: [...pending.commandPattern] } : {}),
+		},
 	};
 	return {
 		kind: "suspended_turn",
@@ -608,6 +685,70 @@ function nonEmpty(value: string, name: string): string {
 
 function bounded(value: string, limit: number): string {
 	return value.slice(0, limit);
+}
+
+type PersistedApprovalOptions =
+	| [ApprovalChoice]
+	| [ApprovalChoice, ApprovalChoice]
+	| [ApprovalChoice, ApprovalChoice, ApprovalChoice]
+	| [ApprovalChoice, ApprovalChoice, ApprovalChoice, ApprovalChoice];
+
+function approvalOptions(
+	commandPattern: readonly string[] | undefined,
+	proposedExecPolicyPattern: readonly string[] | undefined,
+): readonly ApprovalChoice[] {
+	return Object.freeze([
+		"approve_once" as const,
+		"reject" as const,
+		...(commandPattern ? ["allow_session" as const] : []),
+		...(proposedExecPolicyPattern ? ["always_allow" as const] : []),
+	]);
+}
+
+function restoredApprovalOptions(
+	value: readonly ApprovalChoice[],
+	commandPattern: readonly string[] | undefined,
+	proposedExecPolicyPattern: readonly string[] | undefined,
+): readonly ApprovalChoice[] {
+	const available = new Set(approvalOptions(commandPattern, proposedExecPolicyPattern));
+	const restored = value.filter((choice): choice is ApprovalChoice => available.has(choice));
+	return restored.includes("approve_once") && restored.includes("reject")
+		? Object.freeze(restored)
+		: approvalOptions(commandPattern, proposedExecPolicyPattern);
+}
+
+function persistedOptions(options: readonly ApprovalChoice[]): PersistedApprovalOptions {
+	if (options.length < 1 || options.length > 4) throw new TypeError("approval options are invalid");
+	return [...options] as PersistedApprovalOptions;
+}
+
+function requiredPattern(value: readonly string[] | undefined, label: string): readonly string[] {
+	const pattern = optionalPattern(value);
+	if (!pattern) throw new ApprovalPersistenceError(`${label} pattern is unavailable.`);
+	return pattern;
+}
+
+function optionalPattern(value: unknown): readonly string[] | undefined {
+	if (!Array.isArray(value) || value.length === 0 || value.length > 16
+		|| !value.every((token) => typeof token === "string" && token.trim() && token.length <= 256)
+		|| value.reduce((total, token) => total + String(token).length, 0) > 512) return undefined;
+	return Object.freeze([...(value as string[])]);
+}
+
+function tuplePattern(value: readonly string[]): [string, ...string[]] {
+	return [...requiredPattern(value, "exec policy")] as [string, ...string[]];
+}
+
+function equalOptionalPatterns(
+	left: readonly string[] | undefined,
+	right: readonly string[] | undefined,
+): boolean {
+	if (!left || !right) return left === right;
+	return left.length === right.length && left.every((token, index) => token === right[index]);
+}
+
+function isApprovingChoice(value: ApprovalChoice): boolean {
+	return value === "approve_once" || value === "allow_session" || value === "always_allow";
 }
 
 function reasoningEffort(value: unknown): ReasoningEffort | undefined {

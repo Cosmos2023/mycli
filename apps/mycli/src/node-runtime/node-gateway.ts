@@ -575,7 +575,7 @@ class InProcessNodeGateway implements NodeGateway {
 			throw new GatewayFailure("approval_not_pending", "No pending approval is available.");
 		}
 		const choice = requiredString(params.choice, "choice");
-		if (choice !== "approve_once" && choice !== "reject") {
+		if (!isApprovalChoice(choice) || !pending.options.includes(choice)) {
 			throw new GatewayFailure("invalid_params", "Unsupported approval choice.");
 		}
 		const decisionId = requiredString(params.decision_id, "decision_id");
@@ -1576,6 +1576,13 @@ function approvalChoiceLabel(choice: PendingSessionApproval["options"][number]):
 		allow_session: "Allow for session",
 		always_allow: "Always allow",
 	}[choice];
+}
+
+function isApprovalChoice(value: string): value is PendingSessionApproval["options"][number] {
+	return value === "approve_once"
+		|| value === "reject"
+		|| value === "allow_session"
+		|| value === "always_allow";
 }
 
 function gatewayQueueItem(item: QueuedInput): JsonObject {

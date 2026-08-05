@@ -17,6 +17,7 @@ export type {
 export {
 	ApprovalContinuationCoordinator,
 	ApprovalNotPendingError,
+	ApprovalPersistenceError,
 } from "./approval-continuation-coordinator.ts";
 export type {
 	ApprovalChoice,

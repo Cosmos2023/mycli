@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { parseRuntimeState } from "@mycli/contracts";
-import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
+import {
+	ExecPolicyStore,
+	resolveConfig,
+	WorkspaceTrustStore,
+} from "@mycli/config";
 import type {
 	QueueSnapshot,
 	QueuedInput,
@@ -51,6 +55,7 @@ import {
 	PatchTool,
 	planToolExposure,
 	ReadTool,
+	resolveShellProfile,
 	ShellOutputTool,
 	ShellSessionManager,
 	ShellTool,
@@ -103,10 +108,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	): NodeGatewayRuntime => {
 		const fileSnapshots = new FileSnapshotStore();
 		const mutationRuntime = new FileMutationRuntime({ workspaceRoot, snapshots: fileSnapshots });
+		const shellProfile = resolveShellProfile({ env: options.env });
+		const execPolicyStore = new ExecPolicyStore({ homeDir, workspaceRoot });
+		const approvalPolicy = new ApprovalPolicy({
+			workspaceRoot,
+			autoApproveMedium: true,
+			shellKind: shellProfile.kind,
+		});
+		let loadExecPolicy: Promise<void> | undefined;
+		const ensureExecPolicyLoaded = (): Promise<void> => {
+			loadExecPolicy ??= execPolicyStore.load().then((rules) => {
+				approvalPolicy.replaceExecPolicyRules(rules);
+			});
+			return loadExecPolicy;
+		};
 		const shellTool = new ShellTool({
 			workspaceRoot,
 			manager: shellManager,
 			env: options.env,
+			profile: shellProfile,
 		});
 		const adapters = [
 			new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
@@ -129,6 +149,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			toolRouter,
 			publishLifecycle,
 			clock: () => new Date().toISOString(),
+			ruleStore: execPolicyStore,
+			publishExecPolicyRules: (rules) => {
+				approvalPolicy.replaceExecPolicyRules(rules);
+				loadExecPolicy = Promise.resolve();
+			},
+			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
 		});
 		approvalCoordinator.recover();
 		const queueCoordinator = new QueueCoordinator({
@@ -203,7 +229,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			publishLifecycle,
 			planTools: () => toolExposure,
 			toolRouter,
-			approvalPolicy: new ApprovalPolicy({ workspaceRoot, autoApproveMedium: true }),
+			approvalPolicy: {
+				evaluate: async (call) => {
+					await ensureExecPolicyLoaded();
+					return approvalPolicy.evaluate(call);
+				},
+			},
 			approvalCoordinator,
 			queueCoordinator,
 			providerContinuation,

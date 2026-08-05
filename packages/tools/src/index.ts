@@ -140,6 +140,30 @@ export type {
 	ApprovalPolicyOptions,
 	ApprovalPolicyRequest,
 } from "./approval-policy.ts";
+export {
+	classifyShellArgv,
+	classifyShellCommand,
+	isKnownSafeShellSegment,
+	parseShellArgv,
+	parseShellCommand,
+} from "./shell-command-policy.ts";
+export type {
+	ShellCommandClassification,
+	ShellCommandKind,
+	ShellParseResult,
+	ShellSegment,
+} from "./shell-command-policy.ts";
+export {
+	matchExecPolicyRule,
+	validateExecPolicyProposal,
+} from "./exec-policy-proposal.ts";
+export type {
+	ExecPolicyDecision,
+	ExecPolicyProposalInput,
+	ExecPolicyProposalValidation,
+	ExecPolicyRule,
+	ExecPolicySource,
+} from "./exec-policy-proposal.ts";
 export type {
 	BuiltInToolManifest,
 	ToolAdapter,

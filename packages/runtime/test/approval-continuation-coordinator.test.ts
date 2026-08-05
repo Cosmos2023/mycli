@@ -4,6 +4,7 @@ import type { RuntimeStateRecord, RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
 	transitionApproval,
+	type ApprovalChoice,
 	type ApprovalResolution,
 	type ApprovalTransition,
 	type CanonicalToolCall,
@@ -159,12 +160,86 @@ test("interrupt during claimed tool execution becomes an ambiguous effect", asyn
 	assert.equal(fixture.trace.at(-1), "store:interrupt_unknown");
 });
 
+test("always allow persists reloads and publishes before claiming one effect", async () => {
+	const fixture = approvalFixture({ shellApproval: true });
+	const pending = fixture.coordinator.suspend(suspension(true));
+
+	assert.deepEqual(pending.options, [
+		"approve_once",
+		"reject",
+		"allow_session",
+		"always_allow",
+	]);
+	assert.deepEqual(pending.proposedExecPolicyPattern, ["python", "-m", "pytest"]);
+	assert.deepEqual(fixture.reopen().pending()?.proposedExecPolicyPattern, [
+		"python",
+		"-m",
+		"pytest",
+	]);
+
+	const result = await fixture.coordinator.resolve({
+		decisionId: "call-1",
+		choice: "always_allow",
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(fixture.executeCalls, 1);
+	assert.deepEqual(fixture.persistedPatterns, [["python", "-m", "pytest"]]);
+	assert.deepEqual(fixture.trace, [
+		"store:suspend",
+		"rules:allow",
+		"rules:load",
+		"rules:publish",
+		"store:approve_once",
+		"store:claim_effect",
+		"router:execute",
+		"store:commit_result",
+	]);
+});
+
+test("refresh failure after persistence leaves approval pending and never claims the effect", async () => {
+	const fixture = approvalFixture({ shellApproval: true, refreshFailure: true });
+	fixture.coordinator.suspend(suspension(true));
+
+	await assert.rejects(fixture.coordinator.resolve({
+		decisionId: "call-1",
+		choice: "always_allow",
+		signal: new AbortController().signal,
+	}), /refresh failed/u);
+
+	assert.equal(fixture.effect.status, "waiting");
+	assert.equal(fixture.executeCalls, 0);
+	assert.equal(fixture.state.has("pending_decision"), true);
+	assert.equal(fixture.state.has("suspended_turn"), true);
+	assert.deepEqual(fixture.trace, [
+		"store:suspend",
+		"rules:allow",
+		"rules:load",
+		"rules:publish",
+	]);
+});
+
+test("allow session publishes the exact command pattern before claiming one effect", async () => {
+	const fixture = approvalFixture({ shellApproval: true });
+	fixture.coordinator.suspend(suspension(true));
+
+	await fixture.coordinator.resolve({
+		decisionId: "call-1",
+		choice: "allow_session",
+		signal: new AbortController().signal,
+	});
+
+	assert.deepEqual(fixture.sessionPatterns, [["python", "-m", "pytest"]]);
+	assert.ok(fixture.trace.indexOf("rules:allow_session") < fixture.trace.indexOf("store:claim_effect"));
+});
+
 interface CoordinatorContract {
 	suspend(input: ReturnType<typeof suspension>): PendingContract;
 	pending(): PendingContract | undefined;
 	resolve(input: {
 		readonly decisionId: string;
-		readonly choice: "approve_once" | "reject";
+		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
 	}): Promise<{ readonly status: string; readonly continuation?: PendingContract }>;
@@ -176,12 +251,15 @@ interface PendingContract {
 	readonly decisionId: string;
 	readonly callId: string;
 	readonly options: readonly string[];
+	readonly proposedExecPolicyPattern?: readonly string[];
 }
 
 function approvalFixture(options: {
 	readonly effectStatus?: ApprovalResolution["status"];
 	readonly executeAbort?: boolean;
 	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
+	readonly shellApproval?: boolean;
+	readonly refreshFailure?: boolean;
 } = {}) {
 	const trace: string[] = [];
 	const state = new Map<string, RuntimeStateRecord>();
@@ -189,6 +267,8 @@ function approvalFixture(options: {
 	let committedResult: AppendToolResultInput | undefined;
 	let interruptedErrorKind: string | undefined;
 	let executionOptions: ToolExecutionOptions | undefined;
+	const persistedPatterns: string[][] = [];
+	const sessionPatterns: string[][] = [];
 	let effect = checkpoint(options.effectStatus ?? "waiting");
 	if (options.effectStatus) {
 		state.set("pending_decision", pendingDecision());
@@ -290,6 +370,30 @@ function approvalFixture(options: {
 			toolRouter: router,
 			clock: () => NOW,
 			publishLifecycle: options.publishLifecycle ?? (() => undefined),
+			ruleStore: {
+				allow: async (pattern: readonly string[]) => {
+					trace.push("rules:allow");
+					persistedPatterns.push([...pattern]);
+					return { status: "created", patternHash: "0123456789abcdef" };
+				},
+				load: async () => {
+					trace.push("rules:load");
+					return persistedPatterns.map((pattern, index) => ({
+						source: "user",
+						index,
+						pattern,
+						decision: "allow",
+					}));
+				},
+			},
+			publishExecPolicyRules: () => {
+				trace.push("rules:publish");
+				if (options.refreshFailure) throw new Error("refresh failed");
+			},
+			allowSession: (pattern: readonly string[]) => {
+				trace.push("rules:allow_session");
+				sessionPatterns.push([...pattern]);
+			},
 		});
 	};
 	const coordinator = createCoordinator();
@@ -303,6 +407,8 @@ function approvalFixture(options: {
 		get committedResult() { return committedResult; },
 		get interruptedErrorKind() { return interruptedErrorKind; },
 		get executionOptions() { return executionOptions; },
+		persistedPatterns,
+		sessionPatterns,
 	};
 }
 
@@ -323,13 +429,13 @@ function shellLifecycleEvent(): ShellLifecycleEvent {
 	};
 }
 
-function suspension() {
+function suspension(shell = false) {
 	return {
 		clientTurnId: "client-1",
 		turnId: "turn-1",
-		userMessage: "write the notes",
+		userMessage: shell ? "run the tests" : "write the notes",
 		providerProtocol: "responses" as const,
-		call: writeCall(),
+		call: shell ? shellCall() : writeCall(),
 		remainingCalls: Object.freeze([] as CanonicalToolCall[]),
 		conversation: Object.freeze([{ role: "user" as const, content: "write the notes" }]),
 		assistantText: "",
@@ -337,6 +443,21 @@ function suspension() {
 		usage: Object.freeze({ input_tokens: 10 }),
 		preview: "Write notes.txt",
 		reason: "Workspace mutation requires one-time approval.",
+		...(shell ? {
+			commandPattern: ["python", "-m", "pytest"],
+			proposedExecPolicyPattern: ["python", "-m", "pytest"],
+		} : {}),
+	};
+}
+
+function shellCall(): CanonicalToolCall {
+	return {
+		callId: "call-1",
+		name: "Shell",
+		argumentsJson: JSON.stringify({
+			command: "python -m pytest -q",
+			prefix_rule: ["python", "-m", "pytest"],
+		}),
 	};
 }
 

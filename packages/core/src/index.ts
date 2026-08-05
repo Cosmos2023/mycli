@@ -68,10 +68,14 @@ export type {
 } from "./turn-state.ts";
 export type {
 	CanonicalConversationItem,
+	ApprovalChoice,
 	CanonicalMessage,
 	CanonicalToolCall,
 	CanonicalToolResult,
 	ClientTurnId,
+	ExecPolicyDecision,
+	ExecPolicyRule,
+	ExecPolicySource,
 	ProtocolId,
 	ProviderEvent,
 	ProviderId,

@@ -12,6 +12,7 @@ import {
 import {
 	QueueCoordinator,
 	SessionCoordinator,
+	type PendingApprovalChoice,
 	type PreparedSession,
 	type QueueCoordinatorStore,
 	type TurnSubmission,
@@ -40,6 +41,7 @@ function gatewayHarness(options: {
 		readonly targetQueue?: QueueSnapshot;
 		readonly initialPendingApproval?: boolean;
 		readonly targetPendingApproval?: boolean;
+		readonly approvalOptions?: readonly PendingApprovalChoice[];
 	};
 	queue?: {
 		readonly initial?: QueueSnapshot;
@@ -56,7 +58,7 @@ function gatewayHarness(options: {
 	const submissions: TurnSubmission[] = [];
 	const approvalResolutions: Array<{
 		readonly decisionId: string;
-		readonly choice: "approve_once" | "reject";
+		readonly choice: PendingApprovalChoice;
 	}> = [];
 	const reservedClientTurnIds: string[] = [];
 	const queue = options.queue
@@ -86,7 +88,7 @@ function gatewayHarness(options: {
 			return reserve(submission);
 		},
 		resolveApproval: async (
-			input: { readonly decisionId: string; readonly choice: "approve_once" | "reject" },
+			input: { readonly decisionId: string; readonly choice: PendingApprovalChoice },
 			emit: (event: RuntimeEvent) => void,
 			runtimeOptions: { readonly signal: AbortSignal },
 		) => {
@@ -402,6 +404,30 @@ test("approval respond resumes the owning turn without reserving a new turn", as
 	assert.equal(projected.params.generation, 1);
 	parseGatewayEvent(projected);
 
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("approval respond accepts always allow only when the pending backend option offers it", async () => {
+	const harness = gatewayHarness({
+		sessions: {
+			initialPendingApproval: true,
+			approvalOptions: ["approve_once", "reject", "allow_session", "always_allow"],
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("approval.respond", {
+		decision_id: "decision-session-node",
+		choice: "always_allow",
+		generation: 1,
+	});
+
+	assert.ok("result" in response, JSON.stringify(response));
+	assert.deepEqual(harness.approvalResolutions, [{
+		decisionId: "decision-session-node",
+		choice: "always_allow",
+	}]);
 	harness.releaseTurn();
 	await harness.gateway.close();
 });
@@ -1321,6 +1347,7 @@ function gatewaySessionCoordinator(
 		readonly targetQueue?: QueueSnapshot;
 		readonly initialPendingApproval?: boolean;
 		readonly targetPendingApproval?: boolean;
+		readonly approvalOptions?: readonly PendingApprovalChoice[];
 	},
 ): SessionCoordinator<NodeGatewayRuntime> {
 	return new SessionCoordinator({
@@ -1330,6 +1357,7 @@ function gatewaySessionCoordinator(
 			false,
 			emptyQueue("session-node"),
 			options.initialPendingApproval ?? false,
+			options.approvalOptions,
 		),
 		prepare: async (sessionId) => {
 			await options.prepareTarget?.();
@@ -1344,6 +1372,7 @@ function gatewaySessionCoordinator(
 				options.targetReadOnly ?? false,
 				options.targetQueue,
 				options.targetPendingApproval ?? false,
+				options.approvalOptions,
 			);
 		},
 		listSessions: () => [
@@ -1365,6 +1394,7 @@ function preparedGatewaySession(
 	readOnly = false,
 	queue: QueueSnapshot = emptyQueue(sessionId),
 	pendingApproval = false,
+	approvalOptions: readonly PendingApprovalChoice[] = ["approve_once", "reject"],
 ): PreparedSession<NodeGatewayRuntime> {
 	return {
 		sessionId,
@@ -1381,7 +1411,7 @@ function preparedGatewaySession(
 			toolName: "Write",
 			preview: "Write notes.txt",
 			reason: "Approval required",
-			options: ["approve_once", "reject"],
+			options: approvalOptions,
 		} } : {}),
 		suspendedTurn: pendingApproval,
 		readOnly,
