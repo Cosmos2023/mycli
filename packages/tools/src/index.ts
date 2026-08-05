@@ -5,6 +5,7 @@ export {
 	READ_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
+export { combinedToolManifest } from "./combined-manifest.ts";
 export { planToolExposure } from "./exposure-planner.ts";
 export type { ToolExposureCapabilities } from "./exposure-planner.ts";
 export { executionPolicy } from "./execution-policy.ts";
@@ -195,10 +196,19 @@ export type {
 } from "./exec-policy-proposal.ts";
 export type {
 	BuiltInToolManifest,
+	CombinedToolManifest,
+	ExtensionToolManifestEntry,
+	ExtensionToolSource,
+	ManifestToolRegistration,
 	ToolAdapter,
 	ToolAdapterResult,
 	ToolExecutionOptions,
 	ToolExecutionResult,
 	ToolManifestEntry,
 	ToolRouterContract,
+} from "./types.ts";
+export {
+	EXTENSION_ORIGIN_MAX_ENTRIES,
+	EXTENSION_ORIGIN_MAX_KEY_LENGTH,
+	EXTENSION_ORIGIN_MAX_VALUE_LENGTH,
 } from "./types.ts";

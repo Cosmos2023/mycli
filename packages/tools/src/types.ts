@@ -24,6 +24,26 @@ export interface ToolManifestEntry extends ToolDefinition {
 	readonly model_visible: boolean;
 }
 
+export type ExtensionToolSource = "mcp" | "plugin" | "skill" | "subagent";
+
+export const EXTENSION_ORIGIN_MAX_ENTRIES = 16;
+export const EXTENSION_ORIGIN_MAX_KEY_LENGTH = 64;
+export const EXTENSION_ORIGIN_MAX_VALUE_LENGTH = 160;
+
+export interface ManifestToolRegistration {
+	readonly id: string;
+	readonly source: ExtensionToolSource;
+	readonly definition: ToolDefinition;
+	readonly originMetadata: Readonly<Record<string, string>>;
+}
+
+export interface ExtensionToolManifestEntry extends ToolDefinition {
+	readonly source: ExtensionToolSource;
+	readonly toolset: "external";
+	readonly availability: { readonly status: "available" };
+	readonly origin_metadata: Readonly<Record<string, string>>;
+}
+
 export interface ToolParameterManifest {
 	readonly name: string;
 	readonly type: "string" | "integer" | "number" | "boolean" | "array" | "object";
@@ -39,6 +59,16 @@ export interface BuiltInToolManifest {
 		readonly tool_count: number;
 	}[];
 	readonly tools: readonly ToolManifestEntry[];
+}
+
+export interface CombinedToolManifest {
+	readonly schema_version: 1;
+	readonly source: "combined";
+	readonly toolsets: readonly {
+		readonly id: string;
+		readonly tool_count: number;
+	}[];
+	readonly tools: readonly (ToolManifestEntry | ExtensionToolManifestEntry)[];
 }
 
 export interface ToolExecutionOptions {

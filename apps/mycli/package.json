@@ -22,6 +22,7 @@
     "@mycli/config": "0.1.0",
     "@mycli/contracts": "0.1.0",
     "@mycli/core": "0.1.0",
+    "@mycli/integrations": "0.1.0",
     "@mycli/providers": "0.1.0",
     "@mycli/runtime": "0.1.0",
     "@mycli/storage": "0.1.0",
