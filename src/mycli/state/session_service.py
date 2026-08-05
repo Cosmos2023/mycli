@@ -59,6 +59,12 @@ from mycli.state.session_serialization import (
 logger = logging.getLogger(__name__)
 
 
+class SessionStateVersionUnsupportedError(ValueError):
+    """Raised when persisted runtime state uses an unsupported version."""
+
+    code = "session_state_version_unsupported"
+
+
 def _stable_json_hash(payload: object) -> str:
     encoded = json.dumps(
         payload,
@@ -327,7 +333,12 @@ class SessionService:
         return checkpoint
 
     def load_compact_checkpoint(self, session_id: str) -> dict[str, object] | None:
-        return self._load_state_object(session_id, self._KEY_COMPACT_CHECKPOINT)
+        checkpoint = self._load_state_object(session_id, self._KEY_COMPACT_CHECKPOINT)
+        if checkpoint is not None and checkpoint.get("version") != 1:
+            raise SessionStateVersionUnsupportedError(
+                "compact_checkpoint uses an unsupported state version"
+            )
+        return checkpoint
 
     def save_context_baseline(
         self,

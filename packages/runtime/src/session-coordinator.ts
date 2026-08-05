@@ -5,6 +5,8 @@ import type {
 	SessionOverview,
 	TranscriptItem,
 } from "@mycli/storage";
+import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
+import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
 export type PendingApprovalChoice =
 	| "approve_once"
@@ -52,6 +54,7 @@ export interface SessionCoordinatorOptions<Binding> {
 	readonly prepare: (sessionId: string) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
 	readonly listSessions: (query?: SessionListQuery) => readonly SessionOverview[];
 	readonly loadSessionLineage: (sessionId: string) => readonly SessionLineageNode[];
+	readonly failpoint?: RuntimeFailpointHook;
 }
 
 export type SessionTransitionErrorCode =
@@ -70,6 +73,7 @@ export class SessionCoordinator<Binding> {
 	readonly #prepareSession: SessionCoordinatorOptions<Binding>["prepare"];
 	readonly #listSessions: SessionCoordinatorOptions<Binding>["listSessions"];
 	readonly #loadSessionLineage: SessionCoordinatorOptions<Binding>["loadSessionLineage"];
+	readonly #failpoint: RuntimeFailpointHook;
 	#snapshot: ActiveSessionSnapshot<Binding>;
 	#executing = false;
 	#transitioning = false;
@@ -79,6 +83,7 @@ export class SessionCoordinator<Binding> {
 		this.#prepareSession = options.prepare;
 		this.#listSessions = options.listSessions;
 		this.#loadSessionLineage = options.loadSessionLineage;
+		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
 
 	snapshot(): ActiveSessionSnapshot<Binding> {
@@ -158,6 +163,7 @@ export class SessionCoordinator<Binding> {
 		this.#transitioning = true;
 		try {
 			const prepared = freezePrepared(await this.#prepareSession(normalized));
+			this.#failpoint("session_after_prepare");
 			if (this.#executing) {
 				throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
 			}
@@ -171,6 +177,7 @@ export class SessionCoordinator<Binding> {
 				throw new SessionTransitionError("session_state_invalid", "session generation is exhausted");
 			}
 			this.#snapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			this.#failpoint("session_after_commit");
 			return this.#snapshot;
 		} finally {
 			this.#transitioning = false;

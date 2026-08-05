@@ -1562,3 +1562,102 @@ const completed = store.completeTurn(turn);
 const snapshotWritten = await writeTerminalSnapshot(completed);
 if (snapshotWritten) await memory.applyExplicitActions(message);
 ```
+
+## Scenario: M5 Cross-Backend Recovery Corpus And Fault Injection
+
+### 1. Scope / Trigger
+
+- Trigger: changes to M5 session state serialization, recovery ordering, SQLite transactions,
+  transcript snapshots, workspace memory writes, or session generation commits.
+- The parity gate spans Python and Node writers/readers. Fault injection must exercise the real
+  owning store or coordinator instead of a duplicate test-only state machine.
+
+### 2. Signatures
+
+- Shared fixture: `tests/fixtures/node_runtime_m5/state_recovery_contract.json`.
+- Node JSONL helper command: `{action, db_path, fixture_path}` where `action` is `write`, `read`,
+  or `read_invalid`; each input line produces exactly one JSON array line.
+- Runtime injection: `RuntimeFailpointHook = (name: RuntimeFailpoint) => void` on queue, approval,
+  compaction, memory, and session coordinators. The default hook is a no-op.
+- Storage injection: `SQLiteSessionStoreOptions.stateFailpoint(name)` covers reservation and
+  transaction-internal state boundaries.
+
+### 3. Contracts
+
+- The four-way matrix is Python/Python, Python/Node, Node/Python, and Node/Node. Readers emit only
+  normalized ids, ordering, counts, enum states, error codes, and preservation booleans.
+- The shared corpus covers catalog/replay/summaries, pending and reconciled queues, waiting and
+  legacy approval state, executing effects, completed compaction, ineligible Responses state,
+  compatible unknown optional fields, malformed roots, and unsupported versions.
+- A `*_before_*` failpoint fires before the durable operation and leaves no new durable state.
+  A matching `*_after_*` failpoint fires after the durable operation but before in-memory
+  publication or the next side effect.
+- Reservation after-failure retains exactly one user and running turn; restart interrupts it
+  without a provider replay. Queue after-save retains exactly one pending item without publishing
+  the new revision in the crashed coordinator.
+- Approval resolution and effect claim are separate durable boundaries. An approved checkpoint
+  may retry the claim, while an executing checkpoint becomes `effect_outcome_unknown` and never
+  invokes the tool again.
+- A crash after a compaction summary response leaves the `in_progress` fingerprint durable. The
+  next coordinator clears it as interrupted and sends no automatic summary request.
+- Memory topic/index failpoints leave the atomically renamed topic discoverable through `scan()`
+  without claiming an index entry that was not durably written.
+- Session prepare failure keeps the source generation active. Session commit failure may expose
+  the committed target generation, and same-session retry remains idempotent.
+
+### 4. Validation & Error Matrix
+
+- Malformed persisted root -> `session_state_invalid`; do not return a partial normalized case.
+- Unsupported compact state version -> `session_state_version_unsupported` in both readers.
+- Node helper emits zero or multiple JSONL rows -> helper protocol failure.
+- Failure before reservation/save/prepare -> zero new durable records and no publication.
+- Failure after effect claim -> one `effect_outcome_unknown` result, zero tool retries.
+- Failure after tool result append inside its SQLite transaction -> roll back result and
+  checkpoint together, then recover one unknown result.
+- Failure before snapshot rename -> prior complete snapshot remains readable.
+
+### 5. Good/Base/Bad Cases
+
+- Good: inject after queue save, reopen from the durable snapshot, and observe one pending record
+  with no pre-crash publication.
+- Good: write compatible unknown fields in Python, read them through Node, and report only a
+  `preserved=true` structural assertion.
+- Base: with no failpoint callback, normal runtime behavior and event ordering are unchanged.
+- Bad: catch an injected crash as an ordinary summary failure and delete its in-progress
+  checkpoint; restart could resend an already completed provider request.
+- Bad: print raw state, prompt, provider output, memory content, endpoint, or credentials from the
+  parity helper.
+
+### 6. Tests Required
+
+- Pytest must run the four writer/reader directions and both invalid-state readers against the
+  shared sanitized fixture.
+- Storage tests assert before/after reservation, queue history/removal rollback, approval
+  suspension/result rollback, compact rollback, orphan interruption, and one synthetic unmatched
+  tool result.
+- Runtime tests assert queue publication ordering, approval/effect recovery, filesystem-commit
+  ambiguity, no compaction-summary replay, snapshot rename preservation, memory topic/index
+  recovery, and session generation isolation.
+- Run `uv run pytest tests/integration/test_node_runtime_m5_parity.py -q`, storage/runtime package
+  tests, lint, typecheck, contracts drift, and the M4 regression gate.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const summary = await summarize(input);
+try {
+	failpoint("compaction_after_summary_request");
+} catch {
+	store.deleteState(sessionId, "compact_checkpoint");
+}
+```
+
+#### Correct
+
+```typescript
+const summary = await summarize(input);
+failpoint("compaction_after_summary_request"); // Keep in_progress on injected crash.
+store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
+```

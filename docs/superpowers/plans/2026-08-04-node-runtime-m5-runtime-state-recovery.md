@@ -1014,7 +1014,7 @@ git commit -m "feat(node-runtime): compose M5 stateful turns"
 - Modify: `packages/storage/test/recovery.test.ts`
 - Create: `packages/runtime/test/m5-fault-injection.test.ts`
 
-- [ ] **Step 1: Define the sanitized parity and failpoint corpus**
+- [x] **Step 1: Define the sanitized parity and failpoint corpus**
 
 The JSON fixture enumerates state cases with writer, reader, state key, expected normalized value,
 and expected failure/recovery:
@@ -1035,7 +1035,7 @@ and expected failure/recovery:
 Include catalog/replay/summaries, valid unknown optional fields, malformed root types, unsupported
 versions, legacy approval duplicates, and queue history reconciliation.
 
-- [ ] **Step 2: Write the failing four-way pytest matrix**
+- [x] **Step 2: Write the failing four-way pytest matrix**
 
 ```py
 @pytest.mark.parametrize("writer,reader", [
@@ -1047,26 +1047,26 @@ def test_m5_state_round_trip(writer: str, reader: str, tmp_path: Path) -> None:
     assert result["failed"] == []
 ```
 
-- [ ] **Step 3: Write failing crash-boundary tests**
+- [x] **Step 3: Write failing crash-boundary tests**
 
 Inject before/after reservation, queue save/response, queue history/removal, approval suspension,
 approval resolution, effect claim, filesystem commit, tool result, summary request, compact commit,
 snapshot rename, memory topic/index, and session prepare/commit. Each test asserts one user item,
 one queue commit, at most one effect/result, no automatic provider replay, and session isolation.
 
-- [ ] **Step 4: Run parity and fault tests and capture failures**
+- [x] **Step 4: Run parity and fault tests and capture failures**
 
 Run: `uv run pytest tests/integration/test_node_runtime_m5_parity.py -q && node --import tsx --test packages/runtime/test/m5-fault-injection.test.ts packages/storage/test/recovery.test.ts`
 
 Expected: FAIL until all adapters normalize the shared corpus and failpoints.
 
-- [ ] **Step 5: Implement parity helpers and close recovery gaps**
+- [x] **Step 5: Implement parity helpers and close recovery gaps**
 
 The TypeScript helper reads commands as JSONL and emits only normalized structural fields. The
 Python helper uses production serializers/stores, never duplicate test-only schema logic. Fix any
 differences in the owning package; do not weaken fixtures or add language-specific exceptions.
 
-- [ ] **Step 6: Run the full M5 parity and recovery matrix**
+- [x] **Step 6: Run the full M5 parity and recovery matrix**
 
 Run: `uv run pytest tests/integration/test_node_runtime_m5_parity.py -q && npm run test --workspace @mycli/storage && npm run test --workspace @mycli/runtime`
 

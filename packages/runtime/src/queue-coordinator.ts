@@ -18,6 +18,8 @@ import type {
 	QueueSnapshot,
 	QueuedInput,
 } from "@mycli/core";
+import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
+import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
 export interface QueueCoordinatorStore {
 	loadCommittedQueueIds(): ReadonlySet<string>;
@@ -56,6 +58,7 @@ export interface QueueCoordinatorOptions {
 	readonly createQueueId: () => string;
 	readonly clock: () => string;
 	readonly publish?: (snapshot: QueueSnapshot) => void;
+	readonly failpoint?: RuntimeFailpointHook;
 }
 
 export type QueueListener = (snapshot: QueueSnapshot) => void;
@@ -64,6 +67,7 @@ export class QueueCoordinator {
 	readonly #store: QueueCoordinatorStore;
 	readonly #createQueueId: () => string;
 	readonly #clock: () => string;
+	readonly #failpoint: RuntimeFailpointHook;
 	readonly #listeners = new Set<QueueListener>();
 	#snapshot: QueueSnapshot;
 
@@ -71,6 +75,7 @@ export class QueueCoordinator {
 		this.#store = options.store;
 		this.#createQueueId = options.createQueueId;
 		this.#clock = options.clock;
+		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 		if (options.publish) this.#listeners.add(options.publish);
 		const restored = restoreQueue(options.initial, {
 			committedQueueIds: options.store.loadCommittedQueueIds(),
@@ -192,7 +197,9 @@ export class QueueCoordinator {
 
 	#persist(candidate: QueueSnapshot): QueueSnapshot {
 		if (candidate === this.#snapshot) return this.#snapshot;
+		this.#failpoint("queue_before_save");
 		this.#store.saveSnapshot(candidate);
+		this.#failpoint("queue_after_save");
 		this.#acceptPersisted(candidate);
 		return candidate;
 	}

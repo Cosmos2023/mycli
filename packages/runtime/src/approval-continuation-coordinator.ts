@@ -25,6 +25,8 @@ import type {
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
+import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
+import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
 export type ApprovalChoice = "approve_once" | "reject";
 
@@ -130,6 +132,7 @@ export interface ApprovalContinuationCoordinatorOptions {
 	readonly store: ApprovalContinuationStore;
 	readonly toolRouter: ToolRouterContract;
 	readonly clock: () => string;
+	readonly failpoint?: RuntimeFailpointHook;
 }
 
 export class ApprovalNotPendingError extends Error {
@@ -148,6 +151,7 @@ export class ApprovalContinuationCoordinator {
 	readonly #store: ApprovalContinuationStore;
 	readonly #toolRouter: ToolRouterContract;
 	readonly #clock: () => string;
+	readonly #failpoint: RuntimeFailpointHook;
 
 	constructor(options: ApprovalContinuationCoordinatorOptions) {
 		this.#sessionId = nonEmpty(options.sessionId, "sessionId");
@@ -156,6 +160,7 @@ export class ApprovalContinuationCoordinator {
 		this.#store = options.store;
 		this.#toolRouter = options.toolRouter;
 		this.#clock = options.clock;
+		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
 
 	suspend(input: ApprovalSuspensionInput): PendingApprovalContinuation {
@@ -244,12 +249,14 @@ export class ApprovalContinuationCoordinator {
 			expectedStatus: checkpoint.status,
 			transition: { type: "approve_once" },
 		});
+		this.#failpoint("approval_after_resolution");
 		const fingerprint = effectFingerprint(pending.call);
 		const executing = this.#store.compareAndSetApproval({
 			sessionId: this.#sessionId,
 			expectedStatus: "approved",
 			transition: { type: "claim_effect", fingerprint },
 		});
+		this.#failpoint("effect_after_claim");
 		if (approved.status !== "approved" || executing.status !== "executing") {
 			throw new ApprovalConflictError(executing.status, "claim_effect");
 		}

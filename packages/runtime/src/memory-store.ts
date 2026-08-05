@@ -11,6 +11,8 @@ import {
 	unlink,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
+import type { RuntimeFailpointHook } from "./fault-injection.ts";
 import { compareUnicodeCodePoints } from "./memory-ordering.ts";
 import { deterministicMemorySelection } from "./memory-selector.ts";
 
@@ -84,6 +86,7 @@ export interface MemoryStoreOptions {
 	readonly lockTimeoutMs?: number;
 	readonly lockStaleMs?: number;
 	readonly lockRetryDelayMs?: number;
+	readonly failpoint?: RuntimeFailpointHook;
 }
 
 export type MemoryStoreErrorKind =
@@ -137,6 +140,7 @@ export class MemoryStore {
 	readonly #lockTimeoutMs: number;
 	readonly #lockStaleMs: number;
 	readonly #lockRetryDelayMs: number;
+	readonly #failpoint: RuntimeFailpointHook;
 	#mutationTail: Promise<void> = Promise.resolve();
 	#directoryPromise: Promise<string> | undefined;
 	#realDirectoryPromise: Promise<string> | undefined;
@@ -161,6 +165,7 @@ export class MemoryStore {
 			options.lockRetryDelayMs ?? DEFAULT_LOCK_RETRY_DELAY_MS,
 			"lockRetryDelayMs",
 		);
+		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
 
 	directory(): Promise<string> {
@@ -240,6 +245,14 @@ export class MemoryStore {
 		].join("\n");
 		try {
 			ownedTopic = await this.#atomicWrite(topicPath, rendered);
+		} catch (error) {
+			await this.#unlinkOwnedFile(ownedTopic);
+			if (error instanceof MemoryStoreError) throw error;
+			throw new MemoryStoreError("memory_write_failed", { operation: "remember_topic" });
+		}
+		this.#failpoint("memory_after_topic_write");
+		this.#failpoint("memory_before_index_write");
+		try {
 			const existing = await this.#rawEntrypoint();
 			const lines = existing.split(/\r\n|\n|\r/u).filter(
 				(line) => line.trim() && !line.includes(`](${filename})`),
@@ -251,7 +264,7 @@ export class MemoryStore {
 		} catch (error) {
 			await this.#unlinkOwnedFile(ownedTopic);
 			if (error instanceof MemoryStoreError) throw error;
-			throw new MemoryStoreError("memory_write_failed", { operation: "remember" });
+			throw new MemoryStoreError("memory_write_failed", { operation: "remember_index" });
 		}
 		return Object.freeze({
 			filename,

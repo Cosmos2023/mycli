@@ -1,0 +1,440 @@
+{
+  "version": 1,
+  "workspace_root": "/workspace",
+  "cases": [
+    {
+      "id": "catalog-replay-summary",
+      "session_id": "m5-catalog",
+      "state_key": null,
+      "expect": "catalog_replay_summary",
+      "conversation": [
+        {
+          "role": "user",
+          "content": "fixture question"
+        },
+        {
+          "role": "assistant",
+          "content": "fixture answer"
+        }
+      ],
+      "history_items": [
+        {
+          "id": "turn-catalog:user:1",
+          "thread_id": "m5-catalog",
+          "turn_id": "turn-catalog",
+          "type": "user_message",
+          "text": "fixture question",
+          "tool_name": null,
+          "call_id": null,
+          "metadata": {}
+        },
+        {
+          "id": "turn-catalog:assistant:1",
+          "thread_id": "m5-catalog",
+          "turn_id": "turn-catalog",
+          "type": "assistant_message",
+          "text": "fixture answer",
+          "tool_name": null,
+          "call_id": null,
+          "metadata": {}
+        }
+      ],
+      "summaries": [
+        "fixture summary"
+      ],
+      "expected": {
+        "conversation_roles": [
+          "user",
+          "assistant"
+        ],
+        "history_types": [
+          "user_message",
+          "assistant_message"
+        ],
+        "summary_count": 1
+      }
+    },
+    {
+      "id": "queue-pending",
+      "session_id": "m5-queue-pending",
+      "state_key": "input_queue",
+      "expect": "pending_once",
+      "payload": {
+        "session_id": "m5-queue-pending",
+        "revision": 1,
+        "pending_steers": [
+          {
+            "queue_id": "queue-pending-1",
+            "session_id": "m5-queue-pending",
+            "client_turn_id": "client-queue-pending-1",
+            "target_turn_id": "turn-queue-pending",
+            "kind": "pending_steer",
+            "state": "accepted",
+            "text": "fixture steer",
+            "image_paths": [],
+            "source": "user",
+            "created_at": "2026-08-05T00:00:00.000Z",
+            "updated_at": "2026-08-05T00:00:00.000Z",
+            "python_optional_record": "preserved"
+          }
+        ],
+        "rejected_steers": [],
+        "follow_ups": [],
+        "python_optional_queue": "preserved"
+      },
+      "expected": {
+        "revision": 1,
+        "pending_ids": [
+          "queue-pending-1"
+        ],
+        "committed_ids": [],
+        "optional_fields_preserved": true
+      }
+    },
+    {
+      "id": "queue-history-reconciled",
+      "session_id": "m5-queue-reconciled",
+      "state_key": "input_queue",
+      "expect": "history_committed_once",
+      "committed_input": {
+        "queue_id": "queue-committed-1",
+        "session_id": "m5-queue-reconciled",
+        "client_turn_id": "client-queue-committed-1",
+        "target_turn_id": "turn-queue-reconciled",
+        "kind": "pending_steer",
+        "state": "accepted",
+        "text": "fixture committed steer",
+        "image_paths": [],
+        "source": "user",
+        "created_at": "2026-08-05T00:00:00.000Z",
+        "updated_at": "2026-08-05T00:00:00.000Z"
+      },
+      "payload": {
+        "session_id": "m5-queue-reconciled",
+        "revision": 2,
+        "pending_steers": [],
+        "rejected_steers": [],
+        "follow_ups": [],
+        "python_optional_queue": "preserved"
+      },
+      "history_items": [
+        {
+          "id": "turn-queue-reconciled:queue:queue-committed-1",
+          "thread_id": "m5-queue-reconciled",
+          "turn_id": "turn-queue-reconciled",
+          "type": "user_message",
+          "text": "fixture committed steer",
+          "tool_name": null,
+          "call_id": null,
+          "metadata": {
+            "client_turn_id": "client-queue-committed-1",
+            "queue_id": "queue-committed-1",
+            "source": "user",
+            "image_paths": []
+          }
+        }
+      ],
+      "expected": {
+        "revision": 2,
+        "pending_ids": [],
+        "committed_ids": [
+          "queue-committed-1"
+        ],
+        "optional_fields_preserved": true
+      }
+    },
+    {
+      "id": "approval-waiting",
+      "session_id": "m5-approval-waiting",
+      "state_key": "suspended_turn",
+      "expect": "reemit_choice",
+      "states": [
+        {
+          "state_key": "pending_decision",
+          "payload": {
+            "tool_call": {
+              "name": "Write",
+              "arguments": {
+                "file_path": "fixture.txt",
+                "content": "fixture content"
+              },
+              "reason": "fixture",
+              "call_id": "call-approval-1"
+            },
+            "kind": "needs_choice",
+            "reason": "approval required",
+            "preview": "Write fixture.txt",
+            "options": [
+              "approve_once",
+              "reject"
+            ],
+            "python_optional_decision": "preserved"
+          }
+        },
+        {
+          "state_key": "suspended_turn",
+          "payload": {
+            "user_message": "write fixture",
+            "conversation": [
+              {
+                "role": "user",
+                "content": "write fixture",
+                "tool_call_id": null,
+                "response_id": null,
+                "metadata": {},
+                "blocks": [],
+                "tool_calls": []
+              }
+            ],
+            "suspend_reason": "approval_required",
+            "plan_items": [],
+            "pending_approval": {
+              "tool_call": {
+                "name": "Write",
+                "arguments": {
+                  "file_path": "fixture.txt",
+                  "content": "fixture content"
+                },
+                "reason": "fixture",
+                "call_id": "call-approval-1"
+              },
+              "reason": "approval required",
+              "preview": "Write fixture.txt"
+            },
+            "pending_clarification": null,
+            "session_id": "m5-approval-waiting",
+            "client_turn_id": "client-approval-1",
+            "turn_id": "turn-approval-1",
+            "provider_protocol": "responses",
+            "remaining_tool_calls": [],
+            "continuation": {
+              "assistant_text": "",
+              "usage": {}
+            }
+          }
+        },
+        {
+          "state_key": "node_effect_checkpoint",
+          "payload": {
+            "session_id": "m5-approval-waiting",
+            "client_turn_id": "client-approval-1",
+            "turn_id": "turn-approval-1",
+            "decision_id": "call-approval-1",
+            "call_id": "call-approval-1",
+            "tool_name": "Write",
+            "status": "waiting",
+            "updated_at": "2026-08-05T00:00:00.000Z"
+          }
+        }
+      ],
+      "expected": {
+        "decision_id": "call-approval-1",
+        "effect_status": "waiting",
+        "suspend_reason": "approval_required",
+        "conversation_user_count": 1,
+        "optional_fields_preserved": true
+      }
+    },
+    {
+      "id": "approval-legacy-duplicate",
+      "session_id": "m5-approval-legacy-duplicate",
+      "state_key": null,
+      "expect": "deduplicate_original_user",
+      "history_items": [
+        {
+          "id": "legacy-user-original",
+          "thread_id": "m5-approval-legacy-duplicate",
+          "turn_id": "turn-legacy-original",
+          "type": "user_message",
+          "text": "legacy fixture request",
+          "tool_name": null,
+          "call_id": null,
+          "metadata": {}
+        },
+        {
+          "id": "legacy-user-duplicate",
+          "thread_id": "m5-approval-legacy-duplicate",
+          "turn_id": "turn-legacy-approval",
+          "type": "user_message",
+          "text": "legacy fixture request",
+          "tool_name": null,
+          "call_id": null,
+          "metadata": {}
+        },
+        {
+          "id": "legacy-assistant-final",
+          "thread_id": "m5-approval-legacy-duplicate",
+          "turn_id": "turn-legacy-approval",
+          "type": "assistant_message",
+          "text": "legacy fixture answer",
+          "tool_name": null,
+          "call_id": null,
+          "metadata": {}
+        }
+      ],
+      "turn_rollouts": [
+        {
+          "thread_id": "m5-approval-legacy-duplicate",
+          "turn_id": "turn-legacy-approval",
+          "status": "completed",
+          "started_at": "2026-08-05T00:00:00.000Z",
+          "completed_at": "2026-08-05T00:00:01.000Z",
+          "stop_reason": "assistant_completed",
+          "events": [
+            {
+              "event_id": "event-legacy-approval",
+              "kind": "turn_item",
+              "created_at": "2026-08-05T00:00:00.500Z",
+              "payload": {
+                "type": "approval_resolution",
+                "text": "fixture approval resolution"
+              }
+            }
+          ],
+          "continuation_state": {}
+        }
+      ],
+      "expected": {
+        "raw_user_count": 2,
+        "normalized_user_count": 1,
+        "normalized_history_ids": [
+          "legacy-user-original",
+          "legacy-assistant-final"
+        ]
+      }
+    },
+    {
+      "id": "effect-executing",
+      "session_id": "m5-effect-executing",
+      "state_key": "node_effect_checkpoint",
+      "expect": "interrupt_unknown",
+      "payload": {
+        "session_id": "m5-effect-executing",
+        "client_turn_id": "client-effect-1",
+        "turn_id": "turn-effect-1",
+        "decision_id": "call-effect-1",
+        "call_id": "call-effect-1",
+        "tool_name": "Write",
+        "status": "executing",
+        "fingerprint": "sha256:fixture-effect",
+        "updated_at": "2026-08-05T00:00:00.000Z"
+      },
+      "expected": {
+        "effect_status": "executing",
+        "recovery": "effect_outcome_unknown",
+        "execute_count": 0
+      }
+    },
+    {
+      "id": "compact-complete",
+      "session_id": "m5-compact-complete",
+      "state_key": "compact_checkpoint",
+      "expect": "replacement_visible",
+      "payload": {
+        "version": 1,
+        "turn_id": "turn-compact-1",
+        "reason": "context_limit",
+        "phase": "pre_turn",
+        "window_number": 1,
+        "window_id": "window-compact-1",
+        "history_item_count": 2,
+        "input_history_hash": "sha256:fixture-input",
+        "replacement_history_hash": "sha256:fixture-replacement",
+        "replacement_messages": [
+          {
+            "role": "user",
+            "content": "[compact-summary]\nfixture summary",
+            "tool_call_id": null,
+            "response_id": null,
+            "metadata": {},
+            "blocks": [],
+            "tool_calls": []
+          }
+        ],
+        "python_optional_checkpoint": "preserved"
+      },
+      "summaries": [
+        "fixture summary"
+      ],
+      "expected": {
+        "window_number": 1,
+        "replacement_roles": [
+          "user"
+        ],
+        "summary_count": 1,
+        "optional_fields_preserved": true
+      }
+    },
+    {
+      "id": "responses-ineligible",
+      "session_id": "m5-responses-ineligible",
+      "state_key": "responses_continuation_state",
+      "expect": "full_replay",
+      "payload": {
+        "response_id": "response-fixture-1",
+        "request_signature": "sha256:fixture-request",
+        "request_input": [],
+        "response_output": [],
+        "eligible": false,
+        "failure_reason": "compacted_history",
+        "session_id": "m5-responses-ineligible",
+        "protocol": "responses",
+        "model": "fixture-model",
+        "history_boundary": "history-fixture-1",
+        "python_optional_continuation": "preserved"
+      },
+      "expected": {
+        "eligible": false,
+        "failure_reason": "compacted_history",
+        "request_mode": "canonical_replay",
+        "optional_fields_preserved": true
+      }
+    }
+  ],
+  "invalid_cases": [
+    {
+      "id": "malformed-root-array",
+      "session_id": "m5-invalid-root",
+      "state_key": "input_queue",
+      "payload": [],
+      "expected_error": "session_state_invalid"
+    },
+    {
+      "id": "unsupported-compact-version",
+      "session_id": "m5-invalid-version",
+      "state_key": "compact_checkpoint",
+      "payload": {
+        "version": 2,
+        "turn_id": "turn-invalid-version",
+        "reason": "fixture",
+        "phase": "pre_turn",
+        "window_number": 1,
+        "window_id": "window-invalid-version",
+        "history_item_count": 0,
+        "input_history_hash": "sha256:fixture-input",
+        "replacement_history_hash": "sha256:fixture-replacement",
+        "replacement_messages": []
+      },
+      "expected_error": "session_state_version_unsupported"
+    }
+  ],
+  "failpoints": [
+    "turn_before_reservation",
+    "turn_after_reservation",
+    "queue_before_save",
+    "queue_after_save",
+    "queue_commit_after_history",
+    "approval_suspend_after_states",
+    "approval_after_resolution",
+    "effect_after_claim",
+    "filesystem_after_commit",
+    "approval_result_after_tool",
+    "compaction_after_summary_request",
+    "compact_after_replacement",
+    "snapshot_before_rename",
+    "memory_after_topic_write",
+    "memory_before_index_write",
+    "session_after_prepare",
+    "session_after_commit"
+  ]
+}

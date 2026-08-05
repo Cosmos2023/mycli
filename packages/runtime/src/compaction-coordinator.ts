@@ -13,6 +13,8 @@ import type {
 	SaveStateInput,
 } from "@mycli/storage";
 import { resolveReadableWorkspaceFile } from "@mycli/tools";
+import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
+import type { RuntimeFailpointHook } from "./fault-injection.ts";
 import { TokenCounter } from "./token-counter.ts";
 
 const SUMMARY_PROMPT = [
@@ -143,6 +145,7 @@ export interface CompactionCoordinatorOptions {
 	readonly createCheckpointId: () => string;
 	readonly clock: () => string;
 	readonly monotonicClock?: () => number;
+	readonly failpoint?: RuntimeFailpointHook;
 }
 
 export interface CompactInput {
@@ -184,10 +187,12 @@ interface FileCandidate {
 export class CompactionCoordinator {
 	readonly #options: CompactionCoordinatorOptions;
 	readonly #tokenCounter: TokenCounter;
+	readonly #failpoint: RuntimeFailpointHook;
 
 	constructor(options: CompactionCoordinatorOptions) {
 		this.#options = validateOptions(options);
 		this.#tokenCounter = options.tokenCounter ?? new TokenCounter();
+		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
 
 	async compact(input: CompactInput): Promise<CompactionResult> {
@@ -279,6 +284,7 @@ export class CompactionCoordinator {
 				beforeTokens,
 			);
 		}
+		this.#failpoint("compaction_after_summary_request");
 
 		const storedConversation = Object.freeze([
 			{ type: "user", text: `[compact-summary]\n${summary}` } as const,

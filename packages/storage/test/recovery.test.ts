@@ -38,7 +38,53 @@ type StoreConstructor = new (options: {
 	readonly ownerId?: string;
 	readonly processId?: number;
 	readonly isProcessAlive?: (processId: number) => boolean;
+	readonly stateFailpoint?: (name: string) => void;
 }) => Store;
+
+test("a crash before turn reservation leaves no durable user or turn", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-reserve-before-"));
+	t.after(async () => rm(root, { recursive: true, force: true }));
+	const dbPath = join(root, ".mycli", "sessions.db");
+	const store = new SQLiteSessionStore({
+		dbPath,
+		stateFailpoint: (name) => {
+			if (name === "turn_before_reservation") throw new Error("injected crash");
+		},
+	});
+	t.after(() => store.close());
+
+	assert.throws(() => store.reserveTurn(submission(root, "client-before", "turn-before")));
+	assert.equal(store.loadTurn("session-1", "client-before"), undefined);
+	assert.deepEqual(store.loadConversationItems("session-1"), []);
+});
+
+test("a crash after turn reservation recovers one user item without replay", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-reserve-after-"));
+	t.after(async () => rm(root, { recursive: true, force: true }));
+	const dbPath = join(root, ".mycli", "sessions.db");
+	const initial = new SQLiteSessionStore({
+		dbPath,
+		stateFailpoint: (name) => {
+			if (name === "turn_after_reservation") throw new Error("injected crash");
+		},
+	});
+
+	assert.throws(() => initial.reserveTurn(submission(root, "client-after", "turn-after")));
+	assert.equal(initial.loadTurn("session-1", "client-after")?.status, "in_progress");
+	assert.equal(initial.loadConversationItems("session-1").length, 1);
+	initial.close();
+
+	const reopened = new SQLiteSessionStore({ dbPath, clock: () => RECOVERED });
+	t.after(() => reopened.close());
+	assert.equal(reopened.loadTurn("session-1", "client-after")?.status, "interrupted");
+	assert.deepEqual(reopened.loadConversationItems("session-1"), [{
+		type: "user",
+		text: "client-after",
+	}]);
+	assert.equal(reopened.recoverInterruptedTurns(), 0);
+});
 
 test("reopening the store interrupts orphaned running turns without changing completed turns", async (t) => {
 	const SQLiteSessionStore = constructor();

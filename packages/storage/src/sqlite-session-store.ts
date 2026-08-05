@@ -99,6 +99,7 @@ export class SQLiteSessionStore implements SessionStore {
 	readonly #processId: number;
 	readonly #isProcessAlive: (processId: number) => boolean;
 	readonly #stateRepository: SQLiteSessionStateRepository;
+	readonly #stateFailpoint: (name: string) => void;
 	#closed = false;
 
 	constructor(options: SQLiteSessionStoreOptions) {
@@ -107,6 +108,7 @@ export class SQLiteSessionStore implements SessionStore {
 		this.#ownerId = options.ownerId ?? randomUUID();
 		this.#processId = options.processId ?? process.pid;
 		this.#isProcessAlive = options.isProcessAlive ?? processIsAlive;
+		this.#stateFailpoint = options.stateFailpoint ?? (() => undefined);
 		try {
 			this.#database = new Database(options.dbPath, {
 				timeout: options.busyTimeoutMs ?? 1000,
@@ -126,6 +128,7 @@ export class SQLiteSessionStore implements SessionStore {
 	}
 
 	reserveTurn(input: ReserveTurnInput): TurnReservation {
+		this.#stateFailpoint("turn_before_reservation");
 		const initial = parseRuntimeTurnRecord({
 			schema_version: 1,
 			session_id: input.sessionId,
@@ -138,7 +141,7 @@ export class SQLiteSessionStore implements SessionStore {
 			started_at: input.startedAt,
 			completed_at: null,
 		});
-		return this.#write(() => {
+		const reservation = this.#write<TurnReservation>(() => {
 			const existing = this.#loadTurn(input.sessionId, input.clientTurnId);
 			if (existing) {
 				if (existing.request_fingerprint !== input.requestFingerprint) {
@@ -152,6 +155,8 @@ export class SQLiteSessionStore implements SessionStore {
 			this.#appendHistoryItem(input.sessionId, userHistoryItem(input));
 			return { kind: "reserved", turn: initial };
 		});
+		if (reservation.kind === "reserved") this.#stateFailpoint("turn_after_reservation");
+		return reservation;
 	}
 
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined {
