@@ -415,6 +415,11 @@ class FakeStore implements TurnStore {
 		throw new Error("no-tool runtime must not persist tool calls");
 	}
 
+	appendContextItem(input: Parameters<TurnStore["appendContextItem"]>[0]): void {
+		void input;
+		throw new Error("no-tool runtime must not persist context items");
+	}
+
 	appendToolResult(input: AppendToolResultInput): void {
 		void input;
 		throw new Error("no-tool runtime must not persist tool results");

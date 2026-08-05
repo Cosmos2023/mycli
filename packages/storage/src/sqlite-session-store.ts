@@ -9,8 +9,10 @@ import {
 } from "@mycli/core";
 import type {
 	CanonicalConversationItem,
+	CanonicalContextMetadata,
 	CanonicalMessage,
 	CanonicalToolCall,
+	ProviderReplayState,
 	QueueSnapshot,
 	RuntimeErrorCode,
 } from "@mycli/core";
@@ -30,6 +32,7 @@ import { shellHistoryItem } from "./shell-transcript-store.ts";
 import type {
 	AppendSessionSummaryInput,
 	AppendAssistantToolCallsInput,
+	AppendContextItemInput,
 	AppendToolResultInput,
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
@@ -249,6 +252,13 @@ export class SQLiteSessionStore implements SessionStore {
 		});
 	}
 
+	appendContextItem(input: AppendContextItemInput): void {
+		this.#write(() => {
+			this.#appendContextItemRecords(input);
+			this.#touchExistingSession(input.sessionId, this.#clock());
+		});
+	}
+
 	appendToolResult(input: AppendToolResultInput): void {
 		this.#write(() => {
 			const running = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
@@ -264,6 +274,12 @@ export class SQLiteSessionStore implements SessionStore {
 				throw new StorageFailure("tool result name does not match call");
 			}
 			this.#appendToolResultRecords(running, input);
+			if (input.contextItem) {
+				this.#appendContextItemRecords({
+					sessionId: input.sessionId,
+					...input.contextItem,
+				});
+			}
 			this.#touchExistingSession(input.sessionId, this.#clock());
 		});
 	}
@@ -768,6 +784,12 @@ export class SQLiteSessionStore implements SessionStore {
 		);
 	}
 
+	#appendContextItemRecords(input: AppendContextItemInput): void {
+		validateContextItem(input);
+		this.#appendConversationMessage(input.sessionId, contextMessage(input));
+		this.#appendHistoryItem(input.sessionId, contextHistoryItem(input));
+	}
+
 	#appendConversationMessage(sessionId: string, payload: Readonly<Record<string, unknown>>): void {
 		const row = this.#database.prepare(`
 			SELECT COALESCE(MAX(message_index), -1) + 1 AS next_index
@@ -837,7 +859,13 @@ function assistantMessage(
 		content: input.assistantText,
 		tool_call_id: null,
 		response_id: input.responseId ?? null,
-		metadata: { turn_id: turn.turn_id, source: "node_runtime" },
+		metadata: {
+			turn_id: turn.turn_id,
+			source: "node_runtime",
+			...(input.providerState
+				? { provider_state: persistedProviderState(input.providerState) }
+				: {}),
+		},
 		blocks: [],
 		tool_calls: [],
 	};
@@ -858,7 +886,13 @@ function assistantToolCallMessage(
 		content: input.assistantText,
 		tool_call_id: null,
 		response_id: input.responseId ?? null,
-		metadata: { turn_id: turn.turn_id, source: "node_runtime" },
+		metadata: {
+			turn_id: turn.turn_id,
+			source: "node_runtime",
+			...(input.providerState
+				? { provider_state: persistedProviderState(input.providerState) }
+				: {}),
+		},
 		blocks: calls.map(({ call, argumentsValue }) => ({
 			type: "tool_call",
 			text: null,
@@ -895,6 +929,9 @@ function toolCallHistoryItem(
 			arguments: parsed.argumentsValue,
 			source: "node_runtime",
 			...(input.responseId ? { response_id: input.responseId } : {}),
+			...(input.providerState
+				? { provider_state: persistedProviderState(input.providerState) }
+				: {}),
 		},
 	};
 }
@@ -987,7 +1024,35 @@ function assistantHistoryItem(
 		metadata: {
 			source: "node_runtime",
 			...(input.responseId ? { response_id: input.responseId } : {}),
+			...(input.providerState
+				? { provider_state: persistedProviderState(input.providerState) }
+				: {}),
 		},
+	};
+}
+
+function contextMessage(input: AppendContextItemInput): Readonly<Record<string, unknown>> {
+	return {
+		role: "context",
+		content: input.text,
+		tool_call_id: null,
+		response_id: null,
+		metadata: { context: persistedContextMetadata(input.metadata) },
+		blocks: [],
+		tool_calls: [],
+	};
+}
+
+function contextHistoryItem(input: AppendContextItemInput): Readonly<Record<string, unknown>> {
+	return {
+		id: input.itemId,
+		thread_id: null,
+		turn_id: null,
+		type: "skill_instructions",
+		text: input.text,
+		tool_name: null,
+		call_id: null,
+		metadata: persistedContextMetadata(input.metadata),
 	};
 }
 
@@ -1065,6 +1130,101 @@ function stopReason(code: RuntimeErrorCode): string {
 	}
 }
 
+const MAX_CONTEXT_ITEM_ID_CHARS = 512;
+const MAX_CONTEXT_TEXT_CHARS = 131_072;
+const MAX_CONTEXT_CONTENT_CHARS = 65_536;
+const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
+const MAX_PROVIDER_STATE_JSON_CHARS = 65_536;
+const PROVIDER_IDS = new Set(["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]);
+
+function validateContextItem(input: AppendContextItemInput): void {
+	const { metadata } = input;
+	const validSource = metadata.sourceId.length > 0
+		&& metadata.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+		&& !metadata.sourceId.includes("/")
+		&& !metadata.sourceId.includes("\\")
+		&& !metadata.sourceId.includes("\0");
+	if (
+		input.itemId.length === 0
+		|| input.itemId.length > MAX_CONTEXT_ITEM_ID_CHARS
+		|| input.itemId.includes("\0")
+		|| input.text.length > MAX_CONTEXT_TEXT_CHARS
+		|| metadata.kind !== "skill_instructions"
+		|| metadata.cacheClass !== "dynamic"
+		|| metadata.durability !== "persistent"
+		|| metadata.scope !== "transcript"
+		|| !validSource
+		|| !/^[a-f0-9]{64}$/u.test(metadata.contentSha256)
+		|| !Number.isSafeInteger(metadata.contentLength)
+		|| metadata.contentLength < 0
+		|| metadata.contentLength > MAX_CONTEXT_CONTENT_CHARS
+	) {
+		throw new StorageFailure("invalid canonical context item");
+	}
+}
+
+function persistedContextMetadata(
+	metadata: CanonicalContextMetadata,
+): Readonly<Record<string, unknown>> {
+	return {
+		kind: metadata.kind,
+		cache_class: metadata.cacheClass,
+		durability: metadata.durability,
+		scope: metadata.scope,
+		source_id: metadata.sourceId,
+		content_sha256: metadata.contentSha256,
+		content_length: metadata.contentLength,
+	};
+}
+
+function canonicalContextMetadata(value: unknown): CanonicalContextMetadata {
+	const metadata = recordValue(value);
+	const canonical: CanonicalContextMetadata = {
+		kind: metadata.kind as CanonicalContextMetadata["kind"],
+		cacheClass: (metadata.cache_class ?? metadata.cacheClass) as CanonicalContextMetadata["cacheClass"],
+		durability: metadata.durability as CanonicalContextMetadata["durability"],
+		scope: metadata.scope as CanonicalContextMetadata["scope"],
+		sourceId: String(metadata.source_id ?? metadata.sourceId ?? ""),
+		contentSha256: String(metadata.content_sha256 ?? metadata.contentSha256 ?? ""),
+		contentLength: Number(metadata.content_length ?? metadata.contentLength),
+	};
+	validateContextItem({ sessionId: "validation", itemId: "validation", text: "", metadata: canonical });
+	return canonical;
+}
+
+function persistedProviderState(state: ProviderReplayState): Readonly<Record<string, unknown>> {
+	if (!PROVIDER_IDS.has(state.provider)) {
+		throw new StorageFailure("invalid provider replay state");
+	}
+	let json: string;
+	try {
+		json = stableJson(state.value);
+	} catch {
+		throw new StorageFailure("invalid provider replay state");
+	}
+	if (!json || json.length > MAX_PROVIDER_STATE_JSON_CHARS) {
+		throw new StorageFailure("invalid provider replay state");
+	}
+	const value = JSON.parse(json) as unknown;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new StorageFailure("invalid provider replay state");
+	}
+	return { provider: state.provider, value: value as Readonly<Record<string, unknown>> };
+}
+
+function canonicalProviderState(value: unknown): ProviderReplayState | undefined {
+	if (value === undefined || value === null) return undefined;
+	const state = recordValue(value);
+	const provider = stringValue(state.provider);
+	if (!provider || !PROVIDER_IDS.has(provider)) {
+		throw new StorageFailure("invalid provider replay state");
+	}
+	return persistedProviderState({
+		provider: provider as ProviderReplayState["provider"],
+		value: recordValue(state.value),
+	}) as unknown as ProviderReplayState;
+}
+
 function canonicalConversationItem(
 	payloadJson: unknown,
 	source: string,
@@ -1074,6 +1234,8 @@ function canonicalConversationItem(
 		return { type: "user", text: payload.content };
 	}
 	if (payload.role === "assistant" && typeof payload.content === "string") {
+		const metadata = recordValue(payload.metadata);
+		const providerState = canonicalProviderState(metadata.provider_state);
 		const calls = canonicalToolCalls(payload.tool_calls, source);
 		if (calls.length > 0) {
 			return {
@@ -1083,9 +1245,21 @@ function canonicalConversationItem(
 				...(typeof payload.response_id === "string"
 					? { responseId: payload.response_id }
 					: {}),
+				...(providerState ? { providerState } : {}),
 			};
 		}
-		return { type: "assistant", text: payload.content };
+		return {
+			type: "assistant",
+			text: payload.content,
+			...(providerState ? { providerState } : {}),
+		};
+	}
+	if (payload.role === "context" && typeof payload.content === "string") {
+		return {
+			type: "context",
+			text: payload.content,
+			metadata: canonicalContextMetadata(recordValue(payload.metadata).context),
+		};
 	}
 	if (payload.role === "tool" && typeof payload.content === "string"
 		&& typeof payload.tool_call_id === "string" && payload.tool_call_id) {
@@ -1137,9 +1311,21 @@ function canonicalHistoryItem(payloadJson: unknown): CanonicalConversationItem {
 		return { type: "user", text: payload.text };
 	}
 	if (payload.type === "assistant_message" && typeof payload.text === "string") {
-		return { type: "assistant", text: payload.text };
+		const providerState = canonicalProviderState(recordValue(payload.metadata).provider_state);
+		return {
+			type: "assistant",
+			text: payload.text,
+			...(providerState ? { providerState } : {}),
+		};
 	}
 	const metadata = recordValue(payload.metadata);
+	if (payload.type === "skill_instructions" && typeof payload.text === "string") {
+		return {
+			type: "context",
+			text: payload.text,
+			metadata: canonicalContextMetadata(metadata),
+		};
+	}
 	if (payload.type === "tool_call") {
 		const name = stringValue(payload.tool_name);
 		const callId = stringValue(payload.call_id);
@@ -1156,6 +1342,9 @@ function canonicalHistoryItem(payloadJson: unknown): CanonicalConversationItem {
 			}],
 			...(stringValue(metadata.response_id)
 				? { responseId: stringValue(metadata.response_id) }
+				: {}),
+			...(canonicalProviderState(metadata.provider_state)
+				? { providerState: canonicalProviderState(metadata.provider_state) }
 				: {}),
 		};
 	}

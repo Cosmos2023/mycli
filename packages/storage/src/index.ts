@@ -7,6 +7,7 @@ export {
 export type {
 	AppendSessionSummaryInput,
 	AppendAssistantToolCallsInput,
+	AppendContextItemInput,
 	AppendToolResultInput,
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,

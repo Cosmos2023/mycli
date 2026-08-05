@@ -91,6 +91,8 @@ function responsesItem(item: CanonicalConversationItem): readonly Readonly<Recor
 		case "user":
 		case "assistant":
 			return [{ role: item.type, content: item.text }];
+		case "context":
+			return [{ role: "developer", content: item.text }];
 		case "assistant_tool_calls":
 			return [
 				...(item.text ? [{ role: "assistant", content: item.text }] : []),

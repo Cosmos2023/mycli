@@ -3,10 +3,12 @@ import type {
 	ApprovalResolution,
 	ApprovalTransition,
 	CanonicalConversationItem,
+	CanonicalContextMetadata,
 	CanonicalMessage,
 	CanonicalToolCall,
 	CanonicalToolResult,
 	ProviderUsage,
+	ProviderReplayState,
 	QueueSnapshot,
 	QueuedInput,
 	RuntimeErrorCode,
@@ -35,6 +37,7 @@ export interface CompleteStoredTurnInput {
 	readonly assistantText: string;
 	readonly usage: ProviderUsage;
 	readonly responseId?: string;
+	readonly providerState?: ProviderReplayState;
 	readonly completedAt: string;
 }
 
@@ -52,6 +55,14 @@ export interface AppendAssistantToolCallsInput {
 	readonly assistantText: string;
 	readonly calls: readonly CanonicalToolCall[];
 	readonly responseId?: string;
+	readonly providerState?: ProviderReplayState;
+}
+
+export interface AppendContextItemInput {
+	readonly sessionId: string;
+	readonly itemId: string;
+	readonly text: string;
+	readonly metadata: CanonicalContextMetadata;
 }
 
 export interface AppendToolResultInput {
@@ -61,6 +72,7 @@ export interface AppendToolResultInput {
 	readonly summary: string;
 	readonly metadata?: Readonly<Record<string, unknown>>;
 	readonly errorKind?: string;
+	readonly contextItem?: Omit<AppendContextItemInput, "sessionId">;
 }
 
 export interface ProjectedFileChange {
@@ -324,6 +336,7 @@ export interface TurnStore {
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
 	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
 	appendAssistantToolCalls(input: AppendAssistantToolCallsInput): void;
+	appendContextItem(input: AppendContextItemInput): void;
 	appendToolResult(input: AppendToolResultInput): void;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;

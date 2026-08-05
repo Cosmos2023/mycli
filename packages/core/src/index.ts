@@ -67,7 +67,16 @@ export type {
 	StartTurnInput,
 } from "./turn-state.ts";
 export type {
+	ChildTaskStatus,
+	HookExecution,
+	HookInvocation,
+	HookPoint,
+	HookResult,
+	HookRunnerContract,
+} from "./extensions.ts";
+export type {
 	CanonicalConversationItem,
+	CanonicalContextMetadata,
 	ApprovalChoice,
 	CanonicalMessage,
 	CanonicalToolCall,
@@ -81,6 +90,7 @@ export type {
 	ProviderId,
 	ProviderRequest,
 	ProviderRequestConfig,
+	ProviderReplayState,
 	ProviderUsage,
 	ReasoningEffort,
 	RuntimeErrorCode,

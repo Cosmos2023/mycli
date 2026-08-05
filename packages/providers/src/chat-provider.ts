@@ -123,6 +123,8 @@ function chatMessage(item: CanonicalConversationItem): Readonly<Record<string, u
 		case "user":
 		case "assistant":
 			return { role: item.type, content: item.text };
+		case "context":
+			return { role: "system", content: item.text };
 		case "assistant_tool_calls":
 			return {
 				role: "assistant",

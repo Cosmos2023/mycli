@@ -6,9 +6,11 @@ import test from "node:test";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	CanonicalConversationItem,
+	CanonicalContextMetadata,
 	CanonicalMessage,
 	CanonicalToolCall,
 	CanonicalToolResult,
+	ProviderReplayState,
 	ProviderUsage,
 	RuntimeErrorCode,
 } from "@mycli/core";
@@ -31,6 +33,7 @@ interface CompleteStoredTurnInput {
 	readonly assistantText: string;
 	readonly usage: ProviderUsage;
 	readonly responseId?: string;
+	readonly providerState?: ProviderReplayState;
 	readonly completedAt: string;
 }
 
@@ -50,12 +53,20 @@ interface Store {
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
 	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
+	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
 	appendAssistantToolCalls(input: {
 		readonly sessionId: string;
 		readonly clientTurnId: string;
 		readonly assistantText: string;
 		readonly calls: readonly CanonicalToolCall[];
 		readonly responseId?: string;
+		readonly providerState?: ProviderReplayState;
+	}): void;
+	appendContextItem(input: {
+		readonly sessionId: string;
+		readonly itemId: string;
+		readonly text: string;
+		readonly metadata: CanonicalContextMetadata;
 	}): void;
 	appendToolResult(input: {
 		readonly sessionId: string;
@@ -64,6 +75,11 @@ interface Store {
 		readonly summary: string;
 		readonly metadata?: Readonly<Record<string, unknown>>;
 		readonly errorKind?: string;
+		readonly contextItem?: {
+			readonly itemId: string;
+			readonly text: string;
+			readonly metadata: CanonicalContextMetadata;
+		};
 	}): void;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;
@@ -347,6 +363,65 @@ test("persists ordered Python-compatible tool calls and results", async (t) => {
 		FROM history_items WHERE session_id = ? ORDER BY sequence_no
 	`).all("session-1").map((row) => (row as { type: unknown }).type);
 	assert.deepEqual(historyTypes, ["user_message", "tool_call", "tool_call", "tool_result", "tool_result"]);
+});
+
+test("persists provider replay state and context with its tool result", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
+	const providerState: ProviderReplayState = {
+		provider: "openai",
+		value: { thinking: "checked", signature: "sig-test" },
+	};
+	const metadata: CanonicalContextMetadata = {
+		kind: "skill_instructions",
+		cacheClass: "dynamic",
+		durability: "persistent",
+		scope: "transcript",
+		sourceId: "review",
+		contentSha256: "a".repeat(64),
+		contentLength: 12,
+	};
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "",
+		calls: [{ callId: "call-1", name: "Read", argumentsJson: "{}" }],
+		providerState,
+	});
+	store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: {
+			callId: "call-1",
+			toolName: "Read",
+			output: "contents",
+			success: true,
+		},
+		summary: "Read file",
+		contextItem: {
+			itemId: "turn-1:skill:review",
+			text: "instructions",
+			metadata,
+		},
+	});
+
+	assert.deepEqual(store.loadConversationItems("session-1").slice(-3), [
+		{
+			type: "assistant_tool_calls",
+			text: "",
+			calls: [{ callId: "call-1", name: "Read", argumentsJson: "{}" }],
+			providerState,
+		},
+		{ type: "tool_result", callId: "call-1", toolName: "Read", output: "contents", success: true },
+		{ type: "context", text: "instructions", metadata },
+	]);
+	assert.deepEqual(
+		store.loadHistoryItems("session-1").map((item) => item.type),
+		["user_message", "tool_call", "tool_result", "skill_instructions"],
+	);
 });
 
 test("persists only bounded Python-compatible mutation file changes", async (t) => {

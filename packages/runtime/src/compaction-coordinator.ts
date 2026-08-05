@@ -553,6 +553,8 @@ function renderItem(item: CanonicalConversationItem): string {
 		case "user":
 		case "assistant":
 			return `${item.type}: ${item.text}`;
+		case "context":
+			return `context ${item.metadata.kind}: ${item.text}`;
 		case "assistant_tool_calls":
 			return `assistant: ${item.text}\n${item.calls.map((call) =>
 				`tool_call ${call.name} ${call.callId} ${call.argumentsJson}`).join("\n")}`;
@@ -609,6 +611,26 @@ function toStoredMessage(item: CanonicalConversationItem): Readonly<Record<strin
 					source: "node_runtime",
 					tool_name: item.toolName,
 					success: item.success,
+				},
+				blocks: [],
+				tool_calls: [],
+			};
+		case "context":
+			return {
+				role: "context",
+				content: item.text,
+				tool_call_id: null,
+				response_id: null,
+				metadata: {
+					context: {
+						kind: item.metadata.kind,
+						cache_class: item.metadata.cacheClass,
+						durability: item.metadata.durability,
+						scope: item.metadata.scope,
+						source_id: item.metadata.sourceId,
+						content_sha256: item.metadata.contentSha256,
+						content_length: item.metadata.contentLength,
+					},
 				},
 				blocks: [],
 				tool_calls: [],

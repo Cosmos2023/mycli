@@ -404,6 +404,42 @@ test("persists and executes Read before continuing the same Responses turn", asy
 	assert.equal(emitted.some((event) => event.type === "shell_lifecycle"), false);
 });
 
+test("persists provider replay state with tool calls before tool results", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const providerState = {
+		provider: "openai" as const,
+		value: { thinking: "checked", signature: "sig-test" },
+	};
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "provider_state", state: providerState },
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools-1" },
+		],
+		[
+			{ type: "text_delta", text: "done" },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new FakeRouter(trace, successResult("call-1")),
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(store.items.at(1), {
+		type: "assistant_tool_calls",
+		text: "",
+		calls: [CALL],
+		responseId: "resp-tools-1",
+		providerState,
+	});
+	assert.equal(trace.indexOf("persist:calls") < trace.indexOf("persist:result:call-1"), true);
+});
+
 test("continues after a failed Read result and exposes the failure event", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -1653,7 +1689,12 @@ class FakeStore implements TurnStore {
 			text: input.assistantText,
 			calls: input.calls,
 			...(input.responseId ? { responseId: input.responseId } : {}),
+			...(input.providerState ? { providerState: input.providerState } : {}),
 		});
+	}
+
+	appendContextItem(input: Parameters<TurnStore["appendContextItem"]>[0]): void {
+		this.items.push({ type: "context", text: input.text, metadata: input.metadata });
 	}
 
 	appendToolResult(input: AppendToolResultInput): void {

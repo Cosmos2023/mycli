@@ -191,11 +191,74 @@ test("preserves tool call and result order across request fragments", () => {
 	]);
 });
 
+test("projects bounded context and provider replay state immutably", () => {
+	const context: CanonicalConversationItem = {
+		type: "context",
+		text: "<loaded-skill name=\"review\">instructions</loaded-skill>",
+		metadata: {
+			kind: "skill_instructions",
+			cacheClass: "dynamic",
+			durability: "persistent",
+			scope: "transcript",
+			sourceId: "review",
+			contentSha256: "a".repeat(64),
+			contentLength: 12,
+		},
+	};
+	const replayValue = { thinking: "checked", signature: "sig-test" };
+	const assistant: CanonicalConversationItem = {
+		type: "assistant_tool_calls",
+		text: "",
+		calls: [{ callId: "call-1", name: "Read", argumentsJson: "{}" }],
+		providerState: {
+			provider: "openai",
+			value: replayValue,
+		},
+	};
+	const request = core.projectProviderRequest({
+		config: { provider: "openai", protocol: "responses", model: "gpt-test" },
+		instructions: "You are mycli.",
+		history: [context, assistant],
+		tools: [],
+	});
+
+	assert.equal(request.items?.length, 2);
+	assert.deepEqual(request.items, [context, assistant]);
+	replayValue.thinking = "mutated";
+	assert.equal(
+		(request.items?.[1] as Extract<CanonicalConversationItem, { type: "assistant_tool_calls" }>)
+			.providerState?.value.thinking,
+		"checked",
+	);
+});
+
+test("rejects invalid context metadata before provider construction", () => {
+	assert.throws(() => core.projectProviderRequest({
+		config: { provider: "openai", protocol: "responses", model: "gpt-test" },
+		instructions: "You are mycli.",
+		history: [{
+			type: "context",
+			text: "instructions",
+			metadata: {
+				kind: "skill_instructions",
+				cacheClass: "dynamic",
+				durability: "persistent",
+				scope: "transcript",
+				sourceId: "../review",
+				contentSha256: "not-a-digest",
+				contentLength: 12,
+			},
+		}],
+		tools: [],
+	}), /invalid canonical context metadata/);
+});
+
 function itemText(item: CanonicalConversationItem): string {
 	switch (item.type) {
 		case "user":
 		case "assistant":
 		case "assistant_tool_calls":
+		case "context":
 			return item.text;
 		case "tool_result":
 			return item.output;

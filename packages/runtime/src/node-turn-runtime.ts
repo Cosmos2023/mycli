@@ -8,6 +8,7 @@ import type {
 	CanonicalToolCall,
 	ProviderRequest,
 	ProviderRequestConfig,
+	ProviderReplayState,
 	ProviderUsage,
 	ReasoningEffort,
 	RuntimeErrorCode,
@@ -170,6 +171,7 @@ interface ProviderStepResult {
 	readonly usage: ProviderUsage;
 	readonly responseId?: string;
 	readonly toolCalls: readonly CanonicalToolCall[];
+	readonly providerState?: ProviderReplayState;
 }
 
 interface TurnExecutionContext {
@@ -634,6 +636,7 @@ export class NodeTurnRuntime {
 					assistantText: stepResult.assistantText,
 					calls: stepResult.toolCalls,
 					...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
+					...(stepResult.providerState ? { providerState: stepResult.providerState } : {}),
 				});
 				assertNotAborted(signal);
 				for (const call of stepResult.toolCalls) {
@@ -681,6 +684,7 @@ export class NodeTurnRuntime {
 			stepResult.assistantText,
 			accumulatedUsage,
 			stepResult.responseId,
+			stepResult.providerState,
 			emit,
 			signal,
 			config.memoryEnabled,
@@ -924,6 +928,7 @@ export class NodeTurnRuntime {
 			let assistantText = "";
 			let usage: ProviderUsage = {};
 			let responseId: string | undefined;
+			let providerState: ProviderReplayState | undefined;
 			const toolCalls: CanonicalToolCall[] = [];
 			let completed = false;
 			try {
@@ -941,6 +946,12 @@ export class NodeTurnRuntime {
 						case "text_delta":
 							assistantText += event.text;
 							emit(event);
+							break;
+						case "provider_state":
+							if (providerState || event.state.provider !== request.provider) {
+								throw providerProtocolFailure("invalid provider replay state");
+							}
+							providerState = event.state;
 							break;
 						case "usage":
 							usage = { ...usage, ...event.usage };
@@ -979,8 +990,9 @@ export class NodeTurnRuntime {
 				return {
 					assistantText,
 					usage,
-					toolCalls,
-					...(responseId ? { responseId } : {}),
+						toolCalls,
+						...(responseId ? { responseId } : {}),
+						...(providerState ? { providerState } : {}),
 				};
 			} catch (error) {
 				const failure = normalizeFailure(error, signal, "provider_error");
@@ -1043,6 +1055,7 @@ export class NodeTurnRuntime {
 		assistantText: string,
 		usage: ProviderUsage,
 		responseId: string | undefined,
+		providerState: ProviderReplayState | undefined,
 		emit: (event: RuntimeEvent) => void,
 		signal: AbortSignal,
 		memoryEnabled: boolean,
@@ -1055,6 +1068,7 @@ export class NodeTurnRuntime {
 				assistantText,
 				usage,
 				...(responseId ? { responseId } : {}),
+				...(providerState ? { providerState } : {}),
 				completedAt: this.#options.clock(),
 			});
 			const snapshotWritten = await this.#writeTerminalSnapshot(completed);

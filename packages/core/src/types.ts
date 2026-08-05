@@ -37,14 +37,39 @@ export interface CanonicalToolResult {
 	readonly success: boolean;
 }
 
+export interface ProviderReplayState {
+	readonly provider: ProviderId;
+	readonly value: Readonly<Record<string, unknown>>;
+}
+
+export interface CanonicalContextMetadata {
+	readonly kind: "skill_instructions";
+	readonly cacheClass: "dynamic";
+	readonly durability: "persistent";
+	readonly scope: "transcript";
+	readonly sourceId: string;
+	readonly contentSha256: string;
+	readonly contentLength: number;
+}
+
 export type CanonicalConversationItem =
 	| { readonly type: "user"; readonly text: string }
-	| { readonly type: "assistant"; readonly text: string }
+	| {
+		readonly type: "assistant";
+		readonly text: string;
+		readonly providerState?: ProviderReplayState;
+	}
 	| {
 		readonly type: "assistant_tool_calls";
 		readonly text: string;
 		readonly calls: readonly CanonicalToolCall[];
 		readonly responseId?: string;
+		readonly providerState?: ProviderReplayState;
+	}
+	| {
+		readonly type: "context";
+		readonly text: string;
+		readonly metadata: CanonicalContextMetadata;
 	}
 	| ({ readonly type: "tool_result" } & CanonicalToolResult);
 
@@ -70,6 +95,7 @@ export type ProviderUsage = Readonly<Record<string, number>>;
 export type ProviderEvent =
 	| { readonly type: "reasoning_delta"; readonly text: string }
 	| { readonly type: "text_delta"; readonly text: string }
+	| { readonly type: "provider_state"; readonly state: ProviderReplayState }
 	| { readonly type: "usage"; readonly usage: ProviderUsage }
 	| { readonly type: "completed"; readonly responseId?: string }
 	| {
