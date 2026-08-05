@@ -35,12 +35,14 @@ import {
 import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
 import {
 	NodeTurnRuntime,
+	ProviderContinuationCoordinator,
 	QueueCoordinator,
 	type CompactInput,
 	type CompactionCoordinatorContract,
 	type CompactionResult,
 	type MemoryContextServiceContract,
 	type NodeTurnRuntimeOptions,
+	type PersistedProviderContinuation,
 	type QueueCoordinatorStore,
 } from "../src/index.ts";
 
@@ -80,6 +82,194 @@ test("injects dynamic memory after compaction and before fresh input without per
 	assert.deepEqual(memory.actions, ["Read README.md"]);
 	assert.equal(memory.collectSignals[0], signal);
 	assert.equal(trace.indexOf("complete") < trace.indexOf("memory:action"), true);
+});
+
+test("writes the terminal snapshot after durable completion and before memory actions", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const memory = memoryContextFixture(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "text_delta", text: "done" },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		memoryContextService: memory.service,
+		writeTerminalSnapshot: async () => { trace.push("snapshot"); },
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.ok(trace.indexOf("complete") < trace.indexOf("snapshot"));
+	assert.ok(trace.indexOf("snapshot") < trace.indexOf("memory:action"));
+});
+
+test("keeps a durably completed turn and skips memory when snapshot writing fails", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const memory = memoryContextFixture(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		memoryContextService: memory.service,
+		writeTerminalSnapshot: async () => {
+			trace.push("snapshot");
+			throw new Error("private snapshot path");
+		},
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(trace.slice(-2), ["complete", "snapshot"]);
+	assert.equal(trace.includes("memory:action"), false);
+});
+
+test("persists safe Responses continuation before tool execution and terminal completion", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [
+		[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[
+			{ type: "text_delta", text: "done" },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const continuation = continuationFixture(trace);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		providerContinuation: continuation.coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(requests[0]?.previousResponseId, undefined);
+	assert.equal(requests[1]?.previousResponseId, "resp-tools");
+	assert.ok(trace.indexOf("continuation:eligible:resp-tools") < trace.indexOf("tool:call-1"));
+	assert.ok(trace.indexOf("continuation:eligible:resp-final") < trace.indexOf("complete"));
+	assert.equal(continuation.states.at(-1)?.eligible, true);
+});
+
+test("invalidates Responses continuation after terminal provider rejection", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const continuation = continuationFixture(trace);
+	const provider: ModelProvider = {
+		stream: () => failingProviderEvents(new ProviderFailure({
+			code: "provider_error",
+			message: "private rejection",
+		})),
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		providerContinuation: continuation.coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "failed");
+	assert.equal(continuation.states.at(-1)?.eligible, false);
+	assert.equal(continuation.states.at(-1)?.failure_reason, "provider_rejected");
+});
+
+test("Chat uses canonical replay and records no eligible response continuation", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const continuation = continuationFixture(trace, {
+		response_id: "resp-old",
+		request_signature: "old",
+		request_input: [],
+		response_output: [],
+		eligible: true,
+		failure_reason: null,
+		session_id: "session-1",
+		protocol: "responses",
+		model: "gpt-test",
+		history_boundary: "turn-1",
+	});
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "completed", responseId: "chat-1" },
+	]]);
+
+	await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		providerContinuation: continuation.coordinator,
+		runtimeConfig: config({ protocol: "chat_completions" }),
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(requests[0]?.previousResponseId, undefined);
+	assert.equal(continuation.states.at(-1)?.eligible, false);
+	assert.equal(continuation.states.at(-1)?.failure_reason, "chat_replay");
+});
+
+test("Chat replays canonically after approval even without a continuation coordinator", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [
+		[
+			{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+			{ type: "completed", responseId: "chat-tools" },
+		],
+		[{ type: "completed", responseId: "chat-final" }],
+	]);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+		runtimeConfig: config({ protocol: "chat_completions" }),
+	});
+	await runtime.submit(submission(), () => {}, { signal: new AbortController().signal });
+	await resolveApproval(runtime, {
+		decisionId: "call-write",
+		choice: "approve_once",
+	}, () => {}, new AbortController().signal);
+
+	assert.equal(requests[1]?.previousResponseId, undefined);
+});
+
+test("writes a recoverable snapshot after durable approval suspension", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+		{ type: "completed", responseId: "resp-tools" },
+	]]);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+		writeTerminalSnapshot: async () => { trace.push("snapshot"); },
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "in_progress");
+	assert.ok(trace.indexOf("approval:suspend") < trace.indexOf("snapshot"));
 });
 
 test("memory_enabled=false bypasses runtime collection and explicit actions", async () => {
@@ -1024,6 +1214,8 @@ function createRuntime(options: {
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
 	readonly memoryContextService?: MemoryContextServiceContract;
+	readonly providerContinuation?: ProviderContinuationCoordinator;
+	readonly writeTerminalSnapshot?: NodeTurnRuntimeOptions["writeTerminalSnapshot"];
 	readonly runtimeConfig?: NodeRuntimeConfig;
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
@@ -1053,7 +1245,28 @@ function createRuntime(options: {
 		...(options.memoryContextService ? {
 			memoryContextService: options.memoryContextService,
 		} : {}),
+		...(options.providerContinuation ? {
+			providerContinuation: options.providerContinuation,
+		} : {}),
+		...(options.writeTerminalSnapshot ? {
+			writeTerminalSnapshot: options.writeTerminalSnapshot,
+		} : {}),
 	});
+}
+
+function continuationFixture(trace: string[], initialState?: unknown) {
+	const states: PersistedProviderContinuation[] = [];
+	const coordinator = new ProviderContinuationCoordinator({
+		sessionId: "session-1",
+		...(initialState === undefined ? {} : { initialState }),
+		persist: (state) => {
+			states.push(state);
+			trace.push(state.eligible
+				? `continuation:eligible:${state.response_id}`
+				: `continuation:invalid:${state.failure_reason}`);
+		},
+	});
+	return { coordinator, states };
 }
 
 function memoryContextFixture(trace: string[], failAction = false): {

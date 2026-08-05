@@ -901,7 +901,7 @@ Run: `npm run test --workspace @mycli/runtime && npm run typecheck --workspace @
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Node memory support**
+- [x] **Step 8: Commit Node memory support**
 
 ```bash
 git add packages/runtime
@@ -922,7 +922,7 @@ git commit -m "feat(node-runtime): add bounded workspace memory"
 - Test: `apps/mycli/test/node-backend.integration.test.ts`
 - Test: `apps/mycli/test/node-gateway.test.ts`
 
-- [ ] **Step 1: Write failing request-fragment ordering tests**
+- [x] **Step 1: Write failing request-fragment ordering tests**
 
 ```ts
 test("orders compacted replay, rehydration, memory, and fresh input", () => {
@@ -936,19 +936,19 @@ test("orders compacted replay, rehydration, memory, and fresh input", () => {
 Assert equivalent model visibility for Responses and Chat, current input appears exactly once,
 memory is not durable history, and tool calls/results retain order.
 
-- [ ] **Step 2: Write failing complete lifecycle tests**
+- [x] **Step 2: Write failing complete lifecycle tests**
 
 Cover reserve -> queue commit -> compaction -> memory -> provider -> approval/tool -> continuation
 -> terminal persistence -> snapshot -> explicit memory -> queue drain. Inject failures at each
 stage and assert stable terminal state plus no Python start.
 
-- [ ] **Step 3: Run core/runtime/app tests and verify orchestration failures**
+- [x] **Step 3: Run core/runtime/app tests and verify orchestration failures**
 
 Run: `node --import tsx --test packages/core/test/request-projection.test.ts packages/runtime/test/provider-continuation.test.ts packages/runtime/test/node-turn-runtime.test.ts apps/mycli/test/node-backend.integration.test.ts apps/mycli/test/node-gateway.test.ts`
 
 Expected: FAIL until continuation validation and the composition root supply all coordinators.
 
-- [ ] **Step 4: Refactor `NodeTurnRuntime` into explicit phase helpers**
+- [x] **Step 4: Refactor `NodeTurnRuntime` into explicit phase helpers**
 
 Keep the public API stable, but replace the monolithic body with focused private collaborators:
 
@@ -962,7 +962,7 @@ return this.#finalizePreparedTurn(prepared, providerResult, context);
 without special-casing tool names. Finalization writes snapshot before memory diagnostics and
 drains at most one next queued input.
 
-- [ ] **Step 5: Implement provider continuation validation**
+- [x] **Step 5: Implement provider continuation validation**
 
 ```ts
 export function selectProviderContinuation(input: ContinuationInput): ContinuationDecision {
@@ -981,19 +981,24 @@ Persist Responses response ID, request signature, model/protocol, history bounda
 after each safe provider completion. Compaction, provider rejection, malformed state, and
 ambiguous effects clear eligibility. Chat never consumes a response ID.
 
-- [ ] **Step 6: Compose per-session services in the Node backend**
+For the current OpenAI-compatible HTTP transport, an eligible response ID remains validated
+runtime metadata and is not serialized as `previous_response_id`: the deployed compatible endpoint
+requires Responses WebSocket v2 for that field. HTTP Responses and Chat therefore keep canonical
+replay until an explicit transport capability contract enables a supported continuation path.
+
+- [x] **Step 6: Compose per-session services in the Node backend**
 
 Construct one SQLite store, snapshot store, session coordinator, queue coordinator factory,
 approval coordinator, compaction coordinator, memory service, and tool router. Session resume must
 rebind session-scoped coordinators without rebuilding provider-independent global services.
 
-- [ ] **Step 7: Run package and M4 regressions**
+- [x] **Step 7: Run package and M4 regressions**
 
 Run: `npm run test --workspace @mycli/core && npm run test --workspace @mycli/runtime && npm run test --workspace @mycli/app && npm run test:m4`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit M5 runtime composition**
+- [x] **Step 8: Commit M5 runtime composition**
 
 ```bash
 git add packages/core packages/runtime apps/mycli

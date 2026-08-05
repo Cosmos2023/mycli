@@ -13,16 +13,35 @@ export interface NoToolRequestProjectionInput {
 	readonly userText: string;
 }
 
-export interface ProviderRequestProjectionInput {
+interface ProviderRequestProjectionBase {
 	readonly config: ProviderRequestConfig;
 	readonly instructions: string;
-	readonly history: readonly CanonicalConversationItem[];
 	readonly tools: readonly ToolDefinition[];
 	readonly previousResponseId?: string;
 }
 
+export interface ProviderRequestFragments {
+	readonly compactedSummary?: readonly CanonicalConversationItem[];
+	readonly retainedTail?: readonly CanonicalConversationItem[];
+	readonly rehydration?: readonly Extract<CanonicalConversationItem, { readonly type: "user" }>[];
+	readonly memory?: readonly Extract<CanonicalConversationItem, { readonly type: "user" }>[];
+	readonly currentInput: Extract<CanonicalConversationItem, { readonly type: "user" }>;
+	readonly steers?: readonly Extract<CanonicalConversationItem, { readonly type: "user" }>[];
+}
+
+export type ProviderRequestProjectionInput = ProviderRequestProjectionBase & (
+	| {
+		readonly history: readonly CanonicalConversationItem[];
+		readonly fragments?: never;
+	}
+	| {
+		readonly history?: never;
+		readonly fragments: ProviderRequestFragments;
+	}
+);
+
 export function projectProviderRequest(input: ProviderRequestProjectionInput): ProviderRequest {
-	const items = input.history.map(copyConversationItem);
+	const items = providerItems(input).map(copyConversationItem);
 	const messages = items.flatMap((item): CanonicalMessage[] => {
 		if (item.type === "user") {
 			return [{ role: "user", content: item.text }];
@@ -42,6 +61,20 @@ export function projectProviderRequest(input: ProviderRequestProjectionInput): P
 			? { previousResponseId: input.previousResponseId }
 			: {}),
 	});
+}
+
+function providerItems(
+	input: ProviderRequestProjectionInput,
+): readonly CanonicalConversationItem[] {
+	if (input.fragments === undefined) return input.history;
+	return [
+		...(input.fragments.compactedSummary ?? []),
+		...(input.fragments.retainedTail ?? []),
+		...(input.fragments.rehydration ?? []),
+		...(input.fragments.memory ?? []),
+		input.fragments.currentInput,
+		...(input.fragments.steers ?? []),
+	];
 }
 
 export function projectNoToolRequest(input: NoToolRequestProjectionInput): ProviderRequest {

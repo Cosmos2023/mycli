@@ -44,6 +44,11 @@ import type {
 	CompactionResult,
 } from "./compaction-coordinator.ts";
 import type { MemoryContextServiceContract } from "./memory-context-service.ts";
+import {
+	buildProviderRequestSignature,
+	type ContinuationDecision,
+	type SafeProviderCompletionInput,
+} from "./provider-continuation.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -80,6 +85,8 @@ export interface NodeTurnRuntimeOptions {
 		config: NodeRuntimeConfig,
 	) => CompactionCoordinatorContract;
 	readonly memoryContextService?: MemoryContextServiceContract;
+	readonly providerContinuation?: ProviderContinuationContract;
+	readonly writeTerminalSnapshot?: (turn: RuntimeTurnRecord) => Promise<void>;
 }
 
 export interface CompactionCoordinatorContract {
@@ -100,6 +107,17 @@ export interface ApprovalContinuationContract {
 		readonly onExecutionStart?: () => void;
 	}): Promise<ApprovalRuntimeResolution>;
 	finish(decisionId: string): void;
+}
+
+export interface ProviderContinuationContract {
+	select(input: {
+		readonly protocol: ProviderRequestConfig["protocol"];
+		readonly requestSignature: string;
+		readonly model: string;
+		readonly historyBoundary: string;
+	}): ContinuationDecision;
+	recordSafeCompletion(input: SafeProviderCompletionInput): void;
+	invalidate(reason: string): void;
 }
 
 export type ApprovalRuntimeResolution =
@@ -166,6 +184,11 @@ interface ProviderLoopState {
 	readonly compactionEntered?: boolean;
 }
 
+interface PreparedTurn {
+	readonly context: TurnExecutionContext;
+	readonly initial: ProviderLoopState;
+}
+
 export class NodeTurnRuntime {
 	readonly #options: NodeTurnRuntimeOptions;
 	readonly queueCoordinator: QueueCoordinator | undefined;
@@ -218,11 +241,9 @@ export class NodeTurnRuntime {
 			}, emit);
 		}
 
-		let context: TurnExecutionContext;
-		let history: readonly CanonicalConversationItem[];
+		let prepared: PreparedTurn;
 		try {
-			context = await this.#executionContext(submission, turnId, emit, options.signal);
-			history = this.#conversationForCurrentSubmission(submission.message);
+			prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
 		} catch (error) {
 			return this.#finalizeFailure(
 				submission,
@@ -231,11 +252,7 @@ export class NodeTurnRuntime {
 			);
 		}
 
-		return this.#runProviderLoop(context, {
-			history,
-			freshItemIds: new Set([`${turnId}:user:${submission.clientTurnId}`]),
-			accumulatedUsage: {},
-		});
+		return this.#runProviderLoop(prepared.context, prepared.initial);
 	}
 
 	async resolveApproval(
@@ -274,6 +291,7 @@ export class NodeTurnRuntime {
 			},
 		});
 		if (resolution.status === "interrupted") {
+			await this.#writeTerminalSnapshot(resolution.turn);
 			emit({ type: "turn_interrupted", message: "turn interrupted" });
 			return resolution.turn;
 		}
@@ -310,6 +328,24 @@ export class NodeTurnRuntime {
 					...(continuation.responseId ? { responseId: continuation.responseId } : {}),
 				},
 			} : {}),
+		});
+	}
+
+	async #prepareTurn(
+		submission: TurnSubmission,
+		turnId: string,
+		emit: (event: RuntimeEvent) => void,
+		signal: AbortSignal,
+	): Promise<PreparedTurn> {
+		const context = await this.#executionContext(submission, turnId, emit, signal);
+		const history = this.#conversationForCurrentSubmission(submission.message);
+		return Object.freeze({
+			context,
+			initial: Object.freeze({
+				history,
+				freshItemIds: new Set([`${turnId}:user:${submission.clientTurnId}`]),
+				accumulatedUsage: {},
+			}),
 		});
 	}
 
@@ -429,6 +465,10 @@ export class NodeTurnRuntime {
 					);
 				}
 				compactionEntered = compacted.status !== "not_needed";
+				if (compacted.status !== "not_needed") {
+					const invalidation = this.#invalidateProviderContinuation("compacted_history");
+					if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
+				}
 				if (compacted.status === "interrupted") {
 					return this.#finalizeFailure(submission, {
 						code: "interrupted",
@@ -442,12 +482,23 @@ export class NodeTurnRuntime {
 				}
 			}
 			const providerHistory = await this.#providerHistoryWithMemory(context, history);
+			const requestSignature = buildProviderRequestSignature({
+				...requestConfig,
+				instructions: this.#options.instructions,
+				tools,
+			});
+			const continuation = this.#selectProviderContinuation(
+				requestConfig,
+				requestSignature,
+				turnId,
+				previousResponseId,
+			);
 			const request = projectProviderRequest({
 				config: requestConfig,
 				instructions: this.#options.instructions,
 				history: providerHistory,
 				tools,
-				...(previousResponseId ? { previousResponseId } : {}),
+				...(continuation ? { previousResponseId: continuation } : {}),
 			});
 			const stepResult = await this.#streamWithRetry(
 				provider,
@@ -458,6 +509,8 @@ export class NodeTurnRuntime {
 				Boolean(this.#options.toolRouter),
 			);
 			if ("failure" in stepResult) {
+				const invalidation = this.#invalidateProviderContinuation("provider_rejected");
+				if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
 				if (
 					stepResult.failure.code === "context_window_exceeded"
 					&& stepResult.eventsObserved === 0
@@ -480,6 +533,12 @@ export class NodeTurnRuntime {
 						);
 					}
 					compactionEntered = true;
+					const compactionInvalidation = this.#invalidateProviderContinuation(
+						"compacted_history",
+					);
+					if (compactionInvalidation) {
+						return this.#finalizeFailure(submission, compactionInvalidation, emit);
+					}
 					if (compacted.status === "interrupted") {
 						return this.#finalizeFailure(submission, {
 							code: "interrupted",
@@ -495,29 +554,20 @@ export class NodeTurnRuntime {
 				}
 				return this.#finalizeFailure(submission, stepResult.failure, emit);
 			}
+			const continuationFailure = this.#recordSafeProviderCompletion({
+				requestConfig,
+				requestSignature,
+				historyBoundary: turnId,
+				requestInput: providerHistory,
+				stepResult,
+			});
+			if (continuationFailure) {
+				return this.#finalizeFailure(submission, continuationFailure, emit);
+			}
 			accumulatedUsage = addUsage(accumulatedUsage, stepResult.usage);
 
 			if (stepResult.toolCalls.length === 0) {
-				try {
-					assertNotAborted(signal);
-					this.queueCoordinator?.rejectPending(turnId);
-					assertNotAborted(signal);
-				} catch (error) {
-					return this.#finalizeFailure(
-						submission,
-							normalizeFailure(error, signal, "persistence_error"),
-						emit,
-					);
-				}
-				return await this.#completeTurn(
-					submission,
-					stepResult.assistantText,
-					accumulatedUsage,
-					stepResult.responseId,
-					emit,
-					signal,
-					config.memoryEnabled,
-				);
+				return this.#finalizePreparedTurn(context, stepResult, accumulatedUsage);
 			}
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
@@ -561,6 +611,90 @@ export class NodeTurnRuntime {
 				assistantText: stepResult.assistantText,
 				...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
 			};
+		}
+	}
+
+	async #finalizePreparedTurn(
+		context: TurnExecutionContext,
+		stepResult: ProviderStepResult,
+		accumulatedUsage: ProviderUsage,
+	): Promise<RuntimeTurnRecord> {
+		const { submission, turnId, config, emit, signal } = context;
+		try {
+			assertNotAborted(signal);
+			this.queueCoordinator?.rejectPending(turnId);
+			assertNotAborted(signal);
+		} catch (error) {
+			return this.#finalizeFailure(
+				submission,
+				normalizeFailure(error, signal, "persistence_error"),
+				emit,
+			);
+		}
+		return this.#completeTurn(
+			submission,
+			stepResult.assistantText,
+			accumulatedUsage,
+			stepResult.responseId,
+			emit,
+			signal,
+			config.memoryEnabled,
+		);
+	}
+
+	#selectProviderContinuation(
+		requestConfig: ProviderRequestConfig,
+		requestSignature: string,
+		historyBoundary: string,
+		fallbackResponseId: string | undefined,
+	): string | undefined {
+		if (requestConfig.protocol !== "responses") return undefined;
+		const coordinator = this.#options.providerContinuation;
+		if (!coordinator) return fallbackResponseId;
+		const decision = coordinator.select({
+			protocol: requestConfig.protocol,
+			requestSignature,
+			model: requestConfig.model,
+			historyBoundary,
+		});
+		return decision.kind === "responses_continuation" ? decision.responseId : undefined;
+	}
+
+	#recordSafeProviderCompletion(input: {
+		readonly requestConfig: ProviderRequestConfig;
+		readonly requestSignature: string;
+		readonly historyBoundary: string;
+		readonly requestInput: readonly CanonicalConversationItem[];
+		readonly stepResult: ProviderStepResult;
+	}): NormalizedFailure | undefined {
+		const coordinator = this.#options.providerContinuation;
+		if (!coordinator) return undefined;
+		try {
+			if (!input.stepResult.responseId) {
+				coordinator.invalidate("missing_response_id");
+				return undefined;
+			}
+			coordinator.recordSafeCompletion({
+				protocol: input.requestConfig.protocol,
+				responseId: input.stepResult.responseId,
+				requestSignature: input.requestSignature,
+				requestInput: input.requestInput.map(continuationRecord),
+				responseOutput: providerStepOutput(input.stepResult),
+				model: input.requestConfig.model,
+				historyBoundary: input.historyBoundary,
+			});
+			return undefined;
+		} catch (error) {
+			return normalizeFailure(error, undefined, "persistence_error");
+		}
+	}
+
+	#invalidateProviderContinuation(reason: string): NormalizedFailure | undefined {
+		try {
+			this.#options.providerContinuation?.invalidate(reason);
+			return undefined;
+		} catch (error) {
+			return normalizeFailure(error, undefined, "persistence_error");
 		}
 	}
 
@@ -651,7 +785,9 @@ export class NodeTurnRuntime {
 					reason: pending.reason,
 					options: pending.options,
 				});
-				return this.#runningTurn(pending.clientTurnId);
+				const running = this.#runningTurn(pending.clientTurnId);
+				await this.#writeTerminalSnapshot(running);
+				return running;
 			}
 
 			const result = policy?.kind === "deny"
@@ -866,8 +1002,9 @@ export class NodeTurnRuntime {
 				...(responseId ? { responseId } : {}),
 				completedAt: this.#options.clock(),
 			});
+			const snapshotWritten = await this.#writeTerminalSnapshot(completed);
 			emit({ type: "turn_completed", assistantText, usage });
-			if (memoryEnabled && this.#options.memoryContextService) {
+			if (snapshotWritten && memoryEnabled && this.#options.memoryContextService) {
 				try {
 					await this.#options.memoryContextService.applyExplicitActions({
 						userMessage: submission.message,
@@ -887,12 +1024,19 @@ export class NodeTurnRuntime {
 		}
 	}
 
-	#finalizeFailure(
+	async #finalizeFailure(
 		submission: TurnSubmission,
 		failure: NormalizedFailure,
 		emit: (event: RuntimeEvent) => void,
-	): RuntimeTurnRecord {
+	): Promise<RuntimeTurnRecord> {
 		try {
+			try {
+				this.#options.providerContinuation?.invalidate(
+					failure.code === "interrupted" ? "turn_interrupted" : "turn_failed",
+				);
+			} catch {
+				// The terminal turn still has to be closed even if continuation cleanup fails.
+			}
 			const failed = this.#options.store.failTurn({
 				sessionId: this.#options.sessionId,
 				clientTurnId: submission.clientTurnId,
@@ -900,6 +1044,7 @@ export class NodeTurnRuntime {
 				message: failure.message,
 				completedAt: this.#options.clock(),
 			});
+			await this.#writeTerminalSnapshot(failed);
 			if (failure.code === "interrupted") {
 				emit({ type: "turn_interrupted", message: failure.message });
 			} else {
@@ -920,6 +1065,40 @@ export class NodeTurnRuntime {
 			throw error;
 		}
 	}
+
+	async #writeTerminalSnapshot(turn: RuntimeTurnRecord): Promise<boolean> {
+		if (!this.#options.writeTerminalSnapshot) return true;
+		try {
+			await this.#options.writeTerminalSnapshot(turn);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+}
+
+function continuationRecord(item: CanonicalConversationItem): Readonly<Record<string, unknown>> {
+	if (item.type === "assistant_tool_calls") {
+		return {
+			...item,
+			calls: item.calls.map((call) => ({ ...call })),
+		};
+	}
+	return { ...item };
+}
+
+function providerStepOutput(
+	step: ProviderStepResult,
+): readonly Readonly<Record<string, unknown>>[] {
+	if (step.toolCalls.length > 0) {
+		return [{
+			type: "assistant_tool_calls",
+			text: step.assistantText,
+			calls: step.toolCalls.map((call) => ({ ...call })),
+			...(step.responseId ? { responseId: step.responseId } : {}),
+		}];
+	}
+	return step.assistantText ? [{ type: "assistant", text: step.assistantText }] : [];
 }
 
 function normalizeFailure(

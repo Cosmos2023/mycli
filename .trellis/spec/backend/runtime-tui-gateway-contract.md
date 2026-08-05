@@ -1456,3 +1456,109 @@ store.commitCompaction({
 });
 emit(completedEvent);
 ```
+
+## Scenario: Validated Node Provider Continuation And HTTP Replay
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node provider request ordering, `responses_continuation_state`, model/tool
+  request signatures, compaction invalidation, or terminal snapshot/memory/queue ordering.
+- This flow crosses core request projection, runtime orchestration, SQLite session state, provider
+  transport serialization, transcript snapshots, workspace memory, and gateway queue draining.
+
+### 2. Signatures
+
+- Core: `projectProviderRequest({history | fragments, config, instructions, tools})`.
+- Runtime: `selectProviderContinuation(input) -> ContinuationDecision` and
+  `ProviderContinuationCoordinator.recordSafeCompletion(input)`.
+- State key: `responses_continuation_state` with `response_id`, `request_signature`,
+  `request_input`, `response_output`, `eligible`, `failure_reason`, `session_id`, `protocol`,
+  `model`, and `history_boundary`.
+- Finalization callback: `writeTerminalSnapshot(turn) -> Promise<void>`.
+
+### 3. Contracts
+
+- Fragment projection order is compacted summary, retained tail, rehydration, transient memory,
+  current user input, then committed steers. Tool calls and results keep canonical relative order.
+- Memory is provider context only. It is not appended to canonical conversation/history or the
+  transcript snapshot.
+- Chat always uses canonical replay. A Responses continuation candidate requires an eligible,
+  same-session state with a non-empty response id and exact request-signature, model, and
+  turn-level history-boundary matches.
+- The current OpenAI-compatible Responses HTTP adapter intentionally does not serialize
+  `previous_response_id`. The deployed compatible endpoint reports that field as WebSocket-v2
+  only, so HTTP requests replay canonical items even when runtime metadata identifies an eligible
+  continuation. A future transport may consume the candidate only after an explicit capability
+  contract and transport tests are added.
+- Safe Responses completions persist continuation state before later tool execution or terminal
+  turn persistence. State arrays are bounded to 4096 items.
+- Completed and failed turns write the durable SQLite terminal state before the schema-v2
+  transcript snapshot. Successful turns run explicit memory actions only after snapshot success;
+  the gateway may then reserve and drain at most one queued input.
+
+### 4. Validation & Error Matrix
+
+- Chat protocol -> `canonical_replay/chat_replay`; never attach a response id to the request.
+- Missing state -> `canonical_replay/missing_state`.
+- Wrong root, missing required fields, cross-session state, or over 4096 request/output items ->
+  persist ineligible `malformed_state`, then canonical replay.
+- `eligible=false` -> canonical replay without reviving the prior response id.
+- Signature, model, or history-boundary mismatch -> `canonical_replay/state_mismatch`.
+- Compaction -> persist ineligible `compacted_history` before the next provider request.
+- Terminal provider rejection or turn failure -> clear eligibility before terminal persistence.
+- Snapshot failure after durable completion -> retain the completed SQLite turn, skip explicit
+  memory actions, and do not attempt to fail the already completed turn.
+
+### 5. Good/Base/Bad Cases
+
+- Good: persist a matching Responses tool-batch continuation, execute and persist tool results in
+  order, replay the canonical HTTP request, complete SQLite, write snapshot, apply explicit memory,
+  then reserve one queued follow-up.
+- Base: no persisted state produces one canonical request with current input exactly once.
+- Good: malformed legacy state is made explicitly ineligible on first provider selection.
+- Bad: send `previous_response_id` to a compatible HTTP endpoint that only supports it on
+  Responses WebSocket v2.
+- Bad: write memory into durable conversation history or start a queued turn before snapshot and
+  memory finalization settle.
+
+### 6. Tests Required
+
+- Core tests assert fragment order, Responses/Chat item equivalence, current-input uniqueness,
+  transient memory, and tool call/result order.
+- Runtime tests assert exact continuation matching, malformed/oversized invalidation, Chat replay,
+  provider rejection and compaction invalidation, approval snapshotting, and
+  complete -> snapshot -> memory order.
+- Backend integration uses real SQLite and a fake HTTP provider to assert no Python start,
+  schema-v2 snapshot output, workspace memory composition, and complete continuation fields.
+- Gateway queue tests assert reservation before removal and at-most-one terminal drain.
+- Run core/runtime/app tests, M4 Node/Python parity, lint, typecheck, contracts drift, and build.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const body = {
+	input: request.items,
+	previous_response_id: persisted.response_id,
+};
+store.completeTurn(turn);
+await memory.applyExplicitActions(message);
+await snapshots.write(snapshot);
+```
+
+#### Correct
+
+```typescript
+const decision = selectProviderContinuation({
+	protocol,
+	persisted,
+	requestSignature,
+	model,
+	historyBoundary,
+});
+const body = { input: canonicalItems }; // Compatible Responses HTTP replay.
+const completed = store.completeTurn(turn);
+const snapshotWritten = await writeTerminalSnapshot(completed);
+if (snapshotWritten) await memory.applyExplicitActions(message);
+```

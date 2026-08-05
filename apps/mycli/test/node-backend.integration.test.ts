@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,6 +50,7 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 			MYCLI_PROTOCOL: "responses",
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_PYTHON: join(root, "python-must-not-start"),
 		},
 	});
 	const messages: Array<Record<string, unknown>> = [];
@@ -67,6 +68,8 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		const params = message.params as Record<string, unknown> | undefined;
 		return params?.final === true;
 	}));
+	const submitResponse = await waitFor(() => response(messages, "1"));
+	const submittedTurnId = resultValue(submitResponse, "turn_id");
 	assert.equal((final.params as Record<string, unknown>).text, "hello from node");
 	assert.equal(requests, 1);
 	assert.equal(capture.requestBody?.model, "gpt-test");
@@ -92,6 +95,30 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 
 	writeRequest(backend, "2", "shutdown", {});
 	assert.equal(await backend.completion, 0);
+	assert.equal(existsSync(join(home, ".mycli", "projects")), true);
+	const snapshot = JSON.parse(await readFile(
+		join(home, ".mycli", "sessions", "integration-session", "session.json"),
+		"utf8",
+	)) as Record<string, unknown>;
+	assert.equal(snapshot.schema_version, 2);
+	assert.equal(snapshot.session_id, "integration-session");
+	assert.equal(snapshot.state, "idle");
+	assert.equal(JSON.stringify(snapshot.transcript).includes("hello from node"), true);
+	const reopened = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		const continuation = reopened.loadState(
+			"integration-session",
+			"responses_continuation_state",
+		) as Record<string, unknown> | undefined;
+		assert.equal(continuation?.response_id, "resp_node");
+		assert.equal(continuation?.eligible, true);
+		assert.equal(continuation?.session_id, "integration-session");
+		assert.equal(continuation?.protocol, "responses");
+		assert.equal(continuation?.model, "gpt-test");
+		assert.equal(continuation?.history_boundary, submittedTurnId);
+	} finally {
+		reopened.close();
+	}
 });
 
 test("Node backend atomically resumes complete persisted session state", async (t) => {

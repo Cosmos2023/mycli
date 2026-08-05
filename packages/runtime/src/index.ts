@@ -5,6 +5,7 @@ export type {
 	ApprovalRuntimeResolution,
 	CompactionCoordinatorContract,
 	NodeTurnRuntimeOptions,
+	ProviderContinuationContract,
 	ResolveApprovalInput,
 	SubmitTurnOptions,
 	TurnSubmission,
@@ -110,3 +111,16 @@ export type {
 	SessionGenerationContext,
 	SessionTransitionErrorCode,
 } from "./session-coordinator.ts";
+export {
+	buildProviderRequestSignature,
+	ProviderContinuationCoordinator,
+	selectProviderContinuation,
+} from "./provider-continuation.ts";
+export type {
+	ContinuationDecision,
+	ContinuationInput,
+	PersistedProviderContinuation,
+	ProviderContinuationCoordinatorOptions,
+	ProviderRequestSignatureInput,
+	SafeProviderCompletionInput,
+} from "./provider-continuation.ts";

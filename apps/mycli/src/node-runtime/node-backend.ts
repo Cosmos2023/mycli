@@ -7,7 +7,11 @@ import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
 	CompactionCoordinator,
+	MemoryContextService,
+	MemorySelector,
+	MemoryStore,
 	NodeTurnRuntime,
+	ProviderContinuationCoordinator,
 	QueueCoordinator,
 	SessionCoordinator,
 	SessionTransitionError,
@@ -70,11 +74,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const registry = new OpenAIProviderRegistry();
 	const toolExposure = planToolExposure(builtinToolManifest());
 	const transcriptSnapshots = new TranscriptSnapshotStore({ homeDir });
+	const tokenCounter = new TokenCounter();
 	const createRuntime = (
 		sessionId: string,
 		workspaceRoot: string,
 		threadId: string,
 		initialQueue: QueueSnapshot,
+		initialContinuation?: unknown,
 	): NodeGatewayRuntime => {
 		const fileSnapshots = new FileSnapshotStore();
 		const mutationRuntime = new FileMutationRuntime({ workspaceRoot, snapshots: fileSnapshots });
@@ -112,7 +118,39 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			clock: () => new Date().toISOString(),
 		});
 		const runtimeInstructions = "You are mycli, a coding agent and personal assistant.";
-		const tokenCounter = new TokenCounter();
+		const providerContinuation = new ProviderContinuationCoordinator({
+			sessionId,
+			...(initialContinuation === undefined ? {} : { initialState: initialContinuation }),
+			persist: (state) => {
+				store.saveState({
+					sessionId,
+					workspaceRoot,
+					threadId,
+					key: "responses_continuation_state",
+					payload: state,
+				});
+			},
+		});
+		const memoryContextService = new MemoryContextService({
+			store: new MemoryStore({ homeDir, workspaceRoot }),
+			sessionStore: store,
+			selector: new MemorySelector({
+				provider: {
+					stream: (request, streamOptions) => registry.create({
+						...config,
+						provider: request.provider,
+						protocol: request.protocol,
+						model: request.model,
+					}).stream(request, streamOptions),
+				},
+				providerConfig: {
+					provider: config.provider,
+					protocol: config.protocol,
+					model: config.model,
+				},
+			}),
+			tokenCounter,
+		});
 		return new NodeTurnRuntime({
 			sessionId,
 			workspaceRoot,
@@ -136,6 +174,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			approvalPolicy: new ApprovalPolicy({ workspaceRoot, autoApproveMedium: true }),
 			approvalCoordinator,
 			queueCoordinator,
+			providerContinuation,
+			memoryContextService,
+			writeTerminalSnapshot: async () => {
+				const overview = store.loadSession(sessionId);
+				if (!overview) throw new SnapshotStateError("terminal session is missing");
+				const approval = loadApprovalState(store, sessionId);
+				await transcriptSnapshots.write(canonicalSnapshot(
+					store,
+					overview,
+					approval.pendingApproval !== undefined,
+					approval.suspendedTurn,
+				));
+			},
 			createCompactionCoordinator: (resolved) => {
 				const compactionThreshold = compactionThresholdForModel(resolved);
 				return new CompactionCoordinator({
@@ -260,6 +311,7 @@ interface PrepareStoredSessionOptions {
 		workspaceRoot: string,
 		threadId: string,
 		initialQueue: QueueSnapshot,
+		initialContinuation?: unknown,
 	) => NodeGatewayRuntime;
 }
 
@@ -317,10 +369,16 @@ async function prepareStoredSession(
 	}
 
 	const queue = loadQueue(store, sessionId);
-	const binding = createRuntime(sessionId, overview.workspaceRoot, overview.threadId, queue);
 	const approvalState = loadApprovalState(store, sessionId);
 	const compactionState = store.loadState(sessionId, "compact_checkpoint");
 	const responsesContinuation = loadResponsesContinuation(store, sessionId);
+	const binding = createRuntime(
+		sessionId,
+		overview.workspaceRoot,
+		overview.threadId,
+		queue,
+		responsesContinuation,
+	);
 	let transcript;
 	try {
 		transcript = await transcriptSnapshots.loadOrRebuild(sessionId, {
