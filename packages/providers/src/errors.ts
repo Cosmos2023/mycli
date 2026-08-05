@@ -47,6 +47,14 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 			diagnostics,
 		});
 	}
+	const errorName = stringValue(record.name) ?? (error instanceof Error ? error.name : undefined);
+	if (errorName === "APIResponseValidationError") {
+		return new ProviderFailure({
+			code: "provider_error",
+			message: "provider response validation failed",
+			diagnostics,
+		});
+	}
 	if (status === 401 || status === 403) {
 		return new ProviderFailure({
 			code: "auth_error",

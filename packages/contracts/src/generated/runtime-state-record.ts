@@ -210,7 +210,7 @@ export interface SuspendedTurnPayload {
   session_id?: Identifier;
   client_turn_id?: Identifier;
   turn_id?: Identifier;
-  provider_protocol?: "responses" | "chat_completions";
+  provider_protocol?: "responses" | "chat_completions" | "anthropic_messages";
   /**
    * @maxItems 128
    */

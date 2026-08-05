@@ -96,6 +96,12 @@ export function projectNoToolRequest(input: NoToolRequestProjectionInput): Provi
 }
 
 function copyConversationItem(item: CanonicalConversationItem): CanonicalConversationItem {
+	if (item.type === "user" && item.images) {
+		return Object.freeze({
+			...item,
+			images: Object.freeze(item.images.map((image) => Object.freeze({ ...image }))),
+		});
+	}
 	if (item.type === "assistant_tool_calls") {
 		return Object.freeze({
 			...item,

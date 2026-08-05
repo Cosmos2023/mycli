@@ -77,6 +77,23 @@ test("legacy transport retry limit feeds the stream retry setting", async (t) =>
 	assert.equal(resolved.streamMaxRetries, 7);
 });
 
+test("resolves Anthropic defaults and cache-control policy", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+
+	const resolved = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_PROVIDER: "anthropic", MYCLI_API_KEY: "test-key" },
+	});
+
+	assert.equal(resolved.provider, "anthropic");
+	assert.equal(resolved.protocol, "anthropic_messages");
+	assert.equal(resolved.model, "claude-sonnet-4-6");
+	assert.equal(resolved.apiBaseUrl, "https://api.anthropic.com");
+	assert.equal(resolved.promptCacheKeyEnabled, false);
+	assert.equal(resolved.cacheControlEnabled, true);
+});
+
 test("loads Python-compatible compaction and memory defaults", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);
 

@@ -24,3 +24,10 @@ export interface ChatCompletionsClient {
 		options: ProviderStreamOptions,
 	): Promise<AsyncIterable<unknown>>;
 }
+
+export interface AnthropicMessagesClient {
+	stream(
+		request: Readonly<Record<string, unknown>>,
+		options: ProviderStreamOptions,
+	): Promise<AsyncIterable<unknown>>;
+}

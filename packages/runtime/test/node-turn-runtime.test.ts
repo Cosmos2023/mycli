@@ -9,6 +9,7 @@ import type {
 	CanonicalConversationItem,
 	CanonicalToolCall,
 	ProviderEvent,
+	ProtocolId,
 	ProviderRequest,
 	QueueSnapshot,
 	QueuedInput,
@@ -438,6 +439,54 @@ test("persists provider replay state with tool calls before tool results", async
 		providerState,
 	});
 	assert.equal(trace.indexOf("persist:calls") < trace.indexOf("persist:result:call-1"), true);
+});
+
+test("runs Anthropic tool continuations through the shared runtime", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [
+		[
+			{
+				type: "provider_state",
+				state: {
+					provider: "anthropic",
+					value: { thinkingBlocks: [{ thinking: "checked", signature: "sig-test" }] },
+				},
+			},
+			{ type: "tool_call", callId: "toolu-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed" },
+		],
+		[
+			{ type: "text_delta", text: "done" },
+			{ type: "completed" },
+		],
+	]);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: new FakeRouter(trace, successResult("toolu-1")),
+		runtimeConfig: config({
+			provider: "anthropic",
+			protocol: "anthropic_messages",
+			model: "claude-test",
+			apiBaseUrl: "https://api.anthropic.com",
+			authRef: "anthropic",
+			promptCacheKeyEnabled: false,
+			cacheControlEnabled: true,
+		}),
+	});
+
+	const result = await runtime.submit(submission(), () => {}, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(requests.length, 2);
+	assert.equal(requests[0]?.protocol, "anthropic_messages");
+	assert.equal(requests[0]?.cacheControlEnabled, true);
+	assert.equal(requests[1]?.previousResponseId, undefined);
+	assert.equal(store.items.at(1)?.type, "assistant_tool_calls");
 });
 
 test("continues after a failed Read result and exposes the failure event", async () => {
@@ -1483,7 +1532,7 @@ interface ApprovalRequestFixture {
 	readonly call: CanonicalToolCall;
 	readonly remainingCalls: readonly CanonicalToolCall[];
 	readonly userMessage: string;
-	readonly providerProtocol: "responses" | "chat_completions";
+	readonly providerProtocol: ProtocolId;
 	readonly assistantText: string;
 	readonly responseId?: string;
 	readonly usage: Readonly<Record<string, number>>;

@@ -96,7 +96,8 @@ test("parses a Python-compatible pending decision", () => {
 });
 
 test("parses a Python-compatible suspended turn", () => {
-	assert.doesNotThrow(() => parseRuntimeState({
+	for (const providerProtocol of ["responses", "anthropic_messages"] as const) {
+		assert.doesNotThrow(() => parseRuntimeState({
 		kind: "suspended_turn",
 		version: 1,
 		payload: {
@@ -128,10 +129,11 @@ test("parses a Python-compatible suspended turn", () => {
 			pending_clarification: null,
 			client_turn_id: "client-1",
 			turn_id: "turn-1",
-			provider_protocol: "responses",
+			provider_protocol: providerProtocol,
 			remaining_tool_calls: [],
 		},
-	}));
+		}));
+	}
 });
 
 test("parses an executing effect checkpoint", () => {

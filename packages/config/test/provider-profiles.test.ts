@@ -15,3 +15,20 @@ test("rejects a protocol unsupported by the selected provider", () => {
 		/config_error: provider 'deepseek' does not support protocol 'responses'/,
 	);
 });
+
+test("resolves the Anthropic Messages profile", () => {
+	const profile = resolveProviderProfile("anthropic", "anthropic_messages");
+
+	assert.deepEqual(profile, {
+		provider: "anthropic",
+		defaultProtocol: "anthropic_messages",
+		supportsResponses: false,
+		supportsChatCompletions: false,
+		supportsAnthropicMessages: true,
+		defaultBaseUrl: "https://api.anthropic.com",
+		defaultModel: "claude-sonnet-4-6",
+		promptCacheKeyEnabled: false,
+		cacheControlEnabled: true,
+	});
+	assert.equal(inferProviderFromBaseUrl("https://api.anthropic.com"), "anthropic");
+});

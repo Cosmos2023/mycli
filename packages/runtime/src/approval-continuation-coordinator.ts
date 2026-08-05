@@ -15,6 +15,7 @@ import type {
 	CanonicalMessage,
 	CanonicalToolCall,
 	ExecPolicyRule,
+	ProtocolId,
 	ProviderUsage,
 	ReasoningEffort,
 	ShellLifecycleEvent,
@@ -38,7 +39,7 @@ export interface ApprovalSuspensionInput {
 	readonly clientTurnId: string;
 	readonly turnId: string;
 	readonly userMessage: string;
-	readonly providerProtocol: "responses" | "chat_completions";
+	readonly providerProtocol: ProtocolId;
 	readonly call: CanonicalToolCall;
 	readonly remainingCalls: readonly CanonicalToolCall[];
 	readonly conversation: readonly CanonicalMessage[];
@@ -65,7 +66,7 @@ export interface PendingApprovalContinuation {
 	readonly options: readonly ApprovalChoice[];
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
-	readonly providerProtocol: "responses" | "chat_completions";
+	readonly providerProtocol: ProtocolId;
 	readonly userMessage: string;
 	readonly call: CanonicalToolCall;
 	readonly remainingCalls: readonly CanonicalToolCall[];
@@ -447,9 +448,7 @@ function pendingFromStates(
 		options: restoredApprovalOptions(pending.payload.options, commandPattern, proposedExecPolicyPattern),
 		...(commandPattern ? { commandPattern } : {}),
 		...(proposedExecPolicyPattern ? { proposedExecPolicyPattern } : {}),
-		providerProtocol: payload.provider_protocol === "chat_completions"
-			? "chat_completions"
-			: "responses",
+		providerProtocol: payload.provider_protocol ?? "responses",
 		userMessage: payload.user_message,
 		call,
 		remainingCalls: Object.freeze((payload.remaining_tool_calls ?? []).map(canonicalStoredCall)),

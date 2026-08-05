@@ -5,9 +5,11 @@ export interface ProviderProfile {
 	readonly defaultProtocol: ProtocolId;
 	readonly supportsResponses: boolean;
 	readonly supportsChatCompletions: boolean;
+	readonly supportsAnthropicMessages: boolean;
 	readonly defaultBaseUrl: string;
 	readonly defaultModel?: string;
 	readonly promptCacheKeyEnabled: boolean;
+	readonly cacheControlEnabled: boolean;
 }
 
 const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
@@ -16,49 +18,70 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		defaultProtocol: "responses",
 		supportsResponses: true,
 		supportsChatCompletions: true,
+		supportsAnthropicMessages: false,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		defaultModel: "gpt-5",
 		promptCacheKeyEnabled: true,
+		cacheControlEnabled: false,
 	},
 	codex: {
 		provider: "codex",
 		defaultProtocol: "responses",
 		supportsResponses: true,
 		supportsChatCompletions: false,
+		supportsAnthropicMessages: false,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		defaultModel: "gpt-5",
 		promptCacheKeyEnabled: true,
+		cacheControlEnabled: false,
 	},
 	compatible: {
 		provider: "compatible",
 		defaultProtocol: "chat_completions",
 		supportsResponses: true,
 		supportsChatCompletions: true,
+		supportsAnthropicMessages: false,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		promptCacheKeyEnabled: true,
+		cacheControlEnabled: false,
 	},
 	qwen: {
 		provider: "qwen",
 		defaultProtocol: "chat_completions",
 		supportsResponses: true,
 		supportsChatCompletions: true,
+		supportsAnthropicMessages: false,
 		defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		defaultModel: "qwen3.6-plus",
 		promptCacheKeyEnabled: false,
+		cacheControlEnabled: false,
 	},
 	deepseek: {
 		provider: "deepseek",
 		defaultProtocol: "chat_completions",
 		supportsResponses: false,
 		supportsChatCompletions: true,
+		supportsAnthropicMessages: false,
 		defaultBaseUrl: "https://api.deepseek.com",
 		defaultModel: "deepseek-chat",
 		promptCacheKeyEnabled: false,
+		cacheControlEnabled: false,
+	},
+	anthropic: {
+		provider: "anthropic",
+		defaultProtocol: "anthropic_messages",
+		supportsResponses: false,
+		supportsChatCompletions: false,
+		supportsAnthropicMessages: true,
+		defaultBaseUrl: "https://api.anthropic.com",
+		defaultModel: "claude-sonnet-4-6",
+		promptCacheKeyEnabled: false,
+		cacheControlEnabled: true,
 	},
 };
 
 const PROVIDERS = new Set<string>(Object.keys(PROFILES));
-const PROTOCOLS = new Set<string>(["responses", "chat_completions"]);
+const PROTOCOLS = new Set<string>(["responses", "chat_completions", "anthropic_messages"]);
 
 export function inferProviderFromBaseUrl(baseUrl: string): ProviderId {
 	let hostname = "";
@@ -75,6 +98,9 @@ export function inferProviderFromBaseUrl(baseUrl: string): ProviderId {
 	}
 	if (hostname === "api.openai.com" || hostname.endsWith(".openai.com")) {
 		return "openai";
+	}
+	if (hostname === "api.anthropic.com" || hostname.endsWith(".anthropic.com")) {
+		return "anthropic";
 	}
 	return "compatible";
 }
@@ -95,6 +121,11 @@ export function resolveProviderProfile(providerValue: string, protocolValue?: st
 	if (protocol === "chat_completions" && !profile.supportsChatCompletions) {
 		throw new Error(
 			`config_error: provider '${provider}' does not support protocol 'chat_completions'`,
+		);
+	}
+	if (protocol === "anthropic_messages" && !profile.supportsAnthropicMessages) {
+		throw new Error(
+			`config_error: provider '${provider}' does not support protocol 'anthropic_messages'`,
 		);
 	}
 	return profile;

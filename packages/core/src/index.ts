@@ -77,6 +77,7 @@ export type {
 export type {
 	CanonicalConversationItem,
 	CanonicalContextMetadata,
+	CanonicalImage,
 	ApprovalChoice,
 	CanonicalMessage,
 	CanonicalToolCall,

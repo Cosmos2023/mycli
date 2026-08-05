@@ -11,7 +11,7 @@ import type {
 	QueuedInput,
 	ShellLifecycleEvent,
 } from "@mycli/core";
-import { OpenAIProviderRegistry } from "@mycli/providers";
+import { ProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
 	CompactionCoordinator,
@@ -93,7 +93,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	});
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
-	const registry = new OpenAIProviderRegistry();
+	const registry = new ProviderRegistry();
 	const toolManifest = builtinToolManifest();
 	const allToolExposure = planToolExposure(toolManifest, { shell: true });
 	const shellManager = new ShellSessionManager({

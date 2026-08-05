@@ -318,7 +318,7 @@
         "turn_id": {"$ref": "#/$defs/identifier"},
         "provider_protocol": {
           "type": "string",
-          "enum": ["responses", "chat_completions"]
+          "enum": ["responses", "chat_completions", "anthropic_messages"]
         },
         "remaining_tool_calls": {
           "type": "array",

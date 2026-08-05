@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@mycli/config": "0.1.0",
     "@mycli/core": "0.1.0",
     "openai": "^7.3.0"

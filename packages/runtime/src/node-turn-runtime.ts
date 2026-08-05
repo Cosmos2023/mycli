@@ -422,6 +422,7 @@ export class NodeTurnRuntime {
 				...(config.promptCacheKeyEnabled
 					? { promptCacheKey: this.#options.sessionId }
 					: {}),
+				...(config.cacheControlEnabled ? { cacheControlEnabled: true } : {}),
 				...(this.#options.maxOutputTokens === undefined
 					? {}
 					: { maxOutputTokens: this.#options.maxOutputTokens }),

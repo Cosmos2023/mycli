@@ -33,3 +33,15 @@ test("classifies rate limits as retryable with bounded retry-after", () => {
 	assert.equal(failure.retryable, true);
 	assert.equal(failure.retryAfterSeconds, 2.5);
 });
+
+test("classifies Anthropic response validation errors as non-retryable", () => {
+	const failure = providers.classifyProviderError(Object.assign(
+		new Error("raw provider body with secret"),
+		{ name: "APIResponseValidationError" },
+	));
+
+	assert.equal(failure.code, "provider_error");
+	assert.equal(failure.retryable, false);
+	assert.equal(failure.message, "provider_error: provider response validation failed");
+	assert.doesNotMatch(JSON.stringify(failure.diagnostics), /secret/);
+});

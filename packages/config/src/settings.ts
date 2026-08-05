@@ -33,6 +33,7 @@ export interface NodeRuntimeConfig {
 	readonly reasoningEffort: ReasoningEffort;
 	readonly thinkingEnabled: boolean;
 	readonly promptCacheKeyEnabled: boolean;
+	readonly cacheControlEnabled: boolean;
 	readonly memoryEnabled: boolean;
 	readonly compressionThresholdTokens: number;
 	readonly compactionTokenLimit: number;
@@ -55,6 +56,7 @@ export interface NodeRuntimeConfig {
 }
 
 export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
+	cacheControlEnabled: false,
 	memoryEnabled: true,
 	compressionThresholdTokens: 8_000,
 	compactionTokenLimit: 9_600,
@@ -74,6 +76,7 @@ export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
 	compactionRehydrationMaxFiles: 5,
 } satisfies Pick<
 	NodeRuntimeConfig,
+	| "cacheControlEnabled"
 	| "memoryEnabled"
 	| "compressionThresholdTokens"
 	| "compactionTokenLimit"
@@ -117,6 +120,7 @@ const SECTION_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> =
 		request_max_retries: "request_max_retries",
 		stream_max_retries: "stream_max_retries",
 		prompt_cache_key_enabled: "prompt_cache_key_enabled",
+		cache_control_enabled: "cache_control_enabled",
 	},
 	reasoning: {
 		enabled: "thinking_enabled",
@@ -254,6 +258,12 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		sources,
 		"MYCLI_PROMPT_CACHE_KEY_ENABLED",
 		"prompt_cache_key_enabled",
+	));
+	const cacheControlOverride = optionalBoolean(setting(
+		options.env,
+		sources,
+		"MYCLI_CACHE_CONTROL_ENABLED",
+		"cache_control_enabled",
 	));
 	const memoryEnabled = booleanSetting(
 		setting(options.env, sources, "MYCLI_MEMORY_ENABLED", "memory_enabled"),
@@ -465,6 +475,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		reasoningEffort,
 		thinkingEnabled,
 		promptCacheKeyEnabled: promptCacheOverride ?? profile.promptCacheKeyEnabled,
+		cacheControlEnabled: cacheControlOverride ?? profile.cacheControlEnabled,
 		memoryEnabled,
 		compressionThresholdTokens,
 		compactionTokenLimit,

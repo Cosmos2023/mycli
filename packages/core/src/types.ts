@@ -7,8 +7,8 @@ export type SessionId = Brand<string, "SessionId">;
 export type ClientTurnId = Brand<string, "ClientTurnId">;
 export type TurnId = Brand<string, "TurnId">;
 
-export type ProviderId = "openai" | "codex" | "compatible" | "qwen" | "deepseek";
-export type ProtocolId = "responses" | "chat_completions";
+export type ProviderId = "openai" | "codex" | "compatible" | "qwen" | "deepseek" | "anthropic";
+export type ProtocolId = "responses" | "chat_completions" | "anthropic_messages";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
 
@@ -37,6 +37,11 @@ export interface CanonicalToolResult {
 	readonly success: boolean;
 }
 
+export interface CanonicalImage {
+	readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+	readonly data: string;
+}
+
 export interface ProviderReplayState {
 	readonly provider: ProviderId;
 	readonly value: Readonly<Record<string, unknown>>;
@@ -53,7 +58,11 @@ export interface CanonicalContextMetadata {
 }
 
 export type CanonicalConversationItem =
-	| { readonly type: "user"; readonly text: string }
+	| {
+		readonly type: "user";
+		readonly text: string;
+		readonly images?: readonly CanonicalImage[];
+	}
 	| {
 		readonly type: "assistant";
 		readonly text: string;
@@ -80,6 +89,7 @@ export interface ProviderRequestConfig {
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly maxOutputTokens?: number;
 	readonly promptCacheKey?: string;
+	readonly cacheControlEnabled?: boolean;
 }
 
 export interface ProviderRequest extends ProviderRequestConfig {
