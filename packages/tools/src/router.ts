@@ -25,13 +25,9 @@ export class ToolRouter implements ToolRouterContract {
 	readonly #routes = new Map<string, Route>();
 
 	constructor(options: ToolRouterOptions) {
-		const exposedNames = new Set(options.exposure.map((tool) => tool.name));
 		const ajv = new Ajv2020({ allErrors: true, strict: true });
 		for (const adapter of options.adapters) {
 			const name = adapter.definition.name;
-			if (!exposedNames.has(name)) {
-				continue;
-			}
 			if (this.#routes.has(name)) {
 				throw new Error(`duplicate_tool: ${boundedName(name)}`);
 			}

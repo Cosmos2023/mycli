@@ -611,6 +611,173 @@
       ],
       "type": "object"
     },
+    "shell.lifecycle": {
+      "properties": {
+        "active_background_count": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "background": {
+          "type": "boolean"
+        },
+        "call_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleanup_result": {
+          "maxLength": 128,
+          "type": "string"
+        },
+        "command_preview": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "completed_at": {
+          "maxLength": 64,
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "next_cursor": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "omitted_output_chars": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_chars": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_delta": {
+          "maxLength": 10000,
+          "type": "string"
+        },
+        "process_state": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sequence": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "shell_edition": {
+          "maxLength": 64,
+          "type": "string"
+        },
+        "shell_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "shell_kind": {
+          "maxLength": 64,
+          "type": "string"
+        },
+        "started_at": {
+          "maxLength": 64,
+          "type": "string"
+        },
+        "terminal_state": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "pipe",
+            "unix_pty",
+            "windows_conpty"
+          ],
+          "type": "string"
+        },
+        "tty": {
+          "type": "boolean"
+        },
+        "yielded": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "shell_id",
+        "session_id",
+        "sequence",
+        "command_preview",
+        "background",
+        "process_state"
+      ],
+      "type": "object"
+    },
+    "shell.started": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/shell.lifecycle"
+        }
+      ],
+      "name": "shell.started"
+    },
+    "shell.output": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/shell.lifecycle"
+        },
+        {
+          "required": [
+            "output_delta",
+            "next_cursor"
+          ],
+          "type": "object"
+        }
+      ],
+      "name": "shell.output"
+    },
+    "shell.completed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/shell.lifecycle"
+        },
+        {
+          "required": [
+            "terminal_state"
+          ],
+          "type": "object"
+        }
+      ],
+      "name": "shell.completed"
+    },
+    "shell.removed": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/shell.lifecycle"
+        }
+      ],
+      "name": "shell.removed"
+    },
+    "shell.list.updated": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/shell.lifecycle"
+        }
+      ],
+      "name": "shell.list.updated"
+    },
     "session.changed": {
       "name": "session.changed",
       "properties": {
@@ -2270,6 +2437,106 @@
         },
         "params": {
           "$ref": "#/$defs/session.changed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "shell.completed"
+        },
+        "params": {
+          "$ref": "#/$defs/shell.completed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "shell.list.updated"
+        },
+        "params": {
+          "$ref": "#/$defs/shell.list.updated"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "shell.output"
+        },
+        "params": {
+          "$ref": "#/$defs/shell.output"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "shell.removed"
+        },
+        "params": {
+          "$ref": "#/$defs/shell.removed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "shell.started"
+        },
+        "params": {
+          "$ref": "#/$defs/shell.started"
         }
       },
       "required": [

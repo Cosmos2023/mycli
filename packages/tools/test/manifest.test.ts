@@ -12,6 +12,7 @@ interface ManifestTool {
 	readonly approval_policy: string;
 	readonly capability_tags: readonly string[];
 	readonly effects: Readonly<Record<string, unknown>>;
+	readonly model_visible: boolean;
 }
 
 interface Manifest {
@@ -21,18 +22,38 @@ interface Manifest {
 	readonly tools: readonly ManifestTool[];
 }
 
-test("built-in M4 manifest exposes the stable file tool inventory", () => {
+test("built-in M6 manifest exposes stable file and terminal tool inventories", () => {
 	const manifest = builtinManifest();
 
 	assert.equal(manifest.schema_version, 1);
 	assert.equal(manifest.source, "builtin");
-	assert.deepEqual(manifest.toolsets, [{ id: "file", tool_count: 4 }]);
-	assert.deepEqual(manifest.tools.map((tool) => tool.name), ["Read", "Edit", "Patch", "Write"]);
+	assert.deepEqual(manifest.toolsets, [
+		{ id: "file", tool_count: 4 },
+		{ id: "terminal", tool_count: 6 },
+	]);
+	assert.deepEqual(manifest.tools.map((tool) => tool.name), [
+		"Read",
+		"Edit",
+		"Patch",
+		"Write",
+		"Shell",
+		"WriteStdin",
+		"Bash",
+		"ShellOutput",
+		"BashOutput",
+		"KillShell",
+	]);
 	assert.deepEqual(manifest.tools.map((tool) => tool.id), [
 		"builtin:Read",
 		"builtin:Edit",
 		"builtin:Patch",
 		"builtin:Write",
+		"builtin:Shell",
+		"builtin:WriteStdin",
+		"builtin:Bash",
+		"builtin:ShellOutput",
+		"builtin:BashOutput",
+		"builtin:KillShell",
 	]);
 	assert.equal(JSON.stringify(manifest).includes("LS"), false);
 	assert.equal(JSON.stringify(manifest).includes("Glob"), false);
@@ -76,13 +97,41 @@ test("mutation manifest entries preserve schemas safety and effects", () => {
 test("exposure planner preserves manifest order and provider schemas", () => {
 	const manifest = builtinManifest();
 	const planToolExposure = requiredFunction("planToolExposure");
-	const exposure = planToolExposure(manifest) as readonly {
+	const exposure = planToolExposure(manifest, { shell: true }) as readonly {
 		readonly name: string;
 		readonly inputSchema: unknown;
 	}[];
 
-	assert.deepEqual(exposure.map((tool) => tool.name), ["Read", "Edit", "Patch", "Write"]);
-	assert.deepEqual(exposure.map((tool) => tool.inputSchema), manifest.tools.map((tool) => tool.inputSchema));
+	assert.deepEqual(exposure.map((tool) => tool.name), [
+		"Read",
+		"Edit",
+		"Patch",
+		"Write",
+		"Shell",
+		"WriteStdin",
+	]);
+	assert.equal(exposure.some((tool) => tool.name === "KillShell"), false);
+	const shell = manifest.tools.find((tool) => tool.name === "Shell");
+	const writeStdin = manifest.tools.find((tool) => tool.name === "WriteStdin");
+	assert.ok(shell && writeStdin);
+	assert.deepEqual(requiredFields(shell.inputSchema), ["command"]);
+	assert.deepEqual(requiredFields(writeStdin.inputSchema), ["session_id"]);
+	const fileExposure = planToolExposure(manifest, { shell: false }) as readonly {
+		readonly name: string;
+	}[];
+	assert.deepEqual(
+		fileExposure.map((tool) => tool.name),
+		["Read", "Edit", "Patch", "Write"],
+	);
+	assert.deepEqual(
+		(planToolExposure(manifest) as readonly { readonly name: string }[])
+			.map((tool) => tool.name),
+		fileExposure.map((tool) => tool.name),
+	);
+	assert.deepEqual(
+		exposure.map((tool) => tool.inputSchema),
+		manifest.tools.filter((tool) => tool.model_visible).map((tool) => tool.inputSchema),
+	);
 });
 
 function builtinManifest(): Manifest {

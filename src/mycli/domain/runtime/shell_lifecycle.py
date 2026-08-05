@@ -42,6 +42,7 @@ class ShellLifecycleEvent:
     def to_tui_payload(self) -> dict[str, object]:
         return {
             "shell_id": self.shell_id,
+            "session_id": self.owner_session_id,
             "call_id": self.call_id,
             "sequence": self.sequence,
             "command_preview": self.command_preview,

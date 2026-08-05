@@ -109,6 +109,14 @@ test("serializes optional file-tool parameters without strict mode", async () =>
 		parameters: tool.inputSchema,
 	})));
 	assert.equal(JSON.stringify(capturedRequest?.tools).includes("strict"), false);
+	const responseTools = capturedRequest?.tools as readonly {
+		readonly name: string;
+		readonly parameters: { readonly required?: readonly string[] };
+	}[] | undefined;
+	const shell = responseTools?.find((tool) => tool.name === "Shell");
+	assert.ok(shell);
+	assert.equal("strict" in shell, false);
+	assert.deepEqual(shell.parameters.required, ["command"]);
 	assert.deepEqual(capturedRequest?.input, [{ role: "user", content: "Read README.md" }]);
 	assert.equal("previous_response_id" in (capturedRequest ?? {}), false);
 });
@@ -294,7 +302,25 @@ const WRITE_TOOL: ToolDefinition = {
 		additionalProperties: false,
 	},
 };
-const FILE_TOOLS = [READ_TOOL, EDIT_TOOL, PATCH_TOOL, WRITE_TOOL] as const;
+const SHELL_TOOL: ToolDefinition = {
+	id: "builtin:Shell",
+	name: "Shell",
+	description: "Execute a command in the active user shell.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			command: { type: "string" },
+			cwd: { type: "string" },
+			tty: { type: "boolean" },
+			yield_time_ms: { type: "integer" },
+			max_output_tokens: { type: "integer" },
+			prefix_rule: { type: "array", items: { type: "string" } },
+		},
+		required: ["command"],
+		additionalProperties: false,
+	},
+};
+const FILE_TOOLS = [READ_TOOL, EDIT_TOOL, PATCH_TOOL, WRITE_TOOL, SHELL_TOOL] as const;
 
 function toolRequest(): ProviderRequest {
 	return {

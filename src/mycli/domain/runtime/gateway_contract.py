@@ -13,7 +13,12 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(cast(list[str], _CATALOG["eventStrea
 GATEWAY_ERROR_CODES = tuple(cast(list[str], _CATALOG["errorCodes"]))
 APPROVAL_DECISION_CHOICES = tuple(cast(list[str], _CATALOG["approvalDecisionChoices"]))
 TERMINAL_TURN_STATES = tuple(cast(list[str], _CATALOG["terminalTurnStates"]))
-GATEWAY_EVENT_PAYLOAD_SCHEMAS = cast(dict[str, dict[str, Any]], _EVENT_SCHEMA["$defs"])
+_GATEWAY_SCHEMA_DEFINITIONS = cast(dict[str, dict[str, Any]], _EVENT_SCHEMA["$defs"])
+GATEWAY_EVENT_PAYLOAD_SCHEMAS = {
+    name: schema
+    for name, schema in _GATEWAY_SCHEMA_DEFINITIONS.items()
+    if name in SUPPORTED_GATEWAY_EVENT_STREAMS
+}
 
 
 def gateway_event_payload_schemas() -> dict[str, dict[str, Any]]:

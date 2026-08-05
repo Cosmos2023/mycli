@@ -1,5 +1,6 @@
 import type {
 	CanonicalToolCall,
+	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
 
@@ -19,6 +20,7 @@ export interface ToolManifestEntry extends ToolDefinition {
 	readonly capability_tags: readonly string[];
 	readonly effects: ToolEffectProfile;
 	readonly availability: { readonly status: "available" };
+	readonly model_visible: boolean;
 }
 
 export interface ToolParameterManifest {
@@ -40,6 +42,9 @@ export interface BuiltInToolManifest {
 
 export interface ToolExecutionOptions {
 	readonly signal: AbortSignal;
+	readonly ownerSessionId: string;
+	readonly callId: string;
+	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 }
 
 export interface ToolExecutionResult {

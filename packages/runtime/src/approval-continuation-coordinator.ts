@@ -15,6 +15,7 @@ import type {
 	CanonicalToolCall,
 	ProviderUsage,
 	ReasoningEffort,
+	ShellLifecycleEvent,
 } from "@mycli/core";
 import type {
 	AppendToolResultInput,
@@ -208,6 +209,7 @@ export class ApprovalContinuationCoordinator {
 		readonly decisionId: string;
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
+		readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 		readonly onExecutionStart?: () => void;
 	}): Promise<ApprovalContinuationResult> {
 		const checkpoint = this.#checkpoint();
@@ -263,7 +265,12 @@ export class ApprovalContinuationCoordinator {
 		let result: ToolExecutionResult;
 		try {
 			input.onExecutionStart?.();
-			result = await this.#toolRouter.execute(pending.call, { signal: input.signal });
+			result = await this.#toolRouter.execute(pending.call, {
+				signal: input.signal,
+				ownerSessionId: this.#sessionId,
+				callId: pending.call.callId,
+				publishLifecycle: input.publishLifecycle ?? ignoreShellLifecycle,
+			});
 		} catch {
 			return this.#interruptUnknown(executing);
 		}
@@ -320,6 +327,8 @@ export class ApprovalContinuationCoordinator {
 		};
 	}
 }
+
+function ignoreShellLifecycle(): void {}
 
 function pendingFromInput(
 	sessionId: string,

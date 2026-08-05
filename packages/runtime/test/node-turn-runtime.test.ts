@@ -13,6 +13,7 @@ import type {
 	QueueSnapshot,
 	QueuedInput,
 	RuntimeEvent,
+	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
 import { ProviderFailure, type ModelProvider } from "@mycli/providers";
@@ -30,6 +31,7 @@ import {
 	READ_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 	type ToolExecutionResult,
+	type ToolExecutionOptions,
 	type ToolRouterContract,
 } from "@mycli/tools";
 import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
@@ -350,7 +352,13 @@ test("persists and executes Read before continuing the same Responses turn", asy
 		],
 	]);
 	const toolRouter = new FakeRouter(trace, successResult("call-1"));
-	const instance = createRuntime({ store, provider, toolRouter });
+	const backendLifecycle: ShellLifecycleEvent[] = [];
+	const instance = createRuntime({
+		store,
+		provider,
+		toolRouter,
+		publishLifecycle: backendLifecycle.push.bind(backendLifecycle),
+	});
 	const emitted: RuntimeEvent[] = [];
 
 	const result = await instance.submit(submission(), emitted.push.bind(emitted), {
@@ -388,6 +396,11 @@ test("persists and executes Read before continuing the same Responses turn", asy
 		response_id: "resp-final",
 		usage: { input_tokens: 15, output_tokens: 5 },
 	});
+	assert.equal(toolRouter.options?.ownerSessionId, "session-1");
+	assert.equal(toolRouter.options?.callId, "call-1");
+	toolRouter.options?.publishLifecycle(shellLifecycleEvent());
+	assert.deepEqual(backendLifecycle, [shellLifecycleEvent()]);
+	assert.equal(emitted.some((event) => event.type === "shell_lifecycle"), false);
 });
 
 test("continues after a failed Read result and exposes the failure event", async () => {
@@ -1216,6 +1229,7 @@ function createRuntime(options: {
 	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly providerContinuation?: ProviderContinuationCoordinator;
 	readonly writeTerminalSnapshot?: NodeTurnRuntimeOptions["writeTerminalSnapshot"];
+	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 	readonly runtimeConfig?: NodeRuntimeConfig;
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
@@ -1232,6 +1246,7 @@ function createRuntime(options: {
 		random: () => 0.5,
 		planTools: () => options.toolDefinitions ?? [READ_TOOL_DEFINITION],
 		toolRouter: options.toolRouter,
+		...(options.publishLifecycle ? { publishLifecycle: options.publishLifecycle } : {}),
 		...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
 		...(options.approvalCoordinator ? { approvalCoordinator: options.approvalCoordinator } : {}),
 		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),
@@ -1400,7 +1415,12 @@ function approvalRuntimeFixture(
 			let toolResult: ToolExecutionResult;
 			if (input.choice === "approve_once") {
 				input.onExecutionStart?.();
-				toolResult = await router.execute(continuation.call, { signal: input.signal });
+				toolResult = await router.execute(continuation.call, {
+					signal: input.signal,
+					ownerSessionId: "session-1",
+					callId: continuation.call.callId,
+					publishLifecycle: () => {},
+				});
 			} else {
 				toolResult = {
 					callId: continuation.call.callId,
@@ -1596,16 +1616,35 @@ class FakeStore implements TurnStore {
 class FakeRouter implements ToolRouterContract {
 	readonly #trace: string[];
 	readonly #result: ToolExecutionResult;
+	options: ToolExecutionOptions | undefined;
 
 	constructor(trace: string[], result: ToolExecutionResult) {
 		this.#trace = trace;
 		this.#result = result;
 	}
 
-	async execute(call: CanonicalToolCall): Promise<ToolExecutionResult> {
+	async execute(call: CanonicalToolCall, options: ToolExecutionOptions): Promise<ToolExecutionResult> {
+		this.options = options;
 		this.#trace.push(`tool:${call.callId}`);
 		return { ...this.#result, callId: call.callId };
 	}
+}
+
+function shellLifecycleEvent(): ShellLifecycleEvent {
+	return {
+		type: "shell_lifecycle",
+		kind: "shell.output",
+		shellId: "shell-1",
+		ownerSessionId: "session-1",
+		callId: "call-1",
+		sequence: 1,
+		commandPreview: "npm test",
+		background: true,
+		processState: "running_background",
+		tty: false,
+		yielded: true,
+		outputDelta: "ready\n",
+	};
 }
 
 class SequencedRouter implements ToolRouterContract {

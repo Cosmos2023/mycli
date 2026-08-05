@@ -548,6 +548,7 @@ def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
     payload = event.to_tui_payload()
 
     assert payload["shell_id"] == "shell-1"
+    assert payload["session_id"] == "session-a"
     assert payload["call_id"] == "call-1"
     assert payload["sequence"] == 1
     assert payload["command_preview"] == "python3 -m http.server"

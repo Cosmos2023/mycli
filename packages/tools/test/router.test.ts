@@ -80,6 +80,49 @@ test("rejects unknown and retired tools without fallback", async () => {
 	}
 });
 
+test("routes a hidden adapter without exposing it to the provider", async () => {
+	const calls: unknown[] = [];
+	const killDefinition = {
+		id: "builtin:KillShell",
+		name: "KillShell",
+		description: "Terminate an owner-scoped shell session.",
+		inputSchema: {
+			type: "object",
+			properties: { shell_id: { type: "string", minLength: 1 } },
+			required: ["shell_id"],
+			additionalProperties: false,
+		},
+	} as const;
+	const ToolRouter = Reflect.get(tools, "ToolRouter") as unknown as new (options: {
+		readonly adapters: readonly unknown[];
+		readonly exposure: readonly unknown[];
+	}) => Router;
+	const router = new ToolRouter({
+		adapters: [{
+			definition: killDefinition,
+			execute: async (argumentsValue: unknown) => {
+				calls.push(argumentsValue);
+				return {
+					success: true,
+					modelOutput: "Shell terminated",
+					summary: "Killed shell shell-1",
+					metadata: { shell_id: "shell-1" },
+				};
+			},
+		}],
+		exposure: [readDefinition],
+	});
+
+	const result = await router.execute({
+		callId: "call-kill",
+		name: "KillShell",
+		argumentsJson: "{\"shell_id\":\"shell-1\"}",
+	}, { signal: new AbortController().signal });
+
+	assert.deepEqual(calls, [{ shell_id: "shell-1" }]);
+	assert.equal(result.success, true);
+});
+
 interface Adapter {
 	readonly definition: typeof readDefinition;
 	execute(argumentsValue: unknown, options: { readonly signal: AbortSignal }): Promise<unknown>;

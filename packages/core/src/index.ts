@@ -1,4 +1,9 @@
 export { TurnTransitionError } from "./errors.ts";
+export type {
+	ShellLifecycleEvent,
+	ShellLifecycleKind,
+	ShellTransportKind,
+} from "./shell-lifecycle.ts";
 export {
 	ApprovalConflictError,
 	createWaitingApproval,

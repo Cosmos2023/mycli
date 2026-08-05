@@ -12,6 +12,7 @@ import type {
 	ReasoningEffort,
 	RuntimeErrorCode,
 	RuntimeEvent,
+	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
 import {
@@ -87,6 +88,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly providerContinuation?: ProviderContinuationContract;
 	readonly writeTerminalSnapshot?: (turn: RuntimeTurnRecord) => Promise<void>;
+	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 }
 
 export interface CompactionCoordinatorContract {
@@ -102,9 +104,10 @@ export interface ApprovalContinuationContract {
 	pending(): PendingApprovalContinuation | undefined;
 	resolve(input: {
 		readonly decisionId: string;
-		readonly choice: ApprovalChoice;
-		readonly signal: AbortSignal;
-		readonly onExecutionStart?: () => void;
+	readonly choice: ApprovalChoice;
+	readonly signal: AbortSignal;
+	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
+	readonly onExecutionStart?: () => void;
 	}): Promise<ApprovalRuntimeResolution>;
 	finish(decisionId: string): void;
 }
@@ -281,6 +284,9 @@ export class NodeTurnRuntime {
 		const resolution = await coordinator.resolve({
 			...input,
 			signal: options.signal,
+			...(this.#options.publishLifecycle ? {
+				publishLifecycle: this.#options.publishLifecycle,
+			} : {}),
 			onExecutionStart: () => {
 				startedAt = this.#options.monotonicClock?.() ?? performance.now();
 				emit({
@@ -818,7 +824,12 @@ export class NodeTurnRuntime {
 		});
 		let result: ToolExecutionResult;
 		try {
-			result = await router.execute(call, { signal });
+			result = await router.execute(call, {
+				signal,
+				ownerSessionId: this.#options.sessionId,
+				callId: call.callId,
+				publishLifecycle: this.#options.publishLifecycle ?? ignoreShellLifecycle,
+			});
 		} catch (error) {
 			if (error instanceof Error && error.name === "AbortError") throw error;
 			assertNotAborted(signal);
@@ -1278,6 +1289,8 @@ function emitToolResult(
 		...(result.errorKind ? { errorKind: result.errorKind.slice(0, 128) } : {}),
 	});
 }
+
+function ignoreShellLifecycle(): void {}
 
 function boundedCallId(value: string): string {
 	return value.slice(0, 256);

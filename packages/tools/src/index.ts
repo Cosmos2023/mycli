@@ -6,6 +6,16 @@ export {
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
 export { planToolExposure } from "./exposure-planner.ts";
+export type { ToolExposureCapabilities } from "./exposure-planner.ts";
+export {
+	BASH_OUTPUT_TOOL_DEFINITION,
+	BASH_TOOL_DEFINITION,
+	KILL_SHELL_TOOL_DEFINITION,
+	SHELL_MANIFEST_ENTRIES,
+	SHELL_OUTPUT_TOOL_DEFINITION,
+	SHELL_TOOL_DEFINITION,
+	WRITE_STDIN_TOOL_DEFINITION,
+} from "./shell-manifest.ts";
 export { FileSnapshotStore } from "./file-snapshot-store.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";

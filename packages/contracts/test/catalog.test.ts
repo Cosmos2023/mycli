@@ -8,6 +8,8 @@ test("catalog exposes the versioned current gateway surface", () => {
 	assert.ok(gatewayContractCatalog.rpcMethods.includes("turn.submit"));
 	assert.ok(gatewayContractCatalog.eventStreams.includes("turn.started"));
 	assert.ok(gatewayContractCatalog.eventStreams.includes("runtime.ready"));
+	assert.ok(gatewayContractCatalog.eventStreams.includes("shell.started"));
+	assert.ok(gatewayContractCatalog.eventStreams.includes("shell.completed"));
 	assert.ok(gatewayContractCatalog.errorCodes.includes("incompatible_protocol"));
 });
 

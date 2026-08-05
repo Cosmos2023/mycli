@@ -92,6 +92,31 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "shell.completed";
+      params: ShellCompleted;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "shell.list.updated";
+      params: ShellListUpdated;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "shell.output";
+      params: ShellOutput;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "shell.removed";
+      params: ShellRemoved;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "shell.started";
+      params: ShellStarted;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "status.changed";
       params: Status;
     }
@@ -180,6 +205,15 @@ export type GatewayEventNotification =
       method: "workspace.trust.changed";
       params: WorkspaceTrust;
     };
+export type ShellCompleted = Shell & {
+  [k: string]: any;
+};
+export type ShellListUpdated = Shell;
+export type ShellOutput = Shell & {
+  [k: string]: any;
+};
+export type ShellRemoved = Shell;
+export type ShellStarted = Shell;
 
 export interface Approval {
   action?: string;
@@ -430,6 +464,31 @@ export interface Runtime1 {
 export interface Session {
   session_id: string;
   generation?: number;
+  [k: string]: any;
+}
+export interface Shell {
+  active_background_count?: number;
+  background: boolean;
+  call_id?: string | null;
+  cleanup_result?: string;
+  command_preview: string;
+  completed_at?: string;
+  exit_code?: number;
+  next_cursor?: number;
+  omitted_output_chars?: number;
+  output_chars?: number;
+  output_delta?: string;
+  process_state: string;
+  sequence: number;
+  session_id: string;
+  shell_edition?: string;
+  shell_id: string;
+  shell_kind?: string;
+  started_at?: string;
+  terminal_state?: string;
+  transport?: "pipe" | "unix_pty" | "windows_conpty";
+  tty?: boolean;
+  yielded?: boolean;
   [k: string]: any;
 }
 export interface Status {

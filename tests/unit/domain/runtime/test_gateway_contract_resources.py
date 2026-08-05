@@ -29,7 +29,12 @@ def test_canonical_gateway_contract_matches_python_contract() -> None:
     assert catalog["errorCodes"] == list(GATEWAY_ERROR_CODES)
     assert catalog["approvalDecisionChoices"] == list(APPROVAL_DECISION_CHOICES)
     assert catalog["terminalTurnStates"] == list(TERMINAL_TURN_STATES)
-    assert events["$defs"] == gateway_event_payload_schemas()
+    assert gateway_event_payload_schemas() == {
+        name: schema
+        for name, schema in events["$defs"].items()
+        if name in catalog["eventStreams"]
+    }
+    assert "shell.lifecycle" not in gateway_event_payload_schemas()
 
 
 def test_python_contract_resources_are_exact_generated_copies() -> None:

@@ -1,4 +1,5 @@
 import type { RuntimeErrorCode } from "@mycli/contracts";
+import type { ShellLifecycleEvent } from "./shell-lifecycle.ts";
 
 type Brand<Value, Name extends string> = Value & { readonly __brand: Name };
 
@@ -79,6 +80,7 @@ export type ProviderEvent =
 	};
 
 export type RuntimeEvent =
+	| ShellLifecycleEvent
 	| { readonly type: "turn_started"; readonly clientTurnId: string; readonly turnId: string }
 	| {
 		readonly type: "compaction_started";

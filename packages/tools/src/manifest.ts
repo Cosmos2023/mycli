@@ -4,6 +4,7 @@ import type {
 	ToolManifestEntry,
 	ToolParameterManifest,
 } from "./types.ts";
+import { SHELL_MANIFEST_ENTRIES } from "./shell-manifest.ts";
 
 const READ_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 	{ name: "file_path", type: "string", required: true },
@@ -108,6 +109,7 @@ const READ_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	capability_tags: ["file", "read", "structured_data", "snapshot"],
 	effects: { filesystem: "read", network: false, process: false },
 	availability: { status: "available" },
+	model_visible: true,
 });
 
 const EDIT_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
@@ -121,6 +123,7 @@ const EDIT_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	capability_tags: ["file", "edit", "mutation", "snapshot_guard", "diff"],
 	effects: { filesystem: "write", network: false, process: false },
 	availability: { status: "available" },
+	model_visible: true,
 });
 
 const PATCH_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
@@ -134,6 +137,7 @@ const PATCH_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	capability_tags: ["file", "patch", "mutation", "snapshot_guard", "diff"],
 	effects: { filesystem: "write", network: false, process: false },
 	availability: { status: "available" },
+	model_visible: true,
 });
 
 const WRITE_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
@@ -147,13 +151,23 @@ const WRITE_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	capability_tags: ["file", "write", "mutation", "conflict_guard", "diff"],
 	effects: { filesystem: "write", network: false, process: false },
 	availability: { status: "available" },
+	model_visible: true,
 });
 
 const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 	schema_version: 1,
 	source: "builtin",
-	toolsets: [{ id: "file", tool_count: 4 }],
-	tools: [READ_MANIFEST_ENTRY, EDIT_MANIFEST_ENTRY, PATCH_MANIFEST_ENTRY, WRITE_MANIFEST_ENTRY],
+	toolsets: [
+		{ id: "file", tool_count: 4 },
+		{ id: "terminal", tool_count: SHELL_MANIFEST_ENTRIES.length },
+	],
+	tools: [
+		READ_MANIFEST_ENTRY,
+		EDIT_MANIFEST_ENTRY,
+		PATCH_MANIFEST_ENTRY,
+		WRITE_MANIFEST_ENTRY,
+		...SHELL_MANIFEST_ENTRIES,
+	],
 });
 
 export function builtinToolManifest(): BuiltInToolManifest {
