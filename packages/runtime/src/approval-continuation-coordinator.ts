@@ -132,6 +132,7 @@ export interface ApprovalContinuationCoordinatorOptions {
 	readonly threadId: string;
 	readonly store: ApprovalContinuationStore;
 	readonly toolRouter: ToolRouterContract;
+	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly clock: () => string;
 	readonly failpoint?: RuntimeFailpointHook;
 }
@@ -151,6 +152,7 @@ export class ApprovalContinuationCoordinator {
 	readonly #threadId: string;
 	readonly #store: ApprovalContinuationStore;
 	readonly #toolRouter: ToolRouterContract;
+	readonly #publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly #clock: () => string;
 	readonly #failpoint: RuntimeFailpointHook;
 
@@ -160,6 +162,7 @@ export class ApprovalContinuationCoordinator {
 		this.#threadId = nonEmpty(options.threadId, "threadId");
 		this.#store = options.store;
 		this.#toolRouter = options.toolRouter;
+		this.#publishLifecycle = options.publishLifecycle;
 		this.#clock = options.clock;
 		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
@@ -209,7 +212,6 @@ export class ApprovalContinuationCoordinator {
 		readonly decisionId: string;
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
-		readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 		readonly onExecutionStart?: () => void;
 	}): Promise<ApprovalContinuationResult> {
 		const checkpoint = this.#checkpoint();
@@ -269,7 +271,7 @@ export class ApprovalContinuationCoordinator {
 				signal: input.signal,
 				ownerSessionId: this.#sessionId,
 				callId: pending.call.callId,
-				publishLifecycle: input.publishLifecycle ?? ignoreShellLifecycle,
+				publishLifecycle: this.#publishLifecycle,
 			});
 		} catch {
 			return this.#interruptUnknown(executing);
@@ -327,8 +329,6 @@ export class ApprovalContinuationCoordinator {
 		};
 	}
 }
-
-function ignoreShellLifecycle(): void {}
 
 function pendingFromInput(
 	sessionId: string,

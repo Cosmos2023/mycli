@@ -1246,7 +1246,7 @@ function createRuntime(options: {
 		random: () => 0.5,
 		planTools: () => options.toolDefinitions ?? [READ_TOOL_DEFINITION],
 		toolRouter: options.toolRouter,
-		...(options.publishLifecycle ? { publishLifecycle: options.publishLifecycle } : {}),
+		publishLifecycle: options.publishLifecycle ?? (() => undefined),
 		...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
 		...(options.approvalCoordinator ? { approvalCoordinator: options.approvalCoordinator } : {}),
 		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),

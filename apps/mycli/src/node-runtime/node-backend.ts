@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { parseRuntimeState } from "@mycli/contracts";
 import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
-import type { QueueSnapshot, QueuedInput } from "@mycli/core";
+import type {
+	QueueSnapshot,
+	QueuedInput,
+	ShellLifecycleEvent,
+} from "@mycli/core";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
@@ -37,6 +41,8 @@ import type {
 } from "@mycli/storage";
 import {
 	ApprovalPolicy,
+	BashOutputTool,
+	BashTool,
 	builtinToolManifest,
 	EditTool,
 	FileMutationRuntime,
@@ -44,7 +50,13 @@ import {
 	PatchTool,
 	planToolExposure,
 	ReadTool,
+	ShellOutputTool,
+	ShellSessionManager,
+	ShellTool,
+	startPipeTransport,
 	ToolRouter,
+	KillShellTool,
+	WriteStdinTool,
 	WriteTool,
 } from "@mycli/tools";
 import {
@@ -73,7 +85,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new OpenAIProviderRegistry();
-	const toolExposure = planToolExposure(builtinToolManifest());
+	const toolExposure = planToolExposure(builtinToolManifest(), { shell: false });
+	const shellManager = new ShellSessionManager({ transportFactory: startPipeTransport });
+	const publishLifecycle: (event: ShellLifecycleEvent) => void = () => undefined;
 	const transcriptSnapshots = new TranscriptSnapshotStore({ homeDir });
 	const tokenCounter = new TokenCounter();
 	const createRuntime = (
@@ -85,11 +99,22 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	): NodeGatewayRuntime => {
 		const fileSnapshots = new FileSnapshotStore();
 		const mutationRuntime = new FileMutationRuntime({ workspaceRoot, snapshots: fileSnapshots });
+		const shellTool = new ShellTool({
+			workspaceRoot,
+			manager: shellManager,
+			env: options.env,
+		});
 		const adapters = [
 			new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
+			shellTool,
+			new WriteStdinTool({ manager: shellManager }),
+			new BashTool({ shell: shellTool }),
+			new ShellOutputTool({ manager: shellManager }),
+			new BashOutputTool({ manager: shellManager }),
+			new KillShellTool({ manager: shellManager }),
 		];
 		const toolRouter = new ToolRouter({ adapters, exposure: toolExposure });
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
@@ -98,6 +123,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			threadId,
 			store,
 			toolRouter,
+			publishLifecycle,
 			clock: () => new Date().toISOString(),
 		});
 		approvalCoordinator.recover();
@@ -170,6 +196,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			createProvider: (resolved) => registry.create(resolved),
 			createTurnId: randomUUID,
 			clock: () => new Date().toISOString(),
+			publishLifecycle,
 			planTools: () => toolExposure,
 			toolRouter,
 			approvalPolicy: new ApprovalPolicy({ workspaceRoot, autoApproveMedium: true }),
@@ -279,9 +306,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				load: (workspaceRoot) => workspaceTrustStore.load(workspaceRoot),
 				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
 			},
-			close: () => store.close(),
+			close: async () => {
+				await shellManager.close();
+				store.close();
+			},
 		});
 	} catch (error) {
+		await shellManager.close().catch(() => undefined);
 		store.close();
 		throw error;
 	}

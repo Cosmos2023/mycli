@@ -88,7 +88,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly providerContinuation?: ProviderContinuationContract;
 	readonly writeTerminalSnapshot?: (turn: RuntimeTurnRecord) => Promise<void>;
-	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
+	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 }
 
 export interface CompactionCoordinatorContract {
@@ -106,7 +106,6 @@ export interface ApprovalContinuationContract {
 		readonly decisionId: string;
 	readonly choice: ApprovalChoice;
 	readonly signal: AbortSignal;
-	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 	readonly onExecutionStart?: () => void;
 	}): Promise<ApprovalRuntimeResolution>;
 	finish(decisionId: string): void;
@@ -284,9 +283,6 @@ export class NodeTurnRuntime {
 		const resolution = await coordinator.resolve({
 			...input,
 			signal: options.signal,
-			...(this.#options.publishLifecycle ? {
-				publishLifecycle: this.#options.publishLifecycle,
-			} : {}),
 			onExecutionStart: () => {
 				startedAt = this.#options.monotonicClock?.() ?? performance.now();
 				emit({
@@ -828,7 +824,7 @@ export class NodeTurnRuntime {
 				signal,
 				ownerSessionId: this.#options.sessionId,
 				callId: call.callId,
-				publishLifecycle: this.#options.publishLifecycle ?? ignoreShellLifecycle,
+				publishLifecycle: this.#options.publishLifecycle,
 			});
 		} catch (error) {
 			if (error instanceof Error && error.name === "AbortError") throw error;
@@ -1289,8 +1285,6 @@ function emitToolResult(
 		...(result.errorKind ? { errorKind: result.errorKind.slice(0, 128) } : {}),
 	});
 }
-
-function ignoreShellLifecycle(): void {}
 
 function boundedCallId(value: string): string {
 	return value.slice(0, 256);

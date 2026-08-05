@@ -327,6 +327,7 @@ async function approvalFixture(
 		threadId: "session-approval",
 		store,
 		toolRouter: router,
+		publishLifecycle: () => undefined,
 		clock: () => NOW,
 		...(failpoint ? { failpoint } : {}),
 	});

@@ -55,6 +55,31 @@ export type {
 	ShellSessionSnapshot,
 	ShellStartRequest,
 } from "./shell-session-manager.ts";
+export { resolveShellProfile } from "./shell-profile.ts";
+export type {
+	ResolveShellProfileOptions,
+	ShellProfile,
+} from "./shell-profile.ts";
+export { ShellTool } from "./shell-tool.ts";
+export type {
+	ShellStartManager,
+	ShellToolOptions,
+} from "./shell-tool.ts";
+export { WriteStdinTool } from "./write-stdin-tool.ts";
+export type {
+	ShellInteractionManager,
+	WriteStdinToolOptions,
+} from "./write-stdin-tool.ts";
+export {
+	BashOutputTool,
+	BashTool,
+	KillShellTool,
+	ShellOutputTool,
+} from "./legacy-shell-tools.ts";
+export type {
+	BashToolOptions,
+	KillShellToolOptions,
+} from "./legacy-shell-tools.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";
 export type { BoundedFileDiff } from "./file-diff.ts";

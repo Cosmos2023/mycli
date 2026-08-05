@@ -474,6 +474,7 @@ function createRuntime(overrides: {
 		createProvider: () => overrides.provider,
 		createTurnId: () => "turn-1",
 		clock: clockSequence(),
+		publishLifecycle: () => undefined,
 		sleep: overrides.sleep ?? (async () => {}),
 		random: () => 0.5,
 		...(overrides.maxOutputTokens === undefined

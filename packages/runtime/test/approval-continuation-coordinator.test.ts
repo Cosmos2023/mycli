@@ -7,12 +7,17 @@ import {
 	type ApprovalResolution,
 	type ApprovalTransition,
 	type CanonicalToolCall,
+	type ShellLifecycleEvent,
 } from "@mycli/core";
 import type {
 	ApprovalCheckpoint,
 	AppendToolResultInput,
 } from "@mycli/storage";
-import type { ToolExecutionResult, ToolRouterContract } from "@mycli/tools";
+import type {
+	ToolExecutionOptions,
+	ToolExecutionResult,
+	ToolRouterContract,
+} from "@mycli/tools";
 import * as runtime from "../src/index.ts";
 
 const NOW = "2026-08-04T00:00:00.000Z";
@@ -64,6 +69,24 @@ test("approve once claims executes and commits one effect in order", async () =>
 	assert.equal(result.continuation?.decisionId, "call-1");
 	assert.equal(fixture.state.has("pending_decision"), true);
 	assert.equal(fixture.state.has("suspended_turn"), true);
+});
+
+test("approval execution uses the coordinator-owned lifecycle publisher", async () => {
+	const events: ShellLifecycleEvent[] = [];
+	const publishLifecycle = (event: ShellLifecycleEvent): void => { events.push(event); };
+	const fixture = approvalFixture({ publishLifecycle });
+	fixture.coordinator.suspend(suspension());
+
+	await fixture.coordinator.resolve({
+		decisionId: "call-1",
+		choice: "approve_once",
+		signal: new AbortController().signal,
+	});
+	fixture.executionOptions?.publishLifecycle(shellLifecycleEvent());
+
+	assert.equal(fixture.executionOptions?.ownerSessionId, "session-1");
+	assert.equal(fixture.executionOptions?.callId, "call-1");
+	assert.deepEqual(events, [shellLifecycleEvent()]);
 });
 
 test("reject commits a denied result without executing the tool", async () => {
@@ -158,12 +181,14 @@ interface PendingContract {
 function approvalFixture(options: {
 	readonly effectStatus?: ApprovalResolution["status"];
 	readonly executeAbort?: boolean;
+	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 } = {}) {
 	const trace: string[] = [];
 	const state = new Map<string, RuntimeStateRecord>();
 	let executeCalls = 0;
 	let committedResult: AppendToolResultInput | undefined;
 	let interruptedErrorKind: string | undefined;
+	let executionOptions: ToolExecutionOptions | undefined;
 	let effect = checkpoint(options.effectStatus ?? "waiting");
 	if (options.effectStatus) {
 		state.set("pending_decision", pendingDecision());
@@ -233,8 +258,9 @@ function approvalFixture(options: {
 		},
 	};
 	const router: ToolRouterContract = {
-		execute: async (call): Promise<ToolExecutionResult> => {
+		execute: async (call, routerOptions): Promise<ToolExecutionResult> => {
 			executeCalls += 1;
+			executionOptions = routerOptions;
 			trace.push("router:execute");
 			if (options.executeAbort) {
 				const error = new Error("aborted during mutation");
@@ -263,6 +289,7 @@ function approvalFixture(options: {
 			store,
 			toolRouter: router,
 			clock: () => NOW,
+			publishLifecycle: options.publishLifecycle ?? (() => undefined),
 		});
 	};
 	const coordinator = createCoordinator();
@@ -275,6 +302,24 @@ function approvalFixture(options: {
 		get executeCalls() { return executeCalls; },
 		get committedResult() { return committedResult; },
 		get interruptedErrorKind() { return interruptedErrorKind; },
+		get executionOptions() { return executionOptions; },
+	};
+}
+
+function shellLifecycleEvent(): ShellLifecycleEvent {
+	return {
+		type: "shell_lifecycle",
+		kind: "shell.output",
+		shellId: "a1b2c3d4",
+		ownerSessionId: "session-1",
+		callId: "call-1",
+		sequence: 1,
+		commandPreview: "npm test",
+		background: true,
+		processState: "running_background",
+		tty: false,
+		yielded: true,
+		outputDelta: "ready\n",
 	};
 }
 
