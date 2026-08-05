@@ -51,3 +51,47 @@ Completed M5 persistent runtime recovery across session state, transcripts, queu
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Complete M6 persistent shell
+
+**Date**: 2026-08-05
+**Task**: Complete M6 persistent shell
+**Branch**: `feature/mycli-node-runtime-rewrite`
+
+### Summary
+
+Completed the Node-owned persistent shell milestone: bounded output, pipe and native PTY/ConPTY transports, session ownership, approvals, sandboxing, lifecycle persistence, backend integration, parity fixtures, live smoke contract, rollout documentation, and cross-platform verification.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ff0b9e26` | (see git log) |
+| `9318b85d` | (see git log) |
+| `e91ccef7` | (see git log) |
+| `2c803893` | (see git log) |
+| `62da5544` | (see git log) |
+| `9b1d91e3` | (see git log) |
+| `0fe3081f` | (see git log) |
+| `c0a729f7` | (see git log) |
+| `1762c7c1` | (see git log) |
+| `c48bc088` | (see git log) |
+| `28cfdd3f` | (see git log) |
+| `7a2d85c7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
