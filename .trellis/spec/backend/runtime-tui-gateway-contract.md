@@ -5,8 +5,9 @@
 ## Scenario: Approval And Live Status Events
 
 ### 1. Scope / Trigger
-- Trigger: Any change to `src/mycli/cli/node_tui/gateway.py`, the Node TUI
-  protocol types, or the reducer state that changes runtime-to-TUI events.
+- Trigger: Any change to `src/mycli/cli/node_tui/gateway.py`, the Node runtime
+  gateway, the Node TUI protocol types, or the reducer state that changes
+  runtime-to-TUI events.
 - This is a cross-layer contract. Python owns runtime semantics and JSON-RPC
   emission; TypeScript owns rendering and reducer state.
 - The target direction is Hermes-like channel separation, but existing mycli
@@ -17,6 +18,7 @@
 - Python event emitter:
   `NodeTuiGateway._emit_event(method: str, params: dict[str, object]) -> None`
 - Extension discovery request method: `extension.manifest`
+- Session bootstrap request method: `session.bootstrap`
 - Turn submit request method: `turn.submit`
 - Trace export request method: `trace.export`
 - Approval response request methods:
@@ -366,6 +368,12 @@
     `status.changed.pending_decision` / `suspended_turn` flag is not enough for
     clients to respond because they need the stable `decision_id` or
     `request_id`.
+  - After a process restart, `session.bootstrap(protocol_version=1)` must also
+    re-emit the active persisted `approval.request` with its stable
+    `decision_id`, session id, and generation before returning the bootstrap
+    result. The earlier compatibility `initialize` request must not re-emit the
+    same prompt, so the normal startup handshake exposes one actionable
+    approval rather than two.
 - Running-turn queue RPCs:
   - `turn.steer` accepts `{message, expected_turn_id, client_turn_id?,
     client_user_message_id?, local_images?}`. A matching active turn produces
@@ -648,6 +656,9 @@ queue.markStarted(record.queueId);
 - `runtime.ready` with a non-object payload or without non-empty `session_id`
   -> reject at the Node process boundary as an invalid gateway notification;
   do not expose raw payload content in the error.
+- `session.bootstrap(protocol_version=1)` with a recovered pending approval ->
+  emit one concrete `approval.request` before the successful response;
+  `initialize` exposes no approval event.
 - Typed queue item with `kind=rejected_steer` -> accept and preserve it in the
   rejected-steer collection; any unknown queue item kind -> contract validation
   failure.
@@ -762,6 +773,9 @@ queue.markStarted(record.queueId);
   existing terminal events and `status.update`.
 - Good: A bootstrap `runtime.ready` notification with `session_id` validates as
   a direct event without producing a `runtime.event` mirror.
+- Good: Restarting a Node-owned waiting-approval session and calling
+  `session.bootstrap` produces one actionable `approval.request`, after which
+  `approve_once` continues the original turn without another reservation.
 - Good: A `rejected_steer` queue item survives schema validation and remains
   available for the next server turn.
 - Base: `npm ci` at the repository root installs both `@mycli/contracts` and
@@ -798,6 +812,9 @@ queue.markStarted(record.queueId);
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
   UI a gate exists but not how to render or resolve it.
+- Bad: Returning only `status.pending_decision=true` from restart bootstrap;
+  the TUI cannot reconstruct the stable decision id needed by
+  `approval.respond`.
 - Bad: Treating model-side `RuntimeStreamEvent(kind="tool_call")` as execution
   start. That event only means the model requested a tool.
 - Bad: Rendering both typed `message.delta` and compatibility `turn.event`
@@ -926,6 +943,9 @@ queue.markStarted(record.queueId);
   `session.resume` on an ancestor, receive pending-state payloads for the
   resolved tip, respond to approval or clarification, and finish with pending
   state cleared.
+- Node M5 integration proving restart bootstrap re-emits one persisted strict
+  Write approval, `approve_once` executes the mutation exactly once, and the
+  original turn completes without starting Python.
 - Transcript reducer test proving blank final answers do not create visible
   assistant rows.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
@@ -1011,6 +1031,19 @@ if (action.method === "status.update") {
   const liveStatus = liveStatusFromParams(action.params);
   return liveStatus ? { ...state, liveStatus } : state;
 }
+```
+
+Wrong:
+```typescript
+return { ...bootstrap, status: { pending_decision: true } };
+```
+
+Correct:
+```typescript
+if (method === "session.bootstrap" && session.pendingApproval) {
+	emit("approval.request", approvalRequest(session.pendingApproval, session.generation));
+}
+return bootstrap;
 ```
 
 ## Scenario: Node Composition Root With Python Sidecar

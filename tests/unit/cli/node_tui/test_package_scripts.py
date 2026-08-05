@@ -49,6 +49,7 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         "smoke:package": "node scripts/smoke_packed_cli.mjs",
         "smoke:m3": "node scripts/smoke_node_m3_read.mjs --protocol responses",
         "smoke:m4": "node scripts/smoke_node_m4_mutation.mjs --protocol responses",
+        "smoke:m5": "node scripts/smoke_node_m5_state.mjs --protocol responses",
         "test": "npm run test --workspaces --if-present",
         "test:m2": (
             "npm run build && node --import tsx --test "
@@ -66,7 +67,20 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
             "apps/mycli/test/m4-file-mutation.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m4_parity.py -q"
         ),
+        "test:m5": (
+            "npm run build && node --import tsx --test "
+            "apps/mycli/test/m5-state-recovery.integration.test.ts && "
+            "uv run pytest tests/integration/test_node_runtime_m5_parity.py -q"
+        ),
         "typecheck": "npm run typecheck --workspaces --if-present",
     }
     assert Path("package-lock.json").is_file()
     assert not Path("tui/mycli-shell/package-lock.json").exists()
+
+
+def test_node_app_exposes_the_targeted_m5_integration_script() -> None:
+    app_package = json.loads(Path("apps/mycli/package.json").read_text(encoding="utf-8"))
+
+    assert app_package["scripts"]["test:m5"] == (
+        "node --import tsx --test test/m5-state-recovery.integration.test.ts"
+    )

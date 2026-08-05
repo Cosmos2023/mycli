@@ -44,6 +44,11 @@ def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
         "active_turn_not_steerable",
         "input_too_large",
         "message_id_conflict",
+        "session_not_found",
+        "session_state_invalid",
+        "session_state_version_unsupported",
+        "approval_not_pending",
+        "approval_conflict",
     ]
 
 

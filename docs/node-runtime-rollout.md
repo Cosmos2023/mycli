@@ -1,87 +1,108 @@
-# Node Runtime M4 Rollout
+# Node Runtime M5 Rollout
 
 ## Current Status
 
-The Node runtime is an explicit preview backend for text turns and the built-in `Read`, `Edit`,
-`Patch`, and `Write` tools. The default remains `python-sidecar`. Do not promote Node to the
-default until the M4 live smoke and the Node 22.19 macOS, Linux, and Windows matrix pass for the
-release candidate.
+The Node runtime is an explicit preview backend for text turns, the built-in `Read`, `Edit`,
+`Patch`, and `Write` tools, and M5 session state and recovery. The default remains
+`python-sidecar`. Do not promote Node to the default until the M5 live smoke and the Node 22.19
+and Node 24 macOS, Linux, and Windows matrices pass for the release candidate.
 
-Select the preview backend for a new turn:
+Select the preview backend before starting a new turn:
 
 ```bash
 mycli --runtime-backend=node
 ```
 
 Use `--model <name>` and `--session <id>` with the same precedence and session semantics as the
-existing CLI. The selected backend owns the complete turn before provider IO begins.
+existing CLI. A backend owns the complete turn before provider IO or a tool effect begins.
 
-## Supported M4 Scope
+## Supported M5 Scope
 
 - OpenAI Responses and OpenAI-compatible Chat Completions
-- streamed text and reasoning events
+- streamed text, reasoning, compaction, tool, approval, and terminal events
 - bounded runtime-owned retries and interruption
-- append-compatible SQLite conversation, history, rollout, and idempotency records
-- duplicate `client_turn_id` protection
-- startup recovery for orphaned running turns
-- Node-native `Read`, `Edit`, `Patch`, and `Write` tools
-- bounded UTF-8 text and CSV/TSV reads
-- exact-replacement Edit/Patch after a current process-local Read snapshot
-- complete-file Write with optional `expected_sha256` conflict detection
-- workspace-local mutation auto-allow, matching the Python default permission behavior
-- workspace confinement with traversal and symlink escape protection
-- fail-closed binary, invalid UTF-8, directory, file/content size, and secret-like-content checks
-- atomic sibling-file replacement with existing mode preservation
-- bounded unified diffs and Python-compatible durable `file_changes` metadata
-- Responses and Chat Completions tool continuation
-- ordered, durable assistant tool calls and tool results
-- bounded `tool.start`, `tool.complete`, `tool.failed`, and `turn.event` projection
+- append-compatible SQLite conversation, history, rollout, state, summary, and idempotency records
+- session catalog, bounded transcript replay, lineage, atomic resume, and schema-v2 snapshots
+- duplicate `client_turn_id` protection and startup interruption of orphaned running turns
+- durable rejected steers, follow-ups, queue revisions, and commit-before-provider ordering
+- Node-native `Read`, `Edit`, `Patch`, and `Write` tools with the M4 workspace safety contract
+- one-time `approve_once` or `reject` continuation for Node-owned tools
+- claimed-effect recovery that reports `effect_outcome_unknown` instead of replaying a mutation
+- context-only compaction with raw history retention, durable summaries, and bounded rehydration
+- workspace-scoped Markdown memory, bounded deterministic fallback selection, and explicit
+  remember/forget actions
+- validated Responses continuation metadata with canonical HTTP replay
+- Chat canonical replay from persisted conversation items
+- Python/Node shared-state compatibility and four-way persistence parity
 - no fixed per-turn provider-step or total tool-call ceiling, matching Python behavior
 
-`LS`, `Glob`, and `Grep` are retired and are neither advertised nor implemented by the Node
-backend. M4 does not support interactive approval pause/resume, remembered approval rules,
-external writable roots, local images, shell execution, MCP, plugins, hooks, subagents,
-compaction, memory, queues, or steering. Workspace escapes are denied rather than sent for
-approval. An unsupported capability fails explicitly and is never delegated to Python.
+`LS`, `Glob`, and `Grep` remain retired. M5 does not support remembered approval rules, external
+writable roots, local images, shell execution, PTY/background processes, MCP, plugins, hooks,
+skills, or subagents. Automatic background memory extraction and dream consolidation remain
+deferred. Unsupported capabilities fail explicitly and are never delegated to Python after a
+Node turn starts.
+
+## Recovery And Ownership
+
+Session resume prepares and validates the transcript, queue, approval, compaction, continuation,
+workspace, and runtime binding before publishing a new session generation. Corrupt, cross-session,
+or unsupported state fails closed without replacing the active session.
+
+Queue input is durable before publication. Pending steers are committed with their history rows,
+and rejected steers or follow-ups remain queued until a later turn is reserved. Compaction replaces
+only provider context; canonical history and rollouts remain available for replay.
+
+A pending approval belongs to the backend and generation that suspended the turn. Restart the same
+Node backend and approve or reject that decision before changing backends. Do not start the pending
+continuation through Python, and do not delete its state manually. If recovery finds an effect that
+was claimed but lacks a durable result, the turn is interrupted as `effect_outcome_unknown`; the
+tool is not executed again.
 
 ## Failure And Rollback
 
-A failed Node turn reports its real terminal error. mycli does not replay it through Python,
-because a retry could duplicate provider requests or later tool side effects.
+A failed Node turn reports its actual terminal error. mycli does not replay it through Python,
+because that could duplicate a provider request, queued input, approval, or file mutation.
 
-Rollback is operator-controlled and applies before a later turn:
+Rollback is operator-controlled and applies before a later turn, after any pending Node approval
+has been resolved or rejected:
 
 ```bash
 mycli --runtime-backend=python-sidecar --session <id>
 ```
 
-Both backends read the shared SQLite schema. Sessions written by the M4 Node slice remain readable
-by Python, and Node reopening a database preserves Python-compatible records.
+Both backends read the shared SQLite schema. Sessions written by the M5 Node slice remain readable
+by Python, and Node preserves compatible optional Python fields when it rewrites state. Installing
+the prior release is also a valid rollback when no newer turn is running or awaiting approval.
 
 ## Verification
 
-Run the deterministic M4 gate after a clean build:
+Run the deterministic M5 gate and the previous milestone regression after a clean install:
 
 ```bash
+npm run test:m5
 npm run test:m4
 npm run smoke:package
 ```
 
-Live M4 smoke is opt-in and uses a disposable workspace. It prints only protocol, terminal status,
-mutation lifecycle counts, persistence state, file-update state, and `python_started=false`:
+`test:m5` builds the workspace, runs the Node M5 integration suite, and runs the four-way
+Python/Node persistence fixture. CI runs that gate plus the packed CLI smoke on Node 22.19 and
+Node 24 across macOS, Linux, and Windows.
+
+The opt-in live smoke uses `gpt-5.5`, a disposable home, workspace, database, and session, one
+bounded memory topic, forced compaction, zero retries, 64 output tokens per provider request, and
+a 30-second deadline:
 
 ```bash
-node scripts/smoke_node_m4_mutation.mjs --protocol responses --dry-run
-node scripts/smoke_node_m4_mutation.mjs --protocol responses
+npm run smoke:m5
 ```
 
-The runner uses `gpt-5.5`, a temporary session database, one small public file, zero retries, a
-64-token output cap, and a 45-second deadline. Missing credentials exit with code `77`. CI runs
-deterministic M4 and packed CLI smokes on Node 22.19 across macOS, Linux, and Windows. Live requests
-run only after the matrix passes on a `main` branch push, through a protected live-test environment
-when its secret is configured.
+The M5 smoke requires a configured non-official compatible endpoint and exits `77` when
+credentials or the service are unavailable. It performs no retry after an unavailable request.
+Success prints exactly one structural JSON line containing protocol, status, compacted,
+memory-visible, resumed, persisted, and `python_started=false` fields. Unavailable runs print the
+same shape with false assertions.
 
-The M4 smoke must run only after every offline gate passes. A passing sanitized result records at
-least one completed mutation lifecycle, a durable tool transcript, the expected disposable file
-update, and `python_started=false`. Credentials, endpoint data, prompts, tool arguments, original
-or final file content, diffs, hashes, and model text are never printed or stored in the summary.
+The smoke never prints credentials, endpoint data, prompts, memory bodies, summaries, provider
+text, raw responses, tool arguments, hashes, database paths, workspace paths, or session paths.
+Run it only after the offline gates pass, and do not retry an unavailable paid-service request in
+the same verification run.

@@ -1072,7 +1072,7 @@ Run: `uv run pytest tests/integration/test_node_runtime_m5_parity.py -q && npm r
 
 Expected: all four directions and every crash boundary pass.
 
-- [ ] **Step 7: Commit parity and crash recovery**
+- [x] **Step 7: Commit parity and crash recovery**
 
 ```bash
 git add tests/fixtures/node_runtime_m5 tests/integration packages/storage/test packages/runtime/test
@@ -1084,13 +1084,16 @@ git commit -m "test(node-runtime): verify M5 recovery parity"
 **Files:**
 - Create: `apps/mycli/test/m5-state-recovery.integration.test.ts`
 - Create: `scripts/smoke_node_m5_state.mjs`
+- Modify: `apps/mycli/src/node-runtime/node-gateway.ts`
 - Modify: `package.json`
 - Modify: `apps/mycli/package.json`
 - Modify: `tests/unit/cli/node_tui/test_package_scripts.py`
+- Modify: `tests/unit/domain/runtime/test_gateway_contract.py`
+- Modify: `tests/unit/services/test_extension_manifest.py`
 - Modify: `docs/node-runtime-rollout.md`
 - Modify: `.github/workflows/cross-platform.yml`
 
-- [ ] **Step 1: Write failing complete M5 integration tests**
+- [x] **Step 1: Write failing complete M5 integration tests**
 
 Add deterministic Responses and Chat scenarios:
 
@@ -1111,13 +1114,13 @@ Also test queue/steer restart, strict write approval restart/approve, ambiguous 
 atomic cross-session resume, corrupt state fail-closed, Chat canonical replay, and packed executable
 startup.
 
-- [ ] **Step 2: Run integration tests and verify missing script/gate failures**
+- [x] **Step 2: Run integration tests and verify missing script/gate failures**
 
 Run: `node --import tsx --test apps/mycli/test/m5-state-recovery.integration.test.ts`
 
 Expected: FAIL until final event/state projections and package scripts exist.
 
-- [ ] **Step 3: Add M5 package scripts and CI matrix**
+- [x] **Step 3: Add M5 package scripts and CI matrix**
 
 ```json
 {
@@ -1131,7 +1134,7 @@ Expected: FAIL until final event/state projections and package scripts exist.
 Update script allowlist tests and run deterministic M5 plus packed CLI smoke on Node 22.19/current
 for macOS, Linux, and Windows.
 
-- [ ] **Step 4: Implement the sanitized opt-in live smoke**
+- [x] **Step 4: Implement the sanitized opt-in live smoke**
 
 Use a disposable home/workspace/database/session, one bounded memory topic, forced small compaction
 or a prebuilt compatible replay, zero retries, a short deadline, and bounded output. Print only:
@@ -1144,25 +1147,25 @@ Exit 77 when credentials/service are unavailable. Never print endpoint data, cre
 memory, summary, provider text, raw response, tool arguments, or paths. Do not repeat an unavailable
 request in the same verification run.
 
-- [ ] **Step 5: Update rollout and rollback documentation**
+- [x] **Step 5: Update rollout and rollback documentation**
 
 Document supported M5 scope, explicit `--runtime-backend=node`, Python default, session/queue/
 approval/compaction/memory behavior, stable limitations, operator rollback before a later turn,
 pending-approval backend ownership, `npm run test:m5`, and live smoke sanitization.
 
-- [ ] **Step 6: Run targeted M5 and regression gates**
+- [x] **Step 6: Run targeted M5 and regression gates**
 
 Run: `npm run test:m5 && npm run test:m4 && npm run smoke:package`
 
 Expected: M5 integration/parity, M4 regression, and packed CLI smoke pass.
 
-- [ ] **Step 7: Run the full offline quality gate**
+- [x] **Step 7: Run the full offline quality gate**
 
 Run: `npm run lint && npm run typecheck && npm run contracts:check && npm run build && npm test && uv run pytest tests/unit tests/integration -q`
 
 Expected: all commands exit 0. Record exact counts in the implementation handoff.
 
-- [ ] **Step 8: Run sensitive-pattern and worktree checks**
+- [x] **Step 8: Run sensitive-pattern and worktree checks**
 
 Run: `git diff --check && git status --short && rg -n "sk-[A-Za-z0-9_-]{12,}|api[_-]?key\s*[:=]" docs packages apps scripts tests -g '!*.lock'`
 
@@ -1176,6 +1179,9 @@ Run: `node scripts/smoke_node_m5_state.mjs --protocol responses`
 Expected: sanitized structural JSON and exit 0, or one sanitized unavailable result/exit 77. Do not
 retry an unavailable paid-service request.
 
+Not run in this implementation session: the user confirmed the protected service is unpaid and
+unavailable, so no live provider request was issued.
+
 - [ ] **Step 10: Commit M5 integration and rollout**
 
 ```bash
@@ -1185,16 +1191,16 @@ git commit -m "feat(node-runtime): complete M5 state recovery"
 
 ## Final Verification
 
-- [ ] Run `npm run test:m5`.
-- [ ] Run `npm run test:m4`.
-- [ ] Run `npm run lint`.
-- [ ] Run `npm run typecheck`.
-- [ ] Run `npm run contracts:check`.
-- [ ] Run `npm run build`.
-- [ ] Run `npm test`.
-- [ ] Run `uv run pytest tests/unit tests/integration -q`.
-- [ ] Run `npm run smoke:package`.
-- [ ] Confirm the four-way persistence and every fault-injection boundary pass.
-- [ ] Confirm Responses and Chat M5 integration report `python_started=false`.
-- [ ] Confirm Node remains an explicit preview and Python remains the default.
-- [ ] Confirm no secret, endpoint, prompt, memory body, summary, provider text, or raw response was printed or committed.
+- [x] Run `npm run test:m5`.
+- [x] Run `npm run test:m4`.
+- [x] Run `npm run lint`.
+- [x] Run `npm run typecheck`.
+- [x] Run `npm run contracts:check`.
+- [x] Run `npm run build`.
+- [x] Run `npm test`.
+- [x] Run `uv run pytest tests/unit tests/integration -q`.
+- [x] Run `npm run smoke:package`.
+- [x] Confirm the four-way persistence and every fault-injection boundary pass.
+- [x] Confirm Responses and Chat M5 integration report `python_started=false`.
+- [x] Confirm Node remains an explicit preview and Python remains the default.
+- [x] Confirm no secret, endpoint, prompt, memory body, summary, provider text, or raw response was printed or committed.

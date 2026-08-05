@@ -183,13 +183,16 @@ class InProcessNodeGateway implements NodeGateway {
 	#handleRequest(request: RpcRequest): JsonObject | Promise<JsonObject> {
 		switch (request.method) {
 			case "initialize":
-				return this.#bootstrap({ protocol_version: request.params.protocol_version ?? 1 });
+				return this.#bootstrap(
+					{ protocol_version: request.params.protocol_version ?? 1 },
+					false,
+				);
 			case "status.get":
 				return this.#status();
 			case "extension.manifest":
 				return extensionManifest(this.#options.toolNames ?? []);
 			case "session.bootstrap":
-				return this.#bootstrap(request.params);
+				return this.#bootstrap(request.params, true);
 			case "transcript.load":
 				return this.#transcript(request.params);
 			case "command.list":
@@ -242,7 +245,7 @@ class InProcessNodeGateway implements NodeGateway {
 		});
 	}
 
-	#bootstrap(params: JsonObject): JsonObject {
+	#bootstrap(params: JsonObject, reemitPendingApproval: boolean): JsonObject {
 		if (params.protocol_version !== 1) {
 			throw new GatewayFailure("incompatible_protocol", "Unsupported gateway protocol version.");
 		}
@@ -267,6 +270,13 @@ class InProcessNodeGateway implements NodeGateway {
 			token: migration.token,
 			records: migration.records.map(legacyMigrationRecord),
 		};
+		const session = this.#options.sessionCoordinator?.snapshot();
+		if (reemitPendingApproval && session?.pendingApproval) {
+			this.#emitRuntime(
+				"approval.request",
+				approvalRequest(session.pendingApproval, session.generation),
+			);
+		}
 		return payload;
 	}
 

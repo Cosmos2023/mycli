@@ -93,6 +93,61 @@ jobs:
           node scripts/smoke_node_m2.mjs --protocol responses
           node scripts/smoke_node_m2.mjs --protocol chat_completions
 
+  node-m5-gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: ["22.19.0", "24.x"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: uv sync --locked --dev
+      - run: npm ci
+      - name: Node M5 state and recovery gate
+        run: npm run test:m5
+      - name: Packed npm CLI smoke
+        run: npm run smoke:package
+
+  node-m5-live-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: node-m5-gate
+    runs-on: ubuntu-latest
+    environment: node-m5-live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Node M5 live state recovery smoke
+        shell: bash
+        env:
+          MYCLI_API_KEY: ${{ secrets.MYCLI_API_KEY }}
+          MYCLI_BASE_URL: ${{ secrets.MYCLI_BASE_URL }}
+          MYCLI_MODEL: gpt-5.5
+          MYCLI_PROVIDER: openai
+        run: |
+          set +e
+          node scripts/smoke_node_m5_state.mjs --protocol responses
+          code=$?
+          set -e
+          if [ "$code" -eq 77 ]; then
+            exit 0
+          fi
+          exit "$code"
+
   windows-shell-smoke:
     strategy:
       fail-fast: false
