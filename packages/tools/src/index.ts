@@ -26,6 +26,28 @@ export type {
 	FormattedShellResult,
 	ShellResultInput,
 } from "./shell-result.ts";
+export { ShellTransportError } from "./shell-transport.ts";
+export type {
+	ProcessCleanupResult,
+	ProcessCleanupState,
+	ShellExit,
+	ShellOutputChunk,
+	ShellStream,
+	ShellTransport,
+	ShellTransportErrorKind,
+	ShellTransportFactory,
+	ShellTransportKind,
+	ShellTransportStartRequest,
+} from "./shell-transport.ts";
+export { createProcessController } from "./process-controller.ts";
+export type {
+	ManagedProcess,
+	ProcessController,
+	ProcessControllerOptions,
+	WindowsTaskkillRequest,
+} from "./process-controller.ts";
+export { startPipeTransport } from "./pipe-transport.ts";
+export type { StartPipeTransportOptions } from "./pipe-transport.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";
 export type { BoundedFileDiff } from "./file-diff.ts";
