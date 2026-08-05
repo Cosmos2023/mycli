@@ -75,6 +75,8 @@ export type {
 } from "./process-controller.ts";
 export { startPipeTransport } from "./pipe-transport.ts";
 export type { StartPipeTransportOptions } from "./pipe-transport.ts";
+export { startNodePtyTransport } from "./node-pty-transport.ts";
+export type { StartNodePtyTransportOptions } from "./node-pty-transport.ts";
 export { ShellSessionManager } from "./shell-session-manager.ts";
 export type {
 	ShellInteractionRequest,

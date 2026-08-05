@@ -44,6 +44,7 @@ export interface ShellTransportStartRequest {
 	readonly env: Readonly<NodeJS.ProcessEnv>;
 	readonly platform: NodeJS.Platform;
 	readonly tty: boolean;
+	readonly name?: string;
 	readonly rows: number;
 	readonly columns: number;
 }
@@ -53,6 +54,8 @@ export type ShellTransportFactory = (
 ) => Promise<ShellTransport>;
 
 export type ShellTransportErrorKind =
+	| "pty_unavailable"
+	| "conpty_unavailable"
 	| "stdin_closed"
 	| "shell_write_failed"
 	| "shell_resize_failed"

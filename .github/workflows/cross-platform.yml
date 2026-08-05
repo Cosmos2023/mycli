@@ -105,13 +105,24 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Install Linux native build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 make g++
       - run: uv sync --locked --dev
       - run: npm ci
+      - name: Native persistent shell smoke
+        run: >-
+          node --import tsx --test
+          --test-name-pattern="native PTY lifecycle"
+          packages/tools/test/node-pty-transport.integration.test.ts
       - name: Node M5 state and recovery gate
         run: npm run test:m5
       - name: Packed npm CLI smoke

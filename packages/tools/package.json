@@ -19,7 +19,8 @@
     "@mycli/core": "0.1.0",
     "ajv": "^8.17.1",
     "csv-parse": "^6.1.0",
-    "diff": "^9.0.0"
+    "diff": "^9.0.0",
+    "node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
     "tsx": "^4.22.4",

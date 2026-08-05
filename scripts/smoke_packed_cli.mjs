@@ -19,6 +19,66 @@ const WORKSPACES = [
 	"mycli-shell-tui",
 	"@mycli/app",
 ];
+const NATIVE_PTY_SMOKE = String.raw`
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import process from "node:process";
+import { statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { startNodePtyTransport } from "@mycli/tools";
+
+const require = createRequire(import.meta.url);
+const nodePtyPackage = require.resolve("node-pty/package.json");
+if (process.platform === "darwin") {
+	const helper = join(
+		dirname(nodePtyPackage),
+		"prebuilds",
+		process.platform + "-" + process.arch,
+		"spawn-helper",
+	);
+	assert.notEqual(statSync(helper).mode & 0o111, 0, "node-pty spawn-helper is not executable");
+}
+
+const windows = process.platform === "win32";
+const transport = await startNodePtyTransport({
+	executable: windows ? (process.env.ComSpec ?? "cmd.exe") : (process.env.SHELL ?? "/bin/sh"),
+	args: windows ? ["/q"] : ["-i"],
+	cwd: process.cwd(),
+	env: { ...process.env, TERM: "xterm-256color" },
+	platform: process.platform,
+	tty: true,
+	name: "xterm-256color",
+	rows: 24,
+	columns: 80,
+});
+let output = "";
+let exited = false;
+transport.onOutput((chunk) => {
+	output += typeof chunk.data === "string"
+		? chunk.data
+		: Buffer.from(chunk.data).toString("utf8");
+});
+const exit = new Promise((resolve) => transport.onExit(resolve)).then((value) => {
+	exited = true;
+	return value;
+});
+try {
+	await transport.resize(40, 100);
+	await transport.write(windows
+		? "echo packed-pty-ready && exit 0\r\n"
+		: "printf 'packed-pty-ready\\n'; exit 0\n");
+	const result = await Promise.race([
+		exit,
+		new Promise((_, reject) => setTimeout(() => reject(new Error("packed PTY timed out")), 5_000)),
+	]);
+	assert.equal(result.exitCode, 0);
+	assert.match(output, /packed-pty-ready/u);
+} finally {
+	if (!exited) await transport.terminate().catch(() => undefined);
+	await transport.close();
+}
+process.stdout.write("native-pty-ok\n");
+`;
 
 const tempRoot = await mkdtemp(join(tmpdir(), "mycli-packed-cli-"));
 try {
@@ -62,6 +122,12 @@ try {
 	const help = await run(bin, ["--help"], installDir, true);
 	if (!help.includes("--runtime-backend <backend>") || !help.includes("python-sidecar or node")) {
 		throw new Error("packed_cli_smoke_failed: installed CLI help is incomplete");
+	}
+	const nativeSmoke = join(installDir, "native-pty-smoke.mjs");
+	await writeFile(nativeSmoke, NATIVE_PTY_SMOKE, "utf8");
+	const nativeOutput = await run(process.execPath, [nativeSmoke], installDir, true);
+	if (!nativeOutput.includes("native-pty-ok")) {
+		throw new Error("packed_cli_smoke_failed: installed native PTY smoke is incomplete");
 	}
 	process.stdout.write(`${JSON.stringify({ status: "completed", packed_workspaces: tarballs.length })}\n`);
 } catch {
