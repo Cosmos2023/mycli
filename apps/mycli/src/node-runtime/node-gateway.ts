@@ -740,6 +740,25 @@ class InProcessNodeGateway implements NodeGateway {
 				});
 				this.#emitRuntime("status.update", statusPayload("running", active.clientTurnId));
 				break;
+			case "compaction_started":
+				this.#emitRuntime("compaction.started", {
+					client_turn_id: event.clientTurnId,
+					source: event.source,
+					before_tokens: event.beforeTokens,
+					max_tokens: event.maxTokens,
+				});
+				break;
+			case "compaction_completed":
+				this.#emitRuntime("compaction.completed", {
+					client_turn_id: event.clientTurnId,
+					source: event.source,
+					status: event.status,
+					before_tokens: event.beforeTokens,
+					after_tokens: event.afterTokens,
+					max_tokens: event.maxTokens,
+					duration_s: event.durationSeconds,
+				});
+				break;
 			case "text_delta":
 				this.#emitRuntime("message.delta", {
 					client_turn_id: active.clientTurnId,

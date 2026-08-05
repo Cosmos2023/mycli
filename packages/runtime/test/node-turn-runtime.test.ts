@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { NodeRuntimeConfig } from "@mycli/config";
+import {
+	NODE_RUNTIME_CONTEXT_DEFAULTS,
+	type NodeRuntimeConfig,
+} from "@mycli/config";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	CanonicalConversationItem,
@@ -33,6 +36,10 @@ import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
 import {
 	NodeTurnRuntime,
 	QueueCoordinator,
+	type CompactInput,
+	type CompactionCoordinatorContract,
+	type CompactionResult,
+	type NodeTurnRuntimeOptions,
 	type QueueCoordinatorStore,
 } from "../src/index.ts";
 
@@ -518,6 +525,150 @@ test("applies the pre-event retry budget independently to each provider step", a
 	assert.equal(emitted.filter((event) => event.type === "stream_recovered").length, 2);
 });
 
+test("compacts before the first provider request and keeps the current user item fresh", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "text_delta", text: "Continued from compact context." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const compacted: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "[compact-summary]\nEarlier work." },
+		{ type: "user", text: "Read README.md" },
+	];
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("compressed", compacted),
+	]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(trace.slice(0, 3), ["reserve", "compact:pre_turn", "provider:1"]);
+	assert.deepEqual([...coordinator.calls[0]!.freshItemIds], [
+		"turn-1:user:client-1",
+	]);
+	assert.deepEqual(requests[0]?.items, compacted);
+});
+
+test("creates compaction from the config resolved for the active turn", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("not_needed", []),
+	]);
+	let resolvedModel = "";
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		createCompactionCoordinator: (resolved) => {
+			resolvedModel = resolved.model;
+			return coordinator;
+		},
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(resolvedModel, "gpt-test");
+	assert.deepEqual(coordinator.calls.map((call) => call.source), ["pre_turn"]);
+});
+
+test("reactively compacts once after a zero-event context rejection and clears continuation", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	let providerCalls = 0;
+	const provider: ModelProvider = {
+		stream: (request) => {
+			providerCalls += 1;
+			requests.push(request);
+			trace.push(`provider:${providerCalls}`);
+			if (providerCalls === 1) {
+				return providerEvents([
+					{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+					{ type: "completed", responseId: "resp-tools" },
+				]);
+			}
+			if (providerCalls === 2) {
+				return failingProviderEvents(new ProviderFailure({
+					code: "context_window_exceeded",
+					message: "private provider context detail",
+				}));
+			}
+			return providerEvents([
+				{ type: "text_delta", text: "Recovered after compaction." },
+				{ type: "completed", responseId: "resp-final" },
+			]);
+		},
+	};
+	const reactiveProjection: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "[compact-summary]\nRead state was preserved." },
+		{ type: "user", text: "Read README.md" },
+		{ type: "assistant_tool_calls", text: "", calls: [CALL], responseId: "resp-tools" },
+		{ type: "tool_result", ...successResult("call-1"), output: READ_OUTPUT },
+	];
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("not_needed", []),
+		compactionResult("compressed", reactiveProjection),
+	]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(providerCalls, 3);
+	assert.deepEqual(coordinator.calls.map((call) => call.source), [
+		"pre_turn",
+		"context_overflow",
+	]);
+	assert.equal(requests[1]?.previousResponseId, "resp-tools");
+	assert.equal(requests[2]?.previousResponseId, undefined);
+	assert.deepEqual(requests[2]?.items, reactiveProjection);
+});
+
+test("does not compact or retry a context rejection after provider output", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	let providerCalls = 0;
+	const provider: ModelProvider = {
+		stream: () => {
+			providerCalls += 1;
+			return textThenFailure("partial output", new ProviderFailure({
+				code: "context_window_exceeded",
+				message: "private provider context detail",
+			}));
+		},
+	};
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("not_needed", []),
+	]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "context_window_exceeded");
+	assert.equal(providerCalls, 1);
+	assert.deepEqual(coordinator.calls.map((call) => call.source), ["pre_turn"]);
+});
+
 test("reports bounded tool execution duration from a monotonic clock", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -770,6 +921,8 @@ function createRuntime(options: {
 	readonly approvalPolicy?: ApprovalPolicy;
 	readonly approvalCoordinator?: ApprovalCoordinatorFixture;
 	readonly toolDefinitions?: readonly ToolDefinition[];
+	readonly compactionCoordinator?: CompactionCoordinatorContract;
+	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
 		sessionId: "session-1",
@@ -789,7 +942,44 @@ function createRuntime(options: {
 		...(options.approvalCoordinator ? { approvalCoordinator: options.approvalCoordinator } : {}),
 		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),
 		...(options.monotonicClock ? { monotonicClock: options.monotonicClock } : {}),
+		...(options.compactionCoordinator ? {
+			compactionCoordinator: options.compactionCoordinator,
+		} : {}),
+		...(options.createCompactionCoordinator ? {
+			createCompactionCoordinator: options.createCompactionCoordinator,
+		} : {}),
 	});
+}
+
+class ScriptedCompactionCoordinator implements CompactionCoordinatorContract {
+	readonly calls: CompactInput[] = [];
+	readonly #trace: string[];
+	readonly #results: readonly CompactionResult[];
+
+	constructor(trace: string[], results: readonly CompactionResult[]) {
+		this.#trace = trace;
+		this.#results = results;
+	}
+
+	async compact(input: CompactInput): Promise<CompactionResult> {
+		this.calls.push(input);
+		this.#trace.push(`compact:${input.source}`);
+		return this.#results[this.calls.length - 1]
+			?? compactionResult("not_needed", input.conversation);
+	}
+}
+
+function compactionResult(
+	status: CompactionResult["status"],
+	providerConversation: readonly CanonicalConversationItem[],
+): CompactionResult {
+	return {
+		status,
+		providerConversation,
+		rehydration: [],
+		beforeTokens: 100,
+		afterTokens: status === "compressed" ? 40 : 100,
+	};
 }
 
 interface ApprovalRequestFixture {
@@ -1102,6 +1292,11 @@ async function* providerEvents(events: readonly ProviderEvent[]): AsyncIterable<
 	}
 }
 
+async function* textThenFailure(text: string, error: Error): AsyncIterable<ProviderEvent> {
+	yield { type: "text_delta", text };
+	throw error;
+}
+
 function failingProviderEvents(error: Error): AsyncIterable<ProviderEvent> {
 	return {
 		[Symbol.asyncIterator](): AsyncIterator<ProviderEvent> {
@@ -1127,6 +1322,7 @@ function submission() {
 
 function config(): NodeRuntimeConfig {
 	return {
+		...NODE_RUNTIME_CONTEXT_DEFAULTS,
 		workspaceRoot: "/workspace",
 		homeDir: "/home/test",
 		provider: "openai",

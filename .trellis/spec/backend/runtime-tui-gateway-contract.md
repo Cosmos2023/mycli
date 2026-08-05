@@ -1351,3 +1351,108 @@ store.commitApprovalResult({
 	toolResult,
 });
 ```
+
+## Scenario: Recoverable Node Context Compaction
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node token accounting, compaction configuration, provider summary calls,
+  compact checkpoints, file rehydration, or `compaction.*` gateway projection.
+- This flow crosses config, runtime, provider, SQLite, file safety, gateway, and TUI boundaries.
+  Raw history remains canonical; only provider conversation projection is replaced.
+
+### 2. Signatures
+
+- Runtime: `CompactionCoordinator.compact(input: CompactInput) -> Promise<CompactionResult>`.
+- Summary adapter: `summarizeCompactionWithProvider(provider, config, input) -> Promise<string>`.
+- Storage: `saveState(... compact_checkpoint ...)`, `loadHistoryItems(sessionId)`, and
+  `commitCompaction({sessionId, replacementMessages, summary, checkpoint})`.
+- Gateway events: `compaction.started` and `compaction.completed`.
+
+### 3. Contracts
+
+- `TokenCounter` uses `js-tiktoken` with `o200k_base`. Encoder initialization failure uses
+  `ceil(ascii_chars / 4) + non_ascii_chars`, with zero for empty input and a bounded LRU cache.
+- Node accepts the Python-compatible flat or sectioned compaction settings. In particular,
+  `[memory].enabled` maps to `memory_enabled`, `[context]` owns compaction fields, and an empty
+  user `compaction_l4_trigger_ratios_by_model` table falls through to the project table.
+- The runtime commits queued steers before compaction. The reserved user history id and committed
+  queue ids define the fresh suffix; the complete current turn is excluded from summary input.
+- Before summary provider IO, persist an `in_progress` checkpoint with a deterministic request
+  fingerprint. A completed checkpoint increments `window_number`; `history_item_count` is the raw
+  durable history length, not provider-projection length.
+- A successful compact uses one `commitCompaction()` transaction for replacement messages,
+  summary, completed checkpoint, and Responses continuation invalidation. Raw history and rollouts
+  are never deleted.
+- Rehydration reuses the M4 real-workspace read policy, prefers successful Edit/Write/Patch paths
+  over Read paths, excludes runtime state and plan prefixes, and enforces file count, item-token,
+  total-token, byte, UTF-8, binary, and symlink bounds.
+- `compaction.started` is published only after the trigger enters compaction.
+  `compaction.completed` is published only after a successful compact commit or a minimum-savings
+  skip. Summary and commit failures do not publish completion.
+
+### 4. Validation & Error Matrix
+
+- Non-finite, fractional, negative, or out-of-range compaction settings -> bounded
+  `config_error` before provider IO.
+- `compaction_token_limit > max_prompt_tokens` or rehydration item budget above total budget ->
+  bounded `config_error`.
+- Existing `in_progress` checkpoint -> delete the stale attempt, return `interrupted`, and send no
+  summary request.
+- Aborted summary request -> clear the current attempt, return `interrupted`, and do not continue
+  the provider turn.
+- Empty, over-budget, tool-calling, incomplete, or failed summary -> keep the prior provider
+  projection and publish no completion event.
+- `commitCompaction()` failure -> retain the durable `in_progress` checkpoint, keep the prior
+  projection active, and publish no completion event.
+- Provider `context_window_exceeded` before any event -> at most one reactive compact and retry;
+  after text, reasoning, usage, or tool-call output -> no retry.
+
+### 5. Good/Base/Bad Cases
+
+- Good: persist the fingerprint, summarize only old turns, atomically install summary plus exact
+  tail, rehydrate bounded current files, clear Responses continuation, then publish completion.
+- Base: below-threshold context returns `not_needed` without checkpoint writes or lifecycle events.
+- Good: a future user-initiated turn may start a new compact after an interrupted attempt, but the
+  interrupted request itself is never replayed automatically.
+- Bad: derive `history_item_count` from compacted provider items; Python replay would append raw
+  history from the wrong offset.
+- Bad: publish `compaction.completed` before SQLite commit; the TUI would display state that cannot
+  survive restart.
+
+### 6. Tests Required
+
+- Config tests for Python defaults, sectioned memory/context fields, model-ratio precedence,
+  finite ranges, threshold/window relation, and rehydration budget relation.
+- Token tests against the fixed Python `o200k_base` corpus, fallback estimator, and LRU bound.
+- Coordinator tests for fresh suffix exclusion, tail bounds, minimum savings, raw history
+  preservation/count, window increment, provider summary validation, abort classification,
+  stale in-progress recovery, commit failure, and secure bounded rehydration.
+- Runtime tests for queue-before-compact ordering, config-per-turn coordinator creation,
+  zero-event overflow retry, continuation invalidation, and no retry after provider output.
+- Gateway tests must parse both lifecycle payloads through the canonical event validator.
+- Run full Node build/test/lint/typecheck/contracts gates plus M4 Node/Python parity regressions.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const summary = await summarize(items);
+emit({ type: "compaction_completed" });
+store.saveConversation(replacement);
+```
+
+#### Correct
+
+```typescript
+store.saveState({ key: "compact_checkpoint", payload: inProgressCheckpoint });
+const summary = await summarize(oldItems);
+store.commitCompaction({
+	sessionId,
+	replacementMessages,
+	summary,
+	checkpoint: completedCheckpoint,
+});
+emit(completedEvent);
+```

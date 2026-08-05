@@ -80,6 +80,23 @@ export type ProviderEvent =
 
 export type RuntimeEvent =
 	| { readonly type: "turn_started"; readonly clientTurnId: string; readonly turnId: string }
+	| {
+		readonly type: "compaction_started";
+		readonly clientTurnId: string;
+		readonly source: "pre_turn" | "context_overflow";
+		readonly beforeTokens: number;
+		readonly maxTokens: number;
+	}
+	| {
+		readonly type: "compaction_completed";
+		readonly clientTurnId: string;
+		readonly source: "pre_turn" | "context_overflow";
+		readonly status: "compressed" | "skipped";
+		readonly beforeTokens: number;
+		readonly afterTokens: number;
+		readonly maxTokens: number;
+		readonly durationSeconds: number;
+	}
 	| { readonly type: "reasoning_delta"; readonly text: string }
 	| { readonly type: "text_delta"; readonly text: string }
 	| { readonly type: "stream_retrying"; readonly attempt: number; readonly delayMs: number }

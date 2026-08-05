@@ -692,14 +692,19 @@ git commit -m "feat(node-runtime): resume one-time approvals safely"
 - Modify: `package-lock.json`
 - Modify: `packages/config/src/settings.ts`
 - Test: `packages/config/test/settings.test.ts`
+- Modify: `packages/core/src/types.ts`
+- Test: `packages/providers/test/openai-provider-registry.test.ts`
 - Create: `packages/runtime/src/token-counter.ts`
 - Create: `packages/runtime/src/compaction-coordinator.ts`
 - Modify: `packages/runtime/src/index.ts`
 - Modify: `packages/runtime/src/node-turn-runtime.ts`
 - Test: `packages/runtime/test/token-counter.test.ts`
 - Test: `packages/runtime/test/compaction-coordinator.test.ts`
+- Modify: `apps/mycli/src/node-runtime/node-backend.ts`
+- Modify: `apps/mycli/src/node-runtime/node-gateway.ts`
+- Test: `apps/mycli/test/node-gateway.test.ts`
 
-- [ ] **Step 1: Write failing config and token fixture tests**
+- [x] **Step 1: Write failing config and token fixture tests**
 
 ```ts
 test("loads compatible compaction and memory defaults", async () => {
@@ -718,7 +723,7 @@ test("uses the Python fallback estimate when encoder loading fails", () => {
 Add a fixed ASCII/CJK/mixed/code/tool-output corpus whose expected counts come from Python's
 `TokenCounter` with `o200k_base`.
 
-- [ ] **Step 2: Write failing compaction transaction tests**
+- [x] **Step 2: Write failing compaction transaction tests**
 
 ```ts
 test("keeps current input out of the summary and preserves raw history", async () => {
@@ -740,20 +745,20 @@ Cover threshold/buffer/reserved output, tail turns/tokens, minimum savings, summ
 in-progress restart, context-overflow retry before output, no retry after output, continuation
 invalidation, and rehydration path/token/count bounds.
 
-- [ ] **Step 3: Run targeted tests and verify missing dependency/modules**
+- [x] **Step 3: Run targeted tests and verify missing dependency/modules**
 
 Run: `node --import tsx --test packages/config/test/settings.test.ts packages/runtime/test/token-counter.test.ts packages/runtime/test/compaction-coordinator.test.ts`
 
 Expected: FAIL because M5 config fields and runtime modules are missing.
 
-- [ ] **Step 4: Install and lock `js-tiktoken`**
+- [x] **Step 4: Install and lock `js-tiktoken`**
 
 Run: `npm_config_cache=/tmp/mycli-npm-cache npm install js-tiktoken@^1.0.21 --workspace @mycli/runtime`
 
 Expected: only `packages/runtime/package.json` and `package-lock.json` gain the package and its
 declared dependency closure.
 
-- [ ] **Step 5: Implement compatible config and token counting**
+- [x] **Step 5: Implement compatible config and token counting**
 
 ```ts
 export class TokenCounter {
@@ -771,23 +776,28 @@ export class TokenCounter {
 Load `o200k_base`, cache bounded counts, and close/free encoder resources if the package requires
 it. Parse all documented settings with finite range validation.
 
-- [ ] **Step 6: Implement compaction and file rehydration**
+- [x] **Step 6: Implement compaction and file rehydration**
 
 Use the existing provider abstraction for a bounded summary request. Persist an in-progress
 fingerprint before IO. After success, call the one storage `commitCompaction()` transaction and
 emit completion. Re-read candidate files through the M4 real-workspace policy, prefer edits over
 reads, skip state/memory paths and tail duplicates, and apply item/total/count limits.
 
-- [ ] **Step 7: Run config/runtime tests and typecheck**
+- [x] **Step 7: Run config/runtime tests and typecheck**
 
 Run: `npm run test --workspace @mycli/config && npm run test --workspace @mycli/runtime && npm run typecheck --workspace @mycli/config && npm run typecheck --workspace @mycli/runtime`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit compaction support**
+- [x] **Step 8: Commit compaction support**
 
 ```bash
-git add packages/config packages/runtime package-lock.json
+git add apps/mycli/src/node-runtime/node-backend.ts \
+  apps/mycli/src/node-runtime/node-gateway.ts \
+  apps/mycli/test/node-gateway.test.ts \
+  packages/config packages/core/src/types.ts \
+  packages/providers/test/openai-provider-registry.test.ts \
+  packages/runtime package-lock.json
 git commit -m "feat(node-runtime): compact recoverable session context"
 ```
 

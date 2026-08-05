@@ -20,7 +20,8 @@
     "@mycli/core": "0.1.0",
     "@mycli/providers": "0.1.0",
     "@mycli/storage": "0.1.0",
-    "@mycli/tools": "0.1.0"
+    "@mycli/tools": "0.1.0",
+    "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {
     "tsx": "^4.22.4",

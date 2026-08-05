@@ -853,6 +853,63 @@ test("projects bounded tool and mutation lifecycle events without sensitive fiel
 	await harness.gateway.close();
 });
 
+test("projects compaction lifecycle events with the canonical bounded payload", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "continue",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	harness.emit({
+		type: "compaction_started",
+		clientTurnId: "client-turn",
+		source: "pre_turn",
+		beforeTokens: 95_000,
+		maxTokens: 100_000,
+	});
+	harness.emit({
+		type: "compaction_completed",
+		clientTurnId: "client-turn",
+		source: "pre_turn",
+		status: "compressed",
+		beforeTokens: 95_000,
+		afterTokens: 12_000,
+		maxTokens: 100_000,
+		durationSeconds: 0.25,
+	});
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+	const direct = harness.messages.filter((message) =>
+		"method" in message
+		&& !("id" in message)
+		&& ["compaction.started", "compaction.completed"].includes(message.method),
+	);
+	assert.deepEqual(direct.map((message) => "method" in message ? message.method : ""), [
+		"compaction.started",
+		"compaction.completed",
+	]);
+	assert.deepEqual("method" in direct[0]! ? direct[0].params : {}, {
+		client_turn_id: "client-turn",
+		source: "pre_turn",
+		before_tokens: 95_000,
+		max_tokens: 100_000,
+	});
+	assert.deepEqual("method" in direct[1]! ? direct[1].params : {}, {
+		client_turn_id: "client-turn",
+		source: "pre_turn",
+		status: "compressed",
+		before_tokens: 95_000,
+		after_tokens: 12_000,
+		max_tokens: 100_000,
+		duration_s: 0.25,
+	});
+	for (const message of direct) parseGatewayEvent(message);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
 test("turn submission rejects a conflicting client turn id before accepting it", async () => {
 	const harness = gatewayHarness({
 		existingTurn: {

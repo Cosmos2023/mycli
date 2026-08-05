@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { NodeRuntimeConfig } from "@mycli/config";
+import {
+	NODE_RUNTIME_CONTEXT_DEFAULTS,
+	type NodeRuntimeConfig,
+} from "@mycli/config";
 import type {
 	CanonicalConversationItem,
 	CanonicalMessage,
@@ -485,6 +488,7 @@ function submission(): TurnSubmission {
 
 function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 	return {
+		...NODE_RUNTIME_CONTEXT_DEFAULTS,
 		workspaceRoot: "/workspace",
 		homeDir: "/home/test",
 		provider: "openai",

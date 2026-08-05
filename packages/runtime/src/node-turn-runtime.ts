@@ -39,6 +39,10 @@ import type {
 	PendingApprovalContinuation,
 } from "./approval-continuation-coordinator.ts";
 import { ApprovalNotPendingError } from "./approval-continuation-coordinator.ts";
+import type {
+	CompactInput,
+	CompactionResult,
+} from "./compaction-coordinator.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -70,6 +74,14 @@ export interface NodeTurnRuntimeOptions {
 	readonly approvalPolicy?: ApprovalPolicyContract;
 	readonly approvalCoordinator?: ApprovalContinuationContract;
 	readonly queueCoordinator?: QueueCoordinator;
+	readonly compactionCoordinator?: CompactionCoordinatorContract;
+	readonly createCompactionCoordinator?: (
+		config: NodeRuntimeConfig,
+	) => CompactionCoordinatorContract;
+}
+
+export interface CompactionCoordinatorContract {
+	compact(input: CompactInput): Promise<CompactionResult>;
 }
 
 export interface ApprovalPolicyContract {
@@ -132,6 +144,7 @@ interface TurnExecutionContext {
 	readonly requestConfig: ProviderRequestConfig;
 	readonly emit: (event: RuntimeEvent) => void;
 	readonly signal: AbortSignal;
+	readonly compactionCoordinator?: CompactionCoordinatorContract;
 }
 
 interface PendingToolBatch {
@@ -142,10 +155,13 @@ interface PendingToolBatch {
 
 interface ProviderLoopState {
 	readonly history: readonly CanonicalConversationItem[];
+	readonly freshItemIds: ReadonlySet<string>;
 	readonly previousResponseId?: string;
 	readonly accumulatedUsage: ProviderUsage;
 	readonly pendingBatch?: PendingToolBatch;
 	readonly approvalDecisionId?: string;
+	readonly preTurnCompactionChecked?: boolean;
+	readonly compactionEntered?: boolean;
 }
 
 export class NodeTurnRuntime {
@@ -213,7 +229,11 @@ export class NodeTurnRuntime {
 			);
 		}
 
-		return this.#runProviderLoop(context, { history, accumulatedUsage: {} });
+		return this.#runProviderLoop(context, {
+			history,
+			freshItemIds: new Set([`${turnId}:user:${submission.clientTurnId}`]),
+			accumulatedUsage: {},
+		});
 	}
 
 	async resolveApproval(
@@ -274,9 +294,13 @@ export class NodeTurnRuntime {
 		const continuation = resolution.continuation;
 		return this.#runProviderLoop(context, {
 			history: this.#options.store.loadConversationItems(this.#options.sessionId),
+			freshItemIds: new Set([
+				`${pending.turnId}:user:${pending.clientTurnId}`,
+			]),
 			...(continuation.responseId ? { previousResponseId: continuation.responseId } : {}),
 			accumulatedUsage: continuation.usage,
 			approvalDecisionId: continuation.decisionId,
+			preTurnCompactionChecked: true,
 			...(continuation.remainingCalls.length > 0 ? {
 				pendingBatch: {
 					calls: continuation.remainingCalls,
@@ -323,6 +347,11 @@ export class NodeTurnRuntime {
 			},
 			emit,
 			signal,
+			...(this.#options.createCompactionCoordinator
+				? { compactionCoordinator: this.#options.createCompactionCoordinator(config) }
+				: this.#options.compactionCoordinator
+					? { compactionCoordinator: this.#options.compactionCoordinator }
+					: {}),
 		};
 	}
 
@@ -336,6 +365,9 @@ export class NodeTurnRuntime {
 		let accumulatedUsage = initial.accumulatedUsage;
 		let pendingBatch = initial.pendingBatch;
 		let approvalDecisionId = initial.approvalDecisionId;
+		const freshItemIds = new Set(initial.freshItemIds);
+		let preTurnCompactionChecked = initial.preTurnCompactionChecked ?? false;
+		let compactionEntered = initial.compactionEntered ?? false;
 		while (true) {
 			if (approvalDecisionId) {
 				this.#options.approvalCoordinator?.finish(approvalDecisionId);
@@ -364,6 +396,9 @@ export class NodeTurnRuntime {
 				assertNotAborted(signal);
 				const committed = this.queueCoordinator?.commitPending(turnId) ?? [];
 				if (committed.length > 0) {
+					for (const record of committed) {
+						freshItemIds.add(`${turnId}:queue:${record.queueId}`);
+					}
 					history = this.#options.store.loadConversationItems(this.#options.sessionId);
 				}
 				assertNotAborted(signal);
@@ -373,6 +408,36 @@ export class NodeTurnRuntime {
 					normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
+			}
+			if (!preTurnCompactionChecked && context.compactionCoordinator) {
+				preTurnCompactionChecked = true;
+				let compacted: CompactionResult;
+				try {
+					compacted = await this.#compactContext(
+						context,
+						"pre_turn",
+						history,
+						freshItemIds,
+					);
+				} catch (error) {
+					return this.#finalizeFailure(
+						submission,
+						normalizeFailure(error, signal, "persistence_error"),
+						emit,
+					);
+				}
+				compactionEntered = compacted.status !== "not_needed";
+				if (compacted.status === "interrupted") {
+					return this.#finalizeFailure(submission, {
+						code: "interrupted",
+						message: "turn interrupted",
+						retryable: false,
+					}, emit);
+				}
+				if (compacted.status === "compressed") {
+					history = compacted.providerConversation;
+					previousResponseId = undefined;
+				}
 			}
 			const request = projectProviderRequest({
 				config: requestConfig,
@@ -390,6 +455,41 @@ export class NodeTurnRuntime {
 				Boolean(this.#options.toolRouter),
 			);
 			if ("failure" in stepResult) {
+				if (
+					stepResult.failure.code === "context_window_exceeded"
+					&& stepResult.eventsObserved === 0
+					&& !compactionEntered
+					&& context.compactionCoordinator
+				) {
+					let compacted: CompactionResult;
+					try {
+						compacted = await this.#compactContext(
+							context,
+							"context_overflow",
+							history,
+							freshItemIds,
+						);
+					} catch (error) {
+						return this.#finalizeFailure(
+							submission,
+							normalizeFailure(error, signal, "persistence_error"),
+							emit,
+						);
+					}
+					compactionEntered = true;
+					if (compacted.status === "interrupted") {
+						return this.#finalizeFailure(submission, {
+							code: "interrupted",
+							message: "turn interrupted",
+							retryable: false,
+						}, emit);
+					}
+					if (compacted.status === "compressed") {
+						history = compacted.providerConversation;
+						previousResponseId = undefined;
+						continue;
+					}
+				}
 				return this.#finalizeFailure(submission, stepResult.failure, emit);
 			}
 			accumulatedUsage = addUsage(accumulatedUsage, stepResult.usage);
@@ -458,6 +558,25 @@ export class NodeTurnRuntime {
 				...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
 			};
 		}
+	}
+
+	#compactContext(
+		context: TurnExecutionContext,
+		source: "pre_turn" | "context_overflow",
+		conversation: readonly CanonicalConversationItem[],
+		freshItemIds: ReadonlySet<string>,
+	): Promise<CompactionResult> {
+		const coordinator = context.compactionCoordinator;
+		if (!coordinator) throw new StorageFailure("compaction coordinator is not configured");
+		return coordinator.compact({
+			clientTurnId: context.submission.clientTurnId,
+			turnId: context.turnId,
+			source,
+			conversation,
+			freshItemIds,
+			emit: context.emit,
+			signal: context.signal,
+		});
 	}
 
 	async #processToolBatch(
@@ -576,7 +695,10 @@ export class NodeTurnRuntime {
 		emit: (event: RuntimeEvent) => void,
 		signal: AbortSignal,
 		toolCallsAllowed: boolean,
-	): Promise<ProviderStepResult | { readonly failure: NormalizedFailure }> {
+	): Promise<ProviderStepResult | {
+		readonly failure: NormalizedFailure;
+		readonly eventsObserved: number;
+	}> {
 		let retriesUsed = 0;
 		while (true) {
 			let eventsObserved = 0;
@@ -665,6 +787,7 @@ export class NodeTurnRuntime {
 								retryable: false,
 							}
 							: failure,
+						eventsObserved,
 					};
 				}
 				emit({
@@ -677,7 +800,10 @@ export class NodeTurnRuntime {
 					await (this.#options.sleep ?? sleepWithSignal)(decision.delayMs, signal);
 					assertNotAborted(signal);
 				} catch (sleepError) {
-					return { failure: normalizeFailure(sleepError, signal, "interrupted") };
+					return {
+						failure: normalizeFailure(sleepError, signal, "interrupted"),
+						eventsObserved,
+					};
 				}
 				retriesUsed += 1;
 			}

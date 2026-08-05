@@ -6,10 +6,13 @@ import type { QueueSnapshot, QueuedInput } from "@mycli/core";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
+	CompactionCoordinator,
 	NodeTurnRuntime,
 	QueueCoordinator,
 	SessionCoordinator,
 	SessionTransitionError,
+	summarizeCompactionWithProvider,
+	TokenCounter,
 } from "@mycli/runtime";
 import type {
 	PendingSessionApproval,
@@ -108,11 +111,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			createQueueId: randomUUID,
 			clock: () => new Date().toISOString(),
 		});
+		const runtimeInstructions = "You are mycli, a coding agent and personal assistant.";
+		const tokenCounter = new TokenCounter();
 		return new NodeTurnRuntime({
 			sessionId,
 			workspaceRoot,
 			threadId,
-			instructions: "You are mycli, a coding agent and personal assistant.",
+			instructions: runtimeInstructions,
 			store,
 			resolveConfig: (submission) => resolveConfig({
 				homeDir,
@@ -131,6 +136,48 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			approvalPolicy: new ApprovalPolicy({ workspaceRoot, autoApproveMedium: true }),
 			approvalCoordinator,
 			queueCoordinator,
+			createCompactionCoordinator: (resolved) => {
+				const compactionThreshold = compactionThresholdForModel(resolved);
+				return new CompactionCoordinator({
+					sessionId,
+					workspaceRoot,
+					threadId,
+					store,
+					tokenCounter,
+					baseContext: `${runtimeInstructions}\n${JSON.stringify(toolExposure)}`,
+					tokenLimit: totalCompactionBudget(
+						compactionThreshold,
+						resolved.compactionReservedOutputTokens,
+					),
+					reservedOutputTokens: resolved.compactionReservedOutputTokens,
+					triggerRatio: 1,
+					tailTurns: resolved.compactionTailTurns,
+					tailMaxTokens: resolved.compactionTailMaxTokens,
+					minSavingsRatio: resolved.compactionMinSavingsRatio,
+					summaryMaxTokens: 600,
+					summaryModel: resolved.compactionSummarizerModel ?? resolved.model,
+					rehydrationMaxFiles: resolved.compactionRehydrationMaxFiles,
+					rehydrationMaxItemTokens: resolved.compactionRehydrationFileMaxItemTokens,
+					rehydrationMaxTotalTokens: resolved.compactionRehydrationFileMaxTotalTokens,
+					summarize: (input) => {
+						const summaryConfig = {
+							...resolved,
+							model: input.model ?? resolved.model,
+						};
+						return summarizeCompactionWithProvider(
+							registry.create(summaryConfig),
+							{
+								provider: summaryConfig.provider,
+								protocol: summaryConfig.protocol,
+								model: summaryConfig.model,
+							},
+							input,
+						);
+					},
+					createCheckpointId: randomUUID,
+					clock: () => new Date().toISOString(),
+				});
+			},
 		});
 	};
 	try {
@@ -180,6 +227,27 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		store.close();
 		throw error;
 	}
+}
+
+function compactionThresholdForModel(config: Awaited<ReturnType<typeof resolveConfig>>): number {
+	const ratio = config.compactionTriggerRatiosByModel[config.model];
+	if (ratio === undefined) return config.compactionTokenLimit;
+	let buffer = config.compactionBufferTokens;
+	if (config.maxPromptTokens <= buffer) {
+		buffer = Math.max(0, Math.trunc(config.maxPromptTokens * 0.2));
+	}
+	return Math.max(1, Math.min(
+		Math.trunc(config.maxPromptTokens * ratio),
+		config.maxPromptTokens - buffer,
+	));
+}
+
+function totalCompactionBudget(threshold: number, reservedOutputTokens: number): number {
+	const total = threshold + reservedOutputTokens;
+	if (!Number.isSafeInteger(total) || total <= reservedOutputTokens) {
+		throw new Error("config_error: compaction token budget is not representable");
+	}
+	return total;
 }
 
 interface PrepareStoredSessionOptions {

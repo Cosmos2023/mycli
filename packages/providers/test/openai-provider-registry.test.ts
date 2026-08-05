@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { NodeRuntimeConfig } from "@mycli/config";
+import {
+	NODE_RUNTIME_CONTEXT_DEFAULTS,
+	type NodeRuntimeConfig,
+} from "@mycli/config";
 import type { ProviderEvent } from "@mycli/core";
 import type { ModelProvider } from "../src/model-provider.ts";
 import * as providers from "../src/index.ts";
@@ -138,6 +141,7 @@ test("registry rejects an unsupported protocol at the runtime boundary", () => {
 
 function config(protocol: "responses" | "chat_completions"): NodeRuntimeConfig {
 	return {
+		...NODE_RUNTIME_CONTEXT_DEFAULTS,
 		workspaceRoot: "/workspace",
 		homeDir: "/home/test",
 		provider: "compatible",

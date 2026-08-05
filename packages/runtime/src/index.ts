@@ -3,6 +3,7 @@ export type {
 	ApprovalContinuationContract,
 	ApprovalPolicyContract,
 	ApprovalRuntimeResolution,
+	CompactionCoordinatorContract,
 	NodeTurnRuntimeOptions,
 	ResolveApprovalInput,
 	SubmitTurnOptions,
@@ -41,6 +42,22 @@ export type {
 	RetryDecision,
 	RetryDecisionInput,
 } from "./retry-policy.ts";
+export { fallbackTokenEstimate, TokenCounter } from "./token-counter.ts";
+export type { TokenCounterOptions, TokenEncoder } from "./token-counter.ts";
+export {
+	CompactionCoordinator,
+	summarizeCompactionWithProvider,
+} from "./compaction-coordinator.ts";
+export type {
+	CompactInput,
+	CompactionCoordinatorOptions,
+	CompactionCoordinatorStore,
+	CompactionResult,
+	CompactionRuntimeEvent,
+	CompactionSource,
+	CompactionSummaryInput,
+	RehydratedFile,
+} from "./compaction-coordinator.ts";
 export {
 	SessionCoordinator,
 	SessionTransitionError,
