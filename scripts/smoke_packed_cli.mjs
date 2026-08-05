@@ -15,6 +15,7 @@ const WORKSPACES = [
 	"@mycli/tools",
 	"@mycli/providers",
 	"@mycli/storage",
+	"@mycli/integrations",
 	"@mycli/runtime",
 	"mycli-shell-tui",
 	"@mycli/app",
