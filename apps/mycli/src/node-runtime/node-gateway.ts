@@ -14,6 +14,7 @@ import {
 	type CanonicalMessage,
 	type QueuedInput,
 	type RuntimeEvent,
+	type ShellLifecycleEvent,
 } from "@mycli/core";
 import type {
 	PendingSessionApproval,
@@ -24,8 +25,14 @@ import type {
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "@mycli/runtime";
-import { projectMutationMetadata, StorageFailure } from "@mycli/storage";
+import {
+	projectMutationMetadata,
+	sanitizeShellSnapshotPayload,
+	SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
+	StorageFailure,
+} from "@mycli/storage";
 import type { TranscriptItem, TurnReservation } from "@mycli/storage";
+import type { ShellSessionSnapshot } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 
 type JsonObject = Record<string, unknown>;
@@ -56,6 +63,14 @@ export interface CreateNodeGatewayOptions {
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
 	readonly sessionCoordinator?: SessionCoordinator<NodeGatewayRuntime>;
+	readonly shellManager?: {
+		list(ownerSessionId: string): readonly ShellSessionSnapshot[];
+		terminate(ownerSessionId: string, shellId: string): Promise<ShellSessionSnapshot>;
+		terminateOwner(ownerSessionId: string): Promise<readonly ShellSessionSnapshot[]>;
+	};
+	readonly shellLifecycle?: {
+		subscribe(listener: (event: ShellLifecycleEvent) => void): () => void;
+	};
 	readonly workspaceTrust?: {
 		readonly initialState: WorkspaceTrustState;
 		load(workspaceRoot: string): Promise<WorkspaceTrustState>;
@@ -104,6 +119,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#closed = false;
 	#closePromise: Promise<void> | null = null;
 	#unsubscribeQueue: (() => void) | null = null;
+	#unsubscribeShell: (() => void) | null = null;
 	#trustState: WorkspaceTrustState;
 
 	constructor(options: CreateNodeGatewayOptions) {
@@ -123,6 +139,7 @@ class InProcessNodeGateway implements NodeGateway {
 		lines.on("error", () => { void this.close(); });
 		this.#clientOutput.on("error", () => { void this.close(); });
 		this.#bindQueue();
+		this.#bindShellLifecycle();
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionId() });
 	}
 
@@ -132,6 +149,8 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#closed = true;
 			this.#unsubscribeQueue?.();
 			this.#unsubscribeQueue = null;
+			this.#unsubscribeShell?.();
+			this.#unsubscribeShell = null;
 			this.#activeTurn?.controller.abort();
 			let exitCode = 0;
 			try {
@@ -208,7 +227,9 @@ class InProcessNodeGateway implements NodeGateway {
 			case "transcript.load":
 				return this.#transcript(request.params);
 			case "command.list":
-				return { commands: [] };
+				return this.#commandList();
+			case "command.run":
+				return this.#commandRun(request.params);
 			case "settings.load":
 				return { settings: {}, source: "defaults" };
 			case "session.list":
@@ -217,6 +238,12 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#sessionResume(request.params);
 			case "session.tree":
 				return this.#sessionTree(request.params);
+			case "shell.list":
+				return this.#shellList();
+			case "shell.stop":
+				return this.#shellStop(request.params);
+			case "shell.stop_all":
+				return this.#shellStopAll();
 			case "turn.submit":
 				return this.#submit(request.params);
 			case "approval.respond":
@@ -268,7 +295,8 @@ class InProcessNodeGateway implements NodeGateway {
 			provider: this.#options.provider,
 			model: this.#options.model,
 			status: this.#status(),
-			background_shells: [],
+			background_shells: this.#activeShells().map((snapshot) =>
+				shellSnapshotPayload(snapshot, this.#sessionContext())),
 			auth_providers: [],
 			models: [],
 			permissions: {},
@@ -326,6 +354,27 @@ class InProcessNodeGateway implements NodeGateway {
 		return { session_id: sessionId, items, next_before: null };
 	}
 
+	#commandList(): JsonObject {
+		return {
+			commands: this.#options.shellManager ? [SHELL_PS_COMMAND] : [],
+		};
+	}
+
+	async #commandRun(params: JsonObject): Promise<JsonObject> {
+		const command = requiredString(params.command, "command").trim();
+		if (command === "/ps") {
+			const context = this.#sessionContext();
+			const processes = this.#activeShells().map((snapshot) =>
+				shellSnapshotPayload(snapshot, context));
+			return shellPsCommandResult(processes);
+		}
+		if (command === "/stop") {
+			const stopped = await this.#shellStopAll();
+			return shellStopCommandResult(stopped);
+		}
+		throw new GatewayFailure("method_not_found", "Unknown command.");
+	}
+
 	#sessionList(): JsonObject {
 		const coordinator = this.#options.sessionCoordinator;
 		if (!coordinator) {
@@ -379,6 +428,39 @@ class InProcessNodeGateway implements NodeGateway {
 			generation: snapshot.generation,
 			read_only: snapshot.readOnly,
 			lines: [],
+			background_shells: this.#activeShells().map((shell) =>
+				shellSnapshotPayload(shell, this.#sessionContext())),
+		};
+	}
+
+	#shellList(): JsonObject {
+		return {
+			session_id: this.#sessionId(),
+			generation: this.#sessionContext().generation,
+			shells: this.#activeShells().map((snapshot) =>
+				shellSnapshotPayload(snapshot, this.#sessionContext())),
+		};
+	}
+
+	async #shellStop(params: JsonObject): Promise<JsonObject> {
+		const manager = this.#requiredShellManager();
+		const context = this.#sessionContext();
+		const snapshot = await manager.terminate(
+			context.sessionId,
+			requiredString(params.shell_id, "shell_id"),
+		);
+		return shellSnapshotPayload(snapshot, context);
+	}
+
+	async #shellStopAll(): Promise<JsonObject> {
+		const manager = this.#requiredShellManager();
+		const context = this.#sessionContext();
+		const snapshots = await manager.terminateOwner(context.sessionId);
+		return {
+			session_id: context.sessionId,
+			generation: context.generation,
+			stopped: snapshots.length,
+			shells: snapshots.map((snapshot) => shellSnapshotPayload(snapshot, context)),
 		};
 	}
 
@@ -1038,6 +1120,8 @@ class InProcessNodeGateway implements NodeGateway {
 				rejected_steers: rejectedSteers.map(gatewayQueueItem),
 				follow_ups: followUps.map(gatewayQueueItem),
 			},
+			background_shells: this.#activeShells().map((snapshot) =>
+				shellSnapshotPayload(snapshot, this.#sessionContext())),
 			trust: this.#trustStatus(),
 		};
 	}
@@ -1092,6 +1176,21 @@ class InProcessNodeGateway implements NodeGateway {
 		return queue;
 	}
 
+	#requiredShellManager(): NonNullable<CreateNodeGatewayOptions["shellManager"]> {
+		const manager = this.#options.shellManager;
+		if (!manager) throw new GatewayFailure("method_not_found", "Shell operations are unavailable.");
+		return manager;
+	}
+
+	#activeShells(): readonly ShellSessionSnapshot[] {
+		const ownerSessionId = this.#sessionId();
+		return this.#options.shellManager?.list(ownerSessionId).filter((snapshot) =>
+			snapshot.ownerSessionId === ownerSessionId
+				&& snapshot.background
+				&& snapshot.status === "running"
+				&& snapshot.processState === "running_background") ?? [];
+	}
+
 	#bindQueue(): void {
 		this.#unsubscribeQueue?.();
 		this.#unsubscribeQueue = null;
@@ -1108,6 +1207,16 @@ class InProcessNodeGateway implements NodeGateway {
 			}
 			this.#emitRuntime("turn.queue.updated", queueEventPayload(snapshot, context));
 		});
+	}
+
+	#bindShellLifecycle(): void {
+		this.#unsubscribeShell?.();
+		this.#unsubscribeShell = this.#options.shellLifecycle?.subscribe((event) => {
+			if (this.#closed) return;
+			const context = this.#sessionContext();
+			if (event.ownerSessionId !== context.sessionId) return;
+			this.#emitRuntime(event.kind, shellLifecyclePayload(event, context.generation));
+		}) ?? null;
 	}
 
 	#sessionContext(): SessionGenerationContext {
@@ -1170,6 +1279,189 @@ class InProcessNodeGateway implements NodeGateway {
 
 export function createNodeGateway(options: CreateNodeGatewayOptions): NodeGateway {
 	return new InProcessNodeGateway(options);
+}
+
+const SHELL_PS_COMMAND = Object.freeze({
+	id: "ps",
+	name: "/ps",
+	description: "List background terminals",
+	argument_policy: "none",
+	available_during_turn: true,
+});
+
+function shellPsCommandResult(processes: readonly JsonObject[]): JsonObject {
+	const lines = processes.length === 0
+		? ["no background shells"]
+		: processes.map((process) => [
+			String(process.shell_id ?? "shell"),
+			String(process.process_state ?? "running"),
+			String(process.command_preview ?? "[redacted command]"),
+		].join(" "));
+	return {
+		result_id: `command:${randomUUID().replaceAll("-", "")}`,
+		presentation: "transcript",
+		command_kind: "background_shells",
+		processes,
+		lines,
+		display: shellCommandDisplay({
+			kind: "list",
+			command: "/ps",
+			title: "Background terminals",
+			severity: "info",
+			rows: processes.map((process) => ({
+				key: String(process.shell_id ?? "shell"),
+				label: `shell ${String(process.shell_id ?? "unknown")}`,
+				values: [String(process.command_preview ?? "[redacted command]")],
+				status: String(process.process_state ?? "running"),
+			})),
+			totalRows: processes.length,
+		}),
+	};
+}
+
+function shellStopCommandResult(stopped: JsonObject): JsonObject {
+	return {
+		result_id: `command:${randomUUID().replaceAll("-", "")}`,
+		presentation: "none",
+		command_kind: "shell_stop",
+		lines: ["Stopping all background terminals."],
+		stopped: stopped.stopped ?? 0,
+		display: shellCommandDisplay({
+			kind: "notice",
+			command: "/stop",
+			title: "Background terminals",
+			severity: "success",
+			summary: "Stopping all background terminals.",
+		}),
+	};
+}
+
+function shellCommandDisplay(input: {
+	readonly kind: "list" | "notice";
+	readonly command: string;
+	readonly title: string;
+	readonly severity: "info" | "success";
+	readonly summary?: string;
+	readonly rows?: readonly JsonObject[];
+	readonly totalRows?: number;
+}): JsonObject {
+	return {
+		version: 1,
+		kind: input.kind,
+		command: input.command,
+		title: input.title,
+		severity: input.severity,
+		...(input.summary ? { summary: input.summary } : {}),
+		fields: [],
+		rows: input.rows ?? [],
+		sections: [],
+		suggestions: [],
+		...(input.totalRows === undefined ? {} : { total_rows: input.totalRows }),
+		omitted_rows: 0,
+		omitted_chars: 0,
+	};
+}
+
+function shellSnapshotPayload(
+	snapshot: ShellSessionSnapshot,
+	context: SessionGenerationContext,
+): JsonObject {
+	const metadata = sanitizeShellSnapshotPayload({
+		...(snapshot.commandPreview ? { command_preview: snapshot.commandPreview } : {}),
+		process_state: snapshot.processState,
+		...(snapshot.terminalState ? { terminal_state: snapshot.terminalState } : {}),
+		...(snapshot.transport ? { transport: snapshot.transport } : {}),
+		...(snapshot.cleanupResult ? { cleanup_result: snapshot.cleanupResult } : {}),
+		...(snapshot.startedAt ? { started_at: snapshot.startedAt } : {}),
+		...(snapshot.completedAt ? { completed_at: snapshot.completedAt } : {}),
+		...(snapshot.shellKind ? { shell_kind: snapshot.shellKind } : {}),
+		...(snapshot.shellEdition ? { shell_edition: snapshot.shellEdition } : {}),
+	}, snapshot.shellId);
+	const discardedOutputChars = Math.max(
+		0,
+		snapshot.output.length - SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
+	);
+	const output = discardedOutputChars > 0
+		? snapshot.output.slice(-SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS)
+		: snapshot.output;
+	return {
+		shell_id: snapshot.shellId,
+		session_id: context.sessionId,
+		generation: context.generation,
+		...(snapshot.callId ? { call_id: snapshot.callId } : {}),
+		...(metadata.command_preview ? { command_preview: metadata.command_preview } : {}),
+		background: snapshot.background,
+		status: snapshot.status,
+		process_state: metadata.process_state ?? snapshot.processState,
+		...(metadata.terminal_state ? { terminal_state: metadata.terminal_state } : {}),
+		...(snapshot.exitCode === undefined ? {} : { exit_code: snapshot.exitCode }),
+		output,
+		next_cursor: snapshot.nextCursor,
+		output_chars: snapshot.outputChars,
+		omitted_output_chars: snapshot.omittedOutputChars + discardedOutputChars,
+		...(metadata.transport ? { transport: metadata.transport } : {}),
+		tty: snapshot.tty,
+		yielded: snapshot.yielded,
+		...(metadata.cleanup_result ? { cleanup_result: metadata.cleanup_result } : {}),
+		...(metadata.started_at ? { started_at: metadata.started_at } : {}),
+		...(metadata.completed_at ? { completed_at: metadata.completed_at } : {}),
+		...(metadata.shell_kind ? { shell_kind: metadata.shell_kind } : {}),
+		...(metadata.shell_edition ? { shell_edition: metadata.shell_edition } : {}),
+		...(snapshot.errorKind ? { error_kind: snapshot.errorKind } : {}),
+		...(snapshot.error ? { error: snapshot.error.slice(0, 512) } : {}),
+	};
+}
+
+function shellLifecyclePayload(
+	event: ShellLifecycleEvent,
+	generation: number,
+): JsonObject {
+	const metadata = sanitizeShellSnapshotPayload({
+		command_preview: event.commandPreview,
+		process_state: event.processState,
+		...(event.terminalState ? { terminal_state: event.terminalState } : {}),
+		...(event.transport ? { transport: event.transport } : {}),
+		...(event.cleanupResult ? { cleanup_result: event.cleanupResult } : {}),
+		...(event.startedAt ? { started_at: event.startedAt } : {}),
+		...(event.completedAt ? { completed_at: event.completedAt } : {}),
+		...(event.shellKind ? { shell_kind: event.shellKind } : {}),
+		...(event.shellEdition ? { shell_edition: event.shellEdition } : {}),
+	}, event.shellId);
+	const outputDelta = event.outputDelta === undefined
+		? undefined
+		: event.outputDelta.slice(-10_000);
+	const discardedOutputChars = event.outputDelta === undefined
+		? 0
+		: Math.max(0, event.outputDelta.length - (outputDelta?.length ?? 0));
+	return {
+		shell_id: event.shellId,
+		session_id: event.ownerSessionId,
+		generation,
+		call_id: event.callId,
+		sequence: event.sequence,
+		command_preview: metadata.command_preview ?? "[redacted command]",
+		background: event.background,
+		process_state: metadata.process_state ?? event.processState,
+		...(metadata.transport ? { transport: metadata.transport } : {}),
+		tty: event.tty,
+		yielded: event.yielded,
+		...(metadata.terminal_state ? { terminal_state: metadata.terminal_state } : {}),
+		...(event.exitCode === undefined ? {} : { exit_code: event.exitCode }),
+		...(outputDelta === undefined ? {} : { output_delta: outputDelta }),
+		...(event.nextCursor === undefined ? {} : { next_cursor: event.nextCursor }),
+		...(event.outputChars === undefined ? {} : { output_chars: event.outputChars }),
+		...((event.omittedOutputChars ?? 0) + discardedOutputChars > 0
+			? { omitted_output_chars: (event.omittedOutputChars ?? 0) + discardedOutputChars }
+			: {}),
+		...(metadata.cleanup_result ? { cleanup_result: metadata.cleanup_result } : {}),
+		...(metadata.started_at ? { started_at: metadata.started_at } : {}),
+		...(metadata.completed_at ? { completed_at: metadata.completed_at } : {}),
+		...(event.activeBackgroundCount === undefined
+			? {}
+			: { active_background_count: event.activeBackgroundCount }),
+		...(metadata.shell_kind ? { shell_kind: metadata.shell_kind } : {}),
+		...(metadata.shell_edition ? { shell_edition: metadata.shell_edition } : {}),
+	};
 }
 
 class GatewayFailure extends Error {

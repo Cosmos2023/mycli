@@ -19,6 +19,7 @@ import {
 	QueueCoordinator,
 	SessionCoordinator,
 	SessionTransitionError,
+	ShellLifecycleProjector,
 	summarizeCompactionWithProvider,
 	TokenCounter,
 } from "@mycli/runtime";
@@ -87,7 +88,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const registry = new OpenAIProviderRegistry();
 	const toolExposure = planToolExposure(builtinToolManifest(), { shell: false });
 	const shellManager = new ShellSessionManager({ transportFactory: startPipeTransport });
-	const publishLifecycle: (event: ShellLifecycleEvent) => void = () => undefined;
+	const shellLifecycle = new ShellLifecycleProjector({ store });
+	const publishLifecycle: (event: ShellLifecycleEvent) => void = (event) => {
+		shellLifecycle.enqueue(event);
+	};
 	const transcriptSnapshots = new TranscriptSnapshotStore({ homeDir });
 	const tokenCounter = new TokenCounter();
 	const createRuntime = (
@@ -301,19 +305,35 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			runtime: initial.binding,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
 			sessionCoordinator,
+			shellManager,
+			shellLifecycle,
 			workspaceTrust: {
 				initialState: initialTrustState,
 				load: (workspaceRoot) => workspaceTrustStore.load(workspaceRoot),
 				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
 			},
 			close: async () => {
-				await shellManager.close();
-				store.close();
+				try {
+					await shellManager.close();
+				} finally {
+					try {
+						await shellLifecycle.drain();
+					} finally {
+						store.close();
+					}
+				}
 			},
 		});
 	} catch (error) {
-		await shellManager.close().catch(() => undefined);
-		store.close();
+		try {
+			await shellManager.close().catch(() => undefined);
+		} finally {
+			try {
+				await shellLifecycle.drain();
+			} finally {
+				store.close();
+			}
+		}
 		throw error;
 	}
 }

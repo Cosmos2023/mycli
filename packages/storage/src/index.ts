@@ -45,6 +45,15 @@ export type { SQLiteSessionStoreOptions } from "./sqlite-session-store.ts";
 export { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 export type { SQLiteSessionStateRepositoryOptions } from "./sqlite-session-state.ts";
 export {
+	SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
+	sanitizeShellSnapshotPayload,
+	shellHistoryItem,
+} from "./shell-transcript-store.ts";
+export type {
+	ShellTranscriptStore,
+	UpsertShellSnapshotInput,
+} from "./shell-transcript-store.ts";
+export {
 	projectTranscript,
 	TRANSCRIPT_TEXT_MAX_CHARS,
 } from "./transcript-projector.ts";

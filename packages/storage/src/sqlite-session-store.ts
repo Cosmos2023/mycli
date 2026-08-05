@@ -26,6 +26,7 @@ import {
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
+import { shellHistoryItem } from "./shell-transcript-store.ts";
 import type {
 	AppendSessionSummaryInput,
 	AppendAssistantToolCallsInput,
@@ -51,6 +52,7 @@ import type {
 	SessionStore,
 	TurnReservation,
 } from "./session-store.ts";
+import type { UpsertShellSnapshotInput } from "./shell-transcript-store.ts";
 import { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 import { stableJson } from "./stable-json.ts";
 
@@ -423,6 +425,32 @@ export class SQLiteSessionStore implements SessionStore {
 
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#stateRepository.loadTurnRollouts(sessionId);
+	}
+
+	upsertShellSnapshot(input: UpsertShellSnapshotInput): void {
+		this.#write(() => {
+			const payload = shellHistoryItem(input, this.#threadId(input.sessionId));
+			const itemId = String(payload.id);
+			const row = this.#database.prepare(`
+				SELECT sequence_no
+				FROM history_items
+				WHERE session_id = ? AND item_id = ?
+				ORDER BY sequence_no DESC
+				LIMIT 1
+			`).get(input.sessionId, itemId) as { sequence_no: number } | undefined;
+			if (row) {
+				this.#database.prepare(`
+					UPDATE history_items
+					SET payload_json = ?
+					WHERE sequence_no = ?
+				`).run(stableJson(payload), row.sequence_no);
+			} else {
+				this.#database.prepare(`
+					INSERT INTO history_items (session_id, item_id, payload_json)
+					VALUES (?, ?, ?)
+				`).run(input.sessionId, itemId, stableJson(payload));
+			}
+		});
 	}
 
 	importLegacyConversation(input: ImportLegacyConversationInput): boolean {

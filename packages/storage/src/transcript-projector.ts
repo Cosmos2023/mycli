@@ -86,6 +86,17 @@ export function projectTranscript(
 			}
 			continue;
 		}
+		if (item.type === "shell_session") {
+			const shell = shellSessionItem(item);
+			const existingIndex = item.callId ? toolsByCallId.get(item.callId) : undefined;
+			if (existingIndex === undefined) {
+				projected.push(shell);
+				if (item.callId) toolsByCallId.set(item.callId, projected.length - 1);
+			} else {
+				projected[existingIndex] = mergeShellItem(projected[existingIndex]!, shell);
+			}
+			continue;
+		}
 		const visible = visibleItem(item);
 		if (visible) projected.push(visible);
 	}
@@ -249,14 +260,45 @@ function toolResultItem(item: ParsedHistoryItem): TranscriptItem {
 	});
 }
 
+function shellSessionItem(item: ParsedHistoryItem): TranscriptItem {
+	const terminalState = stringValue(item.metadata.terminal_state);
+	const rawOutput = stringValue(item.metadata.output) ?? "";
+	const bounded = boundedHeadTail(rawOutput);
+	const historicalState = terminalState ? stringValue(item.metadata.process_state) : "stale";
+	const metadata = visibleMetadata({
+		...item.metadata,
+		process_state: historicalState,
+	});
+	const omitted = bounded.omitted + (safeInteger(item.metadata.omitted_output_chars) ?? 0);
+	return freezeItem({
+		id: item.id,
+		type: "tool",
+		tool_name: item.toolName ?? "Shell",
+		...(item.callId ? { call_id: item.callId } : {}),
+		...(stringValue(item.metadata.command_preview)
+			? { command: stringValue(item.metadata.command_preview) }
+			: {}),
+		status: terminalState ? "completed" : "stale",
+		...(bounded.value ? { output: bounded.value } : {}),
+		...(safeInteger(item.metadata.exit_code) === undefined
+			? {}
+			: { exit_code: safeInteger(item.metadata.exit_code) }),
+		...(omitted > 0 ? { truncated: true, omitted_chars: omitted } : {}),
+		metadata,
+	});
+}
+
 function mergeToolItems(start: TranscriptItem, finish: TranscriptItem): TranscriptItem {
+	const shellSnapshot = typeof start.metadata?.shell_id === "string";
 	return freezeItem({
 		...start,
 		tool_name: start.tool_name ?? finish.tool_name,
 		call_id: start.call_id ?? finish.call_id,
 		command: start.command ?? finish.command,
-		status: "completed",
-		...(finish.output === undefined ? {} : { output: finish.output }),
+		status: shellSnapshot ? start.status ?? "stale" : "completed",
+		...((shellSnapshot ? start.output ?? finish.output : finish.output) === undefined
+			? {}
+			: { output: shellSnapshot ? start.output ?? finish.output : finish.output }),
 		...(finish.exit_code === undefined ? {} : { exit_code: finish.exit_code }),
 		...(finish.duration_ms === undefined ? {} : { duration_ms: finish.duration_ms }),
 		...(finish.truncated ? {
@@ -264,6 +306,23 @@ function mergeToolItems(start: TranscriptItem, finish: TranscriptItem): Transcri
 			omitted_chars: finish.omitted_chars,
 		} : {}),
 		metadata: Object.freeze({ ...(start.metadata ?? {}), ...(finish.metadata ?? {}) }),
+	});
+}
+
+function mergeShellItem(start: TranscriptItem, shell: TranscriptItem): TranscriptItem {
+	return freezeItem({
+		...start,
+		tool_name: start.tool_name ?? shell.tool_name,
+		call_id: start.call_id ?? shell.call_id,
+		command: shell.command ?? start.command,
+		status: shell.status,
+		...(shell.output === undefined ? {} : { output: shell.output }),
+		...(shell.exit_code === undefined ? {} : { exit_code: shell.exit_code }),
+		...(shell.truncated ? {
+			truncated: true,
+			omitted_chars: shell.omitted_chars,
+		} : {}),
+		metadata: Object.freeze({ ...(start.metadata ?? {}), ...(shell.metadata ?? {}) }),
 	});
 }
 
@@ -283,6 +342,21 @@ function visibleMetadata(metadata: Readonly<Record<string, unknown>>): Readonly<
 			.map(projectFileChange)
 			.filter((value): value is Readonly<Record<string, unknown>> => value !== undefined);
 		if (changes.length > 0) visible.file_changes = Object.freeze(changes);
+	}
+	for (const key of [
+		"shell_id",
+		"process_state",
+		"terminal_state",
+		"transport",
+		"cleanup_result",
+		"shell_kind",
+		"shell_edition",
+	] as const) {
+		const value = boundedIdentity(metadata[key], 256);
+		if (value) visible[key] = value;
+	}
+	for (const key of ["background", "tty", "yielded"] as const) {
+		if (typeof metadata[key] === "boolean") visible[key] = metadata[key];
 	}
 	return Object.freeze(visible);
 }

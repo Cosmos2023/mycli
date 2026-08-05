@@ -11,6 +11,7 @@ import type {
 	QueuedInput,
 	RuntimeErrorCode,
 } from "@mycli/core";
+import type { ShellTranscriptStore } from "./shell-transcript-store.ts";
 
 export interface ReserveTurnInput {
 	readonly sessionId: string;
@@ -330,7 +331,7 @@ export interface TurnStore {
 	close(): void;
 }
 
-export interface SessionStore extends TurnStore, SessionStateStore {
+export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscriptStore {
 	commitApprovalResult(input: CommitApprovalResultInput): ApprovalCheckpoint;
 	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord;
 }

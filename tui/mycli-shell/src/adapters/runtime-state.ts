@@ -480,6 +480,32 @@ export function runtimeStateWithLegacyQueueMigration(
 		: migrated;
 }
 
+export function runtimeStateAfterSessionResume(
+	state: RuntimeShellState,
+	sessionId: string,
+	sessionTitle: string,
+	payload: Record<string, unknown>,
+): RuntimeShellState {
+	const eventStatus = stringValue(state.status.session_id) === sessionId
+		? state.status
+		: {};
+	let nextState: RuntimeShellState = {
+		...reduceRuntimeEvent(state, "session.changed", {
+			session_id: sessionId,
+			session_title: sessionTitle,
+		}),
+		transcript: [],
+	};
+	if (Object.keys(eventStatus).length > 0) {
+		nextState = reduceRuntimeEvent(nextState, "status.changed", eventStatus);
+	}
+	const backgroundShells = Array.isArray(payload.background_shells)
+		? payload.background_shells
+		: eventStatus.background_shells;
+	nextState = applyShellBootstrap(nextState, backgroundShells);
+	return runtimeStateWithLegacyQueueMigration(nextState, payload);
+}
+
 export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
 	const rawItems = Array.isArray(payload.items)
 		? payload.items

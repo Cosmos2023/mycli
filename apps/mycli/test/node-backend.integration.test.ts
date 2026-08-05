@@ -58,6 +58,21 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "shell-list", "shell.list", {});
+	const shellList = await waitFor(() => response(messages, "shell-list"));
+	assert.deepEqual(shellList.result, {
+		session_id: "integration-session",
+		generation: 1,
+		shells: [],
+	});
+	writeRequest(backend, "shell-stop-all", "shell.stop_all", {});
+	const shellStopAll = await waitFor(() => response(messages, "shell-stop-all"));
+	assert.deepEqual(shellStopAll.result, {
+		session_id: "integration-session",
+		generation: 1,
+		stopped: 0,
+		shells: [],
+	});
 	writeRequest(backend, "1", "turn.submit", {
 		message: "hello",
 		client_turn_id: "integration-turn",

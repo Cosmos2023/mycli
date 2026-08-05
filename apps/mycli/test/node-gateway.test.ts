@@ -7,6 +7,7 @@ import {
 	fingerprintSubmission,
 	type QueueSnapshot,
 	type RuntimeEvent,
+	type ShellLifecycleEvent,
 } from "@mycli/core";
 import {
 	QueueCoordinator,
@@ -17,6 +18,7 @@ import {
 } from "@mycli/runtime";
 import { StorageFailure } from "@mycli/storage";
 import type { SessionOverview, TranscriptItem } from "@mycli/storage";
+import type { ShellSessionSnapshot } from "@mycli/tools";
 import {
 	createNodeGateway,
 	type NodeGatewayRuntime,
@@ -43,6 +45,7 @@ function gatewayHarness(options: {
 		readonly initial?: QueueSnapshot;
 	};
 	approvalFailure?: Error;
+	shell?: boolean;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -59,6 +62,7 @@ function gatewayHarness(options: {
 	const queue = options.queue
 		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
 		: undefined;
+	const shell = options.shell ? gatewayShellFixture() : undefined;
 	const reserve = options.reserve ?? ((submission: TurnSubmission) => {
 		const fingerprint = fingerprintSubmission({
 			message: submission.message,
@@ -119,6 +123,10 @@ function gatewayHarness(options: {
 		runtime,
 		loadConversation: () => options.conversation ?? [],
 		...(sessionCoordinator ? { sessionCoordinator } : {}),
+		...(shell ? {
+			shellManager: shell.manager,
+			shellLifecycle: shell.lifecycle,
+		} : {}),
 		close: () => { closeCalls += 1; },
 		createTurnId: () => "turn-node",
 		clock: () => 1_700_000_000,
@@ -146,6 +154,7 @@ function gatewayHarness(options: {
 		runtimeSettled: () => runtimeSettled,
 		sessionCoordinator,
 		queue,
+		shell,
 	};
 }
 
@@ -187,6 +196,115 @@ test("node gateway boots the real TUI startup sequence", async () => {
 	await harness.gateway.close();
 });
 
+test("shell bootstrap and control RPCs stay scoped to the active owner", async () => {
+	const harness = gatewayHarness({ shell: true });
+	assert.ok(harness.shell);
+	harness.shell.snapshots.push(shellSnapshot({ ownerSessionId: "session-node" }));
+	harness.shell.snapshots.push(shellSnapshot({
+		ownerSessionId: "another-session",
+		shellId: "deadbeef",
+	}));
+
+	const initialized = await harness.send("initialize", { protocol_version: 1 });
+	assert.ok("result" in initialized);
+	assert.deepEqual("result" in initialized ? initialized.result.background_shells : [], [
+		assertedShellPayload("a1b2c3d4", 1),
+	]);
+	const listed = await harness.send("shell.list");
+	assert.deepEqual("result" in listed ? listed.result.shells : [], [
+		assertedShellPayload("a1b2c3d4", 1),
+	]);
+	const stopped = await harness.send("shell.stop", { shell_id: "a1b2c3d4" });
+	assert.equal("result" in stopped ? stopped.result.shell_id : null, "a1b2c3d4");
+	const stoppedAll = await harness.send("shell.stop_all");
+	assert.equal("result" in stoppedAll ? stoppedAll.result.stopped : null, 1);
+	assert.deepEqual(harness.shell.terminations, [
+		{ ownerSessionId: "session-node", shellId: "a1b2c3d4" },
+	]);
+	assert.deepEqual(harness.shell.terminatedOwners, ["session-node"]);
+	await harness.gateway.close();
+});
+
+test("shell command routes expose ps and stop through the active owner manager", async () => {
+	const harness = gatewayHarness({ shell: true });
+	assert.ok(harness.shell);
+	harness.shell.snapshots.push(shellSnapshot());
+
+	const listed = await harness.send("command.list", { surface: "tui" });
+	assert.deepEqual(
+		"result" in listed
+			? listed.result.commands.map((command: { name: string }) => command.name)
+			: [],
+		["/ps"],
+	);
+	const ps = await harness.send("command.run", { command: "/ps", surface: "tui" });
+	assert.equal("result" in ps ? ps.result.command_kind : null, "background_shells");
+	assert.deepEqual("result" in ps ? ps.result.processes : [], [
+		assertedShellPayload("a1b2c3d4", 1),
+	]);
+	const stopped = await harness.send("command.run", { command: "/stop", surface: "tui" });
+	assert.equal("result" in stopped ? stopped.result.command_kind : null, "shell_stop");
+	assert.deepEqual("result" in stopped ? stopped.result.lines : [], [
+		"Stopping all background terminals.",
+	]);
+	assert.deepEqual(harness.shell.terminatedOwners, ["session-node"]);
+	await harness.gateway.close();
+});
+
+test("shell lifecycle filters stale sessions and publishes the active generation", async () => {
+	const harness = gatewayHarness({ shell: true, sessions: {} });
+	assert.ok(harness.shell);
+	harness.shell.publish(shellLifecycle({
+		ownerSessionId: "session-node",
+		kind: "shell.output",
+		outputDelta: "source",
+		nextCursor: 6,
+	}));
+	const source = await waitFor(() => notification(harness.messages, "shell.output"));
+	assert.equal(source.params.session_id, "session-node");
+	assert.equal(source.params.generation, 1);
+
+	harness.shell.snapshots.push(shellSnapshot({
+		ownerSessionId: "target",
+		shellId: "e5f6a7b8",
+		callId: "call-target",
+	}));
+	await harness.send("session.resume", { session_id: "target" });
+	const targetStatus = await waitFor(() => notificationForSession(
+		harness.messages,
+		"status.changed",
+		"target",
+	));
+	assert.deepEqual(targetStatus.params.background_shells, [
+		assertedShellPayload("e5f6a7b8", 2, "target", "call-target"),
+	]);
+	const before = notifications(harness.messages, "shell.output").length;
+	harness.shell.publish(shellLifecycle({
+		ownerSessionId: "session-node",
+		kind: "shell.output",
+		sequence: 2,
+		outputDelta: "stale",
+		nextCursor: 11,
+	}));
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(notifications(harness.messages, "shell.output").length, before);
+
+	harness.shell.publish(shellLifecycle({
+		ownerSessionId: "target",
+		shellId: "e5f6a7b8",
+		callId: "call-target",
+		kind: "shell.output",
+		outputDelta: "target",
+		nextCursor: 6,
+	}));
+	const target = await waitFor(() => notifications(harness.messages, "shell.output")
+		.find((message) => message.params.session_id === "target"));
+	assert.equal(target.params.generation, 2);
+	assert.equal(target.params.output_delta, "target");
+	parseGatewayEvent(target);
+	await harness.gateway.close();
+});
+
 test("session RPCs atomically resume and publish one target generation", async () => {
 	const harness = gatewayHarness({ sessions: { targetPendingApproval: true } });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
@@ -208,6 +326,7 @@ test("session RPCs atomically resume and publish one target generation", async (
 		generation: 2,
 		read_only: false,
 		lines: [],
+		background_shells: [],
 	});
 	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "target");
 
@@ -1063,6 +1182,134 @@ function notificationCount(messages: RpcMessage[], method: string): number {
 	return messages.filter((message) => "method" in message
 		&& !("id" in message)
 		&& message.method === method).length;
+}
+
+function notifications(messages: RpcMessage[], method: string) {
+	return messages.filter((message) => "method" in message
+		&& !("id" in message)
+		&& message.method === method);
+}
+
+function gatewayShellFixture() {
+	const snapshots: ShellSessionSnapshot[] = [];
+	const terminations: Array<{ readonly ownerSessionId: string; readonly shellId: string }> = [];
+	const terminatedOwners: string[] = [];
+	const listeners = new Set<(event: ShellLifecycleEvent) => void>();
+	return {
+		snapshots,
+		terminations,
+		terminatedOwners,
+		manager: {
+			list: (ownerSessionId: string) => snapshots.filter(
+				(snapshot) => snapshot.ownerSessionId === ownerSessionId,
+			),
+			terminate: async (ownerSessionId: string, shellId: string) => {
+				terminations.push({ ownerSessionId, shellId });
+				return snapshots.find((snapshot) => snapshot.ownerSessionId === ownerSessionId
+					&& snapshot.shellId === shellId) ?? shellSnapshot({
+					ownerSessionId,
+					shellId,
+					success: false,
+					status: "error",
+					processState: "shell_not_found",
+				});
+			},
+			terminateOwner: async (ownerSessionId: string) => {
+				terminatedOwners.push(ownerSessionId);
+				return snapshots.filter((snapshot) => snapshot.ownerSessionId === ownerSessionId
+					&& snapshot.status === "running");
+			},
+		},
+		lifecycle: {
+			subscribe: (listener: (event: ShellLifecycleEvent) => void) => {
+				listeners.add(listener);
+				return () => { listeners.delete(listener); };
+			},
+		},
+		publish: (event: ShellLifecycleEvent) => {
+			for (const listener of listeners) listener(event);
+		},
+	};
+}
+
+function shellSnapshot(
+	overrides: Partial<ShellSessionSnapshot> = {},
+): ShellSessionSnapshot {
+	return Object.freeze({
+		success: true,
+		shellId: "a1b2c3d4",
+		ownerSessionId: "session-node",
+		callId: "call-shell-1",
+		background: true,
+		status: "running",
+		processState: "running_background",
+		output: "ready\n",
+		stdout: "ready\n",
+		stderr: "",
+		nextCursor: 6,
+		outputChars: 6,
+		newOutputChars: 6,
+		omittedOutputChars: 0,
+		stdoutChars: 6,
+		stderrChars: 0,
+		stdoutOmittedChars: 0,
+		stderrOmittedChars: 0,
+		cursorWasEvicted: false,
+		transport: "pipe",
+		tty: false,
+		yielded: true,
+		decodeReplacementCount: 0,
+		commandPreview: "npm test",
+		startedAt: "2026-08-05T00:00:00.000Z",
+		wallTimeSeconds: 1,
+		...overrides,
+	});
+}
+
+function assertedShellPayload(
+	shellId: string,
+	generation: number,
+	sessionId = "session-node",
+	callId = "call-shell-1",
+) {
+	return {
+		shell_id: shellId,
+		session_id: sessionId,
+		generation,
+		call_id: callId,
+		command_preview: "npm test",
+		background: true,
+		status: "running",
+		process_state: "running_background",
+		output: "ready\n",
+		next_cursor: 6,
+		output_chars: 6,
+		omitted_output_chars: 0,
+		transport: "pipe",
+		tty: false,
+		yielded: true,
+		started_at: "2026-08-05T00:00:00.000Z",
+	};
+}
+
+function shellLifecycle(
+	overrides: Partial<ShellLifecycleEvent> = {},
+): ShellLifecycleEvent {
+	return Object.freeze({
+		type: "shell_lifecycle",
+		kind: "shell.started",
+		shellId: "a1b2c3d4",
+		ownerSessionId: "session-node",
+		callId: "call-shell-1",
+		sequence: 1,
+		commandPreview: "npm test",
+		background: true,
+		processState: "running_background",
+		transport: "pipe",
+		tty: false,
+		yielded: true,
+		...overrides,
+	});
 }
 
 function gatewaySessionCoordinator(

@@ -1,4 +1,6 @@
 export { NodeTurnRuntime } from "./node-turn-runtime.ts";
+export { ShellLifecycleProjector } from "./shell-lifecycle-projector.ts";
+export type { ShellLifecycleProjectorOptions } from "./shell-lifecycle-projector.ts";
 export { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 export type { RuntimeFailpoint, RuntimeFailpointHook } from "./fault-injection.ts";
 export type {

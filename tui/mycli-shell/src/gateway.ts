@@ -7,6 +7,7 @@ import {
 	reduceRuntimeEvent,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
+	runtimeStateAfterSessionResume,
 	runtimeStateAfterCommandResult,
 	runtimeStateWithSettings,
 	runtimeStateWithPendingSteer,
@@ -589,14 +590,12 @@ async function runCommand(command: string): Promise<void> {
 async function selectSession(sessionId: string): Promise<void> {
 	const result = await send("session.resume", { session_id: sessionId });
 	const session = sessions.find((candidate) => candidate.id === sessionId);
-	runtimeState = reduceRuntimeEvent(runtimeState, "session.changed", {
-		session_id: sessionId,
-		session_title: session?.title ?? sessionId,
-	});
-	runtimeState = {
-		...runtimeStateWithLegacyQueueMigration(runtimeState, result),
-		transcript: [],
-	};
+	runtimeState = runtimeStateAfterSessionResume(
+		runtimeState,
+		sessionId,
+		session?.title ?? sessionId,
+		result,
+	);
 	setRuntimeState(runtimeState);
 	await acknowledgeLegacyQueueMigration(result);
 	const transcriptPayload = await send("transcript.load", {

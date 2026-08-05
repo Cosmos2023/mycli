@@ -68,6 +68,57 @@ test("merges tool calls and results with stable ids and bounded visible metadata
 	assert.equal(JSON.stringify(tool).includes("private body"), false);
 });
 
+test("merges shell snapshots into the originating tool and marks historical running state stale", () => {
+	const completed = projectTranscript([
+		{
+			...historyItem("call-item", "turn-1", "tool_call", "Run tests", {
+				arguments: { command: "private command" },
+			}),
+			tool_name: "Shell",
+			call_id: "call-shell-1",
+		},
+		{
+			...historyItem("shell:call-shell-1:a1b2c3d4", "turn-1", "shell_session", "", {
+				shell_id: "a1b2c3d4",
+				command_preview: "npm test",
+				process_state: "completed",
+				terminal_state: "completed",
+				exit_code: 0,
+				output: "10 passed\n",
+				background: true,
+				tty: false,
+				yielded: true,
+			}),
+			tool_name: "Shell",
+			call_id: "call-shell-1",
+		},
+	], []);
+	const running = projectTranscript([{
+		...historyItem("shell:call-shell-2:e5f6a7b8", "turn-2", "shell_session", "", {
+			shell_id: "e5f6a7b8",
+			command_preview: "npm run dev",
+			process_state: "running_background",
+			output: "ready\n",
+			background: true,
+			tty: true,
+			yielded: true,
+		}),
+		tool_name: "Shell",
+		call_id: "call-shell-2",
+	}], []);
+
+	assert.equal(completed.length, 1);
+	assert.equal(completed[0]?.id, "call-item");
+	assert.equal(completed[0]?.status, "completed");
+	assert.equal(completed[0]?.command, "npm test");
+	assert.equal(completed[0]?.output, "10 passed\n");
+	assert.equal(completed[0]?.exit_code, 0);
+	assert.equal(completed[0]?.metadata?.shell_id, "a1b2c3d4");
+	assert.equal(JSON.stringify(completed).includes("private command"), false);
+	assert.equal(running[0]?.status, "stale");
+	assert.equal(running[0]?.metadata?.process_state, "stale");
+});
+
 test("projects reasoning summaries and unknown visible items without provider metadata", () => {
 	const projected = projectTranscript([
 		historyItem("reasoning", "turn-1", "reasoning", "Inspecting the repository", {

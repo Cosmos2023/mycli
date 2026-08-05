@@ -7,6 +7,7 @@ import {
 	reduceRuntimeEvent,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
+	runtimeStateAfterSessionResume,
 	runtimeStateWithCommandResult,
 	runtimeStateWithUserMessage,
 	runtimeStateWithPendingSteer,
@@ -2001,6 +2002,36 @@ test("session changes clear transient local user input queues", () => {
 	assert.deepEqual(state.localRejectedSteers, []);
 	assert.deepEqual(state.localFollowUps, []);
 	assert.deepEqual(state.localSubmittingMessages, []);
+});
+
+test("session resume reapplies the target background shell snapshot after session clearing", () => {
+	const backgroundShells = [{
+		shell_id: "shell-target",
+		call_id: "call-target",
+		command_preview: "npm run dev",
+		background: true,
+		status: "running",
+		process_state: "running_background",
+		output: "ready\n",
+	}];
+	let state: RuntimeShellState = { ...initialRuntimeState(), sessionId: "source" };
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "target" });
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "target",
+		generation: 2,
+		background_shells: backgroundShells,
+	});
+
+	state = runtimeStateAfterSessionResume(state, "target", "Target", {
+		session_id: "target",
+		generation: 2,
+		background_shells: backgroundShells,
+	});
+
+	assert.equal(state.sessionId, "target");
+	assert.equal(state.sessionTitle, "Target");
+	assert.equal(state.backgroundShellCount, 1);
+	assert.equal(state.backgroundShells["shell-target"]?.outputPreview, "ready\n");
 });
 
 test("gateway steering retries a turn mismatch with stable user identity", () => {
