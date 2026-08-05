@@ -48,6 +48,13 @@ export type {
 } from "./process-controller.ts";
 export { startPipeTransport } from "./pipe-transport.ts";
 export type { StartPipeTransportOptions } from "./pipe-transport.ts";
+export { ShellSessionManager } from "./shell-session-manager.ts";
+export type {
+	ShellInteractionRequest,
+	ShellSessionManagerOptions,
+	ShellSessionSnapshot,
+	ShellStartRequest,
+} from "./shell-session-manager.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";
 export type { BoundedFileDiff } from "./file-diff.ts";
