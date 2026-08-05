@@ -8,7 +8,7 @@ import type {
 import { defineIntegrationRegistration } from "../foundation/registration.ts";
 import type { IntegrationRegistration } from "../foundation/registration.ts";
 import type { SkillRegistry } from "./registry.ts";
-import type { SkillInvocationArtifact } from "./types.ts";
+import type { SkillInvocationArtifact, SkillSourceKind } from "./types.ts";
 
 export interface SkillToolOptions {
 	readonly registry: SkillRegistry;
@@ -94,15 +94,26 @@ export function skillInvocationArtifactFromMetadata(
 		&& SAFE_SKILL_NAME.test(artifact.name)
 		&& typeof artifact.text === "string"
 		&& artifact.text.length <= MAX_SKILL_CONTEXT_CHARS
-		&& typeof artifact.sourceKind === "string"
-		&& SKILL_SOURCE_KINDS.has(artifact.sourceKind)
+		&& isSkillSourceKind(artifact.sourceKind)
 		&& typeof artifact.contentSha256 === "string"
 		&& /^[a-f0-9]{64}$/u.test(artifact.contentSha256)
+		&& typeof artifact.contentLength === "number"
 		&& Number.isSafeInteger(artifact.contentLength)
-		&& (artifact.contentLength ?? -1) >= 0
-		&& (artifact.contentLength ?? MAX_SKILL_BODY_CHARS + 1) <= MAX_SKILL_BODY_CHARS
-		? Object.freeze({ ...value }) as unknown as SkillInvocationArtifact
+		&& artifact.contentLength >= 0
+		&& artifact.contentLength <= MAX_SKILL_BODY_CHARS
+		? Object.freeze({
+			kind: artifact.kind,
+			name: artifact.name,
+			text: artifact.text,
+			sourceKind: artifact.sourceKind,
+			contentSha256: artifact.contentSha256,
+			contentLength: artifact.contentLength,
+		})
 		: undefined;
+}
+
+function isSkillSourceKind(value: unknown): value is SkillSourceKind {
+	return typeof value === "string" && SKILL_SOURCE_KINDS.has(value);
 }
 
 function instructionArtifact(
