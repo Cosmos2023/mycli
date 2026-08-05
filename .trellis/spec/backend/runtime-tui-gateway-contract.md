@@ -1,6 +1,88 @@
 # Runtime TUI Gateway Contract
 
-> Contract for Python runtime events consumed by the Node TUI.
+> Contract for Python and Node runtime events consumed by the Node TUI.
+
+## Scenario: Durable Workspace Trust
+
+### 1. Scope / Trigger
+- Trigger: changes to the TUI trust selector, `workspace.trust.*` RPCs, Node
+  runtime bootstrap/status payloads, or workspace trust persistence.
+- Trust is runtime-owned durable state. The TUI must not treat its local footer
+  state as proof that a workspace is trusted.
+
+### 2. Signatures
+- Request: `workspace.trust.set({state})`
+- Query: `workspace.trust.status({})`
+- Notification: `workspace.trust.changed({state, workspace, source, enforced})`
+- Node store:
+  `WorkspaceTrustStore.load(workspaceRoot) -> Promise<WorkspaceTrustState>`
+- Node store:
+  `WorkspaceTrustStore.save(workspaceRoot, state) -> Promise<void>`
+- TUI callback:
+  `onTrustSelect(trusted: boolean) -> void | Promise<void>`
+
+### 3. Contracts
+- `state` is exactly `trusted`, `untrusted`, or `unknown`.
+- Node decisions live under `~/.mycli/trust/`, keyed by the SHA-256 digest of
+  the canonical workspace path. Do not store a trust decision in the workspace
+  itself because repository content is inside the boundary being evaluated.
+- Stored records contain schema version, canonical workspace, and decision.
+  They are written through a mode-`0600` temporary file and atomic rename.
+- Node bootstrap and status payloads expose `source: user_store` when the user
+  store is configured. `enforced` remains `false` until runtime tool policy
+  independently enforces untrusted-mode capability limits.
+- The TUI waits for `workspace.trust.set` to succeed before mounting the main
+  interface. Only `trusted` dismisses the startup gate. Persisted `untrusted`
+  remains gated because Node mutation tools do not yet enforce a read-only
+  untrusted mode.
+- Session resume reloads trust for the resumed workspace before publishing its
+  status snapshot; a decision from one workspace must never carry into another.
+
+### 4. Validation & Error Matrix
+- Missing or unsupported `state` -> JSON-RPC `invalid_params`.
+- Missing trust record -> `unknown`.
+- Invalid JSON, schema, state, workspace mismatch, or unreadable record ->
+  `unknown` (fail closed).
+- Workspace canonicalization failure during load -> `unknown`.
+- Workspace canonicalization or atomic write failure during save -> reject the
+  RPC; do not update in-memory trust, keep the gate mounted, and show a stable
+  error without raw filesystem details.
+
+### 5. Good/Base/Bad Cases
+- Good: choose Trust once, restart the same workspace, and enter the main TUI
+  without another prompt.
+- Base: a new workspace returns `unknown` and renders the trust selector.
+- Bad: write `.mycli/config.toml` inside a repository to mark that repository
+  trusted.
+- Bad: dismiss the gate before the runtime confirms durable persistence.
+- Bad: let persisted `untrusted` enter a write-capable Node runtime.
+
+### 6. Tests Required
+- Config unit test: unknown, trusted round trip, corrupted record fail-closed,
+  untrusted round trip, and unknown revocation; assert no workspace-local state.
+- TUI unit test: callback is invoked and the main interface remains unmounted
+  until the returned promise resolves; rejection keeps the gate mounted and
+  renders a bounded error without the raw exception.
+- Reducer unit test: trusted dismisses the gate; untrusted and revoked states do
+  not.
+- Node integration test: set trusted, close the backend, create a new backend
+  with the same home/workspace, and assert bootstrap reports trusted.
+- Real PTY smoke: first launch saves Trust; second launch skips the selector and
+  terminal shutdown restores cursor/input modes.
+
+### 7. Wrong vs Correct
+#### Wrong
+```typescript
+onSelect: () => patchFooter({ trust: "trusted" });
+```
+
+#### Correct
+```typescript
+onSelect: async () => {
+	await gateway.send("workspace.trust.set", { state: "trusted" });
+	mountMainInterface();
+};
+```
 
 ## Scenario: Approval And Live Status Events
 

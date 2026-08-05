@@ -85,6 +85,27 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.tools[0]?.durationMs, 1200);
 });
 
+test("only a trusted workspace dismisses the startup trust gate", () => {
+	const untrusted = runtimeStateFromBootstrap(initialRuntimeState(), {
+		workspace: "/repo",
+		status: { trust: { state: "untrusted", workspace: "/repo" } },
+	});
+	assert.equal(untrusted.trust.state, "untrusted");
+	assert.equal(untrusted.trustGateDismissed, false);
+
+	const trusted = reduceRuntimeEvent(untrusted, "workspace.trust.changed", {
+		state: "trusted",
+		workspace: "/repo",
+	});
+	assert.equal(trusted.trustGateDismissed, true);
+
+	const revoked = reduceRuntimeEvent(trusted, "workspace.trust.changed", {
+		state: "untrusted",
+		workspace: "/repo",
+	});
+	assert.equal(revoked.trustGateDismissed, false);
+});
+
 test("runtime adapter does not append the same transcript page twice", () => {
 	const payload = {
 		items: [

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { parseRuntimeState } from "@mycli/contracts";
-import { resolveConfig } from "@mycli/config";
+import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
 import type { QueueSnapshot, QueuedInput } from "@mycli/core";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import {
@@ -71,6 +71,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		overrides,
 	});
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
+	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new OpenAIProviderRegistry();
 	const toolExposure = planToolExposure(builtinToolManifest());
 	const transcriptSnapshots = new TranscriptSnapshotStore({ homeDir });
@@ -262,6 +263,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return store.loadSessionLineage(sessionId);
 			},
 		});
+		const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
 		return createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
@@ -272,6 +274,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			runtime: initial.binding,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
 			sessionCoordinator,
+			workspaceTrust: {
+				initialState: initialTrustState,
+				load: (workspaceRoot) => workspaceTrustStore.load(workspaceRoot),
+				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
+			},
 			close: () => store.close(),
 		});
 	} catch (error) {

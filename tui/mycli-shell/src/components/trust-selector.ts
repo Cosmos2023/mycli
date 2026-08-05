@@ -36,6 +36,7 @@ function formatDecision(decision: ProjectTrustDecision): string {
 export class TrustSelectorComponent extends Container {
 	private selectedIndex: number;
 	private readonly listContainer: Container;
+	private readonly errorContainer: Container;
 	private readonly savedDecision: ProjectTrustDecision;
 	private readonly onSelectCallback: (trusted: boolean) => void;
 	private readonly onCancelCallback: () => void;
@@ -65,6 +66,8 @@ export class TrustSelectorComponent extends Container {
 		this.listContainer = new Container();
 		this.addChild(this.listContainer);
 		this.addChild(new Spacer(1));
+		this.errorContainer = new Container();
+		this.addChild(this.errorContainer);
 		this.addChild(
 			new Text(
 				rawKeyHint("↑↓", "navigate") +
@@ -79,6 +82,13 @@ export class TrustSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.updateList();
+	}
+
+	setError(message?: string): void {
+		this.errorContainer.clear();
+		if (message) {
+			this.errorContainer.addChild(new Text(theme.fg("error", message), 1, 0));
+		}
 	}
 
 	handleInput(keyData: string): void {

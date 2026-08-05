@@ -106,13 +106,15 @@ Completed foundation:
 - Bootstrap/status payloads can carry optional trust state without making older status events invalid.
 - Node shell state, header, status line, and welcome panel display trusted/untrusted/unknown trust state.
 - `TrustPrompt` renders before approval prompts and routes trust choices back through the gateway.
+- The Node runtime persists canonical workspace decisions in the user-owned `~/.mycli/trust/`
+  store and reloads them before bootstrap/status publication.
 - `ApprovalPrompt` shows decision id, action, cwd, risk, risk reason, and runtime-provided choices.
 - Gateway fallback explicitly reports `enforced: false` when runtime trust enforcement is unavailable.
 
 Remaining follow-up risk:
 
 - Workspace trust runtime enforcement is not productized yet; Python runtime policy must remain the source of truth before untrusted mode can actually block tool execution.
-- Dedicated runtime-backed trust persistence is still needed if trust decisions should survive process/session restarts.
+- Python-side durable trust persistence is still needed for parity with the Node runtime store.
 
 ## Batch P1.1 - Slash Catalog And Completion
 

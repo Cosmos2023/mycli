@@ -701,6 +701,7 @@ extraction_interval_turns = -1
 | Auth store | `~/.mycli/auth.json` |
 | Model catalog | `~/.mycli/models.json` |
 | User config | `~/.mycli/config.toml` |
+| Workspace trust decisions | `~/.mycli/trust/` |
 | File memory | `~/.mycli/projects/<workspace-key>/memory/` |
 | Vendor tools | `~/.mycli/vendor/` |
 

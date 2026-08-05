@@ -2350,6 +2350,63 @@ test("mycli shell runtime enters main UI only after trust selection", async () =
 	assert.equal(runtime.ui.children.length, 6);
 });
 
+test("mycli shell runtime persists trust before entering the main UI", async () => {
+	const terminal = new TestTerminal();
+	const selections: boolean[] = [];
+	let releaseSave!: () => void;
+	const saveReleased = new Promise<void>((resolve) => {
+		releaseSave = resolve;
+	});
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		requireTrust: true,
+		onTrustSelect: async (trusted) => {
+			selections.push(trusted);
+			await saveReleased;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.deepEqual(selections, [true]);
+	assert.equal(runtime.ui.children.length, 1);
+	assert.match(stripAnsi(terminal.output), /Project trust/);
+
+	releaseSave();
+	await setTimeout(25);
+
+	assert.equal(runtime.getState().footer.trust, "trusted");
+	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
+	assert.equal(runtime.ui.children.length, 6);
+});
+
+test("mycli shell runtime keeps the trust gate visible when persistence fails", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		requireTrust: true,
+		onTrustSelect: async () => {
+			throw new Error("private path details");
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /Unable to save workspace trust/);
+	assert.doesNotMatch(output, /private path details/);
+	assert.match(output, /Project trust/);
+	assert.equal(runtime.ui.children.length, 1);
+});
+
 test("mycli shell command palette replaces editor like coding-agent selector", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({

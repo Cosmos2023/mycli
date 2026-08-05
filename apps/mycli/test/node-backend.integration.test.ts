@@ -121,6 +121,63 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	}
 });
 
+test("Node backend persists workspace trust across process restarts", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-trust-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await mkdir(home);
+	await mkdir(workspace);
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "trust-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "trust-set", "workspace.trust.set", { state: "trusted" });
+	const saved = await waitFor(() => response(firstMessages, "trust-set"));
+	assert.deepEqual(saved.result, {
+		state: "trusted",
+		workspace,
+		source: "user_store",
+		enforced: false,
+	});
+	writeRequest(first, "shutdown-first", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
+	const bootstrap = await waitFor(() => response(secondMessages, "bootstrap"));
+	const status = resultValue(bootstrap, "status") as Record<string, unknown>;
+	assert.deepEqual(status.trust, {
+		state: "trusted",
+		workspace,
+		source: "user_store",
+		enforced: false,
+	});
+	writeRequest(second, "shutdown-second", "shutdown", {});
+	assert.equal(await second.completion, 0);
+});
+
 test("Node backend atomically resumes complete persisted session state", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-resume-"));
 	const home = join(root, "home");

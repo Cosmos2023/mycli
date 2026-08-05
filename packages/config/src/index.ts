@@ -12,3 +12,8 @@ export type {
 	NodeRuntimeConfig,
 	ResolveConfigOptions,
 } from "./settings.ts";
+export { WorkspaceTrustStore } from "./workspace-trust-store.ts";
+export type {
+	WorkspaceTrustState,
+	WorkspaceTrustStoreOptions,
+} from "./workspace-trust-store.ts";

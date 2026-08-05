@@ -64,6 +64,7 @@ export type MycliShellRuntimeOptions = {
 	requireTrust?: boolean;
 	trustSavedDecision?: ProjectTrustDecision;
 	projectTrusted?: boolean;
+	onTrustSelect?: (trusted: boolean) => void | Promise<void>;
 	onSubmit?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onFollowUp?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onInterrupt?: (options: { rollbackUserInput: boolean }) => void | Promise<void>;
@@ -706,19 +707,31 @@ export class MycliShellRuntime {
 	showTrustGate(): void {
 		this.ensureSelectorHostMounted();
 		this.showSelector((done) => {
+			let selectionPending = false;
 			const selector = new TrustSelectorComponent({
 				cwd: this.state.footer.cwd,
 				savedDecision: this.options.trustSavedDecision ?? null,
 				projectTrusted: this.options.projectTrusted ?? false,
 				onSelect: (trusted) => {
-					if (trusted) {
-						done();
-						this.mountMain();
-						this.patchFooter({ trust: "trusted" });
-						this.ui.setFocus(this.editor);
-						return;
-					}
-					void this.shutdown();
+					if (selectionPending) return;
+					selectionPending = true;
+					selector.setError();
+					void Promise.resolve(this.options.onTrustSelect?.(trusted))
+						.then(() => {
+							if (trusted) {
+								done();
+								this.mountMain();
+								this.patchFooter({ trust: "trusted" });
+								this.ui.setFocus(this.editor);
+								return;
+							}
+							void this.shutdown();
+						})
+						.catch(() => {
+							selectionPending = false;
+							selector.setError("Unable to save workspace trust.");
+							this.ui.requestRender();
+						});
 				},
 				onCancel: () => {
 					void this.shutdown();

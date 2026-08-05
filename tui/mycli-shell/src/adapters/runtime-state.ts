@@ -438,7 +438,7 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		permissions: permissionStateFromUnknown(payload.permissions ?? status.permissions) ?? state.permissions,
 		status,
 		trust,
-		trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
+		trustGateDismissed: trust.state === "trusted",
 		activeTurnId: stringValue(status.turn_id),
 		transcript: [
 			...state.transcript,
@@ -994,13 +994,13 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			provider: stringValue(params.provider) ?? state.provider,
 			permissions: permissionStateFromUnknown(params.permissions) ?? state.permissions,
 			trust,
-			trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
+			trustGateDismissed: trust.state === "trusted",
 		}, params, "status");
 		return applyShellBootstrap(nextState, params.background_shells);
 	}
 	if (method === "workspace.trust.changed") {
 		const trust = trustFromPayload(params, state.workspace);
-		return { ...state, trust, trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown" };
+		return { ...state, trust, trustGateDismissed: trust.state === "trusted" };
 	}
 	if (method === "turn.queue.updated") {
 		return applyQueuePayload(state, params, "event");

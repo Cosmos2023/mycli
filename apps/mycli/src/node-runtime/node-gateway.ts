@@ -6,6 +6,7 @@ import {
 	parseGatewayEvent,
 	parseJsonRpcMessage,
 } from "@mycli/contracts";
+import type { WorkspaceTrustState } from "@mycli/config";
 import type { RuntimeErrorCode, RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	type QueueMutation,
@@ -55,6 +56,11 @@ export interface CreateNodeGatewayOptions {
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
 	readonly sessionCoordinator?: SessionCoordinator<NodeGatewayRuntime>;
+	readonly workspaceTrust?: {
+		readonly initialState: WorkspaceTrustState;
+		load(workspaceRoot: string): Promise<WorkspaceTrustState>;
+		save(workspaceRoot: string, state: WorkspaceTrustState): Promise<void>;
+	};
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
 	readonly clock?: () => number;
@@ -98,10 +104,12 @@ class InProcessNodeGateway implements NodeGateway {
 	#closed = false;
 	#closePromise: Promise<void> | null = null;
 	#unsubscribeQueue: (() => void) | null = null;
+	#trustState: WorkspaceTrustState;
 
 	constructor(options: CreateNodeGatewayOptions) {
 		this.#options = options;
 		this.#clock = options.clock ?? (() => Date.now() / 1000);
+		this.#trustState = options.workspaceTrust?.initialState ?? "unknown";
 		let resolveCompletion!: (code: number) => void;
 		this.completion = new Promise<number>((resolve) => { resolveCompletion = resolve; });
 		this.#resolveCompletion = resolveCompletion;
@@ -189,6 +197,10 @@ class InProcessNodeGateway implements NodeGateway {
 				);
 			case "status.get":
 				return this.#status();
+			case "workspace.trust.status":
+				return this.#trustStatus();
+			case "workspace.trust.set":
+				return this.#setWorkspaceTrust(request.params);
 			case "extension.manifest":
 				return extensionManifest(this.#options.toolNames ?? []);
 			case "session.bootstrap":
@@ -352,6 +364,7 @@ class InProcessNodeGateway implements NodeGateway {
 			throw new GatewayFailure("turn_in_progress", "An approval continuation owns the session.");
 		}
 		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
+		this.#trustState = await this.#loadWorkspaceTrust(snapshot.workspaceRoot);
 		this.#bindQueue();
 		this.#emitDirect("session.changed", {
 			session_id: snapshot.sessionId,
@@ -1025,7 +1038,35 @@ class InProcessNodeGateway implements NodeGateway {
 				rejected_steers: rejectedSteers.map(gatewayQueueItem),
 				follow_ups: followUps.map(gatewayQueueItem),
 			},
+			trust: this.#trustStatus(),
 		};
+	}
+
+	#trustStatus(): JsonObject {
+		return {
+			state: this.#trustState,
+			workspace: this.#workspaceRoot(),
+			source: this.#options.workspaceTrust ? "user_store" : "runtime",
+			enforced: false,
+		};
+	}
+
+	async #setWorkspaceTrust(params: JsonObject): Promise<JsonObject> {
+		const state = workspaceTrustState(params.state);
+		await this.#options.workspaceTrust?.save(this.#workspaceRoot(), state);
+		this.#trustState = state;
+		const payload = this.#trustStatus();
+		this.#emitRuntime("workspace.trust.changed", payload);
+		this.#emitRuntime("status.changed", this.#status());
+		return payload;
+	}
+
+	async #loadWorkspaceTrust(workspaceRoot: string): Promise<WorkspaceTrustState> {
+		try {
+			return await this.#options.workspaceTrust?.load(workspaceRoot) ?? "unknown";
+		} catch {
+			return "unknown";
+		}
 	}
 
 	#sessionId(): string {
@@ -1398,6 +1439,16 @@ function requiredString(value: unknown, name: string): string {
 
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function workspaceTrustState(value: unknown): WorkspaceTrustState {
+	if (value === "trusted" || value === "untrusted" || value === "unknown") {
+		return value;
+	}
+	throw new GatewayFailure(
+		"invalid_params",
+		"state must be trusted, untrusted, or unknown.",
+	);
 }
 
 function stringArray(value: unknown, name: string): readonly string[] {

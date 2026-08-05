@@ -34,6 +34,7 @@ existing CLI. A backend owns the complete turn before provider IO or a tool effe
 - validated Responses continuation metadata with canonical HTTP replay
 - Chat canonical replay from persisted conversation items
 - Python/Node shared-state compatibility and four-way persistence parity
+- user-owned workspace trust decisions that survive Node process restarts
 - no fixed per-turn provider-step or total tool-call ceiling, matching Python behavior
 
 `LS`, `Glob`, and `Grep` remain retired. M5 does not support remembered approval rules, external
@@ -41,6 +42,12 @@ writable roots, local images, shell execution, PTY/background processes, MCP, pl
 skills, or subagents. Automatic background memory extraction and dream consolidation remain
 deferred. Unsupported capabilities fail explicitly and are never delegated to Python after a
 Node turn starts.
+
+Node stores trust decisions under `~/.mycli/trust/`, keyed by the canonical workspace path. The
+TUI waits for the runtime to save the decision before entering the main interface, and corrupt or
+mismatched records fall back to `unknown`. Trust payloads still report `enforced=false`: full
+runtime policy enforcement for a read-only untrusted mode remains outside the M5 scope, so only a
+persisted `trusted` decision dismisses the Node startup gate.
 
 ## Recovery And Ownership
 

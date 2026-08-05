@@ -199,6 +199,13 @@ async function send(
 	}
 }
 
+async function saveWorkspaceTrust(trusted: boolean): Promise<void> {
+	const payload = await send("workspace.trust.set", {
+		state: trusted ? "trusted" : "untrusted",
+	});
+	setRuntimeState(reduceRuntimeEvent(runtimeState, "workspace.trust.changed", payload));
+}
+
 async function bootstrap(): Promise<void> {
 	client.start();
 	await client.waitForEvent(
@@ -709,9 +716,10 @@ async function main(): Promise<void> {
 	runtime = new MycliShellRuntime({
 		initialState: currentShellState(),
 		terminal: new StreamTerminal(ttyStreams, { alternateScreen }),
-		requireTrust: runtimeState.trust.state === "unknown" && !runtimeState.trustGateDismissed,
+		requireTrust: !runtimeState.trustGateDismissed,
 		projectTrusted: runtimeState.trust.state === "trusted",
 		trustSavedDecision: trustDecisionFromState(runtimeState.trust.state),
+		onTrustSelect: saveWorkspaceTrust,
 		onSubmit: submitTurn,
 		onFollowUp: submitFollowUp,
 		onInterrupt: interruptTurn,
