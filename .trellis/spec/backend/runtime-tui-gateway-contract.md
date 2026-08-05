@@ -1824,3 +1824,137 @@ const summary = await summarize(input);
 failpoint("compaction_after_summary_request"); // Keep in_progress on injected crash.
 store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 ```
+
+## Scenario: Node-Owned Persistent Shell And Native PTY Lifecycle
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node shell tools, process transport, approval/sandbox enforcement,
+  background-process RPCs, shell lifecycle persistence, backend shutdown, `node-pty`, or the M6
+  live smoke.
+- The process owner spans provider, runtime, tool, storage, gateway, and TUI boundaries. A shell
+  must outlive one provider tool call without becoming global or crossing session ownership.
+
+### 2. Signatures
+
+- Backend composition:
+  `startNodeBackend({cwd, env, args, maxOutputTokens?}) -> Promise<NodeBackend>`.
+- Process owner:
+  `ShellSessionManager.start(request)`, `interact(request)`, `resize(owner, shell, rows, columns)`,
+  `terminate(owner, shell)`, `terminateOwner(owner)`, `list(owner)`, and `close()`.
+- Transport boundary:
+  `startPipeTransport(request)` for `tty=false`; `startNodePtyTransport(request)` for `tty=true`.
+- Provider tools: visible `Shell` and `WriteStdin`; hidden compatibility routes `Bash`,
+  `ShellOutput`, `BashOutput`, and `KillShell`.
+- Gateway control: `shell.list`, `shell.stop`, `shell.stop_all`; command routes `/ps` and `/stop`.
+- Lifecycle events: `shell.started`, `shell.output`, `shell.completed`, `shell.removed`, and
+  `shell.list.updated`.
+- Durable history item: `type="shell_session"` with bounded sanitized metadata and output.
+- Verification commands: `npm run test:m6` and, only after offline gates, `npm run smoke:m6`.
+
+### 3. Contracts
+
+- One `ShellSessionManager` is created by `startNodeBackend` and shared by every runtime binding
+  for that backend. It is not created per turn, per tool call, or as a mutable global singleton.
+- Approval and execution-policy checks complete before `manager.start()` reserves or spawns a
+  process. The durable M5 effect claim still precedes process creation, so ambiguous recovery
+  reports `effect_outcome_unknown` and never replays a spawn.
+- `tty=false` uses the native pipe transport. `tty=true` uses `node-pty` and reports
+  `unix_pty` on macOS/Linux or `windows_conpty` on Windows. PTY startup failure does not fall back
+  to pipe.
+- The exact `node-pty` dependency remains pinned to `1.2.0-beta.15` until packed-install and native
+  lifecycle lanes approve a replacement. Stable `1.1.0` is not acceptable because its verified
+  macOS ARM64 package installed `spawn-helper` without execute permission.
+- A foreground process may complete or atomically yield into the background without respawn or
+  cursor reset. `WriteStdin` accepts non-empty input only for PTY/ConPTY, uses empty input as a
+  bounded poll, and maps the interrupt character to process interruption.
+- Manager methods require `ownerSessionId`. A session cannot list, read, write, resize, interrupt,
+  or stop another session's shell.
+- `read-only` and `workspace-write` require the platform sandbox wrapper/helper and fail with
+  `sandbox_unavailable` when it cannot be applied. `full-access` maps explicitly to
+  `danger-full-access`; there is no implicit unsandboxed fallback.
+- Lifecycle payloads and durable `shell_session` metadata may contain only bounded structural
+  fields such as shell id, state, transport, TTY/yield flags, sequence, timestamps, counters,
+  terminal state, exit code, cleanup result, sanitized command preview, and bounded output.
+  Diagnostics exclude raw command, stdin, environment values, provider payloads, and secrets.
+- Backend close aborts the active turn, terminates every owned live process tree, closes each
+  transport, drains lifecycle persistence, and only then closes SQLite. Historical records remain
+  durable, but live OS processes are never reconstructed after restart.
+- The M6 live smoke uses `gpt-5.5`, Responses, a disposable home/workspace/session, zero retries,
+  `maxOutputTokens=64`, and one 30-second deadline. It persists trust, selects full access,
+  approves one PTY launch, completes it through `WriteStdin`, verifies cleanup/persistence and
+  `python_started=false`, and prints one structural JSON line only.
+
+### 4. Validation & Error Matrix
+
+- Missing required sandbox wrapper/helper -> `sandbox_unavailable`; spawn count remains zero.
+- `tty=true` plus unavailable/broken native PTY -> explicit shell failure; do not retry with pipe
+  or Python.
+- Unknown shell id -> `shell_not_found`; wrong owner -> `shell_session_forbidden`.
+- Input after terminal completion -> `shell_already_completed`.
+- Resize on pipe or closed terminal -> `shell_resize_failed`.
+- Timeout -> terminal `timed_out`; interrupt -> `interrupted`; targeted/global stop -> `killed`.
+- Backend/gateway close with live children -> terminate the complete owned process tree and publish
+  terminal lifecycle before store close.
+- Orphaned claimed effect on restart -> one `effect_outcome_unknown` result and zero process
+  launches.
+- Missing live-smoke credentials, official endpoint selection, or unavailable compatible service
+  -> one sanitized summary and exit `77`. Successful structural smoke -> `0`; completed provider
+  flow with failed structural assertions -> `1`; invalid arguments -> `64`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: approve one `Shell(tty=true)`, observe one PTY start and yield, send input through
+  `WriteStdin`, observe one completion, persist one shell transcript, and close with zero active
+  shells and no Python process.
+- Good: an empty `WriteStdin` polls only output newer than the model cursor while lifecycle and
+  model cursors remain independent.
+- Base: a short `tty=false` command completes through pipe without entering the background list.
+- Bad: create a manager inside `NodeTurnRuntime` or a tool adapter; yielded processes disappear
+  when the provider step ends or a session binding is recreated.
+- Bad: catch native PTY failure and retry through pipe/Python; the command may run with different
+  semantics or be duplicated.
+- Bad: print an endpoint, API key, prompt, command, stdin, provider text, raw shell output, or local
+  path from the live smoke.
+
+### 6. Tests Required
+
+- Tools unit tests cover bounded output/cursor eviction, invalid UTF-8 replacement, environment,
+  approval proposals, owner isolation, yield/poll/input/resize, timeout, interrupt, targeted stop,
+  capacity eviction, lifecycle ordering, and close cleanup with fake transports.
+- Native integration tests cover pipe IO/process trees plus Unix PTY or Windows ConPTY input,
+  resize, interrupt, exit, and orphan cleanup on Node 22.19 and Node 24.
+- Backend integration uses a fake Responses provider to assert approval before spawn, exactly one
+  PTY start/completion, `WriteStdin`, `max_output_tokens=64` on every request, durable shell state,
+  shutdown cleanup, and `python_started=false`.
+- Smoke tests assert missing credentials exit `77`, fake-provider success uses exactly three
+  provider requests, stdout is exactly one JSON line, stderr is empty, and secrets/endpoints/
+  commands/stdin/provider output do not appear.
+- Python/Node M6 parity asserts output buffers, decoder behavior, model result bounds, permission
+  profiles, and a sanitized scenario corpus.
+- Run `npm run contracts:check`, `npm run typecheck`, `npm run lint`, `npm run test:m5`,
+  `npm run test:m6`, `npm test`, `npm run smoke:package`, and `git diff --check` before one
+  authorized `npm run smoke:m6`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const runtime = new NodeTurnRuntime({
+	toolRouter: shellRouter(new ShellSessionManager({ transportFactory: startPipeTransport })),
+});
+// A tty request silently receives pipe semantics and the manager dies with the runtime binding.
+```
+
+#### Correct
+
+```typescript
+const shellManager = new ShellSessionManager({
+	transportFactory: (request) => request.tty
+		? startNodePtyTransport(request)
+		: startPipeTransport(request),
+});
+const runtime = new NodeTurnRuntime({ toolRouter: shellRouter(shellManager) });
+await gatewayClose({ shellManager, drainLifecycle, closeStore });
+```

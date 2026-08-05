@@ -761,6 +761,42 @@ Completed:
 - Unknown slash commands render a bounded overlay with nearest matches instead of falling through silently.
 - Tests cover local/runtime/unknown routing, registry output, help/hotkey content, and command visibility.
 
+## Node Runtime Rewrite M6 - Persistent Shell
+
+Status: completed on `feature/mycli-node-runtime-rewrite`.
+
+Goal: let the Node backend produce the same persistent-shell lifecycle already consumed by the TUI,
+without delegating process ownership or failed execution to Python.
+
+Completed:
+
+- Added a backend-owned `ShellSessionManager` with pipe and native `node-pty` transports.
+- Added Unix PTY and Windows ConPTY input, resize, interrupt, timeout, output retention, and
+  process-tree cleanup behind one transport contract.
+- Exposed `Shell` and `WriteStdin` to the provider while retaining legacy shell names as hidden
+  compatibility routes.
+- Routed approval, sandbox policy, lifecycle persistence, session ownership, `/ps`, `/stop`, and
+  footer background counts through the existing gateway/TUI contract.
+- Added deterministic Python/Node parity, real PTY backend integration, fake-provider smoke tests,
+  packed CLI verification, and Node 22.19/24 cross-platform native lanes.
+- Pinned `node-pty@1.2.0-beta.15` because the verified stable package shipped a non-executable
+  macOS ARM64 helper; upgrades remain gated by packed-install and native lifecycle tests.
+
+Verification:
+
+```bash
+npm run test:m6
+npm run smoke:package
+# Run only after offline gates pass and an authorized compatible endpoint is configured.
+npm run smoke:m6
+```
+
+Remaining follow-up risk:
+
+- M7 still owns MCP, plugins, hooks, skills, subagents, and management-command migration.
+- Live processes are deliberately not reattached after a full mycli restart; historical shell
+  transcript remains durable while stale live state is finalized safely.
+
 ## Do Not Prioritize Yet
 
 - Forking Ink or copying Hermes renderer internals.

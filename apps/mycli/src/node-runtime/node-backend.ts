@@ -60,6 +60,7 @@ import {
 	ShellOutputTool,
 	ShellSessionManager,
 	ShellTool,
+	startNodePtyTransport,
 	startPipeTransport,
 	ToolRouter,
 	KillShellTool,
@@ -78,6 +79,7 @@ export interface StartNodeBackendOptions {
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly args: readonly string[];
+	readonly maxOutputTokens?: number;
 }
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
@@ -94,7 +96,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const registry = new OpenAIProviderRegistry();
 	const toolManifest = builtinToolManifest();
 	const allToolExposure = planToolExposure(toolManifest, { shell: true });
-	const shellManager = new ShellSessionManager({ transportFactory: startPipeTransport });
+	const shellManager = new ShellSessionManager({
+		transportFactory: (request) => request.tty
+			? startNodePtyTransport(request)
+			: startPipeTransport(request),
+	});
 	const shellLifecycle = new ShellLifecycleProjector({ store });
 	const publishLifecycle: (event: ShellLifecycleEvent) => void = (event) => {
 		shellLifecycle.enqueue(event);
@@ -216,6 +222,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot,
 			threadId,
 			instructions: runtimeInstructions,
+			...(options.maxOutputTokens === undefined
+				? {}
+				: { maxOutputTokens: options.maxOutputTokens }),
 			store,
 			resolveConfig: (submission) => resolveConfig({
 				homeDir,

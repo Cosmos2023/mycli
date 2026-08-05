@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "test:m5": "node --import tsx --test test/m5-state-recovery.integration.test.ts",
+    "test:m6": "node --import tsx --test test/m6-persistent-shell.integration.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

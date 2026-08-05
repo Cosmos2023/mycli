@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "buffer_cases": [
+    {
+      "id": "retained-output",
+      "max_chars": 16,
+      "chunks": ["ready", "\n"],
+      "cursor": 0
+    },
+    {
+      "id": "incremental-output",
+      "max_chars": 8,
+      "chunks": ["abc", "def"],
+      "cursor": 3
+    },
+    {
+      "id": "cursor-eviction",
+      "max_chars": 0,
+      "chunks": ["abcdef"],
+      "cursor": 0
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "split-utf8",
+      "chunks_hex": ["e4b8", "ad"]
+    },
+    {
+      "id": "terminal-controls",
+      "chunks_hex": ["6f6e650d74776f1b5b33316d211b5b306d"]
+    },
+    {
+      "id": "invalid-utf8",
+      "chunks_hex": ["ff"]
+    }
+  ],
+  "model_cases": [
+    {
+      "id": "running-result",
+      "shell_id": "a1b2c3d4",
+      "chunk_id": "c0ffee12",
+      "wall_time_seconds": 0.25,
+      "terminal_state": null,
+      "exit_code": null,
+      "output": "collecting tests...",
+      "max_output_tokens": 100
+    },
+    {
+      "id": "completed-result",
+      "shell_id": "a1b2c3d4",
+      "chunk_id": "decafbad",
+      "wall_time_seconds": 0.5,
+      "terminal_state": "completed",
+      "exit_code": 0,
+      "output": "done",
+      "max_output_tokens": 100
+    }
+  ],
+  "permission_profiles": ["read-only", "workspace", "full-access"],
+  "scenarios": [
+    {"id": "foreground-pipe-success", "state": "completed", "error_kind": null},
+    {"id": "foreground-pipe-failure", "state": "failed", "error_kind": null},
+    {"id": "partial-output", "state": "running_foreground", "error_kind": null},
+    {"id": "yield-poll", "state": "running_background", "error_kind": null},
+    {"id": "pty-input", "state": "completed", "error_kind": null},
+    {"id": "owner-denial", "state": "denied", "error_kind": "shell_session_forbidden"},
+    {"id": "approval-once", "state": "approved", "error_kind": null},
+    {"id": "approval-session", "state": "approved", "error_kind": null},
+    {"id": "approval-persistent", "state": "approved", "error_kind": null},
+    {"id": "approval-reject", "state": "rejected", "error_kind": null},
+    {"id": "effect-unknown", "state": "interrupted", "error_kind": "effect_outcome_unknown"},
+    {"id": "sandbox-profiles", "state": "allowed", "error_kind": null},
+    {"id": "sandbox-unavailable", "state": "denied", "error_kind": "sandbox_unavailable"},
+    {"id": "timeout", "state": "timed_out", "error_kind": null},
+    {"id": "interrupt", "state": "interrupted", "error_kind": null},
+    {"id": "targeted-kill", "state": "killed", "error_kind": null},
+    {"id": "owner-stop", "state": "killed", "error_kind": null},
+    {"id": "gateway-close", "state": "killed", "error_kind": null},
+    {"id": "stale-restart", "state": "stale", "error_kind": "shell_not_found"},
+    {"id": "lifecycle-order", "state": "started-output-completed", "error_kind": null},
+    {"id": "redacted-metadata", "state": "redacted", "error_kind": null}
+  ]
+}

@@ -69,29 +69,36 @@ uv run mycli --node-tui
 交互式会话需要 Node.js 22.19+，并且 stdin/stdout 必须连接到终端。
 `doctor`、`hooks`、`plugins`、`mcp`、`subagents` 和 `setup` 等管理命令仍可用于脚本和非 TTY 环境。
 
-### M1 Node-parent 预览
+### Node runtime 重构预览（M1-M6）
 
-M1 可让 Node CLI 持有 TTY、signal、exit code 和 child lifecycle，同时把现有 Python
-runtime 作为临时 JSON-RPC sidecar 启动：
+Node CLI 已可显式承载完整 turn、session 恢复、文件工具和 M6 持久 Shell；默认 backend
+仍是 `python-sidecar`。要试用 Node runtime：
 
 ```bash
 npm ci
 npm run build
-npm run mycli -- --runtime-backend python-sidecar
+npm run mycli -- --runtime-backend node
 ```
 
-`python-sidecar` 是 M1 唯一可用的 Node-parent backend，当前预览仍要求 Python 3.13
-和已安装的 `mycli` Python 环境。选择 `--runtime-backend node` 会以
-`runtime_backend_unavailable` 失败，不会自动回退或重放 turn。
+当前 Node 预览直接提供 `Read`、`Edit`、`Patch`、`Write`、`Shell` 和 `WriteStdin`，
+并复用现有 shell transcript、后台终端、`/ps` 和 `/stop`。`tty: true` 在 macOS/Linux
+使用 Unix PTY，在 Windows 使用 ConPTY；任何 Node 失败都不会自动回退到 Python 或重放
+provider/tool effect。
 
-M1 的显式回滚路径仍是：
+`@mycli/tools` 精确锁定 `node-pty@1.2.0-beta.15`。`npm ci` 没有可用预编译产物时，
+还需要 Python 和本机 C/C++ 构建工具：macOS 使用 Xcode Command Line Tools，Linux 使用
+build essentials，Windows 使用 Visual Studio Build Tools。受限 sandbox 还分别要求
+macOS `/usr/bin/sandbox-exec`、Linux Bubblewrap，或 Windows 随包 helper；缺失时 fail closed。
+
+显式回滚路径是切回 Python sidecar；切换前应先处理 pending approval 并停止活动 Shell：
 
 ```bash
-uv run mycli
+npm run mycli -- --runtime-backend python-sidecar --session <id>
 ```
 
-管理命令也继续通过 Python CLI 运行；在对应能力迁移完成前，不要从 Node CLI 调用
-`doctor`、`hooks`、`plugins`、`mcp`、`subagents` 或 `setup`。
+Node backend 尚未迁移 MCP、plugins、hooks、skills、subagents 和 setup/management 命令；
+这些能力仍由 Python 主线提供。完整 rollout、依赖、测试和回滚说明见
+[docs/node-runtime-rollout.md](docs/node-runtime-rollout.md)。
 
 ## 模型与认证
 
@@ -745,7 +752,17 @@ npm run contracts:check
 npm run lint
 npm test
 npm run typecheck
+npm run test:m6
 ```
+
+M6 离线门禁全部通过后，才运行一次真实 Responses-compatible endpoint smoke：
+
+```bash
+npm run smoke:m6
+```
+
+该 smoke 使用 `gpt-5.5`、零重试和 30 秒总 deadline；缺少凭证或服务不可用时退出 `77`，
+且所有路径只输出一行不含 key、endpoint、命令、路径、stdin、shell/provider 输出的结构化 JSON。
 
 网关 canonical schema 位于 `packages/contracts/schemas/`。`packages/contracts/src/generated/`
 中的 TypeScript 类型和 `src/mycli/schemas/generated/` 中的 Python 资源副本均为生成产物，

@@ -24,9 +24,11 @@
     "test:m3": "npm run build && node --import tsx --test apps/mycli/test/m3-read-turn.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m3_parity.py -q",
     "test:m4": "npm run build && node --import tsx --test apps/mycli/test/m4-file-mutation.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m4_parity.py -q",
     "test:m5": "npm run build && node --import tsx --test apps/mycli/test/m5-state-recovery.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m5_parity.py -q",
+    "test:m6": "npm run build && node --import tsx --test apps/mycli/test/m6-persistent-shell.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m6_parity.py -q",
     "smoke:m3": "node scripts/smoke_node_m3_read.mjs --protocol responses",
     "smoke:m4": "node scripts/smoke_node_m4_mutation.mjs --protocol responses",
     "smoke:m5": "node scripts/smoke_node_m5_state.mjs --protocol responses",
+    "smoke:m6": "node scripts/smoke_node_m6_shell.mjs --protocol responses",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
