@@ -82,12 +82,14 @@ command and never accepts a preformatted rule string from a provider or UI.
 
 `@mycli/runtime` owns policy suspension, durable effect claims, approval continuation, and the
 explicit tool execution context. `ToolExecutionOptions` gains immutable owner session, call,
-generation, and lifecycle publication context alongside the abort signal. The approval continuation
-path supplies the same context as ordinary tool execution.
+lifecycle publication context alongside the abort signal. The approval continuation path supplies
+the same context as ordinary tool execution. Gateway generation is assigned only when a persisted
+owner-scoped lifecycle event is projected to the currently active session; a background process is
+not incorrectly bound to the provider generation that originally started it.
 
 `@mycli/contracts` owns typed shell lifecycle payloads and gateway schemas. Provider-specific schema
-projection remains in the provider package and must preserve strict Responses compatibility for
-optional tool arguments.
+projection remains in the provider package and must preserve the established Responses
+optional-schema compatibility contract.
 
 The app composition root creates one `ShellSessionManager` and lifecycle bus per Node backend. The
 manager is shared by runtimes created for different sessions and keys every handle by owner session.
@@ -120,11 +122,12 @@ executed.
 The new provider schema omits `run_in_background` and user-controlled process timeout. The runtime
 retains an absolute configured timeout. Hidden legacy calls may still supply their old fields.
 
-The canonical manifest retains logical optionality. The strict Responses projection includes every
-property name in `required` and represents optional values as nullable, then normalizes null/omission
-to the defaults above before canonical validation. Chat Completions receives the same logical tool
-contract. Contract fixtures cover both projections so M6 cannot reintroduce an
-`invalid_function_parameters` failure for an omitted optional property.
+The canonical manifest retains logical optionality. Responses follows the existing M3 compatibility
+contract: it does not send `strict`, and `required` contains only logically required properties.
+Chat Completions receives the same logical tool contract. Contract fixtures assert that optional
+Shell properties remain optional and that no strict flag is introduced, so M6 cannot recreate the
+earlier `invalid_function_parameters` failure caused by a strict schema whose `required` list
+omitted an optional property.
 
 ### `WriteStdin`
 
