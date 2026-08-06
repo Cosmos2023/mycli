@@ -104,18 +104,55 @@ export { loadPluginManifest } from "./plugins/manifest.ts";
 export type { LoadPluginManifestOptions } from "./plugins/manifest.ts";
 export { discoverPlugins } from "./plugins/discovery.ts";
 export type { DiscoverPluginsOptions } from "./plugins/discovery.ts";
+export {
+	PluginHostError,
+	PluginProcessHost,
+} from "./plugins/process-host.ts";
+export type {
+	PluginProcessHostOptions,
+} from "./plugins/process-host.ts";
+export { createPluginToolRegistration } from "./plugins/tool-adapter.ts";
+export { createPluginHookRegistration } from "./plugins/hook-adapter.ts";
+export { PluginCommandRegistry } from "./plugins/command-registry.ts";
+export type {
+	PluginCommandDescriptor,
+	PluginCommandResult,
+} from "./plugins/command-registry.ts";
+export { PluginRuntime } from "./plugins/runtime.ts";
+export type {
+	PluginRuntimeOptions,
+	PluginRuntimeRecord,
+	PluginRuntimeRecordStatus,
+} from "./plugins/runtime.ts";
+export { PluginManagementService } from "./plugins/management.ts";
+export type {
+	PluginManagementResponse,
+	PluginManagementRow,
+	PluginManagementServiceOptions,
+} from "./plugins/management.ts";
 export type {
 	DiscoveredPlugin,
 	InvalidPluginCandidate,
 	LoadedPluginManifest,
 	PluginCandidate,
+	PluginCommandDefinition,
+	PluginContextV2,
 	PluginDiagnostic,
 	PluginDiagnosticSource,
 	PluginDiscovery,
 	PluginEnablement,
+	PluginHandler,
+	PluginHookDefinition,
+	PluginHostContract,
+	PluginHostErrorKind,
+	PluginHostStatus,
+	PluginInvocationResult,
 	PluginManifestLoadResult,
 	PluginMigrationDiagnostic,
+	PluginProtocolRegistration,
+	PluginResultType,
 	PluginSource,
+	PluginToolDefinition,
 } from "./plugins/types.ts";
 export { renderSkillCatalog } from "./skills/catalog.ts";
 export type { RenderSkillCatalogOptions } from "./skills/catalog.ts";

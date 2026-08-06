@@ -1,0 +1,11 @@
+api_version: 2
+id: crash
+name: Crash Plugin
+version: 1.0.0
+entry: dist/index.js
+provides:
+  tools: []
+  hooks: []
+  commands: [act]
+requires_env: [PLUGIN_TEST_MODE, PLUGIN_TEST_VALUE]
+capabilities: [process_spawn]

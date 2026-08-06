@@ -1,0 +1,11 @@
+api_version: 2
+id: good
+name: Good Plugin
+version: 1.0.0
+entry: dist/index.js
+provides:
+  tools: [echo]
+  hooks: [pre_tool_use]
+  commands: [status, late]
+requires_env: []
+capabilities: []
