@@ -55,6 +55,8 @@ export interface StartSubagentInput {
 	readonly prompt: string;
 	readonly mode?: "foreground" | "background";
 	readonly allowedTools?: readonly string[];
+	readonly parentSessionId?: string;
+	readonly parentTurnId?: string;
 }
 
 export type SubagentStartResult =
@@ -102,8 +104,12 @@ export interface SubagentMessageResult {
 
 export interface SubagentControlContract {
 	start(input: StartSubagentInput): Promise<SubagentStartResult>;
-	output(childSessionId: string): SubagentOutputResult;
-	send(childSessionId: string, message: string): Promise<SubagentMessageResult>;
+	output(childSessionId: string, parentSessionId?: string): SubagentOutputResult;
+	send(
+		childSessionId: string,
+		message: string,
+		parentSessionId?: string,
+	): Promise<SubagentMessageResult>;
 }
 
 export interface SubagentControllerOptions {
@@ -116,16 +122,32 @@ export interface SubagentControllerOptions {
 	readonly createTaskId?: () => string;
 	readonly createChildSessionId?: () => string;
 	readonly shutdownTimeoutMs?: number;
+	readonly onUpdate?: (update: SubagentControllerUpdate) => void;
+}
+
+export interface SubagentControllerUpdate {
+	readonly taskId: string;
+	readonly parentSessionId: string;
+	readonly childSessionId: string;
+	readonly profileId: string;
+	readonly status: Exclude<SubagentTaskRecord["status"], "queued">;
+	readonly summary: string;
+	readonly progress: readonly {
+		readonly kind: "progress" | "final";
+		readonly summary: string;
+	}[];
 }
 
 interface OwnedChild {
 	readonly taskId: string;
+	readonly parentSessionId: string;
 	readonly childSessionId: string;
 	readonly handle: ChildRuntimeHandle;
 	readonly abortController: AbortController;
 	readonly closeOnce: () => Promise<void>;
 	progressSequence: number;
 	usage: Readonly<Record<string, number>>;
+	terminalPublished: boolean;
 	completion?: Promise<SubagentStartResult>;
 }
 
@@ -162,10 +184,14 @@ export class SubagentController implements SubagentControlContract {
 		}
 		const taskId = this.#options.createTaskId();
 		const childSessionId = this.#options.createChildSessionId();
-		const parentTurnId = this.#options.parentTurnId();
+		const parentSessionId = normalizedParentSessionId(
+			input.parentSessionId,
+			this.#options.parentSessionId,
+		);
+		const parentTurnId = input.parentTurnId ?? this.#options.parentTurnId();
 		const ownership = {
 			taskId,
-			parentSessionId: this.#options.parentSessionId,
+			parentSessionId,
 			childSessionId,
 		};
 		this.#options.taskStore.reserve({
@@ -182,7 +208,7 @@ export class SubagentController implements SubagentControlContract {
 			denied: profile.deniedTools,
 		});
 		const createInput = deepFreeze({
-			parentSessionId: this.#options.parentSessionId,
+			parentSessionId,
 			parentTurnId,
 			childSessionId,
 			profileId: profile.id,
@@ -195,8 +221,12 @@ export class SubagentController implements SubagentControlContract {
 		try {
 			handle = await this.#options.factory.create(createInput);
 		} catch {
-			this.#options.taskStore.markRunning(ownership);
-			this.#options.taskStore.fail({ ...ownership, error: "child runtime failed" });
+			const running = this.#options.taskStore.markRunning(ownership);
+			this.#publish(running, "Subagent started", []);
+			const failed = this.#options.taskStore.fail({ ...ownership, error: "child runtime failed" });
+			this.#publish(failed, "Subagent failed", [
+				Object.freeze({ kind: "final", summary: "Subagent failed" }),
+			]);
 			return terminalResult(this.#options.taskStore.get(taskId), childSessionId);
 		}
 
@@ -204,14 +234,17 @@ export class SubagentController implements SubagentControlContract {
 		const closeOnce = onceAsync(() => handle.close());
 		const owned: OwnedChild = {
 			taskId,
+			parentSessionId,
 			childSessionId,
 			handle,
 			abortController,
 			closeOnce,
 			progressSequence: 0,
 			usage: Object.freeze({}),
+			terminalPublished: false,
 		};
-		this.#options.taskStore.markRunning(ownership);
+		const running = this.#options.taskStore.markRunning(ownership);
+		this.#publish(running, "Subagent started", []);
 		this.#owned.set(childSessionId, owned);
 		const prompt = `${profile.prompt}\n\n${input.prompt.trim()}`;
 		owned.completion = this.#runOwned(owned, prompt);
@@ -227,9 +260,9 @@ export class SubagentController implements SubagentControlContract {
 		});
 	}
 
-	output(childSessionId: string): SubagentOutputResult {
+	output(childSessionId: string, parentSessionId?: string): SubagentOutputResult {
 		const record = this.#options.taskStore.getByChildSession(
-			this.#options.parentSessionId,
+			normalizedParentSessionId(parentSessionId, this.#options.parentSessionId),
 			childSessionId,
 		);
 		if (!record) {
@@ -243,10 +276,19 @@ export class SubagentController implements SubagentControlContract {
 		return outputFromRecord(record);
 	}
 
-	async send(childSessionId: string, message: string): Promise<SubagentMessageResult> {
-		const owned = this.#owned.get(childSessionId);
-		const record = this.#options.taskStore.getByChildSession(
+	async send(
+		childSessionId: string,
+		message: string,
+		parentSessionId?: string,
+	): Promise<SubagentMessageResult> {
+		const ownerSessionId = normalizedParentSessionId(
+			parentSessionId,
 			this.#options.parentSessionId,
+		);
+		const owned = this.#owned.get(childSessionId);
+		if (owned?.parentSessionId !== ownerSessionId) return unavailableMessage(childSessionId);
+		const record = this.#options.taskStore.getByChildSession(
+			ownerSessionId,
 			childSessionId,
 		);
 		if (!owned || record?.status !== "running") return unavailableMessage(childSessionId);
@@ -290,7 +332,7 @@ export class SubagentController implements SubagentControlContract {
 	async #runOwned(owned: OwnedChild, prompt: string): Promise<SubagentStartResult> {
 		const ownership = {
 			taskId: owned.taskId,
-			parentSessionId: this.#options.parentSessionId,
+			parentSessionId: owned.parentSessionId,
 			childSessionId: owned.childSessionId,
 		};
 		try {
@@ -338,6 +380,18 @@ export class SubagentController implements SubagentControlContract {
 				}
 			}
 		} finally {
+			const terminal = this.#options.taskStore.get(owned.taskId);
+			if (!owned.terminalPublished
+				&& terminal
+				&& terminal.status !== "queued"
+				&& terminal.status !== "running") {
+				const summary = terminal.status === "completed"
+					? "Subagent completed"
+					: terminal.status === "interrupted"
+						? "Subagent interrupted"
+						: "Subagent failed";
+				this.#publish(terminal, summary, [Object.freeze({ kind: "final", summary })]);
+			}
 			await owned.closeOnce().catch(() => undefined);
 			this.#owned.delete(owned.childSessionId);
 		}
@@ -350,25 +404,54 @@ export class SubagentController implements SubagentControlContract {
 			return;
 		}
 		owned.progressSequence += 1;
-		this.#options.taskStore.updateProgress({
+		const updated = this.#options.taskStore.updateProgress({
 			taskId: owned.taskId,
-			parentSessionId: this.#options.parentSessionId,
+			parentSessionId: owned.parentSessionId,
 			childSessionId: owned.childSessionId,
 			sequence: owned.progressSequence,
 			summary: event.summary.slice(0, SUBAGENT_TASK_PROGRESS_MAX_CHARS),
 			...(Object.keys(owned.usage).length > 0 ? { usage: owned.usage } : {}),
 		});
+		this.#publish(updated, event.summary, [
+			Object.freeze({ kind: "progress", summary: event.summary }),
+		]);
 	}
 
 	#interruptRecord(owned: OwnedChild, reason: string): void {
 		const record = this.#options.taskStore.get(owned.taskId);
 		if (record?.status !== "running") return;
-		this.#options.taskStore.interrupt({
+		const interrupted = this.#options.taskStore.interrupt({
 			taskId: owned.taskId,
-			parentSessionId: this.#options.parentSessionId,
+			parentSessionId: owned.parentSessionId,
 			childSessionId: owned.childSessionId,
 			reason,
 		});
+		this.#publish(interrupted, "Subagent interrupted", [
+			Object.freeze({ kind: "final", summary: "Subagent interrupted" }),
+		]);
+		owned.terminalPublished = true;
+	}
+
+	#publish(
+		record: SubagentTaskRecord,
+		summary: string,
+		progress: SubagentControllerUpdate["progress"],
+	): void {
+		if (!this.#options.onUpdate || record.status === "queued") return;
+		const update: SubagentControllerUpdate = deepFreeze({
+			taskId: record.taskId,
+			parentSessionId: record.parentSessionId,
+			childSessionId: record.childSessionId,
+			profileId: record.profileId,
+			status: record.status,
+			summary: summary.slice(0, SUBAGENT_TASK_PROGRESS_MAX_CHARS),
+			progress: [...progress],
+		});
+		try {
+			this.#options.onUpdate(update);
+		} catch {
+			// Projection listeners cannot change durable task behavior.
+		}
 	}
 
 	async #closeAll(): Promise<void> {
@@ -448,6 +531,10 @@ function hasBudget(budget: SubagentBudget): boolean {
 	return budget.maxTurns !== undefined
 		|| budget.maxToolCalls !== undefined
 		|| budget.noProgressTurnLimit !== undefined;
+}
+
+function normalizedParentSessionId(value: string | undefined, fallback: string): string {
+	return value?.trim() || fallback;
 }
 
 function normalizedUsage(

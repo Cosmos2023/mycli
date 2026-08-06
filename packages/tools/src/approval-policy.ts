@@ -61,6 +61,12 @@ export interface ApprovalPolicyOptions {
 	readonly shellKind?: ShellCommandKind;
 	readonly platform?: NodeJS.Platform;
 	readonly execPolicyRules?: readonly ExecPolicyRule[];
+	readonly extensionTools?: readonly ExtensionToolApprovalPolicy[];
+}
+
+export interface ExtensionToolApprovalPolicy {
+	readonly name: string;
+	readonly approvalPolicy: "auto_allow" | "request";
 }
 
 export class ApprovalPolicy {
@@ -68,6 +74,7 @@ export class ApprovalPolicy {
 	readonly #autoApproveMedium: boolean;
 	readonly #shellKind: ShellCommandKind;
 	readonly #platform: NodeJS.Platform;
+	readonly #extensionTools: ReadonlyMap<string, ExtensionToolApprovalPolicy>;
 	#execPolicyRules: readonly ExecPolicyRule[];
 	#sessionRules: readonly ExecPolicyRule[] = Object.freeze([]);
 
@@ -80,6 +87,7 @@ export class ApprovalPolicy {
 		this.#shellKind = options.shellKind ?? (process.platform === "win32" ? "cmd" : "posix");
 		this.#platform = options.platform ?? process.platform;
 		this.#execPolicyRules = freezeRules(options.execPolicyRules ?? []);
+		this.#extensionTools = extensionToolPolicies(options.extensionTools ?? []);
 	}
 
 	replaceExecPolicyRules(rules: readonly ExecPolicyRule[]): void {
@@ -100,9 +108,10 @@ export class ApprovalPolicy {
 	evaluate(call: CanonicalToolCall): ApprovalPolicyDecision {
 		const manifest = builtinToolManifest().tools.find((tool) => tool.name === call.name);
 		const argumentsValue = parseArguments(call.argumentsJson);
-		if (!manifest || !argumentsValue) {
+		if (!argumentsValue) {
 			return deny(call, "Tool call is not valid for the active policy.");
 		}
+		if (!manifest) return this.#evaluateExtension(call);
 		if (call.name === "Shell" || call.name === "Bash") {
 			return this.#evaluateShell(call, argumentsValue, manifest.approval_policy);
 		}
@@ -128,6 +137,22 @@ export class ApprovalPolicy {
 			toolName: call.name,
 			preview,
 			reason: "Workspace mutation requires one-time approval.",
+			options: APPROVAL_OPTIONS,
+		});
+	}
+
+	#evaluateExtension(call: CanonicalToolCall): ApprovalPolicyDecision {
+		const policy = this.#extensionTools.get(call.name);
+		if (!policy) return deny(call, "Tool call is not valid for the active policy.");
+		if (policy.approvalPolicy === "auto_allow") {
+			return allow(call, `${call.name} local integration`);
+		}
+		return Object.freeze({
+			kind: "request" as const,
+			callId: call.callId,
+			toolName: call.name,
+			preview: bounded(`${call.name} integration request`),
+			reason: "External integration requires one-time approval.",
 			options: APPROVAL_OPTIONS,
 		});
 	}
@@ -229,6 +254,21 @@ function freezeRules(rules: readonly ExecPolicyRule[]): readonly ExecPolicyRule[
 		...rule,
 		pattern: freezePattern(rule.pattern),
 	})));
+}
+
+function extensionToolPolicies(
+	policies: readonly ExtensionToolApprovalPolicy[],
+): ReadonlyMap<string, ExtensionToolApprovalPolicy> {
+	const result = new Map<string, ExtensionToolApprovalPolicy>();
+	for (const policy of policies) {
+		if (!/^[A-Za-z0-9_]{1,128}$/u.test(policy.name)
+			|| (policy.approvalPolicy !== "auto_allow" && policy.approvalPolicy !== "request")) {
+			throw new TypeError("invalid extension tool approval policy");
+		}
+		if (result.has(policy.name)) throw new TypeError("duplicate extension tool approval policy");
+		result.set(policy.name, Object.freeze({ ...policy }));
+	}
+	return result;
 }
 
 function freezePattern(pattern: readonly string[]): readonly string[] {

@@ -155,6 +155,7 @@ export type {
 	PluginToolDefinition,
 } from "./plugins/types.ts";
 export { renderSkillCatalog } from "./skills/catalog.ts";
+export { builtinSkillRoot } from "./skills/builtin-root.ts";
 export type { RenderSkillCatalogOptions } from "./skills/catalog.ts";
 export { SkillRegistry } from "./skills/registry.ts";
 export type { SkillRegistryOptions } from "./skills/registry.ts";
@@ -193,6 +194,7 @@ export type {
 	StartSubagentInput,
 	SubagentControlContract,
 	SubagentControllerOptions,
+	SubagentControllerUpdate,
 	SubagentMessageResult,
 	SubagentOutputResult,
 	SubagentStartResult,

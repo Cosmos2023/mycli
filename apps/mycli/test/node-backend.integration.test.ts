@@ -100,7 +100,7 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	assert.deepEqual(
 		(capture.requestBody?.tools as Array<Record<string, unknown>> | undefined)
 			?.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write"],
+		["Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage"],
 	);
 	assert.equal(existsSync(join(home, ".mycli", "sessions.db")), true);
 	await waitFor(() => event(messages, "status.changed"));
@@ -141,6 +141,176 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		assert.equal(continuation?.history_boundary, submittedTurnId);
 	} finally {
 		reopened.close();
+	}
+});
+
+test("Node backend composes skills subagents and bounded resource discovery", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-integrations-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(home),
+		mkdir(join(workspace, ".mycli", "skills"), { recursive: true }),
+	]);
+	await writeFile(join(workspace, ".mycli", "skills", "review.md"), [
+		"---",
+		"name: review",
+		"description: Review repository changes",
+		"---",
+		"PRIVATE SKILL BODY THAT MUST NOT CROSS RESOURCE LIST",
+	].join("\n"), "utf8");
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "integration-surfaces", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "manifest", "extension.manifest", {});
+	const manifestResponse = await waitFor(() => response(messages, "manifest"));
+	const manifest = resultValue(manifestResponse, "tool_manifest") as {
+		readonly tools: readonly { readonly name: string }[];
+	};
+	assert.deepEqual(manifest.tools.slice(-4).map((tool) => tool.name), [
+		"Skill",
+		"Task",
+		"SubagentOutput",
+		"SendMessage",
+	]);
+
+	writeRequest(backend, "resources", "resource.list", {});
+	const resourceResponse = await waitFor(() => response(messages, "resources"));
+	const resources = resultValue(resourceResponse, "resources") as readonly Record<string, unknown>[];
+	assert.equal(resources.some((resource) => resource.id === "skill:review"), true);
+	assert.equal(JSON.stringify(resources).includes("PRIVATE SKILL BODY"), false);
+
+	writeRequest(backend, "shutdown-integrations", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend runs a foreground subagent through the shared Node runtime", {
+	timeout: 10_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-child-runtime-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const requestBodies: Record<string, unknown>[] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (requestBodies.length === 1) {
+				response.write(`data: ${JSON.stringify({
+					type: "response.output_item.done",
+					item: {
+						type: "function_call",
+						call_id: "call-task-1",
+						name: "Task",
+						arguments: JSON.stringify({
+							profile: "explore",
+							prompt: "Inspect the repository.",
+							mode: "foreground",
+						}),
+					},
+				})}\n\n`);
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-tools\"}}\n\n");
+			} else if (requestBodies.length === 2) {
+				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child inspected repository.\"}\n\n");
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n\n");
+			} else {
+				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received child report.\"}\n\n");
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-final\"}}\n\n");
+			}
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(root, { recursive: true, force: true });
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "parent-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "child-turn", "turn.submit", {
+		message: "Use a subagent.",
+		client_turn_id: "parent-client-turn",
+		client_user_message_id: "parent-user-message",
+	});
+	let final: Record<string, unknown>;
+	try {
+		final = await waitFor(() => messages.find((message) => {
+			if (message.method !== "message.complete") return false;
+			const params = message.params as Record<string, unknown> | undefined;
+			return params?.final === true && params.text === "Parent received child report.";
+		}), 5_000);
+	} catch {
+		assert.fail(JSON.stringify({
+			requests: requestBodies.map((body) => ({
+				tools: toolNames(body.tools),
+				input: body.input,
+			})),
+			events: messages.filter((message) => typeof message.method === "string").map(
+				(message) => ({ method: message.method, params: message.params }),
+			),
+		}, null, 2));
+	}
+	assert.ok(final);
+	assert.equal(requestBodies.length, 3);
+	assert.deepEqual(toolNames(requestBodies[1]?.tools), ["Read"]);
+	const subagentEvents = messages.filter((message) => message.method === "subagent.updated");
+	assert.deepEqual(subagentEvents.map((message) => (
+		(message.params as { subagent: { status: string } }).subagent.status
+	)), ["running", "completed"]);
+	assert.equal(JSON.stringify(subagentEvents).includes("Child inspected repository"), false);
+
+	writeRequest(backend, "shutdown-child", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+	const store = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		const tasks = store.subagentTasks.list("parent-session");
+		assert.equal(tasks.length, 1);
+		assert.equal(tasks[0]?.status, "completed");
+		assert.notEqual(tasks[0]?.parentTurnId, "parent-turn-unavailable");
+		assert.equal(tasks[0]?.payload.report, "Child inspected repository.");
+	} finally {
+		store.close();
 	}
 });
 
@@ -209,8 +379,13 @@ test("Node backend exposes Shell only on turns accepted after workspace trust", 
 	});
 	await waitFor(() => finalMessageCount(messages) === 2);
 
-	assert.deepEqual(requestTools[0], ["Read", "Edit", "Patch", "Write"]);
-	assert.deepEqual(requestTools[1], ["Read", "Edit", "Patch", "Write", "Shell", "WriteStdin"]);
+	assert.deepEqual(requestTools[0], [
+		"Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage",
+	]);
+	assert.deepEqual(requestTools[1], [
+		"Read", "Edit", "Patch", "Write", "Shell", "WriteStdin",
+		"Skill", "Task", "SubagentOutput", "SendMessage",
+	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 });
@@ -654,6 +829,14 @@ function resultValue(message: Record<string, unknown>, key: string): unknown {
 	return typeof result === "object" && result !== null && !Array.isArray(result)
 		? (result as Record<string, unknown>)[key]
 		: undefined;
+}
+
+function toolNames(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((tool) => {
+		if (typeof tool !== "object" || tool === null || !("name" in tool)) return [];
+		return typeof tool.name === "string" ? [tool.name] : [];
+	});
 }
 
 function errorValue(message: Record<string, unknown>, key: string): unknown {

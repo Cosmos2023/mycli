@@ -12,6 +12,7 @@ import {
 	type ChildRuntimeFactory,
 	type ChildRuntimeHandle,
 	type ChildRuntimeResult,
+	type SubagentControllerUpdate,
 } from "../src/index.ts";
 
 test("subagent controller runs a foreground child with frozen tools and durable progress", async (t) => {
@@ -124,6 +125,105 @@ test("subagent controller returns background work immediately and supports outpu
 		childSessionId: "child-background",
 		delivery: "unavailable",
 	});
+});
+
+test("subagent controller publishes bounded durable lifecycle updates", async (t) => {
+	const fixture = await controllerFixture(t);
+	const updates: SubagentControllerUpdate[] = [];
+	const controller = fixture.controller({
+		create: async () => handle({
+			run: async (_prompt, _signal, emit) => {
+				emit({ type: "progress", summary: "Inspecting files" });
+				return completed("Finished review");
+			},
+		}),
+	}, {
+		createTaskId: () => "task-events",
+		createChildSessionId: () => "child-events",
+		onUpdate: (update) => { updates.push(update); },
+	});
+
+	await controller.start({
+		profileId: "review",
+		prompt: "Review the changes.",
+		mode: "foreground",
+		parentTurnId: "turn-events",
+	});
+
+	assert.deepEqual(updates, [{
+		taskId: "task-events",
+		parentSessionId: "parent-session",
+		childSessionId: "child-events",
+		profileId: "review",
+		status: "running",
+		summary: "Subagent started",
+		progress: [],
+	}, {
+		taskId: "task-events",
+		parentSessionId: "parent-session",
+		childSessionId: "child-events",
+		profileId: "review",
+		status: "running",
+		summary: "Inspecting files",
+		progress: [{ kind: "progress", summary: "Inspecting files" }],
+	}, {
+		taskId: "task-events",
+		parentSessionId: "parent-session",
+		childSessionId: "child-events",
+		profileId: "review",
+		status: "completed",
+		summary: "Subagent completed",
+		progress: [{ kind: "final", summary: "Subagent completed" }],
+	}]);
+	assert.equal(JSON.stringify(updates).includes("Finished review"), false);
+});
+
+test("subagent controller binds each child to the executing parent session", async (t) => {
+	const fixture = await controllerFixture(t);
+	const creates: ChildRuntimeCreateInput[] = [];
+	const resultDeferred = deferred<ChildRuntimeResult>();
+	const messages: string[] = [];
+	const controller = fixture.controller({
+		create: async (input) => {
+			creates.push(input);
+			return handle({
+				run: async () => resultDeferred.promise,
+				send: async (message) => { messages.push(message); },
+			});
+		},
+	}, {
+		createTaskId: () => "task-resumed",
+		createChildSessionId: () => "child-resumed",
+	});
+
+	await controller.start({
+		profileId: "explore",
+		prompt: "Inspect resumed session.",
+		mode: "background",
+		parentSessionId: "resumed-session",
+		parentTurnId: "resumed-turn",
+	});
+
+	assert.equal(fixture.store.subagentTasks.list("parent-session").length, 0);
+	assert.equal(fixture.store.subagentTasks.list("resumed-session").length, 1);
+	assert.equal(creates[0]?.parentSessionId, "resumed-session");
+	assert.equal(controller.output("child-resumed").status, "missing");
+	assert.equal(controller.output("child-resumed", "resumed-session").status, "running");
+	assert.equal((await controller.send(
+		"child-resumed",
+		"Inspect tests too.",
+		"parent-session",
+	)).accepted, false);
+	assert.equal((await controller.send(
+		"child-resumed",
+		"Inspect tests too.",
+		"resumed-session",
+	)).accepted, true);
+	assert.deepEqual(messages, ["Inspect tests too."]);
+
+	resultDeferred.resolve(completed("Resumed report"));
+	await controller.waitFor("child-resumed");
+	assert.equal(controller.output("child-resumed", "resumed-session").status, "completed");
 });
 
 test("subagent controller contains child failures and recovers abandoned running tasks", async (t) => {

@@ -50,30 +50,48 @@ test("Task maps foreground and background controller results", async () => {
 	});
 	const tool = new TaskTool({ control });
 
-	const background = await tool.execute({ profile: "explore", prompt: "Inspect." }, execution());
+	const background = await tool.execute(
+		{ profile: "explore", prompt: "Inspect." },
+		execution({ ownerTurnId: "turn-background" }),
+	);
 	const foreground = await tool.execute({
 		profile: "review",
 		prompt: "Review.",
 		mode: "foreground",
 		allowed_tools: ["Read"],
-	}, execution());
+	}, execution({ ownerTurnId: "turn-foreground" }));
 
 	assert.equal(background.success, true);
 	assert.equal(background.modelOutput, "Subagent started in background\nChild session: child-bg");
 	assert.equal(foreground.success, true);
 	assert.ok(foreground.modelOutput.length <= SUBAGENT_TOOL_MODEL_OUTPUT_MAX_CHARS);
 	assert.deepEqual(calls, [
-		{ profileId: "explore", prompt: "Inspect.", mode: "background" },
-		{ profileId: "review", prompt: "Review.", mode: "foreground", allowedTools: ["Read"] },
+		{
+			profileId: "explore",
+			prompt: "Inspect.",
+			mode: "background",
+			parentSessionId: "parent-session",
+			parentTurnId: "turn-background",
+		},
+		{
+			profileId: "review",
+			prompt: "Review.",
+			mode: "foreground",
+			allowedTools: ["Read"],
+			parentSessionId: "parent-session",
+			parentTurnId: "turn-foreground",
+		},
 	]);
 });
 
 test("SubagentOutput returns pending state and bounded completed output", async () => {
 	let completed = false;
+	const parentSessionIds: Array<string | undefined> = [];
 	const tool = new SubagentOutputTool({
 		control: controlFixture({
-			output: () => completed
-				? {
+			output: (_childSessionId, parentSessionId) => {
+				parentSessionIds.push(parentSessionId);
+				return completed ? {
 					found: true,
 					childSessionId: "child-1",
 					taskId: "task-1",
@@ -89,7 +107,8 @@ test("SubagentOutput returns pending state and bounded completed output", async 
 					status: "running",
 					progressSequence: 1,
 					progressSummary: "Reading",
-				},
+				};
+			},
 		}),
 	});
 
@@ -102,6 +121,7 @@ test("SubagentOutput returns pending state and bounded completed output", async 
 	assert.match(pending.modelOutput, /Progress: Reading/u);
 	assert.equal(done.success, true);
 	assert.ok(done.modelOutput.length <= SUBAGENT_TOOL_MODEL_OUTPUT_MAX_CHARS);
+	assert.deepEqual(parentSessionIds, ["parent-session", "parent-session"]);
 });
 
 test("SendMessage reports accepted and unavailable delivery", async () => {
@@ -109,8 +129,8 @@ test("SendMessage reports accepted and unavailable delivery", async () => {
 	const messages: string[] = [];
 	const tool = new SendMessageTool({
 		control: controlFixture({
-			send: async (childSessionId, message) => {
-				messages.push(`${childSessionId}:${message}`);
+			send: async (childSessionId, message, parentSessionId) => {
+				messages.push(`${parentSessionId}:${childSessionId}:${message}`);
 				return {
 					accepted,
 					childSessionId,
@@ -128,7 +148,10 @@ test("SendMessage reports accepted and unavailable delivery", async () => {
 	assert.equal(first.modelOutput, "Message accepted by child session child-1");
 	assert.equal(second.success, false);
 	assert.equal(second.errorKind, "subagent_message_unavailable");
-	assert.deepEqual(messages, ["child-1:Continue", "child-1:Again"]);
+	assert.deepEqual(messages, [
+		"parent-session:child-1:Continue",
+		"parent-session:child-1:Again",
+	]);
 });
 
 test("subagent management lists and inspects profiles without a runtime factory", async (t) => {
@@ -172,11 +195,12 @@ function controlFixture(overrides: Partial<SubagentControlContract> = {}): Subag
 	};
 }
 
-function execution() {
+function execution(overrides: { readonly ownerTurnId?: string } = {}) {
 	return {
 		signal: new AbortController().signal,
 		ownerSessionId: "parent-session",
 		callId: "call-1",
 		publishLifecycle: () => undefined,
+		...overrides,
 	};
 }

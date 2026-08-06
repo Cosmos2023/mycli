@@ -86,6 +86,7 @@ test("approval execution uses the coordinator-owned lifecycle publisher", async 
 	fixture.executionOptions?.publishLifecycle(shellLifecycleEvent());
 
 	assert.equal(fixture.executionOptions?.ownerSessionId, "session-1");
+	assert.equal(fixture.executionOptions?.ownerTurnId, "turn-1");
 	assert.equal(fixture.executionOptions?.callId, "call-1");
 	assert.deepEqual(events, [shellLifecycleEvent()]);
 });

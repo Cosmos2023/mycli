@@ -34,7 +34,7 @@ function mirroredEvent(event: GatewayEvent): { type: string; payload: Record<str
 	return { type, payload: payload as Record<string, unknown> };
 }
 
-function fingerprintEvent(type: string, payload: Record<string, unknown>): DirectEventFingerprint {
+function fingerprintEvent(type: string, payload: unknown): DirectEventFingerprint {
 	return { type, payload: stableStringify(payload) };
 }
 

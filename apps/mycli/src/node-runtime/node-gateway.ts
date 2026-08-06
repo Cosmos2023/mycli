@@ -80,9 +80,24 @@ export interface CreateNodeGatewayOptions {
 		load(workspaceRoot: string): Promise<WorkspaceTrustState>;
 		save(workspaceRoot: string, state: WorkspaceTrustState): Promise<void>;
 	};
+	readonly integrations?: NodeGatewayIntegrations;
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
 	readonly clock?: () => number;
+}
+
+export interface NodeGatewayIntegrationCommands {
+	list(): readonly JsonObject[];
+	run(command: string, signal: AbortSignal): Promise<JsonObject | undefined>;
+}
+
+export interface NodeGatewayIntegrations {
+	readonly toolManifest?: JsonObject;
+	listResources?(): readonly JsonObject[] | Promise<readonly JsonObject[]>;
+	readonly commands?: NodeGatewayIntegrationCommands;
+	subscribeSubagents?(
+		listener: (subagent: Readonly<Record<string, unknown>>) => void,
+	): () => void;
 }
 
 export interface NodeGateway {
@@ -124,6 +139,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#closePromise: Promise<void> | null = null;
 	#unsubscribeQueue: (() => void) | null = null;
 	#unsubscribeShell: (() => void) | null = null;
+	#unsubscribeSubagents: (() => void) | null = null;
 	#trustState: WorkspaceTrustState;
 	#permissionProfile: PermissionProfile = "workspace";
 
@@ -146,6 +162,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#clientOutput.on("error", () => { void this.close(); });
 		this.#bindQueue();
 		this.#bindShellLifecycle();
+		this.#bindSubagents();
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionId() });
 	}
 
@@ -157,6 +174,8 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#unsubscribeQueue = null;
 			this.#unsubscribeShell?.();
 			this.#unsubscribeShell = null;
+			this.#unsubscribeSubagents?.();
+			this.#unsubscribeSubagents = null;
 			this.#activeTurn?.controller.abort();
 			let exitCode = 0;
 			try {
@@ -231,7 +250,12 @@ class InProcessNodeGateway implements NodeGateway {
 			case "permissions.update":
 				return this.#updatePermissions(request.params);
 			case "extension.manifest":
-				return extensionManifest(this.#options.toolNames ?? []);
+				return extensionManifest(
+					this.#options.toolNames ?? [],
+					this.#options.integrations?.toolManifest,
+				);
+			case "resource.list":
+				return this.#resourceList();
 			case "session.bootstrap":
 				return this.#bootstrap(request.params, true);
 			case "transcript.load":
@@ -366,7 +390,10 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#commandList(): JsonObject {
 		return {
-			commands: this.#options.shellManager ? [SHELL_PS_COMMAND] : [],
+			commands: [
+				...(this.#options.shellManager ? [SHELL_PS_COMMAND] : []),
+				...(this.#options.integrations?.commands?.list() ?? []),
+			],
 		};
 	}
 
@@ -382,7 +409,17 @@ class InProcessNodeGateway implements NodeGateway {
 			const stopped = await this.#shellStopAll();
 			return shellStopCommandResult(stopped);
 		}
+		const integrationResult = await this.#options.integrations?.commands?.run(
+			command,
+			new AbortController().signal,
+		);
+		if (integrationResult) return integrationResult;
 		throw new GatewayFailure("method_not_found", "Unknown command.");
+	}
+
+	async #resourceList(): Promise<JsonObject> {
+		const resources = await this.#options.integrations?.listResources?.() ?? [];
+		return { resources: resources.map(boundedResource).filter(isObject) };
 	}
 
 	#sessionList(): JsonObject {
@@ -1252,6 +1289,15 @@ class InProcessNodeGateway implements NodeGateway {
 		}) ?? null;
 	}
 
+	#bindSubagents(): void {
+		this.#unsubscribeSubagents = this.#options.integrations?.subscribeSubagents?.((value) => {
+			const parentSessionId = boundedRequiredValue(value.parent_session_id, 256);
+			if (parentSessionId && parentSessionId !== this.#sessionContext().sessionId) return;
+			const subagent = boundedSubagent(value);
+			if (subagent) this.#emitRuntime("subagent.updated", { subagent });
+		}) ?? null;
+	}
+
 	#sessionContext(): SessionGenerationContext {
 		return this.#options.sessionCoordinator?.context()
 			?? Object.freeze({ sessionId: this.#options.sessionId, generation: 1 });
@@ -1782,7 +1828,7 @@ function permissionPayload(active: PermissionProfile): JsonObject {
 	};
 }
 
-function extensionManifest(toolNames: readonly string[]): JsonObject {
+function extensionManifest(toolNames: readonly string[], toolManifest?: JsonObject): JsonObject {
 	return {
 		schema_version: 1,
 		agent: { name: "mycli", version: "0.1.0", runtime: "node" },
@@ -1793,7 +1839,65 @@ function extensionManifest(toolNames: readonly string[]): JsonObject {
 			tools: toolNames.length > 0,
 			tool_names: toolNames,
 		},
+		...(toolManifest ? { tool_manifest: toolManifest } : {}),
 	};
+}
+
+function boundedResource(value: JsonObject): JsonObject {
+	const resource: JsonObject = {};
+	for (const key of ["id", "type", "name", "source", "status", "detail", "command"] as const) {
+		const item = value[key];
+		if (typeof item === "string" && item.trim()) {
+			resource[key] = boundedString(item.trim(), key === "detail" ? 512 : 256);
+		}
+	}
+	if (typeof value.enabled === "boolean") resource.enabled = value.enabled;
+	return resource;
+}
+
+function boundedSubagent(
+	value: Readonly<Record<string, unknown>>,
+): JsonObject | undefined {
+	const runId = boundedRequiredValue(value.run_id, 256);
+	const childSessionId = boundedRequiredValue(value.child_session_id, 256);
+	const role = boundedRequiredValue(value.role, 64);
+	const status = boundedRequiredValue(value.status, 32);
+	const summary = boundedRequiredValue(value.summary, 512);
+	if (!runId || !childSessionId || !role || !status || !summary) return undefined;
+	const progress = Array.isArray(value.progress)
+		? value.progress.slice(0, 32).flatMap((item) => {
+			if (!isObject(item)) return [];
+			const kind = boundedRequiredValue(item.kind, 64);
+			if (!kind) return [];
+			return [{
+				kind,
+				...(boundedOptionalValue(item.tool_name, 128) ? {
+					tool_name: boundedOptionalValue(item.tool_name, 128),
+				} : {}),
+				...(boundedOptionalValue(item.summary, 512) ? {
+					summary: boundedOptionalValue(item.summary, 512),
+				} : {}),
+			}];
+		})
+		: [];
+	return {
+		run_id: runId,
+		child_session_id: childSessionId,
+		role,
+		status,
+		summary,
+		progress,
+	};
+}
+
+function boundedRequiredValue(value: unknown, limit: number): string | undefined {
+	return typeof value === "string" && value.trim()
+		? boundedString(value.trim(), limit)
+		: undefined;
+}
+
+function boundedOptionalValue(value: unknown, limit: number): string | undefined {
+	return boundedRequiredValue(value, limit);
 }
 
 function requiredString(value: unknown, name: string): string {

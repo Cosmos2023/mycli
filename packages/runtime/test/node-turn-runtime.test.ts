@@ -403,6 +403,7 @@ test("persists and executes Read before continuing the same Responses turn", asy
 		usage: { input_tokens: 15, output_tokens: 5 },
 	});
 	assert.equal(toolRouter.options?.ownerSessionId, "session-1");
+	assert.equal(toolRouter.options?.ownerTurnId, "turn-1");
 	assert.equal(toolRouter.options?.callId, "call-1");
 	toolRouter.options?.publishLifecycle(shellLifecycleEvent());
 	assert.deepEqual(backendLifecycle, [shellLifecycleEvent()]);

@@ -628,7 +628,12 @@ function mergeToolSummaryDetail(first: RuntimeTranscriptItem, second: RuntimeTra
 	};
 }
 
-export function reduceRuntimeEvent(state: RuntimeShellState, method: string, params: Record<string, unknown>): RuntimeShellState {
+export function reduceRuntimeEvent(
+	state: RuntimeShellState,
+	method: string,
+	input: object,
+): RuntimeShellState {
+	const params = Object.fromEntries(Object.entries(input));
 	if (method === "runtime.event") {
 		const type = stringValue(params.type);
 		const payload = recordValue(params.payload);

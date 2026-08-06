@@ -27,7 +27,7 @@ test("Responses reads then edits a file with durable mutation metadata", async (
 
 	await submitAndWait(fixture, "Read README.md, replace beta with gamma, then finish.");
 	assert.deepEqual(toolNames(fixture.requestBodies[0]?.tools, "responses"), [
-		"Read", "Edit", "Patch", "Write",
+		"Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage",
 	]);
 	assert.equal(await readFile(join(fixture.workspace, "README.md"), "utf8"), "alpha\ngamma\n");
 	assert.equal(existsSync(fixture.pythonMarker), false);
@@ -92,7 +92,7 @@ test("Chat writes a file and replays the matching tool call id", async (t) => {
 
 	await submitAndWait(fixture, "Create created.txt with the requested content.");
 	assert.deepEqual(toolNames(fixture.requestBodies[0]?.tools, "chat_completions"), [
-		"Read", "Edit", "Patch", "Write",
+		"Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage",
 	]);
 	assert.equal(await readFile(join(fixture.workspace, "created.txt"), "utf8"), "created by node\n");
 	const continuation = fixture.requestBodies[1]?.messages;

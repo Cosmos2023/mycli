@@ -41,7 +41,7 @@ export class SubagentOutputTool implements ToolAdapter {
 		const childSessionId = typeof argumentsValue.child_session_id === "string"
 			? argumentsValue.child_session_id.trim()
 			: "";
-		const output = this.#control.output(childSessionId);
+		const output = this.#control.output(childSessionId, options.ownerSessionId);
 		if (!output.found) {
 			return failure(
 				"Subagent output unavailable",

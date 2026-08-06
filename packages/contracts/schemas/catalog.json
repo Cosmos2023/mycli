@@ -53,6 +53,7 @@
     "shell.output",
     "shell.removed",
     "shell.started",
+    "subagent.updated",
     "status.changed",
     "status.update",
     "stream.recovered",

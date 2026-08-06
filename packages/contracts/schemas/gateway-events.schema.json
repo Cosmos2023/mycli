@@ -733,6 +733,47 @@
       ],
       "name": "shell.started"
     },
+    "subagent.updated": {
+      "name": "subagent.updated",
+      "additionalProperties": false,
+      "properties": {
+        "subagent": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "child_session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "role": {"type": "string", "minLength": 1, "maxLength": 64},
+            "status": {"type": "string", "minLength": 1, "maxLength": 32},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 512},
+            "progress": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"type": "string", "minLength": 1, "maxLength": 64},
+                  "tool_name": {"type": "string", "minLength": 1, "maxLength": 128},
+                  "summary": {"type": "string", "minLength": 1, "maxLength": 512}
+                },
+                "required": ["kind"],
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "run_id",
+            "child_session_id",
+            "role",
+            "status",
+            "summary",
+            "progress"
+          ],
+          "type": "object"
+        }
+      },
+      "required": ["subagent"],
+      "type": "object"
+    },
     "shell.output": {
       "allOf": [
         {
@@ -2097,6 +2138,26 @@
         },
         "params": {
           "$ref": "#/$defs/approval.request"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "subagent.updated"
+        },
+        "params": {
+          "$ref": "#/$defs/subagent.updated"
         }
       },
       "required": [

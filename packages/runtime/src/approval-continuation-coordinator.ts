@@ -310,6 +310,7 @@ export class ApprovalContinuationCoordinator {
 			result = await this.#toolRouter.execute(pending.call, {
 				signal: input.signal,
 				ownerSessionId: this.#sessionId,
+				ownerTurnId: pending.turnId,
 				callId: pending.call.callId,
 				publishLifecycle: this.#publishLifecycle,
 				...(input.executionPolicy ? { executionPolicy: input.executionPolicy } : {}),

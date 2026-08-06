@@ -76,6 +76,7 @@ function gatewayHarness(options: {
 	approvalFailure?: Error;
 	shell?: boolean;
 	workspaceTrust?: boolean;
+	integrations?: boolean;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -97,6 +98,59 @@ function gatewayHarness(options: {
 		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
 		: undefined;
 	const shell = options.shell ? gatewayShellFixture() : undefined;
+	const subagentListeners = new Set<(subagent: Readonly<Record<string, unknown>>) => void>();
+	const integrations = options.integrations ? {
+		toolManifest: {
+			schema_version: 1,
+			source: "combined",
+			toolsets: [{ id: "external", tool_count: 2 }, { id: "file", tool_count: 1 }],
+			tools: [
+				{ id: "builtin:Read", name: "Read", source: "builtin", toolset: "file" },
+				{ id: "skill:Skill", name: "Skill", source: "skill", toolset: "external" },
+				{ id: "mcp:docs:search", name: "McpSearch", source: "mcp", toolset: "external" },
+			],
+		},
+		listResources: () => [{
+			id: "skill:review",
+			type: "skill",
+			name: "review",
+			source: "repo",
+			enabled: true,
+			status: "enabled",
+			detail: "Review changes",
+			command: "/tools skills",
+		}, {
+			id: "mcp:docs:file:///README.md",
+			type: "plugin",
+			name: "docs README",
+			source: "runtime",
+			enabled: true,
+			status: "enabled",
+			detail: "MCP resource file:///README.md",
+			command: "/mcp inspect docs",
+		}],
+		commands: {
+			list: () => [{
+				id: "plugin:demo:status",
+				name: "/plugin:demo:status",
+				description: "Show demo plugin status",
+				argument_policy: "json",
+				available_during_turn: true,
+			}],
+			run: async (command: string) => command === "/plugin:demo:status"
+				? {
+					result_id: "command:plugin-demo-status",
+					presentation: "transcript",
+					command_kind: "plugin",
+					lines: ["demo ready"],
+				}
+				: undefined,
+		},
+		subscribeSubagents: (listener: (subagent: Readonly<Record<string, unknown>>) => void) => {
+			subagentListeners.add(listener);
+			return () => { subagentListeners.delete(listener); };
+		},
+	} : undefined;
 	const reserve = options.reserve ?? ((submission: TurnSubmission) => {
 		const fingerprint = fingerprintSubmission({
 			message: submission.message,
@@ -171,6 +225,7 @@ function gatewayHarness(options: {
 				save: async () => undefined,
 			},
 		} : {}),
+		...(integrations ? { integrations } : {}),
 		close: () => { closeCalls += 1; },
 		createTurnId: () => "turn-node",
 		clock: () => 1_700_000_000,
@@ -200,6 +255,9 @@ function gatewayHarness(options: {
 		sessionCoordinator,
 		queue,
 		shell,
+		publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
+			for (const listener of subagentListeners) listener(subagent);
+		},
 	};
 }
 
@@ -327,6 +385,123 @@ test("shell command routes expose ps and stop through the active owner manager",
 		"Stopping all background terminals.",
 	]);
 	assert.deepEqual(harness.shell.terminatedOwners, ["session-node"]);
+	await harness.gateway.close();
+});
+
+test("gateway exposes bounded integration manifests resources commands and subagent updates", async () => {
+	const harness = gatewayHarness({ integrations: true });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const manifest = await harness.send("extension.manifest");
+	assert.deepEqual(
+		"result" in manifest
+			? (manifest.result.tool_manifest as { tools: readonly { name: string }[] }).tools.map(
+				(tool) => tool.name,
+			)
+			: [],
+		["Read", "Skill", "McpSearch"],
+	);
+
+	const resources = await harness.send("resource.list");
+	assert.deepEqual("result" in resources ? resources.result.resources : [], [{
+		id: "skill:review",
+		type: "skill",
+		name: "review",
+		source: "repo",
+		enabled: true,
+		status: "enabled",
+		detail: "Review changes",
+		command: "/tools skills",
+	}, {
+		id: "mcp:docs:file:///README.md",
+		type: "plugin",
+		name: "docs README",
+		source: "runtime",
+		enabled: true,
+		status: "enabled",
+		detail: "MCP resource file:///README.md",
+		command: "/mcp inspect docs",
+	}]);
+	assert.equal(JSON.stringify(resources).includes("body"), false);
+
+	const commands = await harness.send("command.list", { surface: "tui" });
+	assert.deepEqual(
+		"result" in commands
+			? commands.result.commands.map((command: { name: string }) => command.name)
+			: [],
+		["/plugin:demo:status"],
+	);
+	const command = await harness.send("command.run", {
+		command: "/plugin:demo:status",
+		surface: "tui",
+	});
+	assert.deepEqual("result" in command ? command.result.lines : [], ["demo ready"]);
+
+	harness.publishSubagent({
+		run_id: "task-1",
+		child_session_id: "child-1",
+		role: "explore",
+		status: "running",
+		summary: "Exploring",
+		progress: [],
+		report: "raw child report",
+		provider_response: { secret: "must not cross gateway" },
+	});
+	const event = await waitFor(() => notification(harness.messages, "subagent.updated"));
+	assert.deepEqual(event.params.subagent, {
+		run_id: "task-1",
+		child_session_id: "child-1",
+		role: "explore",
+		status: "running",
+		summary: "Exploring",
+		progress: [],
+	});
+	parseGatewayEvent(event);
+	await harness.gateway.close();
+});
+
+test("subagent updates filter stale parent sessions after resume", async () => {
+	const harness = gatewayHarness({ integrations: true, sessions: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	harness.publishSubagent({
+		parent_session_id: "session-node",
+		run_id: "task-source",
+		child_session_id: "child-source",
+		role: "explore",
+		status: "running",
+		summary: "Source progress",
+		progress: [],
+	});
+	await waitFor(() => notification(harness.messages, "subagent.updated"));
+	await harness.send("session.resume", { session_id: "target" });
+
+	const before = notifications(harness.messages, "subagent.updated").length;
+	harness.publishSubagent({
+		parent_session_id: "session-node",
+		run_id: "task-stale",
+		child_session_id: "child-stale",
+		role: "explore",
+		status: "completed",
+		summary: "Stale completion",
+		progress: [],
+	});
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(notifications(harness.messages, "subagent.updated").length, before);
+
+	harness.publishSubagent({
+		parent_session_id: "target",
+		run_id: "task-target",
+		child_session_id: "child-target",
+		role: "review",
+		status: "running",
+		summary: "Target progress",
+		progress: [],
+	});
+	const current = await waitFor(() => notifications(harness.messages, "subagent.updated")
+		.find((message) => message.params.subagent.run_id === "task-target"));
+	assert.equal("parent_session_id" in current.params.subagent, false);
+	parseGatewayEvent(current);
 	await harness.gateway.close();
 });
 

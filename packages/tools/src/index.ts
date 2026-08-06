@@ -169,6 +169,7 @@ export type {
 	ApprovalPolicyDeny,
 	ApprovalPolicyOptions,
 	ApprovalPolicyRequest,
+	ExtensionToolApprovalPolicy,
 } from "./approval-policy.ts";
 export {
 	classifyShellArgv,

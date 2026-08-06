@@ -908,6 +908,7 @@ export class NodeTurnRuntime {
 			result = await router.execute(call, {
 				signal,
 				ownerSessionId: this.#options.sessionId,
+				ownerTurnId: context.turnId,
 				callId: call.callId,
 				publishLifecycle: this.#options.publishLifecycle,
 				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),

@@ -7,6 +7,11 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "subagent.updated";
+      params: Subagent;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "approval.respond";
       params: Approval1;
     }
@@ -300,6 +305,23 @@ export interface Approval {
   risk_reason?: string;
   tool_name?: string;
   [k: string]: any;
+}
+export interface Subagent {
+  subagent: {
+    run_id: string;
+    child_session_id: string;
+    role: string;
+    status: string;
+    summary: string;
+    /**
+     * @maxItems 32
+     */
+    progress: {
+      kind: string;
+      tool_name?: string;
+      summary?: string;
+    }[];
+  };
 }
 export interface Approval1 {
   choice: "approve_once" | "reject" | "allow_session" | "always_allow";

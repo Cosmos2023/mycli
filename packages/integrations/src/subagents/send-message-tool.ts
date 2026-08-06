@@ -40,7 +40,11 @@ export class SendMessageTool implements ToolAdapter {
 	): Promise<ToolAdapterResult> {
 		assertNotAborted(options.signal);
 		const childSessionId = stringValue(argumentsValue.child_session_id);
-		const result = await this.#control.send(childSessionId, stringValue(argumentsValue.message));
+		const result = await this.#control.send(
+			childSessionId,
+			stringValue(argumentsValue.message),
+			options.ownerSessionId,
+		);
 		if (!result.accepted) {
 			return failure(
 				`Message unavailable for child session ${result.childSessionId}`,

@@ -951,6 +951,7 @@ test("runtime adapter accumulates subagent progress updates", () => {
 	const block = shell.transcript?.[0];
 
 	assert.equal(block?.kind, "subagent");
+	assert.equal(shell.transcript?.filter((item) => item.kind === "subagent").length, 1);
 	assert.deepEqual(block?.kind === "subagent" ? block.subagent.progress?.map((item) => item.summary) : [], [
 		"Read path=src/auth/session.py",
 		"Found token refresh logic",

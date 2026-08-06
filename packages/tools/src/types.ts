@@ -74,6 +74,7 @@ export interface CombinedToolManifest {
 export interface ToolExecutionOptions {
 	readonly signal: AbortSignal;
 	readonly ownerSessionId: string;
+	readonly ownerTurnId?: string;
 	readonly callId: string;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly executionPolicy?: ExecutionPolicy;

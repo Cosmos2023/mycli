@@ -55,6 +55,8 @@ export class TaskTool implements ToolAdapter {
 			prompt,
 			mode,
 			...(allowedTools ? { allowedTools } : {}),
+			parentSessionId: options.ownerSessionId,
+			...(options.ownerTurnId ? { parentTurnId: options.ownerTurnId } : {}),
 		});
 		if (result.status === "running") {
 			return success(`${result.summary}\nChild session: ${result.childSessionId}`, result.summary);

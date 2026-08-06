@@ -9,12 +9,21 @@ import {
 import type {
 	QueueSnapshot,
 	QueuedInput,
+	RuntimeEvent,
 	ShellLifecycleEvent,
 } from "@mycli/core";
+import {
+	skillInvocationArtifactFromMetadata,
+	type ChildRuntimeCreateInput,
+	type ChildRuntimeEvent,
+	type ChildRuntimeFactory,
+	type ChildRuntimeHandle,
+} from "@mycli/integrations";
 import { ProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
 	CompactionCoordinator,
+	ContextItemCoordinator,
 	ExecutionPolicyCoordinator,
 	MemoryContextService,
 	MemorySelector,
@@ -68,8 +77,15 @@ import {
 	WriteTool,
 } from "@mycli/tools";
 import {
+	createRuntimeIntegrationComposition,
+	type IntegrationCommandService,
+	type RuntimeIntegrationComposition,
+} from "./integration-composition.ts";
+import {
 	createNodeGateway,
 	type NodeGateway,
+	type NodeGatewayIntegrationCommands,
+	type NodeGatewayIntegrations,
 	type NodeGatewayRuntime,
 } from "./node-gateway.ts";
 
@@ -95,7 +111,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new ProviderRegistry();
 	const toolManifest = builtinToolManifest();
-	const allToolExposure = planToolExposure(toolManifest, { shell: true });
 	const shellManager = new ShellSessionManager({
 		transportFactory: (request) => request.tty
 			? startNodePtyTransport(request)
@@ -107,12 +122,58 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	};
 	const transcriptSnapshots = new TranscriptSnapshotStore({ homeDir });
 	const tokenCounter = new TokenCounter();
+	const childRuntimeFactoryDelegate: {
+		create?: (input: ChildRuntimeCreateInput) => Promise<ChildRuntimeHandle>;
+	} = {};
+	const childRuntimeFactory: ChildRuntimeFactory = {
+		create: async (input) => {
+			const create = childRuntimeFactoryDelegate.create;
+			if (!create) throw new Error("child_runtime_unavailable");
+			return create(input);
+		},
+	};
+	let integrationComposition: RuntimeIntegrationComposition;
+	try {
+		integrationComposition = await createRuntimeIntegrationComposition({
+			builtinManifest: toolManifest,
+			workspaceRoot: config.workspaceRoot,
+			homeDir,
+			env: options.env,
+			parentSessionId: config.sessionId,
+			parentTurnId: () => "parent-turn-unavailable",
+			parentTools: () => allToolExposure.map((tool) => tool.name),
+			childRuntimeFactory,
+			taskStore: store.subagentTasks,
+		});
+	} catch (error) {
+		try {
+			await shellManager.close().catch(() => undefined);
+		} finally {
+			try {
+				await shellLifecycle.drain();
+			} finally {
+				store.close();
+			}
+		}
+		throw error;
+	}
+	const extensionDefinitions = Object.freeze(integrationComposition.registrations.map(
+		(registration) => registration.definition,
+	));
+	const allToolExposure = Object.freeze([
+		...planToolExposure(toolManifest, { shell: true }),
+		...extensionDefinitions,
+	]);
+	const contextItemCoordinator = new ContextItemCoordinator({
+		extractArtifact: skillInvocationArtifactFromMetadata,
+	});
 	const createRuntime = (
 		sessionId: string,
 		workspaceRoot: string,
 		threadId: string,
 		initialQueue: QueueSnapshot,
 		initialContinuation?: unknown,
+		runtimeOptions: { readonly allowedTools?: readonly string[] } = {},
 	): NodeGatewayRuntime => {
 		const fileSnapshots = new FileSnapshotStore();
 		const executionPolicyCoordinator = new ExecutionPolicyCoordinator({ workspaceRoot });
@@ -123,6 +184,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot,
 			autoApproveMedium: true,
 			shellKind: shellProfile.kind,
+			extensionTools: integrationComposition.registrations.map((registration) => ({
+				name: registration.definition.name,
+				approvalPolicy: registration.source === "skill" || registration.source === "subagent"
+					? "auto_allow" as const
+					: "request" as const,
+			})),
 		});
 		let loadExecPolicy: Promise<void> | undefined;
 		const ensureExecPolicyLoaded = (): Promise<void> => {
@@ -148,8 +215,21 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new ShellOutputTool({ manager: shellManager }),
 			new BashOutputTool({ manager: shellManager }),
 			new KillShellTool({ manager: shellManager }),
+			...integrationComposition.registrations.map((registration) => registration.adapter),
 		];
-		const toolRouter = new ToolRouter({ adapters, exposure: allToolExposure });
+		const plannedTools = (
+			capabilities: { readonly shell: boolean },
+		) => filterToolDefinitions(
+			Object.freeze([
+				...planToolExposure(toolManifest, capabilities),
+				...extensionDefinitions,
+			]),
+			runtimeOptions.allowedTools,
+		);
+		const toolRouter = new ToolRouter({
+			adapters,
+			exposure: plannedTools({ shell: true }),
+		});
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
 			sessionId,
 			workspaceRoot,
@@ -240,8 +320,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			clock: () => new Date().toISOString(),
 			publishLifecycle,
 			executionPolicyCoordinator,
-			planTools: (capabilities) => planToolExposure(toolManifest, capabilities),
+			planTools: plannedTools,
 			toolRouter,
+			hookRunner: integrationComposition.hookRunner,
+			contextItemCoordinator,
 			approvalPolicy: {
 				evaluate: async (call) => {
 					await ensureExecPolicyLoaded();
@@ -307,6 +389,55 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 		});
 	};
+	childRuntimeFactoryDelegate.create = async (input) => {
+		const runtime = createRuntime(
+			input.childSessionId,
+			config.workspaceRoot,
+			input.childSessionId,
+			emptyQueue(input.childSessionId),
+			undefined,
+			{ allowedTools: input.tools },
+		);
+		let activeTurnId: string | undefined;
+		let running = false;
+		return {
+			run: async (prompt, signal, emit) => {
+				activeTurnId = randomUUID();
+				running = true;
+				try {
+					const result = await runtime.submit({
+						clientTurnId: randomUUID(),
+						turnId: activeTurnId,
+						message: prompt,
+						...(input.model ? { modelOverride: input.model } : {}),
+					}, (event) => emitChildRuntimeEvent(event, emit), { signal });
+					return Object.freeze({
+						status: childStatus(result.status),
+						report: childReport(result),
+						usage: childUsage(result),
+					});
+				} finally {
+					running = false;
+				}
+			},
+			send: async (message) => {
+				if (!running || !activeTurnId || !runtime.queueCoordinator) {
+					throw new Error("child_runtime_unavailable");
+				}
+				runtime.queueCoordinator.enqueueSteer({
+					sessionId: input.childSessionId,
+					clientTurnId: randomUUID(),
+					expectedTurnId: activeTurnId,
+					activeTurnId,
+					steerable: true,
+					text: message,
+					source: "parent",
+				});
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+		};
+	};
 	try {
 		const prepare = (sessionId: string) => prepareStoredSession({
 			sessionId,
@@ -339,6 +470,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 		});
 		const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
+		const gatewayIntegrations = integrationGateway(integrationComposition);
 		return createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
@@ -356,30 +488,129 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				load: (workspaceRoot) => workspaceTrustStore.load(workspaceRoot),
 				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
 			},
+			integrations: gatewayIntegrations,
 			close: async () => {
 				try {
-					await shellManager.close();
+					await integrationComposition.close();
 				} finally {
 					try {
-						await shellLifecycle.drain();
+						await shellManager.close();
 					} finally {
-						store.close();
+						try {
+							await shellLifecycle.drain();
+						} finally {
+							store.close();
+						}
 					}
 				}
 			},
 		});
 	} catch (error) {
 		try {
-			await shellManager.close().catch(() => undefined);
+			await integrationComposition.close().catch(() => undefined);
 		} finally {
 			try {
-				await shellLifecycle.drain();
+				await shellManager.close().catch(() => undefined);
 			} finally {
-				store.close();
+				try {
+					await shellLifecycle.drain();
+				} finally {
+					store.close();
+				}
 			}
 		}
 		throw error;
 	}
+}
+
+function filterToolDefinitions<Value extends { readonly name: string }>(
+	definitions: readonly Value[],
+	allowed: readonly string[] | undefined,
+): readonly Value[] {
+	if (!allowed) return definitions;
+	const names = new Set(allowed);
+	return Object.freeze(definitions.filter((definition) => names.has(definition.name)));
+}
+
+function integrationGateway(
+	composition: RuntimeIntegrationComposition,
+): NodeGatewayIntegrations {
+	const integrations: NodeGatewayIntegrations = {
+		toolManifest: composition.manifest as unknown as Record<string, unknown>,
+		listResources: () => composition.resources.map((resource) => ({ ...resource })),
+		...(composition.commands.length > 0 ? {
+			commands: combinedIntegrationCommands(composition.commands),
+		} : {}),
+		subscribeSubagents: (
+			listener: (subagent: Readonly<Record<string, unknown>>) => void,
+		) => composition.subscribeSubagents(listener),
+	};
+	return Object.freeze(integrations);
+}
+
+function combinedIntegrationCommands(
+	services: readonly IntegrationCommandService[],
+): NodeGatewayIntegrationCommands {
+	const commands: NodeGatewayIntegrationCommands = {
+		list: () => services.flatMap((service) => service.list().map((command) => ({ ...command }))),
+		run: async (command: string, signal: AbortSignal) => {
+			for (const service of services) {
+				const result = await service.run(command, signal);
+				if (result) return { ...result };
+			}
+			return undefined;
+		},
+	};
+	return Object.freeze(commands);
+}
+
+function emitChildRuntimeEvent(
+	event: RuntimeEvent,
+	emit: (event: ChildRuntimeEvent) => void,
+): void {
+	if (event.type === "tool_execution_started") {
+		emit({ type: "progress", summary: `Started ${event.toolName}` });
+	} else if (event.type === "tool_execution_completed" || event.type === "tool_execution_failed") {
+		emit({ type: "progress", summary: event.summary });
+	} else if (event.type === "turn_completed") {
+		emit({ type: "usage", usage: numericUsage(event.usage) });
+	}
+}
+
+function childStatus(
+	status: "in_progress" | "completed" | "failed" | "interrupted",
+): "completed" | "failed" | "interrupted" {
+	return status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed";
+}
+
+function childReport(turn: Awaited<ReturnType<NodeGatewayRuntime["submit"]>>): string {
+	const result = turn.result;
+	return result && typeof result.assistant_text === "string"
+		? result.assistant_text
+		: turn.status === "interrupted"
+			? "Subagent interrupted"
+			: turn.status === "completed"
+				? "Subagent completed"
+				: "Subagent failed";
+}
+
+function childUsage(
+	turn: Awaited<ReturnType<NodeGatewayRuntime["submit"]>>,
+): Readonly<Record<string, number>> {
+	const usage = turn.result?.usage;
+	return typeof usage === "object" && usage !== null && !Array.isArray(usage)
+		? numericUsage(usage as Readonly<Record<string, unknown>>)
+		: Object.freeze({});
+}
+
+function numericUsage(
+	usage: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, number>> {
+	return Object.freeze(Object.fromEntries(Object.entries(usage).flatMap(([key, value]) => (
+		typeof value === "number" && Number.isFinite(value) && value >= 0
+			? [[key.slice(0, 64), value]]
+			: []
+	))));
 }
 
 function compactionThresholdForModel(config: Awaited<ReturnType<typeof resolveConfig>>): number {

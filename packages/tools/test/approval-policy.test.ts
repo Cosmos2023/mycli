@@ -49,6 +49,22 @@ test("malformed and unsupported tool calls fail closed", () => {
 	assert.equal(policy.evaluate(toolCall("Unknown", {})).kind, "deny");
 });
 
+test("extension approval metadata allows local controls and gates external tools", () => {
+	const policy = approvalPolicy({
+		autoApproveMedium: true,
+		extensionTools: [
+			{ name: "Task", approvalPolicy: "auto_allow" },
+			{ name: "McpSearch", approvalPolicy: "request" },
+		],
+	});
+
+	assert.equal(policy.evaluate(toolCall("Task", { profile: "explore" })).kind, "allow");
+	const external = policy.evaluate(toolCall("McpSearch", { query: "docs" }));
+	assert.equal(external.kind, "request");
+	assert.deepEqual(external.options, ["approve_once", "reject"]);
+	assert.equal(policy.evaluate(toolCall("UnknownExtension", {})).kind, "deny");
+});
+
 test("shell policy allows known-safe commands and requests narrow approval options", () => {
 	const policy = approvalPolicy({ autoApproveMedium: true });
 
@@ -123,6 +139,10 @@ function approvalPolicy(options: {
 		readonly pattern: readonly string[];
 		readonly decision: "allow" | "ask" | "deny";
 	}[];
+	readonly extensionTools?: readonly {
+		readonly name: string;
+		readonly approvalPolicy: "auto_allow" | "request";
+	}[];
 }): {
 	evaluate(call: CanonicalToolCall): {
 		readonly kind: string;
@@ -140,6 +160,7 @@ function approvalPolicy(options: {
 			readonly autoApproveMedium: boolean;
 			readonly shellKind?: "posix";
 			readonly execPolicyRules?: readonly Readonly<Record<string, unknown>>[];
+			readonly extensionTools?: readonly Readonly<Record<string, unknown>>[];
 		}) => {
 			evaluate(call: CanonicalToolCall): {
 				readonly kind: string;
@@ -154,6 +175,7 @@ function approvalPolicy(options: {
 		autoApproveMedium: options.autoApproveMedium,
 		shellKind: "posix",
 		...(options.execPolicyRules ? { execPolicyRules: options.execPolicyRules } : {}),
+		...(options.extensionTools ? { extensionTools: options.extensionTools } : {}),
 	});
 }
 
