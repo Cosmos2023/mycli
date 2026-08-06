@@ -6,6 +6,7 @@ import {
 import type {
 	CanonicalConversationItem,
 	CanonicalToolCall,
+	HookRunnerContract,
 	ProviderRequest,
 	ProviderRequestConfig,
 	ProviderReplayState,
@@ -57,6 +58,8 @@ import {
 	type ContinuationDecision,
 	type SafeProviderCompletionInput,
 } from "./provider-continuation.ts";
+import { HookCoordinator } from "./hook-coordinator.ts";
+import type { ContextItemCoordinatorContract } from "./context-item-coordinator.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -95,6 +98,8 @@ export interface NodeTurnRuntimeOptions {
 	) => CompactionCoordinatorContract;
 	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly providerContinuation?: ProviderContinuationContract;
+	readonly hookRunner?: HookRunnerContract;
+	readonly contextItemCoordinator?: ContextItemCoordinatorContract;
 	readonly writeTerminalSnapshot?: (turn: RuntimeTurnRecord) => Promise<void>;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 }
@@ -185,6 +190,7 @@ interface TurnExecutionContext {
 	readonly emit: (event: RuntimeEvent) => void;
 	readonly signal: AbortSignal;
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
+	readonly hookCoordinator?: HookCoordinator;
 }
 
 interface PendingToolBatch {
@@ -379,6 +385,10 @@ export class NodeTurnRuntime {
 		signal: AbortSignal,
 	): Promise<PreparedTurn> {
 		const context = await this.#executionContext(submission, turnId, emit, signal);
+		await context.hookCoordinator?.runPoint("user_prompt_submit", {
+			prompt: submission.message,
+			promptChars: submission.message.length,
+		}, signal);
 		const history = this.#conversationForCurrentSubmission(submission.message);
 		return Object.freeze({
 			context,
@@ -429,6 +439,13 @@ export class NodeTurnRuntime {
 			},
 			emit,
 			signal,
+			...(this.#options.hookRunner ? {
+				hookCoordinator: new HookCoordinator({
+					runner: this.#options.hookRunner,
+					sessionId: this.#options.sessionId,
+					turnId,
+				}),
+			} : {}),
 			...(this.#options.createCompactionCoordinator
 				? { compactionCoordinator: this.#options.createCompactionCoordinator(config) }
 				: this.#options.compactionCoordinator
@@ -670,6 +687,9 @@ export class NodeTurnRuntime {
 	): Promise<RuntimeTurnRecord> {
 		const { submission, turnId, config, emit, signal } = context;
 		try {
+			await context.hookCoordinator?.runPoint("stop", {
+				assistantMessageChars: stepResult.assistantText.length,
+			}, signal);
 			assertNotAborted(signal);
 			this.queueCoordinator?.rejectPending(turnId);
 			assertNotAborted(signal);
@@ -844,11 +864,24 @@ export class NodeTurnRuntime {
 				return running;
 			}
 
+			let executionCall = call;
+			let blockedByHook: ToolExecutionResult | undefined;
+			if (policy?.kind !== "deny" && context.hookCoordinator) {
+				const before = await context.hookCoordinator.beforeTool(call, signal);
+				if (before.status === "deny") {
+					blockedByHook = hookDeniedResult(call, before.errorKind);
+				} else {
+					executionCall = before.call;
+				}
+			}
 			const result = policy?.kind === "deny"
 				? policyDeniedResult(call, policy)
-				: await this.#executeTool(call, context);
-			if (policy?.kind === "deny") emitToolResult(result, 0, emit);
-			this.#persistToolResult(submission.clientTurnId, result);
+				: blockedByHook ?? await this.#executeTool(executionCall, context);
+			if (policy?.kind === "deny" || blockedByHook) emitToolResult(result, 0, emit);
+			this.#persistToolResult(submission.clientTurnId, turnId, result);
+			if (policy?.kind !== "deny" && !blockedByHook) {
+				await context.hookCoordinator?.afterTool(executionCall, result, signal);
+			}
 			assertNotAborted(signal);
 		}
 		return undefined;
@@ -893,7 +926,8 @@ export class NodeTurnRuntime {
 		return result;
 	}
 
-	#persistToolResult(clientTurnId: string, result: ToolExecutionResult): void {
+	#persistToolResult(clientTurnId: string, turnId: string, result: ToolExecutionResult): void {
+		const contextItem = this.#options.contextItemCoordinator?.contextItemFor({ turnId, result });
 		this.#options.store.appendToolResult({
 			sessionId: this.#options.sessionId,
 			clientTurnId,
@@ -901,6 +935,7 @@ export class NodeTurnRuntime {
 			summary: result.summary,
 			metadata: result.metadata,
 			...(result.errorKind ? { errorKind: result.errorKind } : {}),
+			...(contextItem ? { contextItem } : {}),
 		});
 	}
 
@@ -1299,6 +1334,22 @@ function policyDeniedResult(
 		success: false,
 		modelOutput: `${toolName} denied\nError kind: ${errorKind}`,
 		summary: `${toolName} denied`,
+		errorKind,
+		metadata: Object.freeze({}),
+	});
+}
+
+function hookDeniedResult(
+	call: CanonicalToolCall,
+	errorKind: "tool_denied_by_hook" | "tool_hook_error",
+): ToolExecutionResult {
+	const toolName = boundedToolName(call.name);
+	return Object.freeze({
+		callId: call.callId,
+		toolName: call.name,
+		success: false,
+		modelOutput: `${toolName} failed\nError kind: ${errorKind}`,
+		summary: `${toolName} failed`,
 		errorKind,
 		metadata: Object.freeze({}),
 	});

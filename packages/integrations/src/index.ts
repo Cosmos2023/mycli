@@ -183,6 +183,43 @@ export type {
 	ResolvedChildTools,
 	ResolveChildToolsInput,
 } from "./subagents/tool-scope.ts";
+export { SubagentController } from "./subagents/controller.ts";
+export type {
+	ChildRuntimeCreateInput,
+	ChildRuntimeEvent,
+	ChildRuntimeFactory,
+	ChildRuntimeHandle,
+	ChildRuntimeResult,
+	StartSubagentInput,
+	SubagentControlContract,
+	SubagentControllerOptions,
+	SubagentMessageResult,
+	SubagentOutputResult,
+	SubagentStartResult,
+} from "./subagents/controller.ts";
+export {
+	SUBAGENT_TOOL_MODEL_OUTPUT_MAX_CHARS,
+	TASK_TOOL_DEFINITION,
+	TaskTool,
+} from "./subagents/task-tool.ts";
+export type { TaskToolOptions } from "./subagents/task-tool.ts";
+export {
+	SUBAGENT_OUTPUT_TOOL_DEFINITION,
+	SubagentOutputTool,
+} from "./subagents/output-tool.ts";
+export type { SubagentOutputToolOptions } from "./subagents/output-tool.ts";
+export {
+	SEND_MESSAGE_TOOL_DEFINITION,
+	SendMessageTool,
+} from "./subagents/send-message-tool.ts";
+export type { SendMessageToolOptions } from "./subagents/send-message-tool.ts";
+export { SubagentManagementService } from "./subagents/management.ts";
+export type {
+	SubagentManagementInspectResponse,
+	SubagentManagementListResponse,
+	SubagentManagementResponse,
+	SubagentManagementServiceOptions,
+} from "./subagents/management.ts";
 export type {
 	SubagentBudget,
 	SubagentProfile,

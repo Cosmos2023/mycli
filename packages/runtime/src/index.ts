@@ -1,4 +1,18 @@
 export { NodeTurnRuntime } from "./node-turn-runtime.ts";
+export { HookCoordinator } from "./hook-coordinator.ts";
+export type {
+	AfterToolHookResult,
+	BeforeToolHookResult,
+	HookCoordinatorOptions,
+	HookPointResult,
+} from "./hook-coordinator.ts";
+export { ContextItemCoordinator } from "./context-item-coordinator.ts";
+export type {
+	ContextItemCoordinatorContract,
+	ContextItemCoordinatorOptions,
+	ContextItemForToolResultInput,
+	SkillContextArtifact,
+} from "./context-item-coordinator.ts";
 export { ExecutionPolicyCoordinator } from "./execution-policy-coordinator.ts";
 export type {
 	ExecutionPolicyConfiguration,

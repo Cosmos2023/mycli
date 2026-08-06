@@ -8,6 +8,7 @@ import type { RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	CanonicalConversationItem,
 	CanonicalToolCall,
+	HookRunnerContract,
 	ProviderEvent,
 	ProtocolId,
 	ProviderRequest,
@@ -32,6 +33,7 @@ import {
 	READ_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
+	ToolRouter,
 	type ToolExecutionResult,
 	type ToolExecutionOptions,
 	type ToolRouterContract,
@@ -39,11 +41,13 @@ import {
 import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
 import {
 	NodeTurnRuntime,
+	ContextItemCoordinator,
 	ProviderContinuationCoordinator,
 	QueueCoordinator,
 	type CompactInput,
 	type CompactionCoordinatorContract,
 	type CompactionResult,
+	type ContextItemCoordinatorContract,
 	type MemoryContextServiceContract,
 	type NodeTurnRuntimeOptions,
 	type PersistedProviderContinuation,
@@ -403,6 +407,171 @@ test("persists and executes Read before continuing the same Responses turn", asy
 	toolRouter.options?.publishLifecycle(shellLifecycleEvent());
 	assert.deepEqual(backendLifecycle, [shellLifecycleEvent()]);
 	assert.equal(emitted.some((event) => event.type === "shell_lifecycle"), false);
+});
+
+test("orders hooks tool persistence skill context and provider continuation", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[{ type: "completed", responseId: "resp-final" }],
+	]);
+	const hookRunner: HookRunnerContract = {
+		run: async (input) => {
+			trace.push(input.point);
+			return [];
+		},
+	};
+	const artifact = {
+		kind: "skill_instructions" as const,
+		name: "review",
+		text: "instructions",
+		sourceKind: "repo",
+		contentSha256: "a".repeat(64),
+		contentLength: 12,
+	};
+	const contextItemCoordinator = new ContextItemCoordinator({
+		extractArtifact: (metadata) => metadata.artifact === artifact ? artifact : undefined,
+	});
+	const router = new FakeRouter(trace, {
+		...successResult("call-1"),
+		metadata: { artifact },
+	});
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		hookRunner,
+		contextItemCoordinator,
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(trace.filter((entry) => [
+		"user_prompt_submit",
+		"provider:1",
+		"pre_tool_use",
+		"tool:call-1",
+		"persist:result:call-1",
+		"persist:context",
+		"post_tool_use",
+		"provider:2",
+		"stop",
+	].includes(entry)), [
+		"user_prompt_submit",
+		"provider:1",
+		"pre_tool_use",
+		"tool:call-1",
+		"persist:result:call-1",
+		"persist:context",
+		"post_tool_use",
+		"provider:2",
+		"stop",
+	]);
+	assert.equal(store.toolResults[0]?.contextItem?.text, "instructions");
+});
+
+for (const action of ["deny", "error"] as const) {
+	test(`pre-tool hook ${action} prevents execution and persists a failure`, async () => {
+		const trace: string[] = [];
+		const store = new FakeStore(trace);
+		const router = new SequencedRouter(trace);
+		const provider = scriptedProvider(trace, [], [
+			[
+				{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+				{ type: "completed", responseId: "resp-tools" },
+			],
+			[{ type: "completed", responseId: "resp-final" }],
+		]);
+		const hookRunner: HookRunnerContract = {
+			run: async (input) => input.point === "pre_tool_use"
+				? [{ hookId: "guard", result: { action, message: "blocked" } }]
+				: [],
+		};
+
+		const result = await createRuntime({
+			store,
+			provider,
+			toolRouter: router,
+			hookRunner,
+		}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+		assert.equal(result.status, "completed");
+		assert.equal(router.calls, 0);
+		assert.equal(store.toolResults[0]?.errorKind, action === "deny"
+			? "tool_denied_by_hook"
+			: "tool_hook_error");
+	});
+}
+
+test("hook-modified arguments are schema revalidated before adapter execution", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	let adapterCalls = 0;
+	const router = new ToolRouter({
+		exposure: [READ_TOOL_DEFINITION],
+		adapters: [{
+			definition: READ_TOOL_DEFINITION,
+			execute: async () => {
+				adapterCalls += 1;
+				return successResult("call-1");
+			},
+		}],
+	});
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[{ type: "completed", responseId: "resp-final" }],
+	]);
+	const hookRunner: HookRunnerContract = {
+		run: async (input) => input.point === "pre_tool_use"
+			? [{ hookId: "modify", result: { action: "modify", arguments: { offset: 0 } } }]
+			: [],
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		hookRunner,
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(adapterCalls, 0);
+	assert.equal(store.toolResults[0]?.errorKind, "invalid_arguments");
+});
+
+test("post-tool hook failure cannot rewrite a persisted successful result", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[{ type: "completed", responseId: "resp-final" }],
+	]);
+	const hookRunner: HookRunnerContract = {
+		run: async (input) => input.point === "post_tool_use"
+			? [{ hookId: "broken", result: { action: "error", message: "failed" } }]
+			: [],
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new FakeRouter(trace, successResult("call-1")),
+		hookRunner,
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(store.toolResults.length, 1);
+	assert.equal(store.toolResults[0]?.result.success, true);
 });
 
 test("persists provider replay state with tool calls before tool results", async () => {
@@ -1390,6 +1559,8 @@ function createRuntime(options: {
 	readonly runtimeConfig?: NodeRuntimeConfig;
 	readonly executionPolicyCoordinator?: NodeTurnRuntimeOptions["executionPolicyCoordinator"];
 	readonly planTools?: NonNullable<NodeTurnRuntimeOptions["planTools"]>;
+	readonly hookRunner?: HookRunnerContract;
+	readonly contextItemCoordinator?: ContextItemCoordinatorContract;
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
 		sessionId: "session-1",
@@ -1427,6 +1598,10 @@ function createRuntime(options: {
 		} : {}),
 		...(options.executionPolicyCoordinator ? {
 			executionPolicyCoordinator: options.executionPolicyCoordinator,
+		} : {}),
+		...(options.hookRunner ? { hookRunner: options.hookRunner } : {}),
+		...(options.contextItemCoordinator ? {
+			contextItemCoordinator: options.contextItemCoordinator,
 		} : {}),
 	});
 }
@@ -1750,6 +1925,14 @@ class FakeStore implements TurnStore {
 		this.trace.push(`persist:result:${input.result.callId}`);
 		this.toolResults.push(input);
 		this.items.push({ type: "tool_result", ...input.result });
+		if (input.contextItem) {
+			this.trace.push("persist:context");
+			this.items.push({
+				type: "context",
+				text: input.contextItem.text,
+				metadata: input.contextItem.metadata,
+			});
+		}
 		this.afterResultPersisted?.();
 	}
 
