@@ -128,3 +128,38 @@ Completed M7 parity fixtures, no-Python extension smoke, packed and cross-platfo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Complete Node runtime M8 promotion
+
+**Date**: 2026-08-06
+**Task**: Complete Node runtime M8 promotion
+**Branch**: `feature/mycli-node-runtime-rewrite`
+
+### Summary
+
+Closed Node TUI and slash-command parity, promoted npm startup to Node-only, retained the independently launched Python reference runtime, hardened release gates, and documented the final M8 contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3965dc46` | (see git log) |
+| `86951fa5` | (see git log) |
+| `931dce4c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
