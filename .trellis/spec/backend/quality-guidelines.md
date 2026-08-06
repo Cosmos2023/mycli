@@ -255,6 +255,10 @@ Questions to answer:
   the advertised Python gateway RPC/event stream sets -> `runtime_contract=failed`
   with bounded missing/extra names. Doctor must not run a turn, call a model, or
   start Node to validate this contract.
+- Runtime event payload schemas count as declared object schemas when they use either direct
+  `type: object` or a non-empty top-level `allOf` composition. A missing/non-object payload schema,
+  an empty `allOf`, or a missing schema `name` remains absent from the discovered set and must make
+  a required event fail `runtime_contract` validation.
 - Node protocol contract mismatch between TypeScript
   `GATEWAY_EVENT_PAYLOAD_CONTRACTS` and Python manifest
   `event_streams[].payload_schema` required fields, property names, or enum
@@ -360,6 +364,8 @@ Questions to answer:
   `/session-maintenance --apply-vacuum`.
 - Node protocol test for event method plus required-field, property-name, and
   enum-value parity with Python gateway contract/manifest.
+- Unit test runtime-contract discovery against both direct object payload schemas and generated
+  non-empty `allOf` payload schemas; malformed, unnamed, and empty-composition schemas stay absent.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
 - Full lint, type-check, and pytest must pass because doctor touches CLI
   startup paths.
@@ -590,6 +596,8 @@ Keep storage layout centralized and treat trace files as bounded diagnostics, no
 - The product timeout must include realistic cold-start and scheduler margin for the slowest CI
   platform. Use a separate outer test deadline to detect hangs; do not encode scheduler performance
   into a 50-100ms product timeout merely to keep the test fast.
+- Local executable handshakes, including the Windows sandbox helper protocol probe, must allow at
+  least five seconds for cold-start and endpoint-security scheduling before failing closed.
 - Polling for a readiness marker after the timed operation returns cannot repair an operation timeout
   that killed the parent before the marker was created.
 - Keep assertions semantic: timeout result, known descendant PID, eventual process-tree absence, and
@@ -605,6 +613,8 @@ Keep storage layout centralized and treat trace files as bounded diagnostics, no
 #### 5. Good/Base/Bad Cases
 - Good: allow one second for a Node hook tree to cold-start under concurrent load, confirm its PID
   marker, then assert the timeout result and eventual PID absence.
+- Good: give the local Windows sandbox helper five seconds to return its bounded protocol handshake,
+  then fail closed on timeout, malformed JSON, identity mismatch, or protocol mismatch.
 - Base: a fake controller unit test uses a deterministic clock and does not start OS processes.
 - Bad: use a 100ms timeout, wait for a marker only after the operation ends, and increase marker
   polling when the full suite fails.

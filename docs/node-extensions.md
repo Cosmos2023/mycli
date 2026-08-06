@@ -1,6 +1,6 @@
 # Node Extensions
 
-The M7 Node runtime discovers skills, MCP servers, Plugin API v2 workers, configured hooks, and
+The M8 Node-only runtime discovers skills, MCP servers, Plugin API v2 workers, configured hooks, and
 subagent profiles before a turn. Management and doctor commands use the same discovery services,
 but do not construct a provider or start the interactive runtime.
 
@@ -180,4 +180,3 @@ Common remediation:
 - `plugin_migration=warning`: migrate Python plugins; Node never imports them.
 - `mcp=failed`: verify transport availability and referenced environment names, without putting
   credential values in configuration or command output.
-

@@ -1,174 +1,118 @@
-# Node Runtime M7 Rollout
+# Node Runtime M8 Rollout
 
-## Current Status
+## Release Boundary
 
-The Node runtime is an explicit preview backend for complete turns, Node-owned session recovery,
-file and persistent-shell tools, Anthropic Messages, extensions, subagents, setup, management, and
-doctor. The default remains `python-sidecar`. Do not promote Node to the default until the M7
-offline, package, parity, live-smoke, and Node 22.19/24 platform matrices pass for the release
-candidate.
+M8 makes Node the only runtime started by the npm CLI. It follows a final black-box parity audit
+that closed every retained capability row before removing the sidecar selection path. The Python
+package remains available as an independently launched reference implementation.
 
-Select the preview backend before starting a new turn:
+The current CLI:
 
-```bash
-mycli --runtime-backend=node
-```
+- starts `startNodeBackend` unconditionally for interactive use;
+- rejects the retired `--runtime-backend` flag;
+- ignores the retired backend-selection environment variable;
+- contains no Python import, sidecar startup, executable probe, or wheel path;
+- uses the existing TUI and terminal interaction model rather than redesigning it.
 
-Use `--model <name>` and `--session <id>` with the same precedence and session semantics as the
-existing CLI. One backend owns the complete turn, provider continuation, approval, and process
-lifecycle. A failed Node operation is never retried through Python.
+## Retained Surface
 
-## Supported M7 Scope
+M8 retains provider protocols, transcript/session operations, approvals, clarifications, queues,
+compaction, memory, file tools, persistent shells, integrations, subagents, management commands,
+doctor, diagnostics, signals, shutdown, and all 36 Node-owned built-in slash commands.
 
-- OpenAI Responses, OpenAI-compatible Chat Completions, and Anthropic Messages
-- streamed text, reasoning, compaction, tool, approval, shell, and terminal events
-- bounded runtime-owned retries and interruption, with no fixed provider-step or tool-call ceiling
-- append-compatible SQLite conversation, history, rollout, state, summary, and idempotency records
-- atomic session resume, durable queue state, one-time approval continuation, compaction, and memory
-- Node-native `Read`, `Edit`, `Patch`, and `Write`
-- model-visible `Shell` and `WriteStdin`, plus hidden compatibility routing for `Bash`,
-  `ShellOutput`, `BashOutput`, and `KillShell`
-- foreground pipe execution, foreground-to-background yield, explicit background execution,
-  cursor-based output, PTY input, polling, resize, interrupt, targeted stop, and backend cleanup
-- Unix PTY on macOS/Linux and ConPTY on Windows through `node-pty`
-- owner-session isolation and durable shell lifecycle projection into the existing TUI transcript
-- command approval with once, reject, session allowance, and validated persistent allowance choices
-- fail-closed process sandbox enforcement for restricted permission profiles
-- Python/Node deterministic parity fixtures and real native lifecycle tests
-- one stable `Skill` tool with bounded discovery and durable instruction injection
-- local stdio and supported remote MCP discovery, tools, resources, cancellation, and cleanup
-- configured command hooks with digest-bound approval, sandboxing, timeout, and output bounds
-- process-isolated compiled ESM Plugin API v2 tools, hooks, commands, and migration diagnostics
-- foreground/background subagents with frozen tool scopes, durable ownership, progress,
-  interruption, recovery, and result collection
-- provider-free Node setup and hooks/plugins/MCP/subagent management commands
-- independent, read-only Node doctor collectors with shared human/JSON reports and redaction
+The final gateway baseline matched the Python reference at 33 RPCs and 42 events. The audit then
+added three already-implemented shell control RPCs missing from both catalogs, so the frozen
+Node-only contract contains 36 RPCs and 42 events. The sanitized M2-M7 fixture corpus remains under
+`tests/fixtures` and is checksum-protected by the M8 audit.
 
-`LS`, `Glob`, and `Grep` remain retired. M7 does not remove the Python backend, provide Python
-plugin source compatibility, add a hosted plugin marketplace, or productize unrelated new
-integrations. Unsupported capabilities fail explicitly and are never delegated to Python after a
-Node turn starts.
+Intentional Node-surface retirements:
 
-Extension paths, formats, approvals, and management commands are documented in
-[node-extensions.md](node-extensions.md). Plugin authors should use
-[plugin-api-v2.md](plugin-api-v2.md); existing Python plugin owners should follow
-[migration/python-plugins-to-v2.md](migration/python-plugins-to-v2.md).
+- `LS`, `Glob`, and `Grep`; `Read` owns bounded discovery.
+- implicit subagent budgets; Node budgets are opt-in.
+- Python plugin source compatibility; Plugin API v2 is compiled ESM.
+- same-build Python backend fallback.
 
-## Management And Doctor
+The Python source, packaging metadata, pytest suite, ruff/mypy checks, and `uv run mycli` entrypoint
+remain maintained. They are not bundled into or started by the npm package.
 
-The CLI routes `setup`, `doctor`, `hooks`, `plugins`, `mcp`, and `subagents` before TTY checks,
-backend selection, provider construction, or TUI import. `--json` serializes the same typed object
-used by the human renderer. Invalid usage exits `2`; failed operations exit `1`; setup cancellation
-exits `130`.
+## Offline Release Gate
 
-`mycli doctor` checks config/auth presence, read-only SQLite and storage layout, logs/traces and
-obvious redaction failures, Node/package/gateway contracts, the built-in tool manifest,
-sandbox/process support, hooks, plugins, Python migration state, skills, subagents, and MCP. One
-collector failure does not stop later collectors. Warnings exit `0`; failed checks exit `1`.
-
-Doctor never calls a model provider or repairs local state. An extension check may initialize an
-enabled MCP client or plugin worker only through its normal management lifecycle, and must close it
-before returning. Reports exclude credentials, headers, commands/arguments, environment values,
-prompts, provider payloads, raw extension output, and private file contents.
-
-## Native And Sandbox Prerequisites
-
-The supported runtime floor is Node `22.19.0`; Node 24 is also covered. Install from the root
-lockfile with `npm ci`. `@mycli/tools` pins `node-pty` exactly to `1.2.0-beta.15`: the stable
-`1.1.0` package installed its macOS ARM64 `spawn-helper` without the executable bit, while the
-pinned beta installed the helper correctly and passed the native PTY smoke. Do not loosen or
-replace this pin without rerunning packed-install and native lifecycle tests on every supported OS.
-
-When a prebuilt native binary is unavailable, the normal `node-gyp` build prerequisites apply:
-Python, a C/C++ toolchain, and platform build tools (Xcode Command Line Tools on macOS, build
-essentials on Linux, or Visual Studio Build Tools on Windows).
-
-Restricted process execution also requires the platform isolation mechanism:
-
-- macOS `read-only` and `workspace-write` require executable `/usr/bin/sandbox-exec`.
-- Linux restricted profiles require executable `/usr/bin/bwrap` or `/bin/bwrap`.
-- Windows restricted profiles require the packaged `mycli-windows-sandbox.exe` helper.
-- `danger-full-access` runs directly as the current OS user and must be selected explicitly.
-
-If a required wrapper/helper is missing, shell launch returns `sandbox_unavailable`; it does not
-fall back to unsandboxed execution. A bad native PTY install also fails explicitly and does not
-fall back to pipe transport for `tty: true`.
-
-## Shell Operation
-
-A long-running foreground `Shell` call yields one eight-character shell ID without restarting the
-process or resetting its output cursor. `WriteStdin` sends input to PTY/ConPTY sessions; empty input
-polls for incremental output. Completion, timeout, interrupt, and stop publish the same normalized
-shell lifecycle used by the TUI and durable transcript.
-
-The TUI surfaces background process control through:
-
-- `/ps` to list active shells owned by the current session
-- `/stop` to stop every active shell owned by the current session
-
-Targeted stop remains available through the typed `shell.stop` gateway RPC and the hidden
-`KillShell` compatibility route.
-
-Session ownership is enforced at the manager boundary. A different conversation cannot observe,
-write to, resize, interrupt, or stop another session's shell. Backend shutdown drains lifecycle
-persistence and closes or terminates every owned live transport, including its process tree.
-
-## Failure And Rollback
-
-A failed Node turn reports its actual terminal error. mycli does not replay it through Python,
-because that could duplicate a provider request, approval, file mutation, or process launch.
-
-Resolve or reject any pending approval, and stop active background shells before switching
-backends. Then use the operator-controlled rollback path before a later turn:
+Run from a clean Node install:
 
 ```bash
-mycli --runtime-backend=python-sidecar --session <id>
-```
-
-Both backends read the shared SQLite schema. Historical shell transcript items remain readable,
-but a live OS process is intentionally never reconstructed or reattached after a mycli restart.
-Installing the prior release is also a valid rollback when no newer turn is running, awaiting
-approval, or holding a live shell.
-
-## Verification
-
-Run the deterministic M7 gate and the previous milestone regressions after a clean install:
-
-```bash
+npm ci
 npm run contracts:check
-npm run typecheck
 npm run lint
-npm run test:m6
 npm test
+npm run typecheck
+npm run test:m8
+npm run smoke:m8
 npm run smoke:package
 ```
 
-The M7 tests additionally cover Anthropic serialization, extension discovery and lifecycle,
-configured hooks, Plugin API v2 protocol/process isolation, subagent ownership, provider-free
-management, doctor aggregation/redaction, and no-Python Node startup. CI runs process-sensitive
-pipe/PTY/MCP/plugin/subagent cleanup tests with Node 22.19 and Node 24 on macOS, Linux, and Windows.
+CI runs this gate on Linux, macOS, and Windows with Node 22.19 and Node 24. The packed smoke creates
+workspace tarballs, installs them in a clean directory, checks the compiled CLI and native PTY,
+executes management commands with a clean home, and makes Python import/invocation/probing fail the
+test.
 
-Only after every offline gate passes, run the opt-in live smoke selected for the release candidate.
-The existing M6 shell smoke remains available during M7 development:
+`smoke:m8` is provider-free. It starts the real backend with a disposable home and workspace,
+waits for `runtime.ready`, bootstraps a session, loads the 16-command visible TUI projection, and
+shuts down. The audit test separately freezes all 36 built-in commands, including hidden controls.
+Its output is one structural JSON line with no paths, prompts, credentials, endpoint, provider
+payload, or tool output.
+
+## Credential-Gated Responses Smoke
+
+Run one paid-service smoke only after the offline gate passes:
 
 ```bash
-npm run smoke:m6
+MYCLI_API_KEY=... \
+MYCLI_BASE_URL=... \
+MYCLI_MODEL=... \
+MYCLI_PROVIDER=openai \
+node scripts/smoke_node_m5_state.mjs --protocol responses
 ```
 
-The smoke uses the configured model, a disposable
-home/workspace/database/session, zero retries, 64 output tokens per provider request, and one
-30-second deadline. It saves workspace trust, selects full access, approves one shell launch,
-verifies PTY yield and `WriteStdin` completion, closes the backend, and validates cleanup and
-SQLite persistence without starting Python.
+The smoke uses a disposable home/workspace/database, zero retries, bounded output, and sanitized
+structural reporting. Missing credentials or an unavailable configured service return exit `77`;
+success returns `0`; a structural failure returns `1`. Do not retry an unavailable paid-service
+request in the same release run.
 
-Missing credentials or an unavailable service produce exit `77`; success produces `0`; a completed
-request that fails structural assertions produces `1`. Every path prints exactly one JSON line with
-only protocol, status, lifecycle counts/booleans, transport enum, active-shell count, trust,
-permission, persistence, cleanup, and `python_started` state.
+## Rollout Procedure
 
-The smoke never prints credentials, endpoint data, prompts, commands, stdin, provider output, raw
-responses, shell output, hashes, database paths, workspace paths, or session paths. Do not retry an
-unavailable paid-service request in the same verification run.
+1. Back up `~/.mycli` before upgrading a production workstation.
+2. Finish or interrupt active turns and resolve pending approvals/clarifications.
+3. Stop background shells and child tasks.
+4. Install the M8 package and run `mycli doctor`.
+5. Start one provider-free management command and one disposable session.
+6. Run the credential-gated Responses smoke only if the offline gates are green.
+7. Promote the release after platform jobs and cleanup checks pass.
 
-M8 is the backend-retirement boundary. M7 must remain rollbackable to `python-sidecar`; it does not
-delete Python production code or silently change the default backend.
+Do not run the old Python release and M8 concurrently against the same active session database.
+Durable schema compatibility does not make live process or continuation ownership shareable.
+
+## Failure And Rollback
+
+A failed Node turn reports its actual terminal state. It is never replayed through another runtime,
+because replay could duplicate provider calls, approvals, file mutations, plugin effects, or
+process launches.
+
+Rollback means reinstalling the previous package release; the M8 build has no backend selector.
+Before rollback:
+
+1. finish or interrupt the current turn;
+2. resolve or reject pending user input;
+3. stop all background shells and subagents;
+4. close mycli and back up `~/.mycli`;
+5. install the previous release;
+6. resume only after checking the target session with that release's doctor/status flow.
+
+Never keep Python as an unadvertised fallback or diagnostic probe in the M8 package. A rollback is
+a package-level operator decision made between turns, not an automatic retry path.
+
+## Troubleshooting
+
+Use `mycli doctor --json` for automation and [troubleshooting.md](troubleshooting.md) for TTY,
+provider, native PTY, sandbox, extension, session, and shutdown failures. Diagnostic output must
+remain bounded and must not contain credentials, headers, prompts, commands, raw provider data,
+raw tool output, or private file contents.

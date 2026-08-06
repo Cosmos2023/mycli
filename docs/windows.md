@@ -1,47 +1,71 @@
 # Windows Source Checkout
 
-mycli supports native Windows execution for both the Python CLI and Node TUI. Git Bash is optional.
+mycli runs natively on Windows through Node.js. Git Bash and a Python runtime are not required by
+the installed npm CLI. Python 3.13 and `uv` are optional when running the retained Python reference.
 
 ## Requirements
 
-- Python 3.13
-- Node.js 22.19 or newer
-- `uv`
-- Git for source control; Git Bash is not required
+- Node.js 22.19 or newer; Node 24 is supported.
+- npm and Git.
+- Visual Studio Build Tools only when npm must compile a native dependency instead of using a
+  prebuilt binary.
+- Python 3.13 and `uv` only for the retained reference implementation and its tests.
+
+Install and run from PowerShell:
+
+```powershell
+npm ci
+npm run build
+npm run mycli
+```
 
 ## Shell Selection
 
-On Windows, mycli detects the active command runtime in this order:
+mycli detects the command runtime in this order:
 
 1. PowerShell 7 (`pwsh.exe`)
 2. Windows PowerShell 5.1 (`powershell.exe`)
 3. Command Prompt (`cmd.exe`)
 
-The model sees one cross-platform `Shell` tool plus `ShellOutput` and `KillShell`. It does not receive separate Bash, PowerShell, or CMD tool schemas.
+The model sees one cross-platform `Shell` contract plus the relevant input/output control tools.
+It does not receive separate Bash, PowerShell, and CMD schemas.
 
-A recognized explicit `shell_path` can select Bash, zsh, sh, PowerShell, or CMD:
+Configure an explicit shell in `~/.mycli/config.toml`:
 
 ```toml
-shell_path = "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+[shell]
+path = "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
 ```
 
-You can also set a temporary override:
+Or set a temporary override:
 
 ```powershell
 $env:MYCLI_SHELL_PATH = "C:\Program Files\PowerShell\7\pwsh.exe"
-uv run mycli
+npm run mycli
 ```
 
-Invalid paths and unknown executables are ignored. mycli continues with automatic detection, and `mycli doctor` reports the ignored override and selected fallback.
+Invalid paths and unknown executables are ignored, automatic detection continues, and
+`mycli doctor` reports the selected shell without exposing command or environment values.
 
-CMD is a supported final fallback. Its command parser and approval policy are intentionally conservative: unknown syntax, expansion, redirection, pipes, and chained commands may require confirmation. PowerShell provides richer command semantics when available.
+CMD is the final supported fallback. Its approval parser is intentionally conservative: expansion,
+redirection, pipes, chained commands, or unknown syntax may require confirmation.
+
+## PTY And Sandbox
+
+Interactive shell sessions use `node-pty` and ConPTY. Restricted process profiles use the packaged
+`packages/tools/native/windows/mycli-windows-sandbox.exe` helper built from
+`native/windows-sandbox-helper`. A missing or invalid helper returns `sandbox_unavailable`; mycli
+does not run the command unrestricted.
 
 ## Verification
 
-Run the native shell smoke tests from PowerShell:
-
 ```powershell
-uv run pytest tests/integration/test_cross_platform_shell.py -q
+npm run contracts:check
+npm test
+npm run typecheck
+npm run smoke:m8
+npm run smoke:package
 ```
 
-CI forces separate PowerShell 7, Windows PowerShell 5.1, and `cmd.exe` lanes so the CMD fallback remains tested even when PowerShell is installed.
+CI covers Node 22.19 and Node 24 on Windows and separately compiles/tests the sandbox protocol,
+restricted-token primitives, filesystem policy, and network policy.

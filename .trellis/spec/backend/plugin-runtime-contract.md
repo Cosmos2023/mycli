@@ -2,10 +2,10 @@
 
 ## Overview
 
-During M7, `mycli` has two intentionally different local plugin contracts. The
-Python compatibility runtime retains enabled repo/user `register(ctx)` plugins.
-The Node runtime uses process-isolated Plugin API v2 for compiled ESM and never
-imports Python plugin source.
+The repository has two intentionally separate local plugin contracts. The
+independently launched Python reference runtime retains enabled repo/user
+`register(ctx)` plugins. The npm CLI starts only Node, which uses process-isolated
+Plugin API v2 for compiled ESM and never imports Python plugin source.
 
 Neither runtime implements marketplace install/update/remove, ACP, provider
 plugins, or an LLM facade.
@@ -140,9 +140,9 @@ and `error`.
 - Valid tools, hooks, and commands are adapted through host-owned registries. Hook execution order
   is built-in, then configured command hooks, then Plugin API v2 hooks. `modify` results feed the
   next hook; deny/error stops fail-closed hook points before later sources run.
-- Python plugins are compatibility-only during M7. Node discovery reports them as
-  `migration_required` and does not import or spawn them. Python deletion and removal of the
-  `python-sidecar` rollback path belong to M8.
+- Python plugins belong only to the independently launched Python reference runtime. Node discovery
+  reports them as `migration_required` and does not import or spawn them. The npm CLI has no Python
+  sidecar, backend selector, automatic fallback, or source-compatible Python plugin execution path.
 
 ### 4. Validation & Error Matrix
 

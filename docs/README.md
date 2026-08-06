@@ -4,11 +4,14 @@ This directory is split by document purpose.
 
 ## Current Architecture
 
-- [architecture.md](./architecture.md): current Python package and runtime module boundaries.
-- [node-runtime-rollout.md](./node-runtime-rollout.md): M7 Node preview scope, prerequisites, gates, and rollback.
+- [architecture.md](./architecture.md): Node workspace and runtime ownership boundaries.
+- [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
+- [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.
+- [troubleshooting.md](./troubleshooting.md): provider-free diagnosis and common recovery paths.
 - [node-extensions.md](./node-extensions.md): extension discovery, configuration, approvals, management, and doctor.
 - [plugin-api-v2.md](./plugin-api-v2.md): process-isolated compiled ESM plugin author contract.
-- [migration/python-plugins-to-v2.md](./migration/python-plugins-to-v2.md): explicit Python plugin migration and rollback guide.
+- [migration/python-plugins-to-v2.md](./migration/python-plugins-to-v2.md): legacy plugin migration to compiled ESM Plugin API v2.
+- [parity/node-runtime-m8-capability-audit.md](./parity/node-runtime-m8-capability-audit.md): final retained-capability audit and frozen corpus.
 
 ## Context And Prefix Cache
 

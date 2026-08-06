@@ -1206,8 +1206,8 @@ return bootstrap;
   `plugins list|inspect|run`, `mcp list|inspect`, and `subagents list|inspect`.
 
 ### 3. Contracts
-- Parse management commands before runtime-backend selection, TTY validation, backend/provider
-  construction, gateway transport configuration, or TUI import.
+- Parse management commands before TTY validation, Node backend/provider construction, gateway
+  transport configuration, or TUI import.
 - Command types are action-specific closed unions. Required ids, command names, and parsed JSON
   arguments are required fields on the corresponding union member, not optional fields recovered
   with non-null assertions.
@@ -1220,9 +1220,8 @@ return bootstrap;
 - Setup builds provider rows from Node provider profiles and auth presence, including Anthropic.
   TTY setup calls the in-process setup TUI; non-TTY setup and TUI startup failures use the plain
   interaction. A user cancel does not fall through from TUI to plain setup.
-- The setup TUI returns its result in memory and releases terminal ownership. The legacy Python
-  entrypoint compatibility path may use `MYCLI_SETUP_STATE` and `MYCLI_SETUP_RESULT_PATH` until
-  M8, but any result file is mode `0600`; the Node CLI path does not use a result file.
+- The setup TUI returns its result in memory and releases terminal ownership. The npm CLI does not
+  use `MYCLI_SETUP_STATE`, `MYCLI_SETUP_RESULT_PATH`, or a cross-runtime result file.
 - Auth/config updates create a mode-`0700` user directory, write and fsync a sibling mode-`0600`
   temporary file under a short exclusive lock, rename atomically, fsync the directory where
   supported, and remove temporary/lock files. Concurrent auth merges serialize.
@@ -1286,7 +1285,7 @@ return bootstrap;
   and the next collector still runs.
 - Base: A fresh home has no sessions DB, logs, traces, or extensions; doctor reports bounded lazy
   state without creating any of them.
-- Bad: Checking TTY or selecting `python-sidecar` before recognizing `hooks list`.
+- Bad: Checking TTY or starting the Node backend before recognizing `hooks list`.
 - Bad: Returning the setup wizard result as JSON, printing the API key, or writing it through a
   world-readable temporary result file.
 - Bad: Returning the raw `SubagentProfile` from a management service because it contains `prompt`.
@@ -1303,8 +1302,8 @@ return bootstrap;
   inline-key removal, pre-rename failure preservation, redacted errors, and temp cleanup.
 - Setup tests cover all provider rows, stored-auth presence, success persistence, cancellation,
   TUI-to-plain fallback, pre-buffered pipe input, and key absence from output/response.
-- TUI tests assert direct submit/cancel Promise results and terminal cleanup; legacy entrypoint
-  tests must assert private result-file permissions if that compatibility path changes.
+- TUI tests assert direct submit/cancel Promise results, terminal cleanup, and in-memory setup
+  completion without a cross-runtime result file.
 - Management tests assert subagent responses do not contain a `prompt` property or prompt text.
 - Doctor runner tests assert collector order, exception isolation, timeout cancellation plus
   cleanup, later-collector progress, stable counts, shared human/JSON data, and exit semantics.
@@ -1348,100 +1347,103 @@ const report = await runDoctorCollectors(collectors, signal, {
 });
 ```
 
-## Scenario: Node Composition Root With Python Sidecar
+## Scenario: Node-Only npm Composition Root With Independent Python Reference
 
 ### 1. Scope / Trigger
-- Trigger: Changes to `apps/mycli`, sidecar stdio startup, gateway transport
-  injection, process signals, package exports, or Node/Python process ownership.
-- During M1, Node owns the terminal and process lifecycle. Python is a
-  temporary JSON-RPC sidecar and must never inherit the TTY.
+- Trigger: Changes to `apps/mycli`, `startNodeBackend`, gateway transport injection, process
+  signals, package exports, npm startup, or the Node/Python runtime boundary.
+- The npm CLI owns the terminal and process lifecycle and starts only the Node backend. The Python
+  package remains independently launchable through `uv run mycli`; npm must never import, probe,
+  spawn, or fall back to it.
 
 ### 2. Signatures
-- Node CLI: `mycli [--session <id>] [--model <model>] [--runtime-backend python-sidecar]`
-- Backend selector:
-  `selectRuntimeBackend({argv, env}) -> "python-sidecar"`
-- Sidecar controller:
-  `startPythonSidecar({cwd, env, args, ...}) -> PythonSidecar`
-- Sidecar command:
-  `<python> -m mycli.cli.sidecar [--session <id>] [--model <model>]`
-- Python entry point: `python -m mycli.cli.sidecar`
+- Node CLI: `mycli [--session <id>] [--model <model>]`.
+- Composition root: `runCli(options?: RunCliOptions) -> Promise<number>`.
+- Backend factory:
+  `startNodeBackend({cwd, env, args, maxOutputTokens?}) -> Promise<NodeBackend>`.
+- Backend lifecycle: `NodeBackend = {transport, completion, diagnostic(), close(), kill()}`.
 - Gateway module startup: `gatewayStartup: Promise<void>`
 - Gateway module shutdown: `gatewayShutdown() -> Promise<void>`
+- Independent Python entry point: `uv run mycli [python-runtime-options]`.
 
 ### 3. Contracts
-- `MYCLI_PYTHON` optionally overrides the Python executable. The default is
-  `python` on Windows and `python3` elsewhere.
-- `MYCLI_RUNTIME_BACKEND` may select `python-sidecar`; an explicit CLI value
-  takes precedence over the environment.
-- `MYCLI_SIDECAR_START_TIMEOUT_MS` controls readiness timeout and remains
-  bounded to 1-60 seconds.
-- Spawn uses `stdio: ["pipe", "pipe", "pipe"]`, `windowsHide: true`, and
-  `shell: false`. Child stdout is gateway input, child stdin is gateway output,
-  and child stderr is diagnostics only.
-- Startup order is `runtime.ready`, `extension.manifest` compatibility, then
-  `session.bootstrap(protocol_version=1)`. No turn may start first.
-- Sidecar stderr retained by Node is at most 8 KiB and redacts secret-like
-  assignments, bearer tokens, and API-key forms before display.
-- Graceful close ends child stdin, waits two seconds, sends termination, waits
-  two seconds, then performs one final kill. Close and final kill are
-  idempotent.
+- Help, version, and provider-free management commands resolve before TTY checks or backend/TUI
+  construction. Interactive mode accepts only `--session` and `--model` runtime options.
+- `--runtime-backend` is invalid usage. Retired environment values such as
+  `MYCLI_RUNTIME_BACKEND`, `MYCLI_PYTHON`, and `MYCLI_SIDECAR_START_TIMEOUT_MS` cannot change npm
+  startup, trigger a Python lookup, or create a fallback path.
+- Interactive startup validates terminal stdin/stdout, constructs one Node backend, configures its
+  transport, and only then imports the TUI gateway. No turn may start before gateway startup and
+  `session.bootstrap(protocol_version=1)` complete.
+- The Node backend owns provider, storage, tools, integrations, gateway, and child-process cleanup.
+  Its `close()` and `kill()` operations are idempotent and must close all Node-owned resources.
+- The first SIGINT before TUI ownership requests bounded shutdown and exit `130`; after ownership,
+  SIGINT belongs to the TUI. SIGTERM requests gateway shutdown. A parent `exit` synchronously calls
+  backend `kill()` when completion has not settled.
+- Python source, packaging metadata, tests, evaluation utilities, and Python 3.13 CI remain in the
+  repository. They form a separately launched reference runtime, not an npm dependency or hidden
+  rollback backend.
 - Production package exports and the `mycli` bin point only to compiled ESM and
   declarations under `dist`; production execution never requires `tsx`.
 
 ### 4. Validation & Error Matrix
-- `--help` / `--version` -> exit `0`, no TTY check, no Python process.
-- Normal TUI shutdown and sidecar exit `0` -> exit `0`.
-- Sidecar crash, protocol close, readiness timeout, or internal lifecycle
-  failure -> exit `1`, with no backend fallback or turn replay.
-- Invalid CLI/backend/config, unavailable native Node backend, synchronous
-  spawn failure, or missing protocol streams -> exit `2`.
+- `--help` / `--version` -> exit `0`, no TTY check and no backend/provider/TUI startup.
+- `--runtime-backend`, an unknown option, duplicate/missing runtime value, or malformed management
+  command -> exit `2` with bounded `invalid_arguments`; do not start Node or Python.
+- Non-TTY interactive launch -> exit `2` with `tty_required`; management commands remain available.
+- Node backend construction/configuration failure -> exit `2` with a stable bounded diagnostic.
+- TUI import/startup or unexpected Node backend completion -> exit `1`; do not retry through Python
+  and do not replay an accepted turn.
+- Normal gateway/TUI shutdown plus Node backend completion `0` -> exit `0`.
 - SIGINT before TUI ownership -> bounded cleanup and exit `130`.
 - SIGINT after TUI ownership -> leave the first interrupt to the active TUI.
-- SIGTERM -> request gateway shutdown and apply bounded sidecar escalation.
-- Missing canonical manifest method/event or wrong schema version ->
-  `incompatible_protocol` before session bootstrap.
+- SIGTERM -> request gateway shutdown and close Node-owned resources.
+- Missing canonical manifest method/event or wrong schema version -> `incompatible_protocol` before
+  session bootstrap.
 
 ### 5. Good/Base/Bad Cases
-- Good: Configure the sidecar transport before dynamically importing
-  `mycli-shell-tui/gateway`, then await its exported startup promise.
-- Good: An abnormal Node exit synchronously kills the still-running child and
-  a PID probe confirms no orphan remains.
-- Base: `uv run mycli` remains the explicit Python-parent rollback path during
-  M1.
+- Good: Start `startNodeBackend`, configure its transport, dynamically import
+  `mycli-shell-tui/gateway`, and await the exported startup promise.
+- Good: A packed npm installation starts an interactive Node backend with a failing Python marker
+  on `PATH` and in `MYCLI_PYTHON`; the marker is never read or executed.
+- Base: `uv run mycli` starts the retained Python reference directly in a separate process chosen
+  by the operator between turns.
 - Bad: Spawn a separate TUI child that owns terminal input; this breaks Windows
   raw-TTY ownership and splits signal handling.
-- Bad: Forward sidecar stderr into `GatewayClient`; a diagnostic line can then
-  corrupt JSON-RPC framing or leak a credential.
+- Bad: Probe Python at npm startup even when the probe is described as diagnostics or rollback
+  preparation.
 - Bad: Retry a failed Node operation through Python; model requests and tool
   effects could be duplicated.
 
 ### 6. Tests Required
-- Unit tests for POSIX/Windows command construction, piped streams, stable
-  spawn errors, bounded redaction, completion codes, close escalation, and
-  idempotent cleanup.
-- CLI tests proving help/version do not spawn, TTY validation precedes spawn,
-  transport configuration precedes TUI import, unavailable backends do not
-  fall back, and exit codes follow the matrix.
-- Handshake tests for ready timeout, schema mismatch, missing canonical RPCs,
-  missing canonical events, and additive future manifest names.
-- Real-process tests for timeout, crash before/after handshake, normal
-  shutdown, SIGTERM escalation, stderr separation, and orphan PID cleanup.
-- Build/package tests proving compiled help/version run without Python and
+- CLI tests prove help/version and management do not start a backend, TTY validation precedes Node
+  construction, retired flags fail, retired environment selectors are inert, transport
+  configuration precedes TUI import, and exit codes follow the matrix.
+- Lifecycle tests cover normal shutdown, startup failure, unexpected completion, pre-ownership
+  SIGINT, TUI-owned SIGINT, SIGTERM, parent exit, and idempotent close/kill.
+- Gateway tests cover schema mismatch, missing canonical RPCs/events, shutdown, and additive future
+  manifest names entirely inside the Node composition.
+- Build/package tests prove compiled help/version and provider-free smoke run without Python and
   `npm pack --dry-run` excludes source, fixtures, credentials, and local files.
+- Packed smoke installs all published workspaces in a clean temporary directory, scans package
+  contents/startup imports, plants failing Python probes, and starts the packed Node backend.
+- The independent Python gate runs package build, ruff, mypy, pytest, and `uv run mycli --help`
+  separately; it does not exercise npm fallback behavior.
 - Run lifecycle tests on Node 22.19 across macOS, Linux, and Windows.
 
 ### 7. Wrong vs Correct
 
 Wrong:
 ```typescript
-const child = spawn("python3", args, { stdio: "inherit" });
+const backend = selectRuntimeBackend(process.env.MYCLI_RUNTIME_BACKEND);
+if (backend === "python-sidecar") await startPythonSidecar();
 await import("mycli-shell-tui/gateway");
 ```
 
 Correct:
 ```typescript
-const sidecar = startPythonSidecar({ cwd, env, args });
-configureGatewayTransport(sidecar.transport);
+const backend = await startNodeBackend({ cwd, env, args });
+configureGatewayTransport(backend.transport);
 const { gatewayStartup } = await import("mycli-shell-tui/gateway");
 await gatewayStartup;
 ```
@@ -2303,9 +2305,10 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, inp
   fail-closed points; post-operation points contain errors without rewriting persisted tool results.
 - `subagent.updated` filters events whose internal `parent_session_id` is not the active resumed
   session, removes that internal owner field, and bounds the closed public payload before emission.
-- M7 keeps `python-sidecar` as an explicit rollback backend and includes no Python fallback inside a
-  Node-owned turn. Deleting Python production code, changing the default/backend-only policy, and
-  removing rollback are M8 work.
+- M8 removes the npm `python-sidecar` backend and runtime selector while retaining the Python
+  implementation as an independently launched reference. Node-owned turns never fall back across
+  runtimes; rollback means installing an earlier npm release or explicitly launching `uv run mycli`
+  between turns.
 
 ### 4. Validation & Error Matrix
 
