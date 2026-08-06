@@ -1,0 +1,110 @@
+export type McpTransportKind = "stdio" | "http" | "streamable_http";
+
+export interface McpServerConfig {
+	readonly id: string;
+	readonly transport: McpTransportKind;
+	readonly command?: string;
+	readonly url?: string;
+	readonly args: readonly string[];
+	readonly env: Readonly<Record<string, string>>;
+	readonly headers: Readonly<Record<string, string>>;
+	readonly enabled: boolean;
+	readonly timeoutMs: number;
+}
+
+export type McpConfigSource = "user" | "repository";
+
+export interface McpConfigDiagnostic {
+	readonly source: McpConfigSource;
+	readonly fileLabel: string;
+	readonly serverId: string;
+	readonly errorClass: string;
+}
+
+export interface McpConfigDiscovery {
+	readonly servers: readonly McpServerConfig[];
+	readonly diagnostics: readonly McpConfigDiagnostic[];
+	get(id: string): McpServerConfig | undefined;
+}
+
+export interface McpToolDescriptor {
+	readonly serverId: string;
+	readonly name: string;
+	readonly description: string;
+	readonly inputSchema: Readonly<Record<string, unknown>>;
+}
+
+export interface McpContentItem {
+	readonly type: string;
+	readonly [key: string]: unknown;
+}
+
+export interface McpToolCallResult {
+	readonly content: readonly McpContentItem[];
+	readonly structuredContent?: unknown;
+	readonly isError: boolean;
+}
+
+export interface McpResourceDescriptor {
+	readonly serverId: string;
+	readonly uri: string;
+	readonly name: string;
+	readonly description: string;
+	readonly mimeType?: string;
+}
+
+export interface McpResourceContent {
+	readonly serverId: string;
+	readonly uri: string;
+	readonly mimeType?: string;
+	readonly text?: string;
+	readonly blob?: string;
+}
+
+export interface McpProtocolClient {
+	connect(signal: AbortSignal): Promise<void>;
+	listTools(signal: AbortSignal): Promise<{
+		readonly tools: readonly Readonly<Record<string, unknown>>[];
+	}>;
+	callTool(
+		name: string,
+		argumentsValue: Readonly<Record<string, unknown>>,
+		signal: AbortSignal,
+	): Promise<Readonly<Record<string, unknown>>>;
+	listResources(signal: AbortSignal): Promise<{
+		readonly resources: readonly Readonly<Record<string, unknown>>[];
+	}>;
+	readResource(uri: string, signal: AbortSignal): Promise<{
+		readonly contents: readonly Readonly<Record<string, unknown>>[];
+	}>;
+	close(): Promise<void>;
+}
+
+export interface McpClientContract {
+	callTool(
+		name: string,
+		argumentsValue: Readonly<Record<string, unknown>>,
+		signal: AbortSignal,
+	): Promise<McpToolCallResult>;
+}
+
+export interface McpResourceClientContract {
+	listResources(signal: AbortSignal): Promise<readonly McpResourceDescriptor[]>;
+	readResource(uri: string, signal: AbortSignal): Promise<readonly McpResourceContent[]>;
+}
+
+export interface McpManagedClient extends McpClientContract, McpResourceClientContract {
+	listTools(signal: AbortSignal): Promise<readonly McpToolDescriptor[]>;
+	close(): Promise<void>;
+}
+
+export interface McpServerDiscovery {
+	readonly serverId: string;
+	readonly transport: McpTransportKind;
+	readonly enabled: boolean;
+	readonly status: "ok" | "disabled" | "failed";
+	readonly toolCount: number;
+	readonly resourceCount: number;
+	readonly timeoutMs: number;
+	readonly failureCategory?: string;
+}

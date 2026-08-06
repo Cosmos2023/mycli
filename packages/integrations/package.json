@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "assets"],
+  "files": [
+    "dist",
+    "assets"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,6 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@mycli/config": "0.1.0",
     "@mycli/contracts": "0.1.0",
     "@mycli/core": "0.1.0",
