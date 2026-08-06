@@ -345,10 +345,12 @@ function freshSignal(): AbortSignal {
 async function readFileEventually(path: string): Promise<string> {
 	for (let attempt = 0; attempt < 100; attempt += 1) {
 		try {
-			return await readFile(path, "utf8");
+			const value = (await readFile(path, "utf8")).trim();
+			if (/^[1-9]\d*$/u.test(value)) return value;
 		} catch {
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+			// The fixture may not have created the marker yet.
 		}
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
 	}
 	throw new Error(`fixture marker was not written: ${dirname(path)}`);
 }
