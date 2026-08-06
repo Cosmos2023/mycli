@@ -1958,3 +1958,139 @@ const shellManager = new ShellSessionManager({
 const runtime = new NodeTurnRuntime({ toolRouter: shellRouter(shellManager) });
 await gatewayClose({ shellManager, drainLifecycle, closeStore });
 ```
+
+## Scenario: Node Integration Composition And Session-Owned Subagents
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node integration composition, extension tool approval metadata, the `Task` /
+  `SubagentOutput` / `SendMessage` tools, durable child-task ownership, `subagent.updated`, or TUI
+  consumers of generated gateway event types.
+- This is a cross-layer contract spanning tool execution, integrations, SQLite task records, the
+  gateway, generated contracts, and the existing TUI task surfaces.
+
+### 2. Signatures
+
+- Composition:
+  `createRuntimeIntegrationComposition(options) -> Promise<RuntimeIntegrationComposition>`.
+- Tool execution ownership:
+  `ToolExecutionOptions = {ownerSessionId: string, ownerTurnId?: string, ...}`.
+- Child start:
+  `SubagentControlContract.start({parentSessionId?, parentTurnId?, profileId, prompt, ...})`.
+- Child lookup:
+  `SubagentControlContract.output(childSessionId, parentSessionId?)`.
+- Child message:
+  `SubagentControlContract.send(childSessionId, message, parentSessionId?)`.
+- Internal projection:
+  `{parent_session_id, run_id, child_session_id, role, status, summary, progress}`.
+- Public notification:
+  `subagent.updated({subagent: {run_id, child_session_id, role, status, summary, progress}})`.
+- TUI reducer:
+  `reduceRuntimeEvent(state, method, input: object) -> RuntimeShellState`.
+
+### 3. Contracts
+
+- Integration sources start in `skill -> mcp -> plugin -> subagent` order. Closable sources stop in
+  reverse order, shutdown is idempotent and bounded, and partial startup failure closes every source
+  that already initialized.
+- The built-in manifest stays immutable. The combined manifest rejects duplicate provider routes
+  before a turn can execute and does not create a `runtime <-> integrations` package cycle.
+- Extension approval policy is explicit. Skill and local subagent control tools are auto-allowed;
+  MCP and plugin tools request one-time approval; an extension route absent from registered approval
+  metadata fails closed.
+- `NodeTurnRuntime` and approval continuation both pass the executing session and turn through
+  `ToolExecutionOptions`. `TaskTool` forwards those values instead of using the backend startup
+  session or a placeholder turn id.
+- Each `OwnedChild` freezes its parent session at start. Reservation, factory input, progress,
+  completion, failure, interruption, output lookup, message delivery, and shutdown cleanup use that
+  same owner. `SubagentOutput` and `SendMessage` cannot access a child owned by another session.
+- Child runtimes reuse the real Node runtime through `ChildRuntimeFactory`, receive a frozen narrowed
+  tool list, and do not expose recursive `Task` routing unless an explicitly supported profile design
+  introduces it later.
+- Internal subagent updates carry `parent_session_id` only for gateway filtering. The gateway drops
+  stale-session events, strips the ownership field, bounds every public field, and never projects raw
+  child reports, provider payloads, tool output, or private process data.
+- Canonical `subagent.updated` schemas remain closed with `additionalProperties: false`. Generated
+  TypeScript event parameter interfaces therefore need not satisfy `Record<string, unknown>`.
+  Generic consumers accept `object` or `unknown` and normalize at their dynamic inspection boundary;
+  they must not loosen the schema or add unsafe casts merely to obtain an index signature.
+
+### 4. Validation & Error Matrix
+
+- Source startup throws -> close initialized sources in reverse order, then return
+  `integration_start_failed` without the raw exception.
+- Duplicate source id -> `duplicate_integration_source`; duplicate tool route ->
+  `duplicate_tool_route`; neither may mutate the built-in manifest.
+- Unknown extension approval route -> deny before adapter execution.
+- Child lookup/message with a mismatched parent session -> `missing` / `unavailable`, with no child
+  handle call and no cross-session record exposure.
+- Parent shutdown with a running child -> abort, persist interruption with the child's frozen owner,
+  close within the configured bound, and remain idempotent.
+- Internal update owner differs from the active resumed session -> drop the event. Missing/invalid
+  required public fields -> do not emit `subagent.updated`.
+- Public subagent event contains an undeclared field -> canonical contract validation fails.
+- A newly generated closed event parameter type lacks a string index signature -> fix the generic
+  consumer boundary; do not change `additionalProperties` to make TypeScript compile.
+
+### 5. Good/Base/Bad Cases
+
+- Good: resume session B, start `Task`, persist the child under B and its real parent turn, deliver
+  output/messages only through B, and emit running/completed updates only while B is active.
+- Good: an old background child from session A completes after resuming B; its durable A record is
+  updated but its UI event is filtered from B.
+- Base: no MCP/plugin config exists; built-in skills and subagent profiles still compose, and close
+  remains a no-op-safe ordered lifecycle.
+- Bad: keep `parentSessionId` only in controller constructor state; children started after resume are
+  persisted under the backend's original session.
+- Bad: expose `parent_session_id`, child report text, or provider response fields in
+  `subagent.updated`.
+- Bad: add `[key: string]: unknown` or open `additionalProperties` to a security-bounded event solely
+  because a generic reducer expects `Record<string, unknown>`.
+
+### 6. Tests Required
+
+- Composition tests assert deterministic start/reverse-close, idempotent bounded shutdown, partial
+  failure cleanup, built-in manifest immutability, collision rejection, and package DAG direction.
+- Runtime/tool tests assert `ownerSessionId` and `ownerTurnId` on ordinary execution and approval
+  continuation, plus Task forwarding into the controller.
+- Controller tests use real SQLite task storage to assert dynamic session/turn ownership across
+  start, progress, terminal state, output, messaging, interruption, and close.
+- Backend integration runs a real parent/child/parent provider sequence, asserts the child sees only
+  its frozen tools, checks durable parent ownership, and proves no Python process starts.
+- Gateway/contract tests assert bounded `subagent.updated`, stale-session filtering, undeclared-field
+  rejection, resource/command projection, and no raw child report/provider payload.
+- TUI tests assert one existing task row updates in place and actions route by child session id.
+- Run a fresh contracts build before TUI build/typecheck so closed generated interfaces cannot be
+  hidden by stale `dist` declarations.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const parentSessionId = controllerOptions.parentSessionId;
+store.updateProgress({ taskId, parentSessionId, childSessionId, sequence, summary });
+
+// Weakening the public schema only to satisfy a generic consumer is also wrong.
+const params: Record<string, unknown> = event.params as Record<string, unknown>;
+```
+
+#### Correct
+
+```typescript
+const parentSessionId = input.parentSessionId?.trim() || controllerOptions.parentSessionId;
+const owned = { taskId, parentSessionId, childSessionId };
+store.updateProgress({
+	taskId: owned.taskId,
+	parentSessionId: owned.parentSessionId,
+	childSessionId: owned.childSessionId,
+	sequence,
+	summary,
+});
+
+export function reduceRuntimeEvent(state: RuntimeShellState, method: string, input: object) {
+	const params = Object.fromEntries(Object.entries(input));
+	if (method === "subagent.updated") return applySubagentUpdate(state, params);
+	return state;
+}
+```
