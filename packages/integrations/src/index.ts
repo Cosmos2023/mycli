@@ -17,6 +17,47 @@ export type {
 } from "./foundation/lifecycle.ts";
 export { defineIntegrationRegistration } from "./foundation/registration.ts";
 export type { IntegrationRegistration } from "./foundation/registration.ts";
+export { HookAllowlistStore, HookAllowlistStoreError } from "./hooks/allowlist.ts";
+export {
+	hookCommandDigest,
+	hookConfigPathHash,
+	hookIdentity,
+} from "./hooks/allowlist.ts";
+export {
+	configuredHookMatches,
+	discoverHookConfig,
+} from "./hooks/config.ts";
+export type { DiscoverHookConfigOptions } from "./hooks/config.ts";
+export { HookManagementService } from "./hooks/management.ts";
+export type {
+	HookManagementResponse,
+	HookManagementRow,
+	HookManagementServiceOptions,
+} from "./hooks/management.ts";
+export { HookManager } from "./hooks/manager.ts";
+export type {
+	HookManagerOptions,
+	HookRegistration,
+} from "./hooks/manager.ts";
+export { ConfiguredHookRunner } from "./hooks/runner.ts";
+export type { ConfiguredHookRunnerOptions } from "./hooks/runner.ts";
+export type {
+	ConfiguredHookExecutorContract,
+	ConfiguredHookMatcher,
+	ConfiguredHookMatchInput,
+	ConfiguredHookSpec,
+	ConfiguredHookTraceSummary,
+	HookAllowlistSnapshot,
+	HookApprovalReason,
+	HookApprovalRecord,
+	HookApprovalStatus,
+	HookConfigDiagnostic,
+	HookConfigDiscovery,
+	HookConfigScope,
+	HookEnvironmentPolicy,
+	HookShellKind,
+	HookWorkingDirectory,
+} from "./hooks/types.ts";
 export { McpClient } from "./mcp/client.ts";
 export type { McpClientOptions } from "./mcp/client.ts";
 export { discoverMcpConfig } from "./mcp/config.ts";
