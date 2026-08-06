@@ -43,6 +43,25 @@ export {
 } from "./schema.ts";
 export { SQLiteSessionStore } from "./sqlite-session-store.ts";
 export type { SQLiteSessionStoreOptions } from "./sqlite-session-store.ts";
+export {
+	SUBAGENT_TASK_ERROR_MAX_CHARS,
+	SUBAGENT_TASK_OUTPUT_REFERENCE_MAX_CHARS,
+	SUBAGENT_TASK_PROGRESS_MAX_CHARS,
+	SUBAGENT_TASK_REPORT_MAX_CHARS,
+} from "./subagent-task-store.ts";
+export type {
+	CompleteSubagentTaskInput,
+	FailSubagentTaskInput,
+	InterruptSubagentTaskInput,
+	ReserveSubagentTaskInput,
+	SubagentTaskOwnership,
+	SubagentTaskPayload,
+	SubagentTaskRecord,
+	SubagentTaskStatus,
+	SubagentTaskStore,
+	SubagentTaskUsage,
+	UpdateSubagentTaskProgressInput,
+} from "./subagent-task-store.ts";
 export { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 export type { SQLiteSessionStateRepositoryOptions } from "./sqlite-session-state.ts";
 export {

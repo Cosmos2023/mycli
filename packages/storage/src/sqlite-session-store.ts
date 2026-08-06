@@ -58,6 +58,8 @@ import type {
 import type { UpsertShellSnapshotInput } from "./shell-transcript-store.ts";
 import { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 import { stableJson } from "./stable-json.ts";
+import { SQLiteSubagentTaskRepository } from "./subagent-task-store.ts";
+import type { SubagentTaskStore } from "./subagent-task-store.ts";
 
 export interface SQLiteSessionStoreOptions {
 	readonly dbPath: string;
@@ -98,6 +100,7 @@ owner_pid
 `;
 
 export class SQLiteSessionStore implements SessionStore {
+	readonly subagentTasks: SubagentTaskStore;
 	readonly #database: Database.Database;
 	readonly #clock: () => string;
 	readonly #ownerId: string;
@@ -125,6 +128,11 @@ export class SQLiteSessionStore implements SessionStore {
 				clock: this.#clock,
 				write: <Result>(operation: () => Result) => this.#write(operation),
 				...(options.stateFailpoint ? { failpoint: options.stateFailpoint } : {}),
+			});
+			this.subagentTasks = new SQLiteSubagentTaskRepository({
+				database: this.#database,
+				clock: this.#clock,
+				write: <Result>(operation: () => Result) => this.#write(operation),
 			});
 			this.recoverInterruptedTurns();
 		} catch (error) {

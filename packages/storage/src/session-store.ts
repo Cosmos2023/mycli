@@ -14,6 +14,7 @@ import type {
 	RuntimeErrorCode,
 } from "@mycli/core";
 import type { ShellTranscriptStore } from "./shell-transcript-store.ts";
+import type { SubagentTaskStore } from "./subagent-task-store.ts";
 
 export interface ReserveTurnInput {
 	readonly sessionId: string;
@@ -345,6 +346,7 @@ export interface TurnStore {
 }
 
 export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscriptStore {
+	readonly subagentTasks: SubagentTaskStore;
 	commitApprovalResult(input: CommitApprovalResultInput): ApprovalCheckpoint;
 	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord;
 }

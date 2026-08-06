@@ -143,6 +143,26 @@ CREATE TABLE IF NOT EXISTS runtime_turns (
     PRIMARY KEY (session_id, client_turn_id),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS subagent_tasks (
+    task_id TEXT PRIMARY KEY,
+    parent_session_id TEXT NOT NULL,
+    parent_turn_id TEXT NOT NULL,
+    child_session_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress_sequence INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_parent
+ON subagent_tasks(parent_session_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_child
+ON subagent_tasks(parent_session_id, child_session_id);
 `;
 
 export const BACKFILL_SEARCH_SQL = `

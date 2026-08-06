@@ -172,3 +172,23 @@ export type {
 	SkillRegistryDiagnostics,
 	SkillSourceKind,
 } from "./skills/types.ts";
+export {
+	BUILTIN_SUBAGENT_PROFILES,
+	GLOBAL_CHILD_TOOL_DENYLIST,
+} from "./subagents/builtin-profiles.ts";
+export { SubagentProfileRegistry } from "./subagents/profile-registry.ts";
+export type { SubagentProfileRegistryOptions } from "./subagents/profile-registry.ts";
+export { resolveChildTools } from "./subagents/tool-scope.ts";
+export type {
+	ResolvedChildTools,
+	ResolveChildToolsInput,
+} from "./subagents/tool-scope.ts";
+export type {
+	SubagentBudget,
+	SubagentProfile,
+	SubagentProfileIssue,
+	SubagentProfileRecord,
+	SubagentProfileRegistryDiagnostics,
+	SubagentProfileSourceDirectory,
+	SubagentProfileSourceKind,
+} from "./subagents/types.ts";
