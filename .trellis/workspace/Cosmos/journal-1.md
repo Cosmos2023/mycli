@@ -95,3 +95,36 @@ Completed the Node-owned persistent shell milestone: bounded output, pipe and na
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Complete Node runtime M7 extension parity
+
+**Date**: 2026-08-06
+**Task**: Complete Node runtime M7 extension parity
+**Branch**: `feature/mycli-node-runtime-rewrite`
+
+### Summary
+
+Completed M7 parity fixtures, no-Python extension smoke, packed and cross-platform gates, MCP schema adaptation, executable contracts, and a successful credential-gated Responses rerun.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `95b0e868` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
