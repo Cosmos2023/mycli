@@ -39,6 +39,32 @@ test("creates stable MCP registrations and validates arguments through the share
 	assert.equal(callCount, 1);
 });
 
+test("adapts a Draft-07 MCP schema for the host AJV without mutating the descriptor", async () => {
+	const client: McpClientContract = {
+		callTool: async () => ({ content: [{ type: "text", text: "ok" }], isError: false }),
+	};
+	const inputSchema = {
+		$schema: "http://json-schema.org/draft-07/schema#",
+		type: "object",
+		properties: { path: { type: "string" } },
+		required: ["path"],
+		additionalProperties: false,
+	} as const;
+	const registration = createMcpToolRegistration(client, {
+		...descriptor(),
+		inputSchema,
+	});
+	const router = new ToolRouter({
+		adapters: [registration.adapter],
+		exposure: [registration.definition],
+	});
+
+	assert.equal("$schema" in registration.definition.inputSchema, false);
+	assert.equal(inputSchema.$schema, "http://json-schema.org/draft-07/schema#");
+	assert.equal((await router.execute(call("{}"), executionOptions())).errorKind, "invalid_arguments");
+	assert.equal((await router.execute(call('{"path":"README.md"}'), executionOptions())).success, true);
+});
+
 test("bounds mixed MCP results and preserves server error semantics", async () => {
 	const results: McpToolCallResult[] = [
 		{

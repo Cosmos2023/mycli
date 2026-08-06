@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "config": {
+    "legacy_toml": "provider = \"openai\"\nprotocol = \"responses\"\nmodel = \"legacy-model\"\napi_base_url = \"https://legacy.example.test/v1\"\nauth_ref = \"legacy-auth\"\nrequest_max_retries = 1\n",
+    "repo_toml": "provider = \"openai\"\nprotocol = \"responses\"\nmodel = \"repo-model\"\napi_base_url = \"https://repo.example.test/v1\"\nauth_ref = \"repo-auth\"\nrequest_max_retries = 2\n",
+    "user_toml": "provider = \"openai\"\nprotocol = \"responses\"\nmodel = \"user-model\"\napi_base_url = \"https://user.example.test/v1\"\nauth_ref = \"user-auth\"\nrequest_max_retries = 3\n",
+    "env": {
+      "MYCLI_BASE_URL": "https://env.example.test/v1/",
+      "MYCLI_MODEL": "env-model",
+      "MYCLI_REQUEST_MAX_RETRIES": "4",
+      "MYCLI_STREAM_MAX_RETRIES": "6",
+      "MYCLI_THINKING_ENABLED": "false"
+    },
+    "cli_model": "cli-model",
+    "expected": {
+      "provider": "openai",
+      "protocol": "responses",
+      "model": "cli-model",
+      "api_base_url": "https://env.example.test/v1",
+      "auth_ref": "user-auth",
+      "request_max_retries": 4,
+      "stream_max_retries": 6,
+      "thinking_enabled": false
+    }
+  },
+  "doctor": {
+    "checks": [
+      {
+        "name": "config",
+        "status": "ok",
+        "message": "configuration loaded"
+      },
+      {
+        "name": "extensions",
+        "status": "warning",
+        "message": "migration required",
+        "detail": "python plugin"
+      },
+      {
+        "name": "storage",
+        "status": "failed",
+        "message": "database unavailable"
+      }
+    ],
+    "expected": {
+      "ok": false,
+      "action": "doctor",
+      "message": "mycli doctor",
+      "okCount": 1,
+      "warningCount": 1,
+      "failedCount": 1,
+      "exitCode": 1
+    },
+    "human_lines": [
+      "mycli doctor",
+      "[OK] config: configuration loaded",
+      "[WARN] extensions: migration required (python plugin)",
+      "[FAIL] storage: database unavailable",
+      "Summary: 1 ok, 1 warning, 1 failed"
+    ]
+  }
+}

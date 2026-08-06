@@ -206,7 +206,7 @@ test("maps sandbox failure and timeout without leaking process details", async (
 	const timeout = await approvedSpec(fixture, "hang-tree", "pre_tool_use", {
 		commandTail: [marker],
 		hookId: "timeout",
-		timeoutMs: 100,
+		timeoutMs: 1_000,
 	});
 	assert.deepEqual(await configuredRunner(fixture).run(timeout, invocation(), freshSignal()), {
 		action: "error",

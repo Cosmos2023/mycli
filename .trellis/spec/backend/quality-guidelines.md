@@ -569,6 +569,71 @@ Keep storage layout centralized and treat trace files as bounded diagnostics, no
 
 ---
 
+### Scenario: Deterministic Process-Tree Timeout Tests
+
+#### 1. Scope / Trigger
+- Trigger: integration tests that start Node, MCP, plugin, hook, shell, or other child-process trees
+  and assert timeout, interruption, or cleanup behavior.
+- These tests run concurrently with other process-heavy files. A timeout that is safe for a warm
+  single-file run is not evidence that the fixture reached the state the test intends to clean up.
+
+#### 2. Signatures
+- Readiness helper: `readFileEventually(path) -> Promise<string>` or an equivalent explicit
+  child-process handshake.
+- Cleanup helper: `assertProcessStops(pid) -> Promise<void>`.
+- Operation timeout: a product-facing timeout passed to the runtime under test, separate from the
+  test runner's outer deadline.
+
+#### 3. Contracts
+- A process-tree cleanup test must prove the descendant started before asserting that cleanup stopped
+  it. Use a PID/readiness marker written by the descendant or a protocol-ready event.
+- The product timeout must include realistic cold-start and scheduler margin for the slowest CI
+  platform. Use a separate outer test deadline to detect hangs; do not encode scheduler performance
+  into a 50-100ms product timeout merely to keep the test fast.
+- Polling for a readiness marker after the timed operation returns cannot repair an operation timeout
+  that killed the parent before the marker was created.
+- Keep assertions semantic: timeout result, known descendant PID, eventual process-tree absence, and
+  bounded diagnostics. Do not assert exact elapsed milliseconds.
+
+#### 4. Validation & Error Matrix
+- Timed operation returns before readiness marker exists -> test setup failure, not cleanup evidence.
+- Marker identifies a live descendant and timeout returns expected result -> poll for process exit.
+- Descendant remains live past the cleanup deadline -> cleanup regression.
+- Test passes alone but fails in the full package suite -> treat as an implicit scheduling assumption;
+  reproduce in the full suite before modifying production cleanup.
+
+#### 5. Good/Base/Bad Cases
+- Good: allow one second for a Node hook tree to cold-start under concurrent load, confirm its PID
+  marker, then assert the timeout result and eventual PID absence.
+- Base: a fake controller unit test uses a deterministic clock and does not start OS processes.
+- Bad: use a 100ms timeout, wait for a marker only after the operation ends, and increase marker
+  polling when the full suite fails.
+
+#### 6. Tests Required
+- Run the focused file to verify the semantic path.
+- Run the complete owning package suite to reproduce scheduler/process contention.
+- Run the repository-wide suite before completion because workspace concurrency can change startup
+  timing again.
+- Cross-platform CI must cover the process-sensitive test on the minimum and current Node versions.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+const result = await runTree({ timeoutMs: 100 });
+const pid = await readFileEventually(marker); // The parent may have died before creating it.
+```
+
+Correct:
+```typescript
+const result = await runTree({ timeoutMs: 1_000 });
+const pid = Number(await readFileEventually(marker));
+assert.equal(result.kind, "timeout");
+await assertProcessStops(pid);
+```
+
+---
+
 ## Code Review Checklist
 
 <!-- What reviewers should check -->

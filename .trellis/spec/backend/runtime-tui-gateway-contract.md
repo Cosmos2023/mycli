@@ -2266,3 +2266,98 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, inp
 	return state;
 }
 ```
+
+## Scenario: Node M7 Extension Gateway Surface And Ownership Boundary
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node `extension.manifest`, resource/command RPCs, integration composition,
+  `subagent.updated`, extension shutdown, or the M7/M8 rollout boundary.
+- M7 exposes Node-native integrations through the existing gateway; it does not introduce a second
+  runtime loop or permit silent Python fallback after a Node turn is accepted.
+
+### 2. Signatures
+
+- `extension.manifest({}) -> {schema_version, agent, rpc_methods, event_streams, capabilities,
+  tool_manifest?}`.
+- `resource.list({}) -> {resources}`.
+- `command.list({}) -> {commands}` and `command.run({command, arguments?}) -> CommandResult`.
+- `subagent.updated({subagent: {run_id, child_session_id, role, status, summary, progress}})`.
+- `createRuntimeIntegrationComposition(options) -> Promise<RuntimeIntegrationComposition>`.
+- Shutdown: `RuntimeIntegrationComposition.close() -> Promise<void>`.
+
+### 3. Contracts
+
+- `extension.manifest` is provider-free and uses the generated gateway catalog as the source of RPC
+  and event names. M7 requires `extension.manifest`, `resource.list`, `command.list`, `command.run`,
+  and the `subagent.updated` stream to remain advertised and routable by the compiled Node CLI.
+- `agent.runtime` is `node`. The optional `tool_manifest` is the frozen combined built-in/extension
+  discovery view; requesting it does not execute tools or start a provider.
+- Resource and command responses contain only bounded allowlisted display fields. They do not expose
+  MCP headers/config argv, plugin environment, hook commands, raw tool output, provider payloads, or
+  private child reports.
+- Integration sources initialize in `skill -> mcp -> plugin -> subagent` order and close in reverse.
+  Startup failure closes every initialized source; close is bounded and idempotent.
+- For each hook point, the stable source order is built-in hooks, configured command hooks, then
+  Plugin API v2 hooks. Argument modifications are chained in that order. A deny/error stops
+  fail-closed points; post-operation points contain errors without rewriting persisted tool results.
+- `subagent.updated` filters events whose internal `parent_session_id` is not the active resumed
+  session, removes that internal owner field, and bounds the closed public payload before emission.
+- M7 keeps `python-sidecar` as an explicit rollback backend and includes no Python fallback inside a
+  Node-owned turn. Deleting Python production code, changing the default/backend-only policy, and
+  removing rollback are M8 work.
+
+### 4. Validation & Error Matrix
+
+- Unknown gateway request -> `method_not_found`; invalid command/resource arguments ->
+  `invalid_params` without provider startup.
+- Duplicate integration source or tool route -> fail composition before a turn is accepted and close
+  initialized sources.
+- Resource/command provider throws -> return a bounded structured failure; do not emit raw exception
+  text or partially mutate another source.
+- Stale subagent parent session -> drop the public event while retaining its durable task update.
+- Invalid/oversized subagent fields -> do not emit `subagent.updated`.
+- Extension close timeout/failure -> continue reverse cleanup and keep shutdown idempotent.
+
+### 5. Good/Base/Bad Cases
+
+- Good: the compiled gateway lists a skill resource, MCP resource, plugin command, and subagent
+  profile, then runs the extension chain through one Node-owned turn and closes all child processes.
+- Base: no user extensions still exposes built-in skills/profiles and an empty bounded MCP/plugin
+  management surface.
+- Bad: hand-maintain a second list of M7 RPC/event names outside the generated catalog.
+- Bad: publish internal parent ids, prompts, reports, commands, headers, endpoint data, or tool output
+  in gateway extension payloads.
+- Bad: catch a failed Node extension turn and transparently retry it through Python.
+
+### 6. Tests Required
+
+- Gateway tests assert catalog-backed manifest names, combined tool manifest projection, bounded
+  resources/commands, command dispatch, stale-session filtering, and closed `subagent.updated` shape.
+- Composition tests assert ordered startup/reverse close, partial-failure cleanup, route collision
+  failure, package DAG direction, and built-in manifest immutability.
+- Hook manager/runtime tests assert built-in/configured/plugin order, chained modifications,
+  fail-closed pre-hook behavior, and contained post-hook errors.
+- M7 no-Python integration drives Skill -> MCP -> plugin -> foreground Task -> final text, verifies
+  durable context/tool/task records, and proves MCP/plugin cleanup plus an absent Python marker.
+- Packed smoke resolves M7 assets/dependencies and runs compiled management commands. CI config runs
+  the M7 lifecycle gate on macOS/Linux/Windows with Node 22.19 and 24.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+try {
+	return await nodeRuntime.run(turn);
+} catch {
+	return pythonSidecar.run(turn);
+}
+```
+
+#### Correct
+
+```typescript
+const backend = selectBackendBeforeTurn(config);
+return backend.run(turn); // Ownership is fixed for the accepted turn.
+```

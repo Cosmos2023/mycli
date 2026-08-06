@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "expected": {
+    "skills": [
+      {
+        "name": "analyze",
+        "source": "shared_repo"
+      },
+      {
+        "name": "review",
+        "source": "repo"
+      }
+    ],
+    "profiles": [
+      {
+        "id": "parity-agent",
+        "source": "repo",
+        "status": "enabled",
+        "allowed_tools": [
+          "Read"
+        ],
+        "python_budget": {
+          "maxTurns": 8,
+          "noProgressTurnLimit": 3
+        },
+        "node_budget": {}
+      }
+    ],
+    "hooks": [
+      {
+        "id": "parity-hook",
+        "source": "repo",
+        "point": "pre_tool_use",
+        "enabled": true,
+        "timeout_ms": 3000,
+        "working_directory": "workspace",
+        "environment": "minimal"
+      }
+    ],
+    "mcp": [
+      {
+        "id": "local",
+        "transport": "stdio",
+        "enabled": true,
+        "timeout_ms": 3000
+      },
+      {
+        "id": "remote",
+        "transport": "streamable_http",
+        "enabled": false,
+        "timeout_ms": 5000
+      }
+    ],
+    "python_plugins": [
+      {
+        "id": "legacy-python",
+        "python_status": "supported",
+        "node_status": "migration_required"
+      }
+    ],
+    "node_task": {
+      "task_id": "task-parity",
+      "parent_session_id": "parent-parity",
+      "parent_turn_id": "turn-parity",
+      "child_session_id": "child-parity",
+      "profile_id": "parity-agent",
+      "status": "completed",
+      "report": "parity complete"
+    }
+  }
+}

@@ -41,6 +41,10 @@ jobs:
           Copy-Item `
             native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
             src/mycli/native/windows/mycli-windows-sandbox.exe
+          New-Item -ItemType Directory -Force packages/tools/native/windows | Out-Null
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            packages/tools/native/windows/mycli-windows-sandbox.exe
       - run: uv sync --locked --dev
       - name: Verify packaged Windows helper wheel
         if: runner.os == 'Windows'
@@ -152,6 +156,80 @@ jobs:
         run: |
           set +e
           node scripts/smoke_node_m5_state.mjs --protocol responses
+          code=$?
+          set -e
+          if [ "$code" -eq 77 ]; then
+            exit 0
+          fi
+          exit "$code"
+
+  node-m7-gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: ["22.19.0", "24.x"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install Linux process prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential python3 make g++
+      - name: Build Node Windows sandbox helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+          New-Item -ItemType Directory -Force packages/tools/native/windows | Out-Null
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            packages/tools/native/windows/mycli-windows-sandbox.exe
+      - run: uv sync --locked --dev
+      - run: npm ci
+      - name: Node M7 extension parity and lifecycle gate
+        run: npm run test:m7
+      - name: Packed npm CLI smoke
+        run: npm run smoke:package
+
+  node-m7-live-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: node-m7-gate
+    runs-on: ubuntu-latest
+    environment: node-m7-live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential python3 make g++
+      - run: npm ci
+      - run: npm run build
+      - name: Node M7 live extension smoke
+        shell: bash
+        env:
+          MYCLI_API_KEY: ${{ secrets.MYCLI_API_KEY }}
+          MYCLI_BASE_URL: ${{ secrets.MYCLI_BASE_URL }}
+          MYCLI_MODEL: ${{ secrets.MYCLI_MODEL }}
+          MYCLI_PROVIDER: ${{ secrets.MYCLI_PROVIDER }}
+          MYCLI_PROTOCOL: ${{ secrets.MYCLI_PROTOCOL }}
+        run: |
+          protocol="${MYCLI_PROTOCOL:-responses}"
+          set +e
+          node scripts/smoke_node_m7_extensions.mjs --protocol "$protocol"
           code=$?
           set -e
           if [ "$code" -eq 77 ]; then

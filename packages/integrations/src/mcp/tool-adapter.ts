@@ -86,12 +86,13 @@ export function createMcpToolRegistration(
 	descriptor: McpToolDescriptor,
 ): IntegrationRegistration {
 	validateInputSchema(descriptor.inputSchema);
+	const inputSchema = hostInputSchema(descriptor.inputSchema);
 	const id = createIntegrationId("mcp", descriptor.serverId, descriptor.name);
 	const definition: ToolDefinition = Object.freeze({
 		id,
 		name: providerSafeToolName("mcp", descriptor.serverId, descriptor.name),
 		description: descriptor.description || `MCP tool ${descriptor.name}`,
-		inputSchema: descriptor.inputSchema,
+		inputSchema,
 	});
 	const adapter = new McpTool(client, descriptor, definition);
 	return defineIntegrationRegistration({
@@ -101,6 +102,14 @@ export function createMcpToolRegistration(
 		adapter,
 		originMetadata: { server: descriptor.serverId, tool: descriptor.name },
 	});
+}
+
+function hostInputSchema(
+	schema: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return Object.freeze(Object.fromEntries(
+		Object.entries(schema).filter(([key]) => key !== "$schema"),
+	));
 }
 
 function validateInputSchema(schema: Readonly<Record<string, unknown>>): void {

@@ -202,9 +202,96 @@ Correct:
 
 ## Non-goals
 
-This manifest does not productize ACP, subagents, browser, or computer-use.
-MCP remains a minimum local stdio tool lifecycle foundation here; hosted MCP
-auth, OAuth, SSE, plugin marketplace, and user-facing MCP management remain out
-of scope. Skills remain a local discovery/invocation/diagnostics foundation;
-skill marketplace, sync, install, and subagent skill orchestration remain out
-of scope.
+This manifest does not productize ACP, browser, or computer-use. M7 includes
+local/remote MCP discovery and management, Plugin API v2, skills, and
+session-owned subagents. Hosted MCP OAuth, a plugin/skill marketplace, and
+skill synchronization remain out of scope.
+
+## Scenario: Node M7 Combined Extension Tools And MCP Schemas
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node integration registration, `combinedToolManifest`, MCP tool projection,
+  stable Skill routing, extension approval metadata, or subagent profile budgets.
+- This boundary combines externally supplied schemas with the host AJV 2020 validator. External
+  schema dialect declarations must not be allowed to select an unsupported validator dialect.
+
+### 2. Signatures
+
+- `combinedToolManifest(builtin, registrations) -> CombinedToolManifest`.
+- `createMcpToolRegistration(client, descriptor) -> IntegrationRegistration`.
+- `createSkillToolRegistration(registry) -> IntegrationRegistration`.
+- `SubagentProfile.budget?: {maxTurns?, maxToolCalls?, noProgressTurnLimit?}`.
+- Discovery RPC: `extension.manifest({})`, with optional `tool_manifest` in the response.
+
+### 3. Contracts
+
+- The combined manifest is a frozen copy with `schema_version=1`, `source=combined`, deterministic
+  toolset counts, all built-ins in their original order, and contributed tools after them.
+- Contributed ids and provider route names must be unique across both built-in and extension tools.
+  Extension entries use `toolset=external`, `availability.status=available`, and bounded origin
+  metadata. Building the combined view never mutates the built-in manifest or starts a provider.
+- The default skill surface contributes exactly one stable `Skill` route. Discovering, adding, or
+  removing individual skills changes the catalog, not the provider tool schema.
+- MCP accepts object input schemas from the SDK. If the root object contains `$schema`, the host
+  projection copies the root and removes only that marker before AJV 2020 compilation. Nested
+  schema keywords and the original SDK descriptor remain unchanged.
+- MCP schemas still require `type=object`, an object `properties` map, and a `required` array whose
+  members are declared properties. The dialect adaptation does not relax schema validation.
+- MCP and plugin tools have explicit approval metadata and fail closed when no policy exists.
+- Node subagent profiles have no implicit provider-step, tool-call, or no-progress budget. Only
+  explicitly configured positive integer fields are forwarded to the child runtime. Python's
+  historical implicit `maxTurns=8` and `noProgressTurnLimit=3` are an approved migration difference.
+
+### 4. Validation & Error Matrix
+
+- Duplicate tool id -> `duplicate_tool_id`; duplicate provider route -> `duplicate_tool_route`.
+- Definition id differs from registration id -> `tool_definition_id_mismatch`.
+- Invalid/oversized origin metadata -> `invalid_tool_origin` or `tool_origin_too_large`.
+- MCP root `$schema` naming Draft-07 -> remove the root marker in the host copy and compile the rest.
+- MCP schema missing object shape or with undeclared required names -> `invalid_mcp_tool_schema`.
+- Unknown extension approval route -> deny before adapter execution.
+- Missing subagent budget -> continue without a runtime ceiling; malformed explicit budget -> reject
+  the profile during discovery.
+
+### 5. Good/Base/Bad Cases
+
+- Good: an SDK descriptor with Draft-07 `$schema`, one required string property, and
+  `additionalProperties=false` validates through the shared router while the descriptor still
+  retains its original `$schema` value.
+- Base: no MCP/plugin config produces the unchanged built-in manifest plus the stable Skill and
+  subagent control registrations selected by composition.
+- Bad: pass the Draft-07 root marker directly to AJV 2020 and crash during integration startup.
+- Bad: recursively delete `$schema` or other schema fields from the external descriptor.
+- Bad: add Python's implicit 8-step/3-no-progress defaults to a Node profile with no budget.
+
+### 6. Tests Required
+
+- Combined-manifest tests assert ordering, frozen copies, source/toolset metadata, origin bounds,
+  duplicate id/route rejection, and built-in immutability.
+- MCP adapter tests use a real Draft-07 root marker, assert the descriptor is unchanged, reject `{}`
+  when a required property is missing, and accept valid input through `ToolRouter`.
+- Composition tests assert explicit extension approval policies and package dependency direction.
+- Skill tests assert one stable provider route regardless of catalog size.
+- Subagent profile/controller/runtime tests assert missing budgets remain empty and turns can exceed
+  the historical Python defaults.
+- M7 parity fixtures record the approved Python/Node budget difference rather than normalizing it
+  away.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const definition = { ...descriptor, inputSchema: descriptor.inputSchema };
+const profile = { ...loaded, budget: loaded.budget ?? { maxTurns: 8 } };
+```
+
+#### Correct
+
+```typescript
+const inputSchema = Object.freeze(Object.fromEntries(
+	Object.entries(descriptor.inputSchema).filter(([key]) => key !== "$schema"),
+));
+const profile = Object.freeze({ ...loaded, ...(loaded.budget ? { budget: loaded.budget } : {}) });
+```

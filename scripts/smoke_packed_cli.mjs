@@ -80,6 +80,31 @@ try {
 }
 process.stdout.write("native-pty-ok\n");
 `;
+const M7_PACKAGE_SMOKE = String.raw`
+import assert from "node:assert/strict";
+import { statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+	HookAllowlistStore,
+	McpClient,
+	PluginProcessHost,
+	SkillRegistry,
+	SubagentController,
+} from "@mycli/integrations";
+
+assert.equal(typeof HookAllowlistStore, "function");
+assert.equal(typeof McpClient, "function");
+assert.equal(typeof PluginProcessHost, "function");
+assert.equal(typeof SkillRegistry, "function");
+assert.equal(typeof SubagentController, "function");
+assert.ok(import.meta.resolve("@anthropic-ai/sdk"));
+assert.ok(import.meta.resolve("@modelcontextprotocol/sdk/server/mcp.js"));
+const integrationsEntry = fileURLToPath(import.meta.resolve("@mycli/integrations"));
+const workerBootstrap = join(dirname(integrationsEntry), "plugins", "worker-bootstrap.js");
+assert.equal(statSync(workerBootstrap).isFile(), true);
+process.stdout.write("m7-package-ok\n");
+`;
 
 const tempRoot = await mkdtemp(join(tmpdir(), "mycli-packed-cli-"));
 try {
@@ -130,6 +155,33 @@ try {
 	if (!nativeOutput.includes("native-pty-ok")) {
 		throw new Error("packed_cli_smoke_failed: installed native PTY smoke is incomplete");
 	}
+	const m7PackageSmoke = join(installDir, "m7-package-smoke.mjs");
+	await writeFile(m7PackageSmoke, M7_PACKAGE_SMOKE, "utf8");
+	const m7PackageOutput = await run(process.execPath, [m7PackageSmoke], installDir, true);
+	if (!m7PackageOutput.includes("m7-package-ok")) {
+		throw new Error("packed_cli_smoke_failed: installed M7 assets are incomplete");
+	}
+	const packedHome = join(tempRoot, "home");
+	const managementEnv = {
+		...process.env,
+		HOME: packedHome,
+		USERPROFILE: packedHome,
+		MYCLI_API_KEY: "",
+		MYCLI_AUTH_REF: "",
+	};
+	for (const [args, action] of [
+		[["hooks", "list", "--json"], "list"],
+		[["plugins", "list", "--json"], "list"],
+		[["mcp", "list", "--json"], "list"],
+		[["subagents", "list", "--json"], "list"],
+		[["doctor", "--json"], "doctor"],
+	]) {
+		const output = await run(bin, args, installDir, true, managementEnv);
+		const payload = JSON.parse(output);
+		if (payload.action !== action || typeof payload.ok !== "boolean") {
+			throw new Error("packed_cli_smoke_failed: compiled management command is incomplete");
+		}
+	}
 	process.stdout.write(`${JSON.stringify({ status: "completed", packed_workspaces: tarballs.length })}\n`);
 } catch {
 	process.stderr.write("packed_cli_smoke_failed\n");
@@ -138,10 +190,11 @@ try {
 	await rm(tempRoot, { recursive: true, force: true });
 }
 
-function run(command, args, cwd, capture = false) {
+function run(command, args, cwd, capture = false, env = process.env) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, {
 			cwd,
+			env,
 			stdio: ["ignore", capture ? "pipe" : "ignore", "pipe"],
 			shell: process.platform === "win32",
 		});

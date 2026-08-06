@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "native"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

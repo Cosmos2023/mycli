@@ -1677,7 +1677,7 @@ git commit -m "feat(node-cli): add M7 doctor and migration guidance"
 - Modify: `.trellis/spec/backend/tool-manifest-contract.md`
 - Modify: `.trellis/spec/backend/plugin-runtime-contract.md`
 
-- [ ] **Step 1: Write failing Python/Node parity fixtures**
+- [x] **Step 1: Write failing Python/Node parity fixtures**
 
 Compare config precedence, skill/profile discovery, MCP/hook/plugin manifests, management human/JSON
 objects, doctor status reduction, and additive SQLite records. Normalize only timestamps, platform
@@ -1689,13 +1689,13 @@ assert node_payload["mcp"] == python_payload["mcp"]
 assert node_payload["python_plugins"][0]["status"] == "migration_required"
 ```
 
-- [ ] **Step 2: Write the no-Python end-to-end M7 integration test**
+- [x] **Step 2: Write the no-Python end-to-end M7 integration test**
 
 Launch `startNodeBackend()` with local fake provider, skill, MCP server, approved hook, v2 plugin,
 and subagent profile. Drive a turn through Skill -> MCP -> plugin -> subagent -> final text. Assert
 durable items/events/cleanup and a Python marker remains absent.
 
-- [ ] **Step 3: Write structural live smoke behavior**
+- [x] **Step 3: Write structural live smoke behavior**
 
 `smoke_node_m7_extensions.mjs` must:
 
@@ -1708,7 +1708,7 @@ durable items/events/cleanup and a Python marker remains absent.
   output;
 - close all child processes and prove no Python process/marker starts.
 
-- [ ] **Step 4: Run focused parity/integration tests and confirm gaps**
+- [x] **Step 4: Run focused parity/integration tests and confirm gaps**
 
 ```bash
 npm run build
@@ -1718,7 +1718,7 @@ uv run pytest tests/integration/test_node_runtime_m7_parity.py -q
 
 Expected before final wiring: FAIL on missing parity/smoke ownership; after implementation: PASS.
 
-- [ ] **Step 5: Extend package and cross-platform gates**
+- [x] **Step 5: Extend package and cross-platform gates**
 
 Add root scripts:
 
@@ -1733,7 +1733,7 @@ Packed smoke verifies integrations assets, Anthropic/MCP dependencies, plugin wo
 compiled utility commands. Cross-platform CI runs local stdio/plugin/hook/subagent lifecycle on
 macOS/Linux/Windows with Node 22.19 and 24.
 
-- [ ] **Step 6: Run the complete M7 quality gate**
+- [x] **Step 6: Run the complete M7 quality gate**
 
 ```bash
 npm run contracts:generate
@@ -1749,20 +1749,20 @@ npm run smoke:package
 Expected: every command exits 0. Run `npm run smoke:m7` with temporary real credentials only when
 available; exit 77 is recorded as skipped, never passed.
 
-- [ ] **Step 7: Run the compiled CLI smoke and inspect process/output safety**
+- [x] **Step 7: Run the compiled CLI smoke and inspect process/output safety**
 
 Run management commands from `apps/mycli/dist/cli.js`, then the local extension smoke. Inspect the
 process tree during execution and scan captured output for credentials/private fixture values. The
 report records versions, commands, exit codes, structural assertions, skip reasons, and no secrets.
 
-- [ ] **Step 8: Update executable contracts and the smoke report**
+- [x] **Step 8: Update executable contracts and the smoke report**
 
 Record stable gateway events, combined manifest rules, Plugin API v2 process protocol, hook failure
 ordering, subagent no-default-budget behavior, and M7/M8 ownership in `.trellis/spec/backend/`.
 Document actual verification results in the M7 report; do not claim unavailable platform/live lanes
 ran locally.
 
-- [ ] **Step 9: Commit after explicit user confirmation**
+- [x] **Step 9: Commit after explicit user confirmation**
 
 ```bash
 git add tests/fixtures/node_runtime_m7 tests/integration apps/mycli/test/m7-extensions.integration.test.ts scripts package.json .github/workflows/cross-platform.yml docs .trellis/spec/backend
@@ -1773,18 +1773,18 @@ git commit -m "feat(node-runtime): complete M7 extension parity"
 
 ## Final Completion Checklist
 
-- [ ] All 14 task commits were individually approved before commit; no amend or push occurred.
-- [ ] Anthropic uses `ModelProvider` and the same Node runtime loop as Responses/Chat.
-- [ ] Runtime and integrations package dependencies are acyclic.
-- [ ] Built-in tool manifest remains stable; skills use one `Skill` tool.
-- [ ] MCP, hooks, and plugins enforce sandbox, timeout, output, redaction, interrupt, and cleanup.
-- [ ] Plugin API v2 executes only compiled ESM in child processes; Python plugins are diagnostics-only.
-- [ ] Subagents use the same Node runtime, strictly narrowed tools, durable tasks, and no implicit
+- [x] All 14 task commits were individually approved before commit; no amend or push occurred.
+- [x] Anthropic uses `ModelProvider` and the same Node runtime loop as Responses/Chat.
+- [x] Runtime and integrations package dependencies are acyclic.
+- [x] Built-in tool manifest remains stable; skills use one `Skill` tool.
+- [x] MCP, hooks, and plugins enforce sandbox, timeout, output, redaction, interrupt, and cleanup.
+- [x] Plugin API v2 executes only compiled ESM in child processes; Python plugins are diagnostics-only.
+- [x] Subagents use the same Node runtime, strictly narrowed tools, durable tasks, and no implicit
   8-step/16-tool limit.
-- [ ] Setup and all management commands run before TTY/provider/backend startup.
-- [ ] Doctor is bounded, provider-free, and resilient to individual collector failures.
-- [ ] Existing config/auth/SQLite/TUI behavior remains compatible.
-- [ ] Node 22.19/24 and platform-sensitive CI lanes are configured.
-- [ ] Contract, build, lint, typecheck, test, parity, package, and available live gates pass.
-- [ ] Compiled M7 local smoke starts no Python process and emits no secret/private payload.
-- [ ] M7 docs and Trellis specs are current; Python deletion remains M8 work.
+- [x] Setup and all management commands run before TTY/provider/backend startup.
+- [x] Doctor is bounded, provider-free, and resilient to individual collector failures.
+- [x] Existing config/auth/SQLite/TUI behavior remains compatible.
+- [x] Node 22.19/24 and platform-sensitive CI lanes are configured.
+- [x] Contract, build, lint, typecheck, test, parity, package, and available live gates pass.
+- [x] Compiled M7 local smoke starts no Python process and emits no secret/private payload.
+- [x] M7 docs and Trellis specs are current; Python deletion remains M8 work.
