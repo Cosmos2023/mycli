@@ -1176,6 +1176,111 @@ if (method === "session.bootstrap" && session.pendingApproval) {
 return bootstrap;
 ```
 
+## Scenario: Provider-Free Node Management CLI And Setup
+
+### 1. Scope / Trigger
+- Trigger: Changes to Node CLI parsing, `setup`, `doctor`, hooks/plugins/MCP/subagent management,
+  user provider config writes, auth writes, or the setup TUI entrypoint.
+- Utility commands are a control-plane path. They must remain outside interactive backend,
+  provider, turn-runtime, and gateway/TUI startup unless `setup` explicitly opens its own TUI.
+
+### 2. Signatures
+- Parser:
+  `parseCliMode(argv) -> {kind: "interactive", runtimeArgs} | {kind: "management", command}`.
+- Executor: `ManagementExecutor.execute(command, signal?) -> Promise<ManagementResponse>`.
+- Auth writer:
+  `writeApiKey({homeDir, authRef, apiKey}) -> Promise<void>`.
+- Config writer:
+  `writeUserProviderConfig({homeDir, provider, protocol, model, apiBaseUrl, authRef,
+  promptCacheKeyEnabled, cacheControlEnabled}) -> Promise<string>`.
+- Setup TUI:
+  `runSetupTui({state, terminal?, signal?}) -> Promise<SetupWizardResult | undefined>`.
+- Commands:
+  `setup`, `doctor [--json]`, `hooks list|inspect|approve|revoke`,
+  `plugins list|inspect|run`, `mcp list|inspect`, and `subagents list|inspect`.
+
+### 3. Contracts
+- Parse management commands before runtime-backend selection, TTY validation, backend/provider
+  construction, gateway transport configuration, or TUI import.
+- Command types are action-specific closed unions. Required ids, command names, and parsed JSON
+  arguments are required fields on the corresponding union member, not optional fields recovered
+  with non-null assertions.
+- `--json` serializes the typed service response directly. Human renderers consume the same
+  response object and do not scrape JSON or provider/runtime output.
+- Plugin `--json-args` accepts one JSON object only. Arrays, scalars, malformed JSON, duplicates,
+  and missing values are invalid usage.
+- Management rows expose bounded metadata only. Subagent list/inspect rows must omit the profile
+  `prompt`; hook rows omit command/env values; no response includes API keys.
+- Setup builds provider rows from Node provider profiles and auth presence, including Anthropic.
+  TTY setup calls the in-process setup TUI; non-TTY setup and TUI startup failures use the plain
+  interaction. A user cancel does not fall through from TUI to plain setup.
+- The setup TUI returns its result in memory and releases terminal ownership. The legacy Python
+  entrypoint compatibility path may use `MYCLI_SETUP_STATE` and `MYCLI_SETUP_RESULT_PATH` until
+  M8, but any result file is mode `0600`; the Node CLI path does not use a result file.
+- Auth/config updates create a mode-`0700` user directory, write and fsync a sibling mode-`0600`
+  temporary file under a short exclusive lock, rename atomically, fsync the directory where
+  supported, and remove temporary/lock files. Concurrent auth merges serialize.
+- User config writing preserves unrelated TOML values/tables, updates `[model]` and cache fields,
+  normalizes trailing base-URL slashes, and removes legacy root or `[model]` `api_key` values.
+
+### 4. Validation & Error Matrix
+- Unknown command/action, missing id/value, duplicate flags, or unsupported interactive option ->
+  exit `2` with a stable `invalid_arguments` message; no management/backend factory runs.
+- Malformed or non-object `--json-args` -> exit `2` with `invalid_json_arguments`; do not include
+  the raw argument in diagnostics.
+- Management service response with `ok=false` -> exit `1`, except setup cancellation -> exit `130`.
+- Non-TTY interactive mode -> exit `2` with `tty_required`; provider-free management remains valid.
+- TUI setup cancellation or interrupt -> `undefined`, no config/auth write.
+- TUI startup failure -> plain setup fallback without the raw import/startup error.
+- Invalid setup provider or blank endpoint/model/key -> bounded `setup_invalid_result`, no key output.
+- Atomic config/auth failure -> preserve the old target, clean temporary files, and return only
+  `config_write_failed`, `auth_write_failed`, or `setup_write_failed` stable diagnostics.
+- Existing malformed user TOML -> fail the write and preserve the old file. Malformed auth JSON
+  remains Python-compatible and is treated as an empty auth store when replacing credentials.
+
+### 5. Good/Base/Bad Cases
+- Good: `mycli mcp list --json` succeeds with piped stdio and starts zero backends/providers/TUIs.
+- Good: `mycli setup` consumes pre-buffered piped answers, writes private config/auth files, and
+  never writes the API key to stdout or the response object.
+- Base: `subagents list --json` returns ids, descriptions, tool scopes, budgets, and source metadata
+  without profile prompts.
+- Bad: Checking TTY or selecting `python-sidecar` before recognizing `hooks list`.
+- Bad: Returning the setup wizard result as JSON, printing the API key, or writing it through a
+  world-readable temporary result file.
+- Bad: Returning the raw `SubagentProfile` from a management service because it contains `prompt`.
+
+### 6. Tests Required
+- Parser unit tests cover every command/action, interactive flags, usage failures, duplicate flags,
+  and object-only plugin JSON arguments.
+- CLI tests run JSON management under non-TTY streams and assert backend/provider/TUI factory call
+  counts remain zero; test default hooks/plugins/MCP/subagent composition as well as injected fakes.
+- Config tests cover auth merge/replacement, concurrent writers, mode `0600`, TOML preservation,
+  inline-key removal, pre-rename failure preservation, redacted errors, and temp cleanup.
+- Setup tests cover all provider rows, stored-auth presence, success persistence, cancellation,
+  TUI-to-plain fallback, pre-buffered pipe input, and key absence from output/response.
+- TUI tests assert direct submit/cancel Promise results and terminal cleanup; legacy entrypoint
+  tests must assert private result-file permissions if that compatibility path changes.
+- Management tests assert subagent responses do not contain a `prompt` property or prompt text.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+if (!stdin.isTTY) return 2;
+const backend = await startNodeBackend();
+if (argv[0] === "mcp") return runMcp(argv);
+```
+
+Correct:
+```typescript
+const mode = parseCliMode(argv);
+if (mode.kind === "management") {
+	const response = await management.execute(mode.command, signal);
+	return response.exitCode ?? (response.ok ? 0 : 1);
+}
+if (!stdin.isTTY) return 2;
+```
+
 ## Scenario: Node Composition Root With Python Sidecar
 
 ### 1. Scope / Trigger
