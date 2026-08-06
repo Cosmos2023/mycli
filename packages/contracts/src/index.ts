@@ -4,12 +4,16 @@ export {
 	parseGatewayContractCatalog,
 	parseGatewayEvent,
 	parseJsonRpcMessage,
+	parsePluginV2Manifest,
+	parsePluginV2ProtocolMessage,
 	parseRuntimeState,
 	parseRuntimeTurnRecord,
 } from "./validation.ts";
 export type { GatewayContractCatalog } from "./generated/catalog.ts";
 export type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
 export type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
+export type { PluginV2Manifest } from "./generated/plugin-v2-manifest.ts";
+export type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts";
 export type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
 export type {
 	RuntimeErrorCode,

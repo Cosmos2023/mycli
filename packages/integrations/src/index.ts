@@ -100,6 +100,23 @@ export type {
 	McpToolDescriptor,
 	McpTransportKind,
 } from "./mcp/types.ts";
+export { loadPluginManifest } from "./plugins/manifest.ts";
+export type { LoadPluginManifestOptions } from "./plugins/manifest.ts";
+export { discoverPlugins } from "./plugins/discovery.ts";
+export type { DiscoverPluginsOptions } from "./plugins/discovery.ts";
+export type {
+	DiscoveredPlugin,
+	InvalidPluginCandidate,
+	LoadedPluginManifest,
+	PluginCandidate,
+	PluginDiagnostic,
+	PluginDiagnosticSource,
+	PluginDiscovery,
+	PluginEnablement,
+	PluginManifestLoadResult,
+	PluginMigrationDiagnostic,
+	PluginSource,
+} from "./plugins/types.ts";
 export { renderSkillCatalog } from "./skills/catalog.ts";
 export type { RenderSkillCatalogOptions } from "./skills/catalog.ts";
 export { SkillRegistry } from "./skills/registry.ts";

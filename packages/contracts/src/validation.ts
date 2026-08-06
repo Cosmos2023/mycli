@@ -4,6 +4,8 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { GatewayContractCatalog } from "./generated/catalog.ts";
 import type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
 import type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
+import type { PluginV2Manifest } from "./generated/plugin-v2-manifest.ts";
+import type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts";
 import type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
 import type { RuntimeTurnRecord } from "./generated/runtime-turn-record.ts";
 
@@ -23,6 +25,8 @@ function compile(name: string): ValidateFunction {
 const validateCatalog = compile("catalog.schema.json");
 const validateGatewayEvent = compile("gateway-events.schema.json");
 const validateJsonRpcMessage = compile("json-rpc.schema.json");
+const validatePluginV2Manifest = compile("plugin-v2-manifest.schema.json");
+const validatePluginV2ProtocolMessage = compile("plugin-v2-protocol.schema.json");
 const validateRuntimeState = compile("runtime-state.schema.json");
 const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
 
@@ -53,6 +57,35 @@ export function parseGatewayContractCatalog(value: unknown): GatewayContractCata
 
 export function parseJsonRpcMessage(value: unknown): JsonRpcMessage {
 	return parse(value, validateJsonRpcMessage, "JSON-RPC message");
+}
+
+export function parsePluginV2Manifest(value: unknown): PluginV2Manifest {
+	return parse(value, validatePluginV2Manifest, "Plugin API v2 manifest");
+}
+
+export function parsePluginV2ProtocolMessage(value: unknown): PluginV2ProtocolMessage {
+	const message = parse<PluginV2ProtocolMessage>(
+		value,
+		validatePluginV2ProtocolMessage,
+		"Plugin API v2 protocol message",
+	);
+	if (message.type === "registered") {
+		for (const registration of message.registrations) {
+			let valid = false;
+			try {
+				valid = ajv.validateSchema(registration.input_schema) === true;
+			} catch {
+				valid = false;
+			}
+			if (!valid) {
+				throw new ContractValidationError(
+					"Invalid Plugin API v2 registration schema.",
+					ajv.errors ?? [],
+				);
+			}
+		}
+	}
+	return message;
 }
 
 export function parseRuntimeTurnRecord(value: unknown): RuntimeTurnRecord {

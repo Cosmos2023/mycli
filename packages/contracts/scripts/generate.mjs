@@ -31,6 +31,8 @@ const targets = [
 	["gateway-events.schema.json", "gateway-event-notification.ts"],
 	["runtime-turn.schema.json", "runtime-turn-record.ts"],
 	["runtime-state.schema.json", "runtime-state-record.ts"],
+	["plugin-v2-manifest.schema.json", "plugin-v2-manifest.ts"],
+	["plugin-v2-protocol.schema.json", "plugin-v2-protocol.ts"],
 ];
 
 for (const [schemaName, outputName] of targets) {

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/plugin-v2-manifest.schema.json",
+  "title": "PluginV2Manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "api_version",
+    "id",
+    "name",
+    "entry",
+    "provides",
+    "requires_env",
+    "capabilities"
+  ],
+  "properties": {
+    "api_version": {"const": 2},
+    "id": {"$ref": "#/$defs/plugin_id"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "description": {"type": "string", "maxLength": 2000},
+    "entry": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*\\.(?:js|mjs)$"
+    },
+    "provides": {"$ref": "#/$defs/declarations"},
+    "requires_env": {"$ref": "#/$defs/environment_names"},
+    "capabilities": {"$ref": "#/$defs/capabilities"}
+  },
+  "$defs": {
+    "plugin_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "declaration_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "hook_point": {
+      "type": "string",
+      "enum": [
+        "pre_tool_use",
+        "post_tool_use",
+        "user_prompt_submit",
+        "stop",
+        "pre_compact",
+        "session_start",
+        "session_end"
+      ]
+    },
+    "declarations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tools", "hooks", "commands"],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/declaration_name"}
+        },
+        "hooks": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/hook_point"}
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/declaration_name"}
+        }
+      }
+    },
+    "environment_names": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "filesystem_read",
+          "filesystem_write",
+          "network",
+          "process_spawn"
+        ]
+      }
+    }
+  }
+}
