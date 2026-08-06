@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "baseline": "python-m7-final",
+  "gateway": {
+	"rpc_count": 36,
+    "event_count": 42,
+    "required_rpc": [
+      "session.bootstrap",
+      "status.inspect",
+      "command.list",
+      "command.run",
+      "turn.submit",
+      "approval.respond",
+      "clarify.respond",
+      "turn.steer",
+      "turn.follow_up",
+		"shell.list",
+		"shell.stop",
+		"shell.stop_all",
+      "resource.list",
+      "extension.manifest",
+      "shutdown"
+    ],
+    "required_events": [
+      "runtime.ready",
+      "item.started",
+      "item.completed",
+      "approval.request",
+      "clarify.request",
+      "turn.queue.updated",
+      "shell.started",
+      "subagent.updated",
+      "turn.completed",
+      "turn.status"
+    ]
+  },
+  "slash_commands": {
+    "command_count": 36,
+    "prefixed_alias_count": 12,
+    "sha256": "de22dbe33fb579ef515c5a0f2ab514ceee6dbad29d2c3015520de1356daf0977"
+  },
+  "tools": {
+    "retained": [
+      "Read",
+      "Edit",
+      "Patch",
+      "Write",
+      "AskUserQuestion"
+    ],
+    "explicitly_retired": [
+      "LS",
+      "Glob",
+      "Grep"
+    ]
+  },
+  "capabilities": [
+    { "id": "bootstrap_status", "disposition": "fixed", "evidence": "node-gateway.test.ts" },
+    { "id": "user_message_lifecycle", "disposition": "fixed", "evidence": "node-gateway.test.ts" },
+    { "id": "slash_commands", "disposition": "fixed", "evidence": "node-slash-command-registry.test.ts" },
+    { "id": "sessions_transcript", "disposition": "fixed", "evidence": "node-backend.integration.test.ts" },
+    { "id": "approvals", "disposition": "fixed", "evidence": "m5-state-recovery.integration.test.ts" },
+    { "id": "clarifications", "disposition": "fixed", "evidence": "node-backend.integration.test.ts" },
+    { "id": "turn_queue", "disposition": "fixed", "evidence": "m5-state-recovery.integration.test.ts" },
+    { "id": "providers_tools", "disposition": "fixed", "evidence": "m3-read-turn.integration.test.ts" },
+    { "id": "compaction_memory", "disposition": "fixed", "evidence": "m5-state-recovery.integration.test.ts" },
+    { "id": "persistent_shell", "disposition": "fixed", "evidence": "m6-persistent-shell.integration.test.ts" },
+    { "id": "extensions_subagents", "disposition": "fixed", "evidence": "m7-extensions.integration.test.ts" },
+    { "id": "management_diagnostics", "disposition": "fixed", "evidence": "management-cli.test.ts" },
+    { "id": "shutdown_lifecycle", "disposition": "fixed", "evidence": "node-gateway.test.ts" },
+    { "id": "ls_glob_grep", "disposition": "explicitly_retired", "evidence": "node_runtime_m3/tool_contract.json" },
+    { "id": "implicit_subagent_budgets", "disposition": "explicitly_retired", "evidence": "node_runtime_m7/extension_contract.json" },
+    { "id": "python_plugin_source_compatibility", "disposition": "explicitly_retired", "evidence": "migration/python-plugins-to-v2.md" },
+    { "id": "cross_backend_harnesses", "disposition": "test_only", "evidence": "tests/integration/test_node_runtime_m*_parity.py" }
+  ],
+  "corpora": [
+    { "id": "m2_request_projection", "path": "tests/fixtures/node_runtime_m2/request_projection.json", "sha256": "1556cb8f491fda078a9b114df56503b0be7690cf1a6082d576fa0ef6b72b8075" },
+    { "id": "m2_provider_events", "path": "tests/fixtures/node_runtime_m2/provider_events.json", "sha256": "f983704367bdde2683896040c8f8b93cca4604eab3ccf5a77dc1cf1c58fa38cf" },
+    { "id": "m2_session_records", "path": "tests/fixtures/node_runtime_m2/session_records.json", "sha256": "51bab44e2b8345ce4b34c956c6927630a64767944456ea646d4257211f1bdb00" },
+    { "id": "m3_tool_contract", "path": "tests/fixtures/node_runtime_m3/tool_contract.json", "sha256": "f640363f860ea349104b560e8063bfa6f9877c74f6d93a770271bee2471217d8" },
+    { "id": "m4_mutation_contract", "path": "tests/fixtures/node_runtime_m4/mutation_contract.json", "sha256": "4759b2eb8461cd853bb348b0b4746ea84b5992d22bba04a86965df0e6a027e9a" },
+    { "id": "m5_state_recovery", "path": "tests/fixtures/node_runtime_m5/state_recovery_contract.json", "sha256": "1a92545b7bbebd17e030b80e7ce40bdb19c4c07832ed1059fe287d910042e7c5" },
+    { "id": "m6_shell", "path": "tests/fixtures/node_runtime_m6/shell_contract.json", "sha256": "e9b49a94c16a578336801b36051dcae7704b753d4a051c484ffbd94e78835a1a" },
+    { "id": "m7_extensions", "path": "tests/fixtures/node_runtime_m7/extension_contract.json", "sha256": "53ab571b78a75611ab99d3efda30714fa2ab45e49baf8ed5e4cdcbd73ad63478" },
+    { "id": "m7_management", "path": "tests/fixtures/node_runtime_m7/management_contract.json", "sha256": "c50f8a8460bd9c060362f6b488cc1f6a409e66126b08edec9401a21053a38312" }
+  ]
+}

@@ -44,6 +44,12 @@ import type {
 } from "./approval-continuation-coordinator.ts";
 import { ApprovalNotPendingError } from "./approval-continuation-coordinator.ts";
 import type {
+	ClarificationOption,
+	ClarificationSuspensionInput,
+	PendingClarificationContinuation,
+} from "./clarification-continuation-coordinator.ts";
+import { ClarificationNotPendingError } from "./clarification-continuation-coordinator.ts";
+import type {
 	CompactInput,
 	CompactionResult,
 } from "./compaction-coordinator.ts";
@@ -63,6 +69,7 @@ import type { ContextItemCoordinatorContract } from "./context-item-coordinator.
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
+	readonly clientUserMessageId?: string;
 	readonly turnId?: string;
 	readonly message: string;
 	readonly localImages?: readonly string[];
@@ -91,6 +98,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly toolRouter?: ToolRouterContract;
 	readonly approvalPolicy?: ApprovalPolicyContract;
 	readonly approvalCoordinator?: ApprovalContinuationContract;
+	readonly clarificationCoordinator?: ClarificationContinuationContract;
 	readonly queueCoordinator?: QueueCoordinator;
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: (
@@ -125,6 +133,18 @@ export interface ApprovalContinuationContract {
 	finish(decisionId: string): void;
 }
 
+export interface ClarificationContinuationContract {
+	suspend(input: ClarificationSuspensionInput): PendingClarificationContinuation;
+	pending(): PendingClarificationContinuation | undefined;
+	resolve(input: {
+		readonly requestId: string;
+		readonly response: string;
+	}): {
+		readonly continuation: PendingClarificationContinuation;
+		readonly response: string;
+	};
+}
+
 export interface ExecutionPolicyCoordinatorContract {
 	configure(input: ExecutionPolicyConfiguration): void;
 	snapshot(): ExecutionPolicySnapshot;
@@ -157,6 +177,11 @@ export type ApprovalRuntimeResolution =
 export interface ResolveApprovalInput {
 	readonly decisionId: string;
 	readonly choice: ApprovalChoice;
+}
+
+export interface ResolveClarificationInput {
+	readonly requestId: string;
+	readonly response: string;
 }
 
 export interface SubmitTurnOptions {
@@ -233,6 +258,7 @@ export class NodeTurnRuntime {
 		return this.#options.store.reserveTurn({
 			sessionId: this.#options.sessionId,
 			clientTurnId: submission.clientTurnId,
+			clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
 			turnId,
 			requestFingerprint: fingerprintSubmission({
 				message: submission.message,
@@ -301,8 +327,9 @@ export class NodeTurnRuntime {
 		const coordinator = this.#options.approvalCoordinator;
 		const pending = coordinator?.pending();
 		if (!coordinator || !pending) throw new ApprovalNotPendingError();
-		const submission: TurnSubmission = {
-			clientTurnId: pending.clientTurnId,
+			const submission: TurnSubmission = {
+				clientTurnId: pending.clientTurnId,
+				clientUserMessageId: pending.clientUserMessageId,
 			turnId: pending.turnId,
 			message: pending.userMessage,
 			...(pending.modelOverride ? { modelOverride: pending.modelOverride } : {}),
@@ -358,11 +385,58 @@ export class NodeTurnRuntime {
 		const resumed = await this.#runProviderLoop(context, {
 			history: this.#options.store.loadConversationItems(this.#options.sessionId),
 			freshItemIds: new Set([
-				`${pending.turnId}:user:${pending.clientTurnId}`,
+					`${pending.turnId}:user:${pending.clientUserMessageId}`,
 			]),
 			...(continuation.responseId ? { previousResponseId: continuation.responseId } : {}),
 			accumulatedUsage: continuation.usage,
 			approvalDecisionId: continuation.decisionId,
+			preTurnCompactionChecked: true,
+			...(continuation.remainingCalls.length > 0 ? {
+				pendingBatch: {
+					calls: continuation.remainingCalls,
+					assistantText: continuation.assistantText,
+					...(continuation.responseId ? { responseId: continuation.responseId } : {}),
+				},
+			} : {}),
+		});
+		if (resumed.status !== "in_progress") {
+			this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+		}
+		return resumed;
+	}
+
+	async resolveClarification(
+		input: ResolveClarificationInput,
+		emit: (event: RuntimeEvent) => void,
+		options: Pick<SubmitTurnOptions, "signal">,
+	): Promise<RuntimeTurnRecord> {
+		const coordinator = this.#options.clarificationCoordinator;
+		const pending = coordinator?.pending();
+		if (!coordinator || !pending) throw new ClarificationNotPendingError();
+		const submission: TurnSubmission = {
+			clientTurnId: pending.clientTurnId,
+			clientUserMessageId: pending.clientUserMessageId,
+			turnId: pending.turnId,
+			message: pending.userMessage,
+			...(pending.modelOverride ? { modelOverride: pending.modelOverride } : {}),
+			...(pending.reasoningEffort ? { reasoningEffort: pending.reasoningEffort } : {}),
+		};
+		const context = await this.#executionContext(
+			submission,
+			pending.turnId,
+			emit,
+			options.signal,
+			pending.providerProtocol,
+		);
+		const resolution = coordinator.resolve(input);
+		const continuation = resolution.continuation;
+		const resumed = await this.#runProviderLoop(context, {
+			history: this.#options.store.loadConversationItems(this.#options.sessionId),
+			freshItemIds: new Set([
+				`${pending.turnId}:user:${pending.clientUserMessageId}`,
+			]),
+			...(continuation.responseId ? { previousResponseId: continuation.responseId } : {}),
+			accumulatedUsage: continuation.usage,
 			preTurnCompactionChecked: true,
 			...(continuation.remainingCalls.length > 0 ? {
 				pendingBatch: {
@@ -394,7 +468,9 @@ export class NodeTurnRuntime {
 			context,
 			initial: Object.freeze({
 				history,
-				freshItemIds: new Set([`${turnId}:user:${submission.clientTurnId}`]),
+				freshItemIds: new Set([
+					`${turnId}:user:${submission.clientUserMessageId ?? submission.clientTurnId}`,
+				]),
 				accumulatedUsage: {},
 			}),
 		});
@@ -497,6 +573,18 @@ export class NodeTurnRuntime {
 				if (committed.length > 0) {
 					for (const record of committed) {
 						freshItemIds.add(`${turnId}:queue:${record.queueId}`);
+						if (record.source !== "task_notification") {
+							const lifecycle = {
+								clientTurnId: submission.clientTurnId,
+								turnId,
+								itemId: `${turnId}:queue:${record.queueId}`,
+								clientUserMessageId: record.clientTurnId,
+								content: record.text,
+								source: "steer" as const,
+							};
+							emit({ type: "user_message_started", ...lifecycle });
+							emit({ type: "user_message_completed", ...lifecycle });
+						}
 					}
 					history = this.#options.store.loadConversationItems(this.#options.sessionId);
 				}
@@ -828,8 +916,9 @@ export class NodeTurnRuntime {
 						message: "approval continuation is not configured",
 					});
 				}
-				const pending = coordinator.suspend({
-					clientTurnId: submission.clientTurnId,
+					const pending = coordinator.suspend({
+						clientTurnId: submission.clientTurnId,
+						clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
 					turnId,
 					userMessage: submission.message,
 					providerProtocol: config.protocol,
@@ -878,6 +967,47 @@ export class NodeTurnRuntime {
 				? policyDeniedResult(call, policy)
 				: blockedByHook ?? await this.#executeTool(executionCall, context);
 			if (policy?.kind === "deny" || blockedByHook) emitToolResult(result, 0, emit);
+			const clarification = clarificationRequest(result);
+			if (clarification) {
+				const coordinator = this.#options.clarificationCoordinator;
+				if (!coordinator) {
+					throw new ProviderFailure({
+						code: "unsupported_capability",
+						message: "clarification continuation is not configured",
+					});
+				}
+				const pending = coordinator.suspend({
+					clientTurnId: submission.clientTurnId,
+					clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
+					turnId,
+					userMessage: submission.message,
+					providerProtocol: config.protocol,
+					call,
+					remainingCalls: batch.calls.slice(index + 1),
+					conversation: this.#options.store.loadConversation(this.#options.sessionId),
+					assistantText: batch.assistantText,
+					...(batch.responseId ? { responseId: batch.responseId } : {}),
+					usage: accumulatedUsage,
+					...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
+					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
+					...clarification,
+				});
+				emit({
+					type: "clarification_requested",
+					clientTurnId: pending.clientTurnId,
+					turnId: pending.turnId,
+					requestId: pending.requestId,
+					callId: boundedCallId(pending.call.callId),
+					toolName: boundedToolName(pending.call.name),
+					question: pending.question,
+					options: pending.options,
+					header: pending.header,
+					multiSelect: pending.multiSelect,
+				});
+				const running = this.#runningTurn(pending.clientTurnId);
+				await this.#writeTerminalSnapshot(running);
+				return running;
+			}
 			this.#persistToolResult(submission.clientTurnId, turnId, result);
 			if (policy?.kind !== "deny" && !blockedByHook) {
 				await context.hookCoordinator?.afterTool(executionCall, result, signal);
@@ -1181,6 +1311,54 @@ export class NodeTurnRuntime {
 			return false;
 		}
 	}
+}
+
+function clarificationRequest(result: ToolExecutionResult): {
+	readonly question: string;
+	readonly options: readonly ClarificationOption[];
+	readonly header: string;
+	readonly multiSelect: boolean;
+} | undefined {
+	if (!result.success || result.metadata.status !== "awaiting_user_response") return undefined;
+	const question = boundedMetadataString(result.metadata.question, 4_096);
+	const header = boundedMetadataString(result.metadata.header, 256, true);
+	const multiSelect = result.metadata.multi_select;
+	const options = clarificationOptions(result.metadata.options);
+	if (question === undefined || header === undefined || typeof multiSelect !== "boolean" || !options) {
+		throw new ProviderFailure({
+			code: "tool_protocol_error",
+			message: "tool returned an invalid clarification request",
+		});
+	}
+	return Object.freeze({ question, options, header, multiSelect });
+}
+
+function clarificationOptions(value: unknown): readonly ClarificationOption[] | undefined {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 5) return undefined;
+	const options: ClarificationOption[] = [];
+	for (const item of value) {
+		if (!isRecord(item)) return undefined;
+		const label = boundedMetadataString(item.label, 128);
+		const description = boundedMetadataString(item.description, 512, true);
+		if (label === undefined || description === undefined) return undefined;
+		options.push(Object.freeze({ label, ...(description ? { description } : {}) }));
+	}
+	return Object.freeze(options);
+}
+
+function boundedMetadataString(
+	value: unknown,
+	limit: number,
+	optional = false,
+): string | undefined {
+	if (optional && (value === undefined || value === null || value === "")) return "";
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim();
+	return normalized.length > 0 && normalized.length <= limit ? normalized : undefined;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function continuationRecord(item: CanonicalConversationItem): Readonly<Record<string, unknown>> {

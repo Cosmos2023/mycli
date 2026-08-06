@@ -98,6 +98,43 @@ export const PATCH_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	inputSchema: EXACT_REPLACE_INPUT_SCHEMA,
 });
 
+const ASK_USER_QUESTION_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
+	{ name: "question", type: "string", required: true },
+	{ name: "options", type: "array", required: true },
+	{ name: "header", type: "string", required: false },
+	{ name: "multi_select", type: "boolean", required: false },
+]);
+
+export const ASK_USER_QUESTION_TOOL_DEFINITION: ToolDefinition = deepFreeze({
+	id: "builtin:AskUserQuestion",
+	name: "AskUserQuestion",
+	description: "Ask the user a structured question with 2-4 options plus an implicit Other option.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			question: { type: "string", minLength: 1, maxLength: 4096 },
+			options: {
+				type: "array",
+				minItems: 2,
+				maxItems: 4,
+				items: {
+					type: "object",
+					properties: {
+						label: { type: "string", minLength: 1, maxLength: 128 },
+						description: { type: "string", maxLength: 512 },
+					},
+					required: ["label"],
+					additionalProperties: false,
+				},
+			},
+			header: { type: "string", maxLength: 256 },
+			multi_select: { type: "boolean" },
+		},
+		required: ["question", "options"],
+		additionalProperties: false,
+	},
+});
+
 const READ_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	...READ_TOOL_DEFINITION,
 	source: "builtin",
@@ -154,11 +191,26 @@ const WRITE_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	model_visible: true,
 });
 
+const ASK_USER_QUESTION_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
+	...ASK_USER_QUESTION_TOOL_DEFINITION,
+	source: "builtin",
+	toolset: "interaction",
+	parameters: ASK_USER_QUESTION_PARAMETERS,
+	risk_level: "low",
+	supports_parallel_tool_calls: false,
+	approval_policy: "auto_allow",
+	capability_tags: ["interaction", "clarification"],
+	effects: { filesystem: "none", network: false, process: false },
+	availability: { status: "available" },
+	model_visible: true,
+});
+
 const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 	schema_version: 1,
 	source: "builtin",
 	toolsets: [
 		{ id: "file", tool_count: 4 },
+		{ id: "interaction", tool_count: 1 },
 		{ id: "terminal", tool_count: SHELL_MANIFEST_ENTRIES.length },
 	],
 	tools: [
@@ -166,6 +218,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		EDIT_MANIFEST_ENTRY,
 		PATCH_MANIFEST_ENTRY,
 		WRITE_MANIFEST_ENTRY,
+		ASK_USER_QUESTION_MANIFEST_ENTRY,
 		...SHELL_MANIFEST_ENTRIES,
 	],
 });

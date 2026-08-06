@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { ProtocolId, ProviderId } from "@mycli/core";
+import type { ProtocolId, ProviderId, ReasoningEffort } from "@mycli/core";
 import { parse, stringify } from "smol-toml";
 import { atomicPrivateFileUpdate } from "./private-file-writer.ts";
 import { resolveProviderProfile } from "./provider-profiles.ts";
@@ -13,6 +13,7 @@ export interface UserProviderConfigInput {
 	readonly authRef: string;
 	readonly promptCacheKeyEnabled: boolean;
 	readonly cacheControlEnabled: boolean;
+	readonly reasoningEffort?: ReasoningEffort;
 	readonly failpoint?: (name: string) => void;
 }
 
@@ -73,6 +74,11 @@ function serializeConfig(current: string | undefined, input: UserProviderConfigI
 	});
 	payload.model = model;
 	payload.request = request;
+	if (input.reasoningEffort !== undefined) {
+		const reasoning = recordCopy(payload.reasoning);
+		reasoning.effort = input.reasoningEffort;
+		payload.reasoning = reasoning;
+	}
 	return `${stringify(payload).trimEnd()}\n`;
 }
 

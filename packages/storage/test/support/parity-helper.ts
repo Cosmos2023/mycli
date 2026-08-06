@@ -41,6 +41,7 @@ export function writeNodeSessions(dbPath: string, fixture: SessionFixture): void
 			store.reserveTurn({
 				sessionId: scenario.session_id,
 				clientTurnId: scenario.client_turn_id,
+				clientUserMessageId: scenario.client_turn_id,
 				turnId: scenario.turn_id,
 				requestFingerprint: scenario.request_fingerprint,
 				workspaceRoot: scenario.workspace_root,
@@ -107,7 +108,8 @@ export function expectedSharedRecords(fixture: SessionFixture): unknown[] {
 			metadata: {
 				turn_id: scenario.turn_id,
 				client_turn_id: scenario.client_turn_id,
-				source: "node_runtime",
+				client_user_message_id: scenario.client_turn_id,
+				source: "submit",
 			},
 			blocks: [],
 			tool_calls: [],
@@ -122,7 +124,8 @@ export function expectedSharedRecords(fixture: SessionFixture): unknown[] {
 			call_id: null,
 			metadata: {
 				client_turn_id: scenario.client_turn_id,
-				source: "node_runtime",
+				client_user_message_id: scenario.client_turn_id,
+				source: "submit",
 				image_paths: [],
 			},
 		};

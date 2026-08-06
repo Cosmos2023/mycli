@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
-import type { PythonSidecar } from "../src/sidecar/python-sidecar.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 
 type Deferred<T> = {
@@ -28,8 +25,8 @@ function deferred<T>(): Deferred<T> {
 	return { promise, resolve, reject };
 }
 
-function fakeSidecar(): {
-	sidecar: PythonSidecar;
+function fakeBackend(): {
+	backend: NodeBackend;
 	completion: Deferred<number>;
 	closeCalls: () => number;
 	killCalls: () => number;
@@ -41,7 +38,7 @@ function fakeSidecar(): {
 		completion,
 		closeCalls: () => closeCalls,
 		killCalls: () => killCalls,
-		sidecar: {
+		backend: {
 			transport: { input: new PassThrough(), output: new PassThrough() },
 			completion: completion.promise,
 			diagnostic: () => "api_key=[REDACTED]",
@@ -72,7 +69,7 @@ function cliHarness(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-test("help and version are local and never start Python", async (t) => {
+test("help and version are local and never start the Node backend", async (t) => {
 	for (const scenario of [
 		{ argv: ["--help"], expected: "Usage: mycli" },
 		{ argv: ["--version"], expected: "0.1.0" },
@@ -83,7 +80,7 @@ test("help and version are local and never start Python", async (t) => {
 				argv: scenario.argv,
 				stdin: { isTTY: false },
 				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
-				startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+				startNodeBackend: () => { starts += 1; return fakeBackend().backend; },
 			});
 
 			assert.equal(await runCli(harness.options), 0);
@@ -100,10 +97,22 @@ test("help advertises the provider-free management surface", async () => {
 	for (const command of ["setup", "doctor", "hooks", "plugins", "mcp", "subagents"]) {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
+	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);
+});
+
+test("retired runtime backend flags fail before starting Node", async () => {
+	let starts = 0;
+	const harness = cliHarness({
+		argv: ["--runtime-backend", "node"],
+		startNodeBackend: () => { starts += 1; return fakeBackend().backend; },
+	});
+
+	assert.equal(await runCli(harness.options), 2);
+	assert.equal(starts, 0);
+	assert.match(harness.stderr.join(""), /invalid_arguments/u);
 });
 
 test("JSON management commands run without TTY, backend, provider, or TUI startup", async () => {
-	let sidecarStarts = 0;
 	let nodeStarts = 0;
 	let tuiImports = 0;
 	let managementCalls = 0;
@@ -118,8 +127,7 @@ test("JSON management commands run without TTY, backend, provider, or TUI startu
 		argv: ["mcp", "list", "--json"],
 		stdin: { isTTY: false },
 		stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
-		startSidecar: () => { sidecarStarts += 1; return fakeSidecar().sidecar; },
-		startNodeBackend: async () => { nodeStarts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
 		importTui: async () => { tuiImports += 1; },
 		management: {
 			execute: async (command: { kind: string; action: string }) => {
@@ -133,7 +141,6 @@ test("JSON management commands run without TTY, backend, provider, or TUI startu
 	assert.equal(await runCli(harness.options), 0);
 	assert.deepEqual(JSON.parse(harness.stdout.join("")), expected);
 	assert.equal(managementCalls, 1);
-	assert.equal(sidecarStarts, 0);
 	assert.equal(nodeStarts, 0);
 	assert.equal(tuiImports, 0);
 });
@@ -167,7 +174,7 @@ test("invalid plugin JSON arguments fail before management or backend startup", 
 	const harness = cliHarness({
 		argv: ["plugins", "run", "demo", "status", "--json-args", "[]"],
 		stdin: { isTTY: false },
-		startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: () => { starts += 1; return fakeBackend().backend; },
 		management: {
 			execute: async () => { managementCalls += 1; return { ok: true }; },
 		},
@@ -196,8 +203,7 @@ test("default management composition lists local extensions without backend star
 			homeDir: join(root, "home"),
 			stdin: { isTTY: false },
 			stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
-			startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
-			startNodeBackend: async () => { starts += 1; return fakeSidecar().sidecar; },
+			startNodeBackend: async () => { starts += 1; return fakeBackend().backend; },
 		});
 
 		assert.equal(await runCli(harness.options), 0, argv.join(" "));
@@ -228,8 +234,7 @@ test("default non-TTY setup persists through Node without backend or secret outp
 		stdout: output,
 		stderr: { write: () => undefined },
 		processHooks: new EventEmitter(),
-		startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
-		startNodeBackend: async () => { starts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: async () => { starts += 1; return fakeBackend().backend; },
 	});
 
 	assert.equal(code, 0);
@@ -239,13 +244,13 @@ test("default non-TTY setup persists through Node without backend or secret outp
 
 test("interactive startup configures transport before importing the TUI", async () => {
 	const order: string[] = [];
-	const fake = fakeSidecar();
+	const fake = fakeBackend();
 	let configured: GatewayTransport | null = null;
 	const harness = cliHarness({
 		argv: ["--session", "demo", "--model", "gpt-test"],
-		startSidecar: (options: { args: readonly string[] }) => {
+		startNodeBackend: (options: { args: readonly string[] }) => {
 			order.push(`start:${options.args.join(" ")}`);
-			return fake.sidecar;
+			return fake.backend;
 		},
 		configureTransport: (transport: GatewayTransport) => {
 			order.push("configure");
@@ -267,11 +272,11 @@ test("interactive startup configures transport before importing the TUI", async 
 	assert.equal(fake.closeCalls(), 1);
 });
 
-test("CLI validates TTY before starting the sidecar", async () => {
+test("CLI validates TTY before starting the Node backend", async () => {
 	let starts = 0;
 	const harness = cliHarness({
 		stdin: { isTTY: false },
-		startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: () => { starts += 1; return fakeBackend().backend; },
 	});
 
 	assert.equal(await runCli(harness.options), 2);
@@ -281,25 +286,23 @@ test("CLI validates TTY before starting the sidecar", async () => {
 
 test("spawn failure returns two with a stable message", async () => {
 	const harness = cliHarness({
-		startSidecar: () => { throw new Error("sidecar_spawn_failed: unable to start Python sidecar"); },
+		startNodeBackend: () => { throw new Error("node_backend_start_failed: unable to start Node backend"); },
 	});
 
 	assert.equal(await runCli(harness.options), 2);
-	assert.match(harness.stderr.join(""), /sidecar_spawn_failed/);
+	assert.match(harness.stderr.join(""), /node_backend_start_failed/);
 	assert.doesNotMatch(harness.stderr.join(""), /private|ENOENT/);
 });
 
-test("Node backend configures transport without starting Python", async () => {
-	let sidecarStarts = 0;
+test("interactive startup always selects Node and ignores the retired backend environment", async () => {
 	let nodeStarts = 0;
-	const fake = fakeSidecar();
+	const fake = fakeBackend();
 	let configured: GatewayTransport | null = null;
 	const harness = cliHarness({
-		argv: ["--runtime-backend", "node"],
-		startSidecar: () => { sidecarStarts += 1; return fakeSidecar().sidecar; },
+		env: { MYCLI_RUNTIME_BACKEND: "python-sidecar" },
 		startNodeBackend: async (): Promise<NodeBackend> => {
 			nodeStarts += 1;
-			return fake.sidecar;
+			return fake.backend;
 		},
 		configureTransport: (transport: GatewayTransport) => { configured = transport; },
 		importTui: async () => {
@@ -309,14 +312,13 @@ test("Node backend configures transport without starting Python", async () => {
 	});
 
 	assert.equal(await runCli(harness.options), 0);
-	assert.equal(sidecarStarts, 0);
 	assert.equal(nodeStarts, 1);
 });
 
-test("unexpected sidecar exit returns one without printing its diagnostic", async () => {
-	const fake = fakeSidecar();
+test("unexpected Node backend exit returns one without printing its diagnostic", async () => {
+	const fake = fakeBackend();
 	const harness = cliHarness({
-		startSidecar: () => fake.sidecar,
+		startNodeBackend: () => fake.backend,
 		configureTransport: () => undefined,
 		importTui: async () => { fake.completion.resolve(7); },
 	});
@@ -325,10 +327,10 @@ test("unexpected sidecar exit returns one without printing its diagnostic", asyn
 	assert.doesNotMatch(harness.stderr.join(""), /api_key/);
 });
 
-test("abnormal parent exit synchronously kills a running sidecar", async () => {
-	const fake = fakeSidecar();
+test("abnormal parent exit synchronously kills a running Node backend", async () => {
+	const fake = fakeBackend();
 	const harness = cliHarness({
-		startSidecar: () => fake.sidecar,
+		startNodeBackend: () => fake.backend,
 		configureTransport: () => undefined,
 		importTui: async () => {
 			harness.hooks.emit("exit", 1);
@@ -341,11 +343,11 @@ test("abnormal parent exit synchronously kills a running sidecar", async () => {
 });
 
 test("asynchronous TUI startup failure exits one and prints only sanitized diagnostics", async () => {
-	const fake = fakeSidecar();
+	const fake = fakeBackend();
 	const startup = deferred<void>();
 	void startup.promise.catch(() => undefined);
 	const harness = cliHarness({
-		startSidecar: () => fake.sidecar,
+		startNodeBackend: () => fake.backend,
 		configureTransport: () => undefined,
 		importTui: async () => {
 			queueMicrotask(() => {
@@ -363,10 +365,10 @@ test("asynchronous TUI startup failure exits one and prints only sanitized diagn
 	assert.doesNotMatch(harness.stderr.join(""), /private module path/);
 });
 
-test("SIGINT before TUI ownership closes the sidecar and returns 130", async () => {
-	const fake = fakeSidecar();
+test("SIGINT before TUI ownership closes the Node backend and returns 130", async () => {
+	const fake = fakeBackend();
 	const harness = cliHarness({
-		startSidecar: () => fake.sidecar,
+		startNodeBackend: () => fake.backend,
 		configureTransport: () => undefined,
 		importTui: async () => {
 			harness.hooks.emit("SIGINT");
@@ -378,41 +380,3 @@ test("SIGINT before TUI ownership closes the sidecar and returns 130", async () 
 	assert.equal(await runCli(harness.options), 130);
 	assert.equal(fake.closeCalls(), 1);
 });
-
-test("composition root can own a real child-process fixture", async () => {
-	const fixture = fileURLToPath(new URL("./fixtures/fake-sidecar.mjs", import.meta.url));
-	let configured: GatewayTransport | null = null;
-	const harness = cliHarness({
-		startSidecar: () => realFixtureSidecar(fixture),
-		configureTransport: (transport: GatewayTransport) => { configured = transport; },
-		importTui: async () => {
-			configured?.output.write('{"jsonrpc":"2.0","id":"1","method":"shutdown","params":{}}\n');
-			await configured?.close?.();
-		},
-	});
-
-	assert.equal(await runCli(harness.options), 0);
-});
-
-function realFixtureSidecar(fixture: string): PythonSidecar {
-	const child = spawn(process.execPath, [fixture], { stdio: ["pipe", "pipe", "pipe"] });
-	assert.ok(child.stdin && child.stdout && child.stderr);
-	const completion = new Promise<number>((resolve, reject) => {
-		child.once("error", reject);
-		child.once("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
-	});
-	let closePromise: Promise<void> | null = null;
-	return {
-		transport: { input: child.stdout, output: child.stdin },
-		completion,
-		diagnostic: () => "",
-		close: () => {
-			closePromise ??= (async () => {
-				child.stdin.end();
-				await completion;
-			})();
-			return closePromise;
-		},
-		kill: () => { child.kill("SIGKILL"); },
-	};
-}

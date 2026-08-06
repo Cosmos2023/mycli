@@ -64,6 +64,7 @@ if (action === "probe" && first && second && third) {
 	await mkdir(first, { recursive: true });
 	const manifest = builtinToolManifest();
 	const exposure = planToolExposure(manifest);
+	const exposedNames = new Set(exposure.map((tool) => tool.name));
 	const cases = [];
 	for (const scenario of fixture.cases) {
 		cases.push(await executeCase(join(first, scenario.name), scenario, exposure));
@@ -71,7 +72,7 @@ if (action === "probe" && first && second && third) {
 	writeTranscript(second, first, fixture);
 	process.stdout.write(`${JSON.stringify({
 		inventory: exposure.map((tool) => tool.name),
-		parameters: Object.fromEntries(manifest.tools.map((tool) => [
+		parameters: Object.fromEntries(manifest.tools.filter((tool) => exposedNames.has(tool.name)).map((tool) => [
 			tool.name,
 			tool.parameters.map((parameter) => parameter.name),
 		])),

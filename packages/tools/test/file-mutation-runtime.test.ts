@@ -29,6 +29,7 @@ interface MutationRuntime {
 		readonly path: string;
 		readonly content: string;
 		readonly expectedSha256?: string;
+		readonly history?: { readonly turnId: string; readonly toolName: string };
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome>;
 	replace(input: {
@@ -36,6 +37,7 @@ interface MutationRuntime {
 		readonly oldString: string;
 		readonly newString: string;
 		readonly replaceAll: boolean;
+		readonly history?: { readonly turnId: string; readonly toolName: string };
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome>;
 }
@@ -60,6 +62,12 @@ interface SnapshotStore {
 type RuntimeConstructor = new (options: {
 	readonly workspaceRoot: string;
 	readonly snapshots: SnapshotStore;
+	readonly sessionId?: string;
+	readonly history?: {
+		capture(input: Readonly<Record<string, string>>): Promise<{ readonly snapshotId: string } | undefined>;
+		complete(snapshotId: string): Promise<void>;
+		discard(snapshotId: string): Promise<void>;
+	};
 }) => MutationRuntime;
 type SnapshotStoreConstructor = new () => SnapshotStore;
 
@@ -91,6 +99,71 @@ test("returns unchanged without retaining a temporary file", async (t) => {
 	assert.equal(result.status, "unchanged");
 	assert.equal(result.diff, "");
 	assert.deepEqual(await readdir(fixture.root), ["a.txt"]);
+});
+
+test("records only completed mutations in optional durable file history", async (t) => {
+	const fixture = await mutationFixture(t, "old\n");
+	const snapshots = new (Reflect.get(tools, "FileSnapshotStore") as SnapshotStoreConstructor)();
+	const events: string[] = [];
+	const history = {
+		capture: async (input: Readonly<Record<string, string>>) => {
+			events.push(`capture:${input.sessionId}:${input.turnId}:${input.toolName}:${input.path}`);
+			return { snapshotId: "snapshot-1" };
+		},
+		complete: async (snapshotId: string) => { events.push(`complete:${snapshotId}`); },
+		discard: async (snapshotId: string) => { events.push(`discard:${snapshotId}`); },
+	};
+	const Runtime = Reflect.get(tools, "FileMutationRuntime") as unknown as RuntimeConstructor;
+	const runtime = new Runtime({
+		workspaceRoot: fixture.root,
+		snapshots,
+		sessionId: "session-1",
+		history,
+	});
+
+	await runtime.write({
+		path: "a.txt",
+		content: "new\n",
+		history: { turnId: "turn-1", toolName: "Write" },
+		signal: signal(),
+	});
+	await runtime.write({
+		path: "a.txt",
+		content: "new\n",
+		history: { turnId: "turn-2", toolName: "Write" },
+		signal: signal(),
+	});
+
+	assert.deepEqual(events, [
+		"capture:session-1:turn-1:Write:a.txt",
+		"complete:snapshot-1",
+	]);
+});
+
+test("does not fail a completed mutation when history finalization fails", async (t) => {
+	const fixture = await mutationFixture(t, "old\n");
+	const snapshots = new (Reflect.get(tools, "FileSnapshotStore") as SnapshotStoreConstructor)();
+	const Runtime = Reflect.get(tools, "FileMutationRuntime") as unknown as RuntimeConstructor;
+	const runtime = new Runtime({
+		workspaceRoot: fixture.root,
+		snapshots,
+		sessionId: "session-1",
+		history: {
+			capture: async () => ({ snapshotId: "snapshot-1" }),
+			complete: async () => { throw new Error("private history path"); },
+			discard: async () => undefined,
+		},
+	});
+
+	const result = await runtime.write({
+		path: "a.txt",
+		content: "new\n",
+		history: { turnId: "turn-1", toolName: "Write" },
+		signal: signal(),
+	});
+
+	assert.equal(result.status, "overwritten");
+	assert.equal(await readFile(fixture.target, "utf8"), "new\n");
 });
 
 test("rejects secret-like content without changing the target", async (t) => {

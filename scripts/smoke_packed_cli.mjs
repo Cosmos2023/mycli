@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -114,8 +115,9 @@ try {
 	await mkdir(packDir);
 	await mkdir(installDir);
 	for (const workspace of WORKSPACES) {
-		await run("npm", [
+		const output = await run("npm", [
 			"pack",
+			"--json",
 			"--workspace",
 			workspace,
 			"--pack-destination",
@@ -123,7 +125,8 @@ try {
 			"--cache",
 			cacheDir,
 			"--silent",
-		], ROOT);
+		], ROOT, true);
+		assertPackFileList(JSON.parse(output));
 	}
 	const tarballs = (await readdir(packDir))
 		.filter((name) => name.endsWith(".tgz"))
@@ -142,12 +145,25 @@ try {
 		cacheDir,
 		...tarballs,
 	], installDir);
+	const pythonProbe = await createPythonProbe(tempRoot);
+	const guardedEnv = {
+		...process.env,
+		PATH: `${pythonProbe.binDir}${delimiter}${process.env.PATH ?? dirname(process.execPath)}`,
+		MYCLI_PYTHON_PROBE_MARKER: pythonProbe.marker,
+	};
+	await assertNoPythonRuntimeSurface(join(
+		installDir,
+		"node_modules",
+		"@mycli",
+		"app",
+		"dist",
+	));
 	const bin = process.platform === "win32"
 		? join(installDir, "node_modules", ".bin", "mycli.cmd")
 		: join(installDir, "node_modules", ".bin", "mycli");
-	const help = await run(bin, ["--help"], installDir, true);
-	if (!help.includes("--runtime-backend <backend>") || !help.includes("python-sidecar or node")) {
-		throw new Error("packed_cli_smoke_failed: installed CLI help is incomplete");
+	const help = await run(bin, ["--help"], installDir, true, guardedEnv);
+	if (help.includes("--runtime-backend") || help.includes("python-sidecar")) {
+		throw new Error("packed_cli_smoke_failed: installed CLI still advertises Python runtime selection");
 	}
 	const nativeSmoke = join(installDir, "native-pty-smoke.mjs");
 	await writeFile(nativeSmoke, NATIVE_PTY_SMOKE, "utf8");
@@ -163,7 +179,7 @@ try {
 	}
 	const packedHome = join(tempRoot, "home");
 	const managementEnv = {
-		...process.env,
+		...guardedEnv,
 		HOME: packedHome,
 		USERPROFILE: packedHome,
 		MYCLI_API_KEY: "",
@@ -182,12 +198,80 @@ try {
 			throw new Error("packed_cli_smoke_failed: compiled management command is incomplete");
 		}
 	}
+	const m8RuntimeSmoke = join(installDir, "m8-runtime-smoke.mjs");
+	const sourceSmoke = await readFile(join(ROOT, "scripts", "smoke_node_m8.mjs"), "utf8");
+	const installedSmoke = sourceSmoke.replace(
+		'../apps/mycli/dist/node-runtime/node-backend.js',
+		'./node_modules/@mycli/app/dist/node-runtime/node-backend.js',
+	);
+	if (installedSmoke === sourceSmoke) {
+		throw new Error("packed_cli_smoke_failed: M8 runtime smoke entry was not relocated");
+	}
+	await writeFile(m8RuntimeSmoke, installedSmoke, "utf8");
+	const m8Output = await run(process.execPath, [m8RuntimeSmoke], installDir, true, managementEnv);
+	const m8Summary = JSON.parse(m8Output);
+	if (m8Summary.status !== "completed" || m8Summary.runtime !== "node") {
+		throw new Error("packed_cli_smoke_failed: installed Node runtime smoke is incomplete");
+	}
+	if (existsSync(pythonProbe.marker)) {
+		throw new Error("packed_cli_smoke_failed: installed CLI probed for Python");
+	}
 	process.stdout.write(`${JSON.stringify({ status: "completed", packed_workspaces: tarballs.length })}\n`);
 } catch {
 	process.stderr.write("packed_cli_smoke_failed\n");
 	process.exitCode = 1;
 } finally {
 	await rm(tempRoot, { recursive: true, force: true });
+}
+
+function assertPackFileList(output) {
+	const entries = Array.isArray(output) ? output : [];
+	const files = Array.isArray(entries[0]?.files) ? entries[0].files : [];
+	if (entries.length !== 1 || files.length === 0) {
+		throw new Error("packed_cli_smoke_failed: npm pack file inventory is unavailable");
+	}
+	for (const file of files) {
+		const path = typeof file?.path === "string" ? file.path : "";
+		if (/\.py$/u.test(path) || /python-sidecar|backend-router/u.test(path)) {
+			throw new Error("packed_cli_smoke_failed: Python runtime file entered an npm artifact");
+		}
+	}
+}
+
+async function createPythonProbe(root) {
+	const binDir = join(root, "python-probe-bin");
+	const marker = join(root, "python-probed");
+	await mkdir(binDir);
+	if (process.platform === "win32") {
+		const source = '@echo off\r\nbreak > "%MYCLI_PYTHON_PROBE_MARKER%"\r\nexit /b 97\r\n';
+		await Promise.all(["python.cmd", "python3.cmd", "py.cmd"].map(
+			(name) => writeFile(join(binDir, name), source, "utf8"),
+		));
+	} else {
+		const source = '#!/bin/sh\n: > "$MYCLI_PYTHON_PROBE_MARKER"\nexit 97\n';
+		const paths = ["python", "python3", "py"].map((name) => join(binDir, name));
+		await Promise.all(paths.map((path) => writeFile(path, source, "utf8")));
+		await Promise.all(paths.map((path) => chmod(path, 0o755)));
+	}
+	return { binDir, marker };
+}
+
+async function assertNoPythonRuntimeSurface(root) {
+	const pending = [root];
+	const forbidden = /python-sidecar|MYCLI_RUNTIME_BACKEND|MYCLI_PYTHON|startPythonSidecar|mycli\.cli\.sidecar|backend-router/u;
+	while (pending.length > 0) {
+		const current = pending.pop();
+		for (const entry of await readdir(current, { withFileTypes: true })) {
+			const path = join(current, entry.name);
+			if (entry.isDirectory()) {
+				pending.push(path);
+			} else if (entry.isFile() && entry.name.endsWith(".js")) {
+				if (forbidden.test(await readFile(path, "utf8"))) {
+					throw new Error("packed_cli_smoke_failed: app runtime contains a Python startup surface");
+				}
+			}
+		}
+	}
 }
 
 function run(command, args, cwd, capture = false, env = process.env) {

@@ -19,6 +19,7 @@ import type { SubagentTaskStore } from "./subagent-task-store.ts";
 export interface ReserveTurnInput {
 	readonly sessionId: string;
 	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
 	readonly turnId: string;
 	readonly requestFingerprint: string;
 	readonly workspaceRoot: string;
@@ -133,6 +134,85 @@ export interface SessionLineageNode {
 	readonly forkPoint?: number;
 }
 
+export interface ForkSessionInput {
+	readonly sourceSessionId: string;
+	readonly targetSessionId: string;
+	readonly forkPoint?: number;
+}
+
+export interface ForkSessionResult {
+	readonly sourceSessionId: string;
+	readonly targetSessionId: string;
+	readonly forkPoint: number;
+	readonly messageCount: number;
+}
+
+export interface SessionSearchQuery {
+	readonly workspaceRoot?: string;
+	readonly limit?: number;
+}
+
+export interface SessionSearchResult {
+	readonly sessionId: string;
+	readonly messageIndex: number;
+	readonly role: string;
+	readonly snippet: string;
+}
+
+export interface SessionMaintenanceOptions {
+	readonly workspaceRoot?: string;
+	readonly candidateLimit?: number;
+}
+
+export interface SessionMaintenanceCandidate {
+	readonly sessionId: string;
+	readonly lastActiveAt: string;
+	readonly status: string;
+}
+
+export interface SessionStorageMetrics {
+	readonly dbSizeBytes: number;
+	readonly pageCount: number;
+	readonly freelistCount: number;
+	readonly pageSize: number;
+}
+
+export interface SessionMaintenanceReport extends SessionStorageMetrics {
+	readonly workspaceSessionCount: number;
+	readonly emptySessionCount: number;
+	readonly emptySessionCandidates: readonly SessionMaintenanceCandidate[];
+	readonly emptySessionCandidatesOmitted: number;
+	readonly dryRun: true;
+}
+
+export interface SessionEmptyCleanupResult extends SessionStorageMetrics {
+	readonly deletedSessionIds: readonly string[];
+	readonly workspaceSessionCount: number;
+	readonly emptySessionCount: number;
+	readonly emptySessionCandidatesOmitted: number;
+	readonly dryRun: false;
+}
+
+export interface SessionOrphanCleanupResult {
+	readonly deletedRowsByTable: readonly Readonly<{
+		readonly table: string;
+		readonly count: number;
+	}>[];
+	readonly totalDeletedRows: number;
+	readonly dryRun: false;
+}
+
+export interface SessionVacuumResult {
+	readonly beforeDbSizeBytes: number;
+	readonly afterDbSizeBytes: number;
+	readonly beforePageCount: number;
+	readonly afterPageCount: number;
+	readonly beforeFreelistCount: number;
+	readonly afterFreelistCount: number;
+	readonly pageSize: number;
+	readonly dryRun: false;
+}
+
 export interface SaveStateInput {
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
@@ -184,6 +264,20 @@ export interface SaveApprovalSuspensionInput {
 	readonly suspendedTurn: Extract<RuntimeStateRecord, { kind: "suspended_turn" }>;
 	readonly turnRecord: Readonly<Record<string, unknown>>;
 	readonly checkpoint: ApprovalCheckpoint;
+}
+
+export interface SaveClarificationSuspensionInput {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly suspendedTurn: Extract<RuntimeStateRecord, { kind: "suspended_turn" }>;
+	readonly turnRecord: Readonly<Record<string, unknown>>;
+}
+
+export interface CommitClarificationResponseInput {
+	readonly sessionId: string;
+	readonly requestId: string;
+	readonly toolResult: AppendToolResultInput;
 }
 
 export interface CommitApprovalResultInput {
@@ -349,6 +443,8 @@ export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscr
 	readonly subagentTasks: SubagentTaskStore;
 	commitApprovalResult(input: CommitApprovalResultInput): ApprovalCheckpoint;
 	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord;
+	saveClarificationSuspension(input: SaveClarificationSuspensionInput): void;
+	commitClarificationResponse(input: CommitClarificationResponseInput): void;
 }
 
 type DiagnosticValue = string | number | boolean | null;

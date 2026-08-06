@@ -19,6 +19,7 @@ test("upserts one stable bounded shell history snapshot", async (t) => {
 	store.reserveTurn({
 		sessionId: "session-a",
 		clientTurnId: "client-a",
+		clientUserMessageId: "client-a",
 		turnId: "turn-a",
 		requestFingerprint: `sha256:${"a".repeat(64)}`,
 		workspaceRoot: root,
@@ -85,6 +86,7 @@ test("bounds retained shell output and records omitted characters", async (t) =>
 	store.reserveTurn({
 		sessionId: "session-a",
 		clientTurnId: "client-a",
+		clientUserMessageId: "client-a",
 		turnId: "turn-a",
 		requestFingerprint: `sha256:${"b".repeat(64)}`,
 		workspaceRoot: root,

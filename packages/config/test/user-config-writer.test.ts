@@ -15,6 +15,7 @@ type WriteUserProviderConfig = (input: {
 	readonly authRef: string;
 	readonly promptCacheKeyEnabled: boolean;
 	readonly cacheControlEnabled: boolean;
+	readonly reasoningEffort?: string;
 	readonly failpoint?: (name: string) => void;
 }) => Promise<string>;
 
@@ -52,6 +53,7 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		authRef: "anthropic",
 		promptCacheKeyEnabled: false,
 		cacheControlEnabled: true,
+		reasoningEffort: "high",
 	});
 
 	assert.equal(writtenPath, path);
@@ -71,6 +73,7 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		prompt_cache_key_enabled: false,
 		cache_control_enabled: true,
 	});
+	assert.deepEqual(payload.reasoning, { effort: "high" });
 	if (process.platform !== "win32") {
 		assert.equal((await stat(path)).mode & 0o777, 0o600);
 		assert.equal((await stat(directory)).mode & 0o777, 0o700);

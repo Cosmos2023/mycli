@@ -119,16 +119,25 @@ export type RuntimeEvent =
 	| ShellLifecycleEvent
 	| { readonly type: "turn_started"; readonly clientTurnId: string; readonly turnId: string }
 	| {
+		readonly type: "user_message_started" | "user_message_completed";
+		readonly clientTurnId: string;
+		readonly turnId: string;
+		readonly itemId: string;
+		readonly clientUserMessageId: string;
+		readonly content: string;
+		readonly source: "submit" | "steer";
+	}
+	| {
 		readonly type: "compaction_started";
 		readonly clientTurnId: string;
-		readonly source: "pre_turn" | "context_overflow";
+		readonly source: "pre_turn" | "context_overflow" | "user_requested";
 		readonly beforeTokens: number;
 		readonly maxTokens: number;
 	}
 	| {
 		readonly type: "compaction_completed";
 		readonly clientTurnId: string;
-		readonly source: "pre_turn" | "context_overflow";
+		readonly source: "pre_turn" | "context_overflow" | "user_requested";
 		readonly status: "compressed" | "skipped";
 		readonly beforeTokens: number;
 		readonly afterTokens: number;
@@ -151,6 +160,21 @@ export type RuntimeEvent =
 		readonly preview: string;
 		readonly reason: string;
 		readonly options: readonly ApprovalChoice[];
+	}
+	| {
+		readonly type: "clarification_requested";
+		readonly clientTurnId: string;
+		readonly turnId: string;
+		readonly requestId: string;
+		readonly callId: string;
+		readonly toolName: string;
+		readonly question: string;
+		readonly options: readonly {
+			readonly label: string;
+			readonly description?: string;
+		}[];
+		readonly header: string;
+		readonly multiSelect: boolean;
 	}
 	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string }
 	| {

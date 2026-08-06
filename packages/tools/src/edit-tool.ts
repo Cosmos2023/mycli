@@ -54,6 +54,10 @@ export class ExactReplaceTool implements ToolAdapter {
 				oldString,
 				newString,
 				replaceAll: argumentsValue.replace_all === true,
+				history: {
+					turnId: options.ownerTurnId ?? options.callId,
+					toolName: this.#toolName,
+				},
 				signal: options.signal,
 			});
 			return mutationSuccess(this.#toolName, outcome, this.#status);

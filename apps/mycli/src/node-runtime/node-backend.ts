@@ -1,14 +1,27 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseRuntimeState } from "@mycli/contracts";
 import {
 	ExecPolicyStore,
+	listProviderProfiles,
+	loadShellSettings,
+	parseProtocol,
+	readApiKey,
 	resolveConfig,
+	resolveProviderProfile,
+	saveShellSettings,
+	writeApiKey,
+	writeUserProviderConfig,
 	WorkspaceTrustStore,
 } from "@mycli/config";
+import type { NodeRuntimeConfig } from "@mycli/config";
 import type {
 	QueueSnapshot,
 	QueuedInput,
+	ReasoningEffort,
 	RuntimeEvent,
 	ShellLifecycleEvent,
 } from "@mycli/core";
@@ -22,6 +35,7 @@ import {
 import { ProviderRegistry } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
+	ClarificationContinuationCoordinator,
 	CompactionCoordinator,
 	ContextItemCoordinator,
 	ExecutionPolicyCoordinator,
@@ -39,6 +53,7 @@ import {
 } from "@mycli/runtime";
 import type {
 	PendingSessionApproval,
+	PendingSessionClarification,
 	PreparedSession,
 } from "@mycli/runtime";
 import {
@@ -56,14 +71,17 @@ import type {
 } from "@mycli/storage";
 import {
 	ApprovalPolicy,
+	AskUserQuestionTool,
 	BashOutputTool,
 	BashTool,
 	builtinToolManifest,
 	EditTool,
+	FileHistoryStore,
 	FileMutationRuntime,
 	FileSnapshotStore,
 	PatchTool,
-	planToolExposure,
+		planToolExposure,
+		parseShellCommand,
 	ReadTool,
 	resolveShellProfile,
 	ShellOutputTool,
@@ -100,6 +118,7 @@ export interface StartNodeBackendOptions {
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
 	const overrides = parseOverrides(options.args);
+	let activeModelOverride = overrides.model;
 	const homeDir = runtimeHome(options.env);
 	const config = await resolveConfig({
 		homeDir,
@@ -110,6 +129,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new ProviderRegistry();
+	let controlConfig = config;
 	const toolManifest = builtinToolManifest();
 	const shellManager = new ShellSessionManager({
 		transportFactory: (request) => request.tty
@@ -174,10 +194,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		initialQueue: QueueSnapshot,
 		initialContinuation?: unknown,
 		runtimeOptions: { readonly allowedTools?: readonly string[] } = {},
-	): NodeGatewayRuntime => {
-		const fileSnapshots = new FileSnapshotStore();
-		const executionPolicyCoordinator = new ExecutionPolicyCoordinator({ workspaceRoot });
-		const mutationRuntime = new FileMutationRuntime({ workspaceRoot, snapshots: fileSnapshots });
+		): NodeGatewayRuntime => {
+			const fileSnapshots = new FileSnapshotStore();
+			const fileHistory = new FileHistoryStore({ homeDir, workspaceRoot });
+			const executionPolicyCoordinator = new ExecutionPolicyCoordinator({ workspaceRoot });
+			const mutationRuntime = new FileMutationRuntime({
+				workspaceRoot,
+				snapshots: fileSnapshots,
+				sessionId,
+				history: fileHistory,
+			});
 		const shellProfile = resolveShellProfile({ env: options.env });
 		const execPolicyStore = new ExecPolicyStore({ homeDir, workspaceRoot });
 		const approvalPolicy = new ApprovalPolicy({
@@ -209,6 +235,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
+			new AskUserQuestionTool(),
 			shellTool,
 			new WriteStdinTool({ manager: shellManager }),
 			new BashTool({ shell: shellTool }),
@@ -246,6 +273,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
 		});
 		approvalCoordinator.recover();
+		const clarificationCoordinator = new ClarificationContinuationCoordinator({
+			sessionId,
+			workspaceRoot,
+			threadId,
+			store,
+			clock: () => new Date().toISOString(),
+		});
 		const queueCoordinator = new QueueCoordinator({
 			initial: initialQueue,
 			store: {
@@ -277,7 +311,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				});
 			},
 		});
-		const memoryContextService = new MemoryContextService({
+			const memoryContextService = new MemoryContextService({
 			store: new MemoryStore({ homeDir, workspaceRoot }),
 			sessionStore: store,
 			selector: new MemorySelector({
@@ -295,57 +329,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					model: config.model,
 				},
 			}),
-			tokenCounter,
-		});
-		return new NodeTurnRuntime({
-			sessionId,
-			workspaceRoot,
-			threadId,
-			instructions: runtimeInstructions,
-			...(options.maxOutputTokens === undefined
-				? {}
-				: { maxOutputTokens: options.maxOutputTokens }),
-			store,
-			resolveConfig: (submission) => resolveConfig({
-				homeDir,
-				workspaceRoot,
-				env: options.env,
-				overrides: {
-					session: sessionId,
-					model: submission.modelOverride ?? overrides.model,
-				},
-			}),
-			createProvider: (resolved) => registry.create(resolved),
-			createTurnId: randomUUID,
-			clock: () => new Date().toISOString(),
-			publishLifecycle,
-			executionPolicyCoordinator,
-			planTools: plannedTools,
-			toolRouter,
-			hookRunner: integrationComposition.hookRunner,
-			contextItemCoordinator,
-			approvalPolicy: {
-				evaluate: async (call) => {
-					await ensureExecPolicyLoaded();
-					return approvalPolicy.evaluate(call);
-				},
-			},
-			approvalCoordinator,
-			queueCoordinator,
-			providerContinuation,
-			memoryContextService,
-			writeTerminalSnapshot: async () => {
-				const overview = store.loadSession(sessionId);
-				if (!overview) throw new SnapshotStateError("terminal session is missing");
-				const approval = loadApprovalState(store, sessionId);
-				await transcriptSnapshots.write(canonicalSnapshot(
-					store,
-					overview,
-					approval.pendingApproval !== undefined,
-					approval.suspendedTurn,
-				));
-			},
-			createCompactionCoordinator: (resolved) => {
+				tokenCounter,
+			});
+			const createCompactionCoordinator = (
+				resolved: Awaited<ReturnType<typeof resolveConfig>>,
+			): CompactionCoordinator => {
 				const compactionThreshold = compactionThresholdForModel(resolved);
 				return new CompactionCoordinator({
 					sessionId,
@@ -386,9 +374,105 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					createCheckpointId: randomUUID,
 					clock: () => new Date().toISOString(),
 				});
+			};
+			const runtime = new NodeTurnRuntime({
+			sessionId,
+			workspaceRoot,
+			threadId,
+			instructions: runtimeInstructions,
+			...(options.maxOutputTokens === undefined
+				? {}
+				: { maxOutputTokens: options.maxOutputTokens }),
+			store,
+			resolveConfig: (submission) => resolveConfig({
+				homeDir,
+				workspaceRoot,
+				env: options.env,
+				overrides: {
+					session: sessionId,
+					model: submission.modelOverride ?? activeModelOverride,
+				},
+			}),
+			createProvider: (resolved) => registry.create(resolved),
+			createTurnId: randomUUID,
+			clock: () => new Date().toISOString(),
+			publishLifecycle,
+			executionPolicyCoordinator,
+			planTools: plannedTools,
+			toolRouter,
+			hookRunner: integrationComposition.hookRunner,
+			contextItemCoordinator,
+			approvalPolicy: {
+				evaluate: async (call) => {
+					await ensureExecPolicyLoaded();
+					return approvalPolicy.evaluate(call);
+				},
 			},
-		});
-	};
+			approvalCoordinator,
+			clarificationCoordinator,
+			queueCoordinator,
+			providerContinuation,
+			memoryContextService,
+			writeTerminalSnapshot: async () => {
+				const overview = store.loadSession(sessionId);
+				if (!overview) throw new SnapshotStateError("terminal session is missing");
+				const approval = loadApprovalState(store, sessionId);
+				await transcriptSnapshots.write(canonicalSnapshot(
+					store,
+					overview,
+					approval.pendingApproval !== undefined,
+					approval.pendingClarification !== undefined,
+					approval.suspendedTurn,
+				));
+			},
+				createCompactionCoordinator,
+			});
+			const allowancePattern = (value: string): readonly string[] => {
+				const parsed = parseShellCommand(value, { shellKind: shellProfile.kind });
+				if (parsed.kind !== "plain" || parsed.segments.length !== 1) {
+					throw new Error("invalid_arguments: command allowance must be one command prefix");
+				}
+				return parsed.segments[0]!.words;
+			};
+			return Object.assign(runtime, {
+				listCommandAllowances: () => approvalPolicy.listSessionAllowances(),
+				addCommandAllowance: (value: string) => {
+					approvalPolicy.allowSession(allowancePattern(value));
+					return approvalPolicy.listSessionAllowances();
+				},
+				removeCommandAllowance: (value: string) => {
+					approvalPolicy.removeSessionAllowance(allowancePattern(value));
+					return approvalPolicy.listSessionAllowances();
+				},
+				clearCommandAllowances: () => approvalPolicy.clearSessionAllowances(),
+				compact: async (input: { readonly modelOverride?: string; readonly signal: AbortSignal }) => {
+					const resolved = await resolveConfig({
+						homeDir,
+						workspaceRoot,
+						env: options.env,
+						overrides: {
+							session: sessionId,
+							model: input.modelOverride ?? activeModelOverride,
+						},
+					});
+					const commandId = `command_compact_${randomUUID().replaceAll("-", "")}`;
+					const result = await createCompactionCoordinator(resolved).compact({
+						clientTurnId: commandId,
+						turnId: commandId,
+						source: "user_requested",
+						conversation: store.loadConversationItems(sessionId),
+						freshItemIds: new Set(),
+						emit: () => undefined,
+						signal: input.signal,
+					});
+					return {
+						status: result.status,
+						beforeTokens: result.beforeTokens,
+						afterTokens: result.afterTokens,
+					};
+				},
+			});
+		};
 	childRuntimeFactoryDelegate.create = async (input) => {
 		const runtime = createRuntime(
 			input.childSessionId,
@@ -469,9 +553,17 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return store.loadSessionLineage(sessionId);
 			},
 		});
-		const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
-		const gatewayIntegrations = integrationGateway(integrationComposition);
-		return createNodeGateway({
+			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
+			const gatewayIntegrations = integrationGateway(integrationComposition);
+				const activeMemoryStore = () => new MemoryStore({
+				homeDir,
+				workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+				});
+				const activeFileHistory = () => new FileHistoryStore({
+					homeDir,
+					workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+				});
+			return createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
 			provider: config.provider,
@@ -479,8 +571,126 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			toolNames: allToolExposure.map((tool) => tool.name),
 			maxPromptTokens: config.maxPromptTokens,
 			runtime: initial.binding,
-			loadConversation: (sessionId) => store.loadConversation(sessionId),
-			sessionCoordinator,
+				loadConversation: (sessionId) => store.loadConversation(sessionId),
+				loadTranscript: (sessionId) => canonicalTranscript(store, sessionId),
+				loadTurnRollouts: (sessionId) => store.loadTurnRollouts(sessionId),
+				memoryCommands: {
+					directory: () => activeMemoryStore().directory(),
+					scan: async () => (await activeMemoryStore().scan()).map((memory) => ({ ...memory })),
+					remember: async (input) => ({ ...await activeMemoryStore().remember(input) }),
+					forget: async (query) => (await activeMemoryStore().forget(query)).map((memory) => ({
+						...memory,
+					})),
+				},
+					backgroundTaskCommands: {
+					list: (parentSessionId) => store.subagentTasks.list(parentSessionId).map((task) => ({
+						...task,
+					})),
+					interrupt: async (parentSessionId, childSessionId) => {
+						const task = store.subagentTasks.getByChildSession(parentSessionId, childSessionId);
+						if (task?.status !== "running") return false;
+						return await integrationComposition.subagentController?.interrupt(childSessionId) ?? false;
+					},
+					interruptAll: async (parentSessionId) => {
+						const running = store.subagentTasks.list(parentSessionId)
+							.filter((task) => task.status === "running");
+						let interrupted = 0;
+						for (const task of running) {
+							if (await integrationComposition.subagentController?.interrupt(task.childSessionId)) {
+								interrupted += 1;
+							}
+						}
+						return interrupted;
+						},
+					},
+					sessionCommands: {
+						fork: (input) => store.forkSession(input),
+						search: (query, workspaceRoot) => store.searchMessages(query, {
+							workspaceRoot,
+							limit: 20,
+						}),
+						maintenance: (action, workspaceRoot) => {
+							if (action === "report") {
+								return { ...store.sessionMaintenanceReport({ workspaceRoot }) };
+							}
+							if (action === "empty") {
+								return { ...store.cleanupEmptySessions({ workspaceRoot }) };
+							}
+							if (action === "orphans") return { ...store.cleanupOrphanedSessionRows() };
+							return { ...store.vacuumSessionStorage() };
+						},
+					},
+					traceCommands: {
+						inspect: (sessionId) => nodeTraceRows(store, sessionId),
+						export: (sessionId) => nodeTraceRows(store, sessionId).map((row) => JSON.stringify(row)),
+						logs: () => nodeLogRows(homeDir),
+					},
+					fileHistoryCommands: {
+						undo: (sessionId) => activeFileHistory().undoLatest({ sessionId }),
+					},
+					controlCommands: {
+						authProviders: async () => await Promise.all(listProviderProfiles().map(async (profile) => ({
+							id: profile.provider,
+							name: providerDisplayName(profile.provider),
+							configured: Boolean(await readApiKey({
+								homeDir,
+								authRef: profile.provider,
+							})),
+							...(profile.defaultModel ? { default_model: profile.defaultModel } : {}),
+						}))),
+						saveApiKey: async (providerId, apiKey) => {
+							const profile = resolveProviderProfile(providerId);
+							await writeApiKey({ homeDir, authRef: profile.provider, apiKey });
+							return {
+								ok: true,
+								provider_id: profile.provider,
+								message: `Saved API key for ${providerDisplayName(profile.provider)}.`,
+							};
+						},
+						models: async () => modelCatalog(controlConfig),
+						selectModel: async (input) => {
+							const provider = controlString(input.provider, "provider");
+							const protocolValue = controlString(input.protocol, "protocol");
+							const profile = resolveProviderProfile(provider, protocolValue);
+							const protocol = parseProtocol(protocolValue);
+							const model = controlString(input.model, "model");
+							const apiBaseUrl = controlString(input.base_url, "base_url").replace(/\/+$/u, "");
+							const reasoningEffort = controlReasoningEffort(input.reasoning_effort);
+							await writeUserProviderConfig({
+								homeDir,
+								provider: profile.provider,
+								protocol,
+								model,
+								apiBaseUrl,
+								authRef: profile.provider,
+								promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
+								cacheControlEnabled: profile.cacheControlEnabled,
+								...(reasoningEffort ? { reasoningEffort } : {}),
+							});
+							activeModelOverride = model;
+							controlConfig = {
+								...controlConfig,
+								provider: profile.provider,
+								protocol,
+								model,
+								apiBaseUrl,
+								authRef: profile.provider,
+								promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
+								cacheControlEnabled: profile.cacheControlEnabled,
+								...(reasoningEffort ? { reasoningEffort } : {}),
+							};
+							return modelCatalogEntry(controlConfig, true);
+						},
+						loadSettings: async () => ({ ...await loadShellSettings({ homeDir }) }),
+						saveSettings: async (settings) => ({
+							...await saveShellSettings({ homeDir, settings }),
+						}),
+						completePath: (prefix) => pathCompletionCandidates(
+							sessionCoordinator.snapshot().workspaceRoot,
+							prefix,
+						),
+					},
+				sessionCoordinator,
 			shellManager,
 			shellLifecycle,
 			workspaceTrust: {
@@ -523,6 +733,123 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	}
 }
 
+function modelCatalog(config: NodeRuntimeConfig): readonly Readonly<Record<string, unknown>>[] {
+	return Object.freeze(listProviderProfiles().flatMap((profile) => {
+		const current = profile.provider === config.provider;
+		const model = current ? config.model : profile.defaultModel;
+		if (!model) return [];
+		const entryConfig: NodeRuntimeConfig = current ? config : {
+			...config,
+			provider: profile.provider,
+			protocol: profile.defaultProtocol,
+			model,
+			apiBaseUrl: profile.defaultBaseUrl,
+		};
+		return [modelCatalogEntry(entryConfig, current)];
+	}));
+}
+
+function modelCatalogEntry(
+	config: NodeRuntimeConfig,
+	current: boolean,
+): Readonly<Record<string, unknown>> {
+	return Object.freeze({
+		provider: config.provider,
+		protocol: config.protocol,
+		model: config.model,
+		name: config.model,
+		description: `${providerDisplayName(config.provider)} ${config.protocol.replaceAll("_", " ")}`,
+		base_url: config.apiBaseUrl,
+		supported_reasoning_efforts: ["none", "minimal", "low", "medium", "high", "xhigh"],
+		default_reasoning_effort: config.reasoningEffort,
+		default: resolveProviderProfile(config.provider).defaultModel === config.model,
+		current,
+	});
+}
+
+function providerDisplayName(provider: string): string {
+	return {
+		openai: "OpenAI",
+		codex: "OpenAI Codex",
+		compatible: "OpenAI Compatible",
+		qwen: "Qwen",
+		deepseek: "DeepSeek",
+		anthropic: "Anthropic",
+	}[provider] ?? provider;
+}
+
+function controlString(value: unknown, name: string): string {
+	if (typeof value !== "string" || !value.trim()) {
+		throw new Error(`invalid_arguments: ${name} is required`);
+	}
+	return value.trim();
+}
+
+function controlReasoningEffort(value: unknown): ReasoningEffort | undefined {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (
+		value === "none"
+		|| value === "minimal"
+		|| value === "low"
+		|| value === "medium"
+		|| value === "high"
+		|| value === "xhigh"
+	) return value;
+	throw new Error("invalid_arguments: unsupported reasoning_effort");
+}
+
+async function pathCompletionCandidates(
+	workspaceRoot: string,
+	token: string,
+): Promise<readonly Readonly<Record<string, unknown>>[]> {
+	if (!token.startsWith("@")) return [];
+	const raw = token.slice(1);
+	if (raw === ".." || raw.startsWith("../") || isAbsolute(raw)) return [];
+	let root: string;
+	let parent: string;
+	try {
+		root = await realpath(workspaceRoot);
+		const base = resolve(root, raw);
+		parent = await realpath(raw.endsWith("/") ? base : dirname(base));
+	} catch {
+		return [];
+	}
+	if (!withinWorkspace(parent, root)) return [];
+	const prefix = raw.endsWith("/") ? "" : basename(raw);
+	let children;
+	try {
+		children = await readdir(parent, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const items: Readonly<Record<string, unknown>>[] = [];
+	for (const child of children.sort((left, right) => left.name.localeCompare(right.name)).slice(0, 200)) {
+		if (prefix && !child.name.startsWith(prefix)) continue;
+		const childPath = join(parent, child.name);
+		let resolvedChild: string;
+		let directory: boolean;
+		try {
+			resolvedChild = await realpath(childPath);
+			directory = (await stat(resolvedChild)).isDirectory();
+		} catch {
+			continue;
+		}
+		if (!withinWorkspace(resolvedChild, root)) continue;
+		const relativePath = relative(root, childPath).split(sep).join("/");
+		items.push(Object.freeze({
+			value: `@${relativePath}${directory ? "/" : ""}`,
+			kind: directory ? "directory" : "file",
+		}));
+	}
+	return Object.freeze(items);
+}
+
+function withinWorkspace(path: string, root: string): boolean {
+	const candidate = relative(root, path);
+	return candidate === ""
+		|| (!candidate.startsWith(`..${sep}`) && candidate !== ".." && !isAbsolute(candidate));
+}
+
 function filterToolDefinitions<Value extends { readonly name: string }>(
 	definitions: readonly Value[],
 	allowed: readonly string[] | undefined,
@@ -535,8 +862,9 @@ function filterToolDefinitions<Value extends { readonly name: string }>(
 function integrationGateway(
 	composition: RuntimeIntegrationComposition,
 ): NodeGatewayIntegrations {
-	const integrations: NodeGatewayIntegrations = {
-		toolManifest: composition.manifest as unknown as Record<string, unknown>,
+		const integrations: NodeGatewayIntegrations = {
+			toolManifest: composition.manifest as unknown as Record<string, unknown>,
+			diagnostics: composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
 		listResources: () => composition.resources.map((resource) => ({ ...resource })),
 		...(composition.commands.length > 0 ? {
 			commands: combinedIntegrationCommands(composition.commands),
@@ -546,6 +874,67 @@ function integrationGateway(
 		) => composition.subscribeSubagents(listener),
 	};
 	return Object.freeze(integrations);
+}
+
+function nodeTraceRows(
+	store: SQLiteSessionStore,
+	sessionId: string,
+): readonly Readonly<Record<string, unknown>>[] {
+	return store.loadTurnRollouts(sessionId).slice(-50).map((rollout) => {
+		const continuation = objectValue(rollout.continuation_state);
+		const usage = objectValue(continuation.usage);
+		return Object.freeze({
+			kind: "turn",
+			...(boundedTraceString(rollout.turn_id, 256) ? {
+				turn_id: boundedTraceString(rollout.turn_id, 256),
+			} : {}),
+			...(boundedTraceString(rollout.status, 32) ? {
+				status: boundedTraceString(rollout.status, 32),
+			} : {}),
+			...(boundedTraceString(rollout.stop_reason, 64) ? {
+				stop_reason: boundedTraceString(rollout.stop_reason, 64),
+			} : {}),
+			...(boundedTraceString(rollout.started_at, 64) ? {
+				started_at: boundedTraceString(rollout.started_at, 64),
+			} : {}),
+			...(boundedTraceString(rollout.completed_at, 64) ? {
+				completed_at: boundedTraceString(rollout.completed_at, 64),
+			} : {}),
+			...traceUsage(usage),
+		});
+	});
+}
+
+function nodeLogRows(homeDir: string): readonly string[] {
+	const logsRoot = join(homeDir, ".mycli", "logs");
+	const rows = ["agent.log", "errors.log", "model-events.jsonl"].map((name) => {
+		const path = join(logsRoot, name);
+		return existsSync(path)
+			? `${name} present bytes=${statSync(path).size}`
+			: `${name} absent`;
+	});
+	return Object.freeze(rows);
+}
+
+function objectValue(value: unknown): Readonly<Record<string, unknown>> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? value as Readonly<Record<string, unknown>>
+		: {};
+}
+
+function boundedTraceString(value: unknown, limit: number): string | undefined {
+	return typeof value === "string" && value
+		? value.slice(0, limit)
+		: undefined;
+}
+
+function traceUsage(value: Readonly<Record<string, unknown>>): Readonly<Record<string, number>> {
+	const result: Record<string, number> = {};
+	for (const key of ["input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"] as const) {
+		const count = value[key];
+		if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) result[key] = count;
+	}
+	return Object.freeze(result);
 }
 
 function combinedIntegrationCommands(
@@ -719,6 +1108,7 @@ async function prepareStoredSession(
 				store,
 				overview,
 				approvalState.pendingApproval !== undefined,
+				approvalState.pendingClarification !== undefined,
 				approvalState.suspendedTurn,
 			),
 			importLegacy: (legacySessionId, messages) => importLegacySnapshot(
@@ -746,6 +1136,9 @@ async function prepareStoredSession(
 		queue,
 		...(approvalState.pendingApproval
 			? { pendingApproval: approvalState.pendingApproval }
+			: {}),
+		...(approvalState.pendingClarification
+			? { pendingClarification: approvalState.pendingClarification }
 			: {}),
 		suspendedTurn: approvalState.suspendedTurn,
 		...(compactionState === undefined ? {} : { compactionState }),
@@ -776,26 +1169,36 @@ function canonicalSnapshot(
 	store: SQLiteSessionStore,
 	overview: SessionOverview,
 	pendingApproval: boolean,
+	pendingClarification: boolean,
 	suspendedTurn: boolean,
 ): TranscriptSnapshotV2 {
-	const projected = projectTranscript(
-		store.loadHistoryItems(overview.sessionId),
-		store.loadTurnRollouts(overview.sessionId),
-		{ limit: 500 },
-	);
-	const transcript = projected.length > 0
-		? projected
-		: legacyConversationTranscript(store, overview.sessionId);
+	const transcript = canonicalTranscript(store, overview.sessionId);
 	return {
 		schema_version: 2,
 		session_id: overview.sessionId,
 		cwd: overview.workspaceRoot,
-		state: pendingApproval ? "waiting_approval" : suspendedTurn ? "interrupted" : "idle",
+		state: pendingApproval
+			? "waiting_approval"
+			: pendingClarification
+				? "waiting_clarification"
+				: suspendedTurn ? "interrupted" : "idle",
 		message_count: overview.messageCount,
 		created_at: overview.createdAt,
 		updated_at: overview.updatedAt,
 		transcript,
 	};
+}
+
+function canonicalTranscript(
+	store: SQLiteSessionStore,
+	sessionId: string,
+): readonly TranscriptItem[] {
+	const projected = projectTranscript(
+		store.loadHistoryItems(sessionId),
+		store.loadTurnRollouts(sessionId),
+		{ limit: 500 },
+	);
+	return projected.length > 0 ? projected : legacyConversationTranscript(store, sessionId);
 }
 
 function legacyConversationTranscript(
@@ -827,7 +1230,7 @@ function importLegacySnapshot(
 	if (!imported || !current) {
 		throw new SessionTransitionError("session_state_invalid", "legacy transcript import failed");
 	}
-	return canonicalSnapshot(store, current, false, false);
+	return canonicalSnapshot(store, current, false, false, false);
 }
 
 async function loadDegradedSnapshot(
@@ -923,7 +1326,11 @@ function emptyQueue(sessionId: string): QueueSnapshot {
 function loadApprovalState(
 	store: SQLiteSessionStore,
 	sessionId: string,
-): { readonly pendingApproval?: PendingSessionApproval; readonly suspendedTurn: boolean } {
+): {
+	readonly pendingApproval?: PendingSessionApproval;
+	readonly pendingClarification?: PendingSessionClarification;
+	readonly suspendedTurn: boolean;
+} {
 	const pendingPayload = store.loadState(sessionId, "pending_decision");
 	const suspendedPayload = store.loadState(sessionId, "suspended_turn");
 	const suspended = suspendedPayload === undefined
@@ -934,8 +1341,14 @@ function loadApprovalState(
 			&& suspended.payload.session_id !== sessionId))) {
 		throw new SessionTransitionError("session_state_invalid", "suspended session does not match");
 	}
+	const pendingClarification = suspended?.kind === "suspended_turn"
+		? clarificationFromSuspendedState(sessionId, suspended.payload)
+		: undefined;
 	if (pendingPayload === undefined) {
-		return { suspendedTurn: suspended !== undefined };
+		return {
+			...(pendingClarification ? { pendingClarification } : {}),
+			suspendedTurn: suspended !== undefined,
+		};
 	}
 	if (suspended === undefined) {
 		throw new SessionTransitionError("session_state_invalid", "pending approval has no suspended turn");
@@ -943,6 +1356,12 @@ function loadApprovalState(
 	const pending = parseRuntimeState({ kind: "pending_decision", version: 1, payload: pendingPayload });
 	if (pending.kind !== "pending_decision" || suspended.kind !== "suspended_turn") {
 		throw new SessionTransitionError("session_state_invalid", "approval continuation is invalid");
+	}
+	if (pendingClarification) {
+		throw new SessionTransitionError(
+			"session_state_invalid",
+			"approval and clarification cannot both be pending",
+		);
 	}
 	const clientTurnId = requiredStateString(suspended.payload.client_turn_id, "client turn id");
 	const turnId = requiredStateString(suspended.payload.turn_id, "turn id");
@@ -965,6 +1384,53 @@ function loadApprovalState(
 		},
 		suspendedTurn: true,
 	};
+}
+
+function clarificationFromSuspendedState(
+	sessionId: string,
+	payload: Extract<ReturnType<typeof parseRuntimeState>, { kind: "suspended_turn" }>['payload'],
+): PendingSessionClarification | undefined {
+	const clarification = payload.pending_clarification;
+	if (!clarification) return undefined;
+	const clientTurnId = requiredStateString(payload.client_turn_id, "client turn id");
+	const clientUserMessageId = typeof payload.client_user_message_id === "string"
+		&& payload.client_user_message_id.trim()
+		? payload.client_user_message_id
+		: clientTurnId;
+	const callId = requiredStateString(clarification.tool_call.call_id, "clarification call id");
+	return Object.freeze({
+		sessionId,
+		clientTurnId,
+		clientUserMessageId,
+		turnId: requiredStateString(payload.turn_id, "turn id"),
+		requestId: requiredStateString(clarification.request_id, "clarification request id"),
+		callId,
+		toolName: requiredStateString(clarification.tool_call.name, "clarification tool name"),
+		question: requiredStateString(clarification.question, "clarification question"),
+		options: Object.freeze(clarification.options.map(clarificationStateOption)),
+		header: typeof clarification.header === "string" ? clarification.header : "",
+		multiSelect: clarification.multi_select,
+	});
+}
+
+function clarificationStateOption(value: unknown): {
+	readonly label: string;
+	readonly description?: string;
+} {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new SessionTransitionError("session_state_invalid", "clarification option is invalid");
+	}
+	const option = value as Readonly<Record<string, unknown>>;
+	const label = requiredStateString(option.label, "clarification option label");
+	if (option.description !== undefined && typeof option.description !== "string") {
+		throw new SessionTransitionError("session_state_invalid", "clarification option is invalid");
+	}
+	return Object.freeze({
+		label,
+		...(typeof option.description === "string" && option.description
+			? { description: option.description }
+			: {}),
+	});
 }
 
 function loadResponsesContinuation(

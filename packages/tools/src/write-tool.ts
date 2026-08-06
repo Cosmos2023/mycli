@@ -40,6 +40,10 @@ export class WriteTool implements ToolAdapter {
 				path,
 				content,
 				...(expectedSha256 ? { expectedSha256 } : {}),
+				history: {
+					turnId: options.ownerTurnId ?? options.callId,
+					toolName: "Write",
+				},
 				signal: options.signal,
 			});
 			return mutationSuccess("Write", outcome);

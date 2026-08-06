@@ -131,6 +131,18 @@ test("session allowances immediately authorize the exact command prefix", () => 
 	assert.equal(policy.evaluate(call).kind, "allow");
 });
 
+test("session allowances can be listed, revoked, and cleared without changing persistent rules", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	policy.allowSession?.(["git", "status"]);
+	policy.allowSession?.(["npm", "test"]);
+
+	assert.deepEqual(policy.listSessionAllowances?.(), [["git", "status"], ["npm", "test"]]);
+	assert.equal(policy.removeSessionAllowance?.(["git", "status"]), true);
+	assert.deepEqual(policy.listSessionAllowances?.(), [["npm", "test"]]);
+	assert.equal(policy.clearSessionAllowances?.(), 1);
+	assert.deepEqual(policy.listSessionAllowances?.(), []);
+});
+
 function approvalPolicy(options: {
 	readonly autoApproveMedium: boolean;
 	readonly execPolicyRules?: readonly {
@@ -152,6 +164,9 @@ function approvalPolicy(options: {
 		readonly proposedExecPolicyPattern?: readonly string[];
 	};
 	allowSession?(pattern: readonly string[]): void;
+	listSessionAllowances?(): readonly (readonly string[])[];
+	removeSessionAllowance?(pattern: readonly string[]): boolean;
+	clearSessionAllowances?(): number;
 } {
 	const Constructor = Reflect.get(tools, "ApprovalPolicy");
 	assert.equal(typeof Constructor, "function", "ApprovalPolicy must be exported");
@@ -170,6 +185,9 @@ function approvalPolicy(options: {
 				readonly proposedExecPolicyPattern?: readonly string[];
 			};
 			allowSession?(pattern: readonly string[]): void;
+			listSessionAllowances?(): readonly (readonly string[])[];
+			removeSessionAllowance?(pattern: readonly string[]): boolean;
+			clearSessionAllowances?(): number;
 		})({
 		workspaceRoot: "/private/workspace",
 		autoApproveMedium: options.autoApproveMedium,

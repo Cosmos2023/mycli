@@ -105,6 +105,27 @@ export class ApprovalPolicy {
 		})]);
 	}
 
+	listSessionAllowances(): readonly (readonly string[])[] {
+		return Object.freeze(this.#sessionRules.map((rule) => Object.freeze([...rule.pattern])));
+	}
+
+	removeSessionAllowance(pattern: readonly string[]): boolean {
+		const normalized = freezePattern(pattern);
+		const filtered = this.#sessionRules.filter((rule) => !equalTokens(rule.pattern, normalized));
+		if (filtered.length === this.#sessionRules.length) return false;
+		this.#sessionRules = Object.freeze(filtered.map((rule, index) => Object.freeze({
+			...rule,
+			index,
+		})));
+		return true;
+	}
+
+	clearSessionAllowances(): number {
+		const count = this.#sessionRules.length;
+		this.#sessionRules = Object.freeze([]);
+		return count;
+	}
+
 	evaluate(call: CanonicalToolCall): ApprovalPolicyDecision {
 		const manifest = builtinToolManifest().tools.find((tool) => tool.name === call.name);
 		const argumentsValue = parseArguments(call.argumentsJson);

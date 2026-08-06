@@ -1934,7 +1934,10 @@ test("completed user item commits a pending steer exactly once", () => {
 	};
 
 	state = reduceRuntimeEvent(state, "item.completed", payload);
-	state = reduceRuntimeEvent(state, "item.completed", payload);
+	state = reduceRuntimeEvent(state, "runtime.event", {
+		type: "item.completed",
+		payload,
+	});
 
 	assert.equal(state.localPendingSteers.length, 0);
 	assert.deepEqual(projectRuntimeState(state).messages.map((item) => item.text), ["inspect"]);

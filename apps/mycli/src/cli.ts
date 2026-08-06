@@ -8,7 +8,6 @@ import {
 	configureGatewayTransport,
 	type GatewayTransport,
 } from "mycli-shell-tui/gateway-transport";
-import { selectRuntimeBackend } from "./backend-router.ts";
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
 import { createDefaultManagementServices } from "./management/services.ts";
@@ -19,11 +18,6 @@ import {
 	type NodeBackend,
 	type StartNodeBackendOptions,
 } from "./node-runtime/node-backend.ts";
-import {
-	startPythonSidecar,
-	type PythonSidecar,
-	type StartPythonSidecarOptions,
-} from "./sidecar/python-sidecar.ts";
 
 const VERSION = "0.1.0";
 const HELP = `Usage: mycli [options]
@@ -40,7 +34,6 @@ Commands:
 Options:
   --session <id>                    Resume or create a session
   --model <model>                   Override the configured model
-  --runtime-backend <backend>       Select python-sidecar or node
   -h, --help                        Show help
   -V, --version                     Show version
 `;
@@ -62,7 +55,6 @@ export type RunCliOptions = {
 	stdout?: OutputStream;
 	stderr?: OutputStream;
 	processHooks?: ProcessHooks;
-	startSidecar?: (options: StartPythonSidecarOptions) => PythonSidecar;
 	startNodeBackend?: (options: StartNodeBackendOptions) => NodeBackend | Promise<NodeBackend>;
 	configureTransport?: (transport: GatewayTransport) => void;
 	importTui?: () => Promise<unknown>;
@@ -118,14 +110,6 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		}
 	}
 
-	let selectedBackend;
-	try {
-		selectedBackend = selectRuntimeBackend({ argv: mode.runtimeArgs, env });
-	} catch (error) {
-		stderr.write(`[mycli] ${stableMessage(error, "runtime_backend_invalid")}\n`);
-		return 2;
-	}
-
 	let backendArgs: readonly string[];
 	try {
 		backendArgs = parseRuntimeArguments(mode.runtimeArgs);
@@ -139,16 +123,11 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		return 2;
 	}
 
-	let backend: PythonSidecar | NodeBackend;
+	let backend: NodeBackend;
 	try {
-		backend = selectedBackend === "node"
-			? await (options.startNodeBackend ?? startNodeBackend)({ cwd, env, args: backendArgs })
-			: (options.startSidecar ?? startPythonSidecar)({ cwd, env, args: backendArgs });
+		backend = await (options.startNodeBackend ?? startNodeBackend)({ cwd, env, args: backendArgs });
 	} catch (error) {
-		const fallback = selectedBackend === "node"
-			? "node_backend_start_failed"
-			: "sidecar_spawn_failed";
-		stderr.write(`[mycli] ${stableMessage(error, fallback)}\n`);
+		stderr.write(`[mycli] ${stableMessage(error, "node_backend_start_failed")}\n`);
 		return 2;
 	}
 
@@ -202,8 +181,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		stderr.write("[mycli] tui_start_failed: unable to start terminal UI\n");
 		const diagnostic = backend.diagnostic().trim();
 		if (diagnostic) {
-			const prefix = selectedBackend === "node" ? "mycli-node" : "mycli-sidecar";
-			stderr.write(`[${prefix}] ${diagnostic}\n`);
+			stderr.write(`[mycli-node] ${diagnostic}\n`);
 		}
 		return 1;
 	}
@@ -227,13 +205,6 @@ function parseRuntimeArguments(argv: readonly string[]): readonly string[] {
 	const runtimeArgs: string[] = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
-		if (argument === "--runtime-backend") {
-			index += 1;
-			continue;
-		}
-		if (argument?.startsWith("--runtime-backend=")) {
-			continue;
-		}
 		if (argument === "--session" || argument === "--model") {
 			const value = argv[index + 1];
 			if (value === undefined) {

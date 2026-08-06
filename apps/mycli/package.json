@@ -9,6 +9,7 @@
   "types": "./dist/cli.d.ts",
   "files": ["dist"],
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "test:m5": "node --import tsx --test test/m5-state-recovery.integration.test.ts",

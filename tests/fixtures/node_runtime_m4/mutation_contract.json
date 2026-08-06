@@ -1,13 +1,14 @@
 {
   "schema_version": 1,
   "inventory": {
-    "tools": ["Read", "Edit", "Patch", "Write"],
+    "tools": ["Read", "Edit", "Patch", "Write", "AskUserQuestion"],
     "retired_tools": ["LS", "Glob", "Grep"],
     "parameters": {
       "Read": ["file_path", "offset", "limit", "pages"],
       "Edit": ["file_path", "old_string", "new_string", "replace_all"],
       "Patch": ["file_path", "old_string", "new_string", "replace_all"],
-      "Write": ["file_path", "content", "expected_sha256"]
+      "Write": ["file_path", "content", "expected_sha256"],
+      "AskUserQuestion": ["question", "options", "header", "multi_select"]
     }
   },
   "cases": [

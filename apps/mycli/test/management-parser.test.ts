@@ -54,13 +54,12 @@ test("parser decodes plugin command arguments as one JSON object", () => {
 
 test("parser retains validated interactive arguments", () => {
 	assert.deepEqual(parseCliMode([
-		"--runtime-backend=node",
 		"--session",
 		"demo",
 		"--model=gpt-5",
 	]), {
 		kind: "interactive",
-		runtimeArgs: ["--runtime-backend=node", "--session", "demo", "--model=gpt-5"],
+		runtimeArgs: ["--session", "demo", "--model=gpt-5"],
 	});
 });
 
@@ -73,6 +72,7 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["mcp", "inspect"],
 		["subagents", "unknown"],
 		["setup", "--json"],
+		["--runtime-backend=node"],
 	] as const) {
 		assert.throws(
 			() => parseCliMode(argv),

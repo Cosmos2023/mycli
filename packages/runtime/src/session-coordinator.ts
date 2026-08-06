@@ -22,6 +22,23 @@ export interface PendingSessionApproval {
 	readonly options: readonly PendingApprovalChoice[];
 }
 
+export interface PendingSessionClarification {
+	readonly sessionId: string;
+	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
+	readonly turnId: string;
+	readonly requestId: string;
+	readonly callId: string;
+	readonly toolName: string;
+	readonly question: string;
+	readonly options: readonly {
+		readonly label: string;
+		readonly description?: string;
+	}[];
+	readonly header: string;
+	readonly multiSelect: boolean;
+}
+
 export interface PreparedSession<Binding> {
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
@@ -29,6 +46,7 @@ export interface PreparedSession<Binding> {
 	readonly transcript: readonly TranscriptItem[];
 	readonly queue: QueueSnapshot;
 	readonly pendingApproval?: PendingSessionApproval;
+	readonly pendingClarification?: PendingSessionClarification;
 	readonly suspendedTurn: boolean;
 	readonly compactionState?: unknown;
 	readonly responsesContinuation?: unknown;
@@ -132,6 +150,25 @@ export class SessionCoordinator<Binding> {
 		this.#snapshot = Object.freeze({
 			...snapshot,
 			...(pendingApproval ? { pendingApproval: freezePendingApproval(pendingApproval) } : {}),
+			suspendedTurn: pendingApproval !== undefined || snapshot.pendingClarification !== undefined,
+		});
+		return true;
+	}
+
+	updatePendingClarification(
+		context: SessionGenerationContext,
+		pendingClarification: PendingSessionClarification | undefined,
+	): boolean {
+		if (!this.isCurrent(context)) return false;
+		if (pendingClarification && pendingClarification.sessionId !== context.sessionId) return false;
+		const snapshot = { ...this.#snapshot };
+		delete snapshot.pendingClarification;
+		this.#snapshot = Object.freeze({
+			...snapshot,
+			...(pendingClarification
+				? { pendingClarification: freezePendingClarification(pendingClarification) }
+				: {}),
+			suspendedTurn: pendingClarification !== undefined || snapshot.pendingApproval !== undefined,
 		});
 		return true;
 	}
@@ -200,6 +237,19 @@ function freezePrepared<Binding>(prepared: PreparedSession<Binding>): PreparedSe
 			"pending approval belongs to another session",
 		);
 	}
+	if (prepared.pendingClarification?.sessionId !== undefined
+		&& prepared.pendingClarification.sessionId !== sessionId) {
+		throw new SessionTransitionError(
+			"session_state_invalid",
+			"pending clarification belongs to another session",
+		);
+	}
+	if (prepared.pendingApproval && prepared.pendingClarification) {
+		throw new SessionTransitionError(
+			"session_state_invalid",
+			"session cannot wait for approval and clarification together",
+		);
+	}
 	return Object.freeze({
 		...prepared,
 		sessionId,
@@ -208,6 +258,9 @@ function freezePrepared<Binding>(prepared: PreparedSession<Binding>): PreparedSe
 		transcript: Object.freeze(prepared.transcript.map((item) => Object.freeze({ ...item }))),
 		queue: freezeQueue(prepared.queue),
 		...(prepared.pendingApproval ? { pendingApproval: freezePendingApproval(prepared.pendingApproval) } : {}),
+		...(prepared.pendingClarification
+			? { pendingClarification: freezePendingClarification(prepared.pendingClarification) }
+			: {}),
 	});
 }
 
@@ -215,6 +268,15 @@ function freezePendingApproval(approval: PendingSessionApproval): PendingSession
 	return Object.freeze({
 		...approval,
 		options: Object.freeze([...approval.options]),
+	});
+}
+
+function freezePendingClarification(
+	clarification: PendingSessionClarification,
+): PendingSessionClarification {
+	return Object.freeze({
+		...clarification,
+		options: Object.freeze(clarification.options.map((option) => Object.freeze({ ...option }))),
 	});
 }
 

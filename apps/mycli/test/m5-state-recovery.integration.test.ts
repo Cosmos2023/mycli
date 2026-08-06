@@ -409,7 +409,7 @@ test("M5 scripts are declared and the compiled package executable starts without
 		{ ...process.env, MYCLI_PYTHON: marker },
 	);
 	assert.equal(result.code, 0, result.stderr);
-	assert.match(result.stdout, /--runtime-backend <backend>/u);
+	assert.doesNotMatch(result.stdout, /--runtime-backend|python-sidecar/u);
 	assert.equal(existsSync(marker), false);
 	t.after(() => rm(marker, { force: true }));
 });
@@ -534,6 +534,7 @@ function seedCompletedTurn(
 	store.reserveTurn({
 		sessionId,
 		clientTurnId,
+		clientUserMessageId: clientTurnId,
 		turnId: `seed-turn-${sessionId}-${suffix}`,
 		requestFingerprint: fingerprintSubmission({ message: userText, localImages: [] }),
 		workspaceRoot,
@@ -562,6 +563,7 @@ function seedWaitingApproval(
 	store.reserveTurn({
 		sessionId,
 		clientTurnId,
+		clientUserMessageId: clientTurnId,
 		turnId,
 		requestFingerprint: fingerprintSubmission({ message: userText, localImages: [] }),
 		workspaceRoot,

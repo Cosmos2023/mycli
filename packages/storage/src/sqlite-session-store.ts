@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseRuntimeTurnRecord } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
@@ -37,22 +37,35 @@ import type {
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
 	CommitApprovalResultInput,
+	CommitClarificationResponseInput,
 	CommitCompactionInput,
 	CommitQueuedInputsInput,
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
 	FinalizeApprovalContinuationInput,
+	ForkSessionInput,
+	ForkSessionResult,
 	ImportLegacyConversationInput,
 	InterruptAmbiguousApprovalInput,
 	ReserveTurnInput,
 	RuntimeStateKey,
 	SaveQueueSnapshotInput,
 	SaveApprovalSuspensionInput,
+	SaveClarificationSuspensionInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,
+	SessionEmptyCleanupResult,
+	SessionMaintenanceCandidate,
+	SessionMaintenanceOptions,
+	SessionMaintenanceReport,
+	SessionOrphanCleanupResult,
 	SessionOverview,
+	SessionSearchQuery,
+	SessionSearchResult,
 	SessionStore,
+	SessionStorageMetrics,
+	SessionVacuumResult,
 	TurnReservation,
 } from "./session-store.ts";
 import type { UpsertShellSnapshotInput } from "./shell-transcript-store.ts";
@@ -108,10 +121,12 @@ export class SQLiteSessionStore implements SessionStore {
 	readonly #isProcessAlive: (processId: number) => boolean;
 	readonly #stateRepository: SQLiteSessionStateRepository;
 	readonly #stateFailpoint: (name: string) => void;
+	readonly #dbPath: string;
 	#closed = false;
 
 	constructor(options: SQLiteSessionStoreOptions) {
 		mkdirSync(dirname(options.dbPath), { recursive: true });
+		this.#dbPath = options.dbPath;
 		this.#clock = options.clock ?? utcTimestamp;
 		this.#ownerId = options.ownerId ?? randomUUID();
 		this.#processId = options.processId ?? process.pid;
@@ -356,7 +371,7 @@ export class SQLiteSessionStore implements SessionStore {
 				ORDER BY session_id, client_turn_id
 			`).all() as readonly RuntimeTurnRow[];
 			const orphaned = running.filter((row) => !ownedByLiveProcess(row, this.#isProcessAlive)
-				&& !this.#stateRepository.isApprovalContinuationTurn(
+				&& !this.#stateRepository.isContinuationTurn(
 					String(row.session_id),
 					String(row.client_turn_id),
 					String(row.turn_id),
@@ -417,6 +432,249 @@ export class SQLiteSessionStore implements SessionStore {
 
 	loadSessionLineage(sessionId: string): readonly SessionLineageNode[] {
 		return this.#stateRepository.loadSessionLineage(sessionId);
+	}
+
+	forkSession(input: ForkSessionInput): ForkSessionResult {
+		const sourceSessionId = requiredSessionId(input.sourceSessionId, "source session");
+		const targetSessionId = requiredSessionId(input.targetSessionId, "target session");
+		if (sourceSessionId === targetSessionId) {
+			throw new StorageFailure("target session already exists");
+		}
+		return this.#write(() => {
+			const source = this.#database.prepare(`
+				SELECT workspace_root, thread_id FROM sessions WHERE session_id = ?
+			`).get(sourceSessionId) as {
+				readonly workspace_root: unknown;
+				readonly thread_id: unknown;
+			} | undefined;
+			if (!source) throw new StorageFailure("source session does not exist");
+			const existing = this.#database.prepare(
+				"SELECT 1 AS present FROM sessions WHERE session_id = ?",
+			).get(targetSessionId);
+			if (existing) throw new StorageFailure("target session already exists");
+
+			const messageRows = this.#database.prepare(`
+				SELECT message_index, payload_json
+				FROM conversation_messages
+				WHERE session_id = ?
+				ORDER BY message_index
+			`).all(sourceSessionId) as readonly {
+				readonly message_index: number;
+				readonly payload_json: unknown;
+			}[];
+			const forkPoint = input.forkPoint ?? messageRows.length;
+			if (!Number.isSafeInteger(forkPoint) || forkPoint < 0 || forkPoint > messageRows.length) {
+				throw new StorageFailure("fork point is outside the conversation");
+			}
+
+			const now = this.#clock();
+			this.#database.prepare(`
+				INSERT INTO sessions (
+					session_id, workspace_root, thread_id, created_at,
+					updated_at, last_active_at, status
+				) VALUES (?, ?, ?, ?, ?, ?, 'active')
+			`).run(targetSessionId, String(source.workspace_root), targetSessionId, now, now, now);
+			this.#database.prepare(`
+				INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
+				VALUES (?, ?, ?, ?)
+			`).run(targetSessionId, sourceSessionId, forkPoint, now);
+
+			const selectedRows = messageRows.slice(0, forkPoint);
+			const insertMessage = this.#database.prepare(`
+				INSERT INTO conversation_messages (session_id, message_index, payload_json)
+				VALUES (?, ?, ?)
+			`);
+			const historyRefs = emptyForkHistoryRefs();
+			for (const row of selectedRows) {
+				const payload = parsedRecord(row.payload_json, "conversation_messages");
+				collectForkHistoryRefs(historyRefs, payload);
+				insertMessage.run(targetSessionId, row.message_index, stableJson(payload));
+			}
+
+			const insertHistory = this.#database.prepare(`
+				INSERT INTO history_items (session_id, item_id, payload_json)
+				VALUES (?, ?, ?)
+			`);
+			const historyRows = this.#database.prepare(`
+				SELECT item_id, payload_json
+				FROM history_items
+				WHERE session_id = ?
+				ORDER BY sequence_no
+			`).all(sourceSessionId) as readonly {
+				readonly item_id: unknown;
+				readonly payload_json: unknown;
+			}[];
+			for (const row of historyRows) {
+				const payload = parsedRecord(row.payload_json, "history_items");
+				if (!forkIncludesHistoryItem(historyRefs, payload)) continue;
+				insertHistory.run(
+					targetSessionId,
+					String(row.item_id),
+					stableJson({ ...payload, thread_id: targetSessionId }),
+				);
+			}
+
+			return Object.freeze({
+				sourceSessionId,
+				targetSessionId,
+				forkPoint,
+				messageCount: selectedRows.length,
+			});
+		});
+	}
+
+	searchMessages(query: string, options: SessionSearchQuery = {}): readonly SessionSearchResult[] {
+		const match = ftsMatchQuery(query);
+		if (!match) return Object.freeze([]);
+		const limit = boundedOperationLimit(options.limit ?? 20, 100, "session search limit");
+		const workspaceRoot = options.workspaceRoot?.trim();
+		try {
+			const rows = this.#database.prepare(`
+				SELECT
+					conversation_messages.session_id,
+					conversation_messages.message_index,
+					conversation_messages.payload_json
+				FROM conversation_messages_fts
+				JOIN conversation_messages
+					ON conversation_messages.rowid = conversation_messages_fts.rowid
+				JOIN sessions ON sessions.session_id = conversation_messages.session_id
+				WHERE conversation_messages_fts MATCH ?
+				${workspaceRoot ? "AND sessions.workspace_root = ?" : ""}
+				ORDER BY conversation_messages_fts.rank, sessions.last_active_at DESC,
+					conversation_messages.message_index ASC
+				LIMIT ?
+			`).all(...(workspaceRoot ? [match, workspaceRoot, limit] : [match, limit])) as readonly {
+				readonly session_id: unknown;
+				readonly message_index: unknown;
+				readonly payload_json: unknown;
+			}[];
+			return Object.freeze(rows.flatMap((row): SessionSearchResult[] => {
+				const item = canonicalConversationItem(row.payload_json, "conversation_messages");
+				const content = conversationSearchText(item);
+				if (!content) return [];
+				return [Object.freeze({
+					sessionId: String(row.session_id),
+					messageIndex: Number(row.message_index),
+					role: conversationSearchRole(item),
+					snippet: searchSnippet(content, query),
+				})];
+			}));
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	sessionMaintenanceReport(options: SessionMaintenanceOptions = {}): SessionMaintenanceReport {
+		const candidateLimit = boundedOperationLimit(
+			options.candidateLimit ?? 5,
+			100,
+			"maintenance candidate limit",
+		);
+		const workspaceRoot = options.workspaceRoot?.trim();
+		try {
+			const where = workspaceRoot ? "WHERE sessions.workspace_root = ?" : "";
+			const parameters = workspaceRoot ? [workspaceRoot] : [];
+			const countRow = this.#database.prepare(`
+				SELECT COUNT(*) AS count FROM sessions ${where}
+			`).get(...parameters) as { readonly count: number };
+			const candidates = this.#emptySessionCandidates(workspaceRoot);
+			const metrics = this.#storageMetrics();
+			return Object.freeze({
+				workspaceSessionCount: Number(countRow.count),
+				emptySessionCount: candidates.length,
+				emptySessionCandidates: Object.freeze(candidates.slice(0, candidateLimit)),
+				emptySessionCandidatesOmitted: Math.max(0, candidates.length - candidateLimit),
+				...metrics,
+				dryRun: true,
+			});
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	cleanupEmptySessions(options: SessionMaintenanceOptions = {}): SessionEmptyCleanupResult {
+		const candidateLimit = boundedOperationLimit(
+			options.candidateLimit ?? 5,
+			100,
+			"maintenance candidate limit",
+		);
+		const deletedSessionIds = this.#write(() => {
+			const ids = this.#emptySessionCandidates(options.workspaceRoot?.trim())
+				.slice(0, candidateLimit)
+				.map((candidate) => candidate.sessionId);
+			if (ids.length > 0) {
+				this.#database.prepare(`
+					DELETE FROM sessions WHERE session_id IN (${ids.map(() => "?").join(", ")})
+				`).run(...ids);
+			}
+			return ids;
+		});
+		const report = this.sessionMaintenanceReport(options);
+		return Object.freeze({
+			deletedSessionIds: Object.freeze(deletedSessionIds),
+			workspaceSessionCount: report.workspaceSessionCount,
+			emptySessionCount: report.emptySessionCount,
+			emptySessionCandidatesOmitted: report.emptySessionCandidatesOmitted,
+			dbSizeBytes: report.dbSizeBytes,
+			pageCount: report.pageCount,
+			freelistCount: report.freelistCount,
+			pageSize: report.pageSize,
+			dryRun: false,
+		});
+	}
+
+	cleanupOrphanedSessionRows(): SessionOrphanCleanupResult {
+		return this.#write(() => {
+			const tables = [
+				"conversation_messages",
+				"conversation_trees",
+				"history_items",
+				"turn_rollouts",
+				"session_state",
+				"session_summaries",
+				"runtime_turns",
+			] as const;
+			const deletedRowsByTable: Array<{ readonly table: string; readonly count: number }> = [];
+			for (const table of tables) {
+				const result = this.#database.prepare(`
+					DELETE FROM ${table} WHERE session_id NOT IN (SELECT session_id FROM sessions)
+				`).run();
+				if (result.changes > 0) deletedRowsByTable.push({ table, count: result.changes });
+			}
+			const taskResult = this.#database.prepare(`
+				DELETE FROM subagent_tasks
+				WHERE parent_session_id NOT IN (SELECT session_id FROM sessions)
+			`).run();
+			if (taskResult.changes > 0) {
+				deletedRowsByTable.push({ table: "subagent_tasks", count: taskResult.changes });
+			}
+			return Object.freeze({
+				deletedRowsByTable: Object.freeze(deletedRowsByTable),
+				totalDeletedRows: deletedRowsByTable.reduce((total, item) => total + item.count, 0),
+				dryRun: false,
+			});
+		});
+	}
+
+	vacuumSessionStorage(): SessionVacuumResult {
+		if (this.#closed) throw new StorageFailure("session store is closed");
+		try {
+			const before = this.#storageMetrics();
+			this.#database.exec("VACUUM");
+			const after = this.#storageMetrics();
+			return Object.freeze({
+				beforeDbSizeBytes: before.dbSizeBytes,
+				afterDbSizeBytes: after.dbSizeBytes,
+				beforePageCount: before.pageCount,
+				afterPageCount: after.pageCount,
+				beforeFreelistCount: before.freelistCount,
+				afterFreelistCount: after.freelistCount,
+				pageSize: after.pageSize,
+				dryRun: false,
+			});
+		} catch (error) {
+			throw storageError(error);
+		}
 	}
 
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined {
@@ -497,6 +755,24 @@ export class SQLiteSessionStore implements SessionStore {
 		return this.#stateRepository.saveApprovalSuspension(input);
 	}
 
+	saveClarificationSuspension(input: SaveClarificationSuspensionInput): void {
+		this.#stateRepository.saveClarificationSuspension(input);
+	}
+
+	commitClarificationResponse(input: CommitClarificationResponseInput): void {
+		this.#stateRepository.commitClarificationResponse(input, () => {
+			const running = this.#requireRunningTurn(input.sessionId, input.toolResult.clientTurnId);
+			const expected = this.#pendingToolCalls(input.sessionId)[0];
+			if (!expected
+				|| expected.callId !== input.toolResult.result.callId
+				|| expected.name !== input.toolResult.result.toolName
+				|| expected.callId !== input.requestId) {
+				throw new StorageFailure("clarification response does not match pending call");
+			}
+			this.#appendToolResultRecords(running, input.toolResult);
+		});
+	}
+
 	commitApprovalResult(input: CommitApprovalResultInput): ApprovalCheckpoint {
 		return this.#stateRepository.commitApprovalResult(input, () => {
 			const running = this.#requireRunningTurn(input.sessionId, input.toolResult.clientTurnId);
@@ -560,6 +836,66 @@ export class SQLiteSessionStore implements SessionStore {
 
 	commitCompaction(input: CommitCompactionInput): void {
 		this.#stateRepository.commitCompaction(input);
+	}
+
+	#emptySessionCandidates(workspaceRoot?: string): readonly SessionMaintenanceCandidate[] {
+		const where = workspaceRoot ? "AND sessions.workspace_root = ?" : "";
+		const parameters = workspaceRoot ? [workspaceRoot] : [];
+		const rows = this.#database.prepare(`
+			SELECT sessions.session_id, sessions.last_active_at, sessions.status
+			FROM sessions
+			WHERE NOT EXISTS (
+				SELECT 1 FROM conversation_messages
+				WHERE conversation_messages.session_id = sessions.session_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM session_summaries
+				WHERE session_summaries.session_id = sessions.session_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM history_items
+				WHERE history_items.session_id = sessions.session_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM turn_rollouts
+				WHERE turn_rollouts.session_id = sessions.session_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM session_state
+				WHERE session_state.session_id = sessions.session_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM conversation_trees
+				WHERE conversation_trees.session_id = sessions.session_id
+					AND conversation_trees.parent_id IS NOT NULL
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM conversation_trees
+				WHERE conversation_trees.parent_id = sessions.session_id
+			)
+			${where}
+			ORDER BY sessions.last_active_at ASC, sessions.session_id ASC
+		`).all(...parameters) as readonly {
+			readonly session_id: unknown;
+			readonly last_active_at: unknown;
+			readonly status: unknown;
+		}[];
+		return Object.freeze(rows.map((row) => Object.freeze({
+			sessionId: String(row.session_id),
+			lastActiveAt: String(row.last_active_at),
+			status: String(row.status),
+		})));
+	}
+
+	#storageMetrics(): SessionStorageMetrics {
+		const metric = (name: "page_count" | "freelist_count" | "page_size"): number =>
+			Number(this.#database.pragma(name, { simple: true }));
+		return Object.freeze({
+			dbSizeBytes: statSync(this.#dbPath).size,
+			pageCount: metric("page_count"),
+			freelistCount: metric("freelist_count"),
+			pageSize: metric("page_size"),
+		});
 	}
 
 	close(): void {
@@ -834,7 +1170,8 @@ function userMessage(input: ReserveTurnInput): Readonly<Record<string, unknown>>
 		metadata: {
 			turn_id: input.turnId,
 			client_turn_id: input.clientTurnId,
-			source: "node_runtime",
+			client_user_message_id: input.clientUserMessageId,
+			source: "submit",
 		},
 		blocks: [],
 		tool_calls: [],
@@ -843,7 +1180,7 @@ function userMessage(input: ReserveTurnInput): Readonly<Record<string, unknown>>
 
 function userHistoryItem(input: ReserveTurnInput): Readonly<Record<string, unknown>> {
 	return {
-		id: `${input.turnId}:user:${input.clientTurnId}`,
+		id: `${input.turnId}:user:${input.clientUserMessageId}`,
 		thread_id: input.threadId,
 		turn_id: input.turnId,
 		type: "user_message",
@@ -852,7 +1189,8 @@ function userHistoryItem(input: ReserveTurnInput): Readonly<Record<string, unkno
 		call_id: null,
 		metadata: {
 			client_turn_id: input.clientTurnId,
-			source: "node_runtime",
+			client_user_message_id: input.clientUserMessageId,
+			source: "submit",
 			image_paths: [],
 		},
 	};
@@ -1433,6 +1771,113 @@ function parseObjectJson(value: unknown, source: string): Record<string, unknown
 	} catch {
 		throw new StorageFailure(`invalid JSON in ${source}`);
 	}
+}
+
+function requiredSessionId(value: string, label: string): string {
+	if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
+		throw new StorageFailure(`${label} id is invalid`);
+	}
+	return value.trim();
+}
+
+function parsedRecord(value: unknown, source: string): Readonly<Record<string, unknown>> {
+	return parseObjectJson(value, source);
+}
+
+interface ForkHistoryRefs {
+	readonly userTurnIds: Set<string>;
+	readonly assistantTurnIds: Set<string>;
+	readonly toolCallIds: Set<string>;
+	readonly toolResultIds: Set<string>;
+}
+
+function emptyForkHistoryRefs(): ForkHistoryRefs {
+	return {
+		userTurnIds: new Set(),
+		assistantTurnIds: new Set(),
+		toolCallIds: new Set(),
+		toolResultIds: new Set(),
+	};
+}
+
+function collectForkHistoryRefs(
+	refs: ForkHistoryRefs,
+	payload: Readonly<Record<string, unknown>>,
+): void {
+	const turnId = stringValue(payload.turn_id) ?? stringValue(recordValue(payload.metadata).turn_id);
+	if (payload.role === "user" && turnId) {
+		refs.userTurnIds.add(turnId);
+		return;
+	}
+	if (payload.role === "assistant") {
+		const calls = Array.isArray(payload.tool_calls) ? payload.tool_calls.map(recordValue) : [];
+		if (calls.length > 0) {
+			for (const call of calls) {
+				const callId = stringValue(call.call_id);
+				if (callId) refs.toolCallIds.add(callId);
+			}
+		} else if (turnId) {
+			refs.assistantTurnIds.add(turnId);
+		}
+		return;
+	}
+	if (payload.role === "tool") {
+		const callId = stringValue(payload.tool_call_id);
+		if (callId) refs.toolResultIds.add(callId);
+	}
+}
+
+function forkIncludesHistoryItem(
+	refs: ForkHistoryRefs,
+	payload: Readonly<Record<string, unknown>>,
+): boolean {
+	const turnId = stringValue(payload.turn_id);
+	const callId = stringValue(payload.call_id);
+	if (payload.type === "user_message") return Boolean(turnId && refs.userTurnIds.has(turnId));
+	if (payload.type === "assistant_message") {
+		return Boolean(turnId && refs.assistantTurnIds.has(turnId));
+	}
+	if (payload.type === "tool_call") return Boolean(callId && refs.toolCallIds.has(callId));
+	if (payload.type === "tool_result") return Boolean(callId && refs.toolResultIds.has(callId));
+	return false;
+}
+
+function ftsMatchQuery(value: string): string {
+	if (typeof value !== "string") return "";
+	return value.trim().split(/\s+/u).filter(Boolean)
+		.map((token) => `"${token.replaceAll('"', '""')}"`)
+		.join(" ");
+}
+
+function boundedOperationLimit(value: number, maximum: number, label: string): number {
+	if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+		throw new RangeError(`${label} must be between 0 and ${maximum}`);
+	}
+	return value;
+}
+
+function conversationSearchText(item: CanonicalConversationItem): string {
+	if (item.type === "tool_result") return item.output;
+	return item.text;
+}
+
+function conversationSearchRole(item: CanonicalConversationItem): string {
+	if (item.type === "assistant" || item.type === "assistant_tool_calls") return "assistant";
+	if (item.type === "tool_result") return "tool";
+	if (item.type === "context") return "context";
+	return "user";
+}
+
+function searchSnippet(content: string, query: string): string {
+	const maximum = 160;
+	const normalizedQuery = query.trim().toLocaleLowerCase();
+	const lower = content.toLocaleLowerCase();
+	const found = normalizedQuery ? lower.indexOf(normalizedQuery) : -1;
+	const start = found < 0 ? 0 : Math.max(0, found - Math.floor(maximum / 3));
+	const raw = content.slice(start, start + maximum).replace(/\s+/gu, " ").trim();
+	const prefix = start > 0 ? "..." : "";
+	const suffix = start + maximum < content.length ? "..." : "";
+	return `${prefix}${raw}${suffix}`.slice(0, maximum);
 }
 
 function utcTimestamp(): string {

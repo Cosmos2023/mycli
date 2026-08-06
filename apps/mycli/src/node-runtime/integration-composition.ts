@@ -100,6 +100,7 @@ export interface CreateRuntimeIntegrationCompositionOptions {
 
 export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	readonly hookRunner: HookRunnerContract;
+	readonly subagentController?: SubagentController;
 	subscribeSubagents(
 		listener: (subagent: Readonly<Record<string, unknown>>) => void,
 	): () => void;
@@ -187,6 +188,7 @@ export async function createRuntimeIntegrationComposition(
 	const subagentListeners = new Set<(
 		subagent: Readonly<Record<string, unknown>>,
 	) => void>();
+	let subagentController: SubagentController | undefined;
 	const hookDiscovery = await discoverHookConfig({
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
@@ -273,7 +275,7 @@ export async function createRuntimeIntegrationComposition(
 						homeDir: options.homeDir,
 						workspaceRoot: options.workspaceRoot,
 					});
-					const controller = new SubagentController({
+					subagentController = new SubagentController({
 						registry,
 						taskStore: options.taskStore,
 						factory: options.childRuntimeFactory,
@@ -291,13 +293,13 @@ export async function createRuntimeIntegrationComposition(
 							}
 						},
 					});
-					controller.recoverAbandoned("parent runtime restarted");
+					subagentController.recoverAbandoned("parent runtime restarted");
 					return {
-						registrations: subagentRegistrations(controller),
+						registrations: subagentRegistrations(subagentController),
 						resources: subagentResources(registry),
 						diagnostics: registry.diagnostics().issues.map((issue) => ({ ...issue })),
-						subagents: controller,
-						close: () => controller.close(),
+						subagents: subagentController,
+						close: () => subagentController?.close() ?? Promise.resolve(),
 					};
 				},
 			},
@@ -326,6 +328,7 @@ export async function createRuntimeIntegrationComposition(
 			...composition,
 			resources,
 			hookRunner,
+			...(subagentController ? { subagentController } : {}),
 			subscribeSubagents: (
 				listener: (subagent: Readonly<Record<string, unknown>>) => void,
 			) => {

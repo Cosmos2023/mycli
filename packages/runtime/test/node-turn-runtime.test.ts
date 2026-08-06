@@ -7,6 +7,7 @@ import {
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	CanonicalConversationItem,
+	CanonicalMessage,
 	CanonicalToolCall,
 	HookRunnerContract,
 	ProviderEvent,
@@ -30,6 +31,7 @@ import type {
 } from "@mycli/storage";
 import { StorageFailure } from "@mycli/storage";
 import {
+	ASK_USER_QUESTION_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
@@ -53,6 +55,16 @@ import {
 	type PersistedProviderContinuation,
 	type QueueCoordinatorStore,
 } from "../src/index.ts";
+
+const ASK_ARGUMENTS = JSON.stringify({
+	question: "Which runtime?",
+	options: [
+		{ label: "Node" },
+		{ label: "Python" },
+	],
+	header: "Runtime",
+	multi_select: false,
+});
 
 test("injects dynamic memory after compaction and before fresh input without persisting it", async () => {
 	const trace: string[] = [];
@@ -920,7 +932,11 @@ test("approval resolution continues the original turn without reserving or dupli
 		approvalCoordinator: approvals.coordinator,
 		toolDefinitions: [READ_TOOL_DEFINITION, WRITE_TOOL_DEFINITION],
 	});
-	await instance.submit(submission(), () => {}, { signal: new AbortController().signal });
+	await instance.submit({
+		...submission(),
+		clientUserMessageId: "client-user-message-1",
+	}, () => {}, { signal: new AbortController().signal });
+	assert.equal(approvals.pending()?.clientUserMessageId, "client-user-message-1");
 	const userCountBefore = store.items.filter((item) => item.type === "user").length;
 
 	const result = await resolveApproval(instance, {
@@ -1017,6 +1033,73 @@ test("one provider batch can pause for multiple approvals in original order", as
 		"call-write-2",
 	]);
 	assert.equal(router.calls, 1);
+});
+
+test("clarification response resumes the original provider loop without a new user turn", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-question", name: "AskUserQuestion", argumentsJson: ASK_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-question" },
+		],
+		[
+			{ type: "text_delta", text: "Node selected." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const router: ToolRouterContract = {
+		execute: async (call) => {
+			trace.push(`tool:${call.callId}`);
+			return call.name === "AskUserQuestion"
+				? {
+					callId: call.callId,
+					toolName: call.name,
+					success: true,
+					modelOutput: "Awaiting user response.",
+					summary: "Awaiting user response",
+					metadata: {
+						status: "awaiting_user_response",
+						question: "Which runtime?",
+						options: [{ label: "Node" }, { label: "Python" }, { label: "Other" }],
+						header: "Runtime",
+						multi_select: false,
+					},
+				}
+				: successResult(call.callId);
+		},
+	};
+	const clarifications = clarificationRuntimeFixture(trace, store);
+	const emitted: RuntimeEvent[] = [];
+	const instance = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		clarificationCoordinator: clarifications.coordinator,
+		toolDefinitions: [ASK_USER_QUESTION_TOOL_DEFINITION, READ_TOOL_DEFINITION],
+	});
+
+	const waiting = await instance.submit(submission(), emitted.push.bind(emitted), {
+		signal: new AbortController().signal,
+	});
+	assert.equal(waiting.status, "in_progress");
+	assert.equal(trace.includes("persist:result:call-question"), false);
+	assert.equal(trace.includes("tool:call-read"), false);
+	const request = emitted.find((event) => event.type === "clarification_requested");
+	assert.ok(request);
+	assert.equal("requestId" in request ? request.requestId : undefined, "call-question");
+
+	const completed = await resolveClarification(
+		instance,
+		{ requestId: "call-question", response: "Node" },
+		emitted.push.bind(emitted),
+		new AbortController().signal,
+	);
+	assert.equal(completed.status, "completed");
+	assert.equal(store.items.filter((item) => item.type === "user").length, 1);
+	assert.ok(trace.indexOf("clarification:resolve:call-question") < trace.indexOf("tool:call-read"));
+	assert.equal(trace.filter((item) => item.startsWith("provider:")).length, 2);
 });
 
 test("interrupts after a durable tool result without requesting a continuation", async () => {
@@ -1289,6 +1372,7 @@ test("commits accepted steers before the next provider request", async () => {
 	const store = new FakeStore(trace);
 	const queue = queueFixture(store, trace);
 	const requests: ProviderRequest[] = [];
+	const events: RuntimeEvent[] = [];
 	let step = 0;
 	const provider: ModelProvider = {
 		stream: (request) => {
@@ -1319,7 +1403,9 @@ test("commits accepted steers before the next provider request", async () => {
 		provider,
 		toolRouter: new SequencedRouter(trace),
 		queueCoordinator: queue.coordinator,
-	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+	}).submit(submission(), (event) => { events.push(event); }, {
+		signal: new AbortController().signal,
+	});
 
 	assert.equal(result.status, "completed");
 	assert.ok(trace.indexOf("queue:commit") < trace.indexOf("provider:2"));
@@ -1328,6 +1414,31 @@ test("commits accepted steers before the next provider request", async () => {
 		text: "Also inspect package.json",
 	});
 	assert.deepEqual(queue.committedQueueIds, ["queue-1"]);
+	assert.deepEqual(
+		events
+			.filter((event) => String(event.type).startsWith("user_message_"))
+			.map((event) => JSON.parse(JSON.stringify(event))),
+		[
+			{
+				type: "user_message_started",
+				clientTurnId: "client-1",
+				turnId: "turn-1",
+				itemId: "turn-1:queue:queue-1",
+				clientUserMessageId: "client-steer",
+				content: "Also inspect package.json",
+				source: "steer",
+			},
+			{
+				type: "user_message_completed",
+				clientTurnId: "client-1",
+				turnId: "turn-1",
+				itemId: "turn-1:queue:queue-1",
+				clientUserMessageId: "client-steer",
+				content: "Also inspect package.json",
+				source: "steer",
+			},
+		],
+	);
 });
 
 test("rejects unconsumed steers before normal terminal completion", async () => {
@@ -1550,6 +1661,7 @@ function createRuntime(options: {
 	readonly monotonicClock?: () => number;
 	readonly approvalPolicy?: ApprovalPolicy;
 	readonly approvalCoordinator?: ApprovalCoordinatorFixture;
+	readonly clarificationCoordinator?: ClarificationCoordinatorFixture;
 	readonly toolDefinitions?: readonly ToolDefinition[];
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
@@ -1580,6 +1692,9 @@ function createRuntime(options: {
 		publishLifecycle: options.publishLifecycle ?? (() => undefined),
 		...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
 		...(options.approvalCoordinator ? { approvalCoordinator: options.approvalCoordinator } : {}),
+		...(options.clarificationCoordinator ? {
+			clarificationCoordinator: options.clarificationCoordinator,
+		} : {}),
 		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),
 		...(options.monotonicClock ? { monotonicClock: options.monotonicClock } : {}),
 		...(options.compactionCoordinator ? {
@@ -1704,9 +1819,11 @@ interface ApprovalRequestFixture {
 	readonly toolName: string;
 	readonly options: readonly ["approve_once", "reject"];
 	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
 	readonly turnId: string;
 	readonly call: CanonicalToolCall;
 	readonly remainingCalls: readonly CanonicalToolCall[];
+	readonly conversation: readonly CanonicalMessage[];
 	readonly userMessage: string;
 	readonly providerProtocol: ProtocolId;
 	readonly assistantText: string;
@@ -1717,7 +1834,10 @@ interface ApprovalRequestFixture {
 }
 
 interface ApprovalCoordinatorFixture {
-	suspend(input: Omit<ApprovalRequestFixture, "sessionId" | "decisionId" | "callId" | "toolName" | "options">): ApprovalRequestFixture;
+	suspend(input: Omit<
+		ApprovalRequestFixture,
+		"sessionId" | "decisionId" | "callId" | "toolName" | "options" | "clientUserMessageId"
+	> & { readonly clientUserMessageId?: string }): ApprovalRequestFixture;
 	pending(): ApprovalRequestFixture | undefined;
 	resolve(input: {
 		readonly decisionId: string;
@@ -1732,6 +1852,75 @@ interface ApprovalCoordinatorFixture {
 	finish(decisionId: string): void;
 }
 
+interface ClarificationRequestFixture {
+	readonly sessionId: string;
+	readonly requestId: string;
+	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
+	readonly turnId: string;
+	readonly call: CanonicalToolCall;
+	readonly remainingCalls: readonly CanonicalToolCall[];
+	readonly conversation: readonly CanonicalMessage[];
+	readonly userMessage: string;
+	readonly providerProtocol: ProtocolId;
+	readonly assistantText: string;
+	readonly responseId?: string;
+	readonly usage: Readonly<Record<string, number>>;
+	readonly question: string;
+	readonly options: readonly {
+		readonly label: string;
+		readonly description?: string;
+	}[];
+	readonly header: string;
+	readonly multiSelect: boolean;
+}
+
+interface ClarificationCoordinatorFixture {
+	suspend(input: Omit<ClarificationRequestFixture, "sessionId" | "requestId">): ClarificationRequestFixture;
+	pending(): ClarificationRequestFixture | undefined;
+	resolve(input: { readonly requestId: string; readonly response: string }): {
+		readonly continuation: ClarificationRequestFixture;
+		readonly response: string;
+	};
+}
+
+function clarificationRuntimeFixture(trace: string[], store: FakeStore) {
+	let current: ClarificationRequestFixture | undefined;
+	const coordinator: ClarificationCoordinatorFixture = {
+		suspend: (input) => {
+			trace.push("clarification:suspend");
+			current = Object.freeze({
+				...input,
+				sessionId: "session-1",
+				requestId: input.call.callId,
+			});
+			return current;
+		},
+		pending: () => current,
+		resolve: (input) => {
+			assert.ok(current);
+			assert.equal(input.requestId, current.requestId);
+			trace.push(`clarification:resolve:${input.requestId}`);
+			const continuation = current;
+			store.appendToolResult({
+				sessionId: "session-1",
+				clientTurnId: continuation.clientTurnId,
+				result: {
+					callId: continuation.call.callId,
+					toolName: continuation.call.name,
+					output: `User response: ${input.response}`,
+					success: true,
+				},
+				summary: "User answered clarification",
+				metadata: { request_id: input.requestId },
+			});
+			current = undefined;
+			return { continuation, response: input.response };
+		},
+	};
+	return { coordinator };
+}
+
 function approvalRuntimeFixture(
 	trace: string[],
 	router: ToolRouterContract,
@@ -1744,6 +1933,7 @@ function approvalRuntimeFixture(
 			trace.push("approval:suspend");
 			const pending: ApprovalRequestFixture = Object.freeze({
 				...input,
+				clientUserMessageId: input.clientUserMessageId ?? input.clientTurnId,
 				sessionId: "session-1",
 				decisionId: input.call.callId,
 				callId: input.call.callId,
@@ -1815,6 +2005,17 @@ async function resolveApproval(
 ): Promise<RuntimeTurnRecord> {
 	const method = Reflect.get(runtime, "resolveApproval");
 	assert.equal(typeof method, "function", "NodeTurnRuntime.resolveApproval must exist");
+	return method.call(runtime, input, emit, { signal }) as Promise<RuntimeTurnRecord>;
+}
+
+async function resolveClarification(
+	runtime: NodeTurnRuntime,
+	input: { readonly requestId: string; readonly response: string },
+	emit: (event: RuntimeEvent) => void,
+	signal: AbortSignal,
+): Promise<RuntimeTurnRecord> {
+	const method = Reflect.get(runtime, "resolveClarification");
+	assert.equal(typeof method, "function", "NodeTurnRuntime.resolveClarification must exist");
 	return method.call(runtime, input, emit, { signal }) as Promise<RuntimeTurnRecord>;
 }
 

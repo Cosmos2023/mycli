@@ -22,13 +22,14 @@ interface Manifest {
 	readonly tools: readonly ManifestTool[];
 }
 
-test("built-in M6 manifest exposes stable file and terminal tool inventories", () => {
+test("built-in manifest exposes stable file interaction and terminal tool inventories", () => {
 	const manifest = builtinManifest();
 
 	assert.equal(manifest.schema_version, 1);
 	assert.equal(manifest.source, "builtin");
 	assert.deepEqual(manifest.toolsets, [
 		{ id: "file", tool_count: 4 },
+		{ id: "interaction", tool_count: 1 },
 		{ id: "terminal", tool_count: 6 },
 	]);
 	assert.deepEqual(manifest.tools.map((tool) => tool.name), [
@@ -36,6 +37,7 @@ test("built-in M6 manifest exposes stable file and terminal tool inventories", (
 		"Edit",
 		"Patch",
 		"Write",
+		"AskUserQuestion",
 		"Shell",
 		"WriteStdin",
 		"Bash",
@@ -48,6 +50,7 @@ test("built-in M6 manifest exposes stable file and terminal tool inventories", (
 		"builtin:Edit",
 		"builtin:Patch",
 		"builtin:Write",
+		"builtin:AskUserQuestion",
 		"builtin:Shell",
 		"builtin:WriteStdin",
 		"builtin:Bash",
@@ -107,6 +110,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 		"Edit",
 		"Patch",
 		"Write",
+		"AskUserQuestion",
 		"Shell",
 		"WriteStdin",
 	]);
@@ -121,7 +125,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	}[];
 	assert.deepEqual(
 		fileExposure.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write"],
+		["Read", "Edit", "Patch", "Write", "AskUserQuestion"],
 	);
 	assert.deepEqual(
 		(planToolExposure(manifest) as readonly { readonly name: string }[])

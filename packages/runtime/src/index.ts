@@ -28,11 +28,13 @@ export type {
 	ApprovalContinuationContract,
 	ApprovalPolicyContract,
 	ApprovalRuntimeResolution,
+	ClarificationContinuationContract,
 	CompactionCoordinatorContract,
 	ExecutionPolicyCoordinatorContract,
 	NodeTurnRuntimeOptions,
 	ProviderContinuationContract,
 	ResolveApprovalInput,
+	ResolveClarificationInput,
 	SubmitTurnOptions,
 	TurnSubmission,
 } from "./node-turn-runtime.ts";
@@ -41,6 +43,19 @@ export {
 	ApprovalNotPendingError,
 	ApprovalPersistenceError,
 } from "./approval-continuation-coordinator.ts";
+export {
+	ClarificationContinuationCoordinator,
+	ClarificationNotPendingError,
+} from "./clarification-continuation-coordinator.ts";
+export type {
+	ClarificationContinuationCoordinatorOptions,
+	ClarificationContinuationStore,
+	ClarificationOption,
+	ClarificationSuspensionInput,
+	CommitClarificationResponseInput,
+	PendingClarificationContinuation,
+	SaveClarificationSuspensionInput,
+} from "./clarification-continuation-coordinator.ts";
 export type {
 	ApprovalChoice,
 	ApprovalContinuationCoordinatorOptions,
@@ -133,6 +148,7 @@ export type {
 	ActiveSessionSnapshot,
 	PendingApprovalChoice,
 	PendingSessionApproval,
+	PendingSessionClarification,
 	PreparedSession,
 	SessionCoordinatorOptions,
 	SessionGenerationContext,

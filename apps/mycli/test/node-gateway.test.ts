@@ -27,6 +27,25 @@ import {
 
 type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
 
+const TUI_BUILTIN_COMMAND_NAMES = [
+	"/model",
+	"/plan",
+	"/permissions",
+	"/new",
+	"/resume",
+	"/fork",
+	"/status",
+	"/usage",
+	"/compact",
+	"/skills",
+	"/tools",
+	"/tasks",
+	"/ps",
+	"/changes",
+	"/help",
+	"/quit",
+] as const;
+
 function permissionPayload(active: "read-only" | "workspace" | "full-access") {
 	return {
 		active,
@@ -68,16 +87,23 @@ function gatewayHarness(options: {
 		readonly targetQueue?: QueueSnapshot;
 		readonly initialPendingApproval?: boolean;
 		readonly targetPendingApproval?: boolean;
+		readonly initialPendingClarification?: boolean;
+		readonly targetPendingClarification?: boolean;
 		readonly approvalOptions?: readonly PendingApprovalChoice[];
 	};
 	queue?: {
 		readonly initial?: QueueSnapshot;
 	};
 	approvalFailure?: Error;
+	clarificationFailure?: Error;
 	shell?: boolean;
 	workspaceTrust?: boolean;
 	integrations?: boolean;
-} = {}) {
+	integrationCommands?: readonly Record<string, unknown>[];
+	memory?: boolean;
+	backgroundTasks?: boolean;
+	control?: boolean;
+		} = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
 	let closeCalls = 0;
@@ -89,16 +115,36 @@ function gatewayHarness(options: {
 		readonly decisionId: string;
 		readonly choice: PendingApprovalChoice;
 	}> = [];
+	const clarificationResolutions: Array<{
+		readonly requestId: string;
+		readonly response: string;
+	}> = [];
 	const reservedClientTurnIds: string[] = [];
 	const policyConfigurations: Array<{
 		readonly trust: "trusted" | "untrusted" | "unknown";
 		readonly permission: "read-only" | "workspace" | "full-access";
 	}> = [];
+	let commandAllowances: string[][] = [];
+	const taskInterruptions: string[] = [];
+	const sessionCommandCalls: Array<Readonly<Record<string, unknown>>> = [];
+	const savedApiKeys: Array<Readonly<{ providerId: string; apiKey: string }>> = [];
+	const selectedModels: Array<Readonly<Record<string, unknown>>> = [];
+	let visualSettings: Readonly<Record<string, unknown>> = {
+		statusbar_mode: "full",
+		view_mode: "default",
+	};
 	const queue = options.queue
 		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
 		: undefined;
 	const shell = options.shell ? gatewayShellFixture() : undefined;
 	const subagentListeners = new Set<(subagent: Readonly<Record<string, unknown>>) => void>();
+	const memories: Record<string, unknown>[] = [{
+		filename: "architecture.md",
+		name: "Architecture",
+		kind: "user",
+		description: "Layering decisions",
+		content: "Keep clear boundaries",
+	}];
 	const integrations = options.integrations ? {
 		toolManifest: {
 			schema_version: 1,
@@ -130,7 +176,7 @@ function gatewayHarness(options: {
 			command: "/mcp inspect docs",
 		}],
 		commands: {
-			list: () => [{
+			list: () => options.integrationCommands ?? [{
 				id: "plugin:demo:status",
 				name: "/plugin:demo:status",
 				description: "Show demo plugin status",
@@ -176,6 +222,21 @@ function gatewayHarness(options: {
 		configureExecutionPolicy: (input: typeof policyConfigurations[number]) => {
 			policyConfigurations.push(input);
 		},
+		listCommandAllowances: () => commandAllowances.map((pattern) => [...pattern]),
+		addCommandAllowance: (pattern: string) => {
+			commandAllowances = [...commandAllowances, pattern.split(/\s+/u)];
+			return commandAllowances.map((item) => [...item]);
+		},
+		removeCommandAllowance: (pattern: string) => {
+			commandAllowances = commandAllowances.filter((item) => item.join(" ") !== pattern);
+			return commandAllowances.map((item) => [...item]);
+		},
+		clearCommandAllowances: () => {
+			const count = commandAllowances.length;
+			commandAllowances = [];
+			return count;
+		},
+		compact: async () => ({ status: "compressed" as const, beforeTokens: 900, afterTokens: 300 }),
 		resolveApproval: async (
 			input: { readonly decisionId: string; readonly choice: PendingApprovalChoice },
 			emit: (event: RuntimeEvent) => void,
@@ -189,6 +250,24 @@ function gatewayHarness(options: {
 			runtimeSettled = true;
 			return turnRecord({
 				clientTurnId: "client-session-node",
+				turnId: "turn-session-node",
+				message: "original",
+			}, runtimeOptions.signal.aborted ? "interrupted" : "completed");
+		},
+		resolveClarification: async (
+			input: { readonly requestId: string; readonly response: string },
+			emit: (event: RuntimeEvent) => void,
+			runtimeOptions: { readonly signal: AbortSignal },
+		) => {
+			clarificationResolutions.push(input);
+			emitRuntime = emit;
+			signal = runtimeOptions.signal;
+			if (options.clarificationFailure) throw options.clarificationFailure;
+			await turnReleased;
+			runtimeSettled = true;
+			return turnRecord({
+				clientTurnId: "client-session-node",
+				clientUserMessageId: "user-session-node",
 				turnId: "turn-session-node",
 				message: "original",
 			}, runtimeOptions.signal.aborted ? "interrupted" : "completed");
@@ -213,6 +292,80 @@ function gatewayHarness(options: {
 		toolNames: ["Read"],
 		runtime,
 		loadConversation: () => options.conversation ?? [],
+		sessionCommands: {
+			fork: (input: {
+				readonly sourceSessionId: string;
+				readonly targetSessionId: string;
+				readonly forkPoint?: number;
+			}) => {
+				sessionCommandCalls.push({ kind: "fork", ...input });
+				return {
+					sourceSessionId: input.sourceSessionId,
+					targetSessionId: input.targetSessionId,
+					forkPoint: input.forkPoint ?? 2,
+					messageCount: input.forkPoint ?? 2,
+				};
+			},
+			search: (query: string, workspaceRoot: string) => {
+				sessionCommandCalls.push({ kind: "search", query, workspaceRoot });
+				return [{ sessionId: "target", messageIndex: 3, role: "user", snippet: `match ${query}` }];
+			},
+			maintenance: (action: string, workspaceRoot: string) => {
+				sessionCommandCalls.push({ kind: "maintenance", action, workspaceRoot });
+				return action === "report"
+					? { dryRun: true, workspaceSessionCount: 2, emptySessionCount: 1 }
+					: { dryRun: false, action, affected: 1 };
+			},
+		},
+		traceCommands: {
+			inspect: () => [{ kind: "turn", turnId: "turn-1", status: "completed" }],
+			export: () => [
+				JSON.stringify({ kind: "turn", turn_id: "turn-1", status: "completed" }),
+			],
+			logs: () => ["runtime status=completed"],
+		},
+		fileHistoryCommands: {
+			undo: async () => ({
+				snapshotId: "snapshot-1",
+				restoredPaths: ["src/app.ts"],
+				deletedPaths: [],
+			}),
+		},
+		...(options.memory ? {
+			memoryCommands: {
+				directory: async () => "/bounded/memory",
+				scan: async () => memories.map((memory) => ({ ...memory })),
+				remember: async (input: Record<string, unknown>) => {
+					const memory = { filename: "saved.md", ...input };
+					memories.push(memory);
+					return memory;
+				},
+				forget: async (query: string) => {
+					const removed = memories.filter((memory) => memory.name === query);
+					for (const memory of removed) memories.splice(memories.indexOf(memory), 1);
+					return removed;
+				},
+			},
+		} : {}),
+		...(options.backgroundTasks ? {
+			backgroundTaskCommands: {
+				list: () => [{
+					taskId: "task-1",
+					childSessionId: "child-1",
+					profileId: "explore",
+					status: "running",
+					payload: { progressSummary: "Inspecting" },
+				}],
+				interrupt: async (_parentSessionId: string, childSessionId: string) => {
+					taskInterruptions.push(childSessionId);
+					return childSessionId === "child-1";
+				},
+				interruptAll: async () => {
+					taskInterruptions.push("*");
+					return 1;
+				},
+			},
+		} : {}),
 		...(sessionCoordinator ? { sessionCoordinator } : {}),
 		...(shell ? {
 			shellManager: shell.manager,
@@ -225,8 +378,40 @@ function gatewayHarness(options: {
 				save: async () => undefined,
 			},
 		} : {}),
-		...(integrations ? { integrations } : {}),
-		close: () => { closeCalls += 1; },
+			...(integrations ? { integrations } : {}),
+			...(options.control ? {
+				controlCommands: {
+					authProviders: async () => [{
+						id: "openai",
+						name: "OpenAI",
+						configured: savedApiKeys.some((item) => item.providerId === "openai"),
+						default_model: "gpt-test",
+					}],
+					saveApiKey: async (providerId: string, apiKey: string) => {
+						savedApiKeys.push({ providerId, apiKey });
+						return { ok: true, provider_id: providerId, message: `Saved API key for ${providerId}.` };
+					},
+					models: async () => [{
+						provider: "openai",
+						protocol: "responses",
+						model: "gpt-test",
+						name: "GPT Test",
+						base_url: "https://example.invalid/v1",
+						current: selectedModels.length === 0,
+					}],
+					selectModel: async (input: Readonly<Record<string, unknown>>) => {
+						selectedModels.push({ ...input });
+						return { ...input, name: String(input.model), current: true };
+					},
+					loadSettings: async () => ({ ...visualSettings }),
+					saveSettings: async (settings: Readonly<Record<string, unknown>>) => {
+						visualSettings = { ...settings };
+						return { ...visualSettings };
+					},
+					completePath: async (prefix: string) => [{ value: `${prefix}README.md`, kind: "file" }],
+				},
+			} : {}),
+			close: () => { closeCalls += 1; },
 		createTurnId: () => "turn-node",
 		clock: () => 1_700_000_000,
 	});
@@ -246,6 +431,7 @@ function gatewayHarness(options: {
 		reservedClientTurnIds,
 		policyConfigurations,
 		approvalResolutions,
+		clarificationResolutions,
 		send,
 		emit: (event: RuntimeEvent) => emitRuntime?.(event),
 		signal: () => signal,
@@ -258,6 +444,10 @@ function gatewayHarness(options: {
 		publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
 			for (const listener of subagentListeners) listener(subagent);
 		},
+		taskInterruptions,
+		sessionCommandCalls,
+		savedApiKeys,
+		selectedModels,
 	};
 }
 
@@ -296,6 +486,105 @@ test("node gateway boots the real TUI startup sequence", async () => {
 			});
 		}
 	}
+	await harness.gateway.close();
+});
+
+test("every advertised canonical TUI RPC is routed by the Node gateway", async () => {
+	const harness = gatewayHarness({ control: true, shell: true });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const advertised = await harness.send("extension.manifest");
+	assert.ok("result" in advertised);
+	const advertisedNames = new Set(
+		"result" in advertised && Array.isArray(advertised.result.rpc_methods)
+			? advertised.result.rpc_methods.flatMap((entry: unknown) => {
+				if (typeof entry !== "object" || entry === null || Array.isArray(entry) || !("name" in entry)) return [];
+				return typeof entry.name === "string" ? [entry.name] : [];
+			})
+			: [],
+	);
+	const probes = [
+		["auth.api_key.save", {}],
+		["clarify.respond", {}],
+		["completion.path", {}],
+		["completion.slash", {}],
+		["decision.resolve", {}],
+		["model.list", {}],
+		["model.select", {}],
+		["settings.save", {}],
+		["shell.list", {}],
+		["shell.stop", {}],
+		["shell.stop_all", {}],
+		["status.inspect", {}],
+		["trace.export", {}],
+	] as const;
+	for (const [method, params] of probes) {
+		assert.equal(advertisedNames.has(method), true, `${method} is not advertised`);
+		const result = await harness.send(method, params);
+		assert.notEqual(
+			"error" in result ? result.error.code : null,
+			"method_not_found",
+			`${method} is advertised but not routed`,
+		);
+	}
+	await harness.gateway.close();
+});
+
+test("canonical control RPCs use injected Node services and update active state", async () => {
+	const harness = gatewayHarness({ control: true });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
+	assert.ok("result" in bootstrap);
+	assert.equal("result" in bootstrap ? bootstrap.result.models.length : 0, 1);
+	assert.equal("result" in bootstrap ? bootstrap.result.auth_providers[0]?.configured : null, false);
+
+	const auth = await harness.send("auth.api_key.save", {
+		provider_id: "openai",
+		api_key: "test-secret-that-must-not-return",
+	});
+	assert.equal("result" in auth ? auth.result.ok : false, true);
+	assert.equal(JSON.stringify(auth).includes("test-secret-that-must-not-return"), false);
+	assert.deepEqual(harness.savedApiKeys, [{
+		providerId: "openai",
+		apiKey: "test-secret-that-must-not-return",
+	}]);
+
+	const models = await harness.send("model.list");
+	assert.equal("result" in models ? models.result.models[0]?.model : null, "gpt-test");
+	const selected = await harness.send("model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-selected",
+		base_url: "https://example.invalid/v1",
+		reasoning_effort: "high",
+	});
+	assert.equal("result" in selected ? selected.result.selected.model : null, "gpt-selected");
+	assert.equal("result" in selected ? selected.result.status.model : null, "gpt-selected");
+	assert.equal(harness.selectedModels.length, 1);
+
+	const loadedSettings = await harness.send("settings.load");
+	assert.equal("result" in loadedSettings ? loadedSettings.result.settings.view_mode : null, "default");
+	const savedSettings = await harness.send("settings.save", {
+		settings: { view_mode: "verbose", statusbar_mode: "compact" },
+	});
+	assert.equal("result" in savedSettings ? savedSettings.result.settings.view_mode : null, "verbose");
+
+	const slash = await harness.send("completion.slash", { prefix: "/sta", surface: "tui" });
+	assert.deepEqual("result" in slash ? slash.result.items : [], [{
+		value: "/status",
+		description: "Show runtime status",
+	}]);
+	const path = await harness.send("completion.path", { prefix: "@src/" });
+	assert.deepEqual("result" in path ? path.result.items : [], [{ value: "@src/README.md", kind: "file" }]);
+
+	const status = await harness.send("status.inspect");
+	assert.equal("result" in status ? status.result.model : null, "gpt-selected");
+	const trace = await harness.send("trace.export", { tail: 1 });
+	assert.deepEqual("result" in trace ? trace.result : {}, {
+		session_id: "session-node",
+		format: "jsonl",
+		rows: [JSON.stringify({ kind: "turn", turn_id: "turn-1", status: "completed" })],
+	});
 	await harness.gateway.close();
 });
 
@@ -372,7 +661,7 @@ test("shell command routes expose ps and stop through the active owner manager",
 		"result" in listed
 			? listed.result.commands.map((command: { name: string }) => command.name)
 			: [],
-		["/ps"],
+		TUI_BUILTIN_COMMAND_NAMES,
 	);
 	const ps = await harness.send("command.run", { command: "/ps", surface: "tui" });
 	assert.equal("result" in ps ? ps.result.command_kind : null, "background_shells");
@@ -385,6 +674,378 @@ test("shell command routes expose ps and stop through the active owner manager",
 		"Stopping all background terminals.",
 	]);
 	assert.deepEqual(harness.shell.terminatedOwners, ["session-node"]);
+	await harness.gateway.close();
+});
+
+test("built-in TUI slash commands resolve to their canonical client actions", async () => {
+	const harness = gatewayHarness();
+	const cases = [
+		["/help", "help", "open_command_palette", "", "none"],
+		["/model", "model", "open_model_selector", "", "transcript"],
+		["/permissions", "permissions", "open_permissions", "", "overlay"],
+		["/new", "new", "start_new_session", "", "none"],
+		["/session", "resume", "open_session_selector", "", "transcript"],
+		["/tasks", "tasks", "open_tasks", "", "transcript"],
+		["/settings", "settings", "open_settings", "", "none"],
+		["/resources", "resources", "open_resources", "", "none"],
+		["/details", "details", "toggle_details", "", "none"],
+		["/view focus", "view", "set_view_mode", "focus", "none"],
+		["/hotkeys", "hotkeys", "open_hotkeys", "", "none"],
+		["/copy", "copy", "copy_last_response", "", "none"],
+		["/clear", "clear", "clear_transcript", "", "none"],
+		["/login", "login", "open_login", "", "none"],
+		["/trust", "trust", "open_trust", "", "none"],
+		["/quit", "quit", "quit", "", "none"],
+	] as const;
+	for (const [command, commandId, action, args, presentation] of cases) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.deepEqual("result" in response ? response.result : response, {
+			execution: "tui",
+			command_id: commandId,
+			client_action: action,
+			args,
+			presentation,
+		});
+	}
+	await harness.gateway.close();
+});
+
+test("built-in slash validation returns stable local errors", async () => {
+	const harness = gatewayHarness();
+	for (const [command, surface, code] of [
+		["/does-not-exist", "tui", "unknown_command"],
+		["/plan now", "tui", "invalid_arguments"],
+		["/new", "cli", "unavailable_surface"],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface });
+		assert.equal("error" in response ? response.error.code : null, code);
+	}
+	await harness.gateway.close();
+});
+
+test("integration commands are additive and cannot override built-in names or aliases", async () => {
+	const harness = gatewayHarness({
+		integrations: true,
+		integrationCommands: [{
+			id: "plugin:override:help",
+			name: "/help",
+			description: "Override help",
+			argument_policy: "none",
+			available_during_turn: true,
+		}, {
+			id: "plugin:override:session",
+			name: "/session",
+			description: "Override resume alias",
+			argument_policy: "none",
+			available_during_turn: true,
+		}, {
+			id: "plugin:demo:status",
+			name: "/plugin:demo:status",
+			description: "Show demo plugin status",
+			argument_policy: "none",
+			available_during_turn: true,
+		}],
+	});
+	const listed = await harness.send("command.list", { surface: "tui" });
+	assert.deepEqual(
+		"result" in listed
+			? listed.result.commands.map((command: { name: string }) => command.name)
+			: [],
+		[...TUI_BUILTIN_COMMAND_NAMES, "/plugin:demo:status"],
+	);
+	const help = await harness.send("command.run", { command: "/help", surface: "tui" });
+	assert.equal("result" in help ? help.result.client_action : null, "open_command_palette");
+	await harness.gateway.close();
+});
+
+test("commands marked unavailable during a turn fail before execution", async () => {
+	const harness = gatewayHarness();
+	await harness.send("turn.submit", {
+		message: "keep running",
+		client_turn_id: "running-turn",
+		client_user_message_id: "running-message",
+		local_images: [],
+	});
+	const response = await harness.send("command.run", { command: "/new", surface: "tui" });
+	assert.equal("error" in response ? response.error.code : null, "unavailable_during_turn");
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("core backend slash commands return bounded versioned display results", async () => {
+	const harness = gatewayHarness({ integrations: true });
+	for (const [command, surface, kind, presentation] of [
+		["/status", "tui", "status", "transcript"],
+		["/usage", "tui", "diagnostic", "transcript"],
+		["/tools", "tui", "list", "overlay"],
+		["/skills", "tui", "list", "overlay"],
+		["/changes", "tui", "list", "transcript"],
+		["/help", "cli", "list", "none"],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface });
+		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
+		if (!("result" in response)) continue;
+		assert.equal(response.result.execution, "backend");
+		assert.equal(response.result.presentation, presentation);
+		assert.equal((response.result.display as { version?: unknown }).version, 1);
+		assert.equal((response.result.display as { kind?: unknown }).kind, kind);
+		assert.ok(Array.isArray(response.result.lines));
+		assert.ok(response.result.lines.length <= 100);
+	}
+	await harness.gateway.close();
+});
+
+test("model slash settings apply to the next submitted Node turn", async () => {
+	const harness = gatewayHarness();
+	const selected = await harness.send("command.run", {
+		command: "/model gpt-next --thinking-effort high",
+		surface: "tui",
+	});
+	assert.equal("result" in selected ? selected.result.mutated_model : false, true);
+	assert.equal("result" in selected ? selected.result.model : null, "gpt-next");
+	assert.equal("result" in selected ? selected.result.thinking_effort : null, "high");
+	await harness.send("turn.submit", {
+		message: "use selected model",
+		client_turn_id: "model-turn",
+		client_user_message_id: "model-message",
+		local_images: [],
+	});
+	assert.equal(harness.submissions[0]?.modelOverride, "gpt-next");
+	assert.equal(harness.submissions[0]?.reasoningEffort, "high");
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("mode sandbox resume and quit slash commands mutate their owning runtime state", async () => {
+	const harness = gatewayHarness({ sessions: {} });
+	const mode = await harness.send("command.run", { command: "/mode plan", surface: "tui" });
+	assert.equal("result" in mode ? mode.result.collaboration_mode : null, "plan");
+	assert.equal("result" in mode ? mode.result.mutated_mode : false, true);
+	const sandbox = await harness.send("command.run", {
+		command: "/sandbox read-only",
+		surface: "tui",
+	});
+	assert.equal("result" in sandbox ? sandbox.result.sandbox_mode : null, "read-only");
+	const permissions = await harness.send("permissions.list");
+	assert.equal("result" in permissions ? permissions.result.active : null, "read-only");
+	const resumed = await harness.send("command.run", {
+		command: "/resume target",
+		surface: "tui",
+	});
+	assert.equal("result" in resumed ? resumed.result.mutated_session : false, true);
+	assert.equal("result" in resumed ? resumed.result.session_id : null, "target");
+	const status = await harness.send("status.get");
+	assert.equal("result" in status ? status.result.collaboration_mode : null, "plan");
+	const quit = await harness.send("command.run", { command: "/quit", surface: "cli" });
+	assert.equal("result" in quit ? quit.result.exit_requested : false, true);
+	await harness.gateway.close();
+});
+
+test("context stats agents and task slash commands project existing Node runtime state", async () => {
+	const harness = gatewayHarness({ integrations: true });
+	for (const [command, kind, title] of [
+		["/context", "diagnostic", "Context"],
+		["/stats", "diagnostic", "Runtime stats"],
+		["/agents list", "list", "Agent profiles"],
+		["/tasks agents", "list", "Background agents"],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
+		if (!("result" in response)) continue;
+		const display = response.result.display as { kind?: unknown; title?: unknown };
+		assert.equal(display.kind, kind);
+		assert.equal(display.title, title);
+	}
+	await harness.gateway.close();
+});
+
+test("memory slash commands use the Node memory adapter and keep mutations in transcript", async () => {
+	const harness = gatewayHarness({ memory: true });
+	for (const [command, kind, presentation] of [
+		["/memory list", "list", "overlay"],
+		["/memory path", "diagnostic", "overlay"],
+		["/memory search Architecture", "list", "overlay"],
+		["/memory add user Architecture :: Prefer clear boundaries", "notice", "transcript"],
+		["/memory forget Architecture", "notice", "transcript"],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
+		if (!("result" in response)) continue;
+		assert.equal((response.result.display as { kind?: unknown }).kind, kind);
+		assert.equal(response.result.presentation, presentation);
+	}
+	await harness.gateway.close();
+});
+
+test("permission slash mutations update session command allowances", async () => {
+	const harness = gatewayHarness();
+	for (const command of [
+		"/permissions allow git status",
+		"/permissions allow npm test",
+		"/permissions revoke git status",
+	]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.equal("result" in response ? response.result.presentation : null, "transcript");
+	}
+	let permissions = await harness.send("permissions.list");
+	assert.equal("result" in permissions ? permissions.result.command_allowance_count : null, 1);
+	const cleared = await harness.send("command.run", {
+		command: "/permissions clear",
+		surface: "cli",
+	});
+	assert.equal("result" in cleared ? cleared.result.cleared : null, 1);
+	permissions = await harness.send("permissions.list");
+	assert.equal("result" in permissions ? permissions.result.command_allowance_count : null, 0);
+	await harness.gateway.close();
+});
+
+test("task slash commands list and interrupt only current-session background agents", async () => {
+	const harness = gatewayHarness({ backgroundTasks: true });
+	const listed = await harness.send("command.run", {
+		command: "/tasks agents",
+		surface: "tui",
+	});
+	assert.deepEqual(
+		"result" in listed
+			? (listed.result.display as { rows: readonly { label: string }[] }).rows.map((row) => row.label)
+			: [],
+		["child-1"],
+	);
+	const one = await harness.send("command.run", {
+		command: "/tasks agents kill child-1",
+		surface: "tui",
+	});
+	assert.equal("result" in one ? one.result.interrupted : null, true);
+	const all = await harness.send("command.run", {
+		command: "/tasks kill-agents",
+		surface: "tui",
+	});
+	assert.equal("result" in all ? all.result.interrupted : null, 1);
+	assert.deepEqual(harness.taskInterruptions, ["child-1", "*"]);
+	await harness.gateway.close();
+});
+
+test("compact slash command runs the Node manual compaction boundary", async () => {
+	const harness = gatewayHarness();
+	const response = await harness.send("command.run", { command: "/compact", surface: "tui" });
+	assert.ok("result" in response, JSON.stringify(response));
+	if ("result" in response) {
+		assert.equal(response.result.command_kind, "compact");
+		assert.equal(response.result.compaction_status, "compressed");
+		assert.equal((response.result.display as { kind?: unknown }).kind, "notice");
+		assert.deepEqual(response.result.tokens, { before: 900, after: 300 });
+	}
+	await harness.gateway.close();
+});
+
+test("undo slash command restores the latest recoverable Node file snapshot", async () => {
+	const harness = gatewayHarness();
+	const response = await harness.send("command.run", { command: "/undo", surface: "tui" });
+	assert.ok("result" in response, JSON.stringify(response));
+	if ("result" in response) {
+		assert.equal((response.result.display as { kind?: unknown }).kind, "notice");
+		assert.equal(response.result.presentation, "transcript");
+		assert.equal(response.result.snapshot_id, "snapshot-1");
+		assert.equal((response.result.display as { summary?: unknown }).summary, "restored src/app.ts");
+	}
+	await harness.gateway.close();
+});
+
+test("fork search and maintenance slash commands use Node session storage", async () => {
+	const harness = gatewayHarness({ sessions: {} });
+	const forked = await harness.send("command.run", {
+		command: "/fork session-node branch 1",
+		surface: "tui",
+	});
+	assert.equal("result" in forked ? forked.result.mutated_session : false, true);
+	assert.equal("result" in forked ? forked.result.session_id : null, "branch");
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "branch");
+
+	const searched = await harness.send("command.run", {
+		command: "/session search cache hits",
+		surface: "tui",
+	});
+	assert.equal("result" in searched
+		? (searched.result.display as { kind?: unknown }).kind
+		: null, "list");
+	assert.equal("result" in searched
+		? (searched.result.display as { rows: readonly { label: string }[] }).rows[0]?.label
+		: null, "target:3");
+
+	for (const [command, action, kind] of [
+		["/session maintenance", "report", "list"],
+		["/session maintenance --apply-empty", "empty", "notice"],
+		["/session maintenance --apply-orphans", "orphans", "notice"],
+		["/session maintenance --apply-vacuum", "vacuum", "notice"],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.equal("result" in response
+			? (response.result.display as { kind?: unknown }).kind
+			: null, kind);
+		assert.ok(harness.sessionCommandCalls.some((call) => call.action === action));
+	}
+	await harness.gateway.close();
+});
+
+test("tools subactions and trace commands return filtered bounded displays", async () => {
+	const harness = gatewayHarness({ integrations: true });
+	for (const [command, title, labels] of [
+		["/tools list", "Tools", ["Read", "Skill", "McpSearch"]],
+		["/tools sets", "Tool sets", ["external", "file"]],
+		["/tools extensions", "Extensions", ["Skill", "McpSearch"]],
+		["/tools plugins", "Plugins", ["docs README", "/plugin:demo:status"]],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
+		if (!("result" in response)) continue;
+		const display = response.result.display as {
+			readonly title: string;
+			readonly rows: readonly { readonly label: string }[];
+		};
+		assert.equal(display.title, title);
+		assert.deepEqual(display.rows.map((row) => row.label), labels);
+	}
+
+	for (const [command, kind, title, presentation] of [
+		["/trace", "list", "Trace", "overlay"],
+		["/trace export", "preformatted", "Trace export", "transcript"],
+		["/trace logs", "preformatted", "Trace logs", "overlay"],
+	] as const) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
+		if (!("result" in response)) continue;
+		const display = response.result.display as { readonly kind: string; readonly title: string };
+		assert.equal(display.kind, kind);
+		assert.equal(display.title, title);
+		assert.equal(response.result.presentation, presentation);
+		assert.ok(response.result.lines.length <= 100);
+	}
+	await harness.gateway.close();
+});
+
+test("malformed backend slash subactions return structured bounded errors", async () => {
+	const harness = gatewayHarness({ integrations: true, sessions: {} });
+	for (const command of [
+		"/fork source target nope",
+		"/fork a b 1 extra",
+		"/session search",
+		"/session maintenance --delete-all",
+		"/trace raw",
+		"/tools unknown",
+	]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
+		if (!("result" in response)) continue;
+		const display = response.result.display as {
+			readonly version: number;
+			readonly kind: string;
+			readonly summary: string;
+		};
+		assert.equal(display.version, 1);
+		assert.equal(display.kind, "error");
+		assert.ok(display.summary.length <= 2_048);
+		assert.ok(response.result.lines.length <= 100);
+	}
 	await harness.gateway.close();
 });
 
@@ -429,7 +1090,7 @@ test("gateway exposes bounded integration manifests resources commands and subag
 		"result" in commands
 			? commands.result.commands.map((command: { name: string }) => command.name)
 			: [],
-		["/plugin:demo:status"],
+		[...TUI_BUILTIN_COMMAND_NAMES, "/plugin:demo:status"],
 	);
 	const command = await harness.send("command.run", {
 		command: "/plugin:demo:status",
@@ -654,6 +1315,53 @@ test("approval respond resumes the owning turn without reserving a new turn", as
 	assert.deepEqual(harness.reservedClientTurnIds, []);
 	const projected = await waitFor(() => notification(harness.messages, "approval.respond"));
 	assert.equal(projected.params.generation, 1);
+	parseGatewayEvent(projected);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("clarification bootstrap re-emits the request and response resumes the owning turn", async () => {
+	const harness = gatewayHarness({ sessions: { initialPendingClarification: true } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	await harness.send("session.bootstrap", { protocol_version: 1 });
+	const request = await waitFor(() => notification(harness.messages, "clarify.request"));
+	assert.deepEqual(request.params, {
+		session_id: "session-node",
+		generation: 1,
+		client_turn_id: "client-session-node",
+		turn_id: "turn-session-node",
+		request_id: "question-session-node",
+		tool_id: "question-session-node",
+		call_id: "question-session-node",
+		tool_name: "AskUserQuestion",
+		question: "Which runtime?",
+		options: [{ label: "Node" }, { label: "Python" }, { label: "Other" }],
+		header: "Runtime",
+		multi_select: false,
+	});
+	parseGatewayEvent(request);
+
+	const response = await harness.send("clarify.respond", {
+		request_id: "question-session-node",
+		response: "Node",
+	});
+	assert.deepEqual("result" in response ? response.result : null, {
+		accepted: true,
+		request_id: "question-session-node",
+		client_turn_id: "client-session-node",
+		turn_id: "turn-session-node",
+		session_id: "session-node",
+		generation: 1,
+	});
+	assert.deepEqual(harness.clarificationResolutions, [{
+		requestId: "question-session-node",
+		response: "Node",
+	}]);
+	assert.deepEqual(harness.reservedClientTurnIds, []);
+	assert.equal(harness.sessionCoordinator?.snapshot().pendingClarification, undefined);
+	const projected = await waitFor(() => notification(harness.messages, "clarify.respond"));
 	parseGatewayEvent(projected);
 
 	harness.releaseTurn();
@@ -935,9 +1643,11 @@ test("reserves one queued next turn before removing its queue record", async () 
 	assert.deepEqual(harness.reservedClientTurnIds, ["client-turn", "queued-client-id"]);
 	assert.deepEqual(harness.submissions[1], {
 		clientTurnId: "queued-client-id",
+		clientUserMessageId: "queued-client-id",
 		turnId: "turn-node",
 		message: "queued next turn",
 		localImages: [],
+		modelOverride: "gpt-test",
 	});
 	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
 	await harness.gateway.close();
@@ -1081,6 +1791,129 @@ test("session resume rejects an executing turn and ignores stale generation call
 	await harness.gateway.close();
 });
 
+test("turn submission publishes the committed user item lifecycle", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("turn.submit", {
+		message: "hello",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	const started = await waitFor(() => notification(harness.messages, "item.started"));
+	const completed = await waitFor(() => notification(harness.messages, "item.completed"));
+	const mirrors = notifications(harness.messages, "runtime.event").filter(
+		(message) => message.params.type === "item.started" || message.params.type === "item.completed",
+	);
+
+	assert.ok("result" in response, JSON.stringify(response));
+	assert.deepEqual(started.params, {
+		client_turn_id: "client-turn",
+		turn_id: "turn-node",
+		item: {
+			id: "turn-node:user:client-message",
+			type: "user_message",
+			client_user_message_id: "client-message",
+			content: "hello",
+			source: "submit",
+		},
+	});
+	assert.deepEqual(completed.params, started.params);
+	assert.equal(mirrors.length, 2);
+	assert.deepEqual(mirrors.map((message) => message.params.type), [
+		"item.started",
+		"item.completed",
+	]);
+	assert.deepEqual(mirrors.map((message) => message.params.payload), [
+		started.params,
+		completed.params,
+	]);
+	assert.ok(harness.messages.indexOf(started) < harness.messages.indexOf(completed));
+	parseGatewayEvent(started);
+	parseGatewayEvent(completed);
+	for (const mirror of mirrors) parseGatewayEvent(mirror);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("gateway projects committed steering user item lifecycle", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "inspect",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	const lifecycle = {
+		clientTurnId: "client-turn",
+		turnId: "turn-node",
+		itemId: "turn-node:queue:queue-1",
+		clientUserMessageId: "steer-message",
+		content: "also inspect package.json",
+		source: "steer" as const,
+	};
+	harness.emit({ type: "user_message_started", ...lifecycle });
+	harness.emit({ type: "user_message_completed", ...lifecycle });
+
+	const started = await waitFor(() => notifications(harness.messages, "item.started")
+		.find((message) => message.params.item.id === lifecycle.itemId));
+	const completed = await waitFor(() => notifications(harness.messages, "item.completed")
+		.find((message) => message.params.item.id === lifecycle.itemId));
+	const mirrors = notifications(harness.messages, "runtime.event").filter(
+		(message) => message.params.payload?.item?.id === lifecycle.itemId,
+	);
+
+	assert.deepEqual(started.params, {
+		client_turn_id: "client-turn",
+		turn_id: "turn-node",
+		item: {
+			id: "turn-node:queue:queue-1",
+			type: "user_message",
+			client_user_message_id: "steer-message",
+			content: "also inspect package.json",
+			source: "steer",
+		},
+	});
+	assert.deepEqual(completed.params, started.params);
+	assert.deepEqual(mirrors.map((message) => message.params.type), [
+		"item.started",
+		"item.completed",
+	]);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("failed turn reservation publishes no user item lifecycle", async () => {
+	const harness = gatewayHarness({
+		reserve: () => {
+			throw new StorageFailure("private sqlite path");
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("turn.submit", {
+		message: "must stay invisible",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+
+	assert.equal("error" in response ? response.error.code : null, "persistence_error");
+	assert.equal(notificationCount(harness.messages, "item.started"), 0);
+	assert.equal(notificationCount(harness.messages, "item.completed"), 0);
+	assert.equal(
+		notifications(harness.messages, "runtime.event").filter(
+			(message) => message.params.type === "item.started" || message.params.type === "item.completed",
+		).length,
+		0,
+	);
+	await harness.gateway.close();
+});
+
 test("turn submission responds immediately and emits validated direct events before mirrors", async () => {
 	const harness = gatewayHarness();
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
@@ -1098,20 +1931,23 @@ test("turn submission responds immediately and emits validated direct events bef
 	});
 	assert.deepEqual(harness.submissions, [{
 		clientTurnId: "client-turn",
+		clientUserMessageId: "client-message",
 		turnId: "turn-node",
 		message: "hello",
 		localImages: [],
+		modelOverride: "gpt-test",
 	}]);
 
 	harness.emit({ type: "turn_started", clientTurnId: "client-turn", turnId: "turn-node" });
 	const direct = await waitFor(() => notification(harness.messages, "turn.started"));
-	const mirror = await waitFor(() => notification(harness.messages, "runtime.event"));
+	const mirror = await waitFor(() => notifications(harness.messages, "runtime.event")
+		.find((message) => message.params.type === "turn.started"));
 	parseGatewayEvent(direct);
 	parseGatewayEvent(mirror);
 	assert.ok(harness.messages.indexOf(direct) < harness.messages.indexOf(mirror));
 	assert.deepEqual(mirror.params, {
 		version: 1,
-		sequence: 1,
+		sequence: 3,
 		type: "turn.started",
 		payload: direct.params,
 		timestamp: 1_700_000_000,
@@ -1599,6 +2435,8 @@ function gatewaySessionCoordinator(
 		readonly targetQueue?: QueueSnapshot;
 		readonly initialPendingApproval?: boolean;
 		readonly targetPendingApproval?: boolean;
+		readonly initialPendingClarification?: boolean;
+		readonly targetPendingClarification?: boolean;
 		readonly approvalOptions?: readonly PendingApprovalChoice[];
 	},
 ): SessionCoordinator<NodeGatewayRuntime> {
@@ -1610,6 +2448,7 @@ function gatewaySessionCoordinator(
 			emptyQueue("session-node"),
 			options.initialPendingApproval ?? false,
 			options.approvalOptions,
+			options.initialPendingClarification ?? false,
 		),
 		prepare: async (sessionId) => {
 			await options.prepareTarget?.();
@@ -1625,6 +2464,7 @@ function gatewaySessionCoordinator(
 				options.targetQueue,
 				options.targetPendingApproval ?? false,
 				options.approvalOptions,
+				options.targetPendingClarification ?? false,
 			);
 		},
 		listSessions: () => [
@@ -1647,6 +2487,7 @@ function preparedGatewaySession(
 	queue: QueueSnapshot = emptyQueue(sessionId),
 	pendingApproval = false,
 	approvalOptions: readonly PendingApprovalChoice[] = ["approve_once", "reject"],
+	pendingClarification = false,
 ): PreparedSession<NodeGatewayRuntime> {
 	return {
 		sessionId,
@@ -1665,7 +2506,20 @@ function preparedGatewaySession(
 			reason: "Approval required",
 			options: approvalOptions,
 		} } : {}),
-		suspendedTurn: pendingApproval,
+		...(pendingClarification ? { pendingClarification: {
+			sessionId,
+			clientTurnId: `client-${sessionId}`,
+			clientUserMessageId: `user-${sessionId}`,
+			turnId: `turn-${sessionId}`,
+			requestId: `question-${sessionId}`,
+			callId: `question-${sessionId}`,
+			toolName: "AskUserQuestion",
+			question: "Which runtime?",
+			options: [{ label: "Node" }, { label: "Python" }, { label: "Other" }],
+			header: "Runtime",
+			multiSelect: false,
+		} } : {}),
+		suspendedTurn: pendingApproval || pendingClarification,
 		readOnly,
 		binding: runtime,
 	};

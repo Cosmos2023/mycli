@@ -19,6 +19,7 @@ import * as storage from "../src/index.ts";
 interface ReserveTurnInput {
 	readonly sessionId: string;
 	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
 	readonly turnId: string;
 	readonly requestFingerprint: string;
 	readonly workspaceRoot: string;
@@ -201,6 +202,17 @@ test("reserves a turn atomically and deduplicates the same fingerprint", async (
 	assert.deepEqual(store.loadConversation("session-1"), [
 		{ role: "user", content: "inspect the repository" },
 	]);
+	const userHistory = store.loadHistoryItems("session-1")[0];
+	assert.equal(userHistory?.id, "turn-1:user:user-message-1");
+	assert.equal(
+		(userHistory?.metadata as Readonly<Record<string, unknown>> | undefined)
+			?.client_user_message_id,
+		"user-message-1",
+	);
+	assert.equal(
+		(userHistory?.metadata as Readonly<Record<string, unknown>> | undefined)?.source,
+		"submit",
+	);
 	assert.throws(
 		() => store.reserveTurn({ ...input, requestFingerprint: `sha256:${"b".repeat(64)}` }),
 		/message_id_conflict: client_turn_id already has a different payload/,
@@ -644,6 +656,7 @@ function submission(workspaceRoot: string): ReserveTurnInput {
 	return {
 		sessionId: "session-1",
 		clientTurnId: "client-1",
+		clientUserMessageId: "user-message-1",
 		turnId: "turn-1",
 		requestFingerprint: `sha256:${"a".repeat(64)}`,
 		workspaceRoot,

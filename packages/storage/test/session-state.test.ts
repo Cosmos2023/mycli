@@ -85,6 +85,12 @@ interface M5Store {
 		readonly status: string;
 		readonly decisionId: string;
 	};
+	saveClarificationSuspension(input: ClarificationSuspensionFixture): void;
+	commitClarificationResponse(input: {
+		readonly sessionId: string;
+		readonly requestId: string;
+		readonly toolResult: ReturnType<typeof successfulClarificationResult>;
+	}): void;
 	commitApprovalResult(input: {
 		readonly sessionId: string;
 		readonly expectedStatus: ApprovalResolution["status"];
@@ -525,6 +531,36 @@ test("saves approval suspension state in one transaction", async (t) => {
 	assert.equal((store.loadState("s1", "node_effect_checkpoint") as { status: string }).status, "waiting");
 });
 
+test("persists clarification suspension across recovery and commits its response atomically", async (t) => {
+	const fixture = await databaseFixture(t);
+	let store = createStore(fixture.dbPath);
+	prepareClarificationTurn(store, fixture.root);
+	store.saveClarificationSuspension(clarificationSuspension(fixture.root));
+	assert.equal((store.loadState("s1", "turn_record") as { status: string }).status, "waiting_clarification");
+	assert.equal(
+		(store.loadState("s1", "suspended_turn") as {
+			pending_clarification: { request_id: string };
+		}).pending_clarification.request_id,
+		"call-question",
+	);
+	store.close();
+
+	store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+	assert.equal(store.loadTurn("s1", "client-s1")?.status, "in_progress");
+	store.commitClarificationResponse({
+		sessionId: "s1",
+		requestId: "call-question",
+		toolResult: successfulClarificationResult(),
+	});
+	assert.equal(store.loadState("s1", "suspended_turn"), undefined);
+	assert.equal(store.loadState("s1", "turn_record"), undefined);
+	const items = store.loadConversationItems("s1");
+	const last = items.at(-1);
+	assert.equal(last?.type, "tool_result");
+	assert.equal(last?.type === "tool_result" ? last.output : undefined, "User response: Node");
+});
+
 test("rolls back every approval suspension row when its transaction fails", async (t) => {
 	const fixture = await databaseFixture(t);
 	const store = createStore(fixture.dbPath, (name) => {
@@ -724,6 +760,14 @@ interface ApprovalSuspensionFixture {
 	};
 }
 
+interface ClarificationSuspensionFixture {
+	readonly sessionId: string;
+	readonly workspaceRoot: string;
+	readonly threadId: string;
+	readonly suspendedTurn: Extract<RuntimeStateRecord, { kind: "suspended_turn" }>;
+	readonly turnRecord: Readonly<Record<string, unknown>>;
+}
+
 function prepareApprovalTurn(store: M5Store, workspaceRoot: string): void {
 	store.reserveTurn(submission(workspaceRoot, "s1", NOW));
 	store.appendAssistantToolCalls({
@@ -737,6 +781,81 @@ function prepareApprovalTurn(store: M5Store, workspaceRoot: string): void {
 		}],
 		responseId: "resp-1",
 	});
+}
+
+function prepareClarificationTurn(store: M5Store, workspaceRoot: string): void {
+	store.reserveTurn(submission(workspaceRoot, "s1", NOW));
+	store.appendAssistantToolCalls({
+		sessionId: "s1",
+		clientTurnId: "client-s1",
+		assistantText: "",
+		calls: [{
+			callId: "call-question",
+			name: "AskUserQuestion",
+			argumentsJson: JSON.stringify({ question: "Which runtime?", options: [] }),
+		}],
+		responseId: "resp-question",
+	});
+}
+
+function clarificationSuspension(workspaceRoot: string): ClarificationSuspensionFixture {
+	return {
+		sessionId: "s1",
+		workspaceRoot,
+		threadId: "s1",
+		suspendedTurn: {
+			kind: "suspended_turn",
+			version: 1,
+			payload: {
+				user_message: "message-s1",
+				conversation: [pythonMessage("user", "message-s1")],
+				suspend_reason: "clarification_required",
+				pending_clarification: {
+					request_id: "call-question",
+					tool_call: {
+						name: "AskUserQuestion",
+						arguments: { question: "Which runtime?", options: [] },
+						reason: "",
+						call_id: "call-question",
+					},
+					question: "Which runtime?",
+					options: [{ label: "Node" }, { label: "Python" }, { label: "Other" }],
+					header: "Runtime",
+					multi_select: false,
+				},
+				session_id: "s1",
+				client_turn_id: "client-s1",
+				client_user_message_id: "message-s1",
+				turn_id: "turn-s1",
+				provider_protocol: "responses",
+				remaining_tool_calls: [],
+				continuation: { assistant_text: "", response_id: "resp-question", usage: {} },
+			},
+		},
+		turnRecord: {
+			turn_id: "turn-s1",
+			client_turn_id: "client-s1",
+			user_message: "message-s1",
+			status: "waiting_clarification",
+			stop_reason: "clarification_required",
+			updated_at: NOW,
+		},
+	};
+}
+
+function successfulClarificationResult() {
+	return {
+		sessionId: "s1",
+		clientTurnId: "client-s1",
+		result: {
+			callId: "call-question",
+			toolName: "AskUserQuestion",
+			output: "User response: Node",
+			success: true,
+		},
+		summary: "User answered clarification",
+		metadata: { request_id: "call-question", source: "user" },
+	};
 }
 
 function approvalSuspension(workspaceRoot: string): ApprovalSuspensionFixture {

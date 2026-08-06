@@ -330,6 +330,34 @@ test("skips below threshold and rejects summaries that save too little", async (
 	}
 });
 
+test("user-requested compaction runs below the automatic threshold", async () => {
+	const conversation = conversationFixture();
+	const store = new FakeCompactionStore(
+		conversation,
+		historyFixture(conversation),
+	);
+	let calls = 0;
+	const result = await createCoordinator({
+		store,
+		tokenLimit: 10_000,
+		summarize: async () => {
+			calls += 1;
+			return "old exchange";
+		},
+	}).compact({
+		clientTurnId: "command-compact",
+		turnId: "command-compact",
+		source: "user_requested" as never,
+		conversation,
+		freshItemIds: new Set(["current-user", "steer-q1"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "compressed");
+	assert.equal(calls, 1);
+});
+
 test("forces compaction after a provider context rejection below the local estimate", async () => {
 	const conversation: readonly CanonicalConversationItem[] = [
 		{ type: "user", text: "first " + "history ".repeat(20) },

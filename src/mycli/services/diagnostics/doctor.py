@@ -2391,7 +2391,10 @@ def _manifest_event_payload_schema_names(value: object) -> set[str]:
         payload_schema = item.get("payload_schema")
         if not isinstance(payload_schema, dict):
             continue
-        if payload_schema.get("type") != "object":
+        all_of = payload_schema.get("allOf")
+        if payload_schema.get("type") != "object" and not (
+            isinstance(all_of, list) and all_of
+        ):
             continue
         schema_name = payload_schema.get("name")
         if isinstance(schema_name, str) and schema_name:

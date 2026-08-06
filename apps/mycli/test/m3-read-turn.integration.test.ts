@@ -85,7 +85,7 @@ test("completes and persists a Node-only Responses Read turn", async (t) => {
 	assert.equal((final.params as Record<string, unknown>).text, "README inspected.");
 	assert.equal(requestBodies.length, 2);
 	assert.deepEqual(toolNames(requestBodies[0]?.tools), [
-		"Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill", "Task", "SubagentOutput", "SendMessage",
 	]);
 	assert.equal("previous_response_id" in (requestBodies[1] ?? {}), false);
 	const continuation = JSON.stringify(requestBodies[1]?.input);

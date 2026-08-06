@@ -1,10 +1,12 @@
 export {
+	ASK_USER_QUESTION_TOOL_DEFINITION,
 	builtinToolManifest,
 	EDIT_TOOL_DEFINITION,
 	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
+export { AskUserQuestionTool } from "./ask-user-question-tool.ts";
 export { combinedToolManifest } from "./combined-manifest.ts";
 export { planToolExposure } from "./exposure-planner.ts";
 export type { ToolExposureCapabilities } from "./exposure-planner.ts";
@@ -45,6 +47,7 @@ export {
 	WRITE_STDIN_TOOL_DEFINITION,
 } from "./shell-manifest.ts";
 export { FileSnapshotStore } from "./file-snapshot-store.ts";
+export { FileHistoryStore } from "./file-history-store.ts";
 export { ShellOutputBuffer } from "./shell-output-buffer.ts";
 export type { ShellOutputRead } from "./shell-output-buffer.ts";
 export { TerminalOutputNormalizer } from "./terminal-output-normalizer.ts";
@@ -111,6 +114,11 @@ export type {
 	KillShellToolOptions,
 } from "./legacy-shell-tools.ts";
 export type { FileSnapshot } from "./file-snapshot-store.ts";
+export type {
+	FileHistoryCapture,
+	FileHistoryStoreOptions,
+	FileHistoryUndoResult,
+} from "./file-history-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";
 export type { BoundedFileDiff } from "./file-diff.ts";
 export {

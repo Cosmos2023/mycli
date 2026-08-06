@@ -19,6 +19,7 @@ import type {
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
 	CommitApprovalResultInput,
+	CommitClarificationResponseInput,
 	CommitCompactionInput,
 	CommitQueuedInputsInput,
 	FinalizeApprovalContinuationInput,
@@ -27,6 +28,7 @@ import type {
 	RuntimeStateKey,
 	SaveQueueSnapshotInput,
 	SaveApprovalSuspensionInput,
+	SaveClarificationSuspensionInput,
 	SaveStateInput,
 	SessionLineageNode,
 	SessionListQuery,
@@ -389,6 +391,48 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		});
 	}
 
+	saveClarificationSuspension(input: SaveClarificationSuspensionInput): void {
+		const sessionId = nonEmpty(input.sessionId, "sessionId");
+		const suspended = validateStatePayload("suspended_turn", input.suspendedTurn.payload);
+		const turnRecord = validateStatePayload("turn_record", input.turnRecord);
+		const payload = recordValue(suspended);
+		const clarification = recordValue(payload.pending_clarification);
+		const call = recordValue(clarification.tool_call);
+		if (requiredString(payload.session_id, "session_id") !== sessionId
+			|| requiredString(payload.client_turn_id, "client_turn_id")
+				!== requiredString(recordValue(turnRecord).client_turn_id, "client_turn_id")
+			|| requiredString(payload.turn_id, "turn_id")
+				!== requiredString(recordValue(turnRecord).turn_id, "turn_id")
+			|| requiredString(clarification.request_id, "request_id")
+				!== requiredString(call.call_id, "call_id")) {
+			throw new SessionStateError("session_state_invalid", "suspended_turn");
+		}
+		this.#writeTransaction(() => {
+			this.#touchSession(sessionId, input.workspaceRoot, input.threadId);
+			this.#upsertState(sessionId, "suspended_turn", suspended);
+			this.#upsertState(sessionId, "turn_record", turnRecord);
+			this.#failpoint("clarification_suspend_after_states");
+		});
+	}
+
+	commitClarificationResponse(
+		input: CommitClarificationResponseInput,
+		commitToolResult: () => void,
+	): void {
+		this.#writeTransaction(() => {
+			const suspended = this.#requiredStateObject(input.sessionId, "suspended_turn");
+			const clarification = recordValue(suspended.pending_clarification);
+			if (requiredString(clarification.request_id, "request_id")
+				!== nonEmpty(input.requestId, "requestId")) {
+				throw new SessionStateError("session_state_invalid", "suspended_turn");
+			}
+			commitToolResult();
+			this.#failpoint("clarification_response_after_tool");
+			this.#deleteClarificationContinuation(input.sessionId);
+			this.#touchExistingSession(input.sessionId);
+		});
+	}
+
 	commitApprovalResult(
 		input: CommitApprovalResultInput,
 		commitToolResult: () => void,
@@ -451,7 +495,7 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		});
 	}
 
-	isApprovalContinuationTurn(
+	isContinuationTurn(
 		sessionId: string,
 		clientTurnId: string,
 		turnId: string,
@@ -470,6 +514,16 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		const pending = recordValue(states.get("pending_decision"));
 		const suspended = recordValue(states.get("suspended_turn"));
 		const effect = states.get("node_effect_checkpoint");
+		const clarification = recordValue(suspended.pending_clarification);
+		if (Object.keys(clarification).length > 0) {
+			const call = recordValue(clarification.tool_call);
+			return states.size === 1
+				&& requiredString(suspended.session_id, "session_id") === sessionId
+				&& requiredString(suspended.client_turn_id, "client_turn_id") === clientTurnId
+				&& requiredString(suspended.turn_id, "turn_id") === turnId
+				&& requiredString(clarification.request_id, "request_id")
+					=== requiredString(call.call_id, "call_id");
+		}
 		if (states.size !== 3 || !isRecord(effect)) {
 			throw new SessionStateError("session_state_invalid", "suspended_turn");
 		}
@@ -565,6 +619,13 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 				'pending_decision', 'suspended_turn', 'turn_record'
 				${includeCheckpoint ? ", 'node_effect_checkpoint'" : ""}
 			)
+		`).run(sessionId);
+	}
+
+	#deleteClarificationContinuation(sessionId: string): void {
+		this.#database.prepare(`
+			DELETE FROM session_state
+			WHERE session_id = ? AND state_key IN ('suspended_turn', 'turn_record')
 		`).run(sessionId);
 	}
 

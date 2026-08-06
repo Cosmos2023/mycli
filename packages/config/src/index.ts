@@ -15,6 +15,8 @@ export type {
 } from "./settings.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";
+export { loadShellSettings, saveShellSettings } from "./shell-settings.ts";
+export type { ShellSettings } from "./shell-settings.ts";
 export { WorkspaceTrustStore } from "./workspace-trust-store.ts";
 export type {
 	WorkspaceTrustState,

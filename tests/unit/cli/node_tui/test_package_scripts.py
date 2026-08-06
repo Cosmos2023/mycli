@@ -36,6 +36,7 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
             "npm run build --workspace @mycli/tools && "
             "npm run build --workspace @mycli/providers && "
             "npm run build --workspace @mycli/storage && "
+            "npm run build --workspace @mycli/integrations && "
             "npm run build --workspace @mycli/runtime && "
             "npm run build --workspace mycli-shell-tui && "
             "npm run build --workspace @mycli/app"
@@ -51,6 +52,8 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         "smoke:m4": "node scripts/smoke_node_m4_mutation.mjs --protocol responses",
         "smoke:m5": "node scripts/smoke_node_m5_state.mjs --protocol responses",
         "smoke:m6": "node scripts/smoke_node_m6_shell.mjs --protocol responses",
+        "smoke:m7": "node scripts/smoke_node_m7_extensions.mjs --protocol responses",
+        "smoke:m8": "node scripts/smoke_node_m8.mjs",
         "test": "npm run test --workspaces --if-present",
         "test:m2": (
             "npm run build && node --import tsx --test "
@@ -77,6 +80,16 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
             "npm run build && node --import tsx --test "
             "apps/mycli/test/m6-persistent-shell.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m6_parity.py -q"
+        ),
+        "test:m7": (
+            "npm run build && node --import tsx --test "
+            "apps/mycli/test/m7-extensions.integration.test.ts && "
+            "uv run pytest tests/integration/test_node_runtime_m7_parity.py -q"
+        ),
+        "test:m8": (
+            "npm run build && node --import tsx --test "
+            "apps/mycli/test/node-runtime-m8-capability-audit.test.ts "
+            "apps/mycli/test/cli.test.ts"
         ),
         "typecheck": "npm run typecheck --workspaces --if-present",
     }

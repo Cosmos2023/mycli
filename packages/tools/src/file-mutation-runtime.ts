@@ -66,6 +66,22 @@ export interface MutationOutcome extends BoundedFileDiff {
 export interface FileMutationRuntimeOptions {
 	readonly workspaceRoot: string;
 	readonly snapshots: FileSnapshotStore;
+	readonly sessionId?: string;
+	readonly history?: {
+		capture(input: {
+			readonly sessionId: string;
+			readonly turnId: string;
+			readonly toolName: string;
+			readonly path: string;
+		}): Promise<{ readonly snapshotId: string } | undefined>;
+		complete(snapshotId: string): Promise<void>;
+		discard(snapshotId: string): Promise<void>;
+	};
+}
+
+export interface FileMutationHistoryContext {
+	readonly turnId: string;
+	readonly toolName: string;
 }
 
 interface CapturedFile {
@@ -77,16 +93,21 @@ interface CapturedFile {
 export class FileMutationRuntime {
 	readonly #workspaceRoot: string;
 	readonly #snapshots: FileSnapshotStore;
+	readonly #sessionId?: string;
+	readonly #history?: FileMutationRuntimeOptions["history"];
 
 	constructor(options: FileMutationRuntimeOptions) {
 		this.#workspaceRoot = options.workspaceRoot;
 		this.#snapshots = options.snapshots;
+		this.#sessionId = options.sessionId;
+		this.#history = options.history;
 	}
 
 	async write(input: {
 		readonly path: string;
 		readonly content: string;
 		readonly expectedSha256?: string;
+		readonly history?: FileMutationHistoryContext;
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome> {
 		assertNotAborted(input.signal);
@@ -104,14 +125,21 @@ export class FileMutationRuntime {
 			return unchangedOutcome(resolved.relativePath);
 		}
 		await mkdir(dirname(resolved.target), { recursive: true });
-		await this.#commit({
-			rawPath: input.path,
-			resolved,
-			content: input.content,
-			baseline: existing,
-			conflictKind: "stale_write_snapshot",
-			signal: input.signal,
-		});
+		const historySnapshotId = await this.#captureHistory(input.path, input.history);
+		try {
+			await this.#commit({
+				rawPath: input.path,
+				resolved,
+				content: input.content,
+				baseline: existing,
+				conflictKind: "stale_write_snapshot",
+				signal: input.signal,
+			});
+		} catch (error) {
+			await this.#discardHistory(historySnapshotId);
+			throw error;
+		}
+		await this.#completeHistory(historySnapshotId);
 		return changedOutcome(
 			resolved.relativePath,
 			existing ? "overwritten" : "created",
@@ -125,6 +153,7 @@ export class FileMutationRuntime {
 		readonly oldString: string;
 		readonly newString: string;
 		readonly replaceAll: boolean;
+		readonly history?: FileMutationHistoryContext;
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome> {
 		assertNotAborted(input.signal);
@@ -171,14 +200,21 @@ export class FileMutationRuntime {
 				: replaceFirst(existing.content, oldString, input.newString);
 		}
 
-		await this.#commit({
-			rawPath: input.path,
-			resolved,
-			content,
-			baseline: existing,
-			conflictKind: "stale_read_snapshot",
-			signal: input.signal,
-		});
+		const historySnapshotId = await this.#captureHistory(input.path, input.history);
+		try {
+			await this.#commit({
+				rawPath: input.path,
+				resolved,
+				content,
+				baseline: existing,
+				conflictKind: "stale_read_snapshot",
+				signal: input.signal,
+			});
+		} catch (error) {
+			await this.#discardHistory(historySnapshotId);
+			throw error;
+		}
+		await this.#completeHistory(historySnapshotId);
 		return {
 			...changedOutcome(resolved.relativePath, "edited", existing.content, content),
 			matches: input.replaceAll ? matches : 1,
@@ -191,6 +227,33 @@ export class FileMutationRuntime {
 		} catch (error) {
 			throw mutationErrorFrom(error, "invalid_path");
 		}
+	}
+
+	async #captureHistory(
+		path: string,
+		context: FileMutationHistoryContext | undefined,
+	): Promise<string | undefined> {
+		if (!this.#history || !this.#sessionId || !context) return undefined;
+		try {
+			return (await this.#history.capture({
+				sessionId: this.#sessionId,
+				turnId: context.turnId,
+				toolName: context.toolName,
+				path,
+			}))?.snapshotId;
+		} catch {
+			return undefined;
+		}
+	}
+
+	async #completeHistory(snapshotId: string | undefined): Promise<void> {
+		if (!snapshotId || !this.#history) return;
+		await this.#history.complete(snapshotId).catch(() => undefined);
+	}
+
+	async #discardHistory(snapshotId: string | undefined): Promise<void> {
+		if (!snapshotId || !this.#history) return;
+		await this.#history.discard(snapshotId).catch(() => undefined);
 	}
 
 	async #commit(input: {

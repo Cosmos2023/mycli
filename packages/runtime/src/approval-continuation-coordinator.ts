@@ -37,6 +37,7 @@ export type ApprovalChoice = CoreApprovalChoice;
 
 export interface ApprovalSuspensionInput {
 	readonly clientTurnId: string;
+	readonly clientUserMessageId?: string;
 	readonly turnId: string;
 	readonly userMessage: string;
 	readonly providerProtocol: ProtocolId;
@@ -57,6 +58,7 @@ export interface ApprovalSuspensionInput {
 export interface PendingApprovalContinuation {
 	readonly sessionId: string;
 	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
 	readonly turnId: string;
 	readonly decisionId: string;
 	readonly callId: string;
@@ -208,6 +210,7 @@ export class ApprovalContinuationCoordinator {
 			turnRecord: {
 				turn_id: pending.turnId,
 				client_turn_id: pending.clientTurnId,
+				client_user_message_id: pending.clientUserMessageId,
 				user_message: pending.userMessage,
 				status: "waiting_approval",
 				stop_reason: "approval_required",
@@ -390,6 +393,10 @@ function pendingFromInput(
 	return Object.freeze({
 		sessionId,
 		clientTurnId: nonEmpty(input.clientTurnId, "clientTurnId"),
+		clientUserMessageId: nonEmpty(
+			input.clientUserMessageId ?? input.clientTurnId,
+			"clientUserMessageId",
+		),
 		turnId: nonEmpty(input.turnId, "turnId"),
 		decisionId: nonEmpty(input.call.callId, "decisionId"),
 		callId: nonEmpty(input.call.callId, "callId"),
@@ -440,6 +447,10 @@ function pendingFromStates(
 	return Object.freeze({
 		sessionId,
 		clientTurnId: nonEmpty(String(payload.client_turn_id ?? ""), "clientTurnId"),
+		clientUserMessageId: nonEmpty(
+			String(payload.client_user_message_id ?? payload.client_turn_id ?? ""),
+			"clientUserMessageId",
+		),
 		turnId: nonEmpty(String(payload.turn_id ?? ""), "turnId"),
 		decisionId: call.callId,
 		callId: call.callId,
@@ -519,7 +530,8 @@ function suspendedTurnState(
 			suspend_reason: "approval_required",
 			pending_approval: pendingApproval,
 			session_id: pending.sessionId,
-			client_turn_id: pending.clientTurnId,
+				client_turn_id: pending.clientTurnId,
+				client_user_message_id: pending.clientUserMessageId,
 			turn_id: pending.turnId,
 			provider_protocol: pending.providerProtocol,
 			remaining_tool_calls: pending.remainingCalls.map(storedCanonicalCall),

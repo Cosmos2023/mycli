@@ -114,7 +114,7 @@ export type CompactionRuntimeEvent =
 		readonly durationSeconds: number;
 	};
 
-export type CompactionSource = "pre_turn" | "context_overflow";
+export type CompactionSource = "pre_turn" | "context_overflow" | "user_requested";
 
 export interface RehydratedFile {
 	readonly path: string;
@@ -212,7 +212,7 @@ export class CompactionCoordinator {
 			freshSuffixTokens,
 			triggerRatio: this.#options.triggerRatio ?? 1,
 		});
-		const shouldCompact = input.source === "context_overflow"
+		const shouldCompact = input.source === "context_overflow" || input.source === "user_requested"
 			? beforeTokens > freshSuffixTokens
 			: decision.shouldCompact;
 		if (!shouldCompact || selection.summaryItems.length === 0) {

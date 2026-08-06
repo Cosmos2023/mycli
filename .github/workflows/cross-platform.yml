@@ -13,91 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.13"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22.19.0"
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Build packaged Windows sandbox helper
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cmake `
-            -S native/windows-sandbox-helper `
-            -B native/windows-sandbox-helper/build `
-            -A x64
-          cmake --build native/windows-sandbox-helper/build --config Release
-          Copy-Item `
-            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
-            src/mycli/native/windows/mycli-windows-sandbox.exe
-          New-Item -ItemType Directory -Force packages/tools/native/windows | Out-Null
-          Copy-Item `
-            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
-            packages/tools/native/windows/mycli-windows-sandbox.exe
-      - run: uv sync --locked --dev
-      - name: Verify packaged Windows helper wheel
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          uv build --wheel --out-dir dist-windows
-          uv run python -c "import pathlib,zipfile; wheel=next(pathlib.Path('dist-windows').glob('*win_amd64.whl')); archive=zipfile.ZipFile(wheel); names=archive.namelist(); assert 'mycli/native/windows/mycli-windows-sandbox.exe' in names; metadata=archive.read(next(name for name in names if name.endswith('.dist-info/WHEEL'))).decode(); assert 'Root-Is-Purelib: false' in metadata; print(wheel.name)"
-      - run: npm ci
-      - run: npm run contracts:check
-      - run: npm run lint
-      - run: npm test
-      - name: Node M2 no-tool integration
-        run: npm run test:m2
-      - name: Packed npm CLI smoke
-        run: npm run smoke:package
-      - name: Node sidecar lifecycle integration
-        run: node --import tsx --test apps/mycli/test/lifecycle.integration.test.ts
-      - run: npm run typecheck
-      - run: uv run pytest -q
-      - run: uv run ruff check .
-      - run: uv run mypy src/mycli
-      - name: Shell lifecycle smoke
-        run: uv run pytest tests/integration/test_cross_platform_shell.py -q
-
-  node-m2-live-smoke:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
-    runs-on: ubuntu-latest
-    environment: node-m2-live
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22.19.0"
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - run: npm ci
-      - run: npm run build
-      - name: Node M2 live provider smoke
-        env:
-          MYCLI_API_KEY: ${{ secrets.MYCLI_API_KEY }}
-          MYCLI_BASE_URL: ${{ secrets.MYCLI_BASE_URL }}
-          MYCLI_MODEL: ${{ secrets.MYCLI_MODEL }}
-          MYCLI_PROVIDER: openai
-        run: |
-          if [ -z "$MYCLI_API_KEY" ]; then
-            echo "Node M2 live provider smoke skipped: credential not configured"
-            exit 0
-          fi
-          node scripts/smoke_node_m2.mjs --protocol responses
-          node scripts/smoke_node_m2.mjs --protocol chat_completions
-
-  node-m5-gate:
+  node-m8-gate:
     strategy:
       fail-fast: false
       matrix:
@@ -106,75 +22,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.13"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Install Linux native build prerequisites
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential python3 make g++
-      - run: uv sync --locked --dev
-      - run: npm ci
-      - name: Native persistent shell smoke
-        run: >-
-          node --import tsx --test
-          --test-name-pattern="native PTY lifecycle"
-          packages/tools/test/node-pty-transport.integration.test.ts
-      - name: Node M5 state and recovery gate
-        run: npm run test:m5
-      - name: Packed npm CLI smoke
-        run: npm run smoke:package
-
-  node-m5-live-smoke:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: node-m5-gate
-    runs-on: ubuntu-latest
-    environment: node-m5-live
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22.19.0"
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - run: npm ci
-      - run: npm run build
-      - name: Node M5 live state recovery smoke
-        shell: bash
-        env:
-          MYCLI_API_KEY: ${{ secrets.MYCLI_API_KEY }}
-          MYCLI_BASE_URL: ${{ secrets.MYCLI_BASE_URL }}
-          MYCLI_MODEL: gpt-5.5
-          MYCLI_PROVIDER: openai
-        run: |
-          set +e
-          node scripts/smoke_node_m5_state.mjs --protocol responses
-          code=$?
-          set -e
-          if [ "$code" -eq 77 ]; then
-            exit 0
-          fi
-          exit "$code"
-
-  node-m7-gate:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: ["22.19.0", "24.x"]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
@@ -182,7 +29,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install Linux process prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential python3 make g++
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential make g++
       - name: Build Node Windows sandbox helper
         if: runner.os == 'Windows'
         shell: pwsh
@@ -196,18 +43,65 @@ jobs:
           Copy-Item `
             native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
             packages/tools/native/windows/mycli-windows-sandbox.exe
-      - run: uv sync --locked --dev
       - run: npm ci
-      - name: Node M7 extension parity and lifecycle gate
-        run: npm run test:m7
+      - run: npm run contracts:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
+      - name: Node M8 retirement gate
+        run: npm run test:m8
+      - name: Provider-free M8 smoke
+        run: npm run smoke:m8
       - name: Packed npm CLI smoke
         run: npm run smoke:package
 
-  node-m7-live-smoke:
+  python-reference-gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Build Python Windows sandbox asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            src/mycli/native/windows/mycli-windows-sandbox.exe
+      - run: uv sync --locked --dev
+      - run: npm ci
+      - run: npm run build
+      - run: npm run contracts:check
+      - run: uv run pytest -q
+      - run: uv run ruff check .
+      - run: uv run mypy src/mycli
+      - name: Verify Python Windows wheel asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          uv build --wheel --out-dir dist-windows
+          uv run python -c "import pathlib,zipfile; wheel=next(pathlib.Path('dist-windows').glob('*win_amd64.whl')); archive=zipfile.ZipFile(wheel); names=archive.namelist(); assert 'mycli/native/windows/mycli-windows-sandbox.exe' in names; metadata=archive.read(next(name for name in names if name.endswith('.dist-info/WHEEL'))).decode(); assert 'Root-Is-Purelib: false' in metadata"
+
+  node-m8-live-smoke:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: node-m7-gate
+    needs: node-m8-gate
     runs-on: ubuntu-latest
-    environment: node-m7-live
+    environment: node-m8-live
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -215,59 +109,25 @@ jobs:
           node-version: "22.19.0"
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential python3 make g++
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential make g++
       - run: npm ci
       - run: npm run build
-      - name: Node M7 live extension smoke
+      - name: Node M8 live Responses smoke
         shell: bash
         env:
           MYCLI_API_KEY: ${{ secrets.MYCLI_API_KEY }}
           MYCLI_BASE_URL: ${{ secrets.MYCLI_BASE_URL }}
           MYCLI_MODEL: ${{ secrets.MYCLI_MODEL }}
           MYCLI_PROVIDER: ${{ secrets.MYCLI_PROVIDER }}
-          MYCLI_PROTOCOL: ${{ secrets.MYCLI_PROTOCOL }}
         run: |
-          protocol="${MYCLI_PROTOCOL:-responses}"
           set +e
-          node scripts/smoke_node_m7_extensions.mjs --protocol "$protocol"
+          node scripts/smoke_node_m5_state.mjs --protocol responses
           code=$?
           set -e
           if [ "$code" -eq 77 ]; then
             exit 0
           fi
           exit "$code"
-
-  windows-shell-smoke:
-    strategy:
-      fail-fast: false
-      matrix:
-        shell_mode: [pwsh, powershell, cmd]
-    runs-on: windows-latest
-    env:
-      MYCLI_TEST_SHELL_MODE: ${{ matrix.shell_mode }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync --locked --dev
-      - name: Native shell lifecycle smoke (${{ matrix.shell_mode }})
-        run: uv run pytest tests/integration/test_cross_platform_shell.py -q
-
-  windows-conpty-smoke:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync --locked --dev
-      - name: ConPTY transport and shell integration smoke
-        run: >-
-          uv run pytest
-          tests/unit/tools/shell_transport/test_windows_conpty.py
-          tests/integration/test_cross_platform_shell.py
-          -q
 
   windows-sandbox-helper:
     runs-on: windows-latest

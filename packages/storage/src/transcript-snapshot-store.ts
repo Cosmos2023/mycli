@@ -12,7 +12,12 @@ import {
 	type TranscriptItem,
 } from "./transcript-projector.ts";
 
-export type TranscriptSessionState = "idle" | "running" | "waiting_approval" | "interrupted";
+export type TranscriptSessionState =
+	| "idle"
+	| "running"
+	| "waiting_approval"
+	| "waiting_clarification"
+	| "interrupted";
 
 export interface TranscriptSnapshotV2 {
 	readonly schema_version: 2;
@@ -261,7 +266,8 @@ function validSessionId(value: string): string {
 
 function isTranscriptState(value: unknown): value is TranscriptSessionState {
 	return value === "idle" || value === "running"
-		|| value === "waiting_approval" || value === "interrupted";
+		|| value === "waiting_approval" || value === "waiting_clarification"
+		|| value === "interrupted";
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

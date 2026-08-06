@@ -413,7 +413,8 @@ def _expected_record(scenario: dict[str, Any]) -> dict[str, Any]:
         "metadata": {
             "turn_id": scenario["turn_id"],
             "client_turn_id": scenario["client_turn_id"],
-            "source": "node_runtime",
+            "client_user_message_id": scenario["client_turn_id"],
+            "source": "submit",
         },
         "blocks": [],
         "tool_calls": [],
@@ -428,7 +429,8 @@ def _expected_record(scenario: dict[str, Any]) -> dict[str, Any]:
         "call_id": None,
         "metadata": {
             "client_turn_id": scenario["client_turn_id"],
-            "source": "node_runtime",
+            "client_user_message_id": scenario["client_turn_id"],
+            "source": "submit",
             "image_paths": [],
         },
     }

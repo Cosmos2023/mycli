@@ -11,6 +11,23 @@ import {
 
 const NOW = "2026-08-04T00:00:00.000Z";
 
+test("preserves a waiting clarification snapshot for degraded restart", async (t) => {
+	const root = await temporaryDirectory(t);
+	const snapshots = new TranscriptSnapshotStore({ homeDir: root });
+	await snapshots.write({
+		...snapshot("s1", "waiting"),
+		state: "waiting_clarification",
+	});
+
+	const result = await snapshots.loadOrRebuild("s1", {
+		loadCanonical: () => { throw new Error("sqlite unavailable"); },
+		importLegacy: () => { throw new Error("must not import"); },
+	});
+
+	assert.equal(result.source, "snapshot_read_only");
+	assert.equal(result.snapshot.state, "waiting_clarification");
+});
+
 test("rebuilds a corrupt v2 snapshot from SQLite", async (t) => {
 	const root = await temporaryDirectory(t);
 	const snapshots = new TranscriptSnapshotStore({ homeDir: root });

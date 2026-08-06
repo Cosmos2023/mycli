@@ -289,6 +289,7 @@ async function approvalFixture(
 	store.reserveTurn({
 		sessionId: "session-approval",
 		clientTurnId: "client-approval",
+		clientUserMessageId: "client-approval",
 		turnId: "turn-approval",
 		requestFingerprint: `sha256:${"a".repeat(64)}`,
 		workspaceRoot: root,

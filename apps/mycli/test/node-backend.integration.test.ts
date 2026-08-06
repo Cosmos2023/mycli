@@ -86,13 +86,42 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		client_turn_id: "integration-turn",
 		client_user_message_id: "integration-message",
 	});
-	const final = await waitFor(() => messages.find((message) => {
-		if (message.method !== "message.complete") return false;
-		const params = message.params as Record<string, unknown> | undefined;
-		return params?.final === true;
-	}));
+	const userStarted = await waitFor(() => event(messages, "item.started"));
+	const userCompleted = await waitFor(() => event(messages, "item.completed"));
+	assert.deepEqual(userStarted.params, {
+		client_turn_id: "integration-turn",
+		turn_id: (userStarted.params as Record<string, unknown>).turn_id,
+		item: {
+			id: `${String((userStarted.params as Record<string, unknown>).turn_id)}:user:integration-message`,
+			type: "user_message",
+			client_user_message_id: "integration-message",
+			content: "hello",
+			source: "submit",
+		},
+	});
+	assert.deepEqual(userCompleted.params, userStarted.params);
+	let final: Record<string, unknown>;
+	try {
+		final = await waitFor(() => messages.find((message) => {
+			if (message.method !== "message.complete") return false;
+			const params = message.params as Record<string, unknown> | undefined;
+			return params?.final === true;
+		}));
+	} catch {
+		assert.fail(JSON.stringify(messages.map((message) => ({
+			method: message.method,
+			code: paramValue(message, "code") ?? errorValue(message, "code"),
+			state: paramValue(message, "state"),
+		}))));
+	}
 	const submitResponse = await waitFor(() => response(messages, "1"));
 	const submittedTurnId = resultValue(submitResponse, "turn_id");
+	assert.equal(messages.indexOf(userCompleted), messages.findIndex(
+		(message) => message.method === "item.completed",
+	));
+	assert.ok(messages.indexOf(userCompleted) < messages.findIndex(
+		(message) => message.method === "message.delta",
+	));
 	assert.equal((final.params as Record<string, unknown>).text, "hello from node");
 	assert.equal(requests, 1);
 	assert.equal(capture.requestBody?.model, "gpt-test");
@@ -100,10 +129,23 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	assert.deepEqual(
 		(capture.requestBody?.tools as Array<Record<string, unknown>> | undefined)
 			?.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage"],
+		["Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill", "Task", "SubagentOutput", "SendMessage"],
 	);
 	assert.equal(existsSync(join(home, ".mycli", "sessions.db")), true);
 	await waitFor(() => event(messages, "status.changed"));
+	writeRequest(backend, "transcript", "transcript.load", {
+		session_id: "integration-session",
+	});
+	const transcriptResponse = await waitFor(() => response(messages, "transcript"));
+	const transcriptItems = resultValue(transcriptResponse, "items") as readonly Record<string, unknown>[];
+	assert.deepEqual(transcriptItems.slice(0, 2).map((item) => ({
+		id: item.id,
+		type: item.type,
+		text: item.text,
+	})), [
+		{ id: `${submittedTurnId}:user:integration-message`, type: "user", text: "hello" },
+		{ id: `${submittedTurnId}:assistant:1`, type: "assistant_final", text: "hello from node" },
+	]);
 	writeRequest(backend, "duplicate", "turn.submit", {
 		message: "hello",
 		client_turn_id: "integration-turn",
@@ -129,6 +171,8 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	assert.equal(JSON.stringify(snapshot.transcript).includes("hello from node"), true);
 	const reopened = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
+		const userHistory = reopened.loadHistoryItems("integration-session")[0];
+		assert.equal(userHistory?.id, `${submittedTurnId}:user:integration-message`);
 		const continuation = reopened.loadState(
 			"integration-session",
 			"responses_continuation_state",
@@ -139,6 +183,120 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		assert.equal(continuation?.protocol, "responses");
 		assert.equal(continuation?.model, "gpt-test");
 		assert.equal(continuation?.history_boundary, submittedTurnId);
+	} finally {
+		reopened.close();
+	}
+});
+
+test("Node backend restores and resolves a durable clarification without a new turn", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-clarification-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const requestBodies: Record<string, unknown>[] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (requestBodies.length === 1) {
+				response.write(`data: ${JSON.stringify({
+					type: "response.output_item.done",
+					item: {
+						type: "function_call",
+						call_id: "call-question",
+						name: "AskUserQuestion",
+						arguments: JSON.stringify({
+							question: "Which runtime?",
+							options: [{ label: "Node" }, { label: "Python" }],
+							header: "Runtime",
+							multi_select: false,
+						}),
+					},
+				})}\n\n`);
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-question\"}}\n\n");
+			} else {
+				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Node selected.\"}\n\n");
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-final\"}}\n\n");
+			}
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(root, { recursive: true, force: true });
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const options = {
+		cwd: workspace,
+		args: ["--session", "clarification-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "submit", "turn.submit", {
+		message: "Ask before choosing a runtime.",
+		client_turn_id: "clarification-client-turn",
+		client_user_message_id: "clarification-user-message",
+	});
+	const liveRequest = await waitFor(() => event(firstMessages, "clarify.request"));
+	assert.equal(paramValue(liveRequest, "request_id"), "call-question");
+	assert.equal(paramValue(liveRequest, "question"), "Which runtime?");
+	await waitFor(() => firstMessages.find((message) =>
+		message.method === "status.update" && paramValue(message, "state") === "waiting_clarification"));
+	writeRequest(first, "shutdown-first", "shutdown", {});
+	assert.equal(await first.completion, 0);
+	const waitingSnapshot = JSON.parse(await readFile(
+		join(home, ".mycli", "sessions", "clarification-session", "session.json"),
+		"utf8",
+	)) as Record<string, unknown>;
+	assert.equal(waitingSnapshot.state, "waiting_clarification");
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
+	const restored = await waitFor(() => event(secondMessages, "clarify.request"));
+	assert.equal(paramValue(restored, "request_id"), "call-question");
+	writeRequest(second, "answer", "clarify.respond", {
+		request_id: "call-question",
+		response: "Node",
+	});
+	const accepted = await waitFor(() => response(secondMessages, "answer"));
+	assert.equal(resultValue(accepted, "accepted"), true);
+	const final = await waitFor(() => secondMessages.find((message) =>
+		message.method === "message.complete"
+		&& paramValue(message, "final") === true), 5_000);
+	assert.equal(paramValue(final, "text"), "Node selected.");
+	assert.equal(requestBodies.length, 2);
+	assert.equal(JSON.stringify(requestBodies[1]?.input).includes("User response: Node"), true);
+
+	writeRequest(second, "shutdown-second", "shutdown", {});
+	assert.equal(await second.completion, 0);
+	const reopened = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		assert.equal(reopened.loadState("clarification-session", "suspended_turn"), undefined);
+		assert.equal(reopened.loadTurn("clarification-session", "clarification-client-turn")?.status, "completed");
 	} finally {
 		reopened.close();
 	}
@@ -380,10 +538,10 @@ test("Node backend exposes Shell only on turns accepted after workspace trust", 
 	await waitFor(() => finalMessageCount(messages) === 2);
 
 	assert.deepEqual(requestTools[0], [
-		"Read", "Edit", "Patch", "Write", "Skill", "Task", "SubagentOutput", "SendMessage",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill", "Task", "SubagentOutput", "SendMessage",
 	]);
 	assert.deepEqual(requestTools[1], [
-		"Read", "Edit", "Patch", "Write", "Shell", "WriteStdin",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Shell", "WriteStdin",
 		"Skill", "Task", "SubagentOutput", "SendMessage",
 	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
@@ -642,6 +800,7 @@ test("Node backend interrupts an orphaned claimed approval effect without replay
 		seed.reserveTurn({
 			sessionId: "approval-recovery",
 			clientTurnId: "approval-client",
+			clientUserMessageId: "approval-client",
 			turnId: "approval-turn",
 			requestFingerprint: fingerprintSubmission({ message: "write notes", localImages: [] }),
 			workspaceRoot: workspace,
@@ -794,6 +953,247 @@ test("Node backend restores a durably queued follow-up without provider IO", asy
 	assert.equal(await second.completion, 0);
 });
 
+test("Node backend wires retained provider-free slash commands to durable services", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-command-services-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const dbPath = join(home, ".mycli", "sessions.db");
+	const seed = new SQLiteSessionStore({ dbPath });
+	try {
+		seedCompletedSession(
+			seed,
+			workspace,
+			"search-source",
+			"the retained parity needle",
+			"searchable answer",
+		);
+	} finally {
+		seed.close();
+	}
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "command-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	let requestNumber = 0;
+	const runCommand = async (command: string): Promise<Record<string, unknown>> => {
+		requestNumber += 1;
+		const id = `command-${requestNumber}`;
+		writeRequest(backend, id, "command.run", { command, surface: "tui" });
+		return await waitFor(() => response(messages, id));
+	};
+
+	const memoryAdded = await runCommand("/memory add project M8 parity :: retained parity memory");
+	assert.equal(resultValue(memoryAdded, "execution"), "backend");
+	assert.equal(displayValue(memoryAdded, "kind"), "notice");
+	const memorySearch = await runCommand("/memory search retained parity");
+	assert.equal(displayValue(memorySearch, "kind"), "list");
+	assert.match(JSON.stringify(displayValue(memorySearch, "rows")), /M8 parity/u);
+
+	const compact = await runCommand("/compact");
+	assert.equal(resultValue(compact, "command_kind"), "compact");
+	assert.equal(resultValue(compact, "compaction_status"), "not_needed");
+	const tasks = await runCommand("/tasks agents");
+	assert.equal(displayValue(tasks, "title"), "Background agents");
+	assert.equal(displayValue(tasks, "total_rows"), 0);
+
+	const search = await runCommand("/session search parity needle");
+	assert.equal(displayValue(search, "kind"), "list");
+	assert.match(JSON.stringify(displayValue(search, "rows")), /search-source/u);
+	const maintenance = await runCommand("/session maintenance");
+	assert.equal(displayValue(maintenance, "title"), "Session maintenance");
+	assert.equal(displayValue(maintenance, "kind"), "list");
+
+	const resume = await runCommand("/resume search-source");
+	assert.equal(resultValue(resume, "mutated_session"), true);
+	assert.equal(resultValue(resume, "session_id"), "search-source");
+	const trace = await runCommand("/trace");
+	assert.equal(displayValue(trace, "title"), "Trace");
+	assert.match(JSON.stringify(displayValue(trace, "rows")), /seed-turn-search-source/u);
+	const fork = await runCommand("/fork search-source forked-session 2");
+	assert.equal(resultValue(fork, "mutated_session"), true);
+	assert.equal(resultValue(fork, "session_id"), "forked-session");
+
+	writeRequest(backend, "shutdown-command-services", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend undoes a file created by a real provider tool turn", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-command-undo-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	let requests = 0;
+	const server = createServer((request, response) => {
+		request.resume();
+		request.on("end", () => {
+			requests += 1;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (requests === 1) {
+				response.write(`data: ${JSON.stringify({
+					type: "response.output_item.done",
+					item: {
+						type: "function_call",
+						call_id: "call-write-undo",
+						name: "Write",
+						arguments: JSON.stringify({
+							file_path: "undo-created.txt",
+							content: "created for undo\n",
+						}),
+					},
+				})}\n\n`);
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-write-undo\"}}\n\n");
+			} else {
+				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Created.\"}\n\n");
+				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-write-final\"}}\n\n");
+			}
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(root, { recursive: true, force: true });
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "undo-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "write-turn", "turn.submit", {
+		message: "Create undo-created.txt.",
+		client_turn_id: "undo-client-turn",
+		client_user_message_id: "undo-user-message",
+	});
+	await waitFor(() => messages.find((message) => {
+		if (message.method !== "message.complete") return false;
+		const params = message.params as Record<string, unknown> | undefined;
+		return params?.final === true;
+	}));
+	assert.equal(await readFile(join(workspace, "undo-created.txt"), "utf8"), "created for undo\n");
+
+	writeRequest(backend, "undo-command", "command.run", { command: "/undo", surface: "tui" });
+	const undo = await waitFor(() => response(messages, "undo-command"));
+	assert.equal(displayValue(undo, "kind"), "notice");
+	assert.equal(resultValue(undo, "deleted_count"), 1);
+	assert.equal(existsSync(join(workspace, "undo-created.txt")), false);
+
+	writeRequest(backend, "shutdown-undo", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend persists canonical TUI control state without exposing credentials", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-controls-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(home),
+		mkdir(join(workspace, "src"), { recursive: true }),
+	]);
+	await writeFile(join(workspace, "src", "README.md"), "control fixture\n", "utf8");
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "control-session"],
+		env: { HOME: home },
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+
+	writeRequest(first, "bootstrap", "session.bootstrap", { protocol_version: 1 });
+	const bootstrap = await waitFor(() => response(firstMessages, "bootstrap"));
+	assert.equal((resultValue(bootstrap, "auth_providers") as unknown[]).length > 0, true);
+	assert.equal((resultValue(bootstrap, "models") as unknown[]).length > 0, true);
+
+	writeRequest(first, "auth", "auth.api_key.save", {
+		provider_id: "openai",
+		api_key: "integration-control-secret",
+	});
+	const auth = await waitFor(() => response(firstMessages, "auth"));
+	assert.equal(resultValue(auth, "ok"), true);
+	assert.equal(JSON.stringify(auth).includes("integration-control-secret"), false);
+
+	writeRequest(first, "model", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-selected",
+		base_url: "https://example.invalid/v1",
+		reasoning_effort: "high",
+	});
+	const model = await waitFor(() => response(firstMessages, "model"));
+	assert.equal((resultValue(model, "selected") as Record<string, unknown>).model, "gpt-selected");
+
+	writeRequest(first, "settings", "settings.save", {
+		settings: { viewMode: "verbose", statusbarMode: "compact", hideThinking: false },
+	});
+	const settings = await waitFor(() => response(firstMessages, "settings"));
+	assert.equal((resultValue(settings, "settings") as Record<string, unknown>).view_mode, "verbose");
+
+	writeRequest(first, "path", "completion.path", { prefix: "@src/" });
+	const completion = await waitFor(() => response(firstMessages, "path"));
+	assert.deepEqual(resultValue(completion, "items"), [{ value: "@src/README.md", kind: "file" }]);
+	writeRequest(first, "shutdown-controls", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	const configRaw = await readFile(join(home, ".mycli", "config.toml"), "utf8");
+	assert.equal(configRaw.includes("integration-control-secret"), false);
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "bootstrap-restarted", "session.bootstrap", { protocol_version: 1 });
+	const restarted = await waitFor(() => response(secondMessages, "bootstrap-restarted"));
+	assert.equal(resultValue(restarted, "model"), "gpt-selected");
+	const providers = resultValue(restarted, "auth_providers") as Array<Record<string, unknown>>;
+	assert.equal(providers.find((provider) => provider.id === "openai")?.configured, true);
+	writeRequest(second, "settings-restarted", "settings.load", {});
+	const restartedSettings = await waitFor(() => response(secondMessages, "settings-restarted"));
+	assert.equal(
+		(resultValue(restartedSettings, "settings") as Record<string, unknown>).statusbar_mode,
+		"compact",
+	);
+	writeRequest(second, "shutdown-controls-restarted", "shutdown", {});
+	assert.equal(await second.completion, 0);
+});
+
 function writeRequest(
 	backend: Awaited<ReturnType<typeof startNodeBackend>>,
 	id: string,
@@ -831,6 +1231,13 @@ function resultValue(message: Record<string, unknown>, key: string): unknown {
 		: undefined;
 }
 
+function displayValue(message: Record<string, unknown>, key: string): unknown {
+	const display = resultValue(message, "display");
+	return typeof display === "object" && display !== null && !Array.isArray(display)
+		? (display as Record<string, unknown>)[key]
+		: undefined;
+}
+
 function toolNames(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap((tool) => {
@@ -863,6 +1270,7 @@ function seedCompletedSession(
 	store.reserveTurn({
 		sessionId,
 		clientTurnId: `seed-client-${sessionId}`,
+		clientUserMessageId: `seed-client-${sessionId}`,
 		turnId: `seed-turn-${sessionId}`,
 		requestFingerprint: fingerprintSubmission({ message: userText, localImages: [] }),
 		workspaceRoot,
@@ -891,6 +1299,7 @@ function seedWaitingApproval(
 	store.reserveTurn({
 		sessionId,
 		clientTurnId,
+		clientUserMessageId: clientTurnId,
 		turnId,
 		requestFingerprint: fingerprintSubmission({ message: userText, localImages: [] }),
 		workspaceRoot,
