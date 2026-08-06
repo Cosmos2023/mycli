@@ -82,6 +82,18 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 
 const PROVIDERS = new Set<string>(Object.keys(PROFILES));
 const PROTOCOLS = new Set<string>(["responses", "chat_completions", "anthropic_messages"]);
+const PROVIDER_ORDER: readonly ProviderId[] = Object.freeze([
+	"openai",
+	"codex",
+	"deepseek",
+	"qwen",
+	"anthropic",
+	"compatible",
+]);
+
+export function listProviderProfiles(): readonly ProviderProfile[] {
+	return Object.freeze(PROVIDER_ORDER.map((provider) => PROFILES[provider]));
+}
 
 export function inferProviderFromBaseUrl(baseUrl: string): ProviderId {
 	let hostname = "";

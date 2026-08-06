@@ -2,12 +2,18 @@
 
 import process from "node:process";
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
 	configureGatewayTransport,
 	type GatewayTransport,
 } from "mycli-shell-tui/gateway-transport";
 import { selectRuntimeBackend } from "./backend-router.ts";
+import { parseCliMode } from "./management/parser.ts";
+import { renderManagementResponse } from "./management/render.ts";
+import { createDefaultManagementServices } from "./management/services.ts";
+import { runSetupCommand, type SetupInputStream, type SetupOutputStream } from "./management/setup.ts";
+import type { ManagementExecutor } from "./management/types.ts";
 import {
 	startNodeBackend,
 	type NodeBackend,
@@ -21,6 +27,15 @@ import {
 
 const VERSION = "0.1.0";
 const HELP = `Usage: mycli [options]
+       mycli <command> [arguments]
+
+Commands:
+  setup                             Configure provider credentials
+  doctor [--json]                   Check local runtime health
+  hooks list|inspect|approve|revoke Manage configured hooks
+  plugins list|inspect|run          Manage local plugins
+  mcp list|inspect                  Inspect MCP servers
+  subagents list|inspect            Inspect subagent profiles
 
 Options:
   --session <id>                    Resume or create a session
@@ -51,6 +66,8 @@ export type RunCliOptions = {
 	startNodeBackend?: (options: StartNodeBackendOptions) => NodeBackend | Promise<NodeBackend>;
 	configureTransport?: (transport: GatewayTransport) => void;
 	importTui?: () => Promise<unknown>;
+	management?: ManagementExecutor;
+	homeDir?: string;
 };
 
 export async function runCli(options: RunCliOptions = {}): Promise<number> {
@@ -70,9 +87,40 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		return 0;
 	}
 
+	let mode;
+	try {
+		mode = parseCliMode(argv);
+	} catch (error) {
+		stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
+		return 2;
+	}
+	if (mode.kind === "management") {
+		try {
+			const homeDir = options.homeDir ?? homedir();
+			const management = options.management ?? await createDefaultManagementServices({
+				workspaceRoot: cwd,
+				homeDir,
+				env,
+				setup: (signal) => runSetupCommand({
+					homeDir,
+					isTty: stdin.isTTY === true && stdout.isTTY === true,
+					input: stdin as SetupInputStream,
+					output: stdout as SetupOutputStream,
+					signal,
+				}),
+			});
+			const response = await management.execute(mode.command, new AbortController().signal);
+			stdout.write(renderManagementResponse(mode.command, response));
+			return response.exitCode ?? (response.ok ? 0 : 1);
+		} catch {
+			stderr.write("[mycli] management_start_failed: unable to run management command\n");
+			return 1;
+		}
+	}
+
 	let selectedBackend;
 	try {
-		selectedBackend = selectRuntimeBackend({ argv, env });
+		selectedBackend = selectRuntimeBackend({ argv: mode.runtimeArgs, env });
 	} catch (error) {
 		stderr.write(`[mycli] ${stableMessage(error, "runtime_backend_invalid")}\n`);
 		return 2;
@@ -80,7 +128,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 
 	let backendArgs: readonly string[];
 	try {
-		backendArgs = parseRuntimeArguments(argv);
+		backendArgs = parseRuntimeArguments(mode.runtimeArgs);
 	} catch (error) {
 		stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
 		return 2;

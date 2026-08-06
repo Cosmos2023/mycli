@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -88,6 +91,149 @@ test("help and version are local and never start Python", async (t) => {
 			assert.match(harness.stdout.join(""), new RegExp(scenario.expected.replaceAll(".", "\\.")));
 		});
 	}
+});
+
+test("help advertises the provider-free management surface", async () => {
+	const harness = cliHarness({ argv: ["--help"] });
+
+	assert.equal(await runCli(harness.options), 0);
+	for (const command of ["setup", "doctor", "hooks", "plugins", "mcp", "subagents"]) {
+		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
+	}
+});
+
+test("JSON management commands run without TTY, backend, provider, or TUI startup", async () => {
+	let sidecarStarts = 0;
+	let nodeStarts = 0;
+	let tuiImports = 0;
+	let managementCalls = 0;
+	const expected = {
+		ok: true,
+		action: "list",
+		message: "mcp: 0 configured",
+		servers: [],
+		issues: [],
+	};
+	const harness = cliHarness({
+		argv: ["mcp", "list", "--json"],
+		stdin: { isTTY: false },
+		stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+		startSidecar: () => { sidecarStarts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: async () => { nodeStarts += 1; return fakeSidecar().sidecar; },
+		importTui: async () => { tuiImports += 1; },
+		management: {
+			execute: async (command: { kind: string; action: string }) => {
+				managementCalls += 1;
+				assert.deepEqual(command, { kind: "mcp", action: "list", json: true });
+				return expected;
+			},
+		},
+	});
+
+	assert.equal(await runCli(harness.options), 0);
+	assert.deepEqual(JSON.parse(harness.stdout.join("")), expected);
+	assert.equal(managementCalls, 1);
+	assert.equal(sidecarStarts, 0);
+	assert.equal(nodeStarts, 0);
+	assert.equal(tuiImports, 0);
+});
+
+test("doctor and setup route before backend selection", async (t) => {
+	for (const kind of ["doctor", "setup"] as const) {
+		await t.test(kind, async () => {
+			let commandKind = "";
+			const harness = cliHarness({
+				argv: [kind],
+				stdin: { isTTY: false },
+				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+				management: {
+					execute: async (command: { kind: string }) => {
+						commandKind = command.kind;
+						return { ok: true, action: kind, message: `${kind} complete` };
+					},
+				},
+			});
+
+			assert.equal(await runCli(harness.options), 0);
+			assert.equal(commandKind, kind);
+			assert.match(harness.stdout.join(""), new RegExp(`${kind} complete`));
+		});
+	}
+});
+
+test("invalid plugin JSON arguments fail before management or backend startup", async () => {
+	let starts = 0;
+	let managementCalls = 0;
+	const harness = cliHarness({
+		argv: ["plugins", "run", "demo", "status", "--json-args", "[]"],
+		stdin: { isTTY: false },
+		startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+		management: {
+			execute: async () => { managementCalls += 1; return { ok: true }; },
+		},
+	});
+
+	assert.equal(await runCli(harness.options), 2);
+	assert.equal(starts, 0);
+	assert.equal(managementCalls, 0);
+	assert.match(harness.stderr.join(""), /invalid_json_arguments/);
+});
+
+test("default management composition lists local extensions without backend startup", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-cli-management-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let starts = 0;
+	for (const argv of [
+		["hooks", "list", "--json"],
+		["plugins", "list", "--json"],
+		["mcp", "list", "--json"],
+		["subagents", "list", "--json"],
+	] as const) {
+		const harness = cliHarness({
+			argv,
+			cwd: root,
+			homeDir: join(root, "home"),
+			stdin: { isTTY: false },
+			stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+			startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+			startNodeBackend: async () => { starts += 1; return fakeSidecar().sidecar; },
+		});
+
+		assert.equal(await runCli(harness.options), 0, argv.join(" "));
+		assert.equal(JSON.parse(harness.stdout.join("")).ok, true);
+	}
+	assert.equal(starts, 0);
+});
+
+test("default non-TTY setup persists through Node without backend or secret output", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-cli-setup-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+	input.isTTY = false;
+	input.end("5\n\n\nsecret-cli-value\n");
+	const output = new PassThrough() as PassThrough & { isTTY?: boolean };
+	output.isTTY = false;
+	let rendered = "";
+	output.setEncoding("utf8");
+	output.on("data", (chunk: string) => { rendered += chunk; });
+	let starts = 0;
+
+	const code = await runCli({
+		argv: ["setup"],
+		env: {},
+		cwd: root,
+		homeDir: join(root, "home"),
+		stdin: input,
+		stdout: output,
+		stderr: { write: () => undefined },
+		processHooks: new EventEmitter(),
+		startSidecar: () => { starts += 1; return fakeSidecar().sidecar; },
+		startNodeBackend: async () => { starts += 1; return fakeSidecar().sidecar; },
+	});
+
+	assert.equal(code, 0);
+	assert.equal(starts, 0);
+	assert.equal(rendered.includes("secret-cli-value"), false);
 });
 
 test("interactive startup configures transport before importing the TUI", async () => {

@@ -219,6 +219,7 @@ export { SubagentManagementService } from "./subagents/management.ts";
 export type {
 	SubagentManagementInspectResponse,
 	SubagentManagementListResponse,
+	SubagentManagementRow,
 	SubagentManagementResponse,
 	SubagentManagementServiceOptions,
 } from "./subagents/management.ts";

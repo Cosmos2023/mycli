@@ -56,6 +56,13 @@ export { SessionSelectorComponent } from "./components/session-selector.ts";
 export { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 export { SettingsSelectorComponent } from "./components/settings-selector.ts";
 export { SetupWizardComponent } from "./components/setup-wizard.ts";
+export type {
+	SetupProvider,
+	SetupWizardResult,
+	SetupWizardState,
+} from "./components/setup-wizard.ts";
+export { runSetupTui } from "./setup.ts";
+export type { RunSetupTuiOptions } from "./setup.ts";
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";
 export { UserMessageComponent } from "./components/user-message.ts";

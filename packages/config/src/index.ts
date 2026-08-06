@@ -1,7 +1,8 @@
-export { readApiKey } from "./auth-store.ts";
-export type { ReadApiKeyOptions } from "./auth-store.ts";
+export { readApiKey, writeApiKey } from "./auth-store.ts";
+export type { ReadApiKeyOptions, WriteApiKeyOptions } from "./auth-store.ts";
 export {
 	inferProviderFromBaseUrl,
+	listProviderProfiles,
 	parseProtocol,
 	resolveProviderProfile,
 } from "./provider-profiles.ts";
@@ -12,6 +13,8 @@ export type {
 	NodeRuntimeConfig,
 	ResolveConfigOptions,
 } from "./settings.ts";
+export { writeUserProviderConfig } from "./user-config-writer.ts";
+export type { UserProviderConfigInput } from "./user-config-writer.ts";
 export { WorkspaceTrustStore } from "./workspace-trust-store.ts";
 export type {
 	WorkspaceTrustState,

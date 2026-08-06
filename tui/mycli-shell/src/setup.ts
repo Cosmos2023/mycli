@@ -1,7 +1,52 @@
-import * as fs from "node:fs";
-import { SetupWizardComponent, type SetupWizardResult, type SetupWizardState } from "./components/setup-wizard.ts";
-import { ProcessTerminal } from "./tui-core/terminal.ts";
+import { chmodSync, realpathSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import {
+	SetupWizardComponent,
+	type SetupWizardResult,
+	type SetupWizardState,
+} from "./components/setup-wizard.ts";
+import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
 import { Container, TUI } from "./tui-core/tui.ts";
+
+export interface RunSetupTuiOptions {
+	readonly state: SetupWizardState;
+	readonly terminal?: Terminal;
+	readonly signal?: AbortSignal;
+}
+
+export function runSetupTui(
+	options: RunSetupTuiOptions,
+): Promise<SetupWizardResult | undefined> {
+	return new Promise((resolve) => {
+		const ui = new TUI(options.terminal ?? new ProcessTerminal());
+		const root = new Container();
+		let settled = false;
+		const finish = (result: SetupWizardResult | undefined): void => {
+			if (settled) return;
+			settled = true;
+			options.signal?.removeEventListener("abort", onAbort);
+			ui.stop();
+			resolve(result);
+		};
+		const onAbort = (): void => finish(undefined);
+		const wizard = new SetupWizardComponent({
+			tui: ui,
+			state: options.state,
+			onSubmit: finish,
+			onCancel: () => finish(undefined),
+		});
+
+		root.addChild(wizard);
+		ui.addChild(root);
+		ui.setFocus(wizard);
+		options.signal?.addEventListener("abort", onAbort, { once: true });
+		if (options.signal?.aborted) {
+			finish(undefined);
+			return;
+		}
+		ui.start();
+	});
+}
 
 function readSetupState(): SetupWizardState {
 	const raw = process.env.MYCLI_SETUP_STATE;
@@ -18,37 +63,36 @@ function readSetupState(): SetupWizardState {
 	}
 }
 
-function runSetup(): void {
-	const ui = new TUI(new ProcessTerminal());
-	const root = new Container();
-	let settled = false;
-
-	const finish = (code: number, result?: SetupWizardResult): void => {
-		if (settled) return;
-		settled = true;
-		ui.stop();
-		if (result) {
-			const resultPath = process.env.MYCLI_SETUP_RESULT_PATH;
-			if (resultPath) {
-				fs.writeFileSync(resultPath, `${JSON.stringify(result)}\n`, "utf8");
-			}
+async function runLegacySetupEntrypoint(): Promise<void> {
+	const controller = new AbortController();
+	const onSigint = (): void => controller.abort();
+	process.once("SIGINT", onSigint);
+	try {
+		const result = await runSetupTui({ state: readSetupState(), signal: controller.signal });
+		if (!result) {
+			process.exitCode = 130;
+			return;
 		}
-		process.exitCode = code;
-	};
-
-	const wizard = new SetupWizardComponent({
-		tui: ui,
-		state: readSetupState(),
-		onSubmit: (result) => finish(0, result),
-		onCancel: () => finish(130),
-	});
-
-	root.addChild(wizard);
-	ui.addChild(root);
-	ui.setFocus(wizard);
-	ui.start();
-
-	process.once("SIGINT", () => finish(130));
+		const resultPath = process.env.MYCLI_SETUP_RESULT_PATH;
+		if (resultPath) {
+			writeFileSync(resultPath, `${JSON.stringify(result)}\n`, { encoding: "utf8", mode: 0o600 });
+			if (process.platform !== "win32") chmodSync(resultPath, 0o600);
+		}
+		process.exitCode = 0;
+	} finally {
+		process.off("SIGINT", onSigint);
+	}
 }
 
-runSetup();
+const entryPath = process.argv[1];
+if (entryPath && isEntrypoint(entryPath)) {
+	void runLegacySetupEntrypoint();
+}
+
+function isEntrypoint(entryPath: string): boolean {
+	try {
+		return realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url));
+	} catch {
+		return false;
+	}
+}

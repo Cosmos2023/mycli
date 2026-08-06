@@ -6,11 +6,11 @@ import { theme } from "../theme/theme.ts";
 type ProviderItem = { id: string; name: string; configured?: boolean };
 
 export class ProviderList<T extends ProviderItem> extends Container {
-	private items: T[];
+	private items: readonly T[];
 	private selectedIndex = 0;
 
 	constructor(
-		private readonly providers: T[],
+		private readonly providers: readonly T[],
 		private readonly options: {
 			emptyMessage: string;
 			detail?: (provider: T) => string;
@@ -24,7 +24,7 @@ export class ProviderList<T extends ProviderItem> extends Container {
 
 	filter(query: string): void {
 		this.items = query
-			? fuzzyFilter(this.providers, query, (provider) => `${provider.name} ${provider.id}`)
+			? fuzzyFilter([...this.providers], query, (provider) => `${provider.name} ${provider.id}`)
 			: this.providers;
 		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, Math.max(0, this.items.length - 1)));
 		this.rebuild();

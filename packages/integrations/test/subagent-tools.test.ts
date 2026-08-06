@@ -171,6 +171,8 @@ test("subagent management lists and inspects profiles without a runtime factory"
 	assert.equal(inspected.ok, true);
 	assert.equal(inspected.profile?.id, "explore");
 	assert.deepEqual(inspected.profile?.allowedTools, ["Read"]);
+	assert.equal("prompt" in (inspected.profile ?? {}), false);
+	assert.equal(JSON.stringify(listed).includes("read-only exploration subagent"), false);
 });
 
 function controlFixture(overrides: Partial<SubagentControlContract> = {}): SubagentControlContract {

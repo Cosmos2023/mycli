@@ -27,7 +27,6 @@ import type {
 	ChildRuntimeFactory,
 	HookRegistration,
 	IntegrationRegistration,
-	LoadedPluginManifest,
 	PluginCommandDescriptor,
 	PluginCommandRegistry,
 	SubagentControllerUpdate,
@@ -37,8 +36,11 @@ import {
 	combinedToolManifest,
 	type BuiltInToolManifest,
 	type CombinedToolManifest,
-	type SandboxProfile,
 } from "@mycli/tools";
+import {
+	pluginSandboxProfile,
+	workspaceSandboxProfile,
+} from "./integration-sandbox.ts";
 
 export type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
 
@@ -224,7 +226,7 @@ export async function createRuntimeIntegrationComposition(
 						createClient: (server) => new McpClient({
 							config: server,
 							cwd: options.workspaceRoot,
-							sandboxProfile: workspaceSandbox(options.workspaceRoot),
+							sandboxProfile: workspaceSandboxProfile(options.workspaceRoot),
 						}),
 					});
 					const discovery = await manager.discover(signal);
@@ -248,7 +250,7 @@ export async function createRuntimeIntegrationComposition(
 						workspaceRoot: options.workspaceRoot,
 						homeDir: options.homeDir,
 						env: options.env,
-						sandboxProfile: pluginSandbox,
+						sandboxProfile: pluginSandboxProfile,
 					}, signal);
 					return {
 						registrations: runtime.tools,
@@ -308,7 +310,7 @@ export async function createRuntimeIntegrationComposition(
 			workspaceRoot: options.workspaceRoot,
 			allowlistStore,
 			env: options.env,
-			sandboxProfile: (cwd) => workspaceSandbox(options.workspaceRoot, cwd),
+			sandboxProfile: (cwd) => workspaceSandboxProfile(options.workspaceRoot, cwd),
 		});
 		const hookRunner = new HookManager({
 			configuredHooks: hookDiscovery.hooks,
@@ -539,30 +541,6 @@ function parseCommandArguments(value: string): Readonly<Record<string, unknown>>
 		throw new Error("invalid_plugin_command_arguments");
 	}
 	return parsed as Readonly<Record<string, unknown>>;
-}
-
-function workspaceSandbox(workspaceRoot: string, cwd = workspaceRoot): SandboxProfile {
-	return Object.freeze({
-		mode: "workspace-write",
-		filesystem: "workspace_write",
-		network: "disabled",
-		writableRoots: Object.freeze([workspaceRoot]),
-		workspaceRoot,
-		cwd,
-	});
-}
-
-function pluginSandbox(manifest: LoadedPluginManifest): SandboxProfile {
-	const capabilities = new Set<string>(manifest.capabilities as readonly string[]);
-	const writable = capabilities.has("filesystem_write");
-	return Object.freeze({
-		mode: writable ? "workspace-write" : "read-only",
-		filesystem: writable ? "workspace_write" : "read_only",
-		network: capabilities.has("network") ? "enabled" : "disabled",
-		writableRoots: Object.freeze(writable ? [manifest.pluginRoot] : []),
-		workspaceRoot: manifest.pluginRoot,
-		cwd: manifest.pluginRoot,
-	});
 }
 
 function resourceSource(value: string): "user" | "repo" | "builtin" | "runtime" | "unknown" {

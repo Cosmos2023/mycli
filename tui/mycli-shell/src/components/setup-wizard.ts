@@ -25,7 +25,7 @@ export type SetupProvider = {
 };
 
 export type SetupWizardState = {
-	providers: SetupProvider[];
+	providers: readonly SetupProvider[];
 	config_path?: string;
 	auth_path?: string;
 };
@@ -51,7 +51,7 @@ export class SetupWizardComponent extends Container implements Focusable {
 	private readonly apiKeyInput = new Input();
 	private readonly providerList: ProviderList<SetupProvider>;
 	private readonly tui: TUI;
-	private readonly providers: SetupProvider[];
+	private readonly providers: readonly SetupProvider[];
 	private step: SetupStep = "auth";
 	private selectedProvider: SetupProvider | null = null;
 	private readonly onSubmitCallback: (result: SetupWizardResult) => void;
