@@ -1,11 +1,12 @@
-# Node Runtime M6 Rollout
+# Node Runtime M7 Rollout
 
 ## Current Status
 
-The Node runtime is an explicit preview backend for text turns, Node-owned session recovery,
-the built-in file tools, and persistent shell execution. The default remains `python-sidecar`.
-Do not promote Node to the default until the M6 offline gate and the Node 22.19 and Node 24
-macOS, Linux, and Windows matrices pass for the release candidate.
+The Node runtime is an explicit preview backend for complete turns, Node-owned session recovery,
+file and persistent-shell tools, Anthropic Messages, extensions, subagents, setup, management, and
+doctor. The default remains `python-sidecar`. Do not promote Node to the default until the M7
+offline, package, parity, live-smoke, and Node 22.19/24 platform matrices pass for the release
+candidate.
 
 Select the preview backend before starting a new turn:
 
@@ -17,9 +18,9 @@ Use `--model <name>` and `--session <id>` with the same precedence and session s
 existing CLI. One backend owns the complete turn, provider continuation, approval, and process
 lifecycle. A failed Node operation is never retried through Python.
 
-## Supported M6 Scope
+## Supported M7 Scope
 
-- OpenAI Responses and OpenAI-compatible Chat Completions
+- OpenAI Responses, OpenAI-compatible Chat Completions, and Anthropic Messages
 - streamed text, reasoning, compaction, tool, approval, shell, and terminal events
 - bounded runtime-owned retries and interruption, with no fixed provider-step or tool-call ceiling
 - append-compatible SQLite conversation, history, rollout, state, summary, and idempotency records
@@ -34,11 +35,41 @@ lifecycle. A failed Node operation is never retried through Python.
 - command approval with once, reject, session allowance, and validated persistent allowance choices
 - fail-closed process sandbox enforcement for restricted permission profiles
 - Python/Node deterministic parity fixtures and real native lifecycle tests
+- one stable `Skill` tool with bounded discovery and durable instruction injection
+- local stdio and supported remote MCP discovery, tools, resources, cancellation, and cleanup
+- configured command hooks with digest-bound approval, sandboxing, timeout, and output bounds
+- process-isolated compiled ESM Plugin API v2 tools, hooks, commands, and migration diagnostics
+- foreground/background subagents with frozen tool scopes, durable ownership, progress,
+  interruption, recovery, and result collection
+- provider-free Node setup and hooks/plugins/MCP/subagent management commands
+- independent, read-only Node doctor collectors with shared human/JSON reports and redaction
 
-`LS`, `Glob`, and `Grep` remain retired. M6 does not support external writable roots, local images,
-MCP, plugins, hooks, skills, subagents, or automatic background memory extraction in the Node
-runtime. Unsupported capabilities fail explicitly and are never delegated to Python after a Node
-turn starts.
+`LS`, `Glob`, and `Grep` remain retired. M7 does not remove the Python backend, provide Python
+plugin source compatibility, add a hosted plugin marketplace, or productize unrelated new
+integrations. Unsupported capabilities fail explicitly and are never delegated to Python after a
+Node turn starts.
+
+Extension paths, formats, approvals, and management commands are documented in
+[node-extensions.md](node-extensions.md). Plugin authors should use
+[plugin-api-v2.md](plugin-api-v2.md); existing Python plugin owners should follow
+[migration/python-plugins-to-v2.md](migration/python-plugins-to-v2.md).
+
+## Management And Doctor
+
+The CLI routes `setup`, `doctor`, `hooks`, `plugins`, `mcp`, and `subagents` before TTY checks,
+backend selection, provider construction, or TUI import. `--json` serializes the same typed object
+used by the human renderer. Invalid usage exits `2`; failed operations exit `1`; setup cancellation
+exits `130`.
+
+`mycli doctor` checks config/auth presence, read-only SQLite and storage layout, logs/traces and
+obvious redaction failures, Node/package/gateway contracts, the built-in tool manifest,
+sandbox/process support, hooks, plugins, Python migration state, skills, subagents, and MCP. One
+collector failure does not stop later collectors. Warnings exit `0`; failed checks exit `1`.
+
+Doctor never calls a model provider or repairs local state. An extension check may initialize an
+enabled MCP client or plugin worker only through its normal management lifecycle, and must close it
+before returning. Reports exclude credentials, headers, commands/arguments, environment values,
+prompts, provider payloads, raw extension output, and private file contents.
 
 ## Native And Sandbox Prerequisites
 
@@ -101,30 +132,30 @@ approval, or holding a live shell.
 
 ## Verification
 
-Run the deterministic M6 gate and the previous milestone regression after a clean install:
+Run the deterministic M7 gate and the previous milestone regressions after a clean install:
 
 ```bash
 npm run contracts:check
 npm run typecheck
 npm run lint
-npm run test:m5
 npm run test:m6
 npm test
 npm run smoke:package
 ```
 
-`test:m6` builds the workspace, runs the real Node backend PTY approval/input/persistence
-integration, exercises the fake-provider live-smoke contract, and runs the Python/Node shell parity
-fixture. CI additionally runs native pipe/PTY lifecycle and cleanup tests with Node 22.19 and
-Node 24 on macOS, Linux, and Windows.
+The M7 tests additionally cover Anthropic serialization, extension discovery and lifecycle,
+configured hooks, Plugin API v2 protocol/process isolation, subagent ownership, provider-free
+management, doctor aggregation/redaction, and no-Python Node startup. CI runs process-sensitive
+pipe/PTY/MCP/plugin/subagent cleanup tests with Node 22.19 and Node 24 on macOS, Linux, and Windows.
 
-Only after every offline gate passes, run the opt-in live smoke:
+Only after every offline gate passes, run the opt-in live smoke selected for the release candidate.
+The existing M6 shell smoke remains available during M7 development:
 
 ```bash
 npm run smoke:m6
 ```
 
-The smoke uses `gpt-5.5`, a configured non-official Responses-compatible endpoint, a disposable
+The smoke uses the configured model, a disposable
 home/workspace/database/session, zero retries, 64 output tokens per provider request, and one
 30-second deadline. It saves workspace trust, selects full access, approves one shell launch,
 verifies PTY yield and `WriteStdin` completion, closes the backend, and validates cleanup and
@@ -138,3 +169,6 @@ permission, persistence, cleanup, and `python_started` state.
 The smoke never prints credentials, endpoint data, prompts, commands, stdin, provider output, raw
 responses, shell output, hashes, database paths, workspace paths, or session paths. Do not retry an
 unavailable paid-service request in the same verification run.
+
+M8 is the backend-retirement boundary. M7 must remain rollbackable to `python-sidecar`; it does not
+delete Python production code or silently change the default backend.

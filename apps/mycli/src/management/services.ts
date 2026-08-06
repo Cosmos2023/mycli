@@ -16,6 +16,10 @@ import type {
 	ManagementExecutor,
 	ManagementResponse,
 } from "./types.ts";
+import {
+	doctorResponseFromReport,
+	runDoctor,
+} from "./doctor/runner.ts";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -145,11 +149,7 @@ export async function createDefaultManagementServices(
 		plugins,
 		mcp,
 		subagents,
-		doctor: async () => failure(
-			"doctor",
-			"doctor is not available in this M7 batch",
-			"doctor_not_implemented",
-		),
+		doctor: async (signal) => doctorResponseFromReport(await runDoctor(options, signal)),
 		setup: options.setup ?? (async () => failure(
 			"setup",
 			"setup is not available in this M7 batch",

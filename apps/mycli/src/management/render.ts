@@ -1,14 +1,56 @@
 import type { ManagementCommand, ManagementResponse } from "./types.ts";
+import { redactDoctorText } from "./doctor/redaction.ts";
 
 export function renderManagementResponse(
 	command: ManagementCommand,
 	response: ManagementResponse,
 ): string {
 	if (command.json) return `${JSON.stringify(response)}\n`;
+	if (command.kind === "doctor") return renderDoctor(response);
 	const lines = [response.message ?? `mycli ${command.kind} ${response.ok ? "complete" : "failed"}`];
 	for (const row of responseRows(command, response)) lines.push(row);
 	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
 	return `${lines.join("\n")}\n`;
+}
+
+function renderDoctor(response: ManagementResponse): string {
+	const checks = Array.isArray(Reflect.get(response, "checks"))
+		? (Reflect.get(response, "checks") as readonly unknown[]).flatMap((value) => {
+			const row = record(value);
+			if (!row) return [];
+			const name = typeof row.name === "string" ? row.name : "diagnostic";
+			const status: "ok" | "warning" | "failed" = row.status === "ok"
+				|| row.status === "warning"
+				|| row.status === "failed"
+				? row.status
+				: "failed";
+			const message = typeof row.message === "string" ? row.message : "diagnostic failed";
+			const detail = typeof row.detail === "string" ? row.detail : undefined;
+			return [{ name, status, message, ...(detail ? { detail } : {}) }];
+		})
+		: [];
+	const marker = { ok: "[OK]", warning: "[WARN]", failed: "[FAIL]" } as const;
+	if (checks.length === 0 && response.message && response.message !== "mycli doctor") {
+		return `${redactDoctorText(response.message)}\n`;
+	}
+	const lines = ["mycli doctor"];
+	for (const check of checks) {
+		const detail = check.detail ? ` (${redactDoctorText(check.detail)})` : "";
+		lines.push(
+			`${marker[check.status]} ${redactDoctorText(check.name)}: ${redactDoctorText(check.message)}${detail}`,
+		);
+	}
+	lines.push(
+		`Summary: ${countValue(response, "okCount")} ok, `
+		+ `${countValue(response, "warningCount")} warning, `
+		+ `${countValue(response, "failedCount")} failed`,
+	);
+	return `${lines.join("\n")}\n`;
+}
+
+function countValue(response: ManagementResponse, key: string): number {
+	const value = Reflect.get(response, key);
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function responseRows(

@@ -5,6 +5,10 @@ This directory is split by document purpose.
 ## Current Architecture
 
 - [architecture.md](./architecture.md): current Python package and runtime module boundaries.
+- [node-runtime-rollout.md](./node-runtime-rollout.md): M7 Node preview scope, prerequisites, gates, and rollback.
+- [node-extensions.md](./node-extensions.md): extension discovery, configuration, approvals, management, and doctor.
+- [plugin-api-v2.md](./plugin-api-v2.md): process-isolated compiled ESM plugin author contract.
+- [migration/python-plugins-to-v2.md](./migration/python-plugins-to-v2.md): explicit Python plugin migration and rollback guide.
 
 ## Context And Prefix Cache
 

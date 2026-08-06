@@ -69,10 +69,11 @@ uv run mycli --node-tui
 交互式会话需要 Node.js 22.19+，并且 stdin/stdout 必须连接到终端。
 `doctor`、`hooks`、`plugins`、`mcp`、`subagents` 和 `setup` 等管理命令仍可用于脚本和非 TTY 环境。
 
-### Node runtime 重构预览（M1-M6）
+### Node runtime 重构预览（M1-M7）
 
-Node CLI 已可显式承载完整 turn、session 恢复、文件工具和 M6 持久 Shell；默认 backend
-仍是 `python-sidecar`。要试用 Node runtime：
+Node CLI 已可显式承载完整 turn、session 恢复、文件工具、持久 Shell、Anthropic、MCP、
+plugins、hooks、skills、subagents、setup、management 和 doctor；默认 backend 仍是
+`python-sidecar`。要试用 Node runtime：
 
 ```bash
 npm ci
@@ -96,9 +97,10 @@ macOS `/usr/bin/sandbox-exec`、Linux Bubblewrap，或 Windows 随包 helper；�
 npm run mycli -- --runtime-backend python-sidecar --session <id>
 ```
 
-Node backend 尚未迁移 MCP、plugins、hooks、skills、subagents 和 setup/management 命令；
-这些能力仍由 Python 主线提供。完整 rollout、依赖、测试和回滚说明见
-[docs/node-runtime-rollout.md](docs/node-runtime-rollout.md)。
+扩展的路径、配置、安全边界和管理命令见 [docs/node-extensions.md](docs/node-extensions.md)，
+Plugin API v2 见 [docs/plugin-api-v2.md](docs/plugin-api-v2.md)，Python plugin 迁移见
+[docs/migration/python-plugins-to-v2.md](docs/migration/python-plugins-to-v2.md)。完整 rollout、
+依赖、测试和回滚说明见 [docs/node-runtime-rollout.md](docs/node-runtime-rollout.md)。
 
 ## 模型与认证
 
@@ -214,8 +216,8 @@ export MYCLI_STREAM_MAX_RETRIES=5
 
 ```json
 {
-  "openai-primary": {"type": "api_key", "key": "sk-..."},
-  "deepseek": {"type": "api_key", "key": "sk-..."}
+  "openai-primary": {"type": "api_key", "key": "<api-key>"},
+  "deepseek": {"type": "api_key", "key": "<api-key>"}
 }
 ```
 

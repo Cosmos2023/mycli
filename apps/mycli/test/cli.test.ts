@@ -184,6 +184,7 @@ test("default management composition lists local extensions without backend star
 	t.after(() => rm(root, { recursive: true, force: true }));
 	let starts = 0;
 	for (const argv of [
+		["doctor", "--json"],
 		["hooks", "list", "--json"],
 		["plugins", "list", "--json"],
 		["mcp", "list", "--json"],
