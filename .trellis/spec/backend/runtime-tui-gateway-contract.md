@@ -1195,6 +1195,12 @@ return bootstrap;
   promptCacheKeyEnabled, cacheControlEnabled}) -> Promise<string>`.
 - Setup TUI:
   `runSetupTui({state, terminal?, signal?}) -> Promise<SetupWizardResult | undefined>`.
+- Doctor runner:
+  `runDoctor(options, signal?) -> Promise<DoctorReport>` and
+  `runDoctorCollectors(collectors, signal?, {collectorTimeoutMs?, cleanupTimeoutMs?})`.
+- Doctor report:
+  `{checks: readonly DoctorCheck[], okCount, warningCount, failedCount}`, where each check is
+  `{name, status: "ok" | "warning" | "failed", message, detail?}`.
 - Commands:
   `setup`, `doctor [--json]`, `hooks list|inspect|approve|revoke`,
   `plugins list|inspect|run`, `mcp list|inspect`, and `subagents list|inspect`.
@@ -1222,6 +1228,24 @@ return bootstrap;
   supported, and remove temporary/lock files. Concurrent auth merges serialize.
 - User config writing preserves unrelated TOML values/tables, updates `[model]` and cache fields,
   normalizes trailing base-URL slashes, and removes legacy root or `[model]` `api_key` values.
+- Node doctor runs independent collectors in stable config, storage, runtime, extensions, and
+  process order. Collector exceptions and collector-local `AbortError` values become one failed
+  check and later collectors continue. Caller cancellation aborts the whole command.
+- Every collector has a bounded deadline (30 seconds by default) and receives an abort signal.
+  Timeout handling waits for bounded cleanup (2 seconds by default) before continuing so MCP and
+  plugin probes can close through their normal lifecycle.
+- Doctor opens an existing SQLite database through `node:sqlite` with `readOnly: true`. It must not
+  construct `SQLiteSessionStore`, create directories, migrate schema, repair state, delete rows, or
+  run `VACUUM`.
+- Human and JSON doctor output consume the same sanitized `DoctorReport`. Warnings keep `ok=true`
+  and exit `0`; any failed check sets `ok=false` and exits `1`.
+- Secret scanning detects unredacted credential-shaped values and values under credential,
+  header, or environment fields. The mere presence of benign `content`, `stderr`, or
+  `provider_payload` keys is not a leak. Reports expose counts and bounded references only, never
+  the matched value.
+- Doctor never constructs or calls a model provider. Enabled MCP/plugin health probes may start
+  only through management lifecycles that enforce sandbox, timeout, cancellation, redaction, and
+  deterministic close.
 
 ### 4. Validation & Error Matrix
 - Unknown command/action, missing id/value, duplicate flags, or unsupported interactive option ->
@@ -1237,6 +1261,17 @@ return bootstrap;
   `config_write_failed`, `auth_write_failed`, or `setup_write_failed` stable diagnostics.
 - Existing malformed user TOML -> fail the write and preserve the old file. Malformed auth JSON
   remains Python-compatible and is treated as an empty auth store when replacing credentials.
+- Doctor collector throws -> `status=failed`, `message="diagnostic failed"`; do not include the raw
+  exception, and continue with the next collector.
+- Doctor collector exceeds its deadline -> abort it, wait for bounded cleanup, emit
+  `message="diagnostic timed out"`, then continue. Parent abort -> stop the whole management
+  command as `interrupted`.
+- Missing sessions DB/log directory -> warnings; missing traces/artifacts -> healthy lazy state.
+  Existing invalid schema/recovery/lineage or unreadable diagnostic storage -> failed.
+- Python plugin candidate -> `plugin_migration=warning` with the migration guide and no import or
+  conversion attempt.
+- Redacted marker or benign provider-content field -> no redaction finding. Unredacted credential,
+  header, or environment value -> `logs_redaction=failed` without the value in output.
 
 ### 5. Good/Base/Bad Cases
 - Good: `mycli mcp list --json` succeeds with piped stdio and starts zero backends/providers/TUIs.
@@ -1244,10 +1279,20 @@ return bootstrap;
   never writes the API key to stdout or the response object.
 - Base: `subagents list --json` returns ids, descriptions, tool scopes, budgets, and source metadata
   without profile prompts.
+- Good: Compiled `mycli doctor --json` on a fresh temporary home returns one parseable report,
+  warning-only exit `0`, empty stderr, zero backend/provider/TUI starts, and does not create
+  `.mycli`.
+- Good: An MCP/plugin health probe is aborted by its collector deadline, closes its client/worker,
+  and the next collector still runs.
+- Base: A fresh home has no sessions DB, logs, traces, or extensions; doctor reports bounded lazy
+  state without creating any of them.
 - Bad: Checking TTY or selecting `python-sidecar` before recognizing `hooks list`.
 - Bad: Returning the setup wizard result as JSON, printing the API key, or writing it through a
   world-readable temporary result file.
 - Bad: Returning the raw `SubagentProfile` from a management service because it contains `prompt`.
+- Bad: Treating every JSON `content`/`stderr` key as a secret leak, which makes correctly redacted
+  model diagnostics fail permanently.
+- Bad: Racing a timeout and returning before the normal MCP/plugin close path has observed abort.
 
 ### 6. Tests Required
 - Parser unit tests cover every command/action, interactive flags, usage failures, duplicate flags,
@@ -1261,6 +1306,15 @@ return bootstrap;
 - TUI tests assert direct submit/cancel Promise results and terminal cleanup; legacy entrypoint
   tests must assert private result-file permissions if that compatibility path changes.
 - Management tests assert subagent responses do not contain a `prompt` property or prompt text.
+- Doctor runner tests assert collector order, exception isolation, timeout cancellation plus
+  cleanup, later-collector progress, stable counts, shared human/JSON data, and exit semantics.
+- Doctor redaction tests assert config/header/environment/plugin/provider secrets never appear,
+  references are bounded, and benign payload keys do not create findings.
+- Doctor integration tests use malformed hooks/skills/subagent profiles, a Python plugin candidate,
+  and real plugin/MCP management lifecycles; assert migration status, zero provider calls, and one
+  deterministic close per started probe.
+- Storage tests assert missing-state checks create nothing and an existing SQLite database keeps the
+  same modification time after read-only validation.
 
 ### 7. Wrong vs Correct
 
@@ -1279,6 +1333,19 @@ if (mode.kind === "management") {
 	return response.exitCode ?? (response.ok ? 0 : 1);
 }
 if (!stdin.isTTY) return 2;
+```
+
+Doctor collector isolation follows the same control-plane boundary:
+
+```typescript
+// Wrong: leaks the exception and aborts all later checks.
+for (const collector of collectors) checks.push(...await collector.collect(signal));
+
+// Correct: bound each collector, sanitize its result, and preserve caller cancellation.
+const report = await runDoctorCollectors(collectors, signal, {
+	collectorTimeoutMs: 30_000,
+	cleanupTimeoutMs: 2_000,
+});
 ```
 
 ## Scenario: Node Composition Root With Python Sidecar
