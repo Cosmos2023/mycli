@@ -20,6 +20,8 @@ export class HeadlessTerminal implements Terminal {
 	readonly alternateScreen = false;
 	nativeScrollback: boolean;
 	readonly writes: string[] = [];
+	private _outputBackpressured = false;
+	private readonly outputDrainListeners = new Set<() => void>();
 
 	private readonly emulator: XtermTerminal;
 	private inputHandler?: (data: string) => void;
@@ -43,6 +45,23 @@ export class HeadlessTerminal implements Terminal {
 
 	get rows(): number {
 		return this.emulator.rows;
+	}
+
+	get outputBackpressured(): boolean {
+		return this._outputBackpressured;
+	}
+
+	onOutputDrain(listener: () => void): () => void {
+		this.outputDrainListeners.add(listener);
+		return () => this.outputDrainListeners.delete(listener);
+	}
+
+	setOutputBackpressured(blocked: boolean): void {
+		if (this._outputBackpressured === blocked) return;
+		this._outputBackpressured = blocked;
+		if (!blocked) {
+			for (const listener of this.outputDrainListeners) listener();
+		}
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void): void {

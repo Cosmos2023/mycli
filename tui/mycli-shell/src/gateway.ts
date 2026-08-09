@@ -742,8 +742,8 @@ async function interruptExit(exitCode = 130): Promise<void> {
 }
 
 async function handleUnexpectedGatewayClose(_error: Error): Promise<void> {
-	process.stderr.write("[mycli-shell] Runtime gateway closed unexpectedly.\n");
 	await stopLocalRuntime();
+	process.stderr.write("[mycli-shell] Runtime gateway closed unexpectedly.\n");
 	process.exitCode = 1;
 }
 

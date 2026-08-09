@@ -38,6 +38,7 @@ class FakeOutput extends EventEmitter {
 	windowColumns = 100;
 	windowRows = 40;
 	output = "";
+	writable = true;
 	_handle = {
 		getWindowSize: (size: number[]) => {
 			size[0] = this.windowColumns;
@@ -48,13 +49,42 @@ class FakeOutput extends EventEmitter {
 
 	write(data: string): boolean {
 		this.output += data;
-		return true;
+		return this.writable;
 	}
 
 	getWindowSize(): [number, number] {
 		return [this.columns, this.rows];
 	}
 }
+
+test("stream terminal exposes Writable backpressure until drain", () => {
+	const input = new FakeInput();
+	const output = new FakeOutput();
+	const terminal = new StreamTerminal({
+		input: input as unknown as tty.ReadStream,
+		output: output as unknown as tty.WriteStream,
+		close: () => {},
+	} satisfies TtyStreams);
+	let drainCalls = 0;
+	const unsubscribe = terminal.onOutputDrain(() => {
+		drainCalls += 1;
+	});
+	terminal.start(() => {}, () => {});
+
+	output.writable = false;
+	terminal.write("frame");
+	assert.equal(terminal.outputBackpressured, true);
+	output.writable = true;
+	output.emit("drain");
+	assert.equal(terminal.outputBackpressured, false);
+	assert.equal(drainCalls, 1);
+
+	unsubscribe();
+	assert.equal(output.listenerCount("drain"), 0);
+	output.emit("drain");
+	assert.equal(drainCalls, 1);
+	terminal.stop();
+});
 
 test("stream terminal uses inline native scrollback by default without mouse capture", () => {
 	const input = new FakeInput();

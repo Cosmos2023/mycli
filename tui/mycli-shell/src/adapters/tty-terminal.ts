@@ -2,6 +2,7 @@ import fs from "node:fs";
 import tty from "node:tty";
 import { normalizeAppleTerminalInput, isAppleTerminalSession, type Terminal } from "../tui-core/terminal.ts";
 import { setKittyProtocolActive } from "../tui-core/keys.ts";
+import { OutputBackpressureTracker } from "../tui-core/output-backpressure.ts";
 import { StdinBuffer } from "../tui-core/stdin-buffer.ts";
 
 export type TtyStreams = {
@@ -86,6 +87,7 @@ export class StreamTerminal implements Terminal {
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
 	private _kittyProtocolActive = false;
+	private readonly outputBackpressure: OutputBackpressureTracker;
 
 	private readonly platform: NodeJS.Platform;
 	private readonly resizeSignalSource: ResizeSignalSource;
@@ -98,6 +100,7 @@ export class StreamTerminal implements Terminal {
 		this.platform = options.platform ?? process.platform;
 		this.resizeSignalSource = options.resizeSignalSource ?? process;
 		this.alternateScreen = options.alternateScreen ?? false;
+		this.outputBackpressure = new OutputBackpressureTracker(streams.output);
 	}
 
 	get kittyProtocolActive(): boolean {
@@ -106,6 +109,14 @@ export class StreamTerminal implements Terminal {
 
 	get nativeScrollback(): boolean {
 		return !this.alternateScreen;
+	}
+
+	get outputBackpressured(): boolean {
+		return this.outputBackpressure.blocked;
+	}
+
+	onOutputDrain(listener: () => void): () => void {
+		return this.outputBackpressure.subscribe(listener);
 	}
 
 	get columns(): number {
@@ -209,7 +220,7 @@ export class StreamTerminal implements Terminal {
 	}
 
 	write(data: string): void {
-		this.streams.output.write(data);
+		this.outputBackpressure.observeWrite(this.streams.output.write(data));
 	}
 
 	moveBy(lines: number): void {

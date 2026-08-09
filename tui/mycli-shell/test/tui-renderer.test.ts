@@ -134,6 +134,35 @@ test("a frame update is emitted as one synchronized terminal write", async (t) =
 	assert.match(terminal.writes[0]!, /\x1b\[\?25l\x1b\[\?2026l$/);
 });
 
+test("renderer coalesces updates while terminal output is backpressured", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
+	const component = new MutableLines(["before"]);
+	const ui = new TUI(terminal);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+	terminal.setOutputBackpressured(true);
+
+	for (const text of ["queued one", "queued two", "latest state"]) {
+		component.setLines([text]);
+		ui.requestRender();
+	}
+	await delay(25);
+	assert.equal(terminal.writes.length, 0);
+
+	terminal.setOutputBackpressured(false);
+	await delay(25);
+	await terminal.flush();
+	assert.equal(terminal.writes.length, 1);
+	assert.equal(terminal.visibleLines()[0], "latest state");
+});
+
 test("shortening CJK and emoji content leaves no orphaned wide cells", async (t) => {
 	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
 	const component = new MutableLines(["处理中：北京 🚄 上海"]);

@@ -292,6 +292,7 @@ export class TUI extends Container {
 	private pendingHistoryReplacesScrollback = false;
 	private nativeViewportAnchored = false;
 	private stopped = false;
+	private removeOutputDrainListener?: () => void;
 
 	// Overlay stack for modal components rendered on top of base content
 	private focusOrderCounter = 0;
@@ -634,6 +635,11 @@ export class TUI extends Container {
 
 	start(): void {
 		this.stopped = false;
+		this.removeOutputDrainListener?.();
+		this.removeOutputDrainListener = this.terminal.onOutputDrain?.(() => {
+			if (this.stopped || this.renderingPaused || !this.renderRequested) return;
+			process.nextTick(() => this.scheduleRender());
+		});
 		this.terminal.start(
 			(data) => this.handleInput(data),
 			() => {
@@ -688,6 +694,8 @@ export class TUI extends Container {
 
 		this.terminal.showCursor();
 		this.terminal.stop();
+		this.removeOutputDrainListener?.();
+		this.removeOutputDrainListener = undefined;
 	}
 
 	requestRender(force = false): void {
@@ -705,7 +713,12 @@ export class TUI extends Container {
 			}
 			this.renderRequested = true;
 			process.nextTick(() => {
-				if (this.stopped || this.renderingPaused || !this.renderRequested) {
+				if (
+					this.stopped ||
+					this.renderingPaused ||
+					this.terminal.outputBackpressured === true ||
+					!this.renderRequested
+				) {
 					return;
 				}
 				this.renderRequested = false;
@@ -721,14 +734,25 @@ export class TUI extends Container {
 	}
 
 	private scheduleRender(): void {
-		if (this.stopped || this.renderingPaused || this.renderTimer || !this.renderRequested) {
+		if (
+			this.stopped ||
+			this.renderingPaused ||
+			this.terminal.outputBackpressured === true ||
+			this.renderTimer ||
+			!this.renderRequested
+		) {
 			return;
 		}
 		const elapsed = performance.now() - this.lastRenderAt;
 		const delay = Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed);
 		this.renderTimer = setTimeout(() => {
 			this.renderTimer = undefined;
-			if (this.stopped || this.renderingPaused || !this.renderRequested) {
+			if (
+				this.stopped ||
+				this.renderingPaused ||
+				this.terminal.outputBackpressured === true ||
+				!this.renderRequested
+			) {
 				return;
 			}
 			this.renderRequested = false;
