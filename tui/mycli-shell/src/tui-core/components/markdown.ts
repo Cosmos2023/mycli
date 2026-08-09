@@ -1,6 +1,6 @@
 import { Marked, type Token, Tokenizer, type Tokens } from "marked";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
-import type { Component } from "../tui.ts";
+import type { Component, TailRenderResult } from "../tui.ts";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
@@ -82,6 +82,14 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
+interface RenderedTokenCacheEntry {
+	type: string;
+	raw: string;
+	contextKey?: string;
+	nextType?: string;
+	lines: string[];
+}
+
 export class Markdown implements Component {
 	private text: string;
 	private paddingX: number; // Left/right padding
@@ -95,6 +103,8 @@ export class Markdown implements Component {
 	private cachedText?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	private cachedTokenWidth?: number;
+	private cachedTokens: RenderedTokenCacheEntry[] = [];
 
 	constructor(
 		text: string,
@@ -113,14 +123,18 @@ export class Markdown implements Component {
 	}
 
 	setText(text: string): void {
+		if (this.text === text) return;
 		this.text = text;
-		this.invalidate();
+		this.cachedText = undefined;
+		this.cachedLines = undefined;
 	}
 
 	invalidate(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+		this.cachedTokenWidth = undefined;
+		this.cachedTokens = [];
 	}
 
 	render(width: number): string[] {
@@ -142,61 +156,14 @@ export class Markdown implements Component {
 			return result;
 		}
 
-		// Replace tabs with 3 spaces for consistent rendering
-		const normalizedText = this.text.replace(/\t/g, "   ");
-
-		// Parse markdown to HTML-like tokens
-		const tokens = markdownParser.lexer(normalizedText);
-
-		// Convert tokens to styled terminal output
-		const renderedLines: string[] = [];
-
-		for (let i = 0; i < tokens.length; i++) {
-			const token = tokens[i];
-			const nextToken = tokens[i + 1];
-			const tokenLines = this.renderToken(token, contentWidth, nextToken?.type);
-			for (const tokenLine of tokenLines) {
-				renderedLines.push(tokenLine);
-			}
-		}
-
-		// Wrap lines (NO padding, NO background yet)
-		const wrappedLines: string[] = [];
-		for (const line of renderedLines) {
-			if (isImageLine(line)) {
-				wrappedLines.push(line);
-			} else {
-				for (const wrappedLine of wrapTextWithAnsi(line, contentWidth)) {
-					wrappedLines.push(wrappedLine);
-				}
-			}
-		}
-
-		// Add margins and background to each wrapped line
-		const leftMargin = " ".repeat(this.paddingX);
-		const rightMargin = " ".repeat(this.paddingX);
-		const bgFn = this.defaultTextStyle?.bgColor;
+		const tokenLines = this.renderTokenLines(width, contentWidth);
 		const contentLines: string[] = [];
-
-		for (const line of wrappedLines) {
-			if (isImageLine(line)) {
-				contentLines.push(line);
-				continue;
-			}
-
-			const lineWithMargins = leftMargin + line + rightMargin;
-
-			if (bgFn) {
-				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
-			} else {
-				// No background - just pad to width
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, width - visibleLen);
-				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-			}
+		for (const entry of tokenLines) {
+			contentLines.push(...entry.lines);
 		}
 
 		// Add top/bottom padding (empty lines)
+		const bgFn = this.defaultTextStyle?.bgColor;
 		const emptyLine = " ".repeat(width);
 		const emptyLines: string[] = [];
 		for (let i = 0; i < this.paddingY; i++) {
@@ -213,6 +180,87 @@ export class Markdown implements Component {
 		this.cachedLines = result;
 
 		return result.length > 0 ? result : [""];
+	}
+
+	renderTail(width: number, maxRows: number): TailRenderResult {
+		const rowLimit = Math.max(0, Math.floor(maxRows));
+		if (!this.text || this.text.trim() === "") return { lines: [], totalLines: 0 };
+
+		const contentWidth = Math.max(1, width - this.paddingX * 2);
+		const tokenLines = this.renderTokenLines(width, contentWidth);
+		let totalLines = this.paddingY * 2;
+		for (const entry of tokenLines) totalLines += entry.lines.length;
+		if (totalLines === 0) {
+			return { lines: rowLimit > 0 ? [""] : [], totalLines: 1 };
+		}
+
+		let remaining = rowLimit;
+		const lines: string[] = [];
+		const emptyLine = " ".repeat(width);
+		const bgFn = this.defaultTextStyle?.bgColor;
+		const paddingLine = bgFn ? applyBackgroundToLine(emptyLine, width, bgFn) : emptyLine;
+		const prependTail = (source: string[]): void => {
+			if (remaining <= 0 || source.length === 0) return;
+			const selected = source.slice(-remaining);
+			lines.unshift(...selected);
+			remaining -= selected.length;
+		};
+
+		prependTail(Array.from({ length: this.paddingY }, () => paddingLine));
+		for (let index = tokenLines.length - 1; index >= 0 && remaining > 0; index -= 1) {
+			prependTail(tokenLines[index]!.lines);
+		}
+		prependTail(Array.from({ length: this.paddingY }, () => paddingLine));
+		return { lines, totalLines };
+	}
+
+	private renderTokenLines(width: number, contentWidth: number): RenderedTokenCacheEntry[] {
+		const tokens = markdownParser.lexer(this.text.replace(/\t/g, "   "));
+		const previousTokens = this.cachedTokenWidth === width ? this.cachedTokens : [];
+		const nextTokenCache: RenderedTokenCacheEntry[] = [];
+		for (let index = 0; index < tokens.length; index += 1) {
+			const token = tokens[index]!;
+			const nextType = tokens[index + 1]?.type;
+			const contextKey = token.raw.includes("[") ? JSON.stringify(token) : undefined;
+			const cached = previousTokens[index];
+			const lines = cached &&
+				cached.type === token.type &&
+				cached.raw === token.raw &&
+				cached.contextKey === contextKey &&
+				cached.nextType === nextType
+				? cached.lines
+				: this.renderTokenContentLines(token, contentWidth, width, nextType);
+			nextTokenCache.push({ type: token.type, raw: token.raw, contextKey, nextType, lines });
+		}
+		this.cachedTokenWidth = width;
+		this.cachedTokens = nextTokenCache;
+		return nextTokenCache;
+	}
+
+	private renderTokenContentLines(
+		token: Token,
+		contentWidth: number,
+		width: number,
+		nextTokenType?: string,
+	): string[] {
+		const wrappedLines: string[] = [];
+		for (const line of this.renderToken(token, contentWidth, nextTokenType)) {
+			if (isImageLine(line)) {
+				wrappedLines.push(line);
+				continue;
+			}
+			wrappedLines.push(...wrapTextWithAnsi(line, contentWidth));
+		}
+
+		const leftMargin = " ".repeat(this.paddingX);
+		const rightMargin = " ".repeat(this.paddingX);
+		const bgFn = this.defaultTextStyle?.bgColor;
+		return wrappedLines.map((line) => {
+			if (isImageLine(line)) return line;
+			const lineWithMargins = leftMargin + line + rightMargin;
+			if (bgFn) return applyBackgroundToLine(lineWithMargins, width, bgFn);
+			return lineWithMargins + " ".repeat(Math.max(0, width - visibleWidth(lineWithMargins)));
+		});
 	}
 
 	/**

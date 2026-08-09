@@ -33,6 +33,26 @@ class VolatileComponent implements Component {
 	}
 }
 
+class TailComponent implements Component {
+	renderCalls = 0;
+	tailRenderCalls = 0;
+
+	invalidate(): void {}
+
+	render(): string[] {
+		this.renderCalls += 1;
+		return Array.from({ length: 10_000 }, (_, index) => `line ${index}`);
+	}
+
+	renderTail(_width: number, maxRows: number) {
+		this.tailRenderCalls += 1;
+		return {
+			lines: Array.from({ length: maxRows }, (_, index) => `line ${10_000 - maxRows + index}`),
+			totalLines: 10_000,
+		};
+	}
+}
+
 function viewportFor(components: Component[], maxRows: number): TranscriptViewportComponent {
 	const content = new Container();
 	const header = new Container();
@@ -81,6 +101,17 @@ test("transcript viewport does not cache components without a render key", () =>
 	assert.equal(viewport.render(80).includes("frame 1"), true);
 	assert.equal(viewport.render(80).includes("frame 2"), true);
 	assert.equal(component.renderCalls, 2);
+});
+
+test("transcript viewport uses component tail rendering for tall active content", () => {
+	const component = new TailComponent();
+	const viewport = viewportFor([component], 20);
+
+	const lines = viewport.render(80);
+
+	assert.equal(component.renderCalls, 0);
+	assert.equal(component.tailRenderCalls, 1);
+	assert.equal(lines.at(-1), "line 9999");
 });
 
 test("running shell groups remain outside the transcript render cache", () => {

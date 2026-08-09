@@ -230,7 +230,7 @@ export class TranscriptViewportComponent implements Component {
 	private committedPrefixLength = 0;
 	private committedPrefixBoundary: string | undefined;
 	private committedWidth: number | undefined;
-	private renderCache = new WeakMap<Component, { key: unknown; width: number; lines: string[] }>();
+	private renderCache = new WeakMap<Component, { key: unknown; width: number; maxRows?: number; lines: string[] }>();
 
 	constructor(
 		private readonly content: Container,
@@ -356,7 +356,7 @@ export class TranscriptViewportComponent implements Component {
 			const section = this.content.children[sectionIndex]!;
 			const components = section instanceof Container ? section.children : [section];
 			for (let index = components.length - 1; index >= 0; index -= 1) {
-				const lines = this.renderComponent(components[index]!, width);
+				const lines = this.renderComponent(components[index]!, width, maxRows - renderedRows);
 				chunks.push(lines);
 				renderedRows += lines.length;
 				if (renderedRows >= maxRows) break;
@@ -367,17 +367,26 @@ export class TranscriptViewportComponent implements Component {
 		return chunks.flat().slice(-maxRows);
 	}
 
-	private renderComponent(component: Component, width: number): string[] {
+	private renderComponent(component: Component, width: number, maxRows?: number): string[] {
 		const key = component.getRenderCacheKey?.();
-		if (key === undefined) return component.render(width);
+		if (key === undefined) return this.renderComponentLines(component, width, maxRows);
 
 		const cached = this.renderCache.get(component);
-		if (cached && cached.width === width && Object.is(cached.key, key)) {
+		if (cached && cached.width === width && cached.maxRows === maxRows && Object.is(cached.key, key)) {
 			return cached.lines;
 		}
-		const lines = component.render(width);
-		this.renderCache.set(component, { key, width, lines });
+		const lines = this.renderComponentLines(component, width, maxRows);
+		this.renderCache.set(component, { key, width, maxRows, lines });
 		return lines;
+	}
+
+	private renderComponentLines(component: Component, width: number, maxRows?: number): string[] {
+		if (maxRows !== undefined) {
+			if (maxRows <= 0) return [];
+			if (component.renderTail) return component.renderTail(width, maxRows).lines;
+			return component.render(width).slice(-maxRows);
+		}
+		return component.render(width);
 	}
 
 	private recordCommittedPrefix(lines: string[], start: number, width: number): void {

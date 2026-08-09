@@ -64,6 +64,14 @@ export interface Component {
 
 	/** Stable key for viewport-level render caching. Undefined disables outer caching. */
 	getRenderCacheKey?(): unknown;
+
+	/** Render the final rows without materializing an entire tall component. */
+	renderTail?(width: number, maxRows: number): TailRenderResult;
+}
+
+export interface TailRenderResult {
+	lines: string[];
+	totalLines: number;
 }
 
 type InputListenerResult = { consume?: boolean; data?: string } | undefined;
@@ -233,26 +241,30 @@ export class Container implements Component {
 
 	addChild(component: Component): void {
 		this.children.push(component);
-		this.renderRevision += 1;
+		this.markRenderDirty();
 	}
 
 	removeChild(component: Component): void {
 		const index = this.children.indexOf(component);
 		if (index !== -1) {
 			this.children.splice(index, 1);
-			this.renderRevision += 1;
+			this.markRenderDirty();
 		}
 	}
 
 	clear(): void {
 		this.children = [];
-		this.renderRevision += 1;
+		this.markRenderDirty();
 	}
 
 	invalidate(): void {
 		for (const child of this.children) {
 			child.invalidate?.();
 		}
+		this.markRenderDirty();
+	}
+
+	protected markRenderDirty(): void {
 		this.renderRevision += 1;
 	}
 

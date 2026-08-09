@@ -104,3 +104,17 @@ test("assistant message updates retain the role prefix", () => {
 
 	assert.equal(lines[0]?.startsWith("• complete response"), true);
 });
+
+test("assistant tail rendering matches slicing full visible and thinking output", () => {
+	for (const component of [
+		new AssistantMessageComponent("First paragraph.\n\nSecond paragraph with enough text to wrap across rows."),
+		new AssistantMessageComponent("Final answer", "Reasoning line one.\n\nReasoning line two.", false),
+	]) {
+		const full = component.render(32);
+		for (const maxRows of [0, 1, 3, full.length - 1, full.length, full.length + 2]) {
+			const tail = component.renderTail(32, maxRows);
+			assert.equal(tail.totalLines, full.length);
+			assert.deepEqual(tail.lines, maxRows === 0 ? [] : full.slice(-maxRows));
+		}
+	}
+});

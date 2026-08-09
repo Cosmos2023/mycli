@@ -2848,3 +2848,98 @@ if (!settled && workerIsUnresponsive) {
 }
 // Resolve only after the fresh Gateway publishes the durable terminal record.
 ```
+
+## Scenario: Bounded Streaming Transcript Rendering
+
+### 1. Scope / Trigger
+
+- Trigger: changing TUI component rendering, transcript viewport bounds, assistant Markdown
+  streaming, render-cache keys, or native scrollback delta collection.
+- The goal is to keep a long active assistant response inside the frame budget without changing
+  the visible result that a full render followed by tail slicing would produce.
+
+### 2. Signatures
+
+- Optional component boundary:
+  `Component.renderTail?(width: number, maxRows: number) -> TailRenderResult`.
+- Tail result:
+  `TailRenderResult { lines: string[]; totalLines: number }`.
+- Container invalidation boundary:
+  `Container.markRenderDirty() -> void` for subclasses that change visible child state without
+  invalidating reusable child render caches.
+- Transcript viewport:
+  `TranscriptViewportComponent.render(width) -> string[]`.
+
+### 3. Contracts
+
+- `renderTail(width, maxRows).lines` is byte-for-byte equal to
+  `render(width).slice(-maxRows)` for positive `maxRows`; a non-positive bound returns no lines.
+- `totalLines` is the number of lines from a full render, even when only a bounded tail is
+  materialized. ANSI control sequences, OSC 133 zones, CJK width, assistant role prefixes,
+  thinking blocks, and spacing remain part of this equivalence.
+- `TranscriptViewportComponent` calls `renderTail` only on components that implement it. Other
+  components retain the compatible full-render fallback and are sliced after rendering.
+- Viewport cache identity includes component render key, terminal width, and requested `maxRows`.
+  A tail cached for one remaining-row budget must not be reused for another budget.
+- Assistant streaming reuses existing Markdown components and marks only the owning container
+  dirty. Recursive invalidation is reserved for theme or layout invalidation because it discards
+  the Markdown token cache.
+- Markdown caches top-level rendered token chunks. Reuse requires the same token type, raw source,
+  next-token type, width, and reference-sensitive token context. Appending a reference-link
+  definition must be able to change an earlier `[label][id]` token even when its raw source is
+  unchanged.
+- Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
+  the full-render behavior.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| `maxRows <= 0` | Return `lines=[]` while preserving the exact `totalLines` count |
+| Component has no `renderTail` | Render normally and slice the returned lines |
+| Width or render revision changes | Reject the cached tail and render for the new identity |
+| Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
+| Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
+| Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
+| Tail includes the first assistant content row but not the leading blank | Preserve the assistant role bullet on that content row |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a 100k-character streamed response renders only the bounded viewport tail while reporting
+  the same total line count and visible bytes as a full render.
+- Base: a small component without `renderTail` follows the existing full-render path.
+- Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
+  component.
+- Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
+- Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
+  token chunks.
+- Bad: cache one tail without including the remaining-row budget in its identity.
+
+### 6. Tests Required
+
+- Markdown tests compare incremental updates with fresh renders for paragraphs, lists, code,
+  blockquotes, tables, reference definitions, and width changes.
+- Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
+  narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
+- Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.
+- Viewport tests use a 10,000-line component with separate full/tail counters and assert the
+  bounded path never calls full render.
+- Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
+  any tail-rendering change.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const lines = component.render(width);
+return lines.slice(-remainingRows);
+```
+
+#### Correct
+
+```typescript
+const lines = component.renderTail
+  ? component.renderTail(width, remainingRows).lines
+  : component.render(width).slice(-remainingRows);
+```
