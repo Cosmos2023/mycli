@@ -1884,6 +1884,25 @@ test("mycli shell runtime assembles mounted containers", () => {
 	assert.match(output, /deepseek-v4-flash/);
 });
 
+test("mycli shell runtime reuses chrome layout only within one root render frame", () => {
+	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal: new TestTerminal() });
+	const renderEditor = runtime.editor.render.bind(runtime.editor);
+	let editorRenders = 0;
+	runtime.editor.render = (width) => {
+		editorRenders += 1;
+		return renderEditor(width);
+	};
+
+	runtime.ui.render(100);
+	assert.equal(editorRenders, 1);
+	runtime.ui.render(100);
+	assert.equal(editorRenders, 2);
+
+	runtime.editorContainer.render(100);
+	runtime.editorContainer.render(100);
+	assert.equal(editorRenders, 4);
+});
+
 test("mycli shell runtime updates footer actions with turn and queue state", () => {
 	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal: new TestTerminal() });
 	let output = stripAnsi(runtime.footerContainer.render(180).join("\n"));

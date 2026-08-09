@@ -2867,6 +2867,9 @@ if (!settled && workerIsUnresponsive) {
 - Container invalidation boundary:
   `Container.markRenderDirty() -> void` for subclasses that change visible child state without
   invalidating reusable child render caches.
+- Root-frame identity:
+  `TUI.activeRenderFrameId -> number | null`; it is non-null only during one synchronous root
+  `TUI.render(width)` call.
 - Transcript viewport:
   `TranscriptViewportComponent.render(width) -> string[]`.
 
@@ -2881,6 +2884,9 @@ if (!settled && workerIsUnresponsive) {
   components retain the compatible full-render fallback and are sliced after rendering.
 - Viewport cache identity includes component render key, terminal width, and requested `maxRows`.
   A tail cached for one remaining-row budget must not be reused for another budget.
+- Shell chrome containers may reuse rendered lines between viewport-height measurement and their
+  later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
+  outside the root render call and must not survive into the next frame.
 - Assistant streaming reuses existing Markdown components and marks only the owning container
   dirty. Recursive invalidation is reserved for theme or layout invalidation because it discards
   the Markdown token cache.
@@ -2898,6 +2904,8 @@ if (!settled && workerIsUnresponsive) {
 | `maxRows <= 0` | Return `lines=[]` while preserving the exact `totalLines` count |
 | Component has no `renderTail` | Render normally and slice the returned lines |
 | Width or render revision changes | Reject the cached tail and render for the new identity |
+| Chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
+| Next root frame or direct container render | Render again; never reuse the prior frame's chrome lines |
 | Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
@@ -2914,6 +2922,8 @@ if (!settled && workerIsUnresponsive) {
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
+- Bad: retain measured editor/status/footer lines across root frames; cursor, timer, and input state
+  can change without a parent container rebuild.
 
 ### 6. Tests Required
 
@@ -2924,6 +2934,8 @@ if (!settled && workerIsUnresponsive) {
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.
 - Viewport tests use a 10,000-line component with separate full/tail counters and assert the
   bounded path never calls full render.
+- Shell layout tests count editor child renders and assert one render inside a root frame, another
+  render in the next frame, and no cache reuse for direct container calls.
 - Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
   any tail-rendering change.
 

@@ -289,6 +289,8 @@ export class Container implements Component {
  */
 export class TUI extends Container {
 	public terminal: Terminal;
+	private renderFrameSequence = 0;
+	private activeRenderFrame: number | null = null;
 	private previousLines: string[] = [];
 	private previousKittyImageIds = new Set<number>();
 	private previousWidth = 0;
@@ -336,6 +338,20 @@ export class TUI extends Container {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	get activeRenderFrameId(): number | null {
+		return this.activeRenderFrame;
+	}
+
+	override render(width: number): string[] {
+		if (this.activeRenderFrame !== null) return super.render(width);
+		this.activeRenderFrame = ++this.renderFrameSequence;
+		try {
+			return super.render(width);
+		} finally {
+			this.activeRenderFrame = null;
+		}
 	}
 
 	getShowHardwareCursor(): boolean {

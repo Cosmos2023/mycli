@@ -396,6 +396,30 @@ export class TranscriptViewportComponent implements Component {
 	}
 }
 
+class FrameCachedContainer extends Container {
+	private cachedFrameId: number | null = null;
+	private cachedWidth: number | null = null;
+	private cachedLines: string[] = [];
+
+	constructor(private readonly activeFrameId: () => number | null) {
+		super();
+	}
+
+	override render(width: number): string[] {
+		const frameId = this.activeFrameId();
+		if (frameId !== null && frameId === this.cachedFrameId && width === this.cachedWidth) {
+			return this.cachedLines;
+		}
+		const lines = super.render(width);
+		if (frameId !== null) {
+			this.cachedFrameId = frameId;
+			this.cachedWidth = width;
+			this.cachedLines = lines;
+		}
+		return lines;
+	}
+}
+
 function isVisuallyBlankLine(line: string): boolean {
 	return visibleWidth(line.replace(/\s/g, "")) === 0;
 }
@@ -432,11 +456,11 @@ export class MycliShellRuntime {
 	readonly chatContainer = new Container();
 	readonly transcriptContainer = new Container();
 	readonly transcriptViewport: TranscriptViewportComponent;
-	readonly pendingMessagesContainer = new Container();
-	readonly statusContainer = new Container();
-	readonly editorContainer = new Container();
-	readonly subagentTaskContainer = new Container();
-	readonly footerContainer = new Container();
+	readonly pendingMessagesContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
+	readonly statusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
+	readonly editorContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
+	readonly subagentTaskContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
+	readonly footerContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly editor: CustomEditor;
 
 	private state: MycliShellState;
