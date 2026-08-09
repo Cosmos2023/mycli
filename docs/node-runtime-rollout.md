@@ -20,6 +20,10 @@ M8 retains provider protocols, transcript/session operations, approvals, clarifi
 compaction, memory, file tools, persistent shells, integrations, subagents, management commands,
 doctor, diagnostics, signals, shutdown, and all 36 Node-owned built-in slash commands.
 
+The current subagent implementation uses durable agent threads supervised entirely by Node. Agent
+state, mailbox delivery, frozen permissions, restart recovery, readable artifacts, and TUI
+projection are described in [node-agent-runtime.md](node-agent-runtime.md).
+
 The final gateway baseline matched the Python reference at 33 RPCs and 42 events. The audit then
 added three already-implemented shell control RPCs missing from both catalogs, so the frozen
 Node-only contract contains 36 RPCs and 42 events. The sanitized M2-M7 fixture corpus remains under
@@ -90,6 +94,11 @@ request in the same release run.
 
 Do not run the old Python release and M8 concurrently against the same active session database.
 Durable schema compatibility does not make live process or continuation ownership shareable.
+
+The doctor report must include a healthy `model_input_ledger` row before resuming migrated
+sessions. The check is read-only and detects incomplete manifests, missing immutable references,
+content-hash mismatches, and invalid provider-step lifecycle chains. It never repairs records in
+place; restore from backup or remain on the prior release when the ledger is corrupt.
 
 ## Failure And Rollback
 

@@ -14,7 +14,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 
 | Guide | Description | Status |
 |-------|-------------|--------|
-| [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
+| [Directory Structure](./directory-structure.md) | Module organization and file layout | Active |
 | [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | To fill |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
@@ -25,6 +25,8 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Plugin Runtime Contract](./plugin-runtime-contract.md) | Minimal local plugin manifest, loading, hook/tool registration, and diagnostics | Active |
 | [Read-only Tool Output Contract](./read-only-tool-output-contract.md) | Model-visible LS/Glob/Grep/Read discovery output | Active |
 | [File Mutation Tool Contract](./file-mutation-tool-contract.md) | Write/Edit/Patch safety, diffs, and diagnostics | Active |
+| [Provider Tool Replay Contract](./provider-tool-replay-contract.md) | Bounded tool persistence, terminal call closure, replay repair, and safe provider diagnostics | Active |
+| [Multimodal Input Contract](./multimodal-input-contract.md) | Bounded local-image loading, persistence, capability checks, and provider projection | Active |
 
 ---
 

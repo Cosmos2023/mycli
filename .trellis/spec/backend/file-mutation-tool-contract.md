@@ -17,7 +17,7 @@ Apply this contract when changing:
 - file history integration
 - mutation tool formatter output
 - registry/manifest metadata for file mutation tools
-- Node mutation code under `packages/tools`
+- Node mutation code under `backend/packages/tools`
 - Node tool-result persistence or gateway projection
 
 ## Contracts
@@ -94,8 +94,11 @@ Required tests for mutation tool changes:
   as `missing_read_snapshot` and `stale_read_snapshot` without writing.
 - `Write` may omit `expected_sha256`; when supplied it must match the current existing file or fail
   as `stale_write_snapshot` without writing.
-- Writable targets are resolved against the real workspace root. Traversal, absolute outside
-  paths, and existing or parent symlink escapes fail as `workspace_escape` before mutation.
+- Restricted writable targets are resolved against the real workspace root. Traversal, absolute
+  outside paths, and existing or parent symlink escapes fail as `workspace_escape` before mutation.
+- A frozen unrestricted execution policy permits canonical Read and mutation targets outside the
+  workspace. Existing snapshot, stale-content, atomic-write, encoding, size, binary, and secret
+  checks still apply. Outside mutations do not create workspace file-history snapshots.
 - Workspace-local mutations auto-allow in M4. Interactive approval request/resume and external
   writable roots are deferred; an escape is denied rather than paused for approval.
 - Existing binary-looking files, directories, invalid UTF-8, files or submitted UTF-8 content over
@@ -104,8 +107,9 @@ Required tests for mutation tool changes:
   and baseline, then rename. Failure or interruption removes the temporary sibling.
 - Model-visible mutation output is at most 8,000 characters and contains a compact receipt or a
   stable corrective error. It never contains submitted content, hashes, or an absolute path.
-- Mutation metadata paths are relative and at most 240 characters. Unified diffs are at most
+- Mutation metadata paths are relative or basename-only and at most 240 characters. Unified diffs are at most
   200,000 characters and 5,000 lines; full added/removed counts may describe omitted lines.
+  Outside mutation receipts and diff headers must not expose absolute local paths.
 - Storage derives at most one Python-compatible `file_changes` row from allowlisted flat metadata.
   Raw arrays, nested metadata, content, hashes, absolute/traversal paths, oversized diffs, and
   unknown statuses are ignored. Provider replay keeps the compact receipt, not the diff.
@@ -119,6 +123,8 @@ Required tests for mutation tool changes:
   identical replacement -> stable failure and unchanged bytes.
 - Traversal/symlink escape, binary, directory, invalid encoding, size, or secret failure -> stable
   failure and unchanged bytes.
+- Outside path under a restricted policy -> `workspace_escape`; the same canonical target under
+  full access -> execute with the normal snapshot and mutation guards.
 - Successful create/overwrite -> `add`/`update` file-change kind, bounded diff, compact receipt,
   durable call/result order, and no Python process.
 
@@ -139,6 +145,8 @@ Required tests for mutation tool changes:
   content, secret-like content, traversal, and symlink escape.
 - Edit success, missing/stale Read, oversized file, missing string, identical strings, and Patch
   success/repeated match.
+- Full-access outside Read plus Edit/Patch, outside Write, path-safe receipts/diffs, and restricted
+  outside-path rejection.
 - Compact receipts, statuses, error kinds, match counts, file-change kinds/counts, final file
   contents, and preservation after every failure.
 - Python reads Node mutation transcripts and Node reads Python mutation transcripts, including call

@@ -53,7 +53,7 @@ redirection, pipes, chained commands, or unknown syntax may require confirmation
 ## PTY And Sandbox
 
 Interactive shell sessions use `node-pty` and ConPTY. Restricted process profiles use the packaged
-`packages/tools/native/windows/mycli-windows-sandbox.exe` helper built from
+`backend/packages/tools/native/windows/mycli-windows-sandbox.exe` helper built from
 `native/windows-sandbox-helper`. A missing or invalid helper returns `sandbox_unavailable`; mycli
 does not run the command unrestricted.
 

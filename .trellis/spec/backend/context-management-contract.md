@@ -599,6 +599,82 @@ baseline_metadata = {
 }
 ```
 
+## Scenario: Node Provider-Input Timeline Windows
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node instruction/context assembly, provider-input persistence, logical request
+  projection, provider wire serialization, compaction, resume, or provider cache diagnostics.
+- The flow crosses `@mycli/core`, `@mycli/storage`, `@mycli/runtime`, `@mycli/providers`, and the
+  read-only storage doctor.
+
+### 2. Signatures
+
+- Timeline projector:
+  `projectProviderInputTimeline(input) -> ProviderInputTimelineProjection`
+- Durable events:
+  `ProviderInputTimelineEvent(kind=window_boundary|conversation_item|context_update|context_tombstone)`
+- Manifest:
+  `ProviderRequestManifestV2(timelineWindowId, timelineEventIds, requestConfigurationSha256,
+  bootstrapPrefixSha256, timelineSha256, commonPrefixItemCount)`
+- Storage reader:
+  `ModelInputLedgerStore.loadProviderInputTimelineEvents(sessionId)`
+
+### 3. Contracts
+
+- Within one window, each logical request retains the complete prior logical input as an exact
+  prefix and appends only the normalized unsynchronized conversation tail.
+- Changed context appends a complete superseding context item immediately before the new user item.
+  Removed context appends a bounded model-visible tombstone. Prior context events and items remain
+  immutable.
+- Tool call/result normalization runs before prefix comparison. Context cannot split an open batch;
+  every sibling result precedes generated tool context.
+- The first new session window uses `bootstrap`. A readable v1 session uses `legacy_bootstrap`.
+  Compaction uses `compaction`, and any other incompatible source replacement uses `source_reset`.
+  A boundary starts a new window without rewriting earlier windows.
+- Instruction snapshots, tool-set snapshots, context events, timeline events, the exact request,
+  manifest v2, and `prepared` lifecycle event commit in one transaction before provider dispatch.
+- Request configuration and request signature exclude hashes that change only because timeline items
+  were appended. Timeline growth changes `timelineSha256`, while adjacent-request diagnostics record
+  the exact `commonPrefixItemCount`.
+- Responses and native Chat keep dynamic developer context at its timeline position. DeepSeek maps
+  such an item to `system` at that same position; only bootstrap developer instructions join the
+  leading system prefix. Anthropic has only top-level system authority, so it promotes developer
+  context to `system`; that authority-preserving change may reset the system prefix, while ordinary
+  contextual-user turns still preserve the message prefix.
+- Prompt-cache prefix stability does not depend on `previous_response_id`. Continuation is a separate
+  capability-gated optimization; HTTP-compatible Responses projection replays canonical input and
+  omits `previous_response_id` unless the selected transport explicitly supports it.
+- Diagnostics persist only window ids, event ids, hashes, counts, and bounded boundary labels. They
+  must not contain raw prompt text, tool output, provider payloads, credentials, or full cache keys.
+
+### 4. Validation & Error Matrix
+
+- Previous conversation is an exact prefix -> append only the tail; no boundary.
+- Context hash changes -> append one update before current user; preserve the old request prefix.
+- Context becomes inactive -> append one tombstone referencing the superseded context.
+- Source is replaced by a compaction summary -> append a `compaction` boundary and bootstrap a new
+  window.
+- Source changes incompatibly without compaction -> append a `source_reset` boundary.
+- Existing request manifest has no timeline -> append `legacy_bootstrap` and leave the v1 request
+  reconstructable.
+- Any timeline/manifest/request/prepared write fails -> roll back the complete provider step and do
+  not call the provider.
+- Reopen or resume -> load immutable events, select the latest window, and continue its exact prefix.
+
+### 5. Tests Required
+
+- Projector tests for strict extension, context update, tombstone, all window boundaries, and
+  contiguous tool results.
+- SQLite tests for schema migration, immutable triggers, exact reconstruction, reopen/resume, and
+  transactional rollback.
+- Runtime tests for ordinary turns, changed context, compaction, v1 adoption, and provider dispatch
+  only after persistence.
+- Wire tests for Responses, native Chat, DeepSeek chronological role fallback, and ordinary
+  Anthropic message-prefix stability.
+- Continuation tests proving protocol/capability gating and prompt-cache compatibility without
+  `previous_response_id`.
+
 ## Scenario: Recovery Diagnostics And Provider Replay Recovery
 
 ### 1. Scope / Trigger
@@ -792,9 +868,9 @@ trace.append(
 - OpenAI Responses and OpenAI-compatible Chat Completions use
   `prompt_cache_key` only as a request-level wire option.
 - Anthropic Messages uses `cache_control: {"type": "ephemeral"}` only on
-  serialized payload content-block copies. The default Anthropic policy is
-  `system_and_3`: mark the final system block, then mark the last cacheable
-  content block of the latest three non-system messages.
+  serialized payload content-block copies. The Node adapter marks the final system block, then the
+  last cacheable content block of the earliest three non-system messages. Those fixed message
+  breakpoints do not move when later timeline items are appended.
 - Provider cache hints must not be written into canonical conversation messages,
   request fragments, persisted transcripts, or runtime history.
 - `RequestShape.summary()` may expose bounded policy diagnostics, including
@@ -906,7 +982,7 @@ trace.append(
 - Good: Responses payload has `prompt_cache_key` beside `model`, while input
   items contain no cache hint fields.
 - Good: Anthropic payload has `cache_control` on the final system block and the
-  latest three non-system cacheable content-block copies, while
+  earliest three non-system cacheable content-block copies, while
   `RequestShape.summary()` has no `cache_control`.
 - Base: A legacy/fake Responses client without `prompt_cache_key` support still
   receives normal `input_items` and `tools`.
@@ -1014,6 +1090,14 @@ quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config
 - Provider-specific Chat adapters may explicitly reintroduce supported metadata
   from their own namespace. Example: DeepSeek may use `metadata.deepseek` to
   replay `reasoning_content`, while default OpenAI-compatible adapters strip it.
+- The provider registry must select provider-specific Chat wire policy from the
+  resolved provider id, not from `chat_completions` alone. DeepSeek constructs
+  `ChatProvider` with `developerInstructionMode=merge_into_system`; compatible,
+  OpenAI, and Qwen Chat keep the default native developer-role projection.
+- DeepSeek bootstrap developer instructions are merged with base instructions into one leading
+  `system` message at the wire boundary. Dynamic developer-authority context is mapped to a later
+  `system` message at its timeline position. Canonical instructions and request signatures retain
+  their developer authority classification.
 - Anthropic Messages serialization must ignore Responses-private reasoning
   blocks. It may replay Anthropic raw thinking only when block metadata contains
   an Anthropic `thinking` block.
@@ -1031,8 +1115,12 @@ quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config
   prefix (`rs_` or `msg_`).
 - Chat message contains nested provider-private fields -> outgoing message has
   only supported Chat fields and recursively sanitized tool call objects.
-- DeepSeek receives `developer` role -> adapter maps/merges it into `system`
-  explicitly.
+- DeepSeek receives a bootstrap `developer` instruction -> adapter merges it into the leading
+  `system` message explicitly.
+- DeepSeek receives a dynamic developer context after conversation -> adapter maps it to `system` at
+  that chronological position.
+- A DeepSeek child agent adds a role instruction -> its first Chat request has
+  one leading `system` message and no `developer` wire message.
 - Anthropic receives a reasoning block with only Responses provider_state ->
   no Anthropic thinking block is emitted.
 - Anthropic receives raw `metadata.anthropic.type=thinking` -> thinking block is
@@ -1060,7 +1148,11 @@ quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config
 - Unit test Responses same-shape message replay and deterministic fallback ids.
 - Unit test default/OpenAI-compatible Chat recursive provider-private field
   stripping.
-- Unit test DeepSeek developer-role downgrade remains explicit.
+- Unit tests prove bootstrap developer-role downgrade remains explicit and dynamic developer context
+  remains at its chronological position.
+- Registry test proves only resolved `provider=deepseek` enables the downgrade.
+- Real Node agent smoke proves a DeepSeek Chat child completes its first
+  provider turn and tool call without starting Python.
 - Unit test Anthropic wire-only cache control remains non-mutating.
 - Unit test Anthropic ignores Responses-private reasoning while preserving
   Anthropic thinking metadata.
@@ -1165,8 +1257,9 @@ chat_message = sanitize_provider_private(chat_message)
 
 - Trigger: changes to Node workspace memory discovery, selection, context
   projection, explicit remember/forget actions, or memory-file mutation safety.
-- The flow crosses `MemoryStore`, `MemorySelector`, `MemoryContextService`,
+- The default flow crosses `MemoryStore`, `MemoryContextService`,
   `SessionStateStore`, `NodeTurnRuntime`, and provider request projection.
+  `MemorySelector` remains an optional, explicitly composed extension.
 
 ### 2. Signatures
 
@@ -1183,6 +1276,8 @@ chat_message = sanitize_provider_private(chat_message)
 
 ### 3. Contracts
 
+- Memory is disabled by default in both Python and Node. It requires an
+  explicit `[memory].enabled = true` or `MYCLI_MEMORY_ENABLED=true` opt-in.
 - Memory is rooted at
   `~/.mycli/projects/<python-compatible-real-workspace-key>/memory`.
 - `MEMORY.md` and topic reads use strict UTF-8 and realpath confinement. Model
@@ -1194,14 +1289,17 @@ chat_message = sanitize_provider_private(chat_message)
   ownership metadata and file identity. If ownership cannot be proved after a
   path swap, cleanup leaves the file in place rather than unlinking an unrelated
   path.
-- Selector fallback uses Python-compatible token weights, recency, and Unicode
-  code-point filename ordering. Provider selection has no tools, is capped at
-  512 output tokens, and receives the active turn abort signal.
+- Default selection is deterministic and local, using Python-compatible token
+  weights, recency, and Unicode code-point filename ordering. It must not make
+  a provider request. An explicitly composed provider selector has no tools, is
+  capped at 512 output tokens, and receives the active turn abort signal.
 - File memory is omitted when the current request says `ignore memory`,
   `do not use memory`, or `not use memory`; session summaries remain eligible.
 - Provider-visible memory is token-bounded, fenced as reference content, placed
   after compaction rehydration and before fresh input, and never persisted into
   canonical history.
+- The runtime collects memory at most once per provider loop and reuses the
+  resulting transient item for every tool-continuation request in that loop.
 - Explicit remember/forget runs only after durable successful turn completion.
 
 ### 4. Validation & Error Matrix
@@ -1243,7 +1341,10 @@ chat_message = sanitize_provider_private(chat_message)
 - Selector tests for JSON validation, allowlisting, five-file bounds, Python
   ordering, deterministic fallback, and AbortSignal propagation.
 - Runtime tests for placement after rehydration, absence from durable history,
-  disabled/failed/interrupted behavior, and post-success explicit actions.
+  disabled/failed/interrupted behavior, post-success explicit actions, and
+  single collection across a multi-step provider loop.
+- Backend integration must prove default memory selection adds no provider
+  request while still injecting a relevant memory into the main request.
 
 ### 7. Wrong vs Correct
 

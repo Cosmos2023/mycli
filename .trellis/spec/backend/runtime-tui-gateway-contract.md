@@ -23,6 +23,8 @@
   `WorkspaceTrustStore.save(workspaceRoot, state) -> Promise<void>`
 - Runtime policy:
   `configureExecutionPolicy({trust, permission}) -> void`
+- Approval policy:
+  `ApprovalPolicy.evaluate(call, frozenExecutionPolicy) -> decision`
 - Turn policy:
   `ExecutionPolicyCoordinator.beginTurn(turnId) -> {toolsEnabled, profile}`
 - TUI callback:
@@ -58,6 +60,18 @@
   network/writable roots; `workspace` uses workspace-write with the canonical
   workspace writable and no network; `full-access` uses explicit
   danger-full-access with unrestricted filesystem and network.
+- `full-access` skips routine approval only after valid tool parsing and
+  explicit exec-policy `deny` / `ask` / `allow` evaluation. It auto-allows
+  otherwise-unmatched valid Shell segments, known request-policy extensions,
+  and valid file mutations inside or outside the workspace. Explicit `deny`
+  remains denied; explicit `ask` becomes denied because full access never
+  surfaces routine approval prompts.
+- The frozen turn execution policy controls both approval and adapter path
+  resolution. Full access permits outside `Read`, `Write`, `Edit`, `Patch`, and
+  Shell `cwd`; workspace and read-only profiles retain workspace confinement.
+- Workspace trust remains an independent precondition for process-tool
+  exposure. Clarification and provider authentication are interactive flows,
+  not routine security approvals, and `full-access` must not suppress them.
 - The TUI waits for `workspace.trust.set` to succeed before mounting the main
   interface. Only `trusted` dismisses the startup gate. Persisted `untrusted`
   remains gated because Node mutation tools do not yet enforce a read-only
@@ -71,6 +85,10 @@
 - Missing/invalid runtime policy configuration -> no process-tool exposure.
 - Unsupported permission profile -> JSON-RPC `invalid_params`; preserve the
   prior active profile and do not reconfigure the runtime.
+- Malformed arguments or an unknown tool under `full-access` -> deny. An
+  explicit exec-policy `deny` or `ask` -> deny without an approval request.
+- Unknown or untrusted workspace with `full-access` -> keep process tools
+  unexposed; permission selection must not promote workspace trust.
 - Invalid JSON, schema, state, workspace mismatch, or unreadable record ->
   `unknown` (fail closed).
 - Workspace canonicalization failure during load -> `unknown`.
@@ -87,6 +105,10 @@
   trusted and expose `Shell`/`WriteStdin` on the next provider request.
 - Good: switch an active turn from workspace to full access and keep the
   already-frozen workspace sandbox for that turn.
+- Good: select `full-access` in a trusted workspace and run a valid unmatched
+  Shell command without emitting `approval.request`.
+- Good: use full access to Read then Patch an outside file; retain snapshot and
+  stale-read validation without exposing the absolute path in mutation output.
 - Base: a new workspace returns `unknown` and renders the trust selector.
 - Bad: write `.mycli/config.toml` inside a repository to mark that repository
   trusted.
@@ -94,6 +116,9 @@
 - Bad: let persisted `untrusted` expose process tools in a Node provider request.
 - Bad: treat provider tool schemas as the only authorization boundary and route
   an unexposed `Shell` call returned by the provider.
+- Bad: implement `full-access` ahead of explicit exec-policy evaluation or use
+  it to bypass malformed-call validation, workspace trust, clarification, or
+  provider authentication.
 
 ### 6. Tests Required
 - Config unit test: unknown, trusted round trip, corrupted record fail-closed,
@@ -108,6 +133,16 @@
 - Runtime unit tests: fail-closed initial coordinator state, immutable turn
   profile across reconfiguration, terminal release, and rejection of an
   unexposed provider tool call before persistence/execution.
+- Approval policy tests: workspace requests an unmatched routine Shell command;
+  `full-access` allows it and a known request-policy extension, while explicit
+  `ask` / `deny`, malformed arguments, and unknown tools are denied without a
+  prompt.
+- Tool tests: full access permits outside Read/Write/Edit/Patch and Shell cwd;
+  restricted policies keep rejecting traversal, absolute escape, and symlink
+  escape. Outside diffs and receipts remain path-safe.
+- Runtime/backend integration: `permissions.update(full-access)` reaches the
+  approval policy and a real PTY turn completes with zero `approval.request`
+  events.
 - Gateway tests: permission list/update payloads, invalid-profile rejection,
   trust reconfiguration, and complete permission state in bootstrap/status.
 - Backend integration: compare provider tool names before and after durable
@@ -131,6 +166,19 @@ onSelect: async () => {
 	mountMainInterface();
 };
 ```
+
+#### Wrong
+```typescript
+const decision = approvalPolicy.evaluate(call);
+```
+
+#### Correct
+```typescript
+const decision = approvalPolicy.evaluate(call, context.executionPolicy);
+```
+
+The runtime passes the coordinator's frozen turn profile to approval evaluation
+and tool execution. A later permission change does not affect a running turn.
 
 ## Scenario: Approval And Live Status Events
 
@@ -311,12 +359,49 @@ onSelect: async () => {
     `client_turn_id` when a turn is running, so Node scripted smokes and future
     clients can correlate the interrupt with the active turn. The status
     payloads should include a bounded `message` such as `Interrupt requested`.
-  - `turn.status(state=interrupted)` reports that an interrupt was requested
-    and is terminal for that `client_turn_id` at the gateway/TUI boundary.
-    If the running worker later returns a normal completed `TurnResponse` for
-    the same turn, the gateway must suppress `turn.completed`,
-    final `message.complete(final=true)`, `turn.status(state=completed)`, and
-    `status.update(state=completed)`.
+  - `turn.status(state=interrupted)` is emitted only after the runtime has
+    durably finalized the turn as interrupted. It is proof of the terminal
+    runtime state, not merely proof that a cancellation signal was sent.
+  - The TUI may optimistically render a local `interrupting` status immediately
+    after Ctrl+C/Escape, but it must keep the turn busy and must not restore the
+    composer, terminalize transcript items, or dispatch queued input until the
+    confirmed `turn.interrupted` event arrives.
+  - `turn.interrupt` requires the expected active `turn_id`. A mismatch returns
+    `turn_id_mismatch` with the current `actual_turn_id`; the TUI may retry once
+    for a lifecycle-notification race.
+  - The accepted `turn.interrupt` RPC aborts the active controller, waits up to
+    100 ms for cooperative runtime settlement, and then invokes the runtime's
+    forced interruption boundary. That boundary atomically closes pending tool
+    results, persists the interrupted turn, writes the terminal snapshot, and
+    fences all late completion writes before the gateway emits terminal events.
+  - The interrupt RPC response remains pending until the confirmed terminal
+    interruption has been emitted. Multiple matching interrupt requests share
+    the same in-flight interruption and resolve from the same terminal result.
+  - A force-finalized in-process Promise may still unwind after the gateway has
+    released the active turn, but its callbacks are generation/turn fenced and
+    its storage writes cannot replace the terminal interrupted record.
+  - A tool that emitted `tool.start` must emit exactly one terminal lifecycle
+    event before turn finalization. Abort uses `tool.failed` with
+    `error_kind=tool_interrupted`. A claimed approval effect whose outcome
+    cannot be proven uses `effect_outcome_unknown` instead.
+  - Storage closes every interrupted pending canonical tool call with a
+    synthetic failed result using `error_kind=tool_interrupted`; ordinary turn
+    failures continue to use `tool_result_unavailable`.
+  - TUI reducers defensively terminalize any foreground tool still marked
+    `running` when a terminal interruption arrives. Detached background shell
+    sessions remain running and continue through their own lifecycle.
+  - `turn.interrupt` returns `accepted=false`, `requested=false`, plus an
+    authoritative status snapshot when no active turn exists. TUI clients must
+    clear optimistic interrupt state and must not render a success notice for
+    that rejected request.
+  - `rollback_user_input` never deletes or rewrites canonical conversation,
+    history, or rollout rows. `input_rolled_back=true` is a compensating UI
+    acknowledgement that the output-free submitted text may be restored to the
+    composer; it is denied after visible assistant, reasoning, tool, approval,
+    or clarification activity.
+  - A second Ctrl+C within two seconds remains an explicit process-exit path.
+    It is independent from the 100 ms forced persistence fence and does not
+    claim that an externally committed side effect was reversed.
   - `turn.completion_suppressed` payload:
     - `client_turn_id`: string for the interrupted turn whose late completion
       was suppressed
@@ -374,6 +459,10 @@ onSelect: async () => {
     outside the runtime event boundary during process bootstrap.
 - Tool lifecycle notifications come from real tool execution, not model-side
   tool-call request streaming:
+  - Every started, completed, or failed tool remains represented in the TUI
+    transcript in `default`, `focus`, and `verbose` modes. View modes may change
+    history scope and detail density, and consecutive context tools may collapse
+    into an expandable summary, but they must not hide a tool execution.
   - All `tool.*` lifecycle payloads must include `client_turn_id` so clients
     can correlate tool timeline rows with the active turn.
   - `tool.start` payload includes `client_turn_id`, `tool_id`, `call_id`,
@@ -473,6 +562,12 @@ onSelect: async () => {
   - `workspace`, `model`, and `provider`: bounded display metadata for the
     active runtime context.
   - `context_window`: object with `used_tokens`, `max_tokens`, and `source`.
+    `used_tokens` comes from the latest completed provider step's persisted
+    `last_token_usage` (`input_tokens`, falling back to `total_tokens`), not from the
+    turn's cumulative `usage`. `/usage` continues to aggregate the cumulative field.
+    Legacy rollouts without `last_token_usage` remain readable with
+    `source=provider_aggregate` so clients do not mistake that fallback for an exact
+    active-context measurement.
   - `pending_decision`: boolean indicating whether the active session has a
     persisted pending approval.
   - `suspended_turn`: boolean indicating whether the active session has a
@@ -578,13 +673,30 @@ onSelect: async () => {
 - Before every provider request, atomically append matching pending steers to
   canonical conversation/history and remove them from `input_queue` by
   `queue_id`; then reload canonical provider history.
+- After that durable commit, publish `item.started` and `item.completed` for
+  every visible committed steer before the next provider request. Reuse the
+  queue record `clientTurnId` as `client_user_message_id` and the durable
+  history item id as the lifecycle item id so direct/mirrored event dedup keeps
+  one user transcript row and clears the matching optimistic pending preview.
 - On normal completion, persist remaining matching pending steers as
   `rejected_steer` before terminal success. Interruption retains pending steers.
 - After a completed turn, inspect at most one rejected steer/follow-up. Reuse
   its `clientTurnId` as the reservation idempotency key, reserve first, and call
   `markStarted()` only after reservation succeeds.
+- After reservation and `markStarted()` succeed, publish `item.started` and
+  `item.completed` for the queued turn before provider IO. Reuse the queue
+  record `clientTurnId` as `client_user_message_id`; project a rejected steer
+  with `source=steer` and an ordinary follow-up with `source=submit`. This
+  lifecycle lets the TUI render the user input once and clear its matching
+  optimistic queue entry.
 - Queue callbacks carry the captured session generation. Old-generation
   callbacks cannot replace or publish the new active session queue.
+- A successful queue-mutation RPC response is also an authoritative TUI
+  acknowledgement. Remove the matching optimistic input by
+  `client_user_message_id` before applying the response's monotonic queue
+  snapshot. The response and `turn.queue.updated` notification may arrive in
+  either order; an older revision must not restore a consumed preview. An RPC
+  failure keeps the local recovery path intact.
 - Preserve unknown compatible Python root and record fields when rewriting the
   `input_queue` payload.
 
@@ -621,7 +733,18 @@ onSelect: async () => {
   together and Python optional fields survive snapshot CAS writes.
 - Gateway tests asserting event-before-response only after persistence, stale
   steer deferral, queue RPC revisions, sanitized errors, generation fencing,
-  reservation-before-removal, and reservation-failure retention.
+  reservation-before-removal, reservation-failure retention, and queued-turn
+  user lifecycle identity/source for both rejected steers and follow-ups.
+- TUI reducer tests proving the queued-turn `item.completed` identity removes
+  the matching optimistic pending input and appends one user transcript row.
+- TUI reducer tests proving a successful queue RPC replaces its optimistic
+  input with one durable preview, a later empty snapshot removes the preview,
+  and an older notification cannot restore it.
+- A real Node backend composition test must cover both steer outcomes: commit
+  before a later provider step and deferral into a new queued turn. Feed the
+  emitted direct/mirrored events through the production TUI deduper, reducer,
+  projection, and transcript renderer; require one visible user row for each
+  steering message and the same messages in durable transcript loading.
 - Backend restart integration proving a queued record is readable after process
   restart without provider IO.
 
@@ -646,13 +769,13 @@ queue.markStarted(record.queueId);
 
 - Node workspace dependency layout:
   - The repository root `package.json` is the workspace composition root for
-    `packages/*` and `tui/*`; the root `package-lock.json` is authoritative.
+    `backend/packages/*` and `tui/*`; the root `package-lock.json` is authoritative.
   - Run `npm ci` from the repository root. Do not restore or depend on a nested
     `tui/mycli-shell/package-lock.json`.
   - Workspace tooling such as `tsx` and `typescript` may resolve from the root
     `node_modules`; diagnostics and process launch code must recognize that
     layout instead of requiring duplicate nested installations.
-  - Canonical hand-edited schemas live under `packages/contracts/schemas`.
+  - Canonical hand-edited schemas live under `backend/packages/contracts/schemas`.
     Generated TypeScript declarations and Python JSON resources must be
     regenerated together and must pass `npm run contracts:check`.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
@@ -685,6 +808,12 @@ queue.markStarted(record.queueId);
     TUI reducer as `tool_summary` transcript rows. The reducer matches existing
     rows by `tool_id` first and `call_id` second, so completion updates the
     running row instead of appending duplicates.
+  - Live and resumed transcript projection preserve the same semantic order when an assistant
+    preamble accompanies tool calls: one assistant row, then the tool rows, then later assistant
+    text. A resumed tool row must not reuse the assistant preamble as its target or arguments.
+  - Resumed Skill rows display an allowlisted `skill_name` projected from the structured call. The
+    adapter may accept legacy `arguments.name`, but must prefer explicit safe target metadata and
+    must never expose raw argument objects or private tool rationale.
   - `tool.complete` maps the matching row to `status: "done"` and
     `tool.failed` maps it to `status: "failed"`. If completion arrives without
     a prior start, the reducer creates a compact fallback row.
@@ -868,9 +997,12 @@ queue.markStarted(record.queueId);
 - Scripted Node smoke clients must reduce expected request failures through the
   same `request.failed` state action before dumping state, so no-pending or
   wrong-decision approval errors remain testable as visible TUI diagnostics.
-- User interrupt while a turn is running -> emit `turn.interrupted`, then
-  `turn.status` with `state=interrupted`, `terminal=true`, and a bounded
-  `message`, then `status.update` with `interrupted`.
+- User interrupt with the matching active `turn_id` -> enter local
+  `interrupting`, abort the runtime signal, wait for cooperative cleanup or the
+  100 ms force boundary, then emit `turn.interrupted`, `turn.status` with
+  `state=interrupted`, `terminal=true`, and `status.update` with `interrupted`.
+- Missing active turn -> `accepted=false`; stale `turn_id` ->
+  `turn_id_mismatch` with bounded `actual_turn_id` and no cancellation.
 - User interrupt followed by a late normal worker completion -> preserve the
   interrupted status, emit `turn.completion_suppressed`, and do not append or
   finalize late assistant text.
@@ -972,8 +1104,8 @@ queue.markStarted(record.queueId);
   cross-language Node test.
 - Bad: Feeding both direct method-name notifications and their `runtime.event`
   mirrors into the same visible reducer path without deduplication.
-- Bad: Treating `turn.status(state=interrupted)` as proof that runtime
-  execution stopped. It is currently an interrupt-request signal.
+- Bad: Emitting `turn.status(state=interrupted)` or resolving the interrupt RPC
+  before the runtime has persisted its terminal interrupted record.
 - Bad: Returning `[trace-jsonl]` prefixes from `trace.export`; those are only
   for slash command transcript output.
 - Bad: Advertising extension lifecycle or ACP server support before those
@@ -1179,7 +1311,7 @@ return bootstrap;
 ## Scenario: Provider-Free Node Management CLI And Setup
 
 ### 1. Scope / Trigger
-- Trigger: Changes to Node CLI parsing, `setup`, `doctor`, hooks/plugins/MCP/subagent management,
+- Trigger: Changes to Node CLI parsing, `setup`, `doctor`, hooks/plugins/MCP management,
   user provider config writes, auth writes, or the setup TUI entrypoint.
 - Utility commands are a control-plane path. They must remain outside interactive backend,
   provider, turn-runtime, and gateway/TUI startup unless `setup` explicitly opens its own TUI.
@@ -1203,7 +1335,7 @@ return bootstrap;
   `{name, status: "ok" | "warning" | "failed", message, detail?}`.
 - Commands:
   `setup`, `doctor [--json]`, `hooks list|inspect|approve|revoke`,
-  `plugins list|inspect|run`, `mcp list|inspect`, and `subagents list|inspect`.
+  `plugins list|inspect|run`, and `mcp list|inspect`.
 
 ### 3. Contracts
 - Parse management commands before TTY validation, Node backend/provider construction, gateway
@@ -1215,8 +1347,8 @@ return bootstrap;
   response object and do not scrape JSON or provider/runtime output.
 - Plugin `--json-args` accepts one JSON object only. Arrays, scalars, malformed JSON, duplicates,
   and missing values are invalid usage.
-- Management rows expose bounded metadata only. Subagent list/inspect rows must omit the profile
-  `prompt`; hook rows omit command/env values; no response includes API keys.
+- Management rows expose bounded metadata only. Hook rows omit command/env values; no response
+  includes API keys. Agent-profile management commands and profile discovery are disabled.
 - Setup builds provider rows from Node provider profiles and auth presence, including Anthropic.
   TTY setup calls the in-process setup TUI; non-TTY setup and TUI startup failures use the plain
   interaction. A user cancel does not fall through from TUI to plain setup.
@@ -1276,8 +1408,8 @@ return bootstrap;
 - Good: `mycli mcp list --json` succeeds with piped stdio and starts zero backends/providers/TUIs.
 - Good: `mycli setup` consumes pre-buffered piped answers, writes private config/auth files, and
   never writes the API key to stdout or the response object.
-- Base: `subagents list --json` returns ids, descriptions, tool scopes, budgets, and source metadata
-  without profile prompts.
+- Base: doctor reports `subagents=ok mode=prompt_driven profiles=disabled` without scanning profile
+  directories or constructing a provider.
 - Good: Compiled `mycli doctor --json` on a fresh temporary home returns one parseable report,
   warning-only exit `0`, empty stderr, zero backend/provider/TUI starts, and does not create
   `.mycli`.
@@ -1288,7 +1420,8 @@ return bootstrap;
 - Bad: Checking TTY or starting the Node backend before recognizing `hooks list`.
 - Bad: Returning the setup wizard result as JSON, printing the API key, or writing it through a
   world-readable temporary result file.
-- Bad: Returning the raw `SubagentProfile` from a management service because it contains `prompt`.
+- Bad: Reintroducing `subagents list|inspect` or exposing profile-selected prompts, tools, models,
+  or budgets.
 - Bad: Treating every JSON `content`/`stderr` key as a secret leak, which makes correctly redacted
   model diagnostics fail permanently.
 - Bad: Racing a timeout and returning before the normal MCP/plugin close path has observed abort.
@@ -1297,21 +1430,21 @@ return bootstrap;
 - Parser unit tests cover every command/action, interactive flags, usage failures, duplicate flags,
   and object-only plugin JSON arguments.
 - CLI tests run JSON management under non-TTY streams and assert backend/provider/TUI factory call
-  counts remain zero; test default hooks/plugins/MCP/subagent composition as well as injected fakes.
+  counts remain zero; test default hooks/plugins/MCP composition as well as injected fakes.
 - Config tests cover auth merge/replacement, concurrent writers, mode `0600`, TOML preservation,
   inline-key removal, pre-rename failure preservation, redacted errors, and temp cleanup.
 - Setup tests cover all provider rows, stored-auth presence, success persistence, cancellation,
   TUI-to-plain fallback, pre-buffered pipe input, and key absence from output/response.
 - TUI tests assert direct submit/cancel Promise results, terminal cleanup, and in-memory setup
   completion without a cross-runtime result file.
-- Management tests assert subagent responses do not contain a `prompt` property or prompt text.
+- Parser tests assert retired subagent-profile commands fail as unsupported arguments.
 - Doctor runner tests assert collector order, exception isolation, timeout cancellation plus
   cleanup, later-collector progress, stable counts, shared human/JSON data, and exit semantics.
 - Doctor redaction tests assert config/header/environment/plugin/provider secrets never appear,
   references are bounded, and benign payload keys do not create findings.
-- Doctor integration tests use malformed hooks/skills/subagent profiles, a Python plugin candidate,
-  and real plugin/MCP management lifecycles; assert migration status, zero provider calls, and one
-  deterministic close per started probe.
+- Doctor integration tests use malformed hooks/skills, a Python plugin candidate, and real
+  plugin/MCP management lifecycles; assert prompt-driven subagent status, migration status, zero
+  provider calls, and one deterministic close per started probe.
 - Storage tests assert missing-state checks create nothing and an existing SQLite database keeps the
   same modification time after read-only validation.
 
@@ -1350,7 +1483,7 @@ const report = await runDoctorCollectors(collectors, signal, {
 ## Scenario: Node-Only npm Composition Root With Independent Python Reference
 
 ### 1. Scope / Trigger
-- Trigger: Changes to `apps/mycli`, `startNodeBackend`, gateway transport injection, process
+- Trigger: Changes to `backend/apps/mycli`, `startNodeBackend`, gateway transport injection, process
   signals, package exports, npm startup, or the Node/Python runtime boundary.
 - The npm CLI owns the terminal and process lifecycle and starts only the Node backend. The Python
   package remains independently launchable through `uv run mycli`; npm must never import, probe,
@@ -2137,8 +2270,9 @@ await gatewayClose({ shellManager, drainLifecycle, closeStore });
 
 ### 1. Scope / Trigger
 
-- Trigger: changes to Node integration composition, extension tool approval metadata, the `Task` /
-  `SubagentOutput` / `SendMessage` tools, durable child-task ownership, `subagent.updated`, or TUI
+- Trigger: changes to Node integration composition, extension tool approval metadata, the
+  `spawn_agent` / `send_message` / `followup_task` / `wait_agent` / `interrupt_agent` /
+  `list_agents` tools, durable child-task ownership, `subagent.updated`, or TUI
   consumers of generated gateway event types.
 - This is a cross-layer contract spanning tool execution, integrations, SQLite task records, the
   gateway, generated contracts, and the existing TUI task surfaces.
@@ -2150,11 +2284,9 @@ await gatewayClose({ shellManager, drainLifecycle, closeStore });
 - Tool execution ownership:
   `ToolExecutionOptions = {ownerSessionId: string, ownerTurnId?: string, ...}`.
 - Child start:
-  `SubagentControlContract.start({parentSessionId?, parentTurnId?, profileId, prompt, ...})`.
-- Child lookup:
-  `SubagentControlContract.output(childSessionId, parentSessionId?)`.
-- Child message:
-  `SubagentControlContract.send(childSessionId, message, parentSessionId?)`.
+  `SubagentControlContract.start({parentSessionId?, parentTurnId?, prompt, ...})`.
+- Codex-style spawn:
+  `AgentCoordinationControlContract.spawnAgent({ownerSessionId, ownerTurnId?, taskName, message, forkTurns?})`.
 - Internal projection:
   `{parent_session_id, run_id, child_session_id, role, status, summary, progress}`.
 - Public notification:
@@ -2173,14 +2305,13 @@ await gatewayClose({ shellManager, drainLifecycle, closeStore });
   MCP and plugin tools request one-time approval; an extension route absent from registered approval
   metadata fails closed.
 - `NodeTurnRuntime` and approval continuation both pass the executing session and turn through
-  `ToolExecutionOptions`. `TaskTool` forwards those values instead of using the backend startup
-  session or a placeholder turn id.
-- Each `OwnedChild` freezes its parent session at start. Reservation, factory input, progress,
-  completion, failure, interruption, output lookup, message delivery, and shutdown cleanup use that
-  same owner. `SubagentOutput` and `SendMessage` cannot access a child owned by another session.
-- Child runtimes reuse the real Node runtime through `ChildRuntimeFactory`, receive a frozen narrowed
-  tool list, and do not expose recursive `Task` routing unless an explicitly supported profile design
-  introduces it later.
+  `ToolExecutionOptions`. Every coordination adapter, including `spawn_agent`, forwards those
+  values instead of using the backend startup session or a placeholder turn id.
+- Each child freezes its parent session at start. Reservation, factory input, progress, completion,
+  failure, interruption, mailbox delivery, and shutdown cleanup use that same owner.
+- Child runtimes reuse the real Node runtime through `ChildRuntimeFactory`, inherit the parent's
+  currently exposed tools, and remove coordination routes only when the configured depth disallows
+  descendants. No agent profile can override model, prompt, tool scope, or budget.
 - Internal subagent updates carry `parent_session_id` only for gateway filtering. The gateway drops
   stale-session events, strips the ownership field, bounds every public field, and never projects raw
   child reports, provider payloads, tool output, or private process data.
@@ -2196,7 +2327,7 @@ await gatewayClose({ shellManager, drainLifecycle, closeStore });
 - Duplicate source id -> `duplicate_integration_source`; duplicate tool route ->
   `duplicate_tool_route`; neither may mutate the built-in manifest.
 - Unknown extension approval route -> deny before adapter execution.
-- Child lookup/message with a mismatched parent session -> `missing` / `unavailable`, with no child
+- Child message with a mismatched root session -> typed unavailable/forbidden result, with no child
   handle call and no cross-session record exposure.
 - Parent shutdown with a running child -> abort, persist interruption with the child's frozen owner,
   close within the configured bound, and remain idempotent.
@@ -2208,12 +2339,12 @@ await gatewayClose({ shellManager, drainLifecycle, closeStore });
 
 ### 5. Good/Base/Bad Cases
 
-- Good: resume session B, start `Task`, persist the child under B and its real parent turn, deliver
+- Good: resume session B, call `spawn_agent`, persist the child under B and its real parent turn, deliver
   output/messages only through B, and emit running/completed updates only while B is active.
 - Good: an old background child from session A completes after resuming B; its durable A record is
   updated but its UI event is filtered from B.
-- Base: no MCP/plugin config exists; built-in skills and subagent profiles still compose, and close
-  remains a no-op-safe ordered lifecycle.
+- Base: no MCP/plugin config exists; built-in skills and prompt-driven subagent controls still
+  compose, and close remains a no-op-safe ordered lifecycle.
 - Bad: keep `parentSessionId` only in controller constructor state; children started after resume are
   persisted under the backend's original session.
 - Bad: expose `parent_session_id`, child report text, or provider response fields in
@@ -2226,7 +2357,7 @@ await gatewayClose({ shellManager, drainLifecycle, closeStore });
 - Composition tests assert deterministic start/reverse-close, idempotent bounded shutdown, partial
   failure cleanup, built-in manifest immutability, collision rejection, and package DAG direction.
 - Runtime/tool tests assert `ownerSessionId` and `ownerTurnId` on ordinary execution and approval
-  continuation, plus Task forwarding into the controller.
+  continuation, plus `spawn_agent` forwarding into the supervisor.
 - Controller tests use real SQLite task storage to assert dynamic session/turn ownership across
   start, progress, terminal state, output, messaging, interruption, and close.
 - Backend integration runs a real parent/child/parent provider sequence, asserts the child sees only
@@ -2267,6 +2398,135 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, inp
 	if (method === "subagent.updated") return applySubagentUpdate(state, params);
 	return state;
 }
+```
+
+## Scenario: Node Subagent Interactive Continuation
+
+### 1. Scope / Trigger
+
+- Trigger: changes to child approval or clarification suspension, child runtime continuation,
+  gateway response routing, TUI interactive request state, or subagent terminal projection.
+
+### 2. Signatures
+
+- Broker open:
+  `openTurn({sessionId, agentPath, workerName, runtime, signal, emitLifecycle, emitRuntime})`.
+- Broker ownership snapshot:
+  `pending() -> readonly AgentInteractiveRequestSnapshot[]` in stable registration order.
+- Internal cancellation lifecycle:
+  `interactive.cancelled({session_id, child_session_id, generation, client_turn_id, turn_id,
+  decision_id | request_id})`.
+- Approval request/response identity:
+  `{session_id, child_session_id, generation, decision_id, client_turn_id, turn_id}`.
+- Clarification request/response identity:
+  `{session_id, child_session_id, generation, request_id, client_turn_id, turn_id}`.
+- Gateway presentation queue:
+  `QueuedInteractiveRequest = {method, params, identity}` where identity contains request kind,
+  session, generation, and decision/request id.
+
+### 3. Contracts
+
+- A child `approval_requested` or `clarification_requested` event transitions the agent thread to
+  `waiting` while its durable subagent task remains `running`; it does not emit completion mail or
+  any terminal `subagent.updated` event.
+- The gateway and TUI preserve the child `session_id` and broker `generation` on the pending
+  request. Responses route by that pair and resume the same resident child runtime and suspended
+  turn, not a root runtime or a newly constructed child.
+- A response may begin continuation before the initial suspended `submit()` returns
+  `status=in_progress`. The broker treats that result as valid while continuation is active and
+  waits for the continuation result.
+- Only a completed, failed, or interrupted continuation terminalizes the child task and parent
+  mailbox delivery. A continuation that suspends again must register another interactive request.
+- The broker is the source of truth for child interactive ownership. It keeps at most one pending
+  request per child session, publishes every newly registered request immediately, and replays all
+  pending requests in insertion order to a new subscriber. It must not contain TUI visibility,
+  current-request, or presentation-queue state.
+- Root and child approval/clarification requests share one gateway FIFO presentation queue. Only
+  the head is published to the TUI; a matching response removes it and publishes the next request.
+  A later request must never overwrite an earlier unresolved request in the TUI's single selector.
+- Approval and clarification selectors display a non-terminal `Submitting...` state while the
+  response RPC is in flight. They display success only after the RPC resolves; rejection restores
+  the choices so the user can retry instead of leaving a false `Approved.` or `Answered:` state.
+- A waiting child that fails or is interrupted emits `interactive.cancelled` from the broker. The
+  gateway removes the exact matching presentation entry before publishing the next request; queue
+  cleanup must not be inferred from a later `subagent.updated` projection.
+- Session resume consults the broker pending snapshot in addition to the presentation queue and is
+  rejected while any agent request owns the terminal. Gateway close discards presentation state
+  after unsubscribing from request producers.
+- Spawn freezes the parent runtime's current execution-policy snapshot. A Full Access child keeps
+  `permission=full-access`, `sandboxMode=danger-full-access`, `filesystem=unrestricted`, and enabled
+  network, so ordinary permitted child tools do not emit approval requests.
+
+### 4. Validation & Error Matrix
+
+- Unknown child `session_id` -> `approval_not_pending` or `clarification_not_pending`.
+- Stale or mismatched `generation` -> reject without consuming the current pending request.
+- Wrong decision/request id or unsupported approval choice -> reject without resuming the child.
+- `status=in_progress` with neither a pending request nor an active continuation ->
+  `child_runtime_suspended_without_interactive_request`.
+- Duplicate request identity -> keep the existing queue position and do not publish a second row.
+- A second pending request from the same child session ->
+  `agent_interactive_request_already_pending`; do not replace the original continuation.
+- Approval or clarification response RPC rejection -> keep the request pending, restore selector
+  input, and render the bounded gateway error; do not display success.
+- Session resume with a queued child interaction -> `turn_in_progress`; preserve the active session
+  and request ordering.
+- Child failure or interruption while waiting -> broker removes ownership and publishes an exact
+  internal cancellation; gateway removes only the matching request and advances without a
+  synthetic user response.
+
+### 5. Good/Base/Bad Cases
+
+- Good: child Shell requests approval, TUI responds immediately, the initial suspended submit then
+  returns, and the already active continuation completes the same child session.
+- Base: one child waits for approval while another queued child waits for clarification; resolving
+  the announced request publishes the next one without changing either child identity.
+- Good: two children register synchronously; the broker publishes both independent requests, while
+  the gateway exposes only the first to the shared selector and retains the second in order.
+- Good: root and three children request Shell approval concurrently; the TUI shows one identified
+  request at a time and advances exactly once after each accepted response.
+- Good: a Full Access root spawns a child that runs Shell with the frozen unrestricted profile and
+  produces zero approval events.
+- Bad: mark the task failed as soon as the initial child submit returns `in_progress`, or route the
+  approval to the currently active root session.
+- Bad: replace the visible root approval with a later child approval, or lock the selector on
+  `Approved.` before the gateway accepts the response.
+- Bad: serialize requests inside both the broker and gateway, or remove broker ownership by
+  observing an unrelated terminal UI projection.
+
+### 6. Tests Required
+
+- Broker unit tests cover normal approval, the response-before-suspended-submit race, independent
+  child publication, ordered subscription replay, stale generations, exact cancellation, and
+  same-runtime completion.
+- Gateway and TUI tests assert child identity survives request projection and response submission.
+- Gateway tests enqueue simultaneous root and child requests and assert only the head is published
+  before its response, reject session resume while a child request is pending, and advance after a
+  terminal child update; TUI tests reject approval and clarification responses and assert choices
+  become actionable again.
+- A backend integration test uses a real child Shell approval path and asserts `running` task plus
+  `waiting` thread before approval, no terminal event, same child provider continuation, tool replay,
+  and final completed report after approval.
+- A Full Access backend integration asserts the persisted child spawn snapshot remains unrestricted,
+  the real child Shell output reaches provider replay, and no approval event is emitted.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+pendingApproval = latestApproval;
+selector.showApproved();
+void respondApproval(activeRootSessionId, decision);
+```
+
+#### Correct
+
+```typescript
+broker.register(childSessionId, pending);
+gatewayPresentationQueue.push(pending);
+await respondApproval({ sessionId: pending.childSessionId, generation: pending.generation, decision });
+gatewayPresentationQueue.publishNext();
 ```
 
 ## Scenario: Node M7 Extension Gateway Surface And Ownership Boundary
@@ -2363,4 +2623,228 @@ try {
 ```typescript
 const backend = selectBackendBeforeTurn(config);
 return backend.run(turn); // Ownership is fixed for the accepted turn.
+```
+
+## Scenario: Cross-Runtime Slash Command Behavioral Parity
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing a retained slash command, its backing service, gateway RPC, TUI
+  action, persistence path, or Python-to-Node migration claim.
+- Registry names and dispatch metadata are discovery contracts, not proof of behavioral parity.
+
+### 2. Signatures
+
+- Node registry: `node-slash-command-registry.ts`.
+- Node execution: `command.run`, command-specific RPCs, and TUI client actions.
+- Python reference: `slash_command_registry.py` plus `slash_command_dispatch.py` and the service
+  called by the command.
+- Model catalog: `~/.mycli/models.json` -> `model.list` -> TUI model selector -> `model.select` ->
+  `~/.mycli/config.toml`.
+
+### 3. Contracts
+
+- A retained command is behaviorally compatible only when its data source, argument semantics,
+  validation, side effects, persistence, restart behavior, error behavior, and user-visible result
+  agree across the retained Python and Node runtimes.
+- Metadata hashes may freeze command names, aliases, surfaces, and presentation, but must not be
+  described as full parity evidence without behavioral tests.
+- Node `/model` reads the Python-compatible user-owned `~/.mycli/models.json`. It bootstraps the
+  same built-in catalog only when the file is missing and never replaces an existing registry.
+- `model.list` returns every valid catalog entry with the exact current entry first. Public payloads
+  include selection metadata but exclude `auth_ref`, API keys, and other credentials.
+- `session.bootstrap.models` is a top-level catalog payload, not a field inside `status`. The TUI
+  adapter stores it as catalog state before projecting the model selector. Later `status.changed`
+  events that omit a catalog must preserve the last catalog instead of collapsing to the current
+  model fallback.
+- Opening the bare TUI `/model` refreshes `model.list` immediately before mounting the selector,
+  and a successful `model.select` response refreshes the stored catalog so current markers and
+  runtime edits to `models.json` are visible without restarting.
+- `model.select` resolves `auth_ref` on the backend from the selected catalog entry, verifies the
+  credential exists, validates provider/protocol/base URL and supported reasoning effort, and only
+  then atomically persists model settings.
+- Bare TUI `/model`, direct `model.list`/`model.select`, and inline `/model <name>` share the same
+  catalog and selection path. Inline selection must not mutate only transient Gateway fields.
+- A failed selection leaves the active provider/model and durable config unchanged. A successful
+  selection is visible in `/status`, subsequent turns and subagents, and after restart.
+- Explicitly retired commands remain absent. Behavioral parity must not reintroduce retired
+  surfaces such as agent-profile management.
+
+### 4. Validation & Error Matrix
+
+- Missing `models.json` -> atomically create the compatible built-in registry with private
+  directory/file permissions.
+- Invalid JSON, missing `models`, duplicate identity, unsupported provider/protocol, invalid URL,
+  repeated reasoning effort, or unlisted default effort -> bounded `model_catalog_error`.
+- Model absent from the catalog, endpoint mismatch, unsupported effort, or missing catalog
+  credential -> reject before config mutation and provider startup.
+- Model without a reasoning effort -> persist thinking disabled and remove stale active thinking
+  effort while retaining a valid base reasoning setting for future models.
+- Public model payload or error -> no API key, bearer token, raw auth-store content, or private
+  absolute path.
+
+### 5. Good/Base/Bad Cases
+
+- Good: one shared fixture produces identical Python and Node public model-catalog payloads, then a
+  catalog selection survives restart and is used by the next Node turn.
+- Base: an existing catalog with no exact current entry is returned intact with no row marked
+  current.
+- Bad: synthesize one default model per provider and call it catalog parity.
+- Bad: accept arbitrary `model.select` input or trust `auth_ref` supplied by the TUI.
+- Bad: freeze only the slash registry checksum while command services use different data sources.
+
+### 6. Tests Required
+
+- Config unit tests cover compatible loading, bootstrap, private permissions, exact current
+  matching, duplicate and reasoning validation, and credential-free payloads.
+- A Python/Node parity test feeds the same `models.json` to both implementations and compares all
+  public fields and ordering.
+- Gateway tests cover bare/inline ownership, catalog-backed inline selection, structured failures,
+  current `/status` projection, and the next turn's model/reasoning overrides.
+- TUI adapter tests pass a catalog through the top-level bootstrap envelope, project every entry,
+  preserve it across a catalog-free `status.changed`, and replace it from a later `model.list`.
+- Backend integration tests use a temporary HOME with a real catalog and auth store, verify
+  catalog-owned `auth_ref`, persistence, restart recovery, and absence of credentials in responses.
+- Every other retained slash command changed in the future requires an equivalent behavioral test;
+  updating only the registry hash is insufficient.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const models = listProviderProfiles().map(defaultModelForProvider);
+gateway.model = requestedModel;
+```
+
+#### Correct
+
+```typescript
+const catalog = await loadModelCatalog({ homeDir, currentConfig });
+const selected = validateCatalogSelection(catalog, request);
+await persistModelSelection(selected);
+```
+
+## Scenario: Supervised Node Turn Interruption
+
+### 1. Scope / Trigger
+
+- Trigger: changing Node backend process ownership, Worker Thread transport,
+  `turn.interrupt`, pending tool-call recovery, interrupted-turn provider replay,
+  or TUI terminal-interruption ordering.
+- This contract spans CLI, Worker supervision, Gateway JSON-RPC, runtime,
+  SQLite, canonical context, and the next provider request.
+
+### 2. Signatures
+
+- Default CLI boundary:
+  `startSupervisedNodeBackend(options: StartNodeBackendOptions) -> Promise<NodeBackend>`.
+- Direct integration-test boundary:
+  `startNodeBackend(options: StartNodeBackendOptions) -> Promise<NodeBackend>`.
+- Targeted recovery:
+  `SQLiteSessionStore.recoverInterruptedTurn(sessionId, turnId, userInitiated?) -> RuntimeTurnRecord | undefined`.
+- Recovery startup descriptor:
+  `RecoverInterruptedTurnOptions { sessionId, turnId, inputRolledBack?, userInitiated }`.
+- Canonical replay marker:
+  `turnAbortedContextItem(turnId) -> { itemId, item }`, where `item` has
+  `role=developer`, `kind=turn_aborted`, `cacheClass=dynamic`,
+  `durability=persistent`, and `scope=transcript`.
+
+### 3. Contracts
+
+- Interactive CLI startup hosts the whole Node backend in one supervised Worker
+  Thread. Provider adapters, tools, shell ownership, subagents, Gateway, and
+  SQLite are constructed inside that Worker because those live objects are not
+  structured-cloneable.
+- `turn.interrupt` first uses the existing cooperative `AbortSignal` path. The
+  Gateway waits 100 ms and durably force-finalizes a responsive asynchronous
+  turn. The parent supervisor independently waits 250 ms; if the Worker event
+  loop is still unresponsive, it calls `Worker.terminate()` and starts a fresh
+  Worker for the same active session.
+- The supervisor keeps the same parent-owned `GatewayTransport` streams across
+  restart, queues new client input while restarting, and ignores output from a
+  stale Worker generation. A restarted Worker must not require the TUI to
+  remount its transport.
+- Hard recovery uses the exact active `sessionId + turnId`. It atomically
+  appends one synthetic `tool_interrupted` result for every pending canonical
+  tool call, appends the deterministic `<turn_aborted>` context marker for a
+  user-initiated interrupt, appends the interrupted rollout, and changes the
+  turn to `interrupted`. Repeating the recovery is idempotent.
+- The recovery marker text warns that a command may have partially executed.
+  Terminating JavaScript cannot prove that an external process or side effect
+  was reversed. Hard recovery therefore reports `input_rolled_back=false`
+  unless rollback safety was independently proven.
+- A fresh Worker publishes `turn.interrupted`, terminal `turn.status`,
+  `status.update`, and idle `status.changed` from the recovered durable record.
+  The supervisor returns `accepted=true` for the original interrupt RPC only
+  after it has observed the matching recovered terminal notification.
+- The `<turn_aborted>` item is projected into the next provider request as a
+  developer-visible canonical context item. It must be persisted before it can
+  enter provider context. Ordinary crash/startup orphan recovery does not append
+  this user-intent marker because it cannot truthfully claim an intentional
+  user interruption.
+- Direct `startNodeBackend()` remains available for focused integration tests;
+  production interactive CLI startup uses the supervised boundary.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Turn settles within the cooperative/force boundary | Keep the Worker; forward its terminal events and RPC response |
+| Worker event loop remains blocked past the watchdog | Terminate it, recover the exact turn, restart, then resolve the RPC |
+| Recovery descriptor session differs from startup session | Fail startup with `recovered_interrupt_session_mismatch` and publish no success |
+| Target turn is missing or no recovered terminal event is published | Return a bounded `internal_error`; never claim `accepted=true` |
+| Stale Worker emits after replacement | Drop the message by Worker identity/generation |
+| Client writes during restart | Queue and forward to the fresh Worker after startup |
+| User recovery repeats | Reuse the interrupted record and deterministic marker; append no duplicate marker/result |
+| Non-user orphan recovery | Interrupt pending work without appending `<turn_aborted>` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a synchronous infinite loop blocks the Worker, the parent watchdog
+  terminates it, SQLite closes the pending call and appends one marker, and the
+  TUI sees `turn.interrupted` before the interrupt RPC response.
+- Base: an abort-aware provider or tool settles normally within 100 ms and no
+  Worker restart occurs.
+- Good: a second recovery attempt finds an already interrupted turn and leaves
+  exactly one `<turn_aborted>` item.
+- Bad: emit `turn.interrupted` from the parent immediately after
+  `Worker.terminate()` without first recovering SQLite.
+- Bad: reuse `process.pid` liveness to detect a terminated Worker; Worker
+  Threads share the parent PID, so targeted `sessionId + turnId` recovery is
+  required.
+
+### 6. Tests Required
+
+- Core unit tests assert deterministic marker identity, exact metadata, and
+  developer-role projection into the next provider request.
+- Storage tests assert targeted recovery closes pending calls, marks the turn
+  interrupted, appends the marker exactly once, and leaves terminal turns
+  unchanged.
+- Gateway tests assert recovered terminal event order and active turn ids.
+- A real Worker Thread regression must synchronously block the first Worker,
+  assert the watchdog replaces it, assert two `runtime.ready` notifications,
+  and assert `turn.interrupted` precedes the synthesized interrupt response.
+- Source-mode and compiled-package smokes must both locate their corresponding
+  `.ts` or `.js` Worker entry and receive `runtime.ready` without Python.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+controller.abort();
+setTimeout(() => emit("turn.interrupted"), 100);
+```
+
+#### Correct
+
+```typescript
+controller.abort();
+const settled = await settlesWithin(turnTask, 100);
+if (!settled && workerIsUnresponsive) {
+  await worker.terminate();
+  await restartWithRecovery({ sessionId, turnId, userInitiated: true });
+}
+// Resolve only after the fresh Gateway publishes the durable terminal record.
 ```

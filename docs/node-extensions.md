@@ -1,7 +1,7 @@
 # Node Extensions
 
-The M8 Node-only runtime discovers skills, MCP servers, Plugin API v2 workers, configured hooks, and
-subagent profiles before a turn. Management and doctor commands use the same discovery services,
+The M8 Node-only runtime discovers skills, MCP servers, Plugin API v2 workers, and configured hooks
+before a turn. Management and doctor commands use the same discovery services,
 but do not construct a provider or start the interactive runtime.
 
 ## Discovery And Precedence
@@ -12,7 +12,6 @@ but do not construct a provider or start the interactive runtime.
 | MCP | `~/.mycli/mcp_servers.toml` | `<workspace>/.mycli/mcp_servers.toml` | Repository server ids replace user ids |
 | Plugins | `~/.mycli/plugins/<id>/` | `<workspace>/.mycli/plugins/<id>/` | User plugin ids replace repository ids; disabled wins |
 | Skills | `~/.mycli/skills/` | `<workspace>/.agents/skills/`, then `<workspace>/.mycli/skills/` | Later sources replace earlier skill names |
-| Subagents | `~/.mycli/subagents/`, `~/.mycli/agents/` | `<workspace>/.mycli/subagents/`, `<workspace>/.mycli/agents/` | Later sources replace earlier profile ids |
 
 Every parser bounds file size, item count, names, and diagnostic output. A malformed entry remains
 visible as a diagnostic and does not prevent unrelated entries from loading.
@@ -33,12 +32,10 @@ mycli plugins inspect <plugin-id> --json
 mycli plugins run <plugin-id> <command> --json-args '{"enabled":true}' --json
 mycli mcp list --json
 mycli mcp inspect <server-id> --json
-mycli subagents list --json
-mycli subagents inspect <profile-id> --json
 ```
 
 Human and JSON output are rendered from the same typed response. Management output omits hook
-commands, environment values, plugin output, subagent prompts, credentials, headers, and provider
+commands, environment values, plugin output, credentials, headers, and provider
 payloads.
 
 ## Configured Hooks
@@ -123,27 +120,30 @@ transcript. Management/doctor output exposes counts and issue categories, never 
 
 ## Subagents
 
-Profiles can be TOML or Markdown. Budgets are optional; omitting them does not introduce a hidden
-turn or tool-call ceiling.
+Subagents are prompt-driven. The parent supplies `task_name`, `message`, and optional `fork_turns`;
+there are no profile files or profile-specific prompts, models, tools, or budgets. The child inherits
+the parent's resolved provider/model, execution policy, and exposed tools. Runtime budgets remain
+optional, and omitting them does not introduce a hidden turn or tool-call ceiling.
 
-```toml
-id = "reviewer"
-description = "Review a bounded change"
-instruction = "Inspect the requested files and return findings."
-allowedTools = ["Read"]
-deniedTools = ["Write", "Edit", "Patch", "Shell"]
-enabled = true
+Every child is an independent durable Node thread with immutable identity, canonical path, frozen
+least-authority execution policy, provider state, queue, cancellation boundary, and session
+artifacts. Parent ownership gates routing, interruption, recovery, and shutdown cleanup.
 
-[budget]
-maxTurns = 8
-maxToolCalls = 24
-noProgressTurnLimit = 3
-```
+The provider-visible coordination tools are `spawn_agent`, `send_message`, `followup_task`,
+`wait_agent`, `interrupt_agent`, and `list_agents`. `spawn_agent` is the only child-spawn entry
+point. `Task`, legacy `SendMessage`, and `SubagentOutput` routes are not registered or exported.
 
-Child sessions use the same Node turn runtime with a frozen narrowed tool set. Parent session
-ownership gates output, messaging, interruption, recovery, and shutdown cleanup. Skill activation
-and local subagent controls are auto-allowed; child tools still use their normal approval policy.
-List/inspect output never returns the profile prompt.
+Terminal reports enter the durable parent mailbox automatically and idempotently. Each child also
+owns `session.json`, `events.jsonl`, task output, subagent projections, transcript state, and usage
+projection beneath its own session identity. Parent task/subagent files remain readable indexes;
+SQLite is authoritative and repairs derivable files. Provider-only mailbox payloads are never
+rendered as user-authored transcript rows.
+
+Use `wait_agent` only when the caller has no independent work left. It subscribes to mailbox,
+lifecycle, user-steering, cancellation, and timeout activity without polling or creating a process.
+`WriteStdin` remains solely the transport for an existing persistent Shell session. The complete
+agent configuration, permission, artifact, recovery, and TUI contract is documented in
+[node-agent-runtime.md](node-agent-runtime.md).
 
 ## Plugins
 

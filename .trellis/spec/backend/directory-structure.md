@@ -6,49 +6,133 @@
 
 ## Overview
 
-<!--
-Document your project's backend directory structure here.
-
-Questions to answer:
-- How are modules/packages organized?
-- Where does business logic live?
-- Where are API endpoints defined?
-- How are utilities and helpers organized?
--->
-
-(To be filled by the team)
+The production CLI is a Node.js npm monorepo. The Python package remains in the same repository as
+an independently launched reference runtime. Keep those two runtime trees explicit: shared behavior
+is verified through contracts and parity tests, not by importing implementation code across them.
 
 ---
 
 ## Directory Layout
 
-```
-<!-- Replace with your actual structure -->
-src/
-├── ...
-└── ...
+```text
+backend/
+  apps/mycli/                Node CLI composition root, management commands, and gateway
+  packages/
+    config/                  Provider, auth, policy, and user configuration
+    contracts/               Versioned schemas shared by Node runtime and TUI
+    core/                    Provider-neutral domain state and decisions
+    integrations/            MCP, plugins, skills, hooks, and subagents
+    providers/               Model-provider transports and protocol adapters
+    runtime/                 Turn orchestration and recovery workflows
+    storage/                 SQLite stores and readable projections
+    tools/                   File, shell, approval, sandbox, and ripgrep adapters
+tui/mycli-shell/             Terminal UI and gateway client adapter
+npm/ripgrep/<target>/        Release-only optional native packages; not npm workspaces
+native/                      Native helper source built by the platform matrix
+scripts/                     Repository build, smoke, and release helpers
+src/mycli/                   Retained Python reference implementation
+tests/                       Python unit and integration tests
+docs/                        User, architecture, migration, and parity documentation
 ```
 
 ---
 
 ## Module Organization
 
-<!-- How should new features/modules be organized? -->
+- Put executable Node CLI wiring in `backend/apps/mycli`; keep business decisions in a package.
+- Put provider-neutral decisions in `backend/packages/core` and orchestration in
+  `backend/packages/runtime`.
+- Keep filesystem, shell, process, and sandbox side effects behind `backend/packages/tools`
+  interfaces.
+- Keep persistence in `backend/packages/storage` and external extension protocols in
+  `backend/packages/integrations`.
+- Keep the TUI dependent on contracts and gateway APIs, not backend implementation modules.
+- Put release-only native npm manifests under `npm/<component>/<target>`. Do not add mutually
+  incompatible OS/CPU packages to the root workspace glob.
+- Do not move the retained Python implementation into Node packages or use it as an npm fallback.
+- Tests must use framework temporary directories. They must not create `.tmp-*`, session homes,
+  databases, or generated artifacts at repository root.
 
-(To be filled by the team)
+## Scenario: Node Backend Workspace Layout
+
+### 1. Scope / Trigger
+
+- Trigger: adding, moving, packaging, or resolving a Node backend app/package or a root-level
+  script, test, CI job, or document that references one.
+
+### 2. Signatures
+
+- Root workspaces: `backend/apps/*`, `backend/packages/*`, and `tui/*`.
+- CLI source entry: `backend/apps/mycli/src/cli.ts`.
+- Backend package names remain `@mycli/*`; the physical `backend/` prefix is not part of an npm
+  package name or an internal package import.
+
+### 3. Contracts
+
+- All Node backend implementation workspaces live under `backend/apps` or `backend/packages`.
+- `tui/`, `npm/`, `native/`, `scripts/`, and the retained Python `src/mycli/` tree remain at the
+  repository root and are not backend workspaces.
+- A backend file that resolves a root-level resource must account for the extra `backend/` path
+  segment. Search both literal paths such as `packages/tools` and segmented construction such as
+  `join(ROOT, "packages", "tools")` when changing the layout.
+- The root `package-lock.json` must contain only the current workspace paths. Old workspace rows
+  marked `extraneous` are stale migration artifacts, not an acceptable compatibility layer.
+
+### 4. Validation & Error Matrix
+
+- Missing `backend/` workspace glob -> npm cannot resolve local `@mycli/*` packages.
+- Stale package `tsconfig.json` root extension -> TypeScript cannot load `tsconfig.base.json`.
+- Stale root script or fixture path -> smoke fails with `ERR_MODULE_NOT_FOUND`, missing fixtures,
+  or a bounded timeout.
+- Stale lockfile workspace row -> regenerate the lockfile from the current root manifest and verify
+  no root `apps/` or `packages/` entries remain.
+
+### 5. Good/Base/Bad Cases
+
+- Good: backend packages move physically while npm names, imports, exports, and dependency
+  directions stay unchanged.
+- Base: package-to-package relative paths under the common `backend/` parent remain valid.
+- Bad: move the TUI or platform packages into backend merely to reduce the number of root folders.
+- Bad: preserve old workspace directories or lockfile rows as aliases.
+
+### 6. Tests Required
+
+- Build and type-check every workspace from the repository root.
+- Run Node workspace tests and Python parity tests that launch TypeScript helpers.
+- Run the packed CLI smoke and assert all local workspaces and platform packages install.
+- Run a stale-path scan that includes literal paths and segmented `join`/`Path` construction.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```json
+{ "workspaces": ["apps/*", "packages/*", "tui/*"] }
+```
+
+#### Correct
+
+```json
+{ "workspaces": ["backend/apps/*", "backend/packages/*", "tui/*"] }
+```
 
 ---
 
 ## Naming Conventions
 
-<!-- File and folder naming rules -->
-
-(To be filled by the team)
+- TypeScript modules and package directories use lowercase kebab-case where a multiword filename is
+  needed; exported types and classes use PascalCase.
+- Python modules remain snake_case.
+- Native package child directories use the canonical target key, for example
+  `npm/ripgrep/macos-aarch64` or `npm/ripgrep/windows-x86_64`.
+- Generated `dist/`, `vendor/`, cache, session, and test-home directories are ignored and must be
+  reproducible from source.
 
 ---
 
 ## Examples
 
-<!-- Link to well-organized modules as examples -->
-
-(To be filled by the team)
+- `backend/packages/tools/src/ripgrep-targets.ts` owns cross-platform ripgrep metadata.
+- `backend/packages/runtime/src/node-turn-runtime.ts` is the Node turn orchestration boundary.
+- `backend/apps/mycli/src/management/` keeps provider-free CLI commands separate from runtime startup.
+- `npm/ripgrep/README.md` documents why native release packages are outside workspaces.

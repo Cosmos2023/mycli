@@ -5,7 +5,7 @@ palette normally shows the common subset; hidden commands below remain supported
 
 | Command | Arguments | TUI behavior | During turn | Aliases |
 | --- | --- | --- | --- | --- |
-| `/model` | optional `[model] [--thinking-effort level]` | picker when bare; backend when inline | yes | - |
+| `/model` | optional `[model] [--thinking-effort level]` | `~/.mycli/models.json` picker when bare; validated backend selection when inline | yes | - |
 | `/plan` | none | backend | no | - |
 | `/mode` | optional `[default\|plan]` | backend | no | - |
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | `/tools permissions` |
@@ -23,7 +23,6 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/tools` | optional `[list\|sets\|hooks\|extensions\|plugins]` | overlay | yes | `/hooks`, `/toolsets`, `/extensions`, `/plugin` |
 | `/resources` | none | opens resources | yes | - |
 | `/memory` | optional `[list\|path\|search\|add\|forget]` | overlay | yes | - |
-| `/agents` | optional `[list\|inspect profile-id]` | overlay | yes | - |
 | `/tasks` | optional `[agents\|kill-agents]` | task view when bare; backend when inline | yes | `/jobs`, `/jobs subagents`, `/jobs kill-subagents`, `/subagents`, `/agents runs`, `/agents kill` |
 | `/ps` | none | backend | yes | `/tasks bashes`, `/bashes`, `/jobs bashes` |
 | `/stop` | none | backend | yes | - |
@@ -31,7 +30,7 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/undo` | none | backend | yes | `/changes undo` |
 | `/trace` | optional `[export\|logs]` | overlay | yes | `/trace-jsonl`, `/logs` |
 | `/details` | none | toggles compact tool details | yes | - |
-| `/view` | optional `[default\|verbose\|focus]` | changes tool visibility | yes | - |
+| `/view` | optional `[default\|verbose\|focus]` | changes transcript density; tools remain visible | yes | - |
 | `/hotkeys` | none | opens keyboard help | yes | - |
 | `/copy` | none | copies the last assistant response | yes | - |
 | `/clear` | none | clears the local transcript view | no | - |
@@ -46,16 +45,21 @@ Prefix aliases can inject a canonical subcommand. For example, `/logs` resolves 
 `/trace logs`, `/trace-jsonl` resolves to `/trace export`, and `/subagents` resolves to
 `/tasks agents`.
 
+`/model` uses the same user-owned catalog in the Python and Node runtimes. The Node runtime
+bootstraps `~/.mycli/models.json` when it is missing, validates provider/protocol, endpoint,
+`auth_ref`, and reasoning-effort compatibility on selection, and persists successful selections
+to `~/.mycli/config.toml`. Catalog payloads sent to the TUI never include credentials or `auth_ref`.
+
 ## Error Contract
 
 - Unknown commands return `unknown_command` locally.
 - A command used on the wrong surface returns `unavailable_surface`.
-- A command blocked by an active turn returns `unavailable_while_running`.
+- A command blocked by an active turn returns `unavailable_during_turn`.
 - Missing required arguments, extra arguments for a no-argument command, and invalid subactions
   return bounded usage errors.
 - Failed slash commands never become ordinary provider-visible user messages.
 - Plugin commands are additive. They cannot replace a built-in canonical name or alias.
 
 The executable source of truth is
-`apps/mycli/src/node-runtime/node-slash-command-registry.ts`. Its serialized matrix and checksum
+`backend/apps/mycli/src/node-runtime/node-slash-command-registry.ts`. Its serialized matrix and checksum
 are frozen by the M8 capability audit tests.

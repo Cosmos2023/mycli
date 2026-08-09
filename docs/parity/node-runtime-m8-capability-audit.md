@@ -3,7 +3,7 @@
 This is the final Python/Node promotion audit. It was captured before making Node unconditional in
 the npm CLI; the independently launched Python reference runtime remains in the repository.
 The executable source is
-`apps/mycli/test/fixtures/node-runtime-m8-capability-audit.json`; the matching Node test rejects an
+`backend/apps/mycli/test/fixtures/node-runtime-m8-capability-audit.json`; the matching Node test rejects an
 unresolved row, gateway/catalog drift, slash-command drift, tool retirement drift, or changes to
 the sanitized M2-M7 corpus.
 
@@ -12,8 +12,10 @@ the sanitized M2-M7 corpus.
 - The final cross-backend baseline advertised the same 33 RPC methods and 42 event streams. The
   audit then fixed three shared catalog omissions for existing shell controls, so the frozen
   Node contract advertises 36 RPC methods and 42 event streams.
-- The retained slash surface is frozen at 36 commands and 12 argument-prefix aliases, including
-  ownership, surfaces, running-turn policy, argument rules, presentation, and client actions.
+- The retained slash surface is frozen at 35 commands and 12 argument-prefix aliases. The retired
+  agent-profile browser is absent; runtime aliases such as `/agents runs` remain mapped to `/tasks`.
+  Remaining commands keep frozen ownership, surfaces, running-turn policy, argument rules,
+  presentation, and client actions.
 - Bootstrap/status, live user items, sessions/transcripts, approvals, clarifications, queues,
   provider/tool turns, compaction/memory, persistent shells, integrations/subagents, management,
   diagnostics, interrupts, and shutdown all have Node-owned black-box coverage.

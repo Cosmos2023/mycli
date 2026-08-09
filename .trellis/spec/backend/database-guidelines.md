@@ -86,6 +86,91 @@ Questions to answer:
   deleting the original messages.
 - Do not move or rewrite `~/.mycli/sessions.db` as part of storage layout work.
 
+## Scenario: Readable Node Session Artifact Projection
+
+### 1. Scope / Trigger
+
+- Trigger: changing Node session snapshots, background task output, subagent lifecycle persistence,
+  or restart repair beneath `~/.mycli/sessions/<session-id>/`.
+
+### 2. Signatures
+
+- Canonical store: `SQLiteSessionStore` at `~/.mycli/sessions.db`.
+- Artifact store: `SessionArtifactStore.appendEvent`, `writeTaskOutput`, and
+  `writeSubagentSnapshot`.
+- Snapshot store: `TranscriptSnapshotStore.write` and `loadOrRebuild` with schema version 2.
+- Paths: `events.jsonl`, `tasks/<safe-task-id>/output.txt`, and
+  `subagents/subagent-<first-16-sha256-chars>.json` under the parent session directory.
+
+### 3. Contracts
+
+- SQLite is authoritative for provider replay, task status, recovery, and index reconstruction.
+- JSON/JSONL files are private, bounded, readable projections and never replace canonical rows.
+- Terminal turn snapshots append one complete `conversation.saved` JSONL row after SQLite commit.
+- Assistant text emitted alongside a tool-call batch is one transcript message before that batch.
+  Persist it once as an `assistant_message`; tool-call history rows keep empty display text and
+  retain only their structured call identity and arguments. Never copy the same assistant preamble
+  into every sibling tool row.
+- Readable transcript projection may repair legacy Node tool rows that contain the duplicated
+  preamble by emitting one assistant item and clearing only the projected tool text. This is a
+  read-time compatibility repair: it must not rewrite SQLite history or canonical conversation
+  rows. Safe tool targets such as a validated Skill name may be allowlisted into snapshot metadata;
+  raw arguments and private rationale remain excluded.
+- Live subagent updates atomically replace the subagent JSON, refresh the parent snapshot index,
+  and append `subagent.updated`; restart repair does not invent historical event rows.
+- Terminal subagent notifications include `<output-file>` only after the child-session task output
+  exists. Background Shell output uses the shell id as its safe task id.
+- Backend artifact operations are serialized and drained before SQLite closes. Auxiliary artifact
+  failures do not roll back committed SQLite state.
+
+### 4. Validation & Error Matrix
+
+- Blank, `.`, path-like, traversal-like, NUL-bearing, or angle-placeholder identity -> reject
+  before filesystem mutation.
+- Malformed optional `subagents` or `links.events` snapshot metadata -> reject the snapshot.
+- SQLite available with a stale valid snapshot -> return and rewrite the canonical SQLite
+  projection.
+- Atomic task/subagent write fails before rename -> preserve the old target and remove the temp.
+- Derivable artifact missing on writable session preparation -> rebuild it from durable rows.
+- SQLite unavailable with a valid schema-v2 snapshot -> bounded read-only degraded history only.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a completed background child produces a readable output file, deterministic snapshot,
+  indexed parent snapshot, live event row, and notification path.
+- Base: a session without tasks has `session.json`, `events.jsonl` after a terminal turn, and an
+  empty bounded subagent index.
+- Bad: recover provider context from `session.json`, parse `events.jsonl` as canonical history, or
+  close SQLite while queued artifact work is still running.
+
+### 6. Tests Required
+
+- Storage unit tests assert paths, private modes, deterministic hashes, JSONL rows, traversal
+  rejection, atomic cleanup, enriched degraded loading, and stale-snapshot repair.
+- Storage projection tests assert a non-empty assistant tool preamble appears exactly once before
+  sibling tools, new tool rows contain no duplicated preamble, and legacy rows project the same
+  visible order without mutating durable history.
+- Runtime tests assert background Shell output projection, foreground exclusion, lifecycle order,
+  and contained projection failure.
+- Backend integration tests assert parent/child events, task output, subagent JSON/index,
+  `<output-file>`, close draining, and restart reconstruction after deleting derived files.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const history = JSON.parse(await readFile("session.json", "utf8"));
+store.restoreConversation(history.transcript);
+```
+
+#### Correct
+
+```typescript
+const canonical = canonicalSnapshot(store, overview, false, false, false);
+await artifactQueue.run(() => transcriptSnapshots.write(canonical));
+```
+
 ---
 
 ## Naming Conventions

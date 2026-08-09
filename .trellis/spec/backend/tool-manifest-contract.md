@@ -212,7 +212,7 @@ skill synchronization remain out of scope.
 ### 1. Scope / Trigger
 
 - Trigger: changes to Node integration registration, `combinedToolManifest`, MCP tool projection,
-  stable Skill routing, extension approval metadata, or subagent profile budgets.
+  stable Skill routing, extension approval metadata, or prompt-driven subagent schemas.
 - This boundary combines externally supplied schemas with the host AJV 2020 validator. External
   schema dialect declarations must not be allowed to select an unsupported validator dialect.
 
@@ -221,7 +221,7 @@ skill synchronization remain out of scope.
 - `combinedToolManifest(builtin, registrations) -> CombinedToolManifest`.
 - `createMcpToolRegistration(client, descriptor) -> IntegrationRegistration`.
 - `createSkillToolRegistration(registry) -> IntegrationRegistration`.
-- `SubagentProfile.budget?: {maxTurns?, maxToolCalls?, noProgressTurnLimit?}`.
+- `SPAWN_AGENT_TOOL_DEFINITION` accepts `task_name`, `message`, and optional `fork_turns`.
 - Discovery RPC: `extension.manifest({})`, with optional `tool_manifest` in the response.
 
 ### 3. Contracts
@@ -239,9 +239,14 @@ skill synchronization remain out of scope.
 - MCP schemas still require `type=object`, an object `properties` map, and a `required` array whose
   members are declared properties. The dialect adaptation does not relax schema validation.
 - MCP and plugin tools have explicit approval metadata and fail closed when no policy exists.
-- Node subagent profiles have no implicit provider-step, tool-call, or no-progress budget. Only
-  explicitly configured positive integer fields are forwarded to the child runtime. Python's
+- Node subagents inherit the parent's resolved model, execution policy, and exposed tools. Agent
+  profile discovery and selection are disabled, and the spawn schema does not accept `profile`.
+- `spawn_agent` is the only provider-visible child-spawn entry point. `Task` is absent from runtime
+  composition, package exports, child tool scope, and provider definitions.
+- Node subagents have no implicit provider-step, tool-call, or no-progress budget. Python's
   historical implicit `maxTurns=8` and `noProgressTurnLimit=3` are an approved migration difference.
+- `SendMessage` and `SubagentOutput` are absent from runtime composition and provider definitions;
+  queue delivery uses `send_message` and terminal results arrive through the durable mailbox.
 
 ### 4. Validation & Error Matrix
 
@@ -251,8 +256,8 @@ skill synchronization remain out of scope.
 - MCP root `$schema` naming Draft-07 -> remove the root marker in the host copy and compile the rest.
 - MCP schema missing object shape or with undeclared required names -> `invalid_mcp_tool_schema`.
 - Unknown extension approval route -> deny before adapter execution.
-- Missing subagent budget -> continue without a runtime ceiling; malformed explicit budget -> reject
-  the profile during discovery.
+- A `profile` property on `spawn_agent` -> `invalid_arguments` before execution.
+- Missing subagent budget -> continue without a runtime ceiling.
 
 ### 5. Good/Base/Bad Cases
 
@@ -263,7 +268,9 @@ skill synchronization remain out of scope.
   subagent control registrations selected by composition.
 - Bad: pass the Draft-07 root marker directly to AJV 2020 and crash during integration startup.
 - Bad: recursively delete `$schema` or other schema fields from the external descriptor.
-- Bad: add Python's implicit 8-step/3-no-progress defaults to a Node profile with no budget.
+- Bad: add Python's implicit 8-step/3-no-progress defaults to a Node child with no budget.
+- Bad: discover `.mycli/agents` or `.mycli/subagents` and let a profile override child instructions,
+  model, tools, or budgets.
 
 ### 6. Tests Required
 
@@ -273,8 +280,9 @@ skill synchronization remain out of scope.
   when a required property is missing, and accept valid input through `ToolRouter`.
 - Composition tests assert explicit extension approval policies and package dependency direction.
 - Skill tests assert one stable provider route regardless of catalog size.
-- Subagent profile/controller/runtime tests assert missing budgets remain empty and turns can exceed
-  the historical Python defaults.
+- Subagent schema/controller/runtime tests assert `spawn_agent` is the only spawn route, profile
+  properties are absent, parent tools are inherited, missing budgets remain empty, and turns can
+  exceed the historical Python defaults.
 - M7 parity fixtures record the approved Python/Node budget difference rather than normalizing it
   away.
 
@@ -284,7 +292,7 @@ skill synchronization remain out of scope.
 
 ```typescript
 const definition = { ...descriptor, inputSchema: descriptor.inputSchema };
-const profile = { ...loaded, budget: loaded.budget ?? { maxTurns: 8 } };
+spawnAgent({ taskName, message, profileId: "explore" });
 ```
 
 #### Correct
@@ -293,5 +301,76 @@ const profile = { ...loaded, budget: loaded.budget ?? { maxTurns: 8 } };
 const inputSchema = Object.freeze(Object.fromEntries(
 	Object.entries(descriptor.inputSchema).filter(([key]) => key !== "$schema"),
 ));
-const profile = Object.freeze({ ...loaded, ...(loaded.budget ? { budget: loaded.budget } : {}) });
+spawnAgent({ taskName, message, forkTurns });
 ```
+
+## Scenario: Node Shell Ripgrep Environment
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Node setup, managed Shell environment construction, ripgrep packaging, or
+  cross-platform process lookup.
+
+### 2. Signatures
+
+- `prepareUserRipgrep({destinationRoot, target?, force?, signal?, downloadTimeoutMs?, downloadAttempts?}) -> RipgrepPrepareResult`.
+- `resolveRipgrep({platformPackageRoot?, packageRoot?, homeDir?, platform?, architecture?, pathValue?}) -> string | undefined`.
+- `initializeRipgrepEnvironment({env?, packageRoot?, homeDir?, platform?, architecture?}) -> RipgrepPathResult`.
+- `createShellEnvironment(...) -> {env, diagnostics}`.
+
+### 3. Contracts
+
+- When no package-owned or user-owned binary exists, Node setup prepares ripgrep `15.1.0` under
+  `~/.mycli/vendor/ripgrep/<platform>-<architecture>/rg[.exe]` using the same target archives and
+  SHA-256 values as the retained Python runtime.
+- Preparation uses a bounded download, exact SHA-256 verification, member-only archive extraction,
+  an executable staged file, atomic placement, and cleanup of temporary files.
+- Provider configuration and credentials are saved before ripgrep preparation. Download,
+  verification, extraction, or interruption failure is a bounded non-fatal setup issue and must not
+  discard the saved provider state.
+- Setup reuses an existing package-owned or user-owned binary without network IO. It downloads the
+  user-owned fallback only when both locations are absent; system `PATH` is excluded from this
+  preparation decision.
+- `@mycli/tools` declares all six platform packages as exact-version optional dependencies. Each
+  package under `npm/ripgrep/<target>/` declares one compatible `os`/`cpu` pair and contains only
+  `vendor/<platform>-<architecture>/rg[.exe]` plus npm metadata.
+- A platform package `prepack` stage downloads and verifies its declared target, then `postpack`
+  removes the generated vendor tree. Release staging may use up to three attempts within a
+  180-second total timeout; interactive setup retains one attempt and its 60-second default.
+- Target archive, checksum, optional package name, npm OS, and npm CPU metadata have one source of
+  truth in `RIPGREP_TARGETS`. Tests and the staging script validate every package manifest against it.
+- CLI startup initializes the supplied process environment before argument routing, prepending the
+  package-owned directory once and exporting `MYCLI_RIPGREP_PATH_DIR`. Managed Shell construction
+  independently resolves and reapplies the same directory after environment sanitization.
+- Managed Shell lookup order is the current optional platform package, the legacy tools-package
+  vendor path, the user-vendored binary, then an executable already present on `PATH`. Lookup
+  performs no network IO.
+- The selected directory appears exactly once at the front of `PATH`, and
+  `MYCLI_RIPGREP_PATH_DIR` names that directory. If no executable is found, the marker is absent.
+- Targets are `macos`, `linux`, or `windows` plus normalized `aarch64` or `x86_64`. Windows uses
+  `rg.exe`, semicolon-delimited paths, and case-insensitive environment/path matching.
+- Shell environment sanitization and the mycli-owned `MYCLI_CI=1` marker remain authoritative;
+  ripgrep injection must not reintroduce filtered or secret-like parent variables.
+
+### 4. Validation & Error Matrix
+
+- Existing valid user binary -> reuse it without network IO and report `installed=false`.
+- Unsupported platform/architecture -> bounded unsupported-target failure.
+- Oversized download/member, non-success HTTP response, checksum mismatch, missing archive member,
+  or escaping member path -> reject preparation, remove temporary state, preserve saved setup.
+- Optional platform package absent -> try the legacy tools-package path; package binary absent ->
+  try the user binary; user binary absent -> try `PATH`; all absent -> preserve the sanitized
+  fallback `PATH` without the marker.
+- Explicit empty `PATH` -> do not substitute a host default; use only a package/user vendored binary
+  if present and remove a stale `MYCLI_RIPGREP_PATH_DIR` marker otherwise.
+
+### 5. Tests Required
+
+- Unit tests cover target/package metadata consistency, lookup priority, duplicate removal, Windows
+  behavior, startup injection, empty-PATH isolation, retry cleanup, checksum rejection, tar/zip
+  member extraction, atomic install, and setup failure degradation.
+- A real child-shell integration test must execute `rg` through the generated managed environment
+  and observe `MYCLI_RIPGREP_PATH_DIR`.
+- Package smoke must build and inspect all six platform tarballs, assert the tools package no longer
+  embeds ripgrep, install only the current platform tarball, and execute its `rg --version` with
+  system ripgrep absent from `PATH`.

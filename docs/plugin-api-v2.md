@@ -172,7 +172,7 @@ host <- shutdown_complete <- worker
 ```
 
 The host validates every inbound and outbound message against the schemas under
-`packages/contracts/schemas/`. It enforces one initialization phase, immutable registrations,
+`backend/packages/contracts/schemas/`. It enforces one initialization phase, immutable registrations,
 bounded line/stderr size, bounded outstanding requests, startup/call/shutdown timeouts,
 cancellation, and process-tree cleanup. A crash fails that plugin's pending calls and does not
 corrupt the parent turn or another plugin.
@@ -200,4 +200,3 @@ mycli plugins inspect example --json
 mycli plugins run example status --json-args '{}' --json
 mycli doctor --json
 ```
-

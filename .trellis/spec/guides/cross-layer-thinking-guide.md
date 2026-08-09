@@ -83,6 +83,26 @@ After implementation:
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
 
+For provider tool calls, also apply the executable rules in
+[`backend/provider-tool-replay-contract.md`](../backend/provider-tool-replay-contract.md):
+
+- [ ] One shared output bound is enforced before persistence and again at the storage boundary
+- [ ] Every terminal turn closes all pending tool calls before its terminal transition
+- [ ] Replay repairs only terminal legacy gaps and never fabricates results for active calls
+- [ ] Provider failures retain only allowlisted, bounded structured diagnostics
+- [ ] Provider-specific wire behavior is selected at the registry boundary and tested through the
+      resolved provider, not only through a directly constructed adapter
+
+For durable TUI transcript projection:
+
+- [ ] Compare the live event path with the SQLite-to-snapshot resume path using the same message
+      and tool sequence
+- [ ] Do not overload assistant text as tool labels, targets, arguments, or result summaries
+- [ ] Repair malformed legacy display rows in the read projection without rewriting append-only
+      canonical history
+- [ ] Allowlist structured display metadata and verify raw arguments and private rationale stay out
+      of readable snapshots
+
 ---
 
 ## Atomic Acceptance And Durable Ownership
