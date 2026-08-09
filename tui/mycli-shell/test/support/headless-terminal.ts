@@ -1,0 +1,128 @@
+import { createRequire } from "node:module";
+import type { Terminal as XtermTerminal } from "@xterm/headless";
+import type { Terminal } from "../../src/tui-core/terminal.ts";
+
+const require = createRequire(import.meta.url);
+const { Terminal: XtermHeadless } = require("@xterm/headless") as {
+	Terminal: typeof import("@xterm/headless").Terminal;
+};
+
+export interface HeadlessTerminalOptions {
+	columns?: number;
+	rows?: number;
+	scrollback?: number;
+	nativeScrollback?: boolean;
+}
+
+/** A real ANSI terminal core for renderer integration tests. */
+export class HeadlessTerminal implements Terminal {
+	readonly kittyProtocolActive = false;
+	readonly alternateScreen = false;
+	nativeScrollback: boolean;
+	readonly writes: string[] = [];
+
+	private readonly emulator: XtermTerminal;
+	private inputHandler?: (data: string) => void;
+	private resizeHandler?: () => void;
+	private writeTail: Promise<void> = Promise.resolve();
+
+	constructor(options: HeadlessTerminalOptions = {}) {
+		this.nativeScrollback = options.nativeScrollback ?? false;
+		this.emulator = new XtermHeadless({
+			cols: options.columns ?? 80,
+			rows: options.rows ?? 24,
+			scrollback: options.scrollback ?? 1_000,
+			allowProposedApi: true,
+			logLevel: "off",
+		});
+	}
+
+	get columns(): number {
+		return this.emulator.cols;
+	}
+
+	get rows(): number {
+		return this.emulator.rows;
+	}
+
+	start(onInput: (data: string) => void, onResize: () => void): void {
+		this.inputHandler = onInput;
+		this.resizeHandler = onResize;
+	}
+
+	stop(): void {
+		this.inputHandler = undefined;
+		this.resizeHandler = undefined;
+	}
+
+	async drainInput(): Promise<void> {}
+
+	write(data: string): void {
+		this.writes.push(data);
+		this.writeTail = this.writeTail.then(() => new Promise<void>((resolve) => {
+			this.emulator.write(data, resolve);
+		}));
+	}
+
+	async flush(): Promise<void> {
+		await this.writeTail;
+	}
+
+	resize(columns: number, rows: number): void {
+		this.emulator.resize(columns, rows);
+		this.resizeHandler?.();
+	}
+
+	sendInput(data: string): void {
+		this.inputHandler?.(data);
+	}
+
+	visibleLines(): string[] {
+		const buffer = this.emulator.buffer.active;
+		return Array.from({ length: this.rows }, (_, row) =>
+			buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? "",
+		);
+	}
+
+	historyLines(): string[] {
+		const buffer = this.emulator.buffer.normal;
+		return Array.from({ length: buffer.baseY }, (_, row) =>
+			buffer.getLine(row)?.translateToString(true) ?? "",
+		);
+	}
+
+	moveBy(lines: number): void {
+		if (lines < 0) this.write(`\x1b[${-lines}A`);
+		if (lines > 0) this.write(`\x1b[${lines}B`);
+	}
+
+	hideCursor(): void {
+		this.write("\x1b[?25l");
+	}
+
+	showCursor(): void {
+		this.write("\x1b[?25h");
+	}
+
+	clearLine(): void {
+		this.write("\r\x1b[2K");
+	}
+
+	clearFromCursor(): void {
+		this.write("\x1b[J");
+	}
+
+	clearScreen(): void {
+		this.write("\x1b[2J\x1b[H");
+	}
+
+	setTitle(title: string): void {
+		this.write(`\x1b]0;${title}\x07`);
+	}
+
+	setProgress(): void {}
+
+	dispose(): void {
+		this.emulator.dispose();
+	}
+}

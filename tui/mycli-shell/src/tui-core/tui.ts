@@ -1233,11 +1233,17 @@ export class TUI extends Container {
 				buffer += frameLines[row] ?? "";
 			}
 		}
+		const cursorUpdate = this.buildHardwareCursorUpdate(
+			cursorPos,
+			frameLines.length,
+			Math.max(0, height - 1),
+		);
+		buffer += cursorUpdate.sequence;
 		buffer += "\x1b[?2026l";
 		this.terminal.write(buffer);
 
 		this.cursorRow = Math.max(0, frameLines.length - 1);
-		this.hardwareCursorRow = Math.max(0, height - 1);
+		this.hardwareCursorRow = cursorUpdate.row;
 		this.maxLinesRendered = Math.max(height, frameLines.length);
 		this.previousViewportTop = 0;
 		this.previousLines = frameLines;
@@ -1245,7 +1251,6 @@ export class TUI extends Container {
 		this.previousWidth = width;
 		this.previousHeight = height;
 		this.nativeViewportAnchored = true;
-		this.positionHardwareCursor(cursorPos, frameLines.length);
 	}
 
 	private renderNativeFrame(
@@ -1275,22 +1280,21 @@ export class TUI extends Container {
 			buffer += `\x1b[${row + 1};1H\x1b[2K${frameLines[row] ?? ""}`;
 			finalCursorRow = row;
 		}
-		buffer += "\x1b[?2026l";
+		const frameCursor = cursorPos && cursorPos.row >= frameStart
+			? { row: cursorPos.row - frameStart, col: cursorPos.col }
+			: null;
+		const cursorUpdate = this.buildHardwareCursorUpdate(frameCursor, frameLines.length, finalCursorRow);
+		buffer += `${cursorUpdate.sequence}\x1b[?2026l`;
 		this.terminal.write(buffer);
 
 		this.cursorRow = Math.max(0, frameLines.length - 1);
-		this.hardwareCursorRow = finalCursorRow;
+		this.hardwareCursorRow = cursorUpdate.row;
 		this.maxLinesRendered = frameLines.length;
 		this.previousViewportTop = 0;
 		this.previousLines = frameLines;
 		this.previousKittyImageIds = nextImageIds;
 		this.previousWidth = width;
 		this.previousHeight = height;
-
-		const frameCursor = cursorPos && cursorPos.row >= frameStart
-			? { row: cursorPos.row - frameStart, col: cursorPos.col }
-			: null;
-		this.positionHardwareCursor(frameCursor, frameLines.length);
 	}
 
 	private doRender(): void {
@@ -1383,10 +1387,12 @@ export class TUI extends Container {
 				if (replaceNativeViewport) buffer += "\x1b[2K";
 				buffer += newLines[i];
 			}
+			this.cursorRow = Math.max(0, newLines.length - 1);
+			const cursorUpdate = this.buildHardwareCursorUpdate(cursorPos, newLines.length, this.cursorRow);
+			buffer += cursorUpdate.sequence;
 			buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
-			this.cursorRow = Math.max(0, newLines.length - 1);
-			this.hardwareCursorRow = this.cursorRow;
+			this.hardwareCursorRow = cursorUpdate.row;
 			// Reset max lines when clearing, otherwise track growth
 			if (clear) {
 				this.maxLinesRendered = newLines.length;
@@ -1395,7 +1401,6 @@ export class TUI extends Container {
 			}
 			const bufferLength = Math.max(height, newLines.length);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
-			this.positionHardwareCursor(cursorPos, newLines.length);
 			const baselineStart = this.terminal.nativeScrollback
 				? Math.max(0, newLines.length - height)
 				: 0;
@@ -1525,12 +1530,13 @@ export class TUI extends Container {
 				if (moveBack > 0) {
 					buffer += `\x1b[${moveBack}A`;
 				}
+				const cursorUpdate = this.buildHardwareCursorUpdate(cursorPos, newLines.length, targetRow);
+				buffer += cursorUpdate.sequence;
 				buffer += "\x1b[?2026l";
 				this.terminal.write(buffer);
 				this.cursorRow = targetRow;
-				this.hardwareCursorRow = targetRow;
+				this.hardwareCursorRow = cursorUpdate.row;
 			}
-			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
@@ -1634,6 +1640,8 @@ export class TUI extends Container {
 			buffer += `\x1b[${extraLines}A`;
 		}
 
+		const cursorUpdate = this.buildHardwareCursorUpdate(cursorPos, newLines.length, finalCursorRow);
+		buffer += cursorUpdate.sequence;
 		buffer += "\x1b[?2026l"; // End synchronized output
 
 		if (process.env.MYCLI_TUI_DEBUG === "1") {
@@ -1672,13 +1680,10 @@ export class TUI extends Container {
 		// cursorRow tracks end of content (for viewport calculation)
 		// hardwareCursorRow tracks actual terminal cursor position (for movement)
 		this.cursorRow = Math.max(0, newLines.length - 1);
-		this.hardwareCursorRow = finalCursorRow;
+		this.hardwareCursorRow = cursorUpdate.row;
 		// Track terminal's working area (grows but doesn't shrink unless cleared)
 		this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
 		this.previousViewportTop = Math.max(prevViewportTop, finalCursorRow - height + 1);
-
-		// Position hardware cursor for IME
-		this.positionHardwareCursor(cursorPos, newLines.length);
 
 		this.previousLines = newLines;
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
@@ -1692,9 +1697,18 @@ export class TUI extends Container {
 	 * @param totalLines Total number of rendered lines
 	 */
 	private positionHardwareCursor(cursorPos: { row: number; col: number } | null, totalLines: number): void {
+		const cursorUpdate = this.buildHardwareCursorUpdate(cursorPos, totalLines, this.hardwareCursorRow);
+		this.terminal.write(`\x1b[?2026h${cursorUpdate.sequence}\x1b[?2026l`);
+		this.hardwareCursorRow = cursorUpdate.row;
+	}
+
+	private buildHardwareCursorUpdate(
+		cursorPos: { row: number; col: number } | null,
+		totalLines: number,
+		fromRow: number,
+	): { sequence: string; row: number } {
 		if (!cursorPos || totalLines <= 0) {
-			this.terminal.hideCursor();
-			return;
+			return { sequence: "\x1b[?25l", row: fromRow };
 		}
 
 		// Clamp cursor position to valid range
@@ -1702,7 +1716,7 @@ export class TUI extends Container {
 		const targetCol = Math.max(0, cursorPos.col);
 
 		// Move cursor from current position to target
-		const rowDelta = targetRow - this.hardwareCursorRow;
+		const rowDelta = targetRow - fromRow;
 		let buffer = "";
 		if (rowDelta > 0) {
 			buffer += `\x1b[${rowDelta}B`; // Move down
@@ -1712,15 +1726,7 @@ export class TUI extends Container {
 		// Move to absolute column (1-indexed)
 		buffer += `\x1b[${targetCol + 1}G`;
 
-		if (buffer) {
-			this.terminal.write(buffer);
-		}
-
-		this.hardwareCursorRow = targetRow;
-		if (this.showHardwareCursor) {
-			this.terminal.showCursor();
-		} else {
-			this.terminal.hideCursor();
-		}
+		buffer += this.showHardwareCursor ? "\x1b[?25h" : "\x1b[?25l";
+		return { sequence: buffer, row: targetRow };
 	}
 }
