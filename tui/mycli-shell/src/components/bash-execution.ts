@@ -25,6 +25,10 @@ export class BashExecutionComponent extends Container {
 		this.rebuild();
 	}
 
+	override getRenderCacheKey(): number | undefined {
+		return this.bash.status === "running" ? undefined : super.getRenderCacheKey();
+	}
+
 	private rebuild(): void {
 		this.clear();
 		this.addChild(new Spacer(1));

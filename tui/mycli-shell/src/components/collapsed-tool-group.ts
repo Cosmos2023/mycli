@@ -31,6 +31,13 @@ export class CollapsedToolGroupComponent extends Container {
 		this.rebuild();
 	}
 
+	override getRenderCacheKey(): number | undefined {
+		const hasRunningShell = this.group.items.some(
+			(item) => item.kind === "bash" && item.bash.status === "running",
+		);
+		return hasRunningShell ? undefined : super.getRenderCacheKey();
+	}
+
 	private rebuild(): void {
 		this.clear();
 		if (this.expanded()) {

@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { performance } from "node:perf_hooks";
+import { FrameScheduler } from "./frame-scheduler.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import { diffTerminalLine, TERMINAL_SEGMENT_RESET } from "./screen-buffer.ts";
 import type { Terminal } from "./terminal.ts";
@@ -61,6 +61,9 @@ export interface Component {
 	 * Called when theme changes or when component needs to re-render from scratch.
 	 */
 	invalidate(): void;
+
+	/** Stable key for viewport-level render caching. Undefined disables outer caching. */
+	getRenderCacheKey?(): unknown;
 }
 
 type InputListenerResult = { consume?: boolean; data?: string } | undefined;
@@ -226,26 +229,35 @@ type OverlayFocusRestorePolicy = "clear" | "preserve";
  */
 export class Container implements Component {
 	children: Component[] = [];
+	private renderRevision = 0;
 
 	addChild(component: Component): void {
 		this.children.push(component);
+		this.renderRevision += 1;
 	}
 
 	removeChild(component: Component): void {
 		const index = this.children.indexOf(component);
 		if (index !== -1) {
 			this.children.splice(index, 1);
+			this.renderRevision += 1;
 		}
 	}
 
 	clear(): void {
 		this.children = [];
+		this.renderRevision += 1;
 	}
 
 	invalidate(): void {
 		for (const child of this.children) {
 			child.invalidate?.();
 		}
+		this.renderRevision += 1;
+	}
+
+	getRenderCacheKey(): number | undefined {
+		return this.renderRevision;
 	}
 
 	render(width: number): string[] {
@@ -276,11 +288,9 @@ export class TUI extends Container {
 	public onDebug?: () => void;
 	/** Optional owner hook for resize-sensitive source rebuilds. Return true to defer the normal redraw. */
 	public onResize?: () => boolean | void;
-	private renderRequested = false;
-	private renderTimer: NodeJS.Timeout | undefined;
+	private readonly frameScheduler: FrameScheduler;
 	private renderingPaused = false;
-	private lastRenderAt = 0;
-	private static readonly MIN_RENDER_INTERVAL_MS = 16;
+	private static readonly MIN_RENDER_INTERVAL_MS = 1_000 / 120;
 	private cursorRow = 0; // Logical cursor row (end of rendered content)
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private showHardwareCursor = process.env.MYCLI_TUI_HARDWARE_CURSOR === "1";
@@ -303,6 +313,10 @@ export class TUI extends Container {
 	constructor(terminal: Terminal, showHardwareCursor?: boolean) {
 		super();
 		this.terminal = terminal;
+		this.frameScheduler = new FrameScheduler(() => this.doRender(), {
+			minIntervalMs: TUI.MIN_RENDER_INTERVAL_MS,
+			isBlocked: () => this.terminal.outputBackpressured === true,
+		});
 		if (showHardwareCursor !== undefined) {
 			this.showHardwareCursor = showHardwareCursor;
 		}
@@ -340,16 +354,7 @@ export class TUI extends Container {
 	setRenderingPaused(paused: boolean): void {
 		if (this.renderingPaused === paused) return;
 		this.renderingPaused = paused;
-		if (paused) {
-			if (this.renderTimer) {
-				clearTimeout(this.renderTimer);
-				this.renderTimer = undefined;
-			}
-			return;
-		}
-		if (this.renderRequested) {
-			process.nextTick(() => this.scheduleRender());
-		}
+		this.frameScheduler.setPaused(paused);
 	}
 
 	getClearOnShrink(): boolean {
@@ -638,8 +643,7 @@ export class TUI extends Container {
 		this.stopped = false;
 		this.removeOutputDrainListener?.();
 		this.removeOutputDrainListener = this.terminal.onOutputDrain?.(() => {
-			if (this.stopped || this.renderingPaused || !this.renderRequested) return;
-			process.nextTick(() => this.scheduleRender());
+			this.frameScheduler.notifyReady();
 		});
 		this.terminal.start(
 			(data) => this.handleInput(data),
@@ -651,6 +655,7 @@ export class TUI extends Container {
 		);
 		this.terminal.hideCursor();
 		this.queryCellSize();
+		this.frameScheduler.start();
 		this.requestRender();
 	}
 
@@ -677,10 +682,7 @@ export class TUI extends Container {
 
 	stop(): void {
 		this.stopped = true;
-		if (this.renderTimer) {
-			clearTimeout(this.renderTimer);
-			this.renderTimer = undefined;
-		}
+		this.frameScheduler.stop();
 		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
 		if (this.previousLines.length > 0) {
 			const targetRow = this.previousLines.length; // Line after the last content
@@ -708,61 +710,8 @@ export class TUI extends Container {
 			this.hardwareCursorRow = 0;
 			this.maxLinesRendered = 0;
 			this.previousViewportTop = 0;
-			if (this.renderTimer) {
-				clearTimeout(this.renderTimer);
-				this.renderTimer = undefined;
-			}
-			this.renderRequested = true;
-			process.nextTick(() => {
-				if (
-					this.stopped ||
-					this.renderingPaused ||
-					this.terminal.outputBackpressured === true ||
-					!this.renderRequested
-				) {
-					return;
-				}
-				this.renderRequested = false;
-				this.lastRenderAt = performance.now();
-				this.doRender();
-			});
-			return;
 		}
-		if (this.renderRequested) return;
-		this.renderRequested = true;
-		if (this.renderingPaused) return;
-		process.nextTick(() => this.scheduleRender());
-	}
-
-	private scheduleRender(): void {
-		if (
-			this.stopped ||
-			this.renderingPaused ||
-			this.terminal.outputBackpressured === true ||
-			this.renderTimer ||
-			!this.renderRequested
-		) {
-			return;
-		}
-		const elapsed = performance.now() - this.lastRenderAt;
-		const delay = Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed);
-		this.renderTimer = setTimeout(() => {
-			this.renderTimer = undefined;
-			if (
-				this.stopped ||
-				this.renderingPaused ||
-				this.terminal.outputBackpressured === true ||
-				!this.renderRequested
-			) {
-				return;
-			}
-			this.renderRequested = false;
-			this.lastRenderAt = performance.now();
-			this.doRender();
-			if (this.renderRequested) {
-				this.scheduleRender();
-			}
-		}, delay);
+		this.frameScheduler.request(force);
 	}
 
 	private handleInput(data: string): void {

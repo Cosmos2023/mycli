@@ -217,7 +217,7 @@ class TurnCompletedComponent implements Component {
 	}
 }
 
-class TranscriptViewportComponent implements Component {
+export class TranscriptViewportComponent implements Component {
 	private scrollOffset = 0;
 	private lastLineCount = 0;
 	private lastRenderedLines: string[] = [];
@@ -225,6 +225,7 @@ class TranscriptViewportComponent implements Component {
 	private committedPrefixLength = 0;
 	private committedPrefixBoundary: string | undefined;
 	private committedWidth: number | undefined;
+	private renderCache = new WeakMap<Component, { key: unknown; width: number; lines: string[] }>();
 
 	constructor(
 		private readonly content: Container,
@@ -303,6 +304,7 @@ class TranscriptViewportComponent implements Component {
 
 	invalidate(): void {
 		this.content.invalidate();
+		this.renderCache = new WeakMap();
 	}
 
 	render(width: number): string[] {
@@ -343,19 +345,34 @@ class TranscriptViewportComponent implements Component {
 	}
 
 	private renderContentTail(width: number, maxRows: number): string[] {
-		const components = this.content.children.flatMap((section) =>
-			section instanceof Container ? section.children : [section]
-		);
 		const chunks: string[][] = [];
 		let renderedRows = 0;
-		for (let index = components.length - 1; index >= 0; index -= 1) {
-			const lines = components[index]!.render(width);
-			chunks.push(lines);
-			renderedRows += lines.length;
+		for (let sectionIndex = this.content.children.length - 1; sectionIndex >= 0; sectionIndex -= 1) {
+			const section = this.content.children[sectionIndex]!;
+			const components = section instanceof Container ? section.children : [section];
+			for (let index = components.length - 1; index >= 0; index -= 1) {
+				const lines = this.renderComponent(components[index]!, width);
+				chunks.push(lines);
+				renderedRows += lines.length;
+				if (renderedRows >= maxRows) break;
+			}
 			if (renderedRows >= maxRows) break;
 		}
 		chunks.reverse();
 		return chunks.flat().slice(-maxRows);
+	}
+
+	private renderComponent(component: Component, width: number): string[] {
+		const key = component.getRenderCacheKey?.();
+		if (key === undefined) return component.render(width);
+
+		const cached = this.renderCache.get(component);
+		if (cached && cached.width === width && Object.is(cached.key, key)) {
+			return cached.lines;
+		}
+		const lines = component.render(width);
+		this.renderCache.set(component, { key, width, lines });
+		return lines;
 	}
 
 	private recordCommittedPrefix(lines: string[], start: number, width: number): void {
