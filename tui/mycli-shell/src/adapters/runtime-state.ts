@@ -201,7 +201,8 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		hasImages: item.hasImages,
 	})));
 
-	for (const item of state.transcript) {
+	for (let transcriptIndex = 0; transcriptIndex < state.transcript.length; transcriptIndex += 1) {
+		const item = state.transcript[transcriptIndex]!;
 		if (isInternalTaskNotification(item.text)) {
 			continue;
 		}
@@ -216,7 +217,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });
 		} else if (item.type === "assistant_stream" || item.type === "assistant_final") {
-			const thinking = reasoningForAssistant(item, state);
+			const thinking = reasoningForAssistant(item, transcriptIndex, state);
 			const message: MycliShellMessage = {
 				id: item.id,
 				role: "assistant",
@@ -2622,16 +2623,19 @@ function stringArrayValue(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
-function reasoningForAssistant(item: RuntimeTranscriptItem, state: RuntimeShellState): string | undefined {
+function reasoningForAssistant(
+	item: RuntimeTranscriptItem,
+	itemIndex: number,
+	state: RuntimeShellState,
+): string | undefined {
 	if (item.id === state.activeAssistantItemId && state.liveReasoning?.text.trim()) {
 		return state.liveReasoning.text;
 	}
-	return nearbyReasoningFor(item, state.transcript);
+	return nearbyReasoningFor(itemIndex, state.transcript);
 }
 
-function nearbyReasoningFor(item: RuntimeTranscriptItem, items: RuntimeTranscriptItem[]): string | undefined {
-	const index = items.indexOf(item);
-	for (let cursor = Math.max(0, index - 2); cursor < index; cursor += 1) {
+function nearbyReasoningFor(itemIndex: number, items: RuntimeTranscriptItem[]): string | undefined {
+	for (let cursor = Math.max(0, itemIndex - 2); cursor < itemIndex; cursor += 1) {
 		const candidate = items[cursor];
 		if (candidate?.type === "reasoning" && candidate.text.trim()) {
 			return candidate.text;

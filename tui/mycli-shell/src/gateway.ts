@@ -61,6 +61,7 @@ import {
 	sidecarStartupTimeoutMs,
 	verifyGatewayManifest,
 } from "./adapters/gateway-handshake.ts";
+import { classifyRuntimeTranscriptUpdate } from "./adapters/transcript-update.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -106,13 +107,16 @@ function setRuntimeState(
 	nextState: RuntimeShellState,
 	options: { replaceSessionTranscript?: boolean } = {},
 ): void {
+	const previousState = runtimeState;
 	runtimeState = nextState;
 	if (runtime) {
 		const shellState = currentShellState();
 		if (options.replaceSessionTranscript) {
 			runtime.replaceSessionState(shellState);
 		} else {
-			runtime.setState(shellState);
+			runtime.setState(shellState, {
+				transcriptUpdate: classifyRuntimeTranscriptUpdate(previousState, nextState),
+			});
 		}
 	}
 	if (nativeRuntime) {
@@ -121,7 +125,7 @@ function setRuntimeState(
 }
 
 function refreshRuntime(): void {
-	runtime?.setState(currentShellState());
+	runtime?.setState(currentShellState(), { transcriptUpdate: "unchanged" });
 	nativeRuntime?.setState(currentShellState());
 }
 

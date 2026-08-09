@@ -2047,16 +2047,60 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
 	const component = runtime.chatContainer.children[0];
 
-	runtime.setState({
-		...initial,
-		messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
-		transcript: [
-			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
-		],
-	});
+	runtime.setState(
+		{
+			...initial,
+			messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
+			transcript: [
+				{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
+			],
+		},
+		{ transcriptUpdate: "tail" },
+	);
 
 	assert.equal(runtime.chatContainer.children[0], component);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /hello/);
+});
+
+test("mycli shell runtime regroups context tools on a hinted tail append", () => {
+	const terminal = new TestTerminal();
+	const firstTool = {
+		id: "read-1",
+		name: "Read",
+		args: "one.ts",
+		status: "success" as const,
+		outputPreview: "one",
+		presentation: "context",
+	};
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [firstTool],
+		bash: [],
+		transcript: [{ id: firstTool.id, kind: "tool", tool: firstTool }],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	const secondTool = {
+		...firstTool,
+		id: "read-2",
+		args: "two.ts",
+		outputPreview: "two",
+	};
+
+	runtime.setState(
+		{
+			...initial,
+			tools: [firstTool, secondTool],
+			transcript: [
+				{ id: firstTool.id, kind: "tool", tool: firstTool },
+				{ id: secondTool.id, kind: "tool", tool: secondTool },
+			],
+		},
+		{ transcriptUpdate: "tail" },
+	);
+
+	assert.equal(runtime.chatContainer.children.length, 1);
+	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /Read 2 files/);
 });
 
 test("mycli shell runtime renders pending queued input previews", () => {

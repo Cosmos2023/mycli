@@ -35,6 +35,7 @@ export {
 	MycliShellRuntime,
 	type MycliShellLocalImageAttachment,
 	type MycliShellRuntimeOptions,
+	type MycliShellStateUpdateOptions,
 	type MycliShellSubmitAttachments,
 } from "./shell-runtime.ts";
 export { AssistantMessageComponent } from "./components/assistant-message.ts";

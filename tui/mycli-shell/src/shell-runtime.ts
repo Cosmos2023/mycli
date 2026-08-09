@@ -57,6 +57,7 @@ import { isLocalImageAttachmentPath } from "./local-image-attachments.ts";
 import { getEditorTheme, getSelectListTheme, theme } from "./theme/theme.ts";
 import { projectTranscriptBlocks, type ProjectedTranscriptBlock } from "./transcript-projection.ts";
 import { resolveTranscriptReplayMaxRows } from "./transcript-replay.ts";
+import type { TranscriptUpdateKind } from "./adapters/transcript-update.ts";
 
 export type MycliShellRuntimeOptions = {
 	initialState: MycliShellState;
@@ -94,6 +95,10 @@ export type MycliShellRuntimeOptions = {
 	commands?: MycliShellCommandSpec[];
 	now?: () => number;
 	transcriptReplayMaxRows?: number;
+};
+
+export type MycliShellStateUpdateOptions = {
+	transcriptUpdate?: TranscriptUpdateKind;
 };
 
 export type MycliShellLocalImageAttachment = {
@@ -429,6 +434,7 @@ export class MycliShellRuntime {
 	private started = false;
 	private mainMounted = false;
 	private chatBlocks = new Map<string, ChatBlockComponent>();
+	private projectedChatBlocks: ProjectedTranscriptBlock[] = [];
 	private turnActivity: TurnActivityComponent | null = null;
 	private turnStartedAtMs: number | null = null;
 	private completedDurationMs: number | null = null;
@@ -533,7 +539,7 @@ export class MycliShellRuntime {
 		}
 	}
 
-	setState(nextState: MycliShellState): void {
+	setState(nextState: MycliShellState, options: MycliShellStateUpdateOptions = {}): void {
 		const previousState = this.state;
 		const effectiveState = this.applyToolDetailMode(nextState);
 		const transcriptAppended = this.transcriptBlockCount(effectiveState) > this.transcriptBlockCount(previousState);
@@ -549,7 +555,7 @@ export class MycliShellRuntime {
 		this.updateStatusTiming(previousState, effectiveState);
 		this.state = effectiveState;
 		if (this.mainMounted) {
-			this.rebuildChangedSections(previousState, effectiveState);
+			this.rebuildChangedSections(previousState, effectiveState, options.transcriptUpdate);
 		}
 		this.maybeResetTranscriptScroll(previousState, effectiveState);
 		this.queueNativeTranscriptDelta(transcriptAppended);
@@ -1081,15 +1087,20 @@ export class MycliShellRuntime {
 		this.syncPendingSurface(null, this.state);
 	}
 
-	private rebuildChangedSections(previousState: MycliShellState, nextState: MycliShellState): void {
+	private rebuildChangedSections(
+		previousState: MycliShellState,
+		nextState: MycliShellState,
+		transcriptUpdate?: TranscriptUpdateKind,
+	): void {
 		if ((previousState.title ?? "mycli") !== (nextState.title ?? "mycli")) {
 			this.rebuildHeader();
 		}
-		if (
-			this.chatSignature(previousState) !== this.chatSignature(nextState) ||
-			this.isCompletedLiveState(previousState.footer.liveState) !== this.isCompletedLiveState(nextState.footer.liveState)
-		) {
-			this.rebuildChat();
+		const completionChanged =
+			this.isCompletedLiveState(previousState.footer.liveState) !==
+			this.isCompletedLiveState(nextState.footer.liveState);
+		const chatUpdate = this.resolveChatUpdate(previousState, nextState, transcriptUpdate);
+		if (completionChanged || chatUpdate !== "unchanged") {
+			this.rebuildChat(chatUpdate === "tail" && !completionChanged);
 		}
 		if (
 			previousState.pendingNotice !== nextState.pendingNotice ||
@@ -1101,13 +1112,32 @@ export class MycliShellRuntime {
 		if (this.liveStateSignature(previousState) !== this.liveStateSignature(nextState)) {
 			this.rebuildStatus();
 		}
-		if (this.subagentTaskSignature(previousState) !== this.subagentTaskSignature(nextState)) {
+		if (this.subagentTasksChanged(previousState, nextState, transcriptUpdate)) {
 			this.rebuildSubagentTasks();
 		}
 		if (this.footerSignature(previousState) !== this.footerSignature(nextState)) {
 			this.rebuildFooter();
 		}
 		this.syncPendingSurface(previousState, nextState);
+	}
+
+	private resolveChatUpdate(
+		previousState: MycliShellState,
+		nextState: MycliShellState,
+		hint?: TranscriptUpdateKind,
+	): TranscriptUpdateKind {
+		if (
+			previousState.messages === nextState.messages &&
+			previousState.tools === nextState.tools &&
+			previousState.bash === nextState.bash &&
+			previousState.transcript === nextState.transcript
+		) {
+			return "unchanged";
+		}
+		if (hint) return hint;
+		return this.chatSignature(previousState) === this.chatSignature(nextState)
+			? "unchanged"
+			: "replace";
 	}
 
 	private chatSignature(state: MycliShellState): string {
@@ -1149,6 +1179,20 @@ export class MycliShellRuntime {
 			transcript: state.transcript?.filter((block) => block.kind === "subagent") ?? [],
 			dismissed: [...this.dismissedSubagentIds].sort(),
 		});
+	}
+
+	private subagentTasksChanged(
+		previousState: MycliShellState,
+		nextState: MycliShellState,
+		transcriptUpdate?: TranscriptUpdateKind,
+	): boolean {
+		if (transcriptUpdate === "unchanged") return false;
+		if (transcriptUpdate === "tail") {
+			const previousTail = previousState.transcript?.at(-1);
+			const nextTail = nextState.transcript?.at(-1);
+			if (previousTail?.kind !== "subagent" && nextTail?.kind !== "subagent") return false;
+		}
+		return this.subagentTaskSignature(previousState) !== this.subagentTaskSignature(nextState);
 	}
 
 	private syncPendingSurface(previousState: MycliShellState | null, nextState: MycliShellState): void {
@@ -1242,13 +1286,14 @@ export class MycliShellRuntime {
 		this.headerContainer.addChild(new Spacer(1));
 	}
 
-	private rebuildChat(): void {
+	private rebuildChat(tailOnly = false): void {
 		const transcript = this.state.transcript?.length ? this.state.transcript : this.legacyTranscriptBlocks();
 		if (transcript.length > 0) {
-			this.syncChatBlocks(transcript);
+			this.syncChatBlocks(transcript, tailOnly);
 			return;
 		}
 		this.chatBlocks.clear();
+		this.projectedChatBlocks = [];
 		this.chatContainer.clear();
 	}
 
@@ -1266,20 +1311,50 @@ export class MycliShellRuntime {
 		return blocks;
 	}
 
-	private syncChatBlocks(blocks: MycliShellTranscriptBlock[]): void {
-		const nextBlocks = new Map<string, ChatBlockComponent>();
-		const children: Component[] = [];
-		for (const block of projectTranscriptBlocks(blocks)) {
+	private syncChatBlocks(blocks: MycliShellTranscriptBlock[], tailOnly: boolean): void {
+		const projected = projectTranscriptBlocks(blocks);
+		const prefixLength = tailOnly ? this.stableTailProjectionPrefix(projected) : 0;
+		const previousProjected = this.projectedChatBlocks;
+		const nextSuffixIds = new Set(projected.slice(prefixLength).map((block) => block.id));
+		for (const block of previousProjected.slice(prefixLength)) {
+			if (!nextSuffixIds.has(block.id)) this.chatBlocks.delete(block.id);
+		}
+
+		const children: Component[] = this.chatContainer.children.slice(0, prefixLength);
+		for (const block of projected.slice(prefixLength)) {
 			const cached = this.chatBlocks.get(block.id);
 			const next = this.syncChatBlock(block, cached);
-			nextBlocks.set(block.id, next);
+			this.chatBlocks.set(block.id, next);
 			children.push(next.component);
 		}
 		if (this.isCompletedLiveState(this.state.footer.liveState)) {
 			children.push(new TurnCompletedComponent(this.completedDurationMs ?? 0));
 		}
-		this.chatBlocks = nextBlocks;
+		this.projectedChatBlocks = projected;
 		this.chatContainer.children = children;
+	}
+
+	private stableTailProjectionPrefix(next: ProjectedTranscriptBlock[]): number {
+		const previous = this.projectedChatBlocks;
+		let prefixLength = Math.min(previous.length, next.length);
+		if (
+			previous.length === next.length &&
+			prefixLength > 0 &&
+			this.sameProjectedPosition(previous[prefixLength - 1]!, next[prefixLength - 1]!)
+		) {
+			prefixLength -= 1;
+		}
+		while (
+			prefixLength > 0 &&
+			!this.sameProjectedPosition(previous[prefixLength - 1]!, next[prefixLength - 1]!)
+		) {
+			prefixLength -= 1;
+		}
+		return prefixLength;
+	}
+
+	private sameProjectedPosition(left: ProjectedTranscriptBlock, right: ProjectedTranscriptBlock): boolean {
+		return left.id === right.id && left.kind === right.kind;
 	}
 
 	private sessionTreeJumpTarget(node: MycliShellSessionTreeNode): string | null {
@@ -1327,6 +1402,7 @@ export class MycliShellRuntime {
 
 	private syncChatBlock(block: ProjectedTranscriptBlock, cached?: ChatBlockComponent): ChatBlockComponent {
 		const signature = this.blockSignature(block);
+		if (cached?.kind === block.kind && cached.signature === signature) return cached;
 		if (cached?.kind === block.kind) {
 			if (block.kind === "tool" && cached.component instanceof ToolExecutionComponent) {
 				cached.component.updateTool(block.tool);
@@ -1346,9 +1422,6 @@ export class MycliShellRuntime {
 			if (block.kind === "tool_group" && cached.component instanceof CollapsedToolGroupComponent) {
 				cached.component.updateGroup(block.group);
 				cached.signature = signature;
-				return cached;
-			}
-			if (block.kind === "message" && cached.kind === "message" && cached.signature === signature) {
 				return cached;
 			}
 			if (
