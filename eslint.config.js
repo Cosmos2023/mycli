@@ -5,7 +5,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["apps/**/*.ts", "packages/**/*.ts"],
+    files: ["backend/apps/**/*.ts", "backend/packages/**/*.ts"],
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
     },

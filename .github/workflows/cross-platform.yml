@@ -39,10 +39,10 @@ jobs:
             -B native/windows-sandbox-helper/build `
             -A x64
           cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
-          New-Item -ItemType Directory -Force packages/tools/native/windows | Out-Null
+          New-Item -ItemType Directory -Force backend/packages/tools/native/windows | Out-Null
           Copy-Item `
             native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
-            packages/tools/native/windows/mycli-windows-sandbox.exe
+            backend/packages/tools/native/windows/mycli-windows-sandbox.exe
       - run: npm ci
       - run: npm run contracts:check
       - run: npm run lint

@@ -7,7 +7,7 @@ from jsonschema import Draft202012Validator
 
 
 def test_python_and_fixture_expectations_agree() -> None:
-    root = Path("packages/contracts")
+    root = Path("backend/packages/contracts")
     schema = json.loads(
         (root / "schemas/gateway-events.schema.json").read_text(encoding="utf-8")
     )

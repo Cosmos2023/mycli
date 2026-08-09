@@ -230,7 +230,7 @@ class AgentConfig:
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
     thinking_enabled: bool = True
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
-    memory_enabled: bool = True
+    memory_enabled: bool = False
     memory_extraction_enabled: bool = True
     memory_extraction_interval_turns: int = 5
     memory_dream_enabled: bool = True

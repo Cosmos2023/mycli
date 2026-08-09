@@ -4,9 +4,13 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+	RIPGREP_TARGETS,
+	ripgrepPlatformKey,
+} from "../backend/packages/tools/dist/ripgrep-targets.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WORKSPACES = [
@@ -21,6 +25,11 @@ const WORKSPACES = [
 	"mycli-shell-tui",
 	"@mycli/app",
 ];
+const PLATFORM_PACKAGES = Object.entries(RIPGREP_TARGETS).map(([target, info]) => ({
+	name: info.npmPackage,
+	target,
+}));
+const CURRENT_PLATFORM_PACKAGE = RIPGREP_TARGETS[ripgrepPlatformKey()].npmPackage;
 const NATIVE_PTY_SMOKE = String.raw`
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -106,6 +115,39 @@ const workerBootstrap = join(dirname(integrationsEntry), "plugins", "worker-boot
 assert.equal(statSync(workerBootstrap).isFile(), true);
 process.stdout.write("m7-package-ok\n");
 `;
+const RIPGREP_PACKAGE_SMOKE = String.raw`
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { delimiter, dirname, join } from "node:path";
+import process from "node:process";
+import {
+	initializeRipgrepEnvironment,
+	RIPGREP_TARGETS,
+	RIPGREP_VERSION,
+	ripgrepOutputPath,
+	ripgrepPlatformKey,
+} from "@mycli/tools";
+
+const require = createRequire(import.meta.url);
+const target = ripgrepPlatformKey();
+const platformPackage = RIPGREP_TARGETS[target].npmPackage;
+const packageRoot = dirname(require.resolve(platformPackage + "/package.json"));
+const result = initializeRipgrepEnvironment({ env: process.env });
+assert.ok(result.executable, "packaged ripgrep was not resolved");
+assert.ok(result.directory, "packaged ripgrep directory was not resolved");
+assert.equal(process.env.PATH?.split(delimiter)[0], result.directory);
+assert.equal(process.env.MYCLI_RIPGREP_PATH_DIR, result.directory);
+assert.equal(
+	result.executable,
+	ripgrepOutputPath(join(packageRoot, "vendor"), target),
+	"ripgrep did not come from the installed optional platform package",
+);
+const probe = spawnSync("rg", ["--version"], { encoding: "utf8", env: process.env });
+assert.equal(probe.status, 0, probe.stderr);
+assert.match(probe.stdout, new RegExp("ripgrep " + RIPGREP_VERSION.replaceAll(".", "\\.")));
+process.stdout.write("ripgrep-package-ok\n");
+`;
 
 const tempRoot = await mkdtemp(join(tmpdir(), "mycli-packed-cli-"));
 try {
@@ -114,6 +156,7 @@ try {
 	const cacheDir = join(tempRoot, "npm-cache");
 	await mkdir(packDir);
 	await mkdir(installDir);
+	const packedArtifacts = [];
 	for (const workspace of WORKSPACES) {
 		const output = await run("npm", [
 			"pack",
@@ -126,29 +169,55 @@ try {
 			cacheDir,
 			"--silent",
 		], ROOT, true);
-		assertPackFileList(JSON.parse(output));
+		const entry = assertPackFileList(JSON.parse(output));
+		packedArtifacts.push({ name: workspace, path: join(packDir, basename(entry.filename)) });
 	}
-	const tarballs = (await readdir(packDir))
-		.filter((name) => name.endsWith(".tgz"))
-		.map((name) => join(packDir, name));
-	if (tarballs.length !== WORKSPACES.length) {
+	for (const platformPackage of PLATFORM_PACKAGES) {
+		let output;
+		try {
+			output = await run("npm", [
+				"pack",
+				"--json",
+				"--pack-destination",
+				packDir,
+				"--cache",
+				cacheDir,
+				"--silent",
+			], join(ROOT, "npm", "ripgrep", platformPackage.target), true);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : "unknown_error";
+			throw new Error(`platform_pack_failed:${platformPackage.target}: ${detail}`);
+		}
+		const entry = assertPackFileList(JSON.parse(output), platformPackage.target);
+		packedArtifacts.push({
+			name: platformPackage.name,
+			path: join(packDir, basename(entry.filename)),
+		});
+	}
+	const tarballs = (await readdir(packDir)).filter((name) => name.endsWith(".tgz"));
+	if (tarballs.length !== packedArtifacts.length) {
 		throw new Error("packed_cli_smoke_failed: workspace tarball count mismatch");
 	}
+	const platformNames = new Set(PLATFORM_PACKAGES.map((value) => value.name));
+	const installTarballs = packedArtifacts
+		.filter((artifact) => !platformNames.has(artifact.name) || artifact.name === CURRENT_PLATFORM_PACKAGE)
+		.map((artifact) => artifact.path);
 	await writeFile(join(installDir, "package.json"), JSON.stringify({ private: true }), "utf8");
 	await run("npm", [
 		"install",
 		"--ignore-scripts",
+		"--omit=optional",
 		"--no-audit",
 		"--no-fund",
 		"--package-lock=false",
 		"--cache",
 		cacheDir,
-		...tarballs,
+		...installTarballs,
 	], installDir);
 	const pythonProbe = await createPythonProbe(tempRoot);
 	const guardedEnv = {
 		...process.env,
-		PATH: `${pythonProbe.binDir}${delimiter}${process.env.PATH ?? dirname(process.execPath)}`,
+		PATH: `${pythonProbe.binDir}${delimiter}${dirname(process.execPath)}`,
 		MYCLI_PYTHON_PROBE_MARKER: pythonProbe.marker,
 	};
 	await assertNoPythonRuntimeSurface(join(
@@ -177,6 +246,18 @@ try {
 	if (!m7PackageOutput.includes("m7-package-ok")) {
 		throw new Error("packed_cli_smoke_failed: installed M7 assets are incomplete");
 	}
+	const ripgrepPackageSmoke = join(installDir, "ripgrep-package-smoke.mjs");
+	await writeFile(ripgrepPackageSmoke, RIPGREP_PACKAGE_SMOKE, "utf8");
+	const ripgrepOutput = await run(
+		process.execPath,
+		[ripgrepPackageSmoke],
+		installDir,
+		true,
+		guardedEnv,
+	);
+	if (!ripgrepOutput.includes("ripgrep-package-ok")) {
+		throw new Error("packed_cli_smoke_failed: installed ripgrep is incomplete");
+	}
 	const packedHome = join(tempRoot, "home");
 	const managementEnv = {
 		...guardedEnv,
@@ -201,7 +282,7 @@ try {
 	const m8RuntimeSmoke = join(installDir, "m8-runtime-smoke.mjs");
 	const sourceSmoke = await readFile(join(ROOT, "scripts", "smoke_node_m8.mjs"), "utf8");
 	const installedSmoke = sourceSmoke.replace(
-		'../apps/mycli/dist/node-runtime/node-backend.js',
+		'../backend/apps/mycli/dist/node-runtime/node-backend.js',
 		'./node_modules/@mycli/app/dist/node-runtime/node-backend.js',
 	);
 	if (installedSmoke === sourceSmoke) {
@@ -216,19 +297,33 @@ try {
 	if (existsSync(pythonProbe.marker)) {
 		throw new Error("packed_cli_smoke_failed: installed CLI probed for Python");
 	}
-	process.stdout.write(`${JSON.stringify({ status: "completed", packed_workspaces: tarballs.length })}\n`);
-} catch {
-	process.stderr.write("packed_cli_smoke_failed\n");
+	process.stdout.write(`${JSON.stringify({
+		status: "completed",
+		packed_workspaces: WORKSPACES.length,
+		packed_platforms: PLATFORM_PACKAGES.length,
+	})}\n`);
+} catch (error) {
+	const detail = error instanceof Error ? error.message : "unknown_error";
+	const bounded = detail
+		.replaceAll(tempRoot, "<temp>")
+		.replaceAll(ROOT, "<root>")
+		.replace(/[\r\n]+/gu, " ")
+		.slice(-1_000);
+	process.stderr.write(`packed_cli_smoke_failed: ${bounded}\n`);
 	process.exitCode = 1;
 } finally {
 	await rm(tempRoot, { recursive: true, force: true });
 }
 
-function assertPackFileList(output) {
+function assertPackFileList(output, expectedTarget) {
 	const entries = Array.isArray(output) ? output : [];
-	const files = Array.isArray(entries[0]?.files) ? entries[0].files : [];
+	const entry = entries[0];
+	const files = Array.isArray(entry?.files) ? entry.files : [];
 	if (entries.length !== 1 || files.length === 0) {
 		throw new Error("packed_cli_smoke_failed: npm pack file inventory is unavailable");
+	}
+	if (typeof entry.filename !== "string" || !entry.filename.endsWith(".tgz")) {
+		throw new Error("packed_cli_smoke_failed: npm pack filename is unavailable");
 	}
 	for (const file of files) {
 		const path = typeof file?.path === "string" ? file.path : "";
@@ -236,6 +331,30 @@ function assertPackFileList(output) {
 			throw new Error("packed_cli_smoke_failed: Python runtime file entered an npm artifact");
 		}
 	}
+	if (entry?.name === "@mycli/tools" && files.some(
+		(file) => typeof file?.path === "string" && file.path.startsWith("native/ripgrep/"),
+	)) {
+		throw new Error("packed_cli_smoke_failed: tools package still embeds ripgrep");
+	}
+	if (entry?.name === "@mycli/app"
+		&& !files.some((file) => file?.path === "dist/assets/system.md")) {
+		throw new Error("packed_cli_smoke_failed: app system prompt asset is missing");
+	}
+	if (expectedTarget) {
+		const expectedExecutable = expectedTarget.startsWith("windows-") ? "rg.exe" : "rg";
+		const expectedPath = `vendor/${expectedTarget}/${expectedExecutable}`;
+		if (!files.some((file) => file?.path === expectedPath)) {
+			throw new Error("packed_cli_smoke_failed: platform package omitted ripgrep");
+		}
+		if (files.some((file) => (
+			typeof file?.path === "string"
+			&& /\/rg(?:\.exe)?$/u.test(file.path)
+			&& file.path !== expectedPath
+		))) {
+			throw new Error("packed_cli_smoke_failed: platform package contains the wrong ripgrep target");
+		}
+	}
+	return entry;
 }
 
 async function createPythonProbe(root) {
@@ -294,7 +413,21 @@ function run(command, args, cwd, capture = false, env = process.env) {
 				resolve(stdout);
 				return;
 			}
-			reject(new Error(`command_failed: ${command} (${code ?? "signal"}) ${stderr.slice(-512)}`));
+			reject(new Error(
+				`command_failed: ${command} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`,
+			));
 		});
 	});
+}
+
+function commandFailureKind(stderr) {
+	for (const pattern of [
+		/npm error code ([A-Z0-9_]+)/u,
+		/code: ['"]([A-Z0-9_]+)['"]/u,
+		/DOMException \[([A-Za-z]+)\]/u,
+	]) {
+		const match = pattern.exec(stderr);
+		if (match?.[1]) return match[1];
+	}
+	return "unknown";
 }

@@ -76,7 +76,7 @@ function isExpandedContextBlock(block: MycliShellTranscriptBlock): boolean {
 }
 
 function isContextTool(tool: MycliShellTool): boolean {
-	if (tool.hidden || tool.mutating) {
+	if (tool.mutating) {
 		return false;
 	}
 	if (tool.presentation === "context") {

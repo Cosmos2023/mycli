@@ -281,6 +281,17 @@ def test_resolve_config_loads_memory_extraction_interval(tmp_path: Path) -> None
     assert config.memory_extraction_interval_turns == 8
 
 
+def test_resolve_config_disables_memory_by_default(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(cli_args={}, env={}, cwd=workspace, home=home_dir)
+
+    assert config.memory_enabled is False
+
+
 def test_resolve_config_clamps_memory_extraction_interval_to_one(
     tmp_path: Path,
 ) -> None:
@@ -328,6 +339,7 @@ def test_resolve_config_loads_memory_feature_environment_overrides(
     config = resolve_config(
         cli_args={},
         env={
+            "MYCLI_MEMORY_ENABLED": "true",
             "MYCLI_MEMORY_EXTRACTION_ENABLED": "false",
             "MYCLI_MEMORY_DREAM_ENABLED": "false",
             "MYCLI_MEMORY_DREAM_MIN_HOURS": "36",
@@ -337,6 +349,7 @@ def test_resolve_config_loads_memory_feature_environment_overrides(
         home=home_dir,
     )
 
+    assert config.memory_enabled is True
     assert config.memory_extraction_enabled is False
     assert config.memory_dream_enabled is False
     assert config.memory_dream_min_hours == 36

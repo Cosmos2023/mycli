@@ -655,7 +655,7 @@ test("mycli shell clears max-turns agents from the active UI", async () => {
 	await runtime.handleClientAction("open_tasks", "");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /No background agents currently running/);
+	assert.match(output, /No agents in this session/);
 	assert.doesNotMatch(output, /Explore the tools subsystem/);
 	assert.doesNotMatch(output, /Child sub-agent reached the max turn limit\./);
 });
@@ -693,7 +693,7 @@ test("mycli shell clears completed background subagents from tasks", async () =>
 	await setTimeout(25);
 
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /No background agents currently running/);
+	assert.match(output, /No agents in this session/);
 	assert.doesNotMatch(output, /explore › Inspect repo/);
 	assert.doesNotMatch(output, /Agent completed/);
 });
@@ -866,6 +866,28 @@ test("mycli shell renders transcript blocks in event order", () => {
 	assert.ok(userIndex >= 0, output);
 	assert.ok(toolIndex > userIndex, output);
 	assert.ok(assistantIndex > toolIndex, output);
+});
+
+test("mycli shell renders tools marked hidden by legacy session state", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [{ id: "read-legacy", name: "Read", args: "legacy.txt", status: "success", hidden: true }],
+		bash: [],
+		transcript: [
+			{
+				id: "read-legacy",
+				kind: "tool",
+				tool: { id: "read-legacy", name: "Read", args: "legacy.txt", status: "success", hidden: true },
+			},
+		],
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.match(output, /⏺ Read/);
+	assert.match(output, /legacy\.txt/);
 });
 
 test("mycli shell renders proposed plans as dedicated blocks", () => {
@@ -2429,12 +2451,14 @@ test("mycli shell command palette replaces editor like coding-agent selector", a
 
 test("mycli shell approval selector replaces editor and submits selected choice", async () => {
 	const terminal = new TestTerminal();
-	const approvals: Array<[string, string]> = [];
+	const approvals: Array<[string, string, string | undefined, number | undefined]> = [];
 	const runtime = new MycliShellRuntime({
 		initialState: {
 			...sampleState(),
 			pendingApproval: {
 				decisionId: "decision-1",
+				sessionId: "demo:sub:turn_1:abcd1234",
+				generation: 7,
 				preview: "file /tmp/image.jpg 2>&1",
 				reason: "Shell command requires approval",
 				toolName: "Bash",
@@ -2451,8 +2475,8 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 			footer: { ...sampleState().footer, liveState: "Waiting approval" },
 		},
 		terminal,
-		onApprovalRespond: (decisionId, choice) => {
-			approvals.push([decisionId, choice]);
+		onApprovalRespond: (decisionId, choice, approval) => {
+			approvals.push([decisionId, choice, approval.sessionId, approval.generation]);
 		},
 	});
 
@@ -2478,7 +2502,7 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 
 	terminal.input?.("\r");
 	await setTimeout(25);
-	assert.deepEqual(approvals, [["decision-1", "reject"]]);
+	assert.deepEqual(approvals, [["decision-1", "reject", "demo:sub:turn_1:abcd1234", 7]]);
 });
 
 test("mycli shell approval selector supports numeric and mnemonic shortcuts", async () => {
@@ -2513,6 +2537,48 @@ test("mycli shell approval selector supports numeric and mnemonic shortcuts", as
 
 	assert.deepEqual(approvals, [["decision-3", "approve_once"]]);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Approved\./);
+});
+
+test("mycli shell approval selector restores choices after a rejected response", async () => {
+	const terminal = new TestTerminal();
+	const approvals: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingApproval: {
+				decisionId: "decision-retry",
+				sessionId: "child-session",
+				generation: 3,
+				preview: "sort package.json",
+				options: [
+					{ choice: "approve_once", label: "Allow once" },
+					{ choice: "reject", label: "Reject" },
+				],
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting approval" },
+		},
+		terminal,
+		onApprovalRespond: async (_decisionId, choice) => {
+			approvals.push(choice);
+			throw new Error("A turn is already running.");
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("1");
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.deepEqual(approvals, ["approve_once"]);
+	assert.match(output, /A turn is already running\./);
+	assert.match(output, /1\. Allow once/);
+	assert.doesNotMatch(output, /Approved\.|Submitting\.\.\./);
+
+	terminal.input?.("2");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.deepEqual(approvals, ["approve_once", "reject"]);
+	assert.match(output, /2\. Reject/);
 });
 
 test("mycli shell approval selector uses stable shortcuts for session and always allow", async () => {
@@ -2662,6 +2728,46 @@ test("mycli shell clarification selector submits a selected option", async () =>
 	await setTimeout(25);
 
 	assert.deepEqual(responses, [["question-1", "TUI"]]);
+});
+
+test("mycli shell clarification selector restores choices after a rejected response", async () => {
+	const terminal = new TestTerminal();
+	const responses: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingClarification: {
+				requestId: "question-retry",
+				sessionId: "child-session",
+				generation: 3,
+				question: "Which implementation should we use?",
+				options: [{ label: "Runtime" }, { label: "TUI" }],
+				multiSelect: false,
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting clarification" },
+		},
+		terminal,
+		onClarificationRespond: async (_requestId, response) => {
+			responses.push(response);
+			throw new Error("A turn is already running.");
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("1");
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.deepEqual(responses, ["Runtime"]);
+	assert.match(output, /A turn is already running\./);
+	assert.match(output, /1\. Runtime/);
+	assert.doesNotMatch(output, /Answered:|Submitting\.\.\./);
+
+	terminal.input?.("2");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.deepEqual(responses, ["Runtime", "TUI"]);
+	assert.match(output, /2\. TUI/);
 });
 
 test("mycli shell clarification selector accepts a custom answer", async () => {
@@ -3613,7 +3719,37 @@ test("mycli shell runtime contains asynchronous submit failures at the editor bo
 	await setTimeout(25);
 
 	assert.equal(runtime.isStarted(), true);
+	assert.equal(runtime.editor.getText(), "hello");
+	assert.equal(runtime.getState().transcript?.some((block) =>
+		block.kind === "message"
+			&& block.message.role === "system"
+			&& block.message.text === "Message submission failed: submit failed"
+	), true);
 	runtime.ui.stop();
+});
+
+test("mycli shell runtime contains follow-up failures and restores the queued input", async () => {
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal: new TestTerminal(),
+		onFollowUp: async () => {
+			throw new Error("follow-up failed");
+		},
+	});
+
+	runtime.editor.setText("keep this follow-up");
+	runtime.editor.actionHandlers.get("app.message.followUp")?.();
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "keep this follow-up");
+	assert.equal(runtime.getState().transcript?.some((block) =>
+		block.kind === "message"
+			&& block.message.role === "system"
+			&& block.message.text === "Follow-up submission failed: follow-up failed"
+	), true);
 });
 
 test("mycli shell runtime submits local image attachments from @image paths", async () => {
@@ -4006,7 +4142,7 @@ test("mycli shell runtime interrupts running turns with ctrl c and restores subm
 	assert.equal(runtime.editor.getText(), "");
 	runtime.completeInterruptedTurn([]);
 	assert.equal(runtime.editor.getText(), "draft before send");
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupt requested/);
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupt requested/);
 });
 
 test("mycli shell runtime removes restored interrupted submit from prompt history", async () => {
@@ -4106,6 +4242,94 @@ test("mycli shell does not restore submitted input when backend denies rollback"
 	assert.equal(runtime.editor.getText(), "");
 });
 
+test("mycli shell does not render an interrupt notice when the backend rejects the request", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onInterrupt: () => false,
+	});
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupt requested/);
+});
+
+test("mycli shell uses the force-exit callback on repeated ctrl c after interruption", async () => {
+	let forceExits = 0;
+	const terminal = new TestTerminal();
+	let runtime!: MycliShellRuntime;
+	runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onInterrupt: () => {
+			runtime.setState({
+				...runtime.getState(),
+				footer: {
+					...runtime.getState().footer,
+					liveState: "Interrupted",
+					liveStateKind: "interrupted",
+				},
+			});
+			return true;
+		},
+		onInterruptExit: () => { forceExits += 1; },
+	});
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x03");
+	await setTimeout(25);
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.equal(forceExits, 1);
+});
+
+test("mycli shell allows a second ctrl c while interrupt confirmation is pending", async () => {
+	let forceExits = 0;
+	let resolveInterrupt!: () => void;
+	const interruptPending = new Promise<void>((resolve) => { resolveInterrupt = resolve; });
+	const terminal = new TestTerminal();
+	let runtime!: MycliShellRuntime;
+	runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onInterrupt: () => {
+			runtime.setState({
+				...runtime.getState(),
+				footer: {
+					...runtime.getState().footer,
+					liveState: "Interrupting",
+					liveStateKind: "interrupting",
+				},
+			});
+			return interruptPending;
+		},
+		onInterruptExit: () => { forceExits += 1; },
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x03");
+	await setTimeout(10);
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.equal(forceExits, 1);
+	resolveInterrupt();
+});
+
 test("mycli shell restores interrupted queued inputs in order with attachments", () => {
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
@@ -4191,7 +4415,7 @@ test("mycli shell runtime interrupts running turns with escape", async () => {
 
 	assert.equal(interrupted, 1);
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /Interrupt requested/);
+	assert.doesNotMatch(output, /Interrupt requested/);
 	assert.match(output, /↳ keep steering/);
 	assert.match(output, /↳ keep follow-up/);
 });
@@ -4349,7 +4573,7 @@ test("mycli shell command palette includes backend-supported commands", async ()
 	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /\/tasks agents/);
 });
 
-test("mycli shell local view command switches tool visibility", async () => {
+test("mycli shell local view command keeps tools visible", async () => {
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal: new TestTerminal(),
@@ -4358,7 +4582,7 @@ test("mycli shell local view command switches tool visibility", async () => {
 	await runtime.handleClientAction("set_view_mode", "focus");
 
 	assert.equal(runtime.getState().settings?.viewMode, "focus");
-	assert.equal(runtime.getState().tools.find((tool) => tool.name === "Read")?.hidden, true);
+	assert.equal(runtime.getState().tools.find((tool) => tool.name === "Read")?.hidden, false);
 	assert.equal(runtime.getState().tools.find((tool) => tool.name === "Edit")?.hidden, false);
 });
 
@@ -5446,7 +5670,9 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 
 test("gateway resolves interrupted inputs only after the backend terminal event", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
-	const interruptBody = source.match(/async function interruptTurn\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
+	const interruptBody = source.match(
+		/async function interruptTurn\([\s\S]*?\): Promise<boolean> \{([\s\S]*?)\n\}/,
+	)?.[1] ?? "";
 
 	assert.match(source, /popLastLocalFollowUp\(runtimeState\)/);
 	assert.match(source, /resolveLocalInterruptInputs\(/);

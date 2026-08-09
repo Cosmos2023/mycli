@@ -60,9 +60,8 @@ def test_m7_python_node_config_extension_and_management_parity(tmp_path: Path) -
     assert python_payload["profiles"] == [
         {**profile_contract, "budget": expected_profile["python_budget"]}
     ]
-    assert node_payload["profiles"] == [
-        {**profile_contract, "budget": expected_profile["node_budget"]}
-    ]
+    # Node children are prompt-driven; profile discovery is intentionally retired.
+    assert node_payload["profiles"] == []
     assert python_payload["python_plugins"] == [
         {"id": "legacy-python", "status": "supported"}
     ]

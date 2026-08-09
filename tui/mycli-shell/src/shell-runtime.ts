@@ -67,7 +67,8 @@ export type MycliShellRuntimeOptions = {
 	onTrustSelect?: (trusted: boolean) => void | Promise<void>;
 	onSubmit?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onFollowUp?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
-	onInterrupt?: (options: { rollbackUserInput: boolean }) => void | Promise<void>;
+	onInterrupt?: (options: { rollbackUserInput: boolean }) => boolean | void | Promise<boolean | void>;
+	onInterruptExit?: () => void | Promise<void>;
 	onDequeueQueuedInput?: () => MycliShellQueuedInput | string | null | Promise<MycliShellQueuedInput | string | null>;
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
@@ -80,8 +81,16 @@ export type MycliShellRuntimeOptions = {
 	onSessionTreeSelect?: (node: MycliShellSessionTreeNode) => void | Promise<void>;
 	onSettingsChange?: (settings: MycliShellVisualSettings) => MycliShellVisualSettings | Promise<MycliShellVisualSettings>;
 	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
-	onApprovalRespond?: (decisionId: string, choice: string) => void | Promise<void>;
-	onClarificationRespond?: (requestId: string, response: string) => void | Promise<void>;
+	onApprovalRespond?: (
+		decisionId: string,
+		choice: string,
+		approval: MycliShellPendingApproval,
+	) => void | Promise<void>;
+	onClarificationRespond?: (
+		requestId: string,
+		response: string,
+		clarification: MycliShellPendingClarification,
+	) => void | Promise<void>;
 	commands?: MycliShellCommandSpec[];
 	now?: () => number;
 	transcriptReplayMaxRows?: number;
@@ -450,7 +459,7 @@ export class MycliShellRuntime {
 			this.retainPendingImagesInText(text);
 		};
 		this.editor.onSubmit = (text) => {
-			void this.handleSubmit(text).catch(() => undefined);
+			this.runAsyncAction(() => this.handleSubmit(text), "Message submission failed");
 		};
 		this.editor.onPasteImage = () => {
 			this.editor.insertTextAtCursor?.(" @");
@@ -462,28 +471,28 @@ export class MycliShellRuntime {
 			return true;
 		};
 		this.editor.onEscape = () => {
-			void this.handleInterrupt().catch(() => undefined);
+			this.runAsyncAction(() => this.handleInterrupt(), "Interrupt request failed");
 		};
 		this.editor.onAction("app.interrupt", () => {
-			void this.handleInterrupt().catch(() => undefined);
+			this.runAsyncAction(() => this.handleInterrupt(), "Interrupt request failed");
 		});
 		this.editor.onAction("app.exit", () => {
-			void this.shutdown();
+			this.runAsyncAction(() => this.shutdown(), "Exit failed");
 		});
 		this.editor.onAction("app.commandPalette", () => this.showCommandPalette());
 		this.editor.onAction("app.help", () => this.showCommandPalette());
 		this.editor.onAction("app.model.select", () => this.showModelSelector());
 		this.editor.onAction("app.mode.cycle", () => {
-			void this.cycleCollaborationMode();
+			this.runAsyncAction(() => this.cycleCollaborationMode(), "Mode change failed");
 		});
 		this.editor.onAction("app.permissions.open", () => {
 			this.showPermissionSelector();
 		});
 		this.editor.onAction("app.message.followUp", () => {
-			void this.submitFollowUp();
+			this.runAsyncAction(() => this.submitFollowUp(), "Follow-up submission failed");
 		});
 		this.editor.onAction("app.message.dequeue", () => {
-			void this.restoreQueuedInput();
+			this.runAsyncAction(() => this.restoreQueuedInput(), "Queued message restore failed");
 		});
 		this.editor.onAction("app.tools.expand", () => this.toggleToolDetails());
 		this.ui.addInputListener((data) => this.handleGlobalInput(data));
@@ -613,7 +622,7 @@ export class MycliShellRuntime {
 			return undefined;
 		}
 		if (matchesKey(data, "ctrl+c")) {
-			void this.handleCtrlC();
+			this.runAsyncAction(() => this.handleCtrlC(), "Interrupt request failed");
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+o")) {
@@ -621,7 +630,7 @@ export class MycliShellRuntime {
 			return { consume: true };
 		}
 		if (matchesKey(data, "escape") && this.isTurnRunning()) {
-			void this.handleInterrupt();
+			this.runAsyncAction(() => this.handleInterrupt(), "Interrupt request failed");
 			return { consume: true };
 		}
 		if (this.ui.terminal.nativeScrollback) {
@@ -1149,9 +1158,7 @@ export class MycliShellRuntime {
 	private showApprovalSelector(approval: MycliShellPendingApproval): void {
 		const selector = new ApprovalSelectorComponent({
 			approval,
-			onSelect: (choice) => {
-				void this.respondApproval(approval.decisionId, choice);
-			},
+			onSelect: (choice) => this.respondApproval(approval, choice),
 			onCancel: () => {
 				this.addSystemNotice("Approval still pending.");
 			},
@@ -1163,21 +1170,20 @@ export class MycliShellRuntime {
 		this.ui.setFocus(selector);
 	}
 
-	private async respondApproval(decisionId: string, choice: string): Promise<void> {
+	private async respondApproval(approval: MycliShellPendingApproval, choice: string): Promise<void> {
 		try {
-			await this.options.onApprovalRespond?.(decisionId, choice);
+			await this.options.onApprovalRespond?.(approval.decisionId, choice, approval);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unable to submit approval response.";
 			this.addSystemNotice(message);
+			throw error;
 		}
 	}
 
 	private showClarificationSelector(clarification: MycliShellPendingClarification): void {
 		const selector = new ClarificationSelectorComponent({
 			clarification,
-			onRespond: (response) => {
-				void this.respondClarification(clarification.requestId, response);
-			},
+			onRespond: (response) => this.respondClarification(clarification, response),
 			onCancel: () => {
 				this.addSystemNotice("Question still waiting for an answer.");
 			},
@@ -1189,12 +1195,20 @@ export class MycliShellRuntime {
 		this.ui.setFocus(selector);
 	}
 
-	private async respondClarification(requestId: string, response: string): Promise<void> {
+	private async respondClarification(
+		clarification: MycliShellPendingClarification,
+		response: string,
+	): Promise<void> {
 		try {
-			await this.options.onClarificationRespond?.(requestId, response);
+			await this.options.onClarificationRespond?.(
+				clarification.requestId,
+				response,
+				clarification,
+			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unable to submit clarification response.";
 			this.addSystemNotice(message);
+			throw error;
 		}
 	}
 
@@ -1570,7 +1584,12 @@ export class MycliShellRuntime {
 		if (isSlashCommandSubmission(input)) {
 			this.editor.addToHistory(input);
 			this.editor.setText("");
-			await this.submitCommand(input);
+			try {
+				await this.submitCommand(input);
+			} catch (error) {
+				this.restoreQueuedTextToEditor(input);
+				throw error;
+			}
 			return;
 		}
 		const submitted = this.extractLocalImageAttachments(input);
@@ -1591,6 +1610,10 @@ export class MycliShellRuntime {
 			await this.options.onSubmit?.(submitted.text, { localImages: submitted.localImages });
 		} catch (error) {
 			if (startsNewTurn) this.userTurnPendingStart = false;
+			this.restoreQueuedInputToEditor({
+				text: input,
+				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
+			});
 			throw error;
 		}
 	}
@@ -1644,9 +1667,17 @@ export class MycliShellRuntime {
 		const submitted = this.extractLocalImageAttachments(input);
 		this.editor.addToHistory(input);
 		this.editor.setText("");
-		await (this.options.onFollowUp ?? this.options.onSubmit)?.(submitted.text, {
-			localImages: submitted.localImages,
-		});
+		try {
+			await (this.options.onFollowUp ?? this.options.onSubmit)?.(submitted.text, {
+				localImages: submitted.localImages,
+			});
+		} catch (error) {
+			this.restoreQueuedInputToEditor({
+				text: input,
+				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
+			});
+			throw error;
+		}
 	}
 
 	private async restoreQueuedInput(): Promise<void> {
@@ -1670,7 +1701,6 @@ export class MycliShellRuntime {
 			await this.options.onInterrupt?.({
 				rollbackUserInput: this.lastSubmittedInputEligible,
 			});
-			this.addSystemNotice("Interrupt requested.");
 			return;
 		}
 		if (this.editor.getText().length > 0) {
@@ -1682,8 +1712,15 @@ export class MycliShellRuntime {
 
 	private async handleCtrlC(): Promise<void> {
 		if (this.isTurnRunning()) {
+			const now = this.now();
+			const interrupting = this.state.footer.liveStateKind?.trim().toLowerCase() === "interrupting"
+				|| this.state.footer.liveState?.trim().toLowerCase() === "interrupting";
+			if (interrupting && this.lastCtrlCAtMs !== null && now - this.lastCtrlCAtMs <= 2000) {
+				await (this.options.onInterruptExit ?? this.options.onExit)?.();
+				return;
+			}
+			this.lastCtrlCAtMs = now;
 			await this.handleInterrupt();
-			this.lastCtrlCAtMs = null;
 			return;
 		}
 		if (this.editor.getText().length > 0) {
@@ -1693,7 +1730,13 @@ export class MycliShellRuntime {
 		}
 		const now = this.now();
 		if (this.lastCtrlCAtMs !== null && now - this.lastCtrlCAtMs <= 2000) {
-			await this.shutdown();
+			const interrupted = this.state.footer.liveStateKind?.trim().toLowerCase() === "interrupted"
+				|| this.state.footer.liveState?.trim().toLowerCase() === "interrupted";
+			if (interrupted && this.options.onInterruptExit) {
+				await this.options.onInterruptExit();
+			} else {
+				await this.shutdown();
+			}
 			return;
 		}
 		this.lastCtrlCAtMs = now;
@@ -1778,7 +1821,7 @@ export class MycliShellRuntime {
 				: this.legacyTranscriptBlocks();
 			const hasCollapsed = blocks.some((block) =>
 				block.kind === "tool"
-					? !block.tool.hidden && block.tool.expanded !== true
+					? block.tool.expanded !== true
 					: block.kind === "bash" && block.bash.expanded !== true,
 			);
 			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
@@ -1827,7 +1870,7 @@ export class MycliShellRuntime {
 			this.addSystemNotice("Usage: /view default | /view verbose | /view focus");
 			return;
 		}
-		const next = this.applyToolVisibility({
+		const next = this.ensureToolsVisible({
 			...this.state,
 			settings: { ...this.state.settings, viewMode: mode },
 		});
@@ -1840,24 +1883,15 @@ export class MycliShellRuntime {
 		});
 	}
 
-	private applyToolVisibility(state: MycliShellState): MycliShellState {
-		const viewMode = state.settings?.viewMode ?? "default";
-		const toolHidden = (tool: MycliShellState["tools"][number]): boolean => {
-			if (viewMode === "verbose") return false;
-			if (tool.status === "running" || tool.status === "error" || tool.mutating) return false;
-			const lower = tool.name.toLowerCase();
-			if (lower === "bash" || lower === "shell") return false;
-			if (viewMode === "focus") return true;
-			return ["read", "grep", "glob", "ls", "gitstatus", "gitlog", "gitshow", "gitdiff"].includes(lower);
-		};
-		const tools = state.tools.map((tool) => ({ ...tool, hidden: toolHidden(tool) }));
+	private ensureToolsVisible(state: MycliShellState): MycliShellState {
+		const tools = state.tools.map((tool) => ({ ...tool, hidden: false }));
 		const toolById = new Map(tools.map((tool) => [tool.id, tool]));
 		return {
 			...state,
 			tools,
 			transcript: state.transcript?.map((block) => {
 				if (block.kind !== "tool") return block;
-				return { ...block, tool: toolById.get(block.tool.id) ?? { ...block.tool, hidden: toolHidden(block.tool) } };
+				return { ...block, tool: toolById.get(block.tool.id) ?? { ...block.tool, hidden: false } };
 			}),
 		};
 	}
@@ -1912,13 +1946,22 @@ export class MycliShellRuntime {
 		});
 	}
 
+	private runAsyncAction(action: () => Promise<void>, fallback: string): void {
+		void action().catch((error: unknown) => {
+			const detail = error instanceof Error && error.message.trim()
+				? error.message.trim()
+				: fallback;
+			this.addSystemNotice(detail === fallback ? fallback : `${fallback}: ${detail}`);
+		});
+	}
+
 	private patchFooter(footerPatch: Partial<MycliShellState["footer"]>): void {
 		this.setState({ ...this.state, footer: { ...this.state.footer, ...footerPatch } });
 	}
 
 	private async applySettingsChange(settings: MycliShellVisualSettings): Promise<void> {
 		const previousSettings = this.state.settings;
-		const optimisticState = this.applyToolVisibility({ ...this.state, settings });
+		const optimisticState = this.ensureToolsVisible({ ...this.state, settings });
 		this.setState({
 			...optimisticState,
 			footer: {
@@ -1929,7 +1972,7 @@ export class MycliShellRuntime {
 		try {
 			const savedSettings = await this.options.onSettingsChange?.(settings);
 			if (savedSettings) {
-				const savedState = this.applyToolVisibility({ ...this.state, settings: savedSettings });
+				const savedState = this.ensureToolsVisible({ ...this.state, settings: savedSettings });
 				this.setState({
 					...savedState,
 					footer: {
@@ -1939,7 +1982,7 @@ export class MycliShellRuntime {
 				});
 			}
 		} catch (error) {
-			const restoredState = this.applyToolVisibility({ ...this.state, settings: previousSettings });
+			const restoredState = this.ensureToolsVisible({ ...this.state, settings: previousSettings });
 			this.setState(restoredState);
 			this.addSystemNotice(`Failed to save settings: ${error instanceof Error ? error.message : String(error)}`);
 		}

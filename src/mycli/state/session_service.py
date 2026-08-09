@@ -439,9 +439,17 @@ class SessionService:
             and not queue_snapshot.active_records()
         ):
             return None
+        history_thread_id = next(
+            (
+                item.thread_id
+                for item in reversed(history_items)
+                if item.thread_id is not None
+            ),
+            None,
+        )
         thread_id = (
-            history_items[-1].thread_id
-            if history_items
+            history_thread_id
+            if history_thread_id is not None
             else (
                 context_baseline.thread_id
                 if context_baseline is not None
@@ -1076,8 +1084,12 @@ class SessionService:
         )
 
     def _history_thread_id(self, session_id: str, items: tuple[HistoryItem, ...]) -> str:
-        if items:
-            return items[-1].thread_id
+        for item in reversed(items):
+            if item.thread_id is not None:
+                return item.thread_id
+        for item in reversed(self.load_history_items(session_id)):
+            if item.thread_id is not None:
+                return item.thread_id
         return session_id
 
     def _refresh_snapshot(self, session_id: str) -> None:

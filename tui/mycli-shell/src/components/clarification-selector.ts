@@ -7,7 +7,7 @@ import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 export interface ClarificationSelectorOptions {
 	clarification: MycliShellPendingClarification;
-	onRespond: (response: string) => void;
+	onRespond: (response: string) => void | Promise<void>;
 	onCancel: () => void;
 }
 
@@ -17,11 +17,13 @@ export class ClarificationSelectorComponent extends Container {
 	private readonly listContainer = new Container();
 	private readonly responseContainer = new Container();
 	private readonly clarification: MycliShellPendingClarification;
-	private readonly onRespondCallback: (response: string) => void;
+	private readonly onRespondCallback: (response: string) => void | Promise<void>;
 	private readonly onCancelCallback: () => void;
 	private customMode = false;
 	private customText = "";
 	private responded = false;
+	private submitting = false;
+	private submittedResponse = "";
 
 	constructor(options: ClarificationSelectorOptions) {
 		super();
@@ -40,7 +42,7 @@ export class ClarificationSelectorComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
-		if (this.responded) return;
+		if (this.responded || this.submitting) return;
 		if (this.customMode) {
 			this.handleCustomInput(keyData);
 			return;
@@ -160,16 +162,29 @@ export class ClarificationSelectorComponent extends Container {
 	}
 
 	private respond(response: string): void {
-		this.responded = true;
-		this.responseContainer.clear();
-		this.responseContainer.addChild(new Text(theme.fg("success", `Answered: ${response}`), 1, 0));
+		this.submitting = true;
+		this.submittedResponse = response;
 		this.updateSurface();
-		this.onRespondCallback(response);
+		this.updateResponse();
+		void Promise.resolve().then(() => this.onRespondCallback(response)).then(
+			() => {
+				this.submitting = false;
+				this.responded = true;
+				this.updateResponse();
+			},
+			() => {
+				this.submitting = false;
+				this.responded = false;
+				this.submittedResponse = "";
+				this.updateSurface();
+				this.updateResponse();
+			},
+		);
 	}
 
 	private updateSurface(): void {
 		this.listContainer.clear();
-		if (this.responded) return;
+		if (this.responded || this.submitting) return;
 		if (this.customMode) {
 			this.listContainer.addChild(new Text(theme.fg("muted", "Other answer"), 1, 0));
 			this.listContainer.addChild(new Text(`${theme.fg("accent", "> ")}${this.customText || theme.fg("muted", "Type a response")}`, 1, 0));
@@ -192,6 +207,19 @@ export class ClarificationSelectorComponent extends Container {
 			? `${rawKeyHint("↑↓", "navigate")}  ${rawKeyHint("space", "toggle")}  ${keyHint("tui.select.confirm", "submit")}`
 			: `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}`;
 		this.listContainer.addChild(new Text(hints, 1, 0));
+	}
+
+	private updateResponse(): void {
+		this.responseContainer.clear();
+		if (this.submitting) {
+			this.responseContainer.addChild(new Text(theme.fg("muted", "Submitting..."), 1, 0));
+			return;
+		}
+		if (this.responded) {
+			this.responseContainer.addChild(
+				new Text(theme.fg("success", `Answered: ${this.submittedResponse}`), 1, 0),
+			);
+		}
 	}
 
 	private titleText(): string {

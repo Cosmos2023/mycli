@@ -968,7 +968,7 @@ def resolve_config(
         reasoning_effort=reasoning_effort,
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,
-        memory_enabled=True if memory_enabled_value is None else memory_enabled_value,
+        memory_enabled=False if memory_enabled_value is None else memory_enabled_value,
         memory_extraction_enabled=(
             True
             if memory_extraction_enabled_value is None

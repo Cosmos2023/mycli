@@ -36,9 +36,6 @@ export class ToolExecutionComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
-		if (this.tool.hidden) {
-			return;
-		}
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.headerText(), 1, 0));
 		this.addChild(new Text(this.resultText(), 3, 0));

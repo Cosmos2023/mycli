@@ -7,7 +7,7 @@ import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 export interface ApprovalSelectorOptions {
 	approval: MycliShellPendingApproval;
-	onSelect: (choice: string) => void;
+	onSelect: (choice: string) => void | Promise<void>;
 	onCancel: () => void;
 }
 
@@ -30,9 +30,10 @@ export class ApprovalSelectorComponent extends Container {
 	private readonly listContainer: Container;
 	private readonly responseContainer: Container;
 	private readonly approval: MycliShellPendingApproval;
-	private readonly onSelectCallback: (choice: string) => void;
+	private readonly onSelectCallback: (choice: string) => void | Promise<void>;
 	private readonly onCancelCallback: () => void;
 	private respondedChoice: string | null = null;
+	private submittingChoice: string | null = null;
 
 	constructor(options: ApprovalSelectorOptions) {
 		super();
@@ -73,7 +74,7 @@ export class ApprovalSelectorComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
-		if (this.respondedChoice) {
+		if (this.respondedChoice || this.submittingChoice) {
 			return;
 		}
 		const kb = getKeybindings();
@@ -127,15 +128,27 @@ export class ApprovalSelectorComponent extends Container {
 	}
 
 	private respond(choice: string): void {
-		this.respondedChoice = choice;
+		this.submittingChoice = choice;
 		this.updateList();
 		this.updateResponse();
-		this.onSelectCallback(choice);
+		void Promise.resolve().then(() => this.onSelectCallback(choice)).then(
+			() => {
+				this.submittingChoice = null;
+				this.respondedChoice = choice;
+				this.updateResponse();
+			},
+			() => {
+				this.submittingChoice = null;
+				this.respondedChoice = null;
+				this.updateList();
+				this.updateResponse();
+			},
+		);
 	}
 
 	private updateList(): void {
 		this.listContainer.clear();
-		if (this.respondedChoice) {
+		if (this.respondedChoice || this.submittingChoice) {
 			return;
 		}
 		for (let index = 0; index < this.approval.options.length; index += 1) {
@@ -170,6 +183,10 @@ export class ApprovalSelectorComponent extends Container {
 
 	private updateResponse(): void {
 		this.responseContainer.clear();
+		if (this.submittingChoice) {
+			this.responseContainer.addChild(new Text(theme.fg("muted", "Submitting..."), 1, 0));
+			return;
+		}
 		if (!this.respondedChoice) {
 			return;
 		}

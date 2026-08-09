@@ -5195,7 +5195,11 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
         model_adapter=adapter,
     )
     runtime._memory_service = memory_service
-    runtime._config = AgentConfig(workspace_root=tmp_path, session_id="demo")
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="demo",
+        memory_enabled=True,
+    )
 
     response = runtime.handle_user_turn("inspect this repo")
 
@@ -5222,7 +5226,7 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
     assert current_request_messages == ["inspect this repo"]
 
 
-def test_agent_runtime_wires_model_file_memory_selector_by_default(tmp_path: Path) -> None:
+def test_agent_runtime_wires_model_file_memory_selector_for_opt_in(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
@@ -5243,6 +5247,7 @@ def test_agent_runtime_extracts_explicit_memory_after_successful_turn(tmp_path: 
         model_adapter=MemoryCaptureAdapter(),
     )
     runtime._memory_service = memory_service
+    runtime._config = replace(runtime._config, memory_enabled=True)
 
     response = runtime.handle_user_turn("remember that I prefer terse final answers")
 
@@ -5318,6 +5323,7 @@ def test_agent_runtime_can_disable_extraction_without_disabling_dream(
     )
     runtime._config = replace(
         runtime._config,
+        memory_enabled=True,
         memory_extraction_enabled=False,
         memory_dream_enabled=True,
     )
@@ -5343,6 +5349,7 @@ def test_agent_runtime_can_disable_dream_without_disabling_extraction(
     )
     runtime._config = replace(
         runtime._config,
+        memory_enabled=True,
         memory_extraction_enabled=True,
         memory_dream_enabled=False,
     )
@@ -5380,6 +5387,7 @@ def test_agent_runtime_throttles_automatic_memory_extraction(tmp_path: Path) -> 
         home_dir=tmp_path / "home",
         model_adapter=MemoryCaptureAdapter(),
     )
+    runtime._config = replace(runtime._config, memory_enabled=True)
 
     response = runtime.handle_user_turn("continue")
 
@@ -5395,6 +5403,7 @@ def test_agent_runtime_checks_memory_dream_after_successful_turn(tmp_path: Path)
         home_dir=tmp_path / "home",
         model_adapter=MemoryCaptureAdapter(),
     )
+    runtime._config = replace(runtime._config, memory_enabled=True)
     dream_service = FakeMemoryDreamService()
     runtime._memory_dream_service = dream_service
 
@@ -5413,6 +5422,7 @@ def test_agent_runtime_does_not_schedule_memory_after_failed_turn(tmp_path: Path
         home_dir=tmp_path / "home",
         model_adapter=ErroringAdapter(),
     )
+    runtime._config = replace(runtime._config, memory_enabled=True)
     extraction_service = FakeMemoryExtractionService()
     dream_service = FakeMemoryDreamService()
     runtime._memory_extraction_service = extraction_service

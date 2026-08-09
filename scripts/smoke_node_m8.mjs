@@ -7,7 +7,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { parseJsonRpcMessage } from "@mycli/contracts";
-import { startNodeBackend } from "../apps/mycli/dist/node-runtime/node-backend.js";
+import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const DEADLINE_MS = 15_000;
 const EXPECTED_VISIBLE_COMMANDS = 16;

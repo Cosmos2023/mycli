@@ -211,13 +211,13 @@ export class BackgroundSubagentDialogComponent extends Container {
 	}
 
 	private addListChildren(): void {
-		const title = theme.fg("selectorTitle", theme.bold("Background tasks"));
+		const title = theme.fg("selectorTitle", theme.bold("Agent tree"));
 		const subtitle = theme.fg("selectorMeta", backgroundSummary(this.agents));
 		this.addChild(renderLines((width) => [fitHeader(title, subtitle, width)]));
 		this.addChild(new Text(listGuide(this.currentSelection()), 0, 0));
 		this.addChild(new Spacer(1));
 		if (this.agents.length === 0) {
-			this.addChild(new Text(theme.fg("selectorMeta", "  No background agents currently running"), 0, 0));
+			this.addChild(new Text(theme.fg("selectorMeta", "  No agents in this session"), 0, 0));
 			return;
 		}
 		this.addChild(new Text(theme.fg("selectorMeta", theme.bold("  Agents")), 0, 0));
@@ -226,7 +226,11 @@ export class BackgroundSubagentDialogComponent extends Container {
 		for (let index = startIndex; index < Math.min(this.agents.length, startIndex + maxVisible); index += 1) {
 			const agent = this.agents[index];
 			if (!agent) continue;
-			this.addChild(new Text(agentListLine(agent, index === this.selectedIndex), 0, 0));
+			this.addChild(new Text(agentListLine(
+				agent,
+				index === this.selectedIndex,
+				isLastSibling(this.agents, index),
+			), 0, 0));
 		}
 		if (this.agents.length > maxVisible) {
 			this.addChild(new Text(theme.fg("selectorMeta", `  (${this.selectedIndex + 1}/${this.agents.length})`), 0, 0));
@@ -273,9 +277,10 @@ export class BackgroundSubagentDialogComponent extends Container {
 
 function sortedAgents(agents: MycliShellSubagent[]): MycliShellSubagent[] {
 	return [...agents].sort((left, right) => {
-		const leftRunning = isResolved(left) ? 1 : 0;
-		const rightRunning = isResolved(right) ? 1 : 0;
-		if (leftRunning !== rightRunning) return leftRunning - rightRunning;
+		const leftPath = left.agentPath ?? `/root/${left.id}`;
+		const rightPath = right.agentPath ?? `/root/${right.id}`;
+		const pathOrder = leftPath.localeCompare(rightPath);
+		if (pathOrder !== 0) return pathOrder;
 		return (right.startedAt ?? "").localeCompare(left.startedAt ?? "");
 	});
 }
@@ -322,18 +327,44 @@ function detailGuide(agent: MycliShellSubagent): string {
 	return truncateToWidth(` ${actions.join(theme.fg("muted", " · "))}`, 120, "...");
 }
 
-function agentListLine(agent: MycliShellSubagent, selected: boolean): string {
+function agentListLine(
+	agent: MycliShellSubagent,
+	selected: boolean,
+	lastSibling: boolean,
+): string {
 	const prefix = selected ? theme.fg("selectorMatch", "→ ") : "  ";
-	const label = `${agent.role}: ${agent.description ?? "Async agent"}`;
+	const tree = agentTreePrefix(agent, lastSibling);
+	const identity = agent.agentPath ?? agent.nickname ?? agent.taskName ?? agent.role;
+	const label = `${tree}${identity}: ${agent.description ?? "Async agent"}`;
 	const status = taskStatusText(agent);
 	const stats = agentStats(agent);
 	const row = `${prefix}${shortPreview(label, 52) ?? label} ${status}${stats ? ` ${theme.fg("selectorMeta", stats)}` : ""}`;
 	return selected ? theme.inverse(row) : row;
 }
 
+function agentTreePrefix(agent: MycliShellSubagent, lastSibling: boolean): string {
+	const depth = Math.max(0, (agent.agentPath?.split("/").filter(Boolean).length ?? 2) - 2);
+	return `${"  ".repeat(depth)}${lastSibling ? "└─" : "├─"} `;
+}
+
+function isLastSibling(agents: readonly MycliShellSubagent[], index: number): boolean {
+	const current = agents[index];
+	if (!current) return true;
+	const parent = current.parentThreadId ?? parentAgentPath(current.agentPath);
+	return !agents.slice(index + 1).some((candidate) => (
+		(candidate.parentThreadId ?? parentAgentPath(candidate.agentPath)) === parent
+	));
+}
+
+function parentAgentPath(path: string | undefined): string | undefined {
+	if (!path) return undefined;
+	const separator = path.lastIndexOf("/");
+	return separator <= 0 ? undefined : path.slice(0, separator);
+}
+
 function taskStatusText(agent: MycliShellSubagent): string {
 	const normalized = agent.status.toLowerCase();
-	if (normalized === "running" || normalized === "pending" || normalized === "queued") {
+	if (normalized === "running" || normalized === "pending" || normalized === "queued" || normalized === "waiting") {
 		return theme.fg("warning", "running");
 	}
 	if (normalized === "completed" || normalized === "success") {
@@ -381,7 +412,7 @@ function renderLines(render: (width: number) => string[]): Component {
 
 export function isResolvedSubagent(agent: MycliShellSubagent): boolean {
 	const normalized = agent.status.toLowerCase();
-	return !["running", "pending", "queued"].includes(normalized);
+	return !["running", "pending", "queued", "waiting"].includes(normalized);
 }
 
 function isResolved(agent: MycliShellSubagent): boolean {

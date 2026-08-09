@@ -13,7 +13,7 @@ from mycli.domain.runtime.gateway_contract import (
 )
 
 
-CONTRACT_ROOT = Path("packages/contracts/schemas")
+CONTRACT_ROOT = Path("backend/packages/contracts/schemas")
 PYTHON_COPY_ROOT = Path("src/mycli/schemas/generated")
 
 

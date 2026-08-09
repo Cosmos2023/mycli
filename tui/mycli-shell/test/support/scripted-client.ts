@@ -12,6 +12,7 @@ import {
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
 	runtimeStateRejectPendingSteer,
+	runtimeStateAcknowledgeQueuedInput,
 	restorePendingSteersAfterInterrupt,
 	nextLocalUserInput,
 	removeLocalUserInput,
@@ -182,8 +183,11 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 	if (action.type === "turn.submit_interrupt") {
 		const clientTurnId = `script_interrupt_${Date.now()}`;
 		await submitScriptedTurn(action.message, clientTurnId);
-		await client.waitForEvent("turn.started", (event) => event.params.client_turn_id === clientTurnId);
-		await send("turn.interrupt", {});
+		const started = await client.waitForEvent(
+			"turn.started",
+			(event) => event.params.client_turn_id === clientTurnId,
+		);
+		await send("turn.interrupt", { turn_id: started.params.turn_id });
 		await waitForInterruptedTerminal(clientTurnId);
 		await waitForInterruptedStatus(clientTurnId);
 		return;
@@ -330,11 +334,16 @@ async function queueSteeringMessage(message: string): Promise<void> {
 	}
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
-			await send("turn.steer", {
+			const result = await send("turn.steer", {
 				message,
 				client_user_message_id: input.clientUserMessageId,
 				expected_turn_id: expectedTurnId,
 			});
+			state = runtimeStateAcknowledgeQueuedInput(
+				state,
+				input.clientUserMessageId,
+				result,
+			);
 			return;
 		} catch (error) {
 			const actualTurnId =

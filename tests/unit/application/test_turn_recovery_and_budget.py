@@ -678,10 +678,10 @@ def test_turn_executor_uses_fallback_model_after_retry_exhaustion(tmp_path: Path
     )
 
 
-def test_turn_executor_context_window_recovery_adds_retry_reminder() -> None:
+def test_turn_executor_context_window_recovery_adds_retry_reminder(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
-        workspace_root=Path.cwd(),
-        home_dir=Path.cwd() / ".tmp-turn-recovery-home",
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
         model_adapter=KeyboardInterruptAdapter(),
     )
     executor = TurnExecutor(runtime)

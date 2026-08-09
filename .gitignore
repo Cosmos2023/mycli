@@ -16,8 +16,10 @@ hermes-agent/
 coding-agent/
 pi-tui/
 node_modules/
-apps/*/dist/
-packages/*/dist/
+backend/apps/*/dist/
+backend/packages/*/dist/
+backend/packages/tools/native/ripgrep/
+npm/ripgrep/*/vendor/
 tui/*/dist/
 tui/node/node_modules/
 tui/node/.npm-cache/

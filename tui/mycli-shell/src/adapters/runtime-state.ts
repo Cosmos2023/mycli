@@ -96,6 +96,7 @@ export type RuntimeShellState = {
 	trust: { state?: string; workspace?: string };
 	trustGateDismissed: boolean;
 	status: Record<string, unknown>;
+	models: MycliShellModel[] | null;
 	transcript: RuntimeTranscriptItem[];
 	turnRunning: boolean;
 	activeTurnId: string | null;
@@ -139,6 +140,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		trust: { state: "unknown", workspace: process.cwd() },
 		trustGateDismissed: false,
 		status: {},
+		models: null,
 		transcript: [],
 		turnRunning: false,
 		activeTurnId: null,
@@ -270,7 +272,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 				});
 				continue;
 			}
-			const tool = toolFromTranscriptItem(item, state.workspace, state.viewMode, state.settings.toolDetailsDefault);
+			const tool = toolFromTranscriptItem(item, state.workspace, state.settings.toolDetailsDefault);
 			if (isShellTool(tool.name)) {
 				const metadata = recordValue(item.metadata);
 				const display = toolDisplayFromMetadata(metadata);
@@ -362,7 +364,10 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		pendingNotice: pendingNotice(state),
 		pendingApproval: pendingApprovalFromRecord(state.pendingApproval),
 		pendingClarification: pendingClarificationFromRecord(state.pendingClarification),
-		models: modelListFromStatus(state.status, state.provider, state.model),
+		models: state.models
+			?? (state.model
+				? [currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status))]
+				: []),
 		authProviders: state.authProviders,
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
 		settings: {
@@ -426,14 +431,20 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 	const welcomeText = welcome
 		? `${String(startupMark.text ?? "mycli")}\n${String(welcome.workspace ?? payload.workspace ?? "")}`.trim()
 		: "mycli";
+	const provider = stringValue(payload.provider) ?? state.provider;
+	const model = stringValue(payload.model) ?? state.model;
+	const models = modelCatalogFromPayload(payload)
+		?? modelCatalogFromPayload(status)
+		?? state.models;
 	const bootstrapState = {
 		...state,
 		sessionId: stringValue(payload.session_id) ?? state.sessionId,
 		sessionTitle: stringValue(payload.session_title) ?? state.sessionTitle,
 		workspace: stringValue(payload.workspace) ?? state.workspace,
-		model: stringValue(payload.model) ?? state.model,
+		model,
 		collaborationMode: collaborationModeValue(payload.collaboration_mode) ?? collaborationModeValue(status.collaboration_mode) ?? state.collaborationMode,
-		provider: stringValue(payload.provider) ?? state.provider,
+		provider,
+		models,
 		authProviders: authProvidersFromUnknown(payload.auth_providers),
 		permissions: permissionStateFromUnknown(payload.permissions ?? status.permissions) ?? state.permissions,
 		status,
@@ -525,8 +536,7 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 	);
 	const transcript = coalesceResumedShellOutputItems(
 		coalesceLegacyToolItems(mergeTranscriptItemsById(state.transcript, resumedItems)),
-	)
-		.filter((item) => !shouldSuppressSuccessfulTaskItem(item));
+	);
 	const latestPlanUpdate = [...transcript].reverse().find((item) => item.type === "plan_update");
 	return {
 		...state,
@@ -643,6 +653,11 @@ export function reduceRuntimeEvent(
 		return applyShellLifecycle(state, method, params);
 	}
 	if (method === "turn.started") {
+		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
+		const preserveClarification = pendingRequestBelongsToDifferentTurn(
+			state.pendingClarification,
+			params,
+		);
 		return {
 			...state,
 			turnRunning: true,
@@ -650,9 +665,11 @@ export function reduceRuntimeEvent(
 			activeAssistantItemId: nextId("assistant"),
 			liveStatus: { state: "running", kind: "running", text: "Running" },
 			retryRestoreStatus: null,
-			pendingApproval: null,
-			pendingClarification: null,
-			transcript: removeTransientClarificationItems(removeTransientApprovalItems(state.transcript)),
+			pendingApproval: preserveApproval ? state.pendingApproval : null,
+			pendingClarification: preserveClarification ? state.pendingClarification : null,
+			transcript: preserveApproval || preserveClarification
+				? state.transcript
+				: removeTransientClarificationItems(removeTransientApprovalItems(state.transcript)),
 		};
 	}
 	if (method === "item.started") {
@@ -801,9 +818,27 @@ export function reduceRuntimeEvent(
 		if (!item) {
 			return state;
 		}
+		const childSessionId = stringValue(subagent.child_session_id)
+			?? stringValue(subagent.childSessionId);
+		const terminal = ["completed", "failed", "interrupted"].includes(
+			stringValue(subagent.status) ?? "",
+		);
+		const clearApproval = terminal
+			&& pendingRequestSessionId(state.pendingApproval) === childSessionId;
+		const clearClarification = terminal
+			&& pendingRequestSessionId(state.pendingClarification) === childSessionId;
 		return {
 			...state,
-			transcript: upsertSubagentTranscriptItem(state.transcript, item),
+			pendingApproval: clearApproval ? null : state.pendingApproval,
+			pendingClarification: clearClarification ? null : state.pendingClarification,
+			transcript: upsertSubagentTranscriptItem(
+				clearClarification
+					? removeTransientClarificationItems(state.transcript)
+					: clearApproval
+						? removeTransientApprovalItems(state.transcript)
+						: state.transcript,
+				item,
+			),
 		};
 	}
 	if (method === "reasoning.delta" || method === "thinking.delta") {
@@ -867,8 +902,13 @@ export function reduceRuntimeEvent(
 				: turnState === "failed" && assistantMessage
 				? [...state.transcript, { id: nextId("error"), type: "error", text: assistantMessage, folded: false, metadata: params }]
 				: turnState === "interrupted"
-					? appendInterruptedNotice(state.transcript, params)
+					? finalizeInterruptedTools(appendInterruptedNotice(state.transcript, params))
 					: state.transcript;
+		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
+		const preserveClarification = pendingRequestBelongsToDifferentTurn(
+			state.pendingClarification,
+			params,
+		);
 		return {
 			...state,
 			turnRunning: false,
@@ -887,8 +927,15 @@ export function reduceRuntimeEvent(
 					: turnState === "failed" && assistantMessage
 					? { state: "failed", kind: "failed", text: assistantMessage, message: assistantMessage }
 					: { state: "completed", kind: "completed", text: "Completed" },
-			pendingApproval: params.pending_decision === true || params.turn_state === "waiting_approval" ? state.pendingApproval : null,
-			pendingClarification: params.turn_state === "waiting_clarification" ? state.pendingClarification : null,
+			pendingApproval: preserveApproval
+				|| params.pending_decision === true
+				|| params.turn_state === "waiting_approval"
+				? state.pendingApproval
+				: null,
+			pendingClarification: preserveClarification
+				|| params.turn_state === "waiting_clarification"
+				? state.pendingClarification
+				: null,
 			transcript: terminalTranscript,
 		};
 	}
@@ -932,7 +979,7 @@ export function reduceRuntimeEvent(
 				text: "Interrupted",
 				message: TURN_INTERRUPTED_NOTICE,
 			},
-			transcript: appendInterruptedNotice(state.transcript, params),
+			transcript: finalizeInterruptedTools(appendInterruptedNotice(state.transcript, params)),
 		};
 	}
 	if (method === "turn.failed" || method === "gateway.error") {
@@ -968,6 +1015,12 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "approval.respond") {
+		if (!interactiveResponseMatches(
+			state.pendingApproval,
+			params,
+			"decision_id",
+			"decisionId",
+		)) return state;
 		return {
 			...state,
 			pendingApproval: null,
@@ -991,6 +1044,12 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "clarify.respond") {
+		if (!interactiveResponseMatches(
+			state.pendingClarification,
+			params,
+			"request_id",
+			"requestId",
+		)) return state;
 		const response = stringValue(params.response);
 		return {
 			...state,
@@ -1009,9 +1068,12 @@ export function reduceRuntimeEvent(
 	if (method === "status.changed") {
 		const trust = trustFromPayload(params.trust, state.workspace);
 		const turnRunning = booleanValue(params.turn_running);
+		const model = stringValue(params.model) ?? state.model;
+		const provider = stringValue(params.provider) ?? state.provider;
 		const nextState = applyQueuePayload({
 			...state,
 			status: params,
+			models: modelCatalogFromPayload(params) ?? state.models,
 			turnRunning: turnRunning ?? state.turnRunning,
 			activeTurnId:
 				turnRunning === false
@@ -1019,10 +1081,14 @@ export function reduceRuntimeEvent(
 					: stringValue(params.turn_id) ?? state.activeTurnId,
 			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
 			liveReasoning: turnRunning === false ? null : state.liveReasoning,
+			liveStatus:
+				turnRunning === false && state.liveStatus?.state === "interrupting"
+					? null
+					: state.liveStatus,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
-			model: stringValue(params.model) ?? state.model,
+			model,
 			collaborationMode: collaborationModeValue(params.collaboration_mode) ?? state.collaborationMode,
-			provider: stringValue(params.provider) ?? state.provider,
+			provider,
 			permissions: permissionStateFromUnknown(params.permissions) ?? state.permissions,
 			trust,
 			trustGateDismissed: trust.state === "trusted",
@@ -1213,6 +1279,18 @@ export function removeLocalUserInput(
 	};
 }
 
+export function runtimeStateAcknowledgeQueuedInput(
+	state: RuntimeShellState,
+	clientUserMessageId: string,
+	queuePayload: Record<string, unknown>,
+): RuntimeShellState {
+	return applyQueuePayload(
+		removeLocalUserInput(state, clientUserMessageId),
+		queuePayload,
+		"event",
+	);
+}
+
 function appendLocalInput(
 	inputs: RuntimeLocalUserInput[],
 	input: RuntimeLocalUserInput,
@@ -1354,6 +1432,30 @@ function appendInterruptedNotice(
 	];
 }
 
+function finalizeInterruptedTools(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
+	let changed = false;
+	const finalized = items.map((item) => {
+		if (item.type !== "tool_summary" && item.type !== "tool_detail") return item;
+		const metadata = recordValue(item.metadata);
+		if (stringValue(metadata.status) !== "running" || booleanValue(metadata.background) === true) {
+			return item;
+		}
+		changed = true;
+		return {
+			...item,
+			metadata: {
+				...metadata,
+				status: "failed",
+				success: false,
+				error_kind: "tool_interrupted",
+				error: "tool_interrupted",
+				summary: stringValue(metadata.summary) ?? `${stringValue(metadata.tool_name) ?? "Tool"} interrupted`,
+			},
+		};
+	});
+	return changed ? finalized : items;
+}
+
 function rollbackOutputFreeUserTurn(
 	items: RuntimeTranscriptItem[],
 ): RuntimeTranscriptItem[] {
@@ -1449,7 +1551,10 @@ function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedIn
 
 function isInternalTaskNotification(text: string): boolean {
 	const trimmed = text.trimStart();
-	return trimmed.startsWith("<task-notification>") || trimmed.startsWith("<task-notification ");
+	return trimmed.startsWith("<task-notification>")
+		|| trimmed.startsWith("<task-notification ")
+		|| trimmed.startsWith("<agent-mailbox>")
+		|| trimmed.startsWith("<agent-mailbox ");
 }
 
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
@@ -1801,6 +1906,8 @@ function pendingApprovalFromRecord(value: Record<string, unknown> | null): Mycli
 	const options = approvalOptionsFromPayload(value.options);
 	return {
 		decisionId,
+		sessionId: stringValue(value.session_id) ?? stringValue(value.sessionId) ?? undefined,
+		generation: numberValue(value.generation) ?? undefined,
 		preview: stringValue(value.preview) ?? stringValue(value.action) ?? stringValue(value.tool_name) ?? "Approval required",
 		reason: stringValue(value.reason) ?? undefined,
 		toolName: stringValue(value.tool_name) ?? stringValue(value.toolName) ?? undefined,
@@ -1813,6 +1920,7 @@ function pendingApprovalFromRecord(value: Record<string, unknown> | null): Mycli
 			undefined,
 		workerColor: stringValue(value.worker_color) ?? stringValue(value.workerColor) ?? undefined,
 		childSessionId: stringValue(value.child_session_id) ?? stringValue(value.childSessionId) ?? undefined,
+		agentPath: stringValue(value.agent_path) ?? stringValue(value.agentPath) ?? undefined,
 		options: options.length > 0 ? options : defaultApprovalOptions(),
 		risk: stringValue(value.risk) ?? undefined,
 		riskReason: stringValue(value.risk_reason) ?? stringValue(value.riskReason) ?? undefined,
@@ -1846,11 +1954,56 @@ function pendingClarificationFromRecord(
 	}
 	return {
 		requestId,
+		sessionId: stringValue(value.session_id) ?? stringValue(value.sessionId) ?? undefined,
+		generation: numberValue(value.generation) ?? undefined,
 		question,
+		workerName: stringValue(value.worker_name) ?? stringValue(value.workerName) ?? undefined,
+		childSessionId: stringValue(value.child_session_id) ?? stringValue(value.childSessionId) ?? undefined,
+		agentPath: stringValue(value.agent_path) ?? stringValue(value.agentPath) ?? undefined,
 		header: stringValue(value.header) ?? undefined,
 		options,
 		multiSelect: booleanValue(value.multi_select) ?? booleanValue(value.multiSelect) ?? false,
 	};
+}
+
+function pendingRequestBelongsToDifferentTurn(
+	pending: Record<string, unknown> | null,
+	event: Record<string, unknown>,
+): boolean {
+	if (!pending) return false;
+	const pendingSessionId = pendingRequestSessionId(pending);
+	const eventSessionId = stringValue(event.session_id) ?? stringValue(event.sessionId);
+	if (pendingSessionId && eventSessionId) return pendingSessionId !== eventSessionId;
+	const pendingTurnId = stringValue(pending.client_turn_id) ?? stringValue(pending.clientTurnId);
+	const eventTurnId = stringValue(event.client_turn_id) ?? stringValue(event.clientTurnId);
+	if (pendingTurnId && eventTurnId) return pendingTurnId !== eventTurnId;
+	return Boolean(
+		stringValue(pending.child_session_id) ?? stringValue(pending.childSessionId),
+	);
+}
+
+function pendingRequestSessionId(pending: Record<string, unknown> | null): string | undefined {
+	if (!pending) return undefined;
+	return stringValue(pending.session_id)
+		?? stringValue(pending.sessionId)
+		?? stringValue(pending.child_session_id)
+		?? stringValue(pending.childSessionId)
+		?? undefined;
+}
+
+function interactiveResponseMatches(
+	pending: Record<string, unknown> | null,
+	response: Record<string, unknown>,
+	snakeId: string,
+	camelId: string,
+): boolean {
+	if (!pending) return false;
+	const pendingId = stringValue(pending[snakeId]) ?? stringValue(pending[camelId]);
+	const responseId = stringValue(response[snakeId]) ?? stringValue(response[camelId]);
+	if (!pendingId || pendingId !== responseId) return false;
+	const pendingSessionId = pendingRequestSessionId(pending);
+	const responseSessionId = stringValue(response.session_id) ?? stringValue(response.sessionId);
+	return !pendingSessionId || !responseSessionId || pendingSessionId === responseSessionId;
 }
 
 function approvalOptionsFromPayload(value: unknown): MycliShellPendingApproval["options"] {
@@ -1882,7 +2035,6 @@ function defaultApprovalOptions(): MycliShellPendingApproval["options"] {
 function toolFromTranscriptItem(
 	item: RuntimeTranscriptItem,
 	workspace: string,
-	viewMode: RuntimeShellState["viewMode"],
 	toolDetailsDefault: MycliShellVisualSettings["toolDetailsDefault"] = "collapsed",
 ): MycliShellTool {
 	const metadata = recordValue(item.metadata);
@@ -1912,16 +2064,20 @@ function toolFromTranscriptItem(
 			displayTruncated: display.truncated,
 			displayOmittedChars: display.omittedChars,
 			hiddenLineCount: display.truncated ? 1 : undefined,
-			hidden: shouldHideTool(name, display.status, mutating, viewMode),
+			hidden: false,
 			expanded: item.folded === false || (item.folded === undefined && toolDetailsDefault === "expanded"),
 		};
 	}
 	const rawPayload = recordValue(metadata.raw_payload);
 	const argumentsPayload = recordValue(metadata.arguments);
+	const argumentSkillName = name.trim().toLowerCase() === "skill"
+		? stringValue(argumentsPayload.name)
+		: undefined;
 	const target =
 		stringValue(metadata.skill_name) ??
 		stringValue(rawPayload.skill_name) ??
 		stringValue(argumentsPayload.skill_name) ??
+		argumentSkillName ??
 		stringValue(metadata.path) ??
 		stringValue(rawPayload.path) ??
 		stringValue(argumentsPayload.file_path) ??
@@ -1947,7 +2103,7 @@ function toolFromTranscriptItem(
 		contentPreview,
 		contentLineCount: numberValue(metadata.content_line_count) ?? (contentPreview ? lineCount(contentPreview) : undefined),
 		diffPreview,
-		hidden: shouldHideTool(name, status, mutatingTool(name, metadata), viewMode),
+		hidden: false,
 		outputPreview,
 		errorPreview,
 		hiddenLineCount: hiddenLineCountForTool(metadata, contentPreview),
@@ -2177,7 +2333,10 @@ function transcriptItemFromSubagent(subagent: Record<string, unknown>): RuntimeT
 	if (!childSessionId || !role) {
 		return null;
 	}
-	const id = stringValue(subagent.run_id) ?? `subagent:${childSessionId}`;
+	const id = stringValue(subagent.thread_id)
+		?? stringValue(subagent.threadId)
+		?? stringValue(subagent.run_id)
+		?? `subagent:${childSessionId}`;
 	return {
 		id,
 		type: "subagent",
@@ -2196,7 +2355,15 @@ function subagentFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellSuba
 	}
 	const status = stringValue(metadata.status) ?? "completed";
 	return {
-		id: stringValue(metadata.run_id) ?? item.id,
+		id: stringValue(metadata.thread_id) ?? stringValue(metadata.threadId)
+			?? stringValue(metadata.run_id) ?? item.id,
+		threadId: stringValue(metadata.thread_id) ?? stringValue(metadata.threadId) ?? undefined,
+		rootThreadId: stringValue(metadata.root_thread_id) ?? stringValue(metadata.rootThreadId) ?? undefined,
+		parentThreadId: stringValue(metadata.parent_thread_id) ?? stringValue(metadata.parentThreadId) ?? undefined,
+		agentPath: stringValue(metadata.agent_path) ?? stringValue(metadata.agentPath) ?? undefined,
+		taskName: stringValue(metadata.task_name) ?? stringValue(metadata.taskName) ?? undefined,
+		nickname: stringValue(metadata.nickname) ?? undefined,
+		lifecycleKind: stringValue(metadata.lifecycle_kind) ?? stringValue(metadata.lifecycleKind) ?? undefined,
 		role,
 		description: stringValue(metadata.description) ?? undefined,
 		status,
@@ -2299,20 +2466,6 @@ function isWriteTool(name: string): boolean {
 function lineCount(text: string): number {
 	const trimmed = text.replace(/\n+$/g, "");
 	return trimmed ? trimmed.split("\n").length : 0;
-}
-
-function shouldHideTool(
-	name: string,
-	status: MycliShellToolStatus,
-	mutating: boolean,
-	viewMode: RuntimeShellState["viewMode"],
-): boolean {
-	if (viewMode === "verbose") return false;
-	if (status === "running" || status === "error" || mutating) return false;
-	const lower = name.toLowerCase();
-	if (lower === "bash" || lower === "shell") return false;
-	if (viewMode === "focus") return true;
-	return ["read", "grep", "glob", "ls", "gitstatus", "gitlog", "gitshow", "gitdiff"].includes(lower);
 }
 
 function toolStatus(metadata: Record<string, unknown>): MycliShellToolStatus {
@@ -2846,10 +2999,6 @@ function boundedShellOutput(existing: string, delta: string, omittedChars: numbe
 }
 
 function applyToolLifecycle(items: RuntimeTranscriptItem[], method: string, params: Record<string, unknown>): RuntimeTranscriptItem[] {
-	if (isTaskTool(params) && method !== "tool.failed" && booleanValue(params.success) !== false) {
-		const existingIndex = findToolIndex(items, params);
-		return existingIndex < 0 ? items : [...items.slice(0, existingIndex), ...items.slice(existingIndex + 1)];
-	}
 	if (isShellOutputLifecycle(params) && method !== "tool.failed") {
 		const withoutPollingItem = removeToolLifecycleItem(items, params);
 		if (method !== "tool.complete") {
@@ -3058,24 +3207,6 @@ function shellDisplayEnvelope(options: {
 	};
 }
 
-function shouldSuppressSuccessfulTaskItem(item: RuntimeTranscriptItem): boolean {
-	if (item.type !== "tool_summary" && item.type !== "tool_detail") {
-		return false;
-	}
-	const metadata = recordValue(item.metadata);
-	if (!isTaskTool(metadata)) {
-		return false;
-	}
-	const status = (stringValue(metadata.status) ?? "").toLowerCase();
-	const failedStatus = ["failed", "error", "denied", "interrupted"].includes(status);
-	return booleanValue(metadata.success) !== false && !failedStatus && !stringValue(metadata.error);
-}
-
-function isTaskTool(metadata: Record<string, unknown>): boolean {
-	const name = stringValue(metadata.name) ?? stringValue(metadata.tool_name) ?? "";
-	return name.trim().toLowerCase() === "task";
-}
-
 function applyCompactionLifecycle(items: RuntimeTranscriptItem[], method: string, params: Record<string, unknown>): RuntimeTranscriptItem[] {
 	const metadata = {
 		...params,
@@ -3111,10 +3242,10 @@ function upsertSubagentTranscriptItem(items: RuntimeTranscriptItem[], item: Runt
 	const existing = items[existingIndex]!;
 	const existingMetadata = recordValue(existing.metadata);
 	const nextMetadata = recordValue(item.metadata);
-	const progress = [
+	const progress = uniqueSubagentProgress([
 		...(Array.isArray(existingMetadata.progress) ? existingMetadata.progress : []),
 		...(Array.isArray(nextMetadata.progress) ? nextMetadata.progress : []),
-	].slice(-40);
+	]).slice(-40);
 	const merged: RuntimeTranscriptItem = {
 		...existing,
 		...item,
@@ -3126,6 +3257,24 @@ function upsertSubagentTranscriptItem(items: RuntimeTranscriptItem[], item: Runt
 		},
 	};
 	return [...items.slice(0, existingIndex), merged, ...items.slice(existingIndex + 1)];
+}
+
+function uniqueSubagentProgress(items: readonly unknown[]): readonly unknown[] {
+	const seen = new Set<string>();
+	const unique: unknown[] = [];
+	for (const item of items) {
+		const record = recordValue(item);
+		const identity = JSON.stringify([
+			record.kind,
+			record.call_id ?? record.callId,
+			record.summary,
+			record.status,
+		]);
+		if (seen.has(identity)) continue;
+		seen.add(identity);
+		unique.push(item);
+	}
+	return unique;
 }
 
 function findToolIndex(items: RuntimeTranscriptItem[], metadata: Record<string, unknown>): number {
@@ -3207,14 +3356,22 @@ function trustFromPayload(payload: unknown, workspace: string): RuntimeShellStat
 	};
 }
 
-function modelListFromStatus(status: Record<string, unknown>, provider: string, model: string): MycliShellModel[] {
-	const hasCatalog = Array.isArray(status.models) || Array.isArray(status.available_models);
-	const raw = Array.isArray(status.models) ? status.models : Array.isArray(status.available_models) ? status.available_models : [];
-	const models = raw.map(modelFromUnknown).filter((item): item is MycliShellModel => item !== null);
-	if (!hasCatalog && models.length === 0 && model) {
-		models.push(currentModel(provider, model, reasoningLevelFromStatus(status)));
-	}
-	return models;
+export function runtimeStateWithModelCatalog(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+): RuntimeShellState {
+	const models = modelCatalogFromPayload(payload);
+	return models === null ? state : { ...state, models };
+}
+
+function modelCatalogFromPayload(payload: Record<string, unknown>): MycliShellModel[] | null {
+	const raw = Array.isArray(payload.models)
+		? payload.models
+		: Array.isArray(payload.available_models)
+			? payload.available_models
+			: null;
+	if (raw === null) return null;
+	return raw.map(modelFromUnknown).filter((item): item is MycliShellModel => item !== null);
 }
 
 export function permissionStateFromUnknown(value: unknown): MycliShellPermissionState | null {

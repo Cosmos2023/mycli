@@ -1,0 +1,15 @@
+{
+  "name": "@mycli/ripgrep-linux-arm64",
+  "version": "0.1.0",
+  "description": "ripgrep binary for mycli on Linux ARM64",
+  "license": "MIT OR Unlicense",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["vendor"],
+  "scripts": {
+    "prepack": "npm --prefix ../../.. run build --workspace @mycli/tools && node ../../../scripts/stage_ripgrep_platform_package.mjs stage linux-aarch64",
+    "postpack": "node ../../../scripts/stage_ripgrep_platform_package.mjs clean linux-aarch64"
+  },
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=22.19.0" }
+}

@@ -34,8 +34,8 @@ class HistoryItemType(StrEnum):
 @dataclass(slots=True, frozen=True)
 class HistoryItem:
     id: str
-    thread_id: str
-    turn_id: str
+    thread_id: str | None
+    turn_id: str | None
     type: HistoryItemType
     text: str | None = None
     tool_name: str | None = None
@@ -62,10 +62,12 @@ class HistoryItem:
         text = payload.get("text")
         tool_name = payload.get("tool_name")
         call_id = payload.get("call_id")
+        thread_id = payload.get("thread_id")
+        turn_id = payload.get("turn_id")
         return cls(
             id=str(payload["id"]),
-            thread_id=str(payload["thread_id"]),
-            turn_id=str(payload["turn_id"]),
+            thread_id=thread_id if isinstance(thread_id, str) else None,
+            turn_id=turn_id if isinstance(turn_id, str) else None,
             type=HistoryItemType(str(payload["type"])),
             text=text if isinstance(text, str) else None,
             tool_name=tool_name if isinstance(tool_name, str) else None,

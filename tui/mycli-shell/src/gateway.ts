@@ -10,6 +10,7 @@ import {
 	runtimeStateAfterSessionResume,
 	runtimeStateAfterCommandResult,
 	runtimeStateWithSettings,
+	runtimeStateWithModelCatalog,
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
@@ -19,6 +20,7 @@ import {
 	popLastLocalFollowUp,
 	nextLocalUserInput,
 	removeLocalUserInput,
+	runtimeStateAcknowledgeQueuedInput,
 	resourcesFromResult,
 	permissionStateFromUnknown,
 	sessionsFromResult,
@@ -31,7 +33,15 @@ import {
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
 import { NativeChatRuntime } from "./native-chat-runtime.ts";
-import type { MycliShellPermissionProfile, MycliShellPermissionState, MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
+import type {
+	MycliShellPendingApproval,
+	MycliShellPendingClarification,
+	MycliShellPermissionProfile,
+	MycliShellPermissionState,
+	MycliShellSession,
+	MycliShellState,
+	MycliShellVisualSettings,
+} from "./model.ts";
 import type {
 	MycliShellQueuedInput,
 	MycliShellSubmitAttachments,
@@ -146,8 +156,7 @@ function handleGatewayEvent(event: GatewayEvent): void {
 				...(input.attachments.length ? { localImages: input.attachments } : {}),
 			})),
 			{
-				restoreSubmittedInput:
-					event.method === "turn.completed" && event.params.input_rolled_back === true,
+				restoreSubmittedInput: event.params.input_rolled_back === true,
 			},
 		);
 		interruptRequested = false;
@@ -288,7 +297,16 @@ async function submitTurn(
 				? pendingClarification.requestId
 				: "";
 		if (requestId) {
-			await respondClarification(requestId, text);
+			await respondClarification(requestId, text, {
+				requestId,
+				question: typeof pendingClarification.question === "string"
+					? pendingClarification.question
+					: "Clarification required",
+				options: [],
+				multiSelect: false,
+				sessionId: stringField(pendingClarification.session_id),
+				generation: integerField(pendingClarification.generation),
+			});
 			return;
 		}
 	}
@@ -461,7 +479,7 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 	let expectedTurnId = runtimeState.activeTurnId;
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
-			await send("turn.steer", {
+			const result = await send("turn.steer", {
 				message: input.message,
 				client_user_message_id: input.clientUserMessageId,
 				expected_turn_id: expectedTurnId,
@@ -469,6 +487,11 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 					? { local_images: input.attachments.localImages }
 					: {}),
 			}, { recordErrors: false });
+			setRuntimeState(runtimeStateAcknowledgeQueuedInput(
+				runtimeState,
+				input.clientUserMessageId,
+				result,
+			));
 			return;
 		} catch (error) {
 			const actualTurnId =
@@ -506,7 +529,7 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 		: null;
 }
 
-async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<void> {
+async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<boolean> {
 	if (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId) {
 		interruptRequested = true;
 		resubmitPendingSteersAfterInterrupt = runtimeState.localPendingSteers.length > 0;
@@ -518,10 +541,43 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<v
 			}),
 		);
 	}
+	let expectedTurnId = runtimeState.activeTurnId;
+	if (!expectedTurnId && backendTurnBusy) {
+		const status = await send("status.inspect", {}, { recordErrors: false });
+		expectedTurnId = stringField(status.turn_id) ?? null;
+		setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", status));
+	}
 	try {
-		await send("turn.interrupt", {
-			rollback_user_input: options.rollbackUserInput,
-		});
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			try {
+				const result = await send("turn.interrupt", {
+					rollback_user_input: options.rollbackUserInput,
+					...(expectedTurnId ? { turn_id: expectedTurnId } : {}),
+				}, { recordErrors: false });
+				if (result.accepted !== true || result.requested !== true) {
+					interruptRequested = false;
+					resubmitPendingSteersAfterInterrupt = false;
+					backendTurnBusy = result.turn_running === true;
+					setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", result));
+					return false;
+				}
+				return true;
+			} catch (error) {
+				const actualTurnId =
+					error instanceof GatewayRequestError
+					&& error.code === "turn_id_mismatch"
+					&& typeof error.data.actual_turn_id === "string"
+						? error.data.actual_turn_id
+						: null;
+				if (attempt === 0 && actualTurnId && actualTurnId !== expectedTurnId) {
+					expectedTurnId = actualTurnId;
+					setRuntimeState({ ...runtimeState, activeTurnId: actualTurnId });
+					continue;
+				}
+				throw error;
+			}
+		}
+		return false;
 	} catch (error) {
 		interruptRequested = false;
 		resubmitPendingSteersAfterInterrupt = false;
@@ -529,28 +585,41 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<v
 	}
 }
 
-async function respondApproval(decisionId: string, choice: string): Promise<void> {
-	await send("approval.respond", { decision_id: decisionId, choice });
+async function respondApproval(
+	decisionId: string,
+	choice: string,
+	approval?: MycliShellPendingApproval,
+): Promise<void> {
+	await send("approval.respond", {
+		decision_id: decisionId,
+		choice,
+		...(approval?.sessionId ? { session_id: approval.sessionId } : {}),
+		...(approval?.generation ? { generation: approval.generation } : {}),
+	});
 }
 
-async function respondClarification(requestId: string, response: string): Promise<void> {
-	await send("clarify.respond", { request_id: requestId, response });
+async function respondClarification(
+	requestId: string,
+	response: string,
+	clarification?: MycliShellPendingClarification,
+): Promise<void> {
+	await send("clarify.respond", {
+		request_id: requestId,
+		response,
+		...(clarification?.sessionId ? { session_id: clarification.sessionId } : {}),
+		...(clarification?.generation ? { generation: clarification.generation } : {}),
+	});
 }
 
 async function saveApiKey(providerId: string, apiKey: string): Promise<{ message?: string }> {
 	const result = await send("auth.api_key.save", { provider_id: providerId, api_key: apiKey });
 	const modelResult = await send("model.list", {}, { recordErrors: false });
-	runtimeState = {
+	setRuntimeState(runtimeStateWithModelCatalog({
 		...runtimeState,
-		status: {
-			...runtimeState.status,
-			models: Array.isArray(modelResult.models) ? modelResult.models : [],
-		},
 		authProviders: runtimeState.authProviders.map((provider) =>
 			provider.id === providerId ? { ...provider, configured: true } : provider,
 		),
-	};
-	refreshRuntime();
+	}, modelResult));
 	return { message: typeof result.message === "string" ? result.message : undefined };
 }
 
@@ -559,6 +628,10 @@ async function runCommand(command: string): Promise<void> {
 	const result = await send("command.run", { command, surface: commandSurface });
 	const clientAction = clientActionFromResult(result);
 	if (clientAction && runtime) {
+		if (clientAction.action === "open_model_selector") {
+			const modelResult = await send("model.list", {});
+			setRuntimeState(runtimeStateWithModelCatalog(runtimeState, modelResult));
+		}
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
 		return;
 	}
@@ -722,6 +795,7 @@ async function main(): Promise<void> {
 		onSubmit: submitTurn,
 		onFollowUp: submitFollowUp,
 		onInterrupt: interruptTurn,
+		onInterruptExit: () => interruptExit(130),
 		onDequeueQueuedInput: popLastQueuedFollowUp,
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
@@ -732,13 +806,14 @@ async function main(): Promise<void> {
 			if (!model.protocol || !model.baseUrl) {
 				throw new Error("Model catalog entry is missing provider protocol or endpoint metadata.");
 			}
-			await send("model.select", {
+			const result = await send("model.select", {
 				provider: model.provider,
 				protocol: model.protocol,
 				model: model.model,
 				base_url: model.baseUrl,
 				reasoning_effort: model.thinkingLevel ?? null,
 			});
+			setRuntimeState(runtimeStateWithModelCatalog(runtimeState, result));
 			return model;
 		},
 		onPermissionSelect: selectPermission,
@@ -782,4 +857,12 @@ function trustDecisionFromState(state: string | undefined): ProjectTrustDecision
 	if (state === "trusted") return true;
 	if (state === "untrusted") return false;
 	return null;
+}
+
+function stringField(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function integerField(value: unknown): number | undefined {
+	return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
 }

@@ -26,7 +26,11 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
 
     assert root_package["private"] is True
     assert root_package["type"] == "module"
-    assert root_package["workspaces"] == ["apps/*", "packages/*", "tui/*"]
+    assert root_package["workspaces"] == [
+        "backend/apps/*",
+        "backend/packages/*",
+        "tui/*",
+    ]
     assert root_package["engines"]["node"] == ">=22.19.0"
     assert root_package["scripts"] == {
         "build": (
@@ -43,9 +47,9 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         ),
         "contracts:generate": "npm run generate --workspace @mycli/contracts",
         "contracts:check": "npm run check --workspace @mycli/contracts",
-        "dev": "node --import tsx apps/mycli/src/cli.ts",
-        "lint": 'eslint "apps/**/*.ts" "packages/**/*.ts"',
-        "mycli": "node --import tsx apps/mycli/src/cli.ts",
+        "dev": "node --import tsx backend/apps/mycli/src/cli.ts",
+        "lint": 'eslint "backend/apps/**/*.ts" "backend/packages/**/*.ts"',
+        "mycli": "node --import tsx backend/apps/mycli/src/cli.ts",
         "pretest": "npm run build",
         "smoke:package": "node scripts/smoke_packed_cli.mjs",
         "smoke:m3": "node scripts/smoke_node_m3_read.mjs --protocol responses",
@@ -54,42 +58,43 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
         "smoke:m6": "node scripts/smoke_node_m6_shell.mjs --protocol responses",
         "smoke:m7": "node scripts/smoke_node_m7_extensions.mjs --protocol responses",
         "smoke:m8": "node scripts/smoke_node_m8.mjs",
+        "smoke:agents": "node scripts/smoke_node_agents.mjs --protocol responses",
         "test": "npm run test --workspaces --if-present",
         "test:m2": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/node-backend.integration.test.ts "
-            "apps/mycli/test/m2-smoke-runner.integration.test.ts && "
+            "backend/apps/mycli/test/node-backend.integration.test.ts "
+            "backend/apps/mycli/test/m2-smoke-runner.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m2_parity.py -q"
         ),
         "test:m3": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/m3-read-turn.integration.test.ts && "
+            "backend/apps/mycli/test/m3-read-turn.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m3_parity.py -q"
         ),
         "test:m4": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/m4-file-mutation.integration.test.ts && "
+            "backend/apps/mycli/test/m4-file-mutation.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m4_parity.py -q"
         ),
         "test:m5": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/m5-state-recovery.integration.test.ts && "
+            "backend/apps/mycli/test/m5-state-recovery.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m5_parity.py -q"
         ),
         "test:m6": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/m6-persistent-shell.integration.test.ts && "
+            "backend/apps/mycli/test/m6-persistent-shell.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m6_parity.py -q"
         ),
         "test:m7": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/m7-extensions.integration.test.ts && "
+            "backend/apps/mycli/test/m7-extensions.integration.test.ts && "
             "uv run pytest tests/integration/test_node_runtime_m7_parity.py -q"
         ),
         "test:m8": (
             "npm run build && node --import tsx --test "
-            "apps/mycli/test/node-runtime-m8-capability-audit.test.ts "
-            "apps/mycli/test/cli.test.ts"
+            "backend/apps/mycli/test/node-runtime-m8-capability-audit.test.ts "
+            "backend/apps/mycli/test/cli.test.ts"
         ),
         "typecheck": "npm run typecheck --workspaces --if-present",
     }
@@ -98,7 +103,9 @@ def test_root_node_workspace_owns_install_and_quality_scripts() -> None:
 
 
 def test_node_app_exposes_the_targeted_m5_integration_script() -> None:
-    app_package = json.loads(Path("apps/mycli/package.json").read_text(encoding="utf-8"))
+    app_package = json.loads(
+        Path("backend/apps/mycli/package.json").read_text(encoding="utf-8")
+    )
 
     assert app_package["scripts"]["test:m5"] == (
         "node --import tsx --test test/m5-state-recovery.integration.test.ts"
@@ -106,7 +113,9 @@ def test_node_app_exposes_the_targeted_m5_integration_script() -> None:
 
 
 def test_node_app_exposes_the_targeted_m6_integration_script() -> None:
-    app_package = json.loads(Path("apps/mycli/package.json").read_text(encoding="utf-8"))
+    app_package = json.loads(
+        Path("backend/apps/mycli/package.json").read_text(encoding="utf-8")
+    )
 
     assert app_package["scripts"]["test:m6"] == (
         "node --import tsx --test test/m6-persistent-shell.integration.test.ts"

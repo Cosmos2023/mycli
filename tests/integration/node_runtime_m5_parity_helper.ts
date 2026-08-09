@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import process from "node:process";
-import type { QueuedInput } from "../../packages/core/src/index.ts";
+import type { QueuedInput } from "../../backend/packages/core/src/index.ts";
 import {
 	projectTranscript,
 	SQLiteSessionStore,
 	type RuntimeStateKey,
-} from "../../packages/storage/src/index.ts";
-import { selectProviderContinuation } from "../../packages/runtime/src/provider-continuation.ts";
+} from "../../backend/packages/storage/src/index.ts";
+import { selectProviderContinuation } from "../../backend/packages/runtime/src/provider-continuation.ts";
 import Database from "better-sqlite3";
 
 type JsonObject = Record<string, unknown>;

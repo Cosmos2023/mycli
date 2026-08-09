@@ -13,7 +13,9 @@ import {
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
+	runtimeStateWithModelCatalog,
 	runtimeStateRejectPendingSteer,
+	runtimeStateAcknowledgeQueuedInput,
 	popLastLocalFollowUp,
 	nextLocalUserInput,
 	sessionsFromResult,
@@ -86,6 +88,58 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.tools[0]?.durationMs, 1200);
 });
 
+test("runtime adapter preserves the top-level bootstrap model catalog across status changes", () => {
+	let state = runtimeStateFromBootstrap(initialRuntimeState(), {
+		session_id: "s1",
+		workspace: "/repo",
+		provider: "deepseek",
+		model: "deepseek-v4-flash",
+		models: [
+			{
+				provider: "deepseek",
+				protocol: "chat_completions",
+				model: "deepseek-v4-flash",
+				name: "DeepSeek V4 Flash",
+				base_url: "https://api.deepseek.com",
+				current: true,
+			},
+			{
+				provider: "openai",
+				protocol: "responses",
+				model: "gpt-5.4",
+				name: "GPT-5.4",
+				base_url: "https://api.openai.com/v1",
+				supported_reasoning_efforts: ["low", "medium", "high"],
+			},
+		],
+		status: { trust: { state: "trusted", workspace: "/repo" } },
+	});
+
+	assert.deepEqual(projectRuntimeState(state).models?.map((model) => model.model), [
+		"deepseek-v4-flash",
+		"gpt-5.4",
+	]);
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "s1",
+		provider: "deepseek",
+		model: "deepseek-v4-flash",
+		trust: { state: "trusted", workspace: "/repo" },
+	});
+	assert.equal(projectRuntimeState(state).models?.length, 2);
+
+	state = runtimeStateWithModelCatalog(state, {
+		models: [{
+			provider: "openai",
+			protocol: "responses",
+			model: "gpt-5.4",
+			base_url: "https://api.openai.com/v1",
+			current: true,
+		}],
+	});
+	assert.deepEqual(projectRuntimeState(state).models?.map((model) => model.model), ["gpt-5.4"]);
+});
+
 test("only a trusted workspace dismisses the startup trust gate", () => {
 	const untrusted = runtimeStateFromBootstrap(initialRuntimeState(), {
 		workspace: "/repo",
@@ -146,6 +200,26 @@ test("runtime adapter projects a resumed Skill name as its tool argument", () =>
 	const shell = projectRuntimeState(state);
 
 	assert.equal(shell.tools[0]?.name, "Skill");
+	assert.equal(shell.tools[0]?.args, "repository-analysis");
+});
+
+test("runtime adapter reads a Skill target from structured legacy arguments", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: "skill-arguments",
+			type: "tool_summary",
+			text: "assistant preamble must not become the target",
+			folded: false,
+			metadata: {
+				tool_name: "Skill",
+				arguments: { name: "repository-analysis" },
+				success: true,
+			},
+		}],
+	});
+
+	const shell = projectRuntimeState(state);
+
 	assert.equal(shell.tools[0]?.args, "repository-analysis");
 });
 
@@ -279,6 +353,37 @@ test("runtime adapter keeps running Write as a generic tool until completion", (
 	const shell = projectRuntimeState(state);
 	assert.equal(shell.transcript?.[0]?.kind, "tool");
 	assert.equal(shell.tools[0]?.status, "running");
+});
+
+test("runtime adapter keeps Read visible after lifecycle completion", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "tool.start", {
+		client_turn_id: "turn-read",
+		tool_id: "read-live",
+		call_id: "call-read",
+		name: "Read",
+		args_preview: "src/app.ts",
+	});
+
+	let shell = projectRuntimeState(state);
+	assert.equal(shell.tools[0]?.status, "running");
+	assert.equal(shell.tools[0]?.hidden, false);
+
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		client_turn_id: "turn-read",
+		tool_id: "read-live",
+		call_id: "call-read",
+		name: "Read",
+		summary: "Read src/app.ts",
+		success: true,
+	});
+
+	shell = projectRuntimeState(state);
+	assert.equal(shell.tools[0]?.status, "success");
+	assert.equal(shell.tools[0]?.hidden, false);
+	const readBlock = shell.transcript?.find((block) => block.kind === "tool" && block.tool.name === "Read");
+	assert.equal(readBlock?.kind, "tool");
+	if (readBlock?.kind !== "tool") return;
+	assert.equal(readBlock.tool.hidden, false);
 });
 
 test("runtime adapter falls back to legacy metadata for malformed display", () => {
@@ -726,6 +831,9 @@ test("runtime adapter projects approval requests into shell approval state", () 
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "approval.request", {
 		decision_id: "decision-1",
+		session_id: "demo:sub:turn_1:abcd1234",
+		generation: 3,
+		agent_path: "/root/explore",
 		preview: "file /tmp/image.jpg 2>&1",
 		reason: "Shell command requires approval",
 		tool_name: "Bash",
@@ -749,6 +857,9 @@ test("runtime adapter projects approval requests into shell approval state", () 
 	const shell = projectRuntimeState(state);
 
 	assert.equal(shell.pendingApproval?.decisionId, "decision-1");
+	assert.equal(shell.pendingApproval?.sessionId, "demo:sub:turn_1:abcd1234");
+	assert.equal(shell.pendingApproval?.generation, 3);
+	assert.equal(shell.pendingApproval?.agentPath, "/root/explore");
 	assert.equal(shell.pendingApproval?.preview, "file /tmp/image.jpg 2>&1");
 	assert.equal(shell.pendingApproval?.toolName, "Bash");
 	assert.equal(shell.pendingApproval?.workerName, "explore");
@@ -810,10 +921,47 @@ test("runtime adapter removes transient approval preview after a response", () =
 	assert.equal(shell.messages.some((message) => message.text === "echo duplicated command"), false);
 });
 
+test("child approval survives unrelated root events and clears only for its routed response", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "child-decision",
+		session_id: "child-session",
+		child_session_id: "child-session",
+		generation: 4,
+		client_turn_id: "child-turn",
+		preview: "npm test",
+		options: [{ choice: "approve_once", label: "Allow once" }],
+	});
+	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "root-turn" });
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		client_turn_id: "root-turn",
+		turn_state: "completed",
+	});
+	state = reduceRuntimeEvent(state, "approval.respond", {
+		decision_id: "root-decision",
+		session_id: "root-session",
+		choice: "approve_once",
+	});
+
+	assert.equal(projectRuntimeState(state).pendingApproval?.decisionId, "child-decision");
+	state = reduceRuntimeEvent(state, "approval.respond", {
+		decision_id: "child-decision",
+		session_id: "child-session",
+		generation: 4,
+		choice: "approve_once",
+	});
+	assert.equal(projectRuntimeState(state).pendingApproval, undefined);
+});
+
 test("runtime adapter removes the transient clarification question after a response", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "clarify.request", {
 		request_id: "request-1",
+		session_id: "child-session",
+		child_session_id: "child-session",
+		generation: 5,
+		worker_name: "tester",
+		agent_path: "/root/tester",
 		tool_id: "tool-1",
 		call_id: "call-1",
 		tool_name: "AskUserQuestion",
@@ -839,6 +987,11 @@ test("runtime adapter projects structured pending clarification", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "clarify.request", {
 		request_id: "request-1",
+		session_id: "child-session",
+		child_session_id: "child-session",
+		generation: 5,
+		worker_name: "tester",
+		agent_path: "/root/tester",
 		tool_name: "AskUserQuestion",
 		header: "Scope",
 		question: "Which implementation should we use?",
@@ -854,8 +1007,13 @@ test("runtime adapter projects structured pending clarification", () => {
 
 	assert.deepEqual(shell.pendingClarification, {
 		requestId: "request-1",
+		sessionId: "child-session",
+		generation: 5,
 		header: "Scope",
 		question: "Which implementation should we use?",
+		workerName: "tester",
+		childSessionId: "child-session",
+		agentPath: "/root/tester",
 		options: [
 			{ label: "Runtime", description: "Runtime only" },
 			{ label: "TUI", description: "Terminal UI" },
@@ -958,7 +1116,50 @@ test("runtime adapter accumulates subagent progress updates", () => {
 	]);
 });
 
-test("runtime adapter gives successful Task calls to the dedicated subagent UI", () => {
+test("runtime adapter correlates follow-ups by stable thread id without duplicate terminal rows", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "task-first",
+			thread_id: "thread-review",
+			root_thread_id: "root-thread",
+			parent_thread_id: "root-thread",
+			agent_path: "/root/review",
+			child_session_id: "thread-review",
+			role: "review",
+			status: "running",
+			summary: "Review started",
+			progress: [{ kind: "progress", summary: "Inspecting" }],
+		},
+	});
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "task-follow-up",
+			thread_id: "thread-review",
+			root_thread_id: "root-thread",
+			parent_thread_id: "root-thread",
+			agent_path: "/root/review",
+			child_session_id: "thread-review",
+			role: "review",
+			status: "completed",
+			summary: "Review completed",
+			progress: [
+				{ kind: "progress", summary: "Inspecting" },
+				{ kind: "final", summary: "Review completed" },
+			],
+		},
+	});
+
+	const blocks = projectRuntimeState(state).transcript?.filter((item) => item.kind === "subagent") ?? [];
+	assert.equal(blocks.length, 1);
+	const agent = blocks[0]?.kind === "subagent" ? blocks[0].subagent : undefined;
+	assert.equal(agent?.id, "thread-review");
+	assert.equal(agent?.agentPath, "/root/review");
+	assert.equal(agent?.status, "completed");
+	assert.deepEqual(agent?.progress?.map((item) => item.summary), ["Inspecting", "Review completed"]);
+});
+
+test("runtime adapter keeps successful Task calls visible alongside the dedicated subagent UI", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "tool.start", {
 		tool_id: "tool-task-1",
@@ -989,11 +1190,54 @@ test("runtime adapter gives successful Task calls to the dedicated subagent UI",
 
 	const shell = projectRuntimeState(state);
 
-	assert.equal(shell.tools.some((tool) => tool.name === "Task"), false);
+	assert.equal(shell.tools.some((tool) => tool.name === "Task" && tool.status === "success" && tool.hidden === false), true);
 	assert.equal(shell.transcript?.filter((block) => block.kind === "subagent").length, 1);
 });
 
-test("runtime adapter hides successful Task rows when reloading history", () => {
+test("runtime adapter renders every coordination tool and hides live provider mailbox payloads", () => {
+	let state = initialRuntimeState();
+	for (const [index, name] of [
+		"spawn_agent",
+		"send_message",
+		"followup_task",
+		"wait_agent",
+		"interrupt_agent",
+		"list_agents",
+	].entries()) {
+		state = reduceRuntimeEvent(state, "tool.start", {
+			tool_id: `coordination-${index}`,
+			call_id: `coordination-${index}`,
+			name,
+			context: name,
+		});
+		state = reduceRuntimeEvent(state, "tool.complete", {
+			tool_id: `coordination-${index}`,
+			call_id: `coordination-${index}`,
+			name,
+			success: true,
+			summary: `${name} completed`,
+		});
+	}
+	state = reduceRuntimeEvent(state, "turn.event", {
+		kind: "queued_message_committed",
+		text: "<agent-mailbox>provider-only completion</agent-mailbox>",
+		metadata: { queue_id: "mailbox-1", source: "agent_mailbox" },
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.deepEqual(shell.tools.map((tool) => tool.name), [
+		"spawn_agent",
+		"send_message",
+		"followup_task",
+		"wait_agent",
+		"interrupt_agent",
+		"list_agents",
+	]);
+	assert.equal(shell.tools.every((tool) => tool.hidden === false), true);
+	assert.equal(JSON.stringify(shell.transcript).includes("provider-only completion"), false);
+});
+
+test("runtime adapter keeps successful and failed Task rows visible when reloading history", () => {
 	const state = runtimeStateFromTranscript(initialRuntimeState(), {
 		items: [
 			{
@@ -1013,8 +1257,11 @@ test("runtime adapter hides successful Task rows when reloading history", () => 
 
 	const shell = projectRuntimeState(state);
 
-	assert.equal(shell.tools.length, 1);
-	assert.equal(shell.tools[0]?.errorPreview, "Unavailable");
+	assert.equal(shell.tools.length, 2);
+	assert.equal(shell.tools[0]?.status, "success");
+	assert.equal(shell.tools[0]?.hidden, false);
+	assert.equal(shell.tools[1]?.errorPreview, "Unavailable");
+	assert.equal(shell.tools[1]?.hidden, false);
 });
 
 test("runtime adapter keeps tool calls between assistant text segments", () => {
@@ -1630,6 +1877,44 @@ test("runtime adapter clears the matching interrupted server turn", () => {
 	assert.equal(state.liveStatus?.state, "interrupted");
 });
 
+test("runtime adapter terminalizes foreground tools when a turn is interrupted", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "tool.start", {
+		turn_id: "turn-1",
+		tool_id: "call-read",
+		call_id: "call-read",
+		name: "Read",
+		context: "Reading README.md",
+	});
+	assert.equal(projectRuntimeState(state).tools[0]?.status, "running");
+
+	state = reduceRuntimeEvent(state, "turn.interrupted", {
+		turn_id: "turn-1",
+		requested: false,
+	});
+
+	const tool = projectRuntimeState(state).tools[0];
+	assert.equal(tool?.status, "error");
+	assert.equal(tool?.errorPreview, "tool_interrupted");
+});
+
+test("runtime adapter keeps the canonical user row when composer restoration is confirmed", () => {
+	let state = runtimeStateWithUserMessage(initialRuntimeState(), "restore this draft");
+	state = reduceRuntimeEvent(state, "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "turn.interrupted", {
+		turn_id: "turn-1",
+		requested: false,
+		input_rolled_back: true,
+	});
+
+	assert.equal(
+		projectRuntimeState(state).messages.some((message) => message.text === "restore this draft"),
+		true,
+	);
+});
+
 test("runtime adapter appends one visible notice when a turn is interrupted", () => {
 	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
 		turn_id: "turn-1",
@@ -1692,6 +1977,7 @@ test("runtime adapter keeps an interrupt request busy until the server confirms 
 	});
 	assert.equal(state.turnRunning, false);
 	assert.equal(state.activeTurnId, null);
+	assert.equal(state.liveStatus, null);
 });
 
 test("runtime input disposition queues follow-ups while a turn is interrupting", () => {
@@ -1886,6 +2172,68 @@ test("runtime adapter projects pending steering through rejection and removal", 
 	assert.equal(projectRuntimeState(state).pendingInput, undefined);
 });
 
+test("queue RPC acknowledgement replaces optimistic steering with the durable snapshot", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "inspect output",
+		attachments: [],
+	});
+	const queueSnapshot = {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{
+				queue_id: "queue-1",
+				client_turn_id: "steer-1",
+				message: "inspect output",
+			}],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	};
+	state = reduceRuntimeEvent(state, "turn.queue.updated", queueSnapshot);
+
+	state = runtimeStateAcknowledgeQueuedInput(state, "steer-1", queueSnapshot);
+
+	assert.deepEqual(state.localPendingSteers, []);
+	assert.deepEqual(projectRuntimeState(state).pendingInput, {
+		pendingSteers: [{ text: "inspect output", hasImages: false }],
+		rejectedSteers: [],
+		followUps: [],
+	});
+});
+
+test("queue RPC acknowledgement converges to empty and ignores an older notification", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "inspect output",
+		attachments: [],
+	});
+	state = runtimeStateAcknowledgeQueuedInput(state, "steer-1", {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{ message: "inspect output" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 2,
+		queue_items: { pending_steers: [], rejected_steers: [], follow_ups: [] },
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{ message: "inspect output" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+
+	assert.equal(state.queueRevision, 2);
+	assert.deepEqual(state.localPendingSteers, []);
+	assert.equal(projectRuntimeState(state).pendingInput, undefined);
+});
+
 test("runtime adapter moves a consumed steer from pending input into transcript", () => {
 	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.queue.updated", {
 		queue_revision: 1,
@@ -2050,6 +2398,8 @@ test("gateway steering retries a turn mismatch with stable user identity", () =>
 	assert.match(steeringBody, /error\.data\.actual_turn_id/);
 	assert.match(steeringBody, /expectedTurnId = actualTurnId/);
 	assert.match(steeringBody, /runtimeStateWithPendingSteer/);
+	assert.match(steeringBody, /const result = await send\("turn\.steer"/);
+	assert.match(steeringBody, /runtimeStateAcknowledgeQueuedInput/);
 	assert.match(steeringBody, /runtimeStateRejectPendingSteer/);
 	assert.match(source, /activeTurnId:\s*turnId \?\? runtimeState\.activeTurnId/);
 	assert.match(source, /if \(backendTurnBusy\) \{\s*setRuntimeState\(\{/);
@@ -2057,6 +2407,20 @@ test("gateway steering retries a turn mismatch with stable user identity", () =>
 	assert.doesNotMatch(source, /event\.method === "status\.changed" && backendTurnBusy/);
 	assert.doesNotMatch(source, /queuedSteeringTurns|queuedFollowUpTurns/);
 	assert.doesNotMatch(source, /send\("turn\.follow_up"/);
+});
+
+test("gateway interruption fences the active turn id and retries one lifecycle race", () => {
+	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
+	const interruptBody = source.match(
+		/async function interruptTurn\([\s\S]*?\n\}/,
+	)?.[0] ?? "";
+
+	assert.match(interruptBody, /let expectedTurnId = runtimeState\.activeTurnId/);
+	assert.match(interruptBody, /turn_id: expectedTurnId/);
+	assert.match(interruptBody, /attempt < 2/);
+	assert.match(interruptBody, /error\.code === "turn_id_mismatch"/);
+	assert.match(interruptBody, /error\.data\.actual_turn_id/);
+	assert.match(interruptBody, /expectedTurnId = actualTurnId/);
 });
 
 test("runtime adapter syncs typed backend message queues", () => {
@@ -2511,7 +2875,7 @@ test("runtime adapter applies collaboration mode returned by command results", (
 	assert.equal(shell.messages.some((message) => message.text === "[mode] collaboration_mode=default"), true);
 });
 
-test("runtime adapter hides low-value successful tools outside verbose mode", () => {
+test("runtime adapter keeps every tool visible in every view mode", () => {
 	let state = initialRuntimeState();
 	state = { ...state, workspace: "/repo" };
 	state = runtimeStateFromTranscript(state, {
@@ -2542,11 +2906,13 @@ test("runtime adapter hides low-value successful tools outside verbose mode", ()
 
 	const compact = projectRuntimeState(state);
 	const verbose = projectRuntimeState({ ...state, viewMode: "verbose" });
+	const focus = projectRuntimeState({ ...state, viewMode: "focus" });
 
-	assert.equal(compact.tools.find((tool) => tool.id === "read")?.hidden, true);
+	assert.equal(compact.tools.find((tool) => tool.id === "read")?.hidden, false);
 	assert.equal(compact.tools.find((tool) => tool.id === "edit")?.hidden, false);
 	assert.equal(compact.tools.find((tool) => tool.id === "grep-failed")?.hidden, false);
 	assert.equal(verbose.tools.find((tool) => tool.id === "read")?.hidden, false);
+	assert.equal(focus.tools.find((tool) => tool.id === "read")?.hidden, false);
 });
 
 test("shell lifecycle keeps background Bash running until terminal event", () => {

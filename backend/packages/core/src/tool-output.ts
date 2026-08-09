@@ -1,0 +1,1 @@
+export const TOOL_RESULT_OUTPUT_MAX_CHARS = 8_000;

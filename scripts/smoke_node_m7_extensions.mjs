@@ -16,11 +16,27 @@ import {
 	HookAllowlistStore,
 } from "@mycli/integrations";
 import { SQLiteSessionStore } from "@mycli/storage";
-import { startNodeBackend } from "../apps/mycli/dist/node-runtime/node-backend.js";
+import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const MCP_FIXTURE = join(ROOT, "packages", "integrations", "test", "fixtures", "mcp-stdio-server.mjs");
-const HOOK_FIXTURE = join(ROOT, "packages", "integrations", "test", "fixtures", "hook-command.mjs");
+const MCP_FIXTURE = join(
+	ROOT,
+	"backend",
+	"packages",
+	"integrations",
+	"test",
+	"fixtures",
+	"mcp-stdio-server.mjs",
+);
+const HOOK_FIXTURE = join(
+	ROOT,
+	"backend",
+	"packages",
+	"integrations",
+	"test",
+	"fixtures",
+	"hook-command.mjs",
+);
 const DEADLINE_MS = 45_000;
 const SKIP_EXIT_CODE = 77;
 const PROTOCOLS = new Set(["responses", "chat_completions", "anthropic_messages"]);
@@ -128,8 +144,9 @@ async function runSmoke(sourceConfig, protocol) {
 		send(backend, "turn", "turn.submit", {
 			message: [
 				"Activate the review skill, then call mcp_local_echo once with text m7-smoke,",
-				"then call plugin_good_echo once with text m7-smoke, then start parity-agent",
-				"as a foreground Task with a short structural prompt. Finish after the child returns.",
+				"then call plugin_good_echo once with text m7-smoke, then call spawn_agent once",
+				"with task_name m7-smoke and a short message. Call wait_agent, then finish after",
+				"the child completion notification arrives.",
 			].join(" "),
 			client_turn_id: clientTurnId,
 			client_user_message_id: `user-${randomUUID()}`,
@@ -215,7 +232,6 @@ async function writeExtensionFixtures(options) {
 	const pluginRoot = join(mycli, "plugins", "good");
 	await Promise.all([
 		mkdir(join(mycli, "skills"), { recursive: true }),
-		mkdir(join(mycli, "agents"), { recursive: true }),
 		mkdir(join(pluginRoot, "dist"), { recursive: true }),
 	]);
 	await writeFile(join(mycli, "skills", "review.md"), [
@@ -224,14 +240,6 @@ async function writeExtensionFixtures(options) {
 		"description: Review M7 smoke fixture",
 		"---",
 		"Use the configured M7 extension chain.",
-	].join("\n"), "utf8");
-	await writeFile(join(mycli, "agents", "parity-agent.md"), [
-		"---",
-		"name: parity-agent",
-		"description: M7 smoke child fixture",
-		"tools: [Read]",
-		"---",
-		"Return a concise structural report.",
 	].join("\n"), "utf8");
 	await writeFile(join(mycli, "mcp_servers.toml"), [
 		"[servers.local]",
@@ -286,7 +294,7 @@ function persistedState(homeDir, sessionId, counts) {
 		const history = store.loadHistoryItems(sessionId);
 		const tasks = store.subagentTasks.list(sessionId);
 		return history.some((item) => item.type === "skill_instructions")
-			&& history.filter((item) => item.type === "tool_result").length === 4
+			&& history.filter((item) => item.type === "tool_result").length === 5
 			&& tasks.length === 1
 			&& tasks[0]?.status === "completed"
 			&& Object.values(counts).every((count) => count === 1);
@@ -302,7 +310,7 @@ function toolCounts(messages) {
 		if (name === "Skill") counts.skill += 1;
 		else if (typeof name === "string" && name.startsWith("mcp_")) counts.mcp += 1;
 		else if (typeof name === "string" && name.startsWith("plugin_")) counts.plugin += 1;
-		else if (name === "Task") counts.subagent += 1;
+		else if (name === "spawn_agent") counts.subagent += 1;
 	}
 	return counts;
 }

@@ -110,6 +110,13 @@ type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled"
 
 export type MycliShellSubagent = {
 	id: string;
+	threadId?: string;
+	rootThreadId?: string;
+	parentThreadId?: string;
+	agentPath?: string;
+	taskName?: string;
+	nickname?: string;
+	lifecycleKind?: string;
 	role: string;
 	description?: string;
 	status: MycliShellSubagentStatus;
@@ -370,12 +377,15 @@ type MycliShellApprovalOption = {
 
 export type MycliShellPendingApproval = {
 	decisionId: string;
+	sessionId?: string;
+	generation?: number;
 	preview: string;
 	reason?: string;
 	toolName?: string;
 	workerName?: string;
 	workerColor?: string;
 	childSessionId?: string;
+	agentPath?: string;
 	options: MycliShellApprovalOption[];
 	risk?: string;
 	riskReason?: string;
@@ -392,7 +402,12 @@ type MycliShellClarificationOption = {
 
 export type MycliShellPendingClarification = {
 	requestId: string;
+	sessionId?: string;
+	generation?: number;
 	question: string;
+	workerName?: string;
+	childSessionId?: string;
+	agentPath?: string;
 	header?: string;
 	options: MycliShellClarificationOption[];
 	multiSelect: boolean;

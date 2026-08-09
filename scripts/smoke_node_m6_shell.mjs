@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
 import { SQLiteSessionStore } from "@mycli/storage";
-import { startNodeBackend } from "../apps/mycli/dist/node-runtime/node-backend.js";
+import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const MAX_OUTPUT_TOKENS = 64;
 const DEADLINE_MS = 30_000;
@@ -138,24 +138,11 @@ async function runSmoke(sourceConfig) {
 			client_turn_id: clientTurnId,
 			client_user_message_id: `user-${randomUUID()}`,
 		});
-		const approval = await waitFor(() => event(messages, "approval.request"), deadlineAt);
-		await waitFor(() => events(messages, "status.changed").find((message) => (
-			isObject(message.params)
-			&& message.params.pending_decision === true
-			&& message.params.turn_running === false
-		)), deadlineAt);
-		await request(
-			backend,
-			messages,
-			"approve",
-			"approval.respond",
-			{
-				decision_id: requiredParam(approval, "decision_id"),
-				choice: "approve_once",
-			},
-			deadlineAt,
-		);
-		const terminal = await waitFor(() => terminalMessage(messages, clientTurnId), deadlineAt);
+		const terminal = await waitFor(() => {
+			const approval = event(messages, "approval.request");
+			if (approval) throw new Error("smoke_unexpected_full_access_approval");
+			return terminalMessage(messages, clientTurnId);
+		}, deadlineAt);
 		const providerUnavailable = terminal.method === "turn.failed"
 			&& events(messages, "tool.failed").length === 0;
 		if (providerUnavailable) {
@@ -293,12 +280,6 @@ function event(messages, method) {
 
 function events(messages, method) {
 	return messages.filter((message) => message.method === method && !("id" in message));
-}
-
-function requiredParam(message, name) {
-	const value = isObject(message.params) ? message.params[name] : undefined;
-	if (typeof value !== "string" || !value) throw new Error("smoke_protocol_failed");
-	return value;
 }
 
 function shellTransport(started, completed) {

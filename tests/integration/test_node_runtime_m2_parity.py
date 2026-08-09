@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -25,7 +26,15 @@ from mycli.utils.workspace_logger import WorkspaceLogService
 
 ROOT = Path(__file__).parents[2]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "node_runtime_m2"
-NODE_HELPER = ROOT / "packages" / "storage" / "test" / "support" / "parity-helper.ts"
+NODE_HELPER = (
+    ROOT
+    / "backend"
+    / "packages"
+    / "storage"
+    / "test"
+    / "support"
+    / "parity-helper.ts"
+)
 
 
 def test_request_projection_matches_shared_corpus() -> None:
@@ -386,6 +395,7 @@ def _read_python_sessions(
                 "conversation": [
                     {"role": message.role, "content": message.content}
                     for message in conversation.messages
+                    if message.role in {"user", "assistant"}
                 ],
                 "raw_conversation": raw_conversation,
                 "history_items": [
@@ -470,6 +480,49 @@ def _expected_record(scenario: dict[str, Any]) -> dict[str, Any]:
             "response_id": scenario["response_id"],
             "usage": scenario["usage"],
         }
+    else:
+        marker_text = (
+            "<turn_aborted>\n"
+            "The previous turn was interrupted on purpose. Any running shell processes may still "
+            "be running in the background. If any tools or commands were aborted, they may have "
+            "partially executed.\n"
+            "</turn_aborted>"
+        )
+        identity = hashlib.sha256(scenario["turn_id"].encode()).hexdigest()
+        source_id = f"turn-aborted:{identity}"
+        metadata = {
+            "kind": "turn_aborted",
+            "role": "developer",
+            "cache_class": "dynamic",
+            "durability": "persistent",
+            "scope": "transcript",
+            "source_id": source_id,
+            "content_sha256": hashlib.sha256(marker_text.encode()).hexdigest(),
+            "content_length": len(marker_text),
+        }
+        raw_conversation.append(
+            {
+                "role": "context",
+                "content": marker_text,
+                "tool_call_id": None,
+                "response_id": None,
+                "metadata": {"context": metadata},
+                "blocks": [],
+                "tool_calls": [],
+            }
+        )
+        history_items.append(
+            {
+                "id": source_id,
+                "thread_id": None,
+                "turn_id": None,
+                "type": "skill_instructions",
+                "text": marker_text,
+                "tool_name": None,
+                "call_id": None,
+                "metadata": metadata,
+            }
+        )
     return {
         "session_id": scenario["session_id"],
         "conversation": conversation,

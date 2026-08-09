@@ -1217,7 +1217,7 @@ def test_turn_service_injects_memory_and_skill_context(tmp_path: Path) -> None:
         tmp_path=workspace,
         model=model,
         tool_registry=FakeToolRegistry(),
-        config=AgentConfig(workspace_root=workspace),
+        config=AgentConfig(workspace_root=workspace, memory_enabled=True),
         home_dir=home_dir,
     )
     service._memory_service = memory_service

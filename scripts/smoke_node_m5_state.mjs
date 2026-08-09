@@ -24,9 +24,10 @@ import {
 	SQLiteSessionStore,
 	TranscriptSnapshotStore,
 } from "@mycli/storage";
-import { startNodeBackend } from "../apps/mycli/dist/node-runtime/node-backend.js";
+import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
-const OUTPUT_TOKENS = 64;
+const TURN_OUTPUT_TOKENS = 64;
+const SUMMARY_OUTPUT_TOKENS = 512;
 const DEADLINE_MS = 30_000;
 const SKIP_EXIT_CODE = 77;
 const OFFICIAL_OPENAI_HOST = "api.openai.com";
@@ -140,7 +141,7 @@ async function main() {
 			tailTurns: 1,
 			tailMaxTokens: 128,
 			minSavingsRatio: 0,
-			summaryMaxTokens: OUTPUT_TOKENS,
+			summaryMaxTokens: SUMMARY_OUTPUT_TOKENS,
 			summaryModel: runtimeConfig.model,
 			rehydrationMaxFiles: 0,
 			rehydrationMaxItemTokens: 0,
@@ -153,7 +154,7 @@ async function main() {
 							provider: runtimeConfig.provider,
 							protocol: runtimeConfig.protocol,
 							model: input.model ?? runtimeConfig.model,
-							maxOutputTokens: OUTPUT_TOKENS,
+							maxOutputTokens: SUMMARY_OUTPUT_TOKENS,
 						},
 						input,
 					);
@@ -186,7 +187,7 @@ async function main() {
 			createProvider: () => observedProvider,
 			createTurnId: randomUUID,
 			clock: () => new Date().toISOString(),
-			maxOutputTokens: OUTPUT_TOKENS,
+			maxOutputTokens: TURN_OUTPUT_TOKENS,
 			compactionCoordinator: compaction,
 			memoryContextService: memoryContext,
 			providerContinuation: continuation,
@@ -208,9 +209,17 @@ async function main() {
 			return SKIP_EXIT_CODE;
 		}
 		const checkpoint = store.loadState(sessionId, "compact_checkpoint");
-		const compacted = isObject(checkpoint)
-			&& checkpoint.status === "completed"
-			&& events.some((event) => event.type === "compaction_completed");
+		const compactionEventObserved = events.some(
+			(event) => event.type === "compaction_completed",
+		);
+		const compactionCheckpointStatus = isObject(checkpoint)
+			&& typeof checkpoint.status === "string"
+			? checkpoint.status
+			: "missing";
+		const summaryCount = store.loadSessionSummaries(sessionId).length;
+		const compacted = compactionCheckpointStatus === "completed"
+			&& compactionEventObserved
+			&& summaryCount > 0;
 		const persisted = store.loadTurn(sessionId, clientTurnId)?.status === "completed"
 			&& existsSync(snapshots.snapshotPath(sessionId));
 		store.close();
@@ -227,7 +236,15 @@ async function main() {
 			&& resumed
 			&& persisted
 			&& !existsSync(pythonMarker);
-		writeSummary(completed ? "completed" : "failed", completed);
+		writeSummary(completed ? "completed" : "failed", {
+			compacted,
+			memoryVisible,
+			resumed,
+			persisted,
+			compactionCheckpointStatus,
+			compactionEventObserved,
+			summaryCount,
+		});
 		return completed ? 0 : 1;
 	} catch {
 		writeSummary("unavailable");
@@ -344,15 +361,22 @@ function isObject(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function writeSummary(status, value = false) {
+function writeSummary(status, checks = {}) {
 	process.stdout.write(`${JSON.stringify({
 		protocol: "responses",
 		status,
-		compacted: value,
-		memory_visible: value,
-		resumed: value,
-		persisted: value,
+		compacted: checks.compacted === true,
+		memory_visible: checks.memoryVisible === true,
+		resumed: checks.resumed === true,
+		persisted: checks.persisted === true,
 		python_started: false,
+		...(status === "failed" ? {
+			compaction_checkpoint: typeof checks.compactionCheckpointStatus === "string"
+				? checks.compactionCheckpointStatus
+				: "unknown",
+			compaction_event: checks.compactionEventObserved === true,
+			summary_count: Number.isSafeInteger(checks.summaryCount) ? checks.summaryCount : 0,
+		} : {}),
 	})}\n`);
 }
 

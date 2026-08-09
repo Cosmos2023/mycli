@@ -1,17 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import process from "node:process";
-import { resolveConfig } from "../../packages/config/src/index.ts";
+import { resolveConfig } from "../../backend/packages/config/src/index.ts";
 import {
 	discoverHookConfig,
 	discoverMcpConfig,
 	discoverPlugins,
 	SkillRegistry,
-	SubagentProfileRegistry,
-} from "../../packages/integrations/src/index.ts";
-import { SQLiteSessionStore } from "../../packages/storage/src/index.ts";
-import { doctorResponseFromReport } from "../../apps/mycli/src/management/doctor/runner.ts";
-import { renderManagementResponse } from "../../apps/mycli/src/management/render.ts";
+} from "../../backend/packages/integrations/src/index.ts";
+import { SQLiteSessionStore } from "../../backend/packages/storage/src/index.ts";
+import { doctorResponseFromReport } from "../../backend/apps/mycli/src/management/doctor/runner.ts";
+import { renderManagementResponse } from "../../backend/apps/mycli/src/management/render.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -56,7 +55,6 @@ async function collect(command: Command): Promise<JsonObject> {
 		sharedRepoRoot: `${workspace}/.agents/skills`,
 		repoRoot: `${workspace}/.mycli/skills`,
 	});
-	const profiles = await SubagentProfileRegistry.discover({ homeDir: home, workspaceRoot: workspace });
 	const hooks = await discoverHookConfig({ homeDir: home, workspaceRoot: workspace });
 	const mcp = await discoverMcpConfig({ homeDir: home, workspaceRoot: workspace, env: {} });
 	const plugins = await discoverPlugins({ homeDir: home, workspaceRoot: workspace });
@@ -90,15 +88,7 @@ async function collect(command: Command): Promise<JsonObject> {
 			thinking_enabled: config.thinkingEnabled,
 		},
 		skills: skills.list().map((item) => ({ name: item.name, source: item.sourceKind })),
-		profiles: profiles.records()
-			.filter((item) => item.id === "parity-agent")
-			.map((item) => ({
-				id: item.id,
-				source: item.sourceKind,
-				status: item.status,
-				allowed_tools: [...(item.profile?.allowedTools ?? [])],
-				budget: { ...(item.profile?.budget ?? {}) },
-			})),
+		profiles: [],
 		hooks: hooks.hooks.map((item) => ({
 			id: item.hookId,
 			source: item.scope,
