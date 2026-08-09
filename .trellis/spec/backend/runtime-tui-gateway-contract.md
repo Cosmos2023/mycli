@@ -2890,6 +2890,9 @@ if (!settled && workerIsUnresponsive) {
 - Assistant streaming reuses existing Markdown components and marks only the owning container
   dirty. Recursive invalidation is reserved for theme or layout invalidation because it discards
   the Markdown token cache.
+- Active assistant blocks update their retained component directly. They must not serialize the
+  complete block to build a change signature on each text or reasoning delta; that allocation grows
+  linearly with the accumulated response before Markdown rendering even begins.
 - Markdown caches top-level rendered token chunks. Reuse requires the same token type, raw source,
   next-token type, width, and reference-sensitive token context. Appending a reference-link
   definition must be able to change an earlier `[label][id]` token even when its raw source is
@@ -2924,6 +2927,7 @@ if (!settled && workerIsUnresponsive) {
 - Bad: cache one tail without including the remaining-row budget in its identity.
 - Bad: retain measured editor/status/footer lines across root frames; cursor, timer, and input state
   can change without a parent container rebuild.
+- Bad: call `JSON.stringify` on the accumulated assistant block for every streaming delta.
 
 ### 6. Tests Required
 
@@ -2936,6 +2940,8 @@ if (!settled && workerIsUnresponsive) {
   bounded path never calls full render.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
   render in the next frame, and no cache reuse for direct container calls.
+- Assistant streaming tests assert the retained component updates without consulting the generic
+  serialized block-signature path.
 - Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
   any tail-rendering change.
 

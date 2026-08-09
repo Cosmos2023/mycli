@@ -1434,6 +1434,26 @@ export class MycliShellRuntime {
 	}
 
 	private syncChatBlock(block: ProjectedTranscriptBlock, cached?: ChatBlockComponent): ChatBlockComponent {
+		if (block.kind === "message" && block.message.role === "assistant") {
+			if (
+				cached?.kind === "message" &&
+				cached.role === "assistant" &&
+				cached.component instanceof AssistantMessageComponent
+			) {
+				cached.component.updateMessage(
+					block.message.text,
+					block.message.thinking,
+					block.message.thinkingHidden ?? true,
+				);
+				return cached;
+			}
+			return {
+				kind: "message",
+				signature: "assistant",
+				role: "assistant",
+				component: this.createMessageComponent(block.message),
+			};
+		}
 		const signature = this.blockSignature(block);
 		if (cached?.kind === block.kind && cached.signature === signature) return cached;
 		if (cached?.kind === block.kind) {
@@ -1462,17 +1482,6 @@ export class MycliShellRuntime {
 				cached.component instanceof CommandResultComponent
 			) {
 				cached.component.updateResult(block.commandResult);
-				cached.signature = signature;
-				return cached;
-			}
-			if (
-				block.kind === "message" &&
-				block.message.role === "assistant" &&
-				cached.kind === "message" &&
-				cached.role === "assistant" &&
-				cached.component instanceof AssistantMessageComponent
-			) {
-				cached.component.updateMessage(block.message.text, block.message.thinking, block.message.thinkingHidden ?? true);
 				cached.signature = signature;
 				return cached;
 			}

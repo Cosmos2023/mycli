@@ -2065,6 +2065,21 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 	};
 	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
 	const component = runtime.chatContainer.children[0];
+	const runtimeInternals = runtime as unknown as {
+		blockSignature(block: unknown): string;
+	};
+	const blockSignature = runtimeInternals.blockSignature.bind(runtime);
+	runtimeInternals.blockSignature = (block) => {
+		if (
+			typeof block === "object" &&
+			block !== null &&
+			"kind" in block &&
+			block.kind === "message"
+		) {
+			throw new Error("assistant updates must not serialize the transcript block");
+		}
+		return blockSignature(block);
+	};
 
 	runtime.setState(
 		{
