@@ -163,6 +163,57 @@ test("renderer coalesces updates while terminal output is backpressured", async 
 	assert.equal(terminal.visibleLines()[0], "latest state");
 });
 
+test("streaming repaint does not resend a stable line prefix", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 80, rows: 6 });
+	const prefix = "stable transcript prefix: ";
+	const component = new MutableLines([`${prefix}working`]);
+	const ui = new TUI(terminal);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	component.setLines([`${prefix}working.`]);
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 1);
+	assert.doesNotMatch(terminal.writes[0]!, new RegExp(prefix, "u"));
+	assert.equal(terminal.visibleLines()[0], `${prefix}working.`);
+});
+
+test("native scrollback frame uses cell patches for streaming updates", async (t) => {
+	const terminal = new HeadlessTerminal({
+		columns: 80,
+		rows: 4,
+		nativeScrollback: true,
+	});
+	const prefix = "stable native prefix: ";
+	const component = new MutableLines([`${prefix}working`]);
+	const ui = new TUI(terminal);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.insertHistoryBeforeNextFrame(["committed history"]);
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	component.setLines([`${prefix}working.`]);
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 1);
+	assert.doesNotMatch(terminal.writes[0]!, new RegExp(prefix, "u"));
+	assert.equal(terminal.visibleLines()[0], `${prefix}working.`);
+});
+
 test("shortening CJK and emoji content leaves no orphaned wide cells", async (t) => {
 	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
 	const component = new MutableLines(["处理中：北京 🚄 上海"]);

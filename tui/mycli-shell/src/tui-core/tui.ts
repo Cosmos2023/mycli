@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.ts";
+import { diffTerminalLine, TERMINAL_SEGMENT_RESET } from "./screen-buffer.ts";
 import type { Terminal } from "./terminal.ts";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
@@ -1053,14 +1054,11 @@ export class TUI extends Container {
 		return result;
 	}
 
-	private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
-
 	private applyLineResets(lines: string[]): string[] {
-		const reset = TUI.SEGMENT_RESET;
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			if (!isImageLine(line)) {
-				lines[i] = normalizeTerminalOutput(line) + reset;
+				lines[i] = normalizeTerminalOutput(line) + TERMINAL_SEGMENT_RESET;
 			}
 		}
 		return lines;
@@ -1146,7 +1144,7 @@ export class TUI extends Container {
 		const afterPad = Math.max(0, afterTarget - base.afterWidth);
 
 		// Compose result
-		const r = TUI.SEGMENT_RESET;
+		const r = TERMINAL_SEGMENT_RESET;
 		const result =
 			base.before +
 			" ".repeat(beforePad) +
@@ -1301,8 +1299,16 @@ export class TUI extends Container {
 		let finalCursorRow = this.hardwareCursorRow;
 		for (let row = 0; row < height; row++) {
 			if (previousFrame[row] === frameLines[row]) continue;
-			buffer += `\x1b[${row + 1};1H\x1b[2K${frameLines[row] ?? ""}`;
-			finalCursorRow = row;
+			const previousLine = previousFrame[row] ?? "";
+			const nextLine = frameLines[row] ?? "";
+			const linePatch = diffTerminalLine(previousLine, nextLine, width);
+			if (linePatch === null) {
+				buffer += `\x1b[${row + 1};1H\x1b[2K${nextLine}`;
+				finalCursorRow = row;
+			} else if (linePatch.content) {
+				buffer += `\x1b[${row + 1};${linePatch.column + 1}H${linePatch.content}`;
+				finalCursorRow = row;
+			}
 		}
 		const frameCursor = cursorPos && cursorPos.row >= frameStart
 			? { row: cursorPos.row - frameStart, col: cursorPos.col }
@@ -1611,7 +1617,6 @@ export class TUI extends Container {
 		const renderEnd = Math.min(lastChanged, newLines.length - 1);
 		for (let i = firstChanged; i <= renderEnd; i++) {
 			if (i > firstChanged) buffer += "\r\n";
-			buffer += "\x1b[2K"; // Clear current line
 			const line = newLines[i];
 			const isImage = isImageLine(line);
 			if (!isImage && visibleWidth(line) > width) {
@@ -1642,7 +1647,13 @@ export class TUI extends Container {
 				].join("\n");
 				throw new Error(errorMsg);
 			}
-			buffer += line;
+			const previousLine = this.previousLines[i];
+			const linePatch = previousLine === undefined ? null : diffTerminalLine(previousLine, line, width);
+			if (linePatch === null) {
+				buffer += `\x1b[2K${line}`;
+			} else if (linePatch.content) {
+				buffer += `\x1b[${linePatch.column + 1}G${linePatch.content}`;
+			}
 		}
 
 		// Track where cursor ended up after rendering

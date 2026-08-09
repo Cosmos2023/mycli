@@ -1055,6 +1055,53 @@ export function sliceWithWidth(
 	return { text: result, width: resultWidth };
 }
 
+export interface TerminalCellSnapshot {
+	readonly symbol: string;
+	readonly width: number;
+	readonly style: string;
+	readonly continuation: boolean;
+}
+
+/** Convert a styled line into terminal cells for semantic frame diffing. */
+export function snapshotTerminalCells(line: string): TerminalCellSnapshot[] | null {
+	const cells: TerminalCellSnapshot[] = [];
+	const tracker = new AnsiCodeTracker();
+	let i = 0;
+	while (i < line.length) {
+		const ansi = extractAnsiCode(line, i);
+		if (ansi) {
+			const hyperlink = parseOsc8Hyperlink(ansi.code);
+			if (hyperlink === undefined && !/^\x1b\[[\d;]*m$/.test(ansi.code)) return null;
+			tracker.process(ansi.code);
+			i += ansi.length;
+			continue;
+		}
+		if (line[i] === "\x1b") return null;
+
+		let textEnd = i;
+		while (textEnd < line.length && line[textEnd] !== "\x1b") textEnd++;
+		for (const { segment } of graphemeSegmenter.segment(line.slice(i, textEnd))) {
+			const width = graphemeWidth(segment);
+			if (width === 0) {
+				for (let index = cells.length - 1; index >= 0; index--) {
+					const cell = cells[index]!;
+					if (cell.continuation) continue;
+					cells[index] = { ...cell, symbol: cell.symbol + segment };
+					break;
+				}
+				continue;
+			}
+			const style = tracker.getActiveCodes();
+			cells.push({ symbol: segment, width, style, continuation: false });
+			for (let column = 1; column < width; column++) {
+				cells.push({ symbol: "", width: 0, style, continuation: true });
+			}
+		}
+		i = textEnd;
+	}
+	return cells;
+}
+
 // Pooled tracker instance for extractSegments (avoids allocation per call)
 const pooledStyleTracker = new AnsiCodeTracker();
 
