@@ -191,17 +191,17 @@ test("keeps the prior native Chat wire messages as an exact prefix", async () =>
 	assert.deepEqual(secondMessages.slice(0, firstMessages.length), firstMessages);
 });
 
-test("keeps dynamic DeepSeek developer context at its chronological position", async () => {
+test("keeps dynamic DeepSeek developer context in the append-only user suffix", async () => {
 	const ChatProvider = Reflect.get(providers, "ChatProvider") as ChatProviderConstructor | undefined;
 	assert.equal(typeof ChatProvider, "function");
-	let captured: Record<string, unknown> | undefined;
+	const captured: Record<string, unknown>[] = [];
 	const provider = new ChatProvider!({
 		providerAdapter: "deepseek",
 		client: {
 			create: async (body) => {
-				captured = body;
+				captured.push(body);
 				return events([{
-					id: "chatcmpl-deepseek-context",
+					id: `chatcmpl-deepseek-context-${captured.length}`,
 					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
 				}]);
 			},
@@ -215,18 +215,33 @@ test("keeps dynamic DeepSeek developer context at its chronological position", a
 		items: [
 			{ type: "user", text: "U1" },
 			{ type: "assistant", text: "A1" },
+		],
+	}, { signal: new AbortController().signal }));
+	await collect(provider.stream({
+		...request(),
+		provider: "deepseek",
+		developerInstructions: ["durable policy"],
+		items: [
+			{ type: "user", text: "U1" },
+			{ type: "assistant", text: "A1" },
 			contextItem("updated permission", "developer"),
 			{ type: "user", text: "U2" },
 		],
 	}, { signal: new AbortController().signal }));
 
-	assert.deepEqual(captured?.messages, [
+	const firstMessages = captured[0]?.messages as readonly unknown[];
+	const secondMessages = captured[1]?.messages as readonly Record<string, unknown>[];
+	assert.deepEqual(firstMessages, [
 		{ role: "system", content: "You are mycli.\n\ndurable policy" },
 		{ role: "user", content: "U1" },
 		{ role: "assistant", content: "A1" },
-		{ role: "system", content: "updated permission" },
+	]);
+	assert.deepEqual(secondMessages.slice(0, firstMessages.length), firstMessages);
+	assert.deepEqual(secondMessages.slice(firstMessages.length), [
+		{ role: "user", content: "updated permission" },
 		{ role: "user", content: "U2" },
 	]);
+	assert.equal(secondMessages.filter((message) => message.role === "system").length, 1);
 });
 
 test("preserves DeepSeek reasoning content across a thinking tool continuation", async () => {

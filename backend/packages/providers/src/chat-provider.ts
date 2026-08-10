@@ -120,7 +120,11 @@ function requestBody(
 		messages: [
 			...instructionMessages(request, developerInstructionMode),
 			...(request.items
-				? request.items.map((item) => chatMessage(item, developerInstructionMode))
+				? request.items.map((item) => chatMessage(
+					item,
+					developerInstructionMode,
+					providerAdapter,
+				))
 				: request.messages.map((message) => ({
 					role: message.role,
 					content: message.content,
@@ -162,6 +166,7 @@ function instructionMessages(
 function chatMessage(
 	item: CanonicalConversationItem,
 	developerInstructionMode: "native" | "merge_into_system",
+	providerAdapter: "default" | "deepseek",
 ): Readonly<Record<string, unknown>> {
 	switch (item.type) {
 		case "user":
@@ -170,9 +175,7 @@ function chatMessage(
 			return { role: "assistant", content: item.text };
 		case "context":
 			return {
-				role: item.metadata.role === "developer"
-					? developerInstructionMode === "native" ? "developer" : "system"
-					: "user",
+				role: chatContextRole(item.metadata.role, developerInstructionMode, providerAdapter),
 				content: item.text,
 			};
 		case "assistant_tool_calls":
@@ -191,6 +194,18 @@ function chatMessage(
 		case "tool_result":
 			return { role: "tool", tool_call_id: item.callId, content: item.output };
 	}
+}
+
+function chatContextRole(
+	role: "developer" | "user" | undefined,
+	developerInstructionMode: "native" | "merge_into_system",
+	providerAdapter: "default" | "deepseek",
+): "developer" | "system" | "user" {
+	if (role !== "developer") return "user";
+	// DeepSeek folds system messages into its cache identity. Keep changing timeline context at the
+	// append-only suffix; stable developer instructions remain in the initial system message.
+	if (providerAdapter === "deepseek") return "user";
+	return developerInstructionMode === "native" ? "developer" : "system";
 }
 
 function chatUserContent(

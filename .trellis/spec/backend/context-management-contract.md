@@ -105,6 +105,10 @@
   - Responses: `lane=responses`, optional future `prompt_cache_key` as
     wire-only hint.
   - Chat Completions: `lane=chat_completions`, stable transcript prefix.
+    DeepSeek keeps stable instructions in the initial `system` message and projects later
+    developer-authority timeline updates as bounded user-context messages at their chronological
+    suffix. Runtime policy remains authoritative; adding a dynamic update must not add another
+    DeepSeek `system` message or rewrite the prior wire prefix.
   - Anthropic Messages: `lane=anthropic_messages`, optional future
     `cache_control` as wire-only hint.
 - Compact policy diagnostics must state that all providers use the canonical
@@ -162,7 +166,6 @@
 - Anthropic `cache_control` and OpenAI `prompt_cache_key` must not be persisted
   into canonical messages or request fragments; they are provider wire/request
   hints only.
-
 ### 5. Good/Base/Bad Cases
 
 - Good: `.mycli.md` at workspace root is fenced as `workspace-context` with
@@ -619,6 +622,8 @@ baseline_metadata = {
   bootstrapPrefixSha256, timelineSha256, commonPrefixItemCount)`
 - Storage reader:
   `ModelInputLedgerStore.loadProviderInputTimelineEvents(sessionId)`
+- Chat provider projection:
+  `ChatProvider.stream(request: ProviderRequest, options: ProviderStreamOptions) -> AsyncIterable<ProviderEvent>`
 
 ### 3. Contracts
 
@@ -638,10 +643,11 @@ baseline_metadata = {
   were appended. Timeline growth changes `timelineSha256`, while adjacent-request diagnostics record
   the exact `commonPrefixItemCount`.
 - Responses and native Chat keep dynamic developer context at its timeline position. DeepSeek maps
-  such an item to `system` at that same position; only bootstrap developer instructions join the
-  leading system prefix. Anthropic has only top-level system authority, so it promotes developer
-  context to `system`; that authority-preserving change may reset the system prefix, while ordinary
-  contextual-user turns still preserve the message prefix.
+  such an item to fenced `user` context at that same position; only bootstrap developer
+  instructions join the leading system prefix. Runtime policy remains authoritative. Anthropic has
+  only top-level system authority, so it promotes developer context to `system`; that
+  authority-preserving change may reset the system prefix, while ordinary contextual-user turns
+  still preserve the message prefix.
 - Prompt-cache prefix stability does not depend on `previous_response_id`. Continuation is a separate
   capability-gated optimization; HTTP-compatible Responses projection replays canonical input and
   omits `previous_response_id` unless the selected transport explicitly supports it.
@@ -661,8 +667,19 @@ baseline_metadata = {
 - Any timeline/manifest/request/prepared write fails -> roll back the complete provider step and do
   not call the provider.
 - Reopen or resume -> load immutable events, select the latest window, and continue its exact prefix.
+- DeepSeek dynamic developer-context change -> preserve every prior wire message as an exact
+  prefix, append the update with `role="user"`, and retain exactly one initial `system` message.
 
-### 5. Tests Required
+### 5. Good/Base/Bad Cases
+
+- Good: a DeepSeek permission change appends a fenced `user` context message after the complete
+  previous wire request and before the current user request.
+- Base: native Chat continues to project dynamic developer context with `role="developer"` at its
+  chronological timeline position.
+- Bad: projecting a later DeepSeek permission update as another `system` message, which changes
+  the provider's system-prefix cache identity.
+
+### 6. Tests Required
 
 - Projector tests for strict extension, context update, tombstone, all window boundaries, and
   contiguous tool results.
@@ -674,6 +691,36 @@ baseline_metadata = {
   Anthropic message-prefix stability.
 - Continuation tests proving protocol/capability gating and prompt-cache compatibility without
   `previous_response_id`.
+- DeepSeek Chat projection tests proving dynamic developer-context updates preserve the complete
+  prior wire-message prefix and do not add a second `system` message.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```text
+system: stable instructions
+user: U1
+assistant: A1
+system: <permissions>updated permission profile</permissions>
+user: U2
+```
+
+Adding a changed permission update as a second DeepSeek `system` message invalidates the
+provider's system-prefix cache identity.
+
+#### Correct
+
+```text
+system: stable instructions
+user: U1
+assistant: A1
+user: <permissions>updated permission profile</permissions>
+user: U2
+```
+
+Keep one stable initial `system` message, preserve the complete previous wire request as an exact
+prefix, and append the fenced permission context chronologically before the current user request.
 
 ## Scenario: Recovery Diagnostics And Provider Replay Recovery
 
