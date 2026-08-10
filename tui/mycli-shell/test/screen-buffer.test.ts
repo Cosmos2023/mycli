@@ -11,18 +11,48 @@ test("terminal line diff preserves a stable prefix", () => {
 	assert.match(patch.content, /\./u);
 });
 
+test("terminal line diff preserves a stable suffix", () => {
+	const patch = diffTerminalLine(
+		"status: ◒ Working (24s · esc to interrupt)",
+		"status: ◐ Working (24s · esc to interrupt)",
+		80,
+	);
+
+	assert.ok(patch);
+	assert.equal(patch.column, 8);
+	assert.match(patch.content, /◐/u);
+	assert.doesNotMatch(patch.content, /Working/u);
+	assert.doesNotMatch(patch.content, /\x1b\[K/u);
+});
+
+test("terminal line diff preserves a stable suffix after a wide cell", () => {
+	const patch = diffTerminalLine("状态：北京 → 上海", "状态：南京 → 上海", 40);
+
+	assert.ok(patch);
+	assert.equal(patch.column, 6);
+	assert.match(patch.content, /南/u);
+	assert.doesNotMatch(patch.content, /京|上海/u);
+	assert.doesNotMatch(patch.content, /\x1b\[K/u);
+});
+
 test("terminal line diff detects style-only cell changes", () => {
-	const patch = diffTerminalLine("\x1b[31mred\x1b[0m", "\x1b[32mred\x1b[0m", 20);
+	const patch = diffTerminalLine(
+		"\x1b[31mred\x1b[0m stable",
+		"\x1b[32mred\x1b[0m stable",
+		20,
+	);
 	assert.ok(patch);
 	assert.equal(patch.column, 0);
 	assert.match(patch.content, /\x1b\[32mred/u);
+	assert.doesNotMatch(patch.content, /stable|\x1b\[K/u);
 });
 
 test("terminal line diff backs up across a wide-cell continuation", () => {
 	const patch = diffTerminalLine("A你B", "A好B", 20);
 	assert.ok(patch);
 	assert.equal(patch.column, 1);
-	assert.match(patch.content, /好B/u);
+	assert.match(patch.content, /好/u);
+	assert.doesNotMatch(patch.content, /B|\x1b\[K/u);
 });
 
 test("terminal line diff skips semantically equal SGR encodings", () => {

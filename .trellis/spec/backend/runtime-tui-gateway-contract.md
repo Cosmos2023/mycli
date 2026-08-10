@@ -3545,6 +3545,12 @@ that the cached header plus final-row source boundary still forms exactly one co
 - The cache uses bounded least-recently-used eviction and retains both valid snapshots and `null`
   fallback results. Image lines bypass semantic snapshotting, while unsupported control sequences
   continue to return `null` and trigger a full-line repaint.
+- Semantic line diffing preserves both the equal prefix and equal suffix. It emits only the middle
+  changed cell interval, expands either boundary rather than splitting a wide-cell continuation,
+  and replays the active ANSI/OSC state required by the replacement cells.
+- A middle interval ends with the terminal segment reset but does not erase the stable suffix. When
+  the changed interval reaches the new semantic line end, it additionally emits `EL` so shortened
+  content cannot leave stale cells behind.
 
 ### 4. Validation & Error Matrix
 
@@ -3560,6 +3566,9 @@ that the cached header plus final-row source boundary still forms exactly one co
 | Positive safe-integer snapshot bound | Retain no more than that many exact line snapshots |
 | Invalid, non-positive, or unsafe snapshot bound | Fall back to the finite default bound |
 | Image line or unsupported control sequence | Bypass/fail semantic diffing and repaint the line |
+| Equal semantic suffix after changed cells | Leave suffix cells untouched; do not emit `EL` |
+| Changed interval reaches new line end | Reset styles and emit `EL` to clear any stale tail |
+| Diff boundary intersects a wide cell | Expand to the complete grapheme cell span |
 
 ### 5. Good/Base/Bad Cases
 
@@ -3567,10 +3576,14 @@ that the cached header plus final-row source boundary still forms exactly one co
 - Base: one streamed token changes a suffix and uses the existing ANSI-safe cell patch.
 - Good: a streamed line's next snapshot is reused as the previous snapshot on the following frame;
   old snapshots are evicted at the configured bound.
+- Good: a one-cell spinner change before `Working (24s · esc to interrupt)` writes only the spinner
+  cell and terminal resets; the stable suffix remains in the terminal buffer.
 - Bad: write `CSI ?2026h`, cursor-hide, and `CSI ?2026l` for every unchanged state event.
 - Bad: suppress a cursor-only move because the line bytes are equal; IME placement becomes stale.
 - Bad: include `maxWidth` in the snapshot key or use an unbounded map, causing duplicate parsing or
   memory growth without changing terminal-cell semantics.
+- Bad: append `EL` to every middle-of-line patch; it erases the suffix that the diff intentionally
+  retained and produces visible flicker until another write reconstructs it.
 
 ### 6. Tests Required
 
@@ -3597,6 +3610,9 @@ that the cached header plus final-row source boundary still forms exactly one co
 - Unit-test retained line snapshots with an injectable snapshot function: chained frame diffs reuse
   the shared line, configured bounds evict the least-recently-used line, and invalid bounds retain
   the finite default behavior.
+- Unit-test minimal changed intervals for a spinner, style-only cells, and CJK wide cells. Assert the
+  patch omits the stable suffix and `EL`; a headless terminal integration test must still converge
+  to the complete expected line.
 
 ### 7. Wrong vs Correct
 
@@ -3628,6 +3644,20 @@ const linePatch = this.lineDiffer.diff(previousLine, nextLine, width);
 
 The retained differ is owned by the `TUI`, shared by both rendering modes, and bounded independently
 of terminal width.
+
+#### Wrong
+
+```typescript
+content = `${reset}${replacement}${reset}\x1b[K`;
+```
+
+#### Correct
+
+```typescript
+content = `${reset}${replacement}${reset}${changedThroughLineEnd ? "\x1b[K" : ""}`;
+```
+
+Middle patches preserve equal suffix cells. Tail patches clear through the terminal line end.
 
 #### Wrong
 

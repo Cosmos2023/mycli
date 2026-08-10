@@ -300,6 +300,29 @@ test("streaming repaint does not resend a stable line prefix", async (t) => {
 	assert.equal(terminal.visibleLines()[0], `${prefix}working.`);
 });
 
+test("spinner repaint does not resend a stable line suffix", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 80, rows: 6 });
+	const suffix = " Working (24s · esc to interrupt)";
+	const component = new MutableLines([`◒${suffix}`]);
+	const ui = new TUI(terminal);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	component.setLines([`◐${suffix}`]);
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 1);
+	assert.doesNotMatch(terminal.writes[0]!, /Working/u);
+	assert.equal(terminal.visibleLines()[0], `◐${suffix}`);
+});
+
 test("native scrollback frame uses cell patches for streaming updates", async (t) => {
 	const terminal = new HeadlessTerminal({
 		columns: 80,

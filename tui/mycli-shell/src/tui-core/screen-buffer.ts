@@ -54,7 +54,7 @@ export class TerminalLineDiffer {
 	}
 }
 
-/** Build an ANSI-safe suffix patch, or return null when the line needs a full repaint. */
+/** Build an ANSI-safe cell patch, or return null when the line needs a full repaint. */
 export function diffTerminalLine(
 	previousLine: string,
 	nextLine: string,
@@ -85,11 +85,24 @@ function diffTerminalSnapshots(
 	while (column > 0 && (previous[column]?.continuation || next[column]?.continuation)) {
 		column--;
 	}
-	const availableWidth = Math.max(0, maxWidth - column);
-	const suffix = sliceWithWidth(nextLine, column, availableWidth, true).text;
+
+	let endColumn = comparedLength;
+	while (endColumn > column && cellsEqual(previous[endColumn - 1], next[endColumn - 1])) {
+		endColumn--;
+	}
+	while (
+		endColumn < comparedLength &&
+		(previous[endColumn]?.continuation || next[endColumn]?.continuation)
+	) {
+		endColumn++;
+	}
+
+	const patchWidth = Math.max(0, Math.min(endColumn, maxWidth) - column);
+	const replacement = sliceWithWidth(nextLine, column, patchWidth, true).text;
+	const clearTail = endColumn >= next.length ? "\x1b[K" : "";
 	return {
 		column,
-		content: `${TERMINAL_SEGMENT_RESET}${suffix}${TERMINAL_SEGMENT_RESET}\x1b[K`,
+		content: `${TERMINAL_SEGMENT_RESET}${replacement}${TERMINAL_SEGMENT_RESET}${clearTail}`,
 	};
 }
 
