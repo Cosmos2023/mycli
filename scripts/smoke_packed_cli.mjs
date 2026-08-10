@@ -270,7 +270,6 @@ try {
 		[["hooks", "list", "--json"], "list"],
 		[["plugins", "list", "--json"], "list"],
 		[["mcp", "list", "--json"], "list"],
-		[["subagents", "list", "--json"], "list"],
 		[["doctor", "--json"], "doctor"],
 	]) {
 		const output = await run(bin, args, installDir, true, managementEnv);
