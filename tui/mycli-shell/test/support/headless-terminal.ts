@@ -12,12 +12,13 @@ export interface HeadlessTerminalOptions {
 	rows?: number;
 	scrollback?: number;
 	nativeScrollback?: boolean;
+	alternateScreen?: boolean;
 }
 
 /** A real ANSI terminal core for renderer integration tests. */
 export class HeadlessTerminal implements Terminal {
 	readonly kittyProtocolActive = false;
-	readonly alternateScreen = false;
+	readonly alternateScreen: boolean;
 	nativeScrollback: boolean;
 	readonly writes: string[] = [];
 	private _outputBackpressured = false;
@@ -29,6 +30,7 @@ export class HeadlessTerminal implements Terminal {
 	private writeTail: Promise<void> = Promise.resolve();
 
 	constructor(options: HeadlessTerminalOptions = {}) {
+		this.alternateScreen = options.alternateScreen ?? false;
 		this.nativeScrollback = options.nativeScrollback ?? false;
 		this.emulator = new XtermHeadless({
 			cols: options.columns ?? 80,
@@ -108,6 +110,11 @@ export class HeadlessTerminal implements Terminal {
 		return Array.from({ length: buffer.baseY }, (_, row) =>
 			buffer.getLine(row)?.translateToString(true) ?? "",
 		);
+	}
+
+	cursorPosition(): { row: number; column: number } {
+		const buffer = this.emulator.buffer.active;
+		return { row: buffer.cursorY, column: buffer.cursorX };
 	}
 
 	moveBy(lines: number): void {

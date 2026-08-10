@@ -19,6 +19,7 @@
     "mycli": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts",
     "pretest": "npm run build",
     "smoke:package": "node scripts/smoke_packed_cli.mjs",
+    "smoke:tui-pty": "npm run build --workspace @mycli/tools && node scripts/smoke_tui_pty.mjs",
     "test": "npm run test --workspaces --if-present",
     "test:m2": "npm run build && node --import tsx --test backend/apps/mycli/test/node-backend.integration.test.ts backend/apps/mycli/test/m2-smoke-runner.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m2_parity.py -q",
     "test:m3": "npm run build && node --import tsx --test backend/apps/mycli/test/m3-read-turn.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m3_parity.py -q",

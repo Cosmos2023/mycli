@@ -3371,6 +3371,19 @@ that the cached header plus final-row source boundary still forms exactly one co
 - Repeat the same assertion after native scrollback has anchored a committed history row.
 - Render an identical line with a moved `CURSOR_MARKER` and assert one synchronized absolute-column
   update plus unchanged visible cells.
+- Run an xterm-headless native-scrollback stress sequence that overlaps debounced resize, assistant
+  tail replacement, editor cursor movement, subagent chrome updates, and output backpressure. Assert
+  the final frame and cursor are in bounds, every visible row fits the terminal width, and no
+  coalesced intermediate assistant text leaks into the visible screen or scrollback.
+- Repeat a blocked multi-resize burst in alternate-screen mode. It must converge to the latest frame
+  with one viewport clear, no host-scrollback clear, no intermediate text write, and an in-bounds
+  cursor.
+- Keep a separate native `node-pty` smoke for the real `ProcessTerminal` path. Resize the child PTY
+  during assistant/editor/subagent streaming, require the final content, and assert synchronized
+  output plus bracketed-paste, keyboard-protocol, and cursor cleanup before the child exits.
+  Reconstruct complete UI text with an xterm cell buffer that receives output and resize operations
+  in order. The raw PTY stream is valid for control-sequence assertions only because a cell diff may
+  preserve an unchanged prefix and emit just the replacement suffix.
 - Existing atomic-frame, output-backpressure, wide-cell, resize, suspend/resume, and terminal
   cleanup tests remain green.
 
@@ -3388,6 +3401,23 @@ terminal.write(`\x1b[?2026h${cursorHide}\x1b[?2026l`);
 if (frameChanged) writeFrame();
 else positionHardwareCursorOnlyWhenChanged();
 ```
+
+#### Wrong
+
+```typescript
+assert.match(rawPtyOutput, /pty-ready/);
+```
+
+#### Correct
+
+```typescript
+await replayPendingOutput();
+terminal.resize(columns, rows);
+assert.match(readTerminalCells(terminal), /pty-ready/);
+```
+
+The renderer may transform `pty-draft` into `pty-ready` by emitting only `ready`; only the replayed
+cell buffer represents the complete terminal text.
 
 ## Scenario: Unix TUI Job-Control Suspend And Resume
 
