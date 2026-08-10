@@ -30,6 +30,26 @@ import {
 } from "../src/adapters/runtime-state.ts";
 import { canonicalToolName } from "../src/components/tool-display.ts";
 
+function countedTranscriptWithTail(tail: RuntimeShellState["transcript"][number]): {
+	transcript: RuntimeShellState["transcript"];
+	countedTranscript: RuntimeShellState["transcript"];
+	indexedReads: () => number;
+} {
+	const transcript: RuntimeShellState["transcript"] = Array.from(
+		{ length: 9_999 },
+		(_, index) => ({ id: `user-${index}`, type: "user", text: `message ${index}`, metadata: {} }),
+	);
+	transcript.push(tail);
+	let reads = 0;
+	const countedTranscript = new Proxy(transcript, {
+		get(target, property, receiver) {
+			if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) reads += 1;
+			return Reflect.get(target, property, receiver);
+		},
+	});
+	return { transcript, countedTranscript, indexedReads: () => reads };
+}
+
 test("runtime state projector reuses transcript snapshots for non-transcript updates", () => {
 	const projector = new RuntimeStateProjector();
 	const state: RuntimeShellState = {
@@ -78,6 +98,76 @@ test("runtime state projector reads only a bounded suffix for a 10000-item tail 
 	assert.equal(updated.transcript?.[5_000], initial.transcript?.[5_000]);
 	assert.equal(updated.tools, initial.tools);
 	assert.equal(updated.bash, initial.bash);
+});
+
+test("assistant delta replaces the active tail with one transcript snapshot", () => {
+	const { transcript, countedTranscript, indexedReads } = countedTranscriptWithTail({
+		id: "assistant-active",
+		type: "assistant_stream",
+		text: "before",
+		metadata: {},
+	});
+	const state: RuntimeShellState = {
+		...initialRuntimeState(),
+		activeAssistantItemId: "assistant-active",
+		transcript: countedTranscript,
+	};
+
+	const updated = reduceRuntimeEvent(state, "message.delta", { text: " after" });
+
+	assert.equal(updated.transcript.at(-1)?.text, "before after");
+	assert.equal(updated.transcript[5_000], transcript[5_000]);
+	assert.equal(transcript.at(-1)?.text, "before");
+	assert.ok(
+		indexedReads() <= transcript.length + 4,
+		`expected one transcript snapshot, received ${indexedReads()} indexed reads`,
+	);
+});
+
+test("assistant delta reopens a final active tail without scanning history", () => {
+	const { transcript, countedTranscript, indexedReads } = countedTranscriptWithTail({
+		id: "assistant-active",
+		type: "assistant_final",
+		text: "before",
+		metadata: {},
+	});
+	const state: RuntimeShellState = {
+		...initialRuntimeState(),
+		activeAssistantItemId: "assistant-active",
+		transcript: countedTranscript,
+	};
+
+	const updated = reduceRuntimeEvent(state, "message.delta", { text: " after" });
+
+	assert.equal(updated.transcript.at(-1)?.type, "assistant_stream");
+	assert.equal(updated.transcript.at(-1)?.text, "before after");
+	assert.ok(
+		indexedReads() <= transcript.length + 4,
+		`expected one transcript snapshot, received ${indexedReads()} indexed reads`,
+	);
+});
+
+test("reasoning delta replaces the active tail with one transcript snapshot", () => {
+	const { transcript, countedTranscript, indexedReads } = countedTranscriptWithTail({
+		id: "reasoning-active",
+		type: "reasoning",
+		text: "before",
+		metadata: {},
+	});
+	const state: RuntimeShellState = {
+		...initialRuntimeState(),
+		transcript: countedTranscript,
+	};
+
+	const updated = reduceRuntimeEvent(state, "reasoning.delta", { text: "after" });
+
+	assert.equal(updated.transcript.at(-1)?.text, "after");
+	assert.equal(updated.transcript[5_000], transcript[5_000]);
+	assert.equal(transcript.at(-1)?.text, "before");
+	assert.ok(
+		indexedReads() <= transcript.length + 4,
+		`expected one transcript snapshot, received ${indexedReads()} indexed reads`,
+	);
 });
 
 test("runtime state projector appends projected tool arrays while retaining message blocks", () => {

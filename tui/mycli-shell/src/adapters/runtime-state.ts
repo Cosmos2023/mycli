@@ -2914,15 +2914,35 @@ function nearbyReasoningFor(itemIndex: number, items: RuntimeTranscriptItem[]): 
 }
 
 function applyAssistantDelta(items: RuntimeTranscriptItem[], assistantId: string, text: string): RuntimeTranscriptItem[] {
-	const streamIndex = items.findIndex((item) => item.id === assistantId && item.type === "assistant_stream");
+	const lastIndex = items.length - 1;
+	const last = items[lastIndex];
+	if (last?.id === assistantId && last.type === "assistant_stream") {
+		return items.with(lastIndex, { ...last, text: `${last.text}${text}` });
+	}
+	if (last?.id === assistantId && last.type === "assistant_final") {
+		return items.with(lastIndex, {
+			...last,
+			type: "assistant_stream",
+			text: `${last.text}${text}`,
+		});
+	}
+	const streamIndex = items.findIndex(
+		(item) => item.id === assistantId && item.type === "assistant_stream",
+	);
 	if (streamIndex >= 0) {
 		const item = items[streamIndex]!;
-		return [...items.slice(0, streamIndex), { ...item, text: `${item.text}${text}` }, ...items.slice(streamIndex + 1)];
+		return items.with(streamIndex, { ...item, text: `${item.text}${text}` });
 	}
-	const finalIndex = items.findIndex((item) => item.id === assistantId && item.type === "assistant_final");
+	const finalIndex = items.findIndex(
+		(item) => item.id === assistantId && item.type === "assistant_final",
+	);
 	if (finalIndex >= 0) {
 		const item = items[finalIndex]!;
-		return [...items.slice(0, finalIndex), { ...item, type: "assistant_stream", text: `${item.text}${text}` }, ...items.slice(finalIndex + 1)];
+		return items.with(finalIndex, {
+			...item,
+			type: "assistant_stream",
+			text: `${item.text}${text}`,
+		});
 	}
 	return [...items, { id: assistantId, type: "assistant_stream", text, folded: false, metadata: {} }];
 }
@@ -3052,7 +3072,7 @@ function applyReasoning(items: RuntimeTranscriptItem[], text: string, metadata: 
 		folded: true,
 		metadata,
 	};
-	return last?.type === "reasoning" ? [...items.slice(0, -1), item] : [...items, item];
+	return last?.type === "reasoning" ? items.with(-1, item) : [...items, item];
 }
 
 const SHELL_OUTPUT_PREVIEW_BUDGET = 10_000;
