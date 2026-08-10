@@ -1,9 +1,10 @@
-import { Marked, type Token, Tokenizer, type Tokens } from "marked";
+import { Lexer, Marked, type Token, Tokenizer, type Tokens } from "marked";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component, TailRenderResult } from "../tui.ts";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
+const ANSI_FULL_RESET = "\x1b[0m";
 
 class StrictStrikethroughTokenizer extends Tokenizer {
 	override del(src: string): Tokens.Del | undefined {
@@ -91,6 +92,7 @@ interface RenderedTokenCacheEntry {
 	code?: RenderedCodeTokenCache;
 	list?: RenderedFlatListTokenCache;
 	paragraph?: RenderedPlainParagraphCache;
+	richParagraph?: RenderedRichParagraphCache;
 	blockquote?: RenderedPlainBlockquoteCache;
 	table?: RenderedTableTokenCache;
 }
@@ -107,6 +109,13 @@ interface RenderedPlainParagraphCache {
 	text: string;
 	lastSourceLineStart?: number;
 	lastSourceLineOutputStart?: number;
+	sourceToken: Tokens.Paragraph;
+}
+
+interface RenderedRichParagraphCache {
+	stableInlineCount: number;
+	stableOutputLineCount: number;
+	stableTailSource: string;
 	sourceToken: Tokens.Paragraph;
 }
 
@@ -160,6 +169,16 @@ interface StreamingTableInfo {
 	lastRowOffset: number;
 }
 
+interface StreamingInlineParagraphInfo {
+	boundaryOffset: number;
+	stableInlineCount: number;
+}
+
+interface AppendedInlineParagraphUpdate {
+	sourceToken: Tokens.Paragraph;
+	stableInlineCount: number;
+}
+
 interface OpenFenceInfo {
 	bodyOffset: number;
 	closingPattern: RegExp;
@@ -174,6 +193,8 @@ interface MarkdownTokenUpdate {
 function normalizeMarkdownSource(source: string): string {
 	return source.replace(/\t/g, "   ");
 }
+
+const MAX_INLINE_TAIL_BOUNDARY_TOKENS = 32;
 
 export class Markdown implements Component {
 	private text: string;
@@ -199,8 +220,10 @@ export class Markdown implements Component {
 	private cachedOpenFences = new WeakMap<Token, OpenFenceInfo | null>();
 	private cachedFlatLists = new WeakMap<Token, FlatListInfo | null>();
 	private cachedStreamingTables = new WeakMap<Token, StreamingTableInfo | null>();
+	private cachedStreamingInlineParagraphs = new WeakMap<Token, StreamingInlineParagraphInfo | null>();
 	private appendedTokenSources = new WeakMap<Token, Token>();
 	private appendedListUpdates = new WeakMap<Token, AppendedListUpdate>();
+	private appendedInlineParagraphUpdates = new WeakMap<Token, AppendedInlineParagraphUpdate>();
 	private normalizedTextExtendsLexedText = false;
 	private pendingNormalizedAppend = "";
 
@@ -256,8 +279,10 @@ export class Markdown implements Component {
 		this.cachedOpenFences = new WeakMap();
 		this.cachedFlatLists = new WeakMap();
 		this.cachedStreamingTables = new WeakMap();
+		this.cachedStreamingInlineParagraphs = new WeakMap();
 		this.appendedTokenSources = new WeakMap();
 		this.appendedListUpdates = new WeakMap();
+		this.appendedInlineParagraphUpdates = new WeakMap();
 		this.normalizedTextExtendsLexedText = false;
 		this.pendingNormalizedAppend = "";
 	}
@@ -468,6 +493,17 @@ export class Markdown implements Component {
 
 		if (token.type === "paragraph") {
 			const paragraphToken = token as Tokens.Paragraph;
+			if (cached?.type === "paragraph" && cached.richParagraph) {
+				const updated = this.updateRetainedRichParagraphEntry(
+					cached,
+					paragraphToken,
+					contentWidth,
+					width,
+					nextType,
+					contextKey,
+				);
+				if (updated) return updated;
+			}
 			if (cached?.type === "paragraph" && cached.paragraph) {
 				const updated = this.updateRetainedPlainParagraphEntry(
 					cached,
@@ -486,6 +522,15 @@ export class Markdown implements Component {
 				nextType,
 				lines: this.renderTokenContentLines(token, contentWidth, width, nextType),
 			};
+			const richParagraph = this.createRetainedRichParagraphCache(
+				paragraphToken,
+				entry.lines,
+				contentWidth,
+				width,
+				nextType,
+				contextKey,
+			);
+			if (richParagraph) return { ...entry, richParagraph };
 			const plainText = this.retainablePlainParagraphText(paragraphToken, nextType);
 			if (plainText === null) return entry;
 			const paragraph: RenderedPlainParagraphCache = {
@@ -846,6 +891,128 @@ export class Markdown implements Component {
 		return left.length === right.length && left.every((value, index) => value === right[index]);
 	}
 
+	private createRetainedRichParagraphCache(
+		token: Tokens.Paragraph,
+		lines: readonly string[],
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedRichParagraphCache | null {
+		if (this.defaultTextStyle !== undefined || nextType !== undefined || contextKey !== undefined) {
+			return null;
+		}
+		const info = this.streamingInlineParagraphInfo(token);
+		const inlineTokens = token.tokens ?? [];
+		if (!info || info.stableInlineCount <= 0 || info.stableInlineCount >= inlineTokens.length) {
+			return null;
+		}
+
+		const changedSource = this.renderInlineTokens(inlineTokens.slice(info.stableInlineCount));
+		let stableTailSource = "";
+		let boundaryTokens = 0;
+		for (let index = info.stableInlineCount; index >= 0; index -= 1) {
+			if (index < info.stableInlineCount) {
+				stableTailSource = this.renderInlineTokens([inlineTokens[index]!]) + stableTailSource;
+				boundaryTokens += 1;
+				if (boundaryTokens > MAX_INLINE_TAIL_BOUNDARY_TOKENS) break;
+			}
+			const replacement = this.renderLogicalLines(
+				[stableTailSource + changedSource],
+				contentWidth,
+				width,
+			);
+			const stableOutputLineCount = lines.length - replacement.length;
+			if (stableOutputLineCount > 0 && this.linesEndWith(lines, replacement)) {
+				return {
+					stableInlineCount: info.stableInlineCount,
+					stableOutputLineCount,
+					stableTailSource,
+					sourceToken: token,
+				};
+			}
+		}
+		return null;
+	}
+
+	private updateRetainedRichParagraphEntry(
+		cached: RenderedTokenCacheEntry,
+		token: Tokens.Paragraph,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		const richParagraph = cached.richParagraph;
+		const appended = this.appendedInlineParagraphUpdates.get(token);
+		const info = this.streamingInlineParagraphInfo(token);
+		const inlineTokens = token.tokens ?? [];
+		if (
+			!richParagraph ||
+			!appended ||
+			!info ||
+			this.defaultTextStyle !== undefined ||
+			nextType !== undefined ||
+			contextKey !== undefined ||
+			appended.sourceToken !== richParagraph.sourceToken ||
+			appended.stableInlineCount !== richParagraph.stableInlineCount ||
+			info.stableInlineCount < richParagraph.stableInlineCount ||
+			info.stableInlineCount >= inlineTokens.length ||
+			richParagraph.stableOutputLineCount <= 0 ||
+			richParagraph.stableOutputLineCount > cached.lines.length
+		) return null;
+
+		const newStableSegments = inlineTokens
+			.slice(richParagraph.stableInlineCount, info.stableInlineCount)
+			.map((inlineToken) => this.renderInlineTokens([inlineToken]));
+		const stableSegments = [richParagraph.stableTailSource, ...newStableSegments];
+		const stableTailSource = stableSegments.join("");
+		const changedSource = this.renderInlineTokens(inlineTokens.slice(info.stableInlineCount));
+		const replacement = this.renderLogicalLines(
+			[stableTailSource + changedSource],
+			contentWidth,
+			width,
+		);
+		cached.lines.splice(
+			richParagraph.stableOutputLineCount,
+			cached.lines.length - richParagraph.stableOutputLineCount,
+			...replacement,
+		);
+
+		let retainedLineCount = 0;
+		let nextStableTailSource = stableTailSource;
+		const earliestCandidate = Math.max(1, stableSegments.length - MAX_INLINE_TAIL_BOUNDARY_TOKENS);
+		for (let index = stableSegments.length; index >= earliestCandidate; index -= 1) {
+			const candidateTailSource = stableSegments.slice(index).join("");
+			const candidateLines = this.renderLogicalLines(
+				[candidateTailSource + changedSource],
+				contentWidth,
+				width,
+			);
+			const candidateRetainedLineCount = replacement.length - candidateLines.length;
+			if (candidateRetainedLineCount > 0 && this.linesEndWith(replacement, candidateLines)) {
+				retainedLineCount = candidateRetainedLineCount;
+				nextStableTailSource = candidateTailSource;
+				break;
+			}
+		}
+
+		cached.raw = token.raw;
+		cached.contextKey = contextKey;
+		cached.nextType = nextType;
+		richParagraph.stableInlineCount = info.stableInlineCount;
+		richParagraph.stableOutputLineCount += retainedLineCount;
+		richParagraph.stableTailSource = nextStableTailSource;
+		richParagraph.sourceToken = token;
+		return cached;
+	}
+
+	private linesEndWith(lines: readonly string[], suffix: readonly string[]): boolean {
+		if (suffix.length > lines.length) return false;
+		const offset = lines.length - suffix.length;
+		return suffix.every((line, index) => lines[offset + index] === line);
+	}
+
 	private retainablePlainParagraphText(
 		token: Tokens.Paragraph,
 		nextType: string | undefined,
@@ -1036,7 +1203,7 @@ export class Markdown implements Component {
 		const quoteStylePrefix = this.getStylePrefix(quoteStyle);
 		const source = continuesPreviousLine ? `.\n${text}` : text;
 		const styledText = quoteStylePrefix
-			? quoteStyle(source.replace(/\x1b\[0m/g, `\x1b[0m${quoteStylePrefix}`))
+			? quoteStyle(source.replaceAll(ANSI_FULL_RESET, `\x1b[0m${quoteStylePrefix}`))
 			: quoteStyle(source);
 		const quoteContentWidth = Math.max(1, contentWidth - 2);
 		const quoteLines = wrapTextWithAnsi(styledText, quoteContentWidth);
@@ -1094,6 +1261,13 @@ export class Markdown implements Component {
 				this.pendingNormalizedAppend,
 			);
 			if (tableUpdate) return tableUpdate;
+			const inlineParagraphUpdate = this.updateOpenInlineParagraphToken(
+				source,
+				reparseTokenIndex,
+				reparseOffset,
+				this.pendingNormalizedAppend,
+			);
+			if (inlineParagraphUpdate) return inlineParagraphUpdate;
 			const suffixSource = source.slice(reparseOffset);
 			const suffixTokens = this.lexSource(suffixSource);
 			const suffixEnds = this.tokenEndOffsets(suffixTokens, reparseOffset);
@@ -1306,6 +1480,59 @@ export class Markdown implements Component {
 		};
 	}
 
+	private updateOpenInlineParagraphToken(
+		source: string,
+		tokenIndex: number,
+		sourceOffset: number,
+		appended: string,
+	): MarkdownTokenUpdate | null {
+		if (tokenIndex !== this.cachedSourceTokens.length - 1) return null;
+		const token = this.cachedSourceTokens[tokenIndex];
+		if (!token || token.type !== "paragraph") return null;
+		const paragraphToken = token as Tokens.Paragraph;
+		const info = this.streamingInlineParagraphInfo(paragraphToken);
+		const inlineTokens = paragraphToken.tokens ?? [];
+		if (
+			!info ||
+			!appended ||
+			appended.includes("\n") ||
+			appended.includes("\r") ||
+			paragraphToken.raw.length !== (this.cachedLexedText?.length ?? 0) - sourceOffset
+		) return null;
+
+		const boundarySource = paragraphToken.text.slice(info.boundaryOffset) + appended;
+		const boundaryTokens = Lexer.lexInline(boundarySource, markdownParser.defaults);
+		if (this.inlineTokenRawLength(boundaryTokens) !== boundarySource.length) return null;
+		const raw = paragraphToken.raw + appended;
+		const text = paragraphToken.text + appended;
+		if (raw.length !== source.length - sourceOffset || raw !== text) return null;
+		const tokens = [
+			...inlineTokens.slice(0, info.stableInlineCount),
+			...boundaryTokens,
+		];
+		if (this.inlineTokenRawLength(tokens) !== text.length) return null;
+
+		const nextToken: Tokens.Paragraph = {
+			...paragraphToken,
+			raw,
+			text,
+			tokens,
+		};
+		this.appendedTokenSources.set(nextToken, paragraphToken);
+		this.appendedInlineParagraphUpdates.set(nextToken, {
+			sourceToken: paragraphToken,
+			stableInlineCount: info.stableInlineCount,
+		});
+		this.cachedSourceTokens.splice(tokenIndex, 1, nextToken);
+		this.cachedSourceTokenEnds.splice(tokenIndex, 1, source.length);
+		this.commitLexedSource(source);
+		return {
+			tokens: this.cachedSourceTokens,
+			stablePrefixLength: tokenIndex,
+			changed: true,
+		};
+	}
+
 	private flatListInfo(token: Tokens.List): FlatListInfo | null {
 		if (this.cachedFlatLists.has(token)) {
 			return this.cachedFlatLists.get(token) ?? null;
@@ -1372,6 +1599,67 @@ export class Markdown implements Component {
 			: null;
 		this.cachedStreamingTables.set(token, info);
 		return info;
+	}
+
+	private streamingInlineParagraphInfo(token: Tokens.Paragraph): StreamingInlineParagraphInfo | null {
+		if (this.cachedStreamingInlineParagraphs.has(token)) {
+			return this.cachedStreamingInlineParagraphs.get(token) ?? null;
+		}
+		const inlineTokens = token.tokens ?? [];
+		if (
+			token.raw !== token.text ||
+			token.text.includes("\n") ||
+			token.text.includes("\r") ||
+			token.text.includes("[") ||
+			inlineTokens.length < 2 ||
+			!inlineTokens.some((inlineToken) => inlineToken.type !== "text") ||
+			this.inlineTokenRawLength(inlineTokens) !== token.text.length
+		) {
+			this.cachedStreamingInlineParagraphs.set(token, null);
+			return null;
+		}
+
+		let boundaryIndex = this.inlineContextBoundary(inlineTokens, inlineTokens.length - 1);
+		const unsafeStableIndex = inlineTokens.findIndex(
+			(inlineToken, index) => index < boundaryIndex &&
+				inlineToken.type === "text" &&
+				/[\\`*_~[\]<>]/.test(inlineToken.raw),
+		);
+		if (unsafeStableIndex >= 0) {
+			boundaryIndex = this.inlineContextBoundary(inlineTokens, unsafeStableIndex);
+		}
+		if (boundaryIndex <= 0) {
+			this.cachedStreamingInlineParagraphs.set(token, null);
+			return null;
+		}
+
+		const boundaryOffset = this.inlineTokenRawLength(inlineTokens.slice(0, boundaryIndex));
+		const boundarySource = token.text.slice(boundaryOffset);
+		const reparsedBoundary = Lexer.lexInline(boundarySource, markdownParser.defaults);
+		if (
+			this.inlineTokenRawLength(reparsedBoundary) !== boundarySource.length ||
+			JSON.stringify(reparsedBoundary) !== JSON.stringify(inlineTokens.slice(boundaryIndex))
+		) {
+			this.cachedStreamingInlineParagraphs.set(token, null);
+			return null;
+		}
+
+		const info = { boundaryOffset, stableInlineCount: boundaryIndex };
+		this.cachedStreamingInlineParagraphs.set(token, info);
+		return info;
+	}
+
+	private inlineContextBoundary(tokens: readonly Token[], initialIndex: number): number {
+		let boundaryIndex = initialIndex;
+		while (boundaryIndex > 0) {
+			boundaryIndex -= 1;
+			if (/\s/.test(tokens[boundaryIndex]!.raw)) break;
+		}
+		return boundaryIndex;
+	}
+
+	private inlineTokenRawLength(tokens: readonly Token[]): number {
+		return tokens.reduce((length, token) => length + token.raw.length, 0);
 	}
 
 	private openFenceInfo(token: Token): OpenFenceInfo | null {
@@ -1633,7 +1921,7 @@ export class Markdown implements Component {
 					if (!quoteStylePrefix) {
 						return quoteStyle(line);
 					}
-					const lineWithReappliedStyle = line.replace(/\x1b\[0m/g, `\x1b[0m${quoteStylePrefix}`);
+					const lineWithReappliedStyle = line.replaceAll(ANSI_FULL_RESET, `\x1b[0m${quoteStylePrefix}`);
 					return quoteStyle(lineWithReappliedStyle);
 				};
 

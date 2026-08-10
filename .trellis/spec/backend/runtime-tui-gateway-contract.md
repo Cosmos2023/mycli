@@ -2892,6 +2892,11 @@ if (!settled && workerIsUnresponsive) {
 - Retained table layout cache:
   `RenderedTableTokenCache {naturalWidths, minWordWidths, columnWidths,
   rowBoundaryStarts, bottomLineStart, finalRowMetrics, sourceToken}`.
+- Streaming inline paragraph boundary:
+  `StreamingInlineParagraphInfo {boundaryOffset, stableInlineCount}`.
+- Retained rich paragraph layout cache:
+  `RenderedRichParagraphCache {stableInlineCount, stableOutputLineCount,
+  stableTailSource, sourceToken}`.
 - Runtime update classifier:
   `classifyRuntimeTranscriptUpdate(previous, next) -> "unchanged" | "tail" | "replace"`.
 - Gateway runtime projector:
@@ -2981,6 +2986,18 @@ if (!settled && workerIsUnresponsive) {
   retains that source/output boundary in the cache. The source suffix is validated against the
   retained paragraph text. Following block tokens, default text styling, inline Markdown
   transitions, and source-line disagreement use the complete token-render path.
+- A final single-line rich paragraph without reference syntax may retain complete inline tokens and
+  reparse only its final context-protected inline boundary with Marked `Lexer.lexInline`. The
+  boundary includes the preceding whitespace-bearing token or expands through adjacent tokens, and
+  delimiter-sensitive unmatched text cannot remain in the stable prefix. Old and reparsed inline
+  raw lengths must cover the paragraph exactly, and reparsing the old boundary in isolation must
+  reproduce its prior AST before the fast path is enabled.
+- Rich paragraph layout retains only complete byte-equal output lines. Its unstable source consists
+  of the final unfinished visual line plus changed inline tokens; newly complete lines move into the
+  retained prefix only when independently rendering the candidate tail matches the full replacement
+  suffix byte for byte. Default text styling, following block tokens, newlines, carriage returns,
+  references, unsafe boundaries, or validation disagreement use the complete Marked path. ANSI,
+  OSC 8 hyperlinks, CJK width, padding, entry identity, and line-array identity remain unchanged.
 - A final tight, flat list whose items contain only plain inline text may retain its item AST and
   rendered line boundaries. The lexer reparses from the cached source offset of the previous final
   item, replaces that item plus appended items, and layout rerenders the same suffix. The cached
@@ -3022,6 +3039,9 @@ if (!settled && workerIsUnresponsive) {
 | Plain final paragraph receives a plain-text append | Rewrap its previous final visual line and retain the entry and line-array identities |
 | Plain soft-line paragraph receives a plain-text append | Rewrap its previous final source line and retain the entry and line-array identities |
 | Paragraph append becomes a URL, code span, emphasis, link, or new block | Reject retained paragraph layout and match a fresh render |
+| Final rich paragraph receives a single-line append with a proven inline boundary | Reparse only the context-protected inline suffix and rewrap only the unfinished visual tail |
+| Rich inline boundary has references, unmatched stable delimiters, incomplete raw coverage, or isolated AST disagreement | Reject retained inline state and run the complete Marked path |
+| Rich paragraph receives a newline, following block, or default text style | Reject retained rich layout and match a fresh render |
 | Tight flat list receives a same-marker plain append | Reparse and rerender the previous final item plus appended items |
 | List has unowned trailing source bytes | Start the boundary at the cached final-item source offset, not `list.raw.length - item.raw.length` |
 | List becomes loose, nested, rich, task-based, mixed-marker, or ends | Reject the list fast path and match a fresh Marked render |
@@ -3056,6 +3076,11 @@ if (!settled && workerIsUnresponsive) {
   after Marked confirms that the paragraph still contains one plain inline token.
 - Good: appending one line to a 5,000-line soft-line paragraph rerenders only the previous final
   source line and appended lines after the same Marked validation.
+- Good: appending bold, code, emphasis, strikethrough, or URL content to a long rich paragraph keeps
+  stable inline-token, rendered-entry, and line-array identities while reparsing and rewrapping only
+  a bounded suffix.
+- Good: wrapping a streamed URL in a hyperlink-capable terminal retains byte-identical OSC 8 open,
+  close, and line-continuation sequences compared with a fresh render.
 - Good: appending one item to a 2,000-item tight list reparses and rerenders only the old final item
   and the new item while retaining earlier item objects and rendered lines.
 - Good: appending one line to a 2,000-line plain blockquote rerenders only the previous final source
@@ -3082,6 +3107,11 @@ if (!settled && workerIsUnresponsive) {
   Markdown transitions must first be accepted by Marked before retained layout is reused.
 - Bad: use the complete multiline paragraph as the wrap input after every soft-line append; stable
   source lines already have byte-equal retained output.
+- Bad: lex an inline suffix immediately after a stable token without carrying a whitespace-bearing
+  context boundary; underscore, emphasis, autolink, and delimiter-run semantics can depend on the
+  preceding source.
+- Bad: compare only stripped or visible rich-paragraph output before retaining a line. ANSI resets
+  and OSC 8 close/reopen sequences are part of the byte-level rendering contract.
 - Bad: derive a list boundary with `list.raw.length - lastItem.raw.length`; Marked may retain trailing
   spaces in the list token while excluding them from the final item, which drops spaces on the next
   streamed character.
@@ -3119,6 +3149,10 @@ if (!settled && workerIsUnresponsive) {
   soft-line sources, then compare bounded output with a fresh render. Character-streamed tests cross
   URL, emphasis, code-span, CJK, long-word, list, heading, and second-paragraph boundaries to verify
   that inline and block transitions fall back without changing bytes.
+- Rich-paragraph tests retain stable inline-token, rendered-entry, and line-array identities across
+  bold, code, emphasis, strict strikethrough, URL, CJK, and long-word appends. Character-streamed
+  differential tests cover partial delimiters, new block transitions, reference fallback, default
+  text-style fallback, and both legacy URL rendering and OSC 8 hyperlink rendering.
 - Flat-list tests count bullet renders and assert an append renders only the old final item and new
   items while retaining entry, line-array, and stable-item identities. Character-streamed tests
   cover trailing spaces, partial markers, rich inline content, nesting, loose lists, marker changes,

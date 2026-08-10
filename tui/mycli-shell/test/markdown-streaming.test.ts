@@ -16,6 +16,7 @@ function renderedTokens(markdown: Markdown): Array<{
 	code?: object;
 	list?: object;
 	paragraph?: object;
+	richParagraph?: object;
 	blockquote?: object;
 	table?: object;
 }> {
@@ -25,6 +26,7 @@ function renderedTokens(markdown: Markdown): Array<{
 			code?: object;
 			list?: object;
 			paragraph?: object;
+			richParagraph?: object;
 			blockquote?: object;
 			table?: object;
 		}>;
@@ -167,6 +169,85 @@ test("character-streamed paragraphs fall back across inline markdown transitions
 	}
 
 	assert.equal(renderedTokens(markdown)[0]?.paragraph, undefined);
+});
+
+test("streaming rich inline paragraphs retain lexer and layout prefixes", () => {
+	const before = Array.from(
+		{ length: 80 },
+		(_, index) => `**bold ${index}** \`code ${index}\` *em ${index}* ~~strike ${index}~~ https://example.com/${index}`,
+	).join(" ");
+	const after = `${before} **appended bold** \`appended code\` *appended emphasis* ~~appended strike~~`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.renderTail(52, 12);
+	const sourceToken = sourceTokens(markdown)[0] as { tokens: object[] };
+	const stableInlineToken = sourceToken.tokens[0];
+	const paragraphEntry = renderedTokens(markdown)[0];
+	const paragraphLines = paragraphEntry?.lines;
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(52, 12);
+	const fresh = new Markdown(after, 0, 0, markdownTheme()).renderTail(52, 12);
+	const updatedSourceToken = sourceTokens(markdown)[0] as { tokens: object[] };
+
+	assert.ok(paragraphEntry?.richParagraph);
+	assert.equal(updatedSourceToken.tokens[0], stableInlineToken);
+	assert.equal(renderedTokens(markdown)[0], paragraphEntry);
+	assert.equal(renderedTokens(markdown)[0]?.lines, paragraphLines);
+	assert.deepEqual(incremental, fresh);
+	assert.deepEqual(markdown.render(52), new Markdown(after, 0, 0, markdownTheme()).render(52));
+});
+
+test("character-streamed rich paragraphs match fresh rendering across inline and block boundaries", () => {
+	const base = Array.from(
+		{ length: 24 },
+		(_, index) => `**bold${index}** \`code${index}\` *em${index}* ~~del${index}~~ https://example.com/${index}`,
+	).join(" ");
+	const cases = [
+		" partial **then bold** and `code` with *emphasis* and ~~strike~~",
+		" https://openai.com/research?q=streaming, 中文内容非常长wordthatwrapsacrossrows",
+		" **unfinished delimiter then closed**",
+		"\n- list transition",
+		"\n\nSecond paragraph with **rich content**.",
+	];
+
+	for (const appended of cases) {
+		let source = base;
+		const markdown = new Markdown(source, 0, 0, markdownTheme());
+		markdown.renderTail(31, 9);
+		for (const character of appended) {
+			source += character;
+			markdown.setText(source);
+			for (const width of [18, 41]) {
+				const incremental = markdown.renderTail(width, 9);
+				const fresh = new Markdown(source, 0, 0, markdownTheme()).renderTail(width, 9);
+				assert.deepEqual(incremental, fresh, JSON.stringify({ source: source.slice(-120), width }));
+			}
+		}
+		assert.deepEqual(markdown.render(41), renderFresh(source, 41));
+	}
+});
+
+test("rich paragraph retention falls back for reference syntax and default text styling", () => {
+	const richPrefix = Array.from({ length: 40 }, (_, index) => `**bold ${index}** \`code ${index}\``).join(" ");
+	const referencedBefore = `${richPrefix} [guide][docs]`;
+	const referencedAfter = `${referencedBefore}\n\n[docs]: https://example.com`;
+	const referenced = new Markdown(referencedBefore, 0, 0, markdownTheme());
+	referenced.render(52);
+	const referencedToken = sourceTokens(referenced)[0];
+	referenced.setText(referencedAfter);
+
+	assert.deepEqual(referenced.render(52), renderFresh(referencedAfter, 52));
+	assert.notEqual(sourceTokens(referenced)[0], referencedToken);
+
+	const baseTheme = markdownTheme();
+	const styled = new Markdown(richPrefix, 0, 0, baseTheme, { bold: true });
+	styled.renderTail(52, 10);
+	styled.setText(`${richPrefix} **appended**`);
+	assert.equal(renderedTokens(styled)[0]?.richParagraph, undefined);
+	assert.deepEqual(
+		styled.renderTail(52, 10),
+		new Markdown(`${richPrefix} **appended**`, 0, 0, baseTheme, { bold: true }).renderTail(52, 10),
+	);
 });
 
 test("streaming plain blockquotes retain their final source-line layout", () => {
