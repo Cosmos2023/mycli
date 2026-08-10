@@ -2878,7 +2878,9 @@ if (!settled && workerIsUnresponsive) {
   `TUI.activeRenderFrameId -> number | null`; it is non-null only during one synchronous root
   `TUI.render(width)` call.
 - Transcript viewport:
-  `TranscriptViewportComponent.render(width) -> string[]`.
+  `new TranscriptViewportComponent(content, heightForWidth, maxRenderedRows, contentRevision?)`
+  and `TranscriptViewportComponent.render(width) -> string[]`; the optional callback returns an
+  owner-controlled revision token for transcript-visible mutations.
 - Full transcript projection:
   `createTranscriptProjection(blocks) -> TranscriptProjectionState`.
 - Incremental tail projection:
@@ -2925,6 +2927,20 @@ if (!settled && workerIsUnresponsive) {
   components retain the compatible full-render fallback and are sliced after rendering.
 - Viewport cache identity includes component render key, terminal width, and requested `maxRows`.
   A tail cached for one remaining-row budget must not be reused for another budget.
+- A bounded viewport may retain its complete selected line array between frames only when the
+  terminal width and owner-supplied `contentRevision` are unchanged and every selected component
+  returns a defined `getRenderCacheKey()`. This skips both rendering and the otherwise linear walk
+  over component cache keys.
+- The owner must advance `contentRevision` before rebuilding the transcript header, reconciling
+  transcript children, or mutating any selected component's visible state. The callback is omitted
+  when that ownership proof is unavailable, which preserves component-level caching without
+  enabling complete line-array reuse.
+- A selected component whose `getRenderCacheKey()` is absent or returns `undefined` makes that
+  bounded render volatile and prevents complete line-array reuse on the next frame. Running Shell
+  components use this path so elapsed time and other child-owned state continue to update.
+- Explicit viewport invalidation clears retained aggregate lines and component caches. Width changes
+  reject aggregate reuse. An unbounded viewport preserves the existing full-render behavior even
+  when a revision callback is present.
 - Shell chrome containers may reuse rendered lines between viewport-height measurement and their
   later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
   outside the root render call and must not survive into the next frame.
@@ -3071,6 +3087,11 @@ if (!settled && workerIsUnresponsive) {
 | `maxRows <= 0` | Return `lines=[]` while preserving the exact `totalLines` count |
 | Component has no `renderTail` | Render normally and slice the returned lines |
 | Width or render revision changes | Reject the cached tail and render for the new identity |
+| Bounded viewport width and owner revision are unchanged, and every selected component has a defined render key | Reuse the exact retained line array without traversing component cache keys |
+| Owner rebuilds header or transcript-visible content | Advance the owner revision before mutation so the next bounded render traverses and refreshes the selected components |
+| A selected component has an undefined render key | Render it on every frame and disable aggregate line-array reuse for that render |
+| Revision callback is omitted or viewport is unbounded | Keep component-level or full-render behavior; do not retain aggregate bounded content |
+| Viewport is explicitly invalidated | Clear retained aggregate lines and component caches before rendering again |
 | Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
 | Editor, status, or size-dependent pending content reaches the next root frame | Render again because child-owned state may change without a parent rebuild |
 | Working status receives an unrelated frame with the same width, spinner frame, and elapsed second | Reuse the component's rendered lines while the parent remains frame-local |
@@ -3151,6 +3172,10 @@ if (!settled && workerIsUnresponsive) {
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
+- Good: 500 chrome-only frames over a 10,000-row bounded transcript reuse the retained line array
+  without rereading any transcript component cache key.
+- Base: a running Shell in the selected transcript tail returns an undefined render key, so its
+  elapsed seconds update even when the owner revision is unchanged.
 - Good: appending one message to a 10,000-block transcript reads only the boundary and appended
   source blocks, retains the projected array, and keeps all stable components mounted.
 - Good: replacing a subagent boundary with a second `Read` replays the preceding context run and
@@ -3197,6 +3222,10 @@ if (!settled && workerIsUnresponsive) {
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
+- Bad: retain complete bounded transcript lines from an owner revision alone while ignoring a
+  selected component's undefined render key; child-owned timers would freeze.
+- Bad: mutate transcript-visible state without advancing the owner revision; aggregate reuse would
+  preserve stale lines even if the mutated component has a new render key.
 - Bad: retain measured editor, status, or size-dependent pending lines across root frames; cursor,
   timer, input, and terminal-height state can change without a parent container rebuild.
 - Bad: opt a component into cross-frame chrome caching unless all display state is owned by an
@@ -3259,6 +3288,11 @@ if (!settled && workerIsUnresponsive) {
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.
 - Viewport tests use a 10,000-line component with separate full/tail counters and assert the
   bounded path never calls full render.
+- Viewport aggregate-cache tests use 10,000 stable components and assert unchanged owner revisions
+  do not reread component keys; owner revision, width, and explicit invalidation changes must each
+  traverse the selected components again.
+- Volatile viewport tests assert an undefined component render key disables aggregate reuse, and a
+  running Shell advances its rendered elapsed seconds across unchanged owner frames.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
   render in the next frame, and no cache reuse for direct dynamic-container calls. Footer and
   subagent panel tests assert reuse across unrelated streaming frames, plus invalidation on parent
@@ -3312,6 +3346,28 @@ const lines = component.renderTail
   ? component.renderTail(width, remainingRows).lines
   : component.render(width).slice(-remainingRows);
 ```
+
+#### Wrong
+
+```typescript
+if (ownerRevision === retainedRevision) return retainedLines;
+```
+
+An owner revision cannot prove that child-owned timers or other volatile component state is stable.
+
+#### Correct
+
+```typescript
+if (retainedCacheable && width === retainedWidth && Object.is(ownerRevision, retainedRevision)) {
+  return retainedLines;
+}
+const rendered = renderSelectedComponents(width);
+retainedCacheable = rendered.everyComponentHadStableKey;
+retain(rendered.lines, width, ownerRevision);
+```
+
+Complete bounded content is retained only after every selected component opts into stable caching;
+the owner revision fences transcript mutations while the width fences wrapping changes.
 
 #### Wrong
 

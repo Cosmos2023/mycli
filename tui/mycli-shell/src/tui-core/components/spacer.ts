@@ -5,6 +5,7 @@ import type { Component } from "../tui.ts";
  */
 export class Spacer implements Component {
 	private lines: number;
+	private renderRevision = 0;
 
 	constructor(lines: number = 1) {
 		this.lines = lines;
@@ -12,10 +13,15 @@ export class Spacer implements Component {
 
 	setLines(lines: number): void {
 		this.lines = lines;
+		this.renderRevision += 1;
 	}
 
 	invalidate(): void {
-		// No cached state to invalidate currently
+		this.renderRevision += 1;
+	}
+
+	getRenderCacheKey(): number {
+		return this.renderRevision;
 	}
 
 	render(_width: number): string[] {

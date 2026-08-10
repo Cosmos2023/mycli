@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { BashExecutionComponent } from "../src/components/bash-execution.ts";
 import { CollapsedToolGroupComponent } from "../src/components/collapsed-tool-group.ts";
 import { TranscriptViewportComponent } from "../src/shell-runtime.ts";
 import { Container, type Component } from "../src/tui-core/tui.ts";
 
 class CountingComponent extends Container {
 	renderCalls = 0;
+	cacheKeyReads = 0;
 
 	constructor(private line: string) {
 		super();
@@ -19,6 +21,11 @@ class CountingComponent extends Container {
 	override render(): string[] {
 		this.renderCalls += 1;
 		return [this.line];
+	}
+
+	override getRenderCacheKey(): number | undefined {
+		this.cacheKeyReads += 1;
+		return super.getRenderCacheKey();
 	}
 }
 
@@ -53,14 +60,18 @@ class TailComponent implements Component {
 	}
 }
 
-function viewportFor(components: Component[], maxRows: number): TranscriptViewportComponent {
+function viewportFor(
+	components: Component[],
+	maxRows: number,
+	contentRevision?: () => unknown,
+): TranscriptViewportComponent {
 	const content = new Container();
 	const header = new Container();
 	const transcript = new Container();
 	for (const component of components) transcript.addChild(component);
 	content.addChild(header);
 	content.addChild(transcript);
-	return new TranscriptViewportComponent(content, () => 10, maxRows);
+	return new TranscriptViewportComponent(content, () => 10, maxRows, contentRevision);
 }
 
 test("transcript viewport renders only the bounded tail", () => {
@@ -94,13 +105,51 @@ test("transcript viewport reuses stable tail chunks and rerenders invalidated co
 	assert.equal(active.renderCalls, 3);
 });
 
+test("transcript viewport retains bounded content for an unchanged owner revision", () => {
+	const components = Array.from({ length: 10_000 }, (_, index) => new CountingComponent(`line ${index}`));
+	let revision = 1;
+	const viewport = viewportFor(components, 10_000, () => revision);
+
+	viewport.render(80);
+	const cacheKeyReads = components.reduce((total, component) => total + component.cacheKeyReads, 0);
+	viewport.render(80);
+
+	assert.equal(components.reduce((total, component) => total + component.cacheKeyReads, 0), cacheKeyReads);
+	revision += 1;
+	viewport.render(80);
+	assert.equal(components.every((component) => component.cacheKeyReads === 2), true);
+
+	viewport.render(60);
+	assert.equal(components.every((component) => component.cacheKeyReads === 3), true);
+
+	viewport.invalidate();
+	viewport.render(60);
+	assert.equal(components.every((component) => component.cacheKeyReads === 4), true);
+});
+
 test("transcript viewport does not cache components without a render key", () => {
 	const component = new VolatileComponent();
-	const viewport = viewportFor([component], 20);
+	const viewport = viewportFor([component], 20, () => 1);
 
 	assert.equal(viewport.render(80).includes("frame 1"), true);
 	assert.equal(viewport.render(80).includes("frame 2"), true);
 	assert.equal(component.renderCalls, 2);
+});
+
+test("retained transcript content keeps running shell elapsed time volatile", () => {
+	const startedAt = Date.parse("2026-08-10T10:00:00.000Z");
+	let now = startedAt;
+	const component = new BashExecutionComponent({
+		id: "shell-1",
+		command: "npm test",
+		status: "running",
+		startedAt: new Date(startedAt).toISOString(),
+	}, () => now);
+	const viewport = viewportFor([component], 20, () => 1);
+
+	assert.match(viewport.render(80).join("\n"), /0s/u);
+	now += 2_000;
+	assert.match(viewport.render(80).join("\n"), /2s/u);
 });
 
 test("transcript viewport uses component tail rendering for tall active content", () => {

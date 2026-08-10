@@ -8,6 +8,10 @@ export class PlanUpdateComponent implements Component {
 
 	invalidate(): void {}
 
+	getRenderCacheKey(): number {
+		return 0;
+	}
+
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const title = this.update.title.trim() || "Updated Plan";

@@ -2010,6 +2010,53 @@ test("mycli shell runtime caches the stable subagent panel across streaming fram
 	runtime.ui.render(80);
 });
 
+test("mycli shell runtime retains transcript assembly across chrome-only frames", () => {
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
+		],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal: new TestTerminal() });
+	const component = runtime.chatContainer.children[0];
+	const getRenderCacheKey = component?.getRenderCacheKey?.bind(component);
+	assert.ok(component && getRenderCacheKey);
+	let cacheKeyReads = 0;
+	component.getRenderCacheKey = () => {
+		cacheKeyReads += 1;
+		return getRenderCacheKey();
+	};
+
+	runtime.ui.render(100);
+	assert.equal(cacheKeyReads, 1);
+	runtime.ui.render(100);
+	assert.equal(cacheKeyReads, 1);
+
+	runtime.setState({
+		...initial,
+		footer: { ...initial.footer, model: "gpt-5.5" },
+	});
+	runtime.ui.render(100);
+	assert.equal(cacheKeyReads, 1);
+
+	runtime.setState({
+		...runtime.getState(),
+		messages: [{ id: "assistant-1", role: "assistant", text: "hello again" }],
+		transcript: [
+			{
+				id: "assistant-1",
+				kind: "message",
+				message: { id: "assistant-1", role: "assistant", text: "hello again" },
+			},
+		],
+	}, { transcriptUpdate: "tail" });
+	runtime.ui.render(100);
+	assert.equal(cacheKeyReads, 2);
+});
+
 test("mycli shell runtime updates footer actions with turn and queue state", () => {
 	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal: new TestTerminal() });
 	let output = stripAnsi(runtime.footerContainer.render(180).join("\n"));

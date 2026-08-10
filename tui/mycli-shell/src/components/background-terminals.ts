@@ -10,6 +10,10 @@ export class BackgroundTerminalsComponent implements Component {
 
 	invalidate(): void {}
 
+	getRenderCacheKey(): number {
+		return 0;
+	}
+
 	render(width: number): string[] {
 		const lines = ["", this.line(theme.fg("dim", "/ps"), width), "", this.line(theme.bold("Background terminals"), width), ""];
 		const visibleProcesses = this.backgroundTerminals.processes.slice(0, PROCESS_LIMIT);

@@ -267,6 +267,10 @@ class TurnCompletedComponent implements Component {
 
 	invalidate(): void {}
 
+	getRenderCacheKey(): number {
+		return 0;
+	}
+
 	render(width: number): string[] {
 		return new Text(theme.fg("muted", `✻ Completed for ${elapsedSecondsFor(this.durationMs)} s`), 1, 0).render(width);
 	}
@@ -281,11 +285,20 @@ export class TranscriptViewportComponent implements Component {
 	private committedPrefixBoundary: string | undefined;
 	private committedWidth: number | undefined;
 	private renderCache = new WeakMap<Component, { key: unknown; width: number; maxRows?: number; lines: string[] }>();
+	private retainedContentRevision: unknown;
+	private retainedContentWidth: number | undefined;
+	private retainedContentLines: string[] = [];
+	private retainedContentReady = false;
 
+	/**
+	 * `contentRevision` must change before the owner mutates any transcript-visible content.
+	 * Omit it when the owner cannot guarantee that contract; aggregate frame reuse then stays disabled.
+	 */
 	constructor(
 		private readonly content: Container,
 		private readonly heightForWidth: (width: number) => number,
 		private readonly maxRenderedRows: number | undefined,
+		private readonly contentRevision?: () => unknown,
 	) {}
 
 	getScrollOffset(): number {
@@ -360,6 +373,9 @@ export class TranscriptViewportComponent implements Component {
 	invalidate(): void {
 		this.content.invalidate();
 		this.renderCache = new WeakMap();
+		this.retainedContentReady = false;
+		this.retainedContentLines = [];
+		this.retainedContentWidth = undefined;
 	}
 
 	render(width: number): string[] {
@@ -391,43 +407,69 @@ export class TranscriptViewportComponent implements Component {
 	}
 
 	private renderContent(width: number): string[] {
-		const lines = this.maxRenderedRows === undefined
-			? this.content.render(width)
-			: this.renderContentTail(width, this.maxRenderedRows);
+		const revision = this.contentRevision?.();
+		let lines: string[];
+		if (
+			this.maxRenderedRows !== undefined &&
+			this.contentRevision !== undefined &&
+			this.retainedContentReady &&
+			this.retainedContentWidth === width &&
+			Object.is(this.retainedContentRevision, revision)
+		) {
+			lines = this.retainedContentLines;
+		} else if (this.maxRenderedRows === undefined) {
+			lines = this.content.render(width);
+			this.retainedContentReady = false;
+		} else {
+			const rendered = this.renderContentTail(width, this.maxRenderedRows);
+			lines = rendered.lines;
+			this.retainedContentRevision = revision;
+			this.retainedContentWidth = width;
+			this.retainedContentLines = lines;
+			this.retainedContentReady = this.contentRevision !== undefined && rendered.cacheable;
+		}
 		this.lastRenderedLines = lines;
 		this.lastRenderedWidth = width;
 		return lines;
 	}
 
-	private renderContentTail(width: number, maxRows: number): string[] {
+	private renderContentTail(width: number, maxRows: number): { lines: string[]; cacheable: boolean } {
 		const chunks: string[][] = [];
 		let renderedRows = 0;
+		let cacheable = true;
 		for (let sectionIndex = this.content.children.length - 1; sectionIndex >= 0; sectionIndex -= 1) {
 			const section = this.content.children[sectionIndex]!;
 			const components = section instanceof Container ? section.children : [section];
 			for (let index = components.length - 1; index >= 0; index -= 1) {
-				const lines = this.renderComponent(components[index]!, width, maxRows - renderedRows);
-				chunks.push(lines);
-				renderedRows += lines.length;
+				const rendered = this.renderComponent(components[index]!, width, maxRows - renderedRows);
+				chunks.push(rendered.lines);
+				renderedRows += rendered.lines.length;
+				cacheable &&= rendered.cacheable;
 				if (renderedRows >= maxRows) break;
 			}
 			if (renderedRows >= maxRows) break;
 		}
 		chunks.reverse();
-		return chunks.flat().slice(-maxRows);
+		return { lines: chunks.flat().slice(-maxRows), cacheable };
 	}
 
-	private renderComponent(component: Component, width: number, maxRows?: number): string[] {
+	private renderComponent(
+		component: Component,
+		width: number,
+		maxRows?: number,
+	): { lines: string[]; cacheable: boolean } {
 		const key = component.getRenderCacheKey?.();
-		if (key === undefined) return this.renderComponentLines(component, width, maxRows);
+		if (key === undefined) {
+			return { lines: this.renderComponentLines(component, width, maxRows), cacheable: false };
+		}
 
 		const cached = this.renderCache.get(component);
 		if (cached && cached.width === width && cached.maxRows === maxRows && Object.is(cached.key, key)) {
-			return cached.lines;
+			return { lines: cached.lines, cacheable: true };
 		}
 		const lines = this.renderComponentLines(component, width, maxRows);
 		this.renderCache.set(component, { key, width, maxRows, lines });
-		return lines;
+		return { lines, cacheable: true };
 	}
 
 	private renderComponentLines(component: Component, width: number, maxRows?: number): string[] {
@@ -595,6 +637,7 @@ export class MycliShellRuntime {
 	readonly editor: CustomEditor;
 
 	private state: MycliShellState;
+	private transcriptRenderRevision = 0;
 	private started = false;
 	private mainMounted = false;
 	private chatBlocks = new Map<string, ChatBlockComponent>();
@@ -634,6 +677,7 @@ export class MycliShellRuntime {
 			configuredReplayMaxRows === 0
 				? undefined
 				: configuredReplayMaxRows ?? resolveTranscriptReplayMaxRows(),
+			() => this.transcriptRenderRevision,
 		);
 		const keybindings = installMycliKeybindings();
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, {
@@ -1441,6 +1485,7 @@ export class MycliShellRuntime {
 	}
 
 	private rebuildHeader(): void {
+		this.transcriptRenderRevision += 1;
 		this.headerContainer.clear();
 		const title = this.state.title ?? "mycli";
 		const shortcuts = [
@@ -1454,6 +1499,7 @@ export class MycliShellRuntime {
 	}
 
 	private rebuildChat(tailOnly = false): void {
+		this.transcriptRenderRevision += 1;
 		const transcript = this.state.transcript?.length ? this.state.transcript : this.legacyTranscriptBlocks();
 		if (transcript.length > 0) {
 			this.syncChatBlocks(transcript, tailOnly);

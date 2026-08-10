@@ -9,6 +9,7 @@ export class Text implements Component {
 	private paddingX: number; // Left/right padding
 	private paddingY: number; // Top/bottom padding
 	private customBgFn?: (text: string) => string;
+	private renderRevision = 0;
 
 	// Cache for rendered output
 	private cachedText?: string;
@@ -24,6 +25,7 @@ export class Text implements Component {
 
 	setText(text: string): void {
 		this.text = text;
+		this.renderRevision += 1;
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
@@ -31,15 +33,21 @@ export class Text implements Component {
 
 	setCustomBgFn(customBgFn?: (text: string) => string): void {
 		this.customBgFn = customBgFn;
+		this.renderRevision += 1;
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
 	}
 
 	invalidate(): void {
+		this.renderRevision += 1;
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+	}
+
+	getRenderCacheKey(): number {
+		return this.renderRevision;
 	}
 
 	render(width: number): string[] {
