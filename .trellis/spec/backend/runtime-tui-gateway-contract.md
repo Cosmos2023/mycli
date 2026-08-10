@@ -2905,6 +2905,9 @@ if (!settled && workerIsUnresponsive) {
   `applyReasoning(items, text, metadata) -> RuntimeTranscriptItem[]`.
 - Gateway runtime projector:
   `RuntimeStateProjector.project(state, sessions, transcriptUpdate) -> MycliShellState`.
+- TUI tool-detail projection:
+  `MycliShellRuntime.setState(state, {transcriptUpdate}) -> void`, retaining raw and display arrays
+  separately while a global `Ctrl+O` override is active.
 - Stateless runtime projection oracle:
   `projectRuntimeState(state, sessions) -> MycliShellState`.
 - Gateway event replay:
@@ -2962,6 +2965,15 @@ if (!settled && workerIsUnresponsive) {
   append uses `concat(suffix)`. Context regrouping or any other general suffix replacement keeps the
   defensive `slice(0, prefixLength)` plus suffix fallback. These fast paths must not mutate the
   previous snapshot or weaken the stateless projection equivalence check.
+- A global tool-detail override is a TUI display projection, not canonical runtime state. The shell
+  retains the source and overridden `tools`, `bash`, and `transcript` arrays separately. With a
+  validated `tail` hint, identical source arrays are reused, a final-item replacement uses `with`,
+  and a pure append maps only the appended suffix. Tool and Bash objects shared between category
+  arrays and transcript blocks remain shared after projection.
+- Changing the global detail mode, replacing a session, shrinking an array, or failing an immutable
+  tail-boundary check rebuilds the complete display projection. Internal state-only updates may
+  arrive with the prior display arrays; they must be normalized back to the retained source arrays
+  before reapplying the override. Previous exposed array snapshots remain immutable.
 - `projectRuntimeState` remains the full stateless behavior oracle for tests, resume, and fallback.
   Incremental output must be deeply equal to this function for the same runtime state.
 - Gateway event replay is a bounded race-recovery queue, not a session event log. An event that
@@ -3093,6 +3105,9 @@ if (!settled && workerIsUnresponsive) {
 | Projected suffix replaces exactly the final item | Create one immutable snapshot with `previous.with(-1, item)` and no intermediate prefix array |
 | Projected suffix is a pure append | Create one result with `previous.concat(suffix)` and retain every previous item reference |
 | Projected suffix regroups or replaces a general range | Use the defensive prefix-slice plus suffix fallback |
+| Global tool detail mode is active and an assistant tail changes | Reuse tool/Bash projections and replace only the display transcript tail |
+| Global tool detail mode is active and a tool is appended | Map the new tool/block only and retain shared object identity between both arrays |
+| Tool detail mode changes or retained source boundary disagrees | Rebuild the complete display projection from source arrays |
 | Active tail assistant receives live reasoning | Reproject from that assistant while retaining earlier shell blocks |
 | Runtime source reference or projection context disagrees with the hint | Ignore retained state and match `projectRuntimeState` |
 | Active stream, final assistant, or reasoning item is the transcript tail | Locate it in constant time and create exactly one immutable array snapshot |
@@ -3141,6 +3156,8 @@ if (!settled && workerIsUnresponsive) {
   snapshot, without also allocating a sliced 49,999-item prefix.
 - Base: appending projected blocks uses `concat`, while a context-tool regroup still rebuilds the
   affected general suffix through the defensive fallback.
+- Good: after `Ctrl+O`, streaming an assistant across a 10,000-block transcript reads only the
+  retained boundary and preserves the overridden tool blocks in the stable prefix.
 - Good: a provider delta on a 10,000-item transcript reads the active tail once, copies the array
   once, preserves every stable item reference, and leaves the previous snapshot unchanged.
 - Good: the matching validated `message.delta` classification reads only the active tail instead of
@@ -3188,6 +3205,8 @@ if (!settled && workerIsUnresponsive) {
   not.
 - Bad: mutate retained `MycliShellState.transcript`, `messages`, `tools`, or `bash` arrays in place;
   the caller loses the previous snapshot needed for reconciliation.
+- Bad: remap every tool, Bash item, and transcript block on every assistant delta after `Ctrl+O`;
+  a display-only override must not make streaming cost grow with stable history.
 - Bad: cache footer, approval, queue, permission, or session state inside the transcript projector;
   only the expensive runtime-to-shell transcript mapping is retained.
 - Bad: append every gateway notification to a permanent array, or let a handled lifecycle event
@@ -3250,6 +3269,9 @@ if (!settled && workerIsUnresponsive) {
   reasoning replaces only the active tail assistant block. Tail replacement and pure append must
   preserve the previous snapshot, retain stable item identities, and match the stateless oracle;
   context regrouping must continue to exercise the general fallback behavior.
+- Tool-detail projection tests activate `Ctrl+O` over 10,000 blocks, count source-index reads for an
+  assistant tail update, and assert a following tool append remains collapsed, retains the stable
+  display prefix, and shares the projected tool object with its transcript block.
 - Runtime reducer tests wrap a 10,000-item transcript in an indexed-read counter and assert active
   stream, reopened final, and reasoning tail updates perform at most one complete snapshot read,
   retain stable item identity, and do not mutate the previous array.
@@ -3389,6 +3411,29 @@ return [...previous.slice(0, prefixLength), ...suffix];
 
 The bounded projector proof selects a single-allocation immutable fast path. General regrouping
 retains the safe suffix-replacement fallback.
+
+#### Wrong
+
+```typescript
+const transcript = state.transcript?.map((block) => applyDetailMode(block, expanded));
+```
+
+This remaps stable history on every stream event while the global detail override is active.
+
+#### Correct
+
+```typescript
+const transcript = projectDetailArray(
+  sourceTranscript,
+  retained.sourceTranscript,
+  retained.transcript,
+  transcriptUpdate,
+  applyDetailMode,
+);
+```
+
+The validated update hint selects bounded immutable projection; mode and boundary changes retain the
+full-rebuild fallback.
 
 #### Wrong
 

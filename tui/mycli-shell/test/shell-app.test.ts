@@ -3216,6 +3216,79 @@ test("ctrl o globally toggles tool details and survives gateway state refreshes"
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /└ Command:/);
 });
 
+test("ctrl o detail projection updates transcript tails without scanning stable history", () => {
+	const tool = {
+		id: "detail-tool",
+		name: "Read",
+		args: "README.md",
+		status: "success" as const,
+		outputPreview: "done",
+		expanded: true,
+	};
+	const transcript = [
+		{ id: tool.id, kind: "tool" as const, tool },
+		...Array.from({ length: 9_999 }, (_, index) => ({
+			id: `assistant-${index}`,
+			kind: "message" as const,
+			message: { id: `assistant-${index}`, role: "assistant" as const, text: "before" },
+		})),
+	];
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [tool],
+		bash: [],
+		transcript,
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal: new TestTerminal() });
+	(runtime as unknown as { toggleToolDetails(): void }).toggleToolDetails();
+	const collapsed = runtime.getState();
+	assert.equal(collapsed.tools[0]?.expanded, false);
+
+	const tail = {
+		id: "assistant-9998",
+		kind: "message" as const,
+		message: { id: "assistant-9998", role: "assistant" as const, text: "after" },
+	};
+	const tailTranscript = transcript.with(-1, tail);
+	let indexedReads = 0;
+	const countedTranscript = new Proxy(tailTranscript, {
+		get(target, property, receiver) {
+			if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) indexedReads += 1;
+			return Reflect.get(target, property, receiver);
+		},
+	});
+
+	runtime.setState({ ...initial, transcript: countedTranscript }, { transcriptUpdate: "tail" });
+	const afterTail = runtime.getState();
+	const afterTailBlock = afterTail.transcript?.at(-1);
+	const collapsedTailBlock = collapsed.transcript?.at(-1);
+	assert.ok(indexedReads <= 8, `expected bounded detail-overlay reads, received ${indexedReads}`);
+	assert.equal(afterTail.transcript?.[0], collapsed.transcript?.[0]);
+	assert.equal(afterTailBlock?.kind === "message"
+		? afterTailBlock.message.text
+		: undefined, "after");
+	assert.equal(collapsedTailBlock?.kind === "message"
+		? collapsedTailBlock.message.text
+		: undefined, "before");
+
+	const appendedTool = { ...tool, id: "detail-tool-2", expanded: true };
+	runtime.setState({
+		...initial,
+		tools: [...initial.tools, appendedTool],
+		transcript: [
+			...tailTranscript,
+			{ id: appendedTool.id, kind: "tool", tool: appendedTool },
+		],
+	}, { transcriptUpdate: "tail" });
+	const afterAppend = runtime.getState();
+	const appendedBlock = afterAppend.transcript?.at(-1);
+	assert.equal(afterAppend.transcript?.[0], afterTail.transcript?.[0]);
+	assert.equal(afterAppend.tools.at(-1)?.expanded, false);
+	assert.equal(appendedBlock?.kind === "tool" ? appendedBlock.tool : undefined, afterAppend.tools.at(-1));
+});
+
 test("ctrl o reflows native scrollback from the toggled transcript", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
