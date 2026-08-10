@@ -284,6 +284,20 @@ type TranscriptRenderedChunk = {
 	section: Container;
 	componentIndex: number;
 	start: number;
+	sourceStart: number;
+	totalLines: number;
+};
+
+type TranscriptChunkRender = {
+	section: Container;
+	componentIndex: number;
+	lines: string[];
+	totalLines: number;
+};
+
+type TranscriptChunkLayout = {
+	chunks: TranscriptRenderedChunk[];
+	lineOrigin: number;
 };
 
 type TranscriptTailRender = {
@@ -542,11 +556,7 @@ export class TranscriptViewportComponent implements Component {
 	}
 
 	private renderContentTail(width: number, maxRows: number): TranscriptTailRender {
-		const chunks: Array<{
-			section: Container;
-			componentIndex: number;
-			lines: string[];
-		}> = [];
+		const chunks: TranscriptChunkRender[] = [];
 		let renderedRows = 0;
 		let cacheable = true;
 		let truncated = false;
@@ -559,6 +569,7 @@ export class TranscriptViewportComponent implements Component {
 					section: section instanceof Container ? section : this.content,
 					componentIndex: index,
 					lines: rendered.lines,
+					totalLines: rendered.totalLines,
 				});
 				renderedRows += rendered.lines.length;
 				cacheable &&= rendered.cacheable;
@@ -571,21 +582,12 @@ export class TranscriptViewportComponent implements Component {
 			if (renderedRows >= maxRows) break;
 		}
 		chunks.reverse();
-		const lines: string[] = [];
-		const retainedChunks: TranscriptRenderedChunk[] = [];
-		for (const chunk of chunks) {
-			const start = lines.length;
-			lines.push(...chunk.lines);
-			retainedChunks.push({
-				section: chunk.section,
-				componentIndex: chunk.componentIndex,
-				start,
-			});
-		}
+		const lines = chunks.flatMap((chunk) => chunk.lines);
+		const layout = this.layoutRenderedChunks(chunks, 0);
 		return {
 			lines,
-			chunks: retainedChunks,
-			lineOrigin: 0,
+			chunks: layout.chunks,
+			lineOrigin: layout.lineOrigin,
 			chunkOffset: 0,
 			continuesLineage: false,
 			cacheable,
@@ -618,7 +620,7 @@ export class TranscriptViewportComponent implements Component {
 			)
 			: this.retainedContentLines.length;
 
-		const suffixChunks: Array<{ componentIndex: number; lines: string[] }> = [];
+		const suffixChunks: TranscriptChunkRender[] = [];
 		let renderedRows = 0;
 		let cacheable = true;
 		let truncated = false;
@@ -628,7 +630,12 @@ export class TranscriptViewportComponent implements Component {
 				width,
 				maxRows - renderedRows,
 			);
-			suffixChunks.push({ componentIndex: index, lines: rendered.lines });
+			suffixChunks.push({
+				section: change.section,
+				componentIndex: index,
+				lines: rendered.lines,
+				totalLines: rendered.totalLines,
+			});
 			renderedRows += rendered.lines.length;
 			cacheable &&= rendered.cacheable;
 			truncated ||= rendered.totalLines > rendered.lines.length;
@@ -639,23 +646,36 @@ export class TranscriptViewportComponent implements Component {
 		}
 		suffixChunks.reverse();
 		const suffixLines = suffixChunks.flatMap((chunk) => chunk.lines);
+		const suffixCoversBoundary = suffixChunks[0]?.componentIndex === change.stablePrefixLength;
+		const suffixSourceStart =
+			firstChangedChunk?.section === change.section &&
+			firstChangedChunk.componentIndex === change.stablePrefixLength
+				? firstChangedChunk.sourceStart
+				: firstChangedChunk === undefined
+					? this.retainedContentLineOrigin + lineBoundary
+					: undefined;
 		if (suffixLines.length >= maxRows) {
-			let start = 0;
-			const chunks = suffixChunks.map((chunk): TranscriptRenderedChunk => {
-				const result = {
-					section: change.section,
-					componentIndex: chunk.componentIndex,
-					start,
-				};
-				start += chunk.lines.length;
-				return result;
-			});
+			let layout: TranscriptChunkLayout | undefined;
+			let continuesLineage = false;
+			if (suffixCoversBoundary && suffixSourceStart !== undefined) {
+				const candidate = this.layoutRenderedChunks(suffixChunks, suffixSourceStart);
+				const retainedEnd = this.retainedContentLineOrigin + this.retainedContentLines.length;
+				if (
+					candidate.lineOrigin >= this.retainedContentLineOrigin &&
+					candidate.lineOrigin <= retainedEnd
+				) {
+					layout = candidate;
+					continuesLineage = true;
+					this.retainDisplacedScrollbackLines(width, this.retainedContentLines, candidate.lineOrigin);
+				}
+			}
+			layout ??= this.layoutRenderedChunks(suffixChunks, 0);
 			return {
 				lines: suffixLines,
-				chunks,
-				lineOrigin: 0,
+				chunks: layout.chunks,
+				lineOrigin: layout.lineOrigin,
 				chunkOffset: 0,
-				continuesLineage: false,
+				continuesLineage,
 				cacheable,
 				truncated: true,
 			};
@@ -669,18 +689,12 @@ export class TranscriptViewportComponent implements Component {
 		const lines = trimmedRows > 0 ? combinedLines.slice(trimmedRows) : combinedLines;
 		const lineOrigin = this.retainedContentLineOrigin + trimmedRows;
 		this.retainDisplacedScrollbackLines(width, combinedLines, lineOrigin);
-		let start = this.retainedContentLineOrigin + lineBoundary;
-		const suffixMetadata = suffixChunks.map((chunk): TranscriptRenderedChunk => {
-			const result = {
-				section: change.section,
-				componentIndex: chunk.componentIndex,
-				start,
-			};
-			start += chunk.lines.length;
-			return result;
-		});
+		const suffixLayout = this.layoutRenderedChunks(
+			suffixChunks,
+			suffixSourceStart ?? this.retainedContentLineOrigin + lineBoundary,
+		);
 		const chunks = this.retainedContentChunks;
-		chunks.splice(chunkBoundary, chunks.length - chunkBoundary, ...suffixMetadata);
+		chunks.splice(chunkBoundary, chunks.length - chunkBoundary, ...suffixLayout.chunks);
 		let chunkOffset = this.trimRetainedChunkPrefix(
 			chunks,
 			this.retainedContentChunkOffset,
@@ -703,6 +717,28 @@ export class TranscriptViewportComponent implements Component {
 			cacheable,
 			truncated: this.retainedContentTruncated || truncated || trimmedRows > 0,
 		};
+	}
+
+	private layoutRenderedChunks(
+		chunks: TranscriptChunkRender[],
+		sourceStart: number,
+	): TranscriptChunkLayout {
+		let cursor = sourceStart;
+		let lineOrigin = sourceStart;
+		const metadata = chunks.map((chunk, index): TranscriptRenderedChunk => {
+			const start = cursor + Math.max(0, chunk.totalLines - chunk.lines.length);
+			if (index === 0) lineOrigin = start;
+			const result = {
+				section: chunk.section,
+				componentIndex: chunk.componentIndex,
+				start,
+				sourceStart: cursor,
+				totalLines: chunk.totalLines,
+			};
+			cursor += chunk.totalLines;
+			return result;
+		});
+		return { chunks: metadata, lineOrigin };
 	}
 
 	private trimRetainedChunkPrefix(

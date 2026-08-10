@@ -2963,6 +2963,14 @@ if (!settled && workerIsUnresponsive) {
   retained window. Front trimming advances the origin and offset instead of rewriting every chunk.
   Stale chunk metadata is compacted only after a bounded minimum prefix is stale and that prefix is
   at least half the metadata array, preserving amortized append cost and absolute chunk starts.
+- Retained chunk metadata also records the component's full logical `sourceStart` and the
+  `renderTail.totalLines` value that produced its bounded lines. If one changed suffix component
+  fills the complete row cap, layout derives its retained start as
+  `sourceStart + totalLines - renderedLines.length` instead of resetting the logical lineage.
+- A full-height suffix continues the prior lineage only when rendering reaches the validated
+  `stablePrefixLength`, its source boundary is retained, and its next line origin still overlaps
+  the prior retained window. Growth beyond that window, shrinkage before its origin, or a missing
+  source boundary starts a new lineage and keeps the content-overlap fallback.
 - Native scrollback watermarks use the same logical lineage and absolute row coordinates. When a
   validated bounded update retains that lineage, scrollback derives the exact uncommitted interval
   instead of inferring overlap from line text. Equal adjacent rows remain distinct history rows.
@@ -3125,6 +3133,8 @@ if (!settled && workerIsUnresponsive) {
 | Several tail updates arrive before rendering | Merge the proofs to the minimum stable prefix for that section |
 | Tail hints target different sections or a full mutation follows | Discard the tail proof and run the complete bounded renderer |
 | Tail grows past a full row cap | Trim displaced rows, advance the logical origin/chunk offset, render only the validated suffix, and preserve exact native scrollback boundaries |
+| One changed component's bounded tail fills the row cap | Use its retained source start plus current `totalLines` to advance the line origin without resetting lineage |
+| Full-height tail no longer overlaps the prior retained window | Start a new logical lineage; do not claim rows omitted by both bounded renders |
 | Native scrollback collects a retained-lineage roll | Emit the absolute interval between its committed watermark and current visible start without comparing stable line text |
 | Several bounded rolls render before scrollback collection | Retain displaced uncommitted rows as one contiguous pending interval, then emit them before the current retained prefix |
 | Full render, width change, or logical-lineage disagreement | Use the content-overlap compatibility path and establish a new logical watermark after collection/replacement |
@@ -3220,6 +3230,8 @@ if (!settled && workerIsUnresponsive) {
   about 6.6 ms versus 357.1 ms for forced complete bounded renders.
 - Good: collecting native scrollback after each of 500 one-row rolls over 10,000 retained rows uses
   logical watermarks and measures about 7.0 ms instead of 28.0 ms for content-overlap matching.
+- Good: growing one full-height 10,000-row component 500 times retains its source lineage, emits all
+  500 history rows, and measures about 25.5 ms instead of 48.0 ms for forced lineage rebuilds.
 - Good: five identical visible strings roll by one logical row and emit one new history row; text
   equality cannot collapse distinct rows.
 - Base: a running Shell in the selected transcript tail returns an undefined render key, so its
@@ -3289,6 +3301,11 @@ if (!settled && workerIsUnresponsive) {
   update. Repeated rows can produce a full textual overlap even though the window moved.
 - Bad: overwrite the last rendered bounded frame before preserving uncommitted rows it displaced;
   a later scrollback collection cannot reconstruct rows no longer present in either frame.
+- Bad: reset the logical origin to zero whenever `suffixLines.length === maxRows`. A tall active
+  assistant then loses coordinate continuity on every streamed line even though `totalLines`
+  provides the exact retained-tail offset.
+- Bad: continue a full-height lineage after its new origin advances beyond the old retained end;
+  intermediate rows omitted by both bounded tails cannot be reconstructed safely.
 - Bad: retain measured editor, status, or size-dependent pending lines across root frames; cursor,
   timer, input, and terminal-height state can change without a parent container rebuild.
 - Bad: opt a component into cross-frame chrome caching unless all display state is owned by an
@@ -3369,6 +3386,9 @@ if (!settled && workerIsUnresponsive) {
 - Native scrollback coordinate tests roll repeated equal strings and assert one physical history row
   is emitted. Delayed-collection tests render several bounded rolls, then assert displaced and
   still-retained history rows are emitted exactly once in logical order.
+- Full-height component tests grow one tail beyond the row cap with both repeated and distinct
+  lines. They assert `totalLines` preserves one-row lineage, repeated rows remain distinct, and
+  several rendered rolls can be collected later in exact logical order.
 - Fallback tests shrink a multi-line tail inside a full bounded window and assert older rows are
   exposed exactly as a fresh bounded render. Native scrollback and resize suites remain required.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
@@ -3504,6 +3524,26 @@ return overlapFallback(previousLines, nextLines);
 Text overlap is a compatibility fallback for coordinate resets. It cannot identify repeated rows
 inside a retained logical lineage, and rendered-but-uncollected displaced rows must be preserved
 until the logical interval is committed.
+
+#### Wrong
+
+```typescript
+if (suffixLines.length >= maxRows) {
+  return { lines: suffixLines, lineOrigin: 0, continuesLineage: false };
+}
+```
+
+#### Correct
+
+```typescript
+const lineOrigin = sourceStart + totalLines - suffixLines.length;
+const continuesLineage =
+  suffixCoversBoundary && lineOrigin >= previousOrigin && lineOrigin <= previousRetainedEnd;
+```
+
+`renderTail.totalLines` locates a full-height component tail without materializing its omitted
+prefix. Continuity is accepted only while the new bounded tail overlaps the prior retained window;
+otherwise the viewport creates a new lineage rather than inventing missing rows.
 
 #### Wrong
 

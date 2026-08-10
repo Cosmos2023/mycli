@@ -280,6 +280,40 @@ test("rendered bounded rolls retain displaced rows until native scrollback colle
 	);
 });
 
+test("full-height component tails keep repeated native scrollback rows distinct", () => {
+	const tail = new MutableLinesComponent(Array.from({ length: 5 }, () => "same"));
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness([tail], 5, () => revision, 2);
+	assert.deepEqual(viewport.scrollbackPrefix(80), ["same", "same", "same"]);
+
+	tail.setLines(Array.from({ length: 6 }, () => "same"));
+	revision += 1;
+	viewport.markSectionTailChanged(transcript, 0);
+
+	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), ["same"]);
+});
+
+test("full-height component tails retain delayed native scrollback rows", () => {
+	const tail = new MutableLinesComponent(
+		Array.from({ length: 5 }, (_, index) => `line ${index}`),
+	);
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness([tail], 5, () => revision, 2);
+	assert.deepEqual(viewport.scrollbackPrefix(80), ["line 0", "line 1", "line 2"]);
+
+	for (let lineCount = 6; lineCount <= 9; lineCount += 1) {
+		tail.setLines(Array.from({ length: lineCount }, (_, index) => `line ${index}`));
+		revision += 1;
+		viewport.markSectionTailChanged(transcript, 0);
+		viewport.render(80);
+	}
+
+	assert.deepEqual(
+		viewport.takeNewScrollbackLines(80),
+		["line 3", "line 4", "line 5", "line 6"],
+	);
+});
+
 test("transcript viewport amortizes metadata compaction across repeated bounded appends", () => {
 	const components = Array.from({ length: 20 }, (_, index) => new CountingComponent(`line ${index}`));
 	let revision = 1;
