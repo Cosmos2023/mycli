@@ -1489,24 +1489,35 @@ export class MycliShellRuntime {
 			};
 		const projected = projectionUpdate.projection.blocks;
 		const prefixLength = projectionUpdate.stablePrefixLength;
-		const nextSuffixIds = new Set(projected.slice(prefixLength).map((block) => block.id));
+		const nextSuffixIds = new Set<string>();
+		for (let index = prefixLength; index < projected.length; index += 1) {
+			nextSuffixIds.add(projected[index]!.id);
+		}
 		for (const block of projectionUpdate.replacedBlocks) {
 			if (!nextSuffixIds.has(block.id)) this.chatBlocks.delete(block.id);
 		}
 
-		const children: Component[] = this.chatContainer.children.slice(0, prefixLength);
-		for (const block of projected.slice(prefixLength)) {
+		const suffixComponents: Component[] = [];
+		for (let index = prefixLength; index < projected.length; index += 1) {
+			const block = projected[index]!;
 			const cached = this.chatBlocks.get(block.id);
 			const next = this.syncChatBlock(block, cached);
 			this.chatBlocks.set(block.id, next);
-			children.push(next.component);
+			suffixComponents.push(next.component);
 		}
 		if (this.isCompletedLiveState(this.state.footer.liveState)) {
-			children.push(new TurnCompletedComponent(this.completedDurationMs ?? 0));
+			suffixComponents.push(new TurnCompletedComponent(this.completedDurationMs ?? 0));
+		}
+		const children = this.chatContainer.children;
+		let suffixMatches = children.length === prefixLength + suffixComponents.length;
+		for (let index = 0; suffixMatches && index < suffixComponents.length; index += 1) {
+			suffixMatches = children[prefixLength + index] === suffixComponents[index];
+		}
+		if (!suffixMatches) {
+			children.splice(prefixLength, children.length - prefixLength, ...suffixComponents);
 		}
 		this.transcriptProjection = projectionUpdate.projection;
 		this.projectedChatBlocks = projected;
-		this.chatContainer.children = children;
 	}
 
 	private sessionTreeJumpTarget(node: MycliShellSessionTreeNode): string | null {

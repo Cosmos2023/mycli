@@ -2171,6 +2171,7 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 		],
 	};
 	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	const children = runtime.chatContainer.children;
 	const component = runtime.chatContainer.children[0];
 	const runtimeInternals = runtime as unknown as {
 		blockSignature(block: unknown): string;
@@ -2199,6 +2200,7 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 		{ transcriptUpdate: "tail" },
 	);
 
+	assert.equal(runtime.chatContainer.children, children);
 	assert.equal(runtime.chatContainer.children[0], component);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /hello/);
 });

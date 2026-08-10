@@ -2996,6 +2996,11 @@ if (!settled && workerIsUnresponsive) {
 - `stablePrefixLength` identifies components that remain mounted. `replacedBlocks` contains only
   the old suffix that cache reconciliation may remove; unchanged component identity survives an
   ordinary append.
+- Shell component reconciliation builds and compares only the projected suffix. When every suffix
+  component is already mounted at the expected position, it retains the `Container.children` array
+  itself; otherwise it splices only the changed suffix. This retained component tree is mutable UI
+  cache, unlike the immutable runtime and shell state arrays. Full projection replacement may still
+  rebuild the complete component suffix from index zero.
 - Markdown caches top-level rendered token chunks. Reuse requires the same token type, raw source,
   next-token type, width, and reference-sensitive token context. Appending a reference-link
   definition must be able to change an earlier `[label][id]` token even when its raw source is
@@ -3100,6 +3105,8 @@ if (!settled && workerIsUnresponsive) {
 | Tail appends after a stable non-context block | Read/project only appended source blocks and retain the complete projected prefix |
 | Tail touches a context run | Replay from that run's recorded source start and preserve grouping semantics |
 | Full replacement or session transition | Discard retained projection metadata and rebuild from source |
+| Projected tail resolves to the same mounted components | Update component content and retain the children array without copying its stable prefix |
+| Projected tail changes component identity or grouping | Splice only the changed component suffix from `stablePrefixLength` |
 | Runtime status changes with the same transcript array | Reuse all four runtime projection arrays by identity |
 | Runtime appends or replaces the final immutable item | Reparse a bounded source suffix, snapshot affected arrays, and reuse unaffected arrays |
 | Projected suffix replaces exactly the final item | Create one immutable snapshot with `previous.with(-1, item)` and no intermediate prefix array |
@@ -3148,6 +3155,8 @@ if (!settled && workerIsUnresponsive) {
   source blocks, retains the projected array, and keeps all stable components mounted.
 - Good: replacing a subagent boundary with a second `Read` replays the preceding context run and
   creates the same group as a fresh full projection.
+- Good: 200 assistant tail updates across 50,000 mounted blocks retain the component children array
+  and update only the existing final `AssistantMessageComponent`.
 - Good: a status-only gateway event reuses the complete shell transcript arrays without touching
   any runtime transcript item.
 - Good: a 10,000-item final message update reads only a bounded runtime suffix, returns a new shell
@@ -3198,6 +3207,8 @@ if (!settled && workerIsUnresponsive) {
   recreates those wrappers even when the runtime transcript prefix is unchanged.
 - Bad: build a new projected prefix array on each stream delta; source scanning may be gone while
   linear allocation remains.
+- Bad: copy all mounted transcript components merely to put the same updated assistant component
+  back at the final position.
 - Bad: call `findIndex` before checking the active tail, then combine separately sliced prefix and
   suffix arrays; that adds a full history scan and multiple allocations to every provider delta.
 - Bad: globally treat arrays with matching tail boundaries as append-only. Only the validated
@@ -3262,6 +3273,9 @@ if (!settled && workerIsUnresponsive) {
   changes, subagent boundaries, expanded context tools, and invalid-boundary full fallback.
 - Shell runtime tests reconstruct stable shell block wrappers as the gateway does, then assert the
   existing prefix components retain object identity after a hinted append.
+- Shell runtime tests assert an assistant tail update retains both its component and the complete
+  `chatContainer.children` array, while append and context regroup tests still produce correct
+  suffix shape and output.
 - Runtime projector tests compare every incremental result with stateless `projectRuntimeState`,
   count indexed reads for a 10,000-item final update, and assert ordinary append updates the tool
   array while retaining stable message blocks.
