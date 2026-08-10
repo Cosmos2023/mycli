@@ -291,6 +291,7 @@ type TranscriptTailRender = {
 	chunks: TranscriptRenderedChunk[];
 	lineOrigin: number;
 	chunkOffset: number;
+	continuesLineage: boolean;
 	cacheable: boolean;
 	truncated: boolean;
 };
@@ -305,6 +306,11 @@ export class TranscriptViewportComponent implements Component {
 	private committedPrefixLength = 0;
 	private committedPrefixBoundary: string | undefined;
 	private committedWidth: number | undefined;
+	private committedContentLineage: number | undefined;
+	private committedLogicalEnd = 0;
+	private pendingScrollbackLineage: number | undefined;
+	private pendingScrollbackStart = 0;
+	private pendingScrollbackLines: string[] = [];
 	private renderCache = new WeakMap<Component, {
 		key: unknown;
 		width: number;
@@ -318,9 +324,12 @@ export class TranscriptViewportComponent implements Component {
 	private retainedContentChunks: TranscriptRenderedChunk[] = [];
 	private retainedContentLineOrigin = 0;
 	private retainedContentChunkOffset = 0;
+	private retainedContentLineage = 0;
 	private retainedContentTruncated = false;
 	private retainedContentReady = false;
 	private pendingContentChange: TranscriptContentChange | undefined;
+	private lastRenderedLineOrigin = 0;
+	private lastRenderedContentLineage: number | undefined;
 
 	/**
 	 * `contentRevision` must change before the owner mutates any transcript-visible content.
@@ -401,16 +410,27 @@ export class TranscriptViewportComponent implements Component {
 			this.maxRenderedRows !== undefined &&
 			previousLines.length >= this.maxRenderedRows &&
 			lines.length >= this.maxRenderedRows;
+		const logicalDelta = this.takeLogicalScrollbackDelta(lines, start, width);
+		if (logicalDelta !== undefined) {
+			this.recordCommittedPrefix(lines, start, width);
+			return logicalDelta;
+		}
 		if (refreshLines && boundedWindowRolled && this.committedWidth === width && previousLines.length > 0) {
 			const overlap = suffixPrefixOverlapLength(previousLines, lines);
 			const droppedRows = previousLines.length - overlap;
-			const delta = droppedRows > previousStart
-				? previousLines.slice(previousStart, droppedRows)
-				: [];
+			const delta = this.takePendingScrollbackLines();
+			if (droppedRows > previousStart) {
+				delta.push(...previousLines.slice(previousStart, droppedRows));
+			}
 			const survivingPreviousStart = Math.max(0, previousStart - droppedRows);
 			delta.push(...lines.slice(survivingPreviousStart, start));
 			this.recordCommittedPrefix(lines, start, width);
 			return delta;
+		}
+		const pendingDelta = this.takePendingScrollbackLines();
+		if (pendingDelta.length > 0) {
+			this.recordCommittedPrefix(lines, start, width);
+			return pendingDelta;
 		}
 		const boundaryChanged =
 			this.committedPrefixLength > 0 &&
@@ -436,9 +456,12 @@ export class TranscriptViewportComponent implements Component {
 		this.retainedContentChunks = [];
 		this.retainedContentLineOrigin = 0;
 		this.retainedContentChunkOffset = 0;
+		this.retainedContentLineage += 1;
 		this.retainedContentTruncated = false;
 		this.retainedContentWidth = undefined;
 		this.pendingContentChange = undefined;
+		this.lastRenderedContentLineage = undefined;
+		this.clearPendingScrollbackLines();
 	}
 
 	render(width: number): string[] {
@@ -493,6 +516,9 @@ export class TranscriptViewportComponent implements Component {
 					? this.renderContentTailUpdate(width, this.maxRenderedRows, pendingChange)
 					: undefined;
 			const rendered = incremental ?? this.renderContentTail(width, this.maxRenderedRows);
+			if (incremental === undefined || !rendered.continuesLineage) {
+				this.retainedContentLineage += 1;
+			}
 			lines = rendered.lines;
 			this.retainedContentRevision = revision;
 			this.retainedContentWidth = width;
@@ -506,6 +532,12 @@ export class TranscriptViewportComponent implements Component {
 		this.pendingContentChange = undefined;
 		this.lastRenderedLines = lines;
 		this.lastRenderedWidth = width;
+		this.lastRenderedLineOrigin = this.maxRenderedRows === undefined
+			? 0
+			: this.retainedContentLineOrigin;
+		this.lastRenderedContentLineage = this.maxRenderedRows === undefined
+			? undefined
+			: this.retainedContentLineage;
 		return lines;
 	}
 
@@ -555,6 +587,7 @@ export class TranscriptViewportComponent implements Component {
 			chunks: retainedChunks,
 			lineOrigin: 0,
 			chunkOffset: 0,
+			continuesLineage: false,
 			cacheable,
 			truncated,
 		};
@@ -622,6 +655,7 @@ export class TranscriptViewportComponent implements Component {
 				chunks,
 				lineOrigin: 0,
 				chunkOffset: 0,
+				continuesLineage: false,
 				cacheable,
 				truncated: true,
 			};
@@ -634,6 +668,7 @@ export class TranscriptViewportComponent implements Component {
 		const trimmedRows = Math.max(0, nextLineCount - maxRows);
 		const lines = trimmedRows > 0 ? combinedLines.slice(trimmedRows) : combinedLines;
 		const lineOrigin = this.retainedContentLineOrigin + trimmedRows;
+		this.retainDisplacedScrollbackLines(width, combinedLines, lineOrigin);
 		let start = this.retainedContentLineOrigin + lineBoundary;
 		const suffixMetadata = suffixChunks.map((chunk): TranscriptRenderedChunk => {
 			const result = {
@@ -664,6 +699,7 @@ export class TranscriptViewportComponent implements Component {
 			chunks,
 			lineOrigin,
 			chunkOffset,
+			continuesLineage: true,
 			cacheable,
 			truncated: this.retainedContentTruncated || truncated || trimmedRows > 0,
 		};
@@ -682,6 +718,87 @@ export class TranscriptViewportComponent implements Component {
 			offset += 1;
 		}
 		return offset;
+	}
+
+	private retainDisplacedScrollbackLines(
+		width: number,
+		combinedLines: string[],
+		nextLineOrigin: number,
+	): void {
+		if (
+			this.committedWidth !== width ||
+			this.committedContentLineage !== this.retainedContentLineage ||
+			nextLineOrigin <= this.retainedContentLineOrigin
+		) {
+			return;
+		}
+		const pendingEnd = this.pendingScrollbackLineage === this.retainedContentLineage
+			? this.pendingScrollbackStart + this.pendingScrollbackLines.length
+			: this.committedLogicalEnd;
+		const start = Math.max(this.retainedContentLineOrigin, pendingEnd);
+		if (start >= nextLineOrigin) return;
+		const displaced = combinedLines.slice(
+			start - this.retainedContentLineOrigin,
+			nextLineOrigin - this.retainedContentLineOrigin,
+		);
+		if (displaced.length === 0) return;
+		if (this.pendingScrollbackLineage !== this.retainedContentLineage) {
+			this.pendingScrollbackLineage = this.retainedContentLineage;
+			this.pendingScrollbackStart = start;
+			this.pendingScrollbackLines = displaced;
+			return;
+		}
+		this.pendingScrollbackLines.push(...displaced);
+	}
+
+	private takeLogicalScrollbackDelta(
+		lines: string[],
+		start: number,
+		width: number,
+	): string[] | undefined {
+		const lineage = this.lastRenderedContentLineage;
+		if (
+			lineage === undefined ||
+			lineage !== this.committedContentLineage ||
+			this.committedWidth !== width
+		) {
+			return undefined;
+		}
+		const logicalEnd = this.lastRenderedLineOrigin + start;
+		if (logicalEnd < this.committedLogicalEnd) return undefined;
+
+		const hasPending =
+			this.pendingScrollbackLines.length > 0 &&
+			this.pendingScrollbackLineage === lineage;
+		if (hasPending && this.pendingScrollbackStart !== this.committedLogicalEnd) return undefined;
+		const pendingEnd = hasPending
+			? this.pendingScrollbackStart + this.pendingScrollbackLines.length
+			: this.committedLogicalEnd;
+		if (pendingEnd < this.lastRenderedLineOrigin || pendingEnd > logicalEnd) return undefined;
+		const delta = this.takePendingScrollbackLines(lineage);
+		delta.push(...lines.slice(
+			pendingEnd - this.lastRenderedLineOrigin,
+			logicalEnd - this.lastRenderedLineOrigin,
+		));
+		return delta;
+	}
+
+	private takePendingScrollbackLines(lineage?: number): string[] {
+		if (
+			this.pendingScrollbackLines.length === 0 ||
+			(lineage !== undefined && this.pendingScrollbackLineage !== lineage)
+		) {
+			return [];
+		}
+		const lines = this.pendingScrollbackLines;
+		this.clearPendingScrollbackLines();
+		return lines;
+	}
+
+	private clearPendingScrollbackLines(): void {
+		this.pendingScrollbackLineage = undefined;
+		this.pendingScrollbackStart = 0;
+		this.pendingScrollbackLines = [];
 	}
 
 	private renderComponent(
@@ -722,6 +839,9 @@ export class TranscriptViewportComponent implements Component {
 		this.committedPrefixLength = start;
 		this.committedPrefixBoundary = start > 0 ? lines[start - 1] : undefined;
 		this.committedWidth = width;
+		this.committedContentLineage = this.lastRenderedContentLineage;
+		this.committedLogicalEnd = this.lastRenderedLineOrigin + start;
+		this.clearPendingScrollbackLines();
 	}
 }
 

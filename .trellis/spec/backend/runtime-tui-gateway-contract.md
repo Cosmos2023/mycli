@@ -2963,6 +2963,13 @@ if (!settled && workerIsUnresponsive) {
   retained window. Front trimming advances the origin and offset instead of rewriting every chunk.
   Stale chunk metadata is compacted only after a bounded minimum prefix is stale and that prefix is
   at least half the metadata array, preserving amortized append cost and absolute chunk starts.
+- Native scrollback watermarks use the same logical lineage and absolute row coordinates. When a
+  validated bounded update retains that lineage, scrollback derives the exact uncommitted interval
+  instead of inferring overlap from line text. Equal adjacent rows remain distinct history rows.
+- A rendered roll may displace uncommitted rows before the next scrollback collection. Retain that
+  contiguous interval with its lineage until collection, then append the still-retained prefix.
+  Width changes, full bounded rebuilds, and lineage disagreement keep the content-overlap fallback
+  and reset the logical watermark after collection or source-backed scrollback replacement.
 - Shell chrome containers may reuse rendered lines between viewport-height measurement and their
   later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
   outside the root render call and must not survive into the next frame.
@@ -3118,6 +3125,9 @@ if (!settled && workerIsUnresponsive) {
 | Several tail updates arrive before rendering | Merge the proofs to the minimum stable prefix for that section |
 | Tail hints target different sections or a full mutation follows | Discard the tail proof and run the complete bounded renderer |
 | Tail grows past a full row cap | Trim displaced rows, advance the logical origin/chunk offset, render only the validated suffix, and preserve exact native scrollback boundaries |
+| Native scrollback collects a retained-lineage roll | Emit the absolute interval between its committed watermark and current visible start without comparing stable line text |
+| Several bounded rolls render before scrollback collection | Retain displaced uncommitted rows as one contiguous pending interval, then emit them before the current retained prefix |
+| Full render, width change, or logical-lineage disagreement | Use the content-overlap compatibility path and establish a new logical watermark after collection/replacement |
 | Tail shrinks and retained rows cannot fill the cap | Recompute from earlier components to expose the correct older rows |
 | Tail boundary is invalid or changed section is not final | Ignore the hint and run the complete bounded renderer |
 | Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
@@ -3208,6 +3218,10 @@ if (!settled && workerIsUnresponsive) {
 - Good: 500 one-row appends that continuously roll a full 10,000-row window advance retained
   logical coordinates instead of rereading stable component keys; the measured viewport work is
   about 6.6 ms versus 357.1 ms for forced complete bounded renders.
+- Good: collecting native scrollback after each of 500 one-row rolls over 10,000 retained rows uses
+  logical watermarks and measures about 7.0 ms instead of 28.0 ms for content-overlap matching.
+- Good: five identical visible strings roll by one logical row and emit one new history row; text
+  equality cannot collapse distinct rows.
 - Base: a running Shell in the selected transcript tail returns an undefined render key, so its
   elapsed seconds update even when the owner revision is unchanged.
 - Good: a streamed paragraph crosses a wrap boundary while the replay window is full; the viewport
@@ -3271,6 +3285,10 @@ if (!settled && workerIsUnresponsive) {
   streaming into a stable-prefix key scan on every frame.
 - Bad: subtract the dropped-row count from every retained chunk start. Chunk starts are absolute;
   advance the logical origin and compact stale metadata only at the amortized threshold.
+- Bad: use suffix/prefix text overlap as the primary scrollback identity for a retained-lineage
+  update. Repeated rows can produce a full textual overlap even though the window moved.
+- Bad: overwrite the last rendered bounded frame before preserving uncommitted rows it displaced;
+  a later scrollback collection cannot reconstruct rows no longer present in either frame.
 - Bad: retain measured editor, status, or size-dependent pending lines across root frames; cursor,
   timer, input, and terminal-height state can change without a parent container rebuild.
 - Bad: opt a component into cross-frame chrome caching unless all display state is owned by an
@@ -3348,6 +3366,9 @@ if (!settled && workerIsUnresponsive) {
   retained window matches a fresh render while every appended component key is read exactly once;
   replacing the final component afterward must use the preserved absolute chunk boundary and read
   only that changed key again.
+- Native scrollback coordinate tests roll repeated equal strings and assert one physical history row
+  is emitted. Delayed-collection tests render several bounded rolls, then assert displaced and
+  still-retained history rows are emitted exactly once in logical order.
 - Fallback tests shrink a multi-line tail inside a full bounded window and assert older rows are
   exposed exactly as a fresh bounded render. Native scrollback and resize suites remain required.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
@@ -3463,6 +3484,26 @@ const chunkOffset = trimChunkPrefix(chunks, retainedChunkOffset, lineOrigin);
 Chunk starts stay in absolute logical coordinates. The retained line array is relative to
 `lineOrigin`, and stale metadata is removed only when amortized compaction is due. Shrinkage that
 needs unavailable older rows still uses the complete bounded fallback.
+
+#### Wrong
+
+```typescript
+const overlap = suffixPrefixOverlapLength(previousLines, nextLines);
+const droppedRows = previousLines.length - overlap;
+```
+
+#### Correct
+
+```typescript
+if (currentLineage === committedLineage) {
+  return rowsBetween(committedLogicalEnd, currentLogicalVisibleStart);
+}
+return overlapFallback(previousLines, nextLines);
+```
+
+Text overlap is a compatibility fallback for coordinate resets. It cannot identify repeated rows
+inside a retained logical lineage, and rendered-but-uncollected displaced rows must be preserved
+until the logical interval is committed.
 
 #### Wrong
 

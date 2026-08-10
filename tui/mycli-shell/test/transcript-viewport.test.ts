@@ -246,6 +246,40 @@ test("rolled bounded rows remain available to native scrollback collection", () 
 	assert.equal(stable.every((component) => component.cacheKeyReads === 1), true);
 });
 
+test("logical row origins disambiguate repeated native scrollback lines", () => {
+	const components = Array.from({ length: 5 }, () => new CountingComponent("same"));
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness(components, 5, () => revision, 2);
+	assert.deepEqual(viewport.scrollbackPrefix(80), ["same", "same", "same"]);
+
+	const prefixLength = transcript.children.length;
+	transcript.addChild(new CountingComponent("same"));
+	revision += 1;
+	viewport.markSectionTailChanged(transcript, prefixLength);
+
+	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), ["same"]);
+});
+
+test("rendered bounded rolls retain displaced rows until native scrollback collects them", () => {
+	const components = Array.from({ length: 5 }, (_, index) => new CountingComponent(`line ${index}`));
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness(components, 5, () => revision, 2);
+	assert.deepEqual(viewport.scrollbackPrefix(80), ["line 0", "line 1", "line 2"]);
+
+	for (let index = 5; index <= 8; index += 1) {
+		const prefixLength = transcript.children.length;
+		transcript.addChild(new CountingComponent(`line ${index}`));
+		revision += 1;
+		viewport.markSectionTailChanged(transcript, prefixLength);
+		viewport.render(80);
+	}
+
+	assert.deepEqual(
+		viewport.takeNewScrollbackLines(80),
+		["line 3", "line 4", "line 5", "line 6"],
+	);
+});
+
 test("transcript viewport amortizes metadata compaction across repeated bounded appends", () => {
 	const components = Array.from({ length: 20 }, (_, index) => new CountingComponent(`line ${index}`));
 	let revision = 1;
