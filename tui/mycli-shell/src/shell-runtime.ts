@@ -55,7 +55,12 @@ import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/
 import { UserMessageComponent } from "./components/user-message.ts";
 import { isLocalImageAttachmentPath } from "./local-image-attachments.ts";
 import { getEditorTheme, getSelectListTheme, theme } from "./theme/theme.ts";
-import { projectTranscriptBlocks, type ProjectedTranscriptBlock } from "./transcript-projection.ts";
+import {
+	createTranscriptProjection,
+	projectTranscriptTail,
+	type ProjectedTranscriptBlock,
+	type TranscriptProjectionState,
+} from "./transcript-projection.ts";
 import { resolveTranscriptReplayMaxRows } from "./transcript-replay.ts";
 import type { TranscriptUpdateKind } from "./adapters/transcript-update.ts";
 
@@ -469,6 +474,7 @@ export class MycliShellRuntime {
 	private mainMounted = false;
 	private chatBlocks = new Map<string, ChatBlockComponent>();
 	private projectedChatBlocks: ProjectedTranscriptBlock[] = [];
+	private transcriptProjection: TranscriptProjectionState | null = null;
 	private turnActivity: TurnActivityComponent | null = null;
 	private turnStartedAtMs: number | null = null;
 	private completedDurationMs: number | null = null;
@@ -1329,6 +1335,7 @@ export class MycliShellRuntime {
 		}
 		this.chatBlocks.clear();
 		this.projectedChatBlocks = [];
+		this.transcriptProjection = null;
 		this.chatContainer.clear();
 	}
 
@@ -1347,11 +1354,17 @@ export class MycliShellRuntime {
 	}
 
 	private syncChatBlocks(blocks: MycliShellTranscriptBlock[], tailOnly: boolean): void {
-		const projected = projectTranscriptBlocks(blocks);
-		const prefixLength = tailOnly ? this.stableTailProjectionPrefix(projected) : 0;
-		const previousProjected = this.projectedChatBlocks;
+		const projectionUpdate = tailOnly && this.transcriptProjection
+			? projectTranscriptTail(blocks, this.transcriptProjection)
+			: {
+				projection: createTranscriptProjection(blocks),
+				stablePrefixLength: 0,
+				replacedBlocks: this.projectedChatBlocks,
+			};
+		const projected = projectionUpdate.projection.blocks;
+		const prefixLength = projectionUpdate.stablePrefixLength;
 		const nextSuffixIds = new Set(projected.slice(prefixLength).map((block) => block.id));
-		for (const block of previousProjected.slice(prefixLength)) {
+		for (const block of projectionUpdate.replacedBlocks) {
 			if (!nextSuffixIds.has(block.id)) this.chatBlocks.delete(block.id);
 		}
 
@@ -1365,31 +1378,9 @@ export class MycliShellRuntime {
 		if (this.isCompletedLiveState(this.state.footer.liveState)) {
 			children.push(new TurnCompletedComponent(this.completedDurationMs ?? 0));
 		}
+		this.transcriptProjection = projectionUpdate.projection;
 		this.projectedChatBlocks = projected;
 		this.chatContainer.children = children;
-	}
-
-	private stableTailProjectionPrefix(next: ProjectedTranscriptBlock[]): number {
-		const previous = this.projectedChatBlocks;
-		let prefixLength = Math.min(previous.length, next.length);
-		if (
-			previous.length === next.length &&
-			prefixLength > 0 &&
-			this.sameProjectedPosition(previous[prefixLength - 1]!, next[prefixLength - 1]!)
-		) {
-			prefixLength -= 1;
-		}
-		while (
-			prefixLength > 0 &&
-			!this.sameProjectedPosition(previous[prefixLength - 1]!, next[prefixLength - 1]!)
-		) {
-			prefixLength -= 1;
-		}
-		return prefixLength;
-	}
-
-	private sameProjectedPosition(left: ProjectedTranscriptBlock, right: ProjectedTranscriptBlock): boolean {
-		return left.id === right.id && left.kind === right.kind;
 	}
 
 	private sessionTreeJumpTarget(node: MycliShellSessionTreeNode): string | null {

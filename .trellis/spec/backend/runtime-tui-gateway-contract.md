@@ -2872,6 +2872,13 @@ if (!settled && workerIsUnresponsive) {
   `TUI.render(width)` call.
 - Transcript viewport:
   `TranscriptViewportComponent.render(width) -> string[]`.
+- Full transcript projection:
+  `createTranscriptProjection(blocks) -> TranscriptProjectionState`.
+- Incremental tail projection:
+  `projectTranscriptTail(blocks, previous) ->
+  {projection, stablePrefixLength, replacedBlocks}`.
+- Runtime update classifier:
+  `classifyRuntimeTranscriptUpdate(previous, next) -> "unchanged" | "tail" | "replace"`.
 
 ### 3. Contracts
 
@@ -2893,6 +2900,25 @@ if (!settled && workerIsUnresponsive) {
 - Active assistant blocks update their retained component directly. They must not serialize the
   complete block to build a change signature on each text or reasoning delta; that allocation grows
   linearly with the accumulated response before Markdown rendering even begins.
+- Runtime transcript classification owns the `tail` guarantee. It emits `tail` only for an append,
+  a final-item replacement, or a reasoning update whose assistant is at the tail. Workspace,
+  turn-running, and tool-detail changes force `replace`.
+- `projectRuntimeState` reconstructs shell block wrappers on every state projection. Incremental
+  validation therefore compares the retained boundary by stable `id` and `kind`, not wrapper object
+  identity. The runtime classifier remains responsible for proving the complete source prefix.
+- Projection state retains projected blocks, ordered source spans, source length, and the final two
+  source identities. A valid tail update splices only the grouping-sensitive suffix into the same
+  projected arrays; it must not traverse or copy the complete stable prefix.
+- An append after a non-context block starts at the prior source length. Updating the last source
+  block starts at that block, unless the preceding source span is a context run. A trailing context
+  run is replayed from its first source index so a second context tool can form a group and an
+  expanded tool can keep the complete run ungrouped.
+- Mutating tools, file changes, and subagent source blocks remain grouping boundaries. Subagent
+  blocks have no main-transcript projection but their source positions still prevent context tools
+  on opposite sides from being combined.
+- `stablePrefixLength` identifies components that remain mounted. `replacedBlocks` contains only
+  the old suffix that cache reconciliation may remove; unchanged component identity survives an
+  ordinary append.
 - Markdown caches top-level rendered token chunks. Reuse requires the same token type, raw source,
   next-token type, width, and reference-sensitive token context. Appending a reference-link
   definition must be able to change an earlier `[label][id]` token even when its raw source is
@@ -2913,6 +2939,10 @@ if (!settled && workerIsUnresponsive) {
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
 | Tail includes the first assistant content row but not the leading blank | Preserve the assistant role bullet on that content row |
+| Tail source shrinks or its retained boundary `id`/`kind` changes | Reject incremental state and run a full projection |
+| Tail appends after a stable non-context block | Read/project only appended source blocks and retain the complete projected prefix |
+| Tail touches a context run | Replay from that run's recorded source start and preserve grouping semantics |
+| Full replacement or session transition | Discard retained projection metadata and rebuild from source |
 
 ### 5. Good/Base/Bad Cases
 
@@ -2921,6 +2951,10 @@ if (!settled && workerIsUnresponsive) {
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
+- Good: appending one message to a 10,000-block transcript reads only the boundary and appended
+  source blocks, retains the projected array, and keeps all stable components mounted.
+- Good: replacing a subagent boundary with a second `Read` replays the preceding context run and
+  creates the same group as a fresh full projection.
 - Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
@@ -2928,6 +2962,10 @@ if (!settled && workerIsUnresponsive) {
 - Bad: retain measured editor/status/footer lines across root frames; cursor, timer, and input state
   can change without a parent container rebuild.
 - Bad: call `JSON.stringify` on the accumulated assistant block for every streaming delta.
+- Bad: validate incremental shell projection with wrapper reference equality; gateway projection
+  recreates those wrappers even when the runtime transcript prefix is unchanged.
+- Bad: build a new projected prefix array on each stream delta; source scanning may be gone while
+  linear allocation remains.
 
 ### 6. Tests Required
 
@@ -2942,6 +2980,12 @@ if (!settled && workerIsUnresponsive) {
   render in the next frame, and no cache reuse for direct container calls.
 - Assistant streaming tests assert the retained component updates without consulting the generic
   serialized block-signature path.
+- Projection tests count indexed source reads across 10,000 blocks and assert a final assistant
+  update stays bounded, equals a fresh projection, and retains the same projected array.
+- Projection boundary tests cover ordinary append, second context-tool grouping, mutating and file
+  changes, subagent boundaries, expanded context tools, and invalid-boundary full fallback.
+- Shell runtime tests reconstruct stable shell block wrappers as the gateway does, then assert the
+  existing prefix components retain object identity after a hinted append.
 - Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
   any tail-rendering change.
 
@@ -2961,6 +3005,27 @@ const lines = component.renderTail
   ? component.renderTail(width, remainingRows).lines
   : component.render(width).slice(-remainingRows);
 ```
+
+#### Wrong
+
+```typescript
+const projected = projectTranscriptBlocks(allBlocks);
+const prefix = compareProjectedArrays(previous, projected);
+```
+
+Every delta scans and allocates the complete transcript before discovering that only its tail
+changed.
+
+#### Correct
+
+```typescript
+const { projection, stablePrefixLength, replacedBlocks } =
+  projectTranscriptTail(allBlocks, retainedProjection);
+reconcileSuffix(projection.blocks, stablePrefixLength, replacedBlocks);
+```
+
+The runtime-supplied tail classification protects the source prefix. Source spans identify the
+smallest grouping-sensitive suffix, and reconciliation keeps stable components mounted.
 
 ## Scenario: No-Op Terminal Frame Suppression
 

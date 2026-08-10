@@ -2096,6 +2096,55 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /hello/);
 });
 
+test("mycli shell runtime retains stable components on a hinted transcript append", () => {
+	const terminal = new TestTerminal();
+	const first = {
+		id: "assistant-1",
+		kind: "message" as const,
+		message: { id: "assistant-1", role: "assistant" as const, text: "one" },
+	};
+	const second = {
+		id: "assistant-2",
+		kind: "message" as const,
+		message: { id: "assistant-2", role: "assistant" as const, text: "two" },
+	};
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [first.message, second.message],
+		tools: [],
+		bash: [],
+		transcript: [first, second],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	const stableComponents = [...runtime.chatContainer.children];
+	const third = {
+		id: "assistant-3",
+		kind: "message" as const,
+		message: { id: "assistant-3", role: "assistant" as const, text: "three" },
+	};
+
+	runtime.setState(
+		{
+			...initial,
+			messages: [
+				{ ...first.message },
+				{ ...second.message },
+				third.message,
+			],
+			transcript: [
+				{ ...first, message: { ...first.message } },
+				{ ...second, message: { ...second.message } },
+				third,
+			],
+		},
+		{ transcriptUpdate: "tail" },
+	);
+
+	assert.equal(runtime.chatContainer.children[0], stableComponents[0]);
+	assert.equal(runtime.chatContainer.children[1], stableComponents[1]);
+	assert.equal(runtime.chatContainer.children.length, 3);
+});
+
 test("mycli shell runtime regroups context tools on a hinted tail append", () => {
 	const terminal = new TestTerminal();
 	const firstTool = {
