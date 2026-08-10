@@ -276,6 +276,23 @@ class TurnCompletedComponent implements Component {
 	}
 }
 
+type TranscriptContentChange =
+	| { kind: "full" }
+	| { kind: "section_tail"; section: Container; stablePrefixLength: number };
+
+type TranscriptRenderedChunk = {
+	section: Container;
+	componentIndex: number;
+	start: number;
+};
+
+type TranscriptTailRender = {
+	lines: string[];
+	chunks: TranscriptRenderedChunk[];
+	cacheable: boolean;
+	truncated: boolean;
+};
+
 export class TranscriptViewportComponent implements Component {
 	private scrollOffset = 0;
 	private lastLineCount = 0;
@@ -284,11 +301,20 @@ export class TranscriptViewportComponent implements Component {
 	private committedPrefixLength = 0;
 	private committedPrefixBoundary: string | undefined;
 	private committedWidth: number | undefined;
-	private renderCache = new WeakMap<Component, { key: unknown; width: number; maxRows?: number; lines: string[] }>();
+	private renderCache = new WeakMap<Component, {
+		key: unknown;
+		width: number;
+		maxRows?: number;
+		lines: string[];
+		totalLines: number;
+	}>();
 	private retainedContentRevision: unknown;
 	private retainedContentWidth: number | undefined;
 	private retainedContentLines: string[] = [];
+	private retainedContentChunks: TranscriptRenderedChunk[] = [];
+	private retainedContentTruncated = false;
 	private retainedContentReady = false;
+	private pendingContentChange: TranscriptContentChange | undefined;
 
 	/**
 	 * `contentRevision` must change before the owner mutates any transcript-visible content.
@@ -300,6 +326,32 @@ export class TranscriptViewportComponent implements Component {
 		private readonly maxRenderedRows: number | undefined,
 		private readonly contentRevision?: () => unknown,
 	) {}
+
+	markContentChanged(): void {
+		this.pendingContentChange = { kind: "full" };
+	}
+
+	/** Record an owner-validated stable component prefix for the last content section. */
+	markSectionTailChanged(section: Container, stablePrefixLength: number): void {
+		if (!Number.isSafeInteger(stablePrefixLength) || stablePrefixLength < 0) {
+			this.markContentChanged();
+			return;
+		}
+		const prefix = stablePrefixLength;
+		const pending = this.pendingContentChange;
+		if (pending?.kind === "full") return;
+		if (pending?.kind === "section_tail" && pending.section !== section) {
+			this.pendingContentChange = { kind: "full" };
+			return;
+		}
+		this.pendingContentChange = {
+			kind: "section_tail",
+			section,
+			stablePrefixLength: pending?.kind === "section_tail"
+				? Math.min(pending.stablePrefixLength, prefix)
+				: prefix,
+		};
+	}
 
 	getScrollOffset(): number {
 		return this.scrollOffset;
@@ -375,7 +427,10 @@ export class TranscriptViewportComponent implements Component {
 		this.renderCache = new WeakMap();
 		this.retainedContentReady = false;
 		this.retainedContentLines = [];
+		this.retainedContentChunks = [];
+		this.retainedContentTruncated = false;
 		this.retainedContentWidth = undefined;
+		this.pendingContentChange = undefined;
 	}
 
 	render(width: number): string[] {
@@ -408,10 +463,12 @@ export class TranscriptViewportComponent implements Component {
 
 	private renderContent(width: number): string[] {
 		const revision = this.contentRevision?.();
+		const pendingChange = this.pendingContentChange;
 		let lines: string[];
 		if (
 			this.maxRenderedRows !== undefined &&
 			this.contentRevision !== undefined &&
+			pendingChange === undefined &&
 			this.retainedContentReady &&
 			this.retainedContentWidth === width &&
 			Object.is(this.retainedContentRevision, revision)
@@ -421,64 +478,190 @@ export class TranscriptViewportComponent implements Component {
 			lines = this.content.render(width);
 			this.retainedContentReady = false;
 		} else {
-			const rendered = this.renderContentTail(width, this.maxRenderedRows);
+			const incremental =
+				pendingChange?.kind === "section_tail" &&
+				this.retainedContentReady &&
+				this.retainedContentWidth === width
+					? this.renderContentTailUpdate(width, this.maxRenderedRows, pendingChange)
+					: undefined;
+			const rendered = incremental ?? this.renderContentTail(width, this.maxRenderedRows);
 			lines = rendered.lines;
 			this.retainedContentRevision = revision;
 			this.retainedContentWidth = width;
 			this.retainedContentLines = lines;
+			this.retainedContentChunks = rendered.chunks;
+			this.retainedContentTruncated = rendered.truncated;
 			this.retainedContentReady = this.contentRevision !== undefined && rendered.cacheable;
 		}
+		this.pendingContentChange = undefined;
 		this.lastRenderedLines = lines;
 		this.lastRenderedWidth = width;
 		return lines;
 	}
 
-	private renderContentTail(width: number, maxRows: number): { lines: string[]; cacheable: boolean } {
-		const chunks: string[][] = [];
+	private renderContentTail(width: number, maxRows: number): TranscriptTailRender {
+		const chunks: Array<{
+			section: Container;
+			componentIndex: number;
+			lines: string[];
+		}> = [];
 		let renderedRows = 0;
 		let cacheable = true;
+		let truncated = false;
 		for (let sectionIndex = this.content.children.length - 1; sectionIndex >= 0; sectionIndex -= 1) {
 			const section = this.content.children[sectionIndex]!;
 			const components = section instanceof Container ? section.children : [section];
 			for (let index = components.length - 1; index >= 0; index -= 1) {
 				const rendered = this.renderComponent(components[index]!, width, maxRows - renderedRows);
-				chunks.push(rendered.lines);
+				chunks.push({
+					section: section instanceof Container ? section : this.content,
+					componentIndex: index,
+					lines: rendered.lines,
+				});
 				renderedRows += rendered.lines.length;
 				cacheable &&= rendered.cacheable;
-				if (renderedRows >= maxRows) break;
+				truncated ||= rendered.totalLines > rendered.lines.length;
+				if (renderedRows >= maxRows) {
+					truncated ||= index > 0 || sectionIndex > 0;
+					break;
+				}
 			}
 			if (renderedRows >= maxRows) break;
 		}
 		chunks.reverse();
-		return { lines: chunks.flat().slice(-maxRows), cacheable };
+		const lines: string[] = [];
+		const retainedChunks: TranscriptRenderedChunk[] = [];
+		for (const chunk of chunks) {
+			const start = lines.length;
+			lines.push(...chunk.lines);
+			retainedChunks.push({
+				section: chunk.section,
+				componentIndex: chunk.componentIndex,
+				start,
+			});
+		}
+		return { lines, chunks: retainedChunks, cacheable, truncated };
+	}
+
+	private renderContentTailUpdate(
+		width: number,
+		maxRows: number,
+		change: Extract<TranscriptContentChange, { kind: "section_tail" }>,
+	): TranscriptTailRender | undefined {
+		if (this.content.children.at(-1) !== change.section) return undefined;
+		if (change.stablePrefixLength > change.section.children.length) return undefined;
+
+		let chunkBoundary = this.retainedContentChunks.length;
+		while (chunkBoundary > 0) {
+			const chunk = this.retainedContentChunks[chunkBoundary - 1]!;
+			if (chunk.section !== change.section || chunk.componentIndex < change.stablePrefixLength) break;
+			chunkBoundary -= 1;
+		}
+		const firstChangedChunk = this.retainedContentChunks[chunkBoundary];
+		const lineBoundary = firstChangedChunk?.section === change.section
+			? firstChangedChunk.start
+			: this.retainedContentLines.length;
+
+		const suffixChunks: Array<{ componentIndex: number; lines: string[] }> = [];
+		let renderedRows = 0;
+		let cacheable = true;
+		let truncated = false;
+		for (let index = change.section.children.length - 1; index >= change.stablePrefixLength; index -= 1) {
+			const rendered = this.renderComponent(
+				change.section.children[index]!,
+				width,
+				maxRows - renderedRows,
+			);
+			suffixChunks.push({ componentIndex: index, lines: rendered.lines });
+			renderedRows += rendered.lines.length;
+			cacheable &&= rendered.cacheable;
+			truncated ||= rendered.totalLines > rendered.lines.length;
+			if (renderedRows >= maxRows) {
+				truncated ||= index > change.stablePrefixLength || change.stablePrefixLength > 0;
+				break;
+			}
+		}
+		suffixChunks.reverse();
+		const suffixLines = suffixChunks.flatMap((chunk) => chunk.lines);
+		if (suffixLines.length >= maxRows) {
+			let start = 0;
+			const chunks = suffixChunks.map((chunk): TranscriptRenderedChunk => {
+				const result = {
+					section: change.section,
+					componentIndex: chunk.componentIndex,
+					start,
+				};
+				start += chunk.lines.length;
+				return result;
+			});
+			return { lines: suffixLines, chunks, cacheable, truncated: true };
+		}
+
+		const combinedLines = [...this.retainedContentLines.slice(0, lineBoundary), ...suffixLines];
+		const nextLineCount = combinedLines.length;
+		if (nextLineCount > maxRows && !cacheable) {
+			return {
+				lines: combinedLines.slice(-maxRows),
+				chunks: [],
+				cacheable: false,
+				truncated: true,
+			};
+		}
+		if (nextLineCount > maxRows) return undefined;
+		if (nextLineCount < maxRows && this.retainedContentTruncated) return undefined;
+
+		let start = lineBoundary;
+		const suffixMetadata = suffixChunks.map((chunk): TranscriptRenderedChunk => {
+			const result = {
+				section: change.section,
+				componentIndex: chunk.componentIndex,
+				start,
+			};
+			start += chunk.lines.length;
+			return result;
+		});
+		const chunks = this.retainedContentChunks;
+		chunks.splice(chunkBoundary, chunks.length - chunkBoundary, ...suffixMetadata);
+		return {
+			lines: combinedLines,
+			chunks,
+			cacheable,
+			truncated: this.retainedContentTruncated || truncated,
+		};
 	}
 
 	private renderComponent(
 		component: Component,
 		width: number,
 		maxRows?: number,
-	): { lines: string[]; cacheable: boolean } {
+	): { lines: string[]; totalLines: number; cacheable: boolean } {
 		const key = component.getRenderCacheKey?.();
 		if (key === undefined) {
-			return { lines: this.renderComponentLines(component, width, maxRows), cacheable: false };
+			return { ...this.renderComponentLines(component, width, maxRows), cacheable: false };
 		}
 
 		const cached = this.renderCache.get(component);
 		if (cached && cached.width === width && cached.maxRows === maxRows && Object.is(cached.key, key)) {
-			return { lines: cached.lines, cacheable: true };
+			return { lines: cached.lines, totalLines: cached.totalLines, cacheable: true };
 		}
-		const lines = this.renderComponentLines(component, width, maxRows);
-		this.renderCache.set(component, { key, width, maxRows, lines });
-		return { lines, cacheable: true };
+		const rendered = this.renderComponentLines(component, width, maxRows);
+		this.renderCache.set(component, { key, width, maxRows, ...rendered });
+		return { ...rendered, cacheable: true };
 	}
 
-	private renderComponentLines(component: Component, width: number, maxRows?: number): string[] {
+	private renderComponentLines(
+		component: Component,
+		width: number,
+		maxRows?: number,
+	): { lines: string[]; totalLines: number } {
 		if (maxRows !== undefined) {
-			if (maxRows <= 0) return [];
-			if (component.renderTail) return component.renderTail(width, maxRows).lines;
-			return component.render(width).slice(-maxRows);
+			if (maxRows <= 0) return { lines: [], totalLines: 0 };
+			if (component.renderTail) return component.renderTail(width, maxRows);
+			const lines = component.render(width);
+			return { lines: lines.slice(-maxRows), totalLines: lines.length };
 		}
-		return component.render(width);
+		const lines = component.render(width);
+		return { lines, totalLines: lines.length };
 	}
 
 	private recordCommittedPrefix(lines: string[], start: number, width: number): void {
@@ -1486,6 +1669,7 @@ export class MycliShellRuntime {
 
 	private rebuildHeader(): void {
 		this.transcriptRenderRevision += 1;
+		this.transcriptViewport.markContentChanged();
 		this.headerContainer.clear();
 		const title = this.state.title ?? "mycli";
 		const shortcuts = [
@@ -1502,9 +1686,15 @@ export class MycliShellRuntime {
 		this.transcriptRenderRevision += 1;
 		const transcript = this.state.transcript?.length ? this.state.transcript : this.legacyTranscriptBlocks();
 		if (transcript.length > 0) {
-			this.syncChatBlocks(transcript, tailOnly);
+			const stablePrefixLength = this.syncChatBlocks(transcript, tailOnly);
+			if (tailOnly) {
+				this.transcriptViewport.markSectionTailChanged(this.chatContainer, stablePrefixLength);
+			} else {
+				this.transcriptViewport.markContentChanged();
+			}
 			return;
 		}
+		this.transcriptViewport.markContentChanged();
 		this.chatBlocks.clear();
 		this.projectedChatBlocks = [];
 		this.transcriptProjection = null;
@@ -1525,7 +1715,7 @@ export class MycliShellRuntime {
 		return blocks;
 	}
 
-	private syncChatBlocks(blocks: MycliShellTranscriptBlock[], tailOnly: boolean): void {
+	private syncChatBlocks(blocks: MycliShellTranscriptBlock[], tailOnly: boolean): number {
 		const projectionUpdate = tailOnly && this.transcriptProjection
 			? projectTranscriptTail(blocks, this.transcriptProjection)
 			: {
@@ -1564,6 +1754,7 @@ export class MycliShellRuntime {
 		}
 		this.transcriptProjection = projectionUpdate.projection;
 		this.projectedChatBlocks = projected;
+		return prefixLength;
 	}
 
 	private sessionTreeJumpTarget(node: MycliShellSessionTreeNode): string | null {

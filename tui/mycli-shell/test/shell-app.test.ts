@@ -2013,10 +2013,14 @@ test("mycli shell runtime caches the stable subagent panel across streaming fram
 test("mycli shell runtime retains transcript assembly across chrome-only frames", () => {
 	const initial: MycliShellState = {
 		...sampleState(),
-		messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
+		messages: [
+			{ id: "user-1", role: "user", text: "question" },
+			{ id: "assistant-1", role: "assistant", text: "hello" },
+		],
 		tools: [],
 		bash: [],
 		transcript: [
+			{ id: "user-1", kind: "message", message: { id: "user-1", role: "user", text: "question" } },
 			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
 		],
 	};
@@ -2044,8 +2048,12 @@ test("mycli shell runtime retains transcript assembly across chrome-only frames"
 
 	runtime.setState({
 		...runtime.getState(),
-		messages: [{ id: "assistant-1", role: "assistant", text: "hello again" }],
+		messages: [
+			{ id: "user-1", role: "user", text: "question" },
+			{ id: "assistant-1", role: "assistant", text: "hello again" },
+		],
 		transcript: [
+			{ id: "user-1", kind: "message", message: { id: "user-1", role: "user", text: "question" } },
 			{
 				id: "assistant-1",
 				kind: "message",
@@ -2053,8 +2061,9 @@ test("mycli shell runtime retains transcript assembly across chrome-only frames"
 			},
 		],
 	}, { transcriptUpdate: "tail" });
-	runtime.ui.render(100);
-	assert.equal(cacheKeyReads, 2);
+	const updatedLines = runtime.ui.render(100);
+	assert.equal(cacheKeyReads, 1);
+	assert.match(stripAnsi(updatedLines.join("\n")), /hello again/);
 });
 
 test("mycli shell runtime updates footer actions with turn and queue state", () => {

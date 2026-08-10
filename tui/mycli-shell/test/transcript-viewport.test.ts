@@ -60,18 +60,44 @@ class TailComponent implements Component {
 	}
 }
 
+class MutableLinesComponent extends Container {
+	constructor(private lines: string[]) {
+		super();
+	}
+
+	setLines(lines: string[]): void {
+		this.lines = lines;
+		this.invalidate();
+	}
+
+	override render(): string[] {
+		return this.lines;
+	}
+}
+
 function viewportFor(
 	components: Component[],
 	maxRows: number,
 	contentRevision?: () => unknown,
 ): TranscriptViewportComponent {
+	return viewportHarness(components, maxRows, contentRevision).viewport;
+}
+
+function viewportHarness(
+	components: Component[],
+	maxRows: number,
+	contentRevision?: () => unknown,
+): { viewport: TranscriptViewportComponent; transcript: Container } {
 	const content = new Container();
 	const header = new Container();
 	const transcript = new Container();
 	for (const component of components) transcript.addChild(component);
 	content.addChild(header);
 	content.addChild(transcript);
-	return new TranscriptViewportComponent(content, () => 10, maxRows, contentRevision);
+	return {
+		viewport: new TranscriptViewportComponent(content, () => 10, maxRows, contentRevision),
+		transcript,
+	};
 }
 
 test("transcript viewport renders only the bounded tail", () => {
@@ -125,6 +151,55 @@ test("transcript viewport retains bounded content for an unchanged owner revisio
 	viewport.invalidate();
 	viewport.render(60);
 	assert.equal(components.every((component) => component.cacheKeyReads === 4), true);
+});
+
+test("transcript viewport reconciles a validated component tail without reading the stable prefix", () => {
+	const components = Array.from({ length: 10_000 }, (_, index) => new CountingComponent(`line ${index}`));
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness(components, 10_000, () => revision);
+	viewport.render(80);
+
+	components.at(-1)!.setLine("updated tail");
+	revision += 1;
+	viewport.markSectionTailChanged(transcript, components.length - 1);
+	const lines = viewport.render(80);
+
+	assert.equal(lines.at(-1), "updated tail");
+	assert.equal(components.slice(0, -1).every((component) => component.cacheKeyReads === 1), true);
+	assert.equal(components.at(-1)!.cacheKeyReads, 2);
+});
+
+test("transcript viewport merges coalesced tail hints to the earliest stable prefix", () => {
+	const components = Array.from({ length: 100 }, (_, index) => new CountingComponent(`line ${index}`));
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness(components, 100, () => revision);
+	viewport.render(80);
+
+	components[98]!.setLine("updated 98");
+	viewport.markSectionTailChanged(transcript, 98);
+	components[99]!.setLine("updated 99");
+	viewport.markSectionTailChanged(transcript, 99);
+	revision += 1;
+	const lines = viewport.render(80);
+
+	assert.equal(lines.includes("updated 98"), true);
+	assert.equal(lines.includes("updated 99"), true);
+	assert.equal(components.slice(0, 98).every((component) => component.cacheKeyReads === 1), true);
+	assert.equal(components.slice(98).every((component) => component.cacheKeyReads === 2), true);
+});
+
+test("transcript viewport falls back when a shrinking tail exposes older bounded rows", () => {
+	const stable = Array.from({ length: 9 }, (_, index) => new CountingComponent(`line ${index}`));
+	const tail = new MutableLinesComponent(["tail 1", "tail 2", "tail 3", "tail 4"]);
+	let revision = 1;
+	const { viewport, transcript } = viewportHarness([...stable, tail], 5, () => revision);
+
+	assert.deepEqual(viewport.render(80).slice(0, 5), ["line 8", "tail 1", "tail 2", "tail 3", "tail 4"]);
+	tail.setLines(["tail final"]);
+	revision += 1;
+	viewport.markSectionTailChanged(transcript, stable.length);
+
+	assert.deepEqual(viewport.render(80).slice(0, 5), ["line 5", "line 6", "line 7", "line 8", "tail final"]);
 });
 
 test("transcript viewport does not cache components without a render key", () => {

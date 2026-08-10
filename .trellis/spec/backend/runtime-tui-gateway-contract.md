@@ -2881,6 +2881,9 @@ if (!settled && workerIsUnresponsive) {
   `new TranscriptViewportComponent(content, heightForWidth, maxRenderedRows, contentRevision?)`
   and `TranscriptViewportComponent.render(width) -> string[]`; the optional callback returns an
   owner-controlled revision token for transcript-visible mutations.
+- Transcript viewport change hints:
+  `TranscriptViewportComponent.markContentChanged() -> void` and
+  `TranscriptViewportComponent.markSectionTailChanged(section, stablePrefixLength) -> void`.
 - Full transcript projection:
   `createTranscriptProjection(blocks) -> TranscriptProjectionState`.
 - Incremental tail projection:
@@ -2941,6 +2944,19 @@ if (!settled && workerIsUnresponsive) {
 - Explicit viewport invalidation clears retained aggregate lines and component caches. Width changes
   reject aggregate reuse. An unbounded viewport preserves the existing full-render behavior even
   when a revision callback is present.
+- A validated transcript tail projection passes its mounted `stablePrefixLength` into
+  `markSectionTailChanged`. The viewport retains per-component line boundaries for the selected
+  bounded content, reuses the prior line prefix, and renders only current section children at or
+  after that boundary. It must not reread stable component keys merely to rediscover the boundary.
+- Multiple section-tail hints received before one render merge to the minimum stable prefix for the
+  same section. A full-content change or hints for different sections discard the tail proof. The
+  incremental path applies only to the final root content section, matching the shell's header then
+  chat ownership; any other shape uses the complete bounded renderer.
+- Tail-line reconciliation falls back when width changes, the component boundary is invalid, line
+  growth would roll an already full bounded window, or tail shrinkage would require rows older than
+  the retained prefix. These transitions rerender the bounded tail so native scrollback observes
+  the same lines as a fresh render. A new volatile suffix may reuse already retained stable lines
+  for that frame, but leaves aggregate reuse disabled afterward.
 - Shell chrome containers may reuse rendered lines between viewport-height measurement and their
   later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
   outside the root render call and must not survive into the next frame.
@@ -3092,6 +3108,12 @@ if (!settled && workerIsUnresponsive) {
 | A selected component has an undefined render key | Render it on every frame and disable aggregate line-array reuse for that render |
 | Revision callback is omitted or viewport is unbounded | Keep component-level or full-render behavior; do not retain aggregate bounded content |
 | Viewport is explicitly invalidated | Clear retained aggregate lines and component caches before rendering again |
+| Validated final-section tail keeps the same bounded line count | Reuse retained prefix lines and render only components at or after `stablePrefixLength` |
+| Several tail updates arrive before rendering | Merge the proofs to the minimum stable prefix for that section |
+| Tail hints target different sections or a full mutation follows | Discard the tail proof and run the complete bounded renderer |
+| Tail grows past a full row cap | Recompute the bounded tail so dropped rows and native scrollback boundaries remain exact |
+| Tail shrinks and retained rows cannot fill the cap | Recompute from earlier components to expose the correct older rows |
+| Tail boundary is invalid or changed section is not final | Ignore the hint and run the complete bounded renderer |
 | Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
 | Editor, status, or size-dependent pending content reaches the next root frame | Render again because child-owned state may change without a parent rebuild |
 | Working status receives an unrelated frame with the same width, spinner frame, and elapsed second | Reuse the component's rendered lines while the parent remains frame-local |
@@ -3174,8 +3196,13 @@ if (!settled && workerIsUnresponsive) {
   component.
 - Good: 500 chrome-only frames over a 10,000-row bounded transcript reuse the retained line array
   without rereading any transcript component cache key.
+- Good: 500 final-component updates over a 10,000-row bounded transcript reuse the retained line
+  prefix, reducing the measured viewport work from about 150.7 ms to 6.6 ms while keeping output
+  byte-identical.
 - Base: a running Shell in the selected transcript tail returns an undefined render key, so its
   elapsed seconds update even when the owner revision is unchanged.
+- Base: a streamed paragraph crosses a wrap boundary while the replay window is full; that frame
+  runs the complete bounded renderer, then later same-line token updates resume suffix reuse.
 - Good: appending one message to a 10,000-block transcript reads only the boundary and appended
   source blocks, retains the projected array, and keeps all stable components mounted.
 - Good: replacing a subagent boundary with a second `Read` replays the preceding context run and
@@ -3226,6 +3253,10 @@ if (!settled && workerIsUnresponsive) {
   selected component's undefined render key; child-owned timers would freeze.
 - Bad: mutate transcript-visible state without advancing the owner revision; aggregate reuse would
   preserve stale lines even if the mutated component has a new render key.
+- Bad: treat the most recent tail hint as the only pending hint; two coalesced updates can move the
+  true changed boundary earlier than the last update reports.
+- Bad: reuse a retained line prefix after tail shrinkage leaves fewer than `maxRenderedRows` lines;
+  older components must be rendered to fill the newly exposed window.
 - Bad: retain measured editor, status, or size-dependent pending lines across root frames; cursor,
   timer, input, and terminal-height state can change without a parent container rebuild.
 - Bad: opt a component into cross-frame chrome caching unless all display state is owned by an
@@ -3293,6 +3324,11 @@ if (!settled && workerIsUnresponsive) {
   traverse the selected components again.
 - Volatile viewport tests assert an undefined component render key disables aggregate reuse, and a
   running Shell advances its rendered elapsed seconds across unchanged owner frames.
+- Tail-reconciliation tests use 10,000 stable components, replace only the final component, and
+  assert no stable component key is reread. Runtime wiring tests assert the projected stable prefix
+  reaches the viewport and the changed assistant output remains visible.
+- Fallback tests shrink a multi-line tail inside a full bounded window and assert older rows are
+  exposed exactly as a fresh bounded render. Native scrollback and resize suites remain required.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
   render in the next frame, and no cache reuse for direct dynamic-container calls. Footer and
   subagent panel tests assert reuse across unrelated streaming frames, plus invalidation on parent
@@ -3368,6 +3404,25 @@ retain(rendered.lines, width, ownerRevision);
 
 Complete bounded content is retained only after every selected component opts into stable caching;
 the owner revision fences transcript mutations while the width fences wrapping changes.
+
+#### Wrong
+
+```typescript
+rebuildChat();
+viewport.markContentChanged();
+```
+
+Every streamed token throws away the projection's already validated stable component boundary.
+
+#### Correct
+
+```typescript
+const stablePrefixLength = syncChatBlocks(blocks, true);
+viewport.markSectionTailChanged(chatContainer, stablePrefixLength);
+```
+
+The viewport reuses retained prefix lines only while the boundary, width, row cap, and component
+cacheability proofs remain valid; otherwise it falls back to the complete bounded renderer.
 
 #### Wrong
 
