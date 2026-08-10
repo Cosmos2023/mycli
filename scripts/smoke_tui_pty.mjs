@@ -77,10 +77,20 @@ try {
 	const rendered = Array.from({ length: buffer.length }, (_, row) =>
 		buffer.getLine(row)?.translateToString(true) ?? "",
 	).join("\n");
+	const scrollback = Array.from({ length: buffer.baseY }, (_, row) =>
+		buffer.getLine(row)?.translateToString(true) ?? "",
+	).join("\n");
 
 	assert.equal(result.exitCode, 0);
 	assert.match(rendered, /pty-final/u);
 	assert.match(rendered, /pty-ready/u);
+	const historyMarkers = scrollback.match(/pty-history-\d+/gu) ?? [];
+	assert.ok(
+		historyMarkers.length >= 3,
+		`expected native history markers, found ${historyMarkers.length}: ${historyMarkers.join(", ")}`,
+	);
+	assert.equal(new Set(historyMarkers).size, historyMarkers.length);
+	assert.doesNotMatch(rendered, /pty-(?:partial|draft|long)-\d+/u);
 	assert.match(output, /MYCLI_TUI_PTY_OK/u);
 	assert.match(output, /\x1b\[\?2026h/u);
 	assert.match(output, /\x1b\[\?2026l/u);

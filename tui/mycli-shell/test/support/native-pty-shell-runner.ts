@@ -39,7 +39,10 @@ function initialState(): MycliShellState {
 }
 
 let state = initialState();
-const runtime = new MycliShellRuntime({ initialState: state });
+const runtime = new MycliShellRuntime({
+	initialState: state,
+	transcriptReplayMaxRows: 32,
+});
 
 try {
 	process.stdout.write("\x1b]0;MYCLI_TUI_PTY_READY\x07");
@@ -68,19 +71,44 @@ try {
 		await delay(20);
 	}
 
-	const assistant = {
+	let completedAssistant = {
 		id: "pty-assistant",
+		role: "assistant" as const,
+		text: "",
+	};
+	for (let lineCount = 40; lineCount <= 52; lineCount += 1) {
+		completedAssistant = {
+			id: "pty-assistant",
+			role: "assistant" as const,
+			text: Array.from({ length: lineCount }, (_, index) => `pty-history-${index}`).join("\n"),
+		};
+		state = {
+			...state,
+			messages: [completedAssistant],
+			transcript: (state.transcript ?? []).map((block) =>
+				block.kind === "message" && block.message.id === completedAssistant.id
+					? { ...block, message: completedAssistant }
+					: block,
+			),
+		};
+		runtime.setState(state, { transcriptUpdate: "tail" });
+		runtime.editor.setText(`pty-long-${lineCount} 输入🧪`);
+		runtime.ui.requestRender();
+		await delay(16);
+	}
+
+	const assistant = {
+		id: "pty-final-assistant",
 		role: "assistant" as const,
 		text: "pty-final 完成✅",
 	};
 	state = {
 		...state,
-		messages: [assistant],
-		transcript: (state.transcript ?? []).map((block) =>
-			block.kind === "message" && block.message.id === assistant.id
-				? { ...block, message: assistant }
-				: block,
-		),
+		messages: [completedAssistant, assistant],
+		transcript: [
+			...(state.transcript ?? []),
+			{ id: assistant.id, kind: "message", message: assistant },
+		],
 	};
 	runtime.setState(state, { transcriptUpdate: "tail" });
 	runtime.editor.setText("pty-ready 北京🚄");
