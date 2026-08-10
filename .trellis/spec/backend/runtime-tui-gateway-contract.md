@@ -2877,6 +2877,9 @@ if (!settled && workerIsUnresponsive) {
 - Incremental tail projection:
   `projectTranscriptTail(blocks, previous) ->
   {projection, stablePrefixLength, replacedBlocks}`.
+- Plain blockquote layout cache:
+  `RenderedPlainBlockquoteCache {text, lastSourceLineStart,
+  lastSourceLineOutputStart, sourceToken}`.
 - Runtime update classifier:
   `classifyRuntimeTranscriptUpdate(previous, next) -> "unchanged" | "tail" | "replace"`.
 - Gateway runtime projector:
@@ -2970,6 +2973,13 @@ if (!settled && workerIsUnresponsive) {
   item, replaces that item plus appended items, and layout rerenders the same suffix. The cached
   offset includes list-token bytes not owned by `ListItem.raw`, such as transient trailing spaces.
   Loose, nested, task, reference-sensitive, mixed-marker, or rich-inline lists fall back to Marked.
+- A final top-level blockquote containing exactly one plain paragraph and one plain inline text
+  token may retain its rendered entry and line array. Layout restarts from the previous final quote
+  source line after Marked confirms that the complete blockquote remains plain. The replacement
+  carries the same ANSI state as a continuation of earlier quote lines; independently styling the
+  replacement can produce different control bytes even when it looks identical. Multiple quote
+  blocks, rich inline syntax, nested blocks, reference syntax, or a following top-level token use
+  the complete token-render path.
 - Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
   the full-render behavior.
 
@@ -2992,6 +3002,9 @@ if (!settled && workerIsUnresponsive) {
 | Tight flat list receives a same-marker plain append | Reparse and rerender the previous final item plus appended items |
 | List has unowned trailing source bytes | Start the boundary at the cached final-item source offset, not `list.raw.length - item.raw.length` |
 | List becomes loose, nested, rich, task-based, mixed-marker, or ends | Reject the list fast path and match a fresh Marked render |
+| Plain blockquote receives a plain append | Re-render the prior final quote source line plus the appended text and retain the entry and line-array identities |
+| Blockquote receives rich inline content, a nested block, a second paragraph, or ends | Reject retained quote layout and match a fresh Marked render |
+| Retained quote suffix starts after an earlier styled line | Seed the active ANSI continuation state and require byte-equal output, not merely equal visible text |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
@@ -3017,6 +3030,8 @@ if (!settled && workerIsUnresponsive) {
   after Marked confirms that the paragraph still contains one plain inline token.
 - Good: appending one item to a 2,000-item tight list reparses and rerenders only the old final item
   and the new item while retaining earlier item objects and rendered lines.
+- Good: appending one line to a 2,000-line plain blockquote rerenders only the previous final source
+  line and the appended line while preserving ANSI bytes and the retained line array.
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
@@ -3038,6 +3053,8 @@ if (!settled && workerIsUnresponsive) {
 - Bad: derive a list boundary with `list.raw.length - lastItem.raw.length`; Marked may retain trailing
   spaces in the list token while excluding them from the final item, which drops spaces on the next
   streamed character.
+- Bad: render a retained styled quote line in isolation. The fresh render may canonicalize active
+  cross-line ANSI state into a different escape sequence, violating byte-for-byte tail equivalence.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
@@ -3071,6 +3088,10 @@ if (!settled && workerIsUnresponsive) {
   items while retaining entry, line-array, and stable-item identities. Character-streamed tests
   cover trailing spaces, partial markers, rich inline content, nesting, loose lists, marker changes,
   list termination, ordered numbering, and source-marker preservation against fresh rendering.
+- Plain-blockquote tests retain entry and line-array identities and compare incremental full/tail
+  output with a fresh render under explicit ANSI quote styles. Character-streamed tests cover CJK,
+  long words, rich inline syntax, reference links, blank quote paragraphs, nested lists, and quote
+  termination.
 - Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
   narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.
@@ -3168,6 +3189,25 @@ const boundary = list.raw.slice(retained.lastItemOffset) + appended;
 
 Marked may keep streamed trailing whitespace in `list.raw` without assigning it to
 `lastItem.raw`; the retained source offset preserves those bytes for boundary reparsing.
+
+#### Wrong
+
+```typescript
+const replacement = renderPlainQuote(nextText.slice(lastSourceLineStart));
+```
+
+#### Correct
+
+```typescript
+const replacement = renderPlainQuote(
+  nextText.slice(lastSourceLineStart),
+  { continuesPreviousLine: lastSourceLineStart > 0 },
+);
+```
+
+The continuation flag reconstructs the ANSI state that the full multiline quote renderer carries
+across literal newlines. Cache creation accepts the fast path only after its final-line suffix is
+byte-equal to the full render.
 
 ## Scenario: No-Op Terminal Frame Suppression
 

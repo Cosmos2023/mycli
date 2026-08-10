@@ -11,9 +11,21 @@ function sourceTokens(markdown: Markdown): object[] {
 	return (markdown as unknown as { cachedSourceTokens: object[] }).cachedSourceTokens;
 }
 
-function renderedTokens(markdown: Markdown): Array<{ lines: string[]; code?: object; list?: object; paragraph?: object }> {
+function renderedTokens(markdown: Markdown): Array<{
+	lines: string[];
+	code?: object;
+	list?: object;
+	paragraph?: object;
+	blockquote?: object;
+}> {
 	return (markdown as unknown as {
-		cachedTokens: Array<{ lines: string[]; code?: object; list?: object; paragraph?: object }>;
+		cachedTokens: Array<{
+			lines: string[];
+			code?: object;
+			list?: object;
+			paragraph?: object;
+			blockquote?: object;
+		}>;
 	}).cachedTokens;
 }
 
@@ -109,6 +121,61 @@ test("character-streamed paragraphs fall back across inline markdown transitions
 	}
 
 	assert.equal(renderedTokens(markdown)[0]?.paragraph, undefined);
+});
+
+test("streaming plain blockquotes retain their final source-line layout", () => {
+	const baseTheme = markdownTheme();
+	const styledTheme: MarkdownTheme = {
+		...baseTheme,
+		quote: (text) => `\x1b[31m${text}\x1b[39m`,
+		quoteBorder: (text) => `\x1b[36m${text}\x1b[39m`,
+		italic: (text) => `\x1b[3m${text}\x1b[23m`,
+	};
+	const before = Array.from(
+		{ length: 500 },
+		(_, index) => `> quoted line ${index} with 中文 and a verylongwordthatwrapsacrossrows`,
+	).join("\n");
+	const after = `${before}\n> appended quote with ** still plain while incomplete`;
+	const markdown = new Markdown(before, 0, 0, styledTheme);
+	markdown.renderTail(52, 12);
+	const blockquoteEntry = renderedTokens(markdown)[0];
+	const blockquoteLines = blockquoteEntry?.lines;
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(52, 12);
+	const fresh = new Markdown(after, 0, 0, styledTheme).renderTail(52, 12);
+
+	assert.ok(blockquoteEntry?.blockquote);
+	assert.equal(renderedTokens(markdown)[0], blockquoteEntry);
+	assert.equal(renderedTokens(markdown)[0]?.lines, blockquoteLines);
+	assert.deepEqual(incremental, fresh);
+	assert.deepEqual(markdown.render(52), new Markdown(after, 0, 0, styledTheme).render(52));
+});
+
+test("character-streamed blockquotes fall back across block and inline transitions", () => {
+	const base = Array.from({ length: 12 }, (_, index) => `> stable quote ${index}`).join("\n");
+	const cases = [
+		" extended with 中文 and a verylongwordthatwrapsacrossrows",
+		"\n> appended line with **bold** and `code`",
+		"\n>\n> second paragraph",
+		"\n> - nested list item",
+		"\n> [linked text](https://example.com)",
+		"\n\nOutside paragraph.",
+	];
+
+	for (const appended of cases) {
+		let source = base;
+		const markdown = new Markdown(source, 0, 0, markdownTheme());
+		markdown.render(37);
+		for (const character of appended) {
+			source += character;
+			markdown.setText(source);
+			const incremental = markdown.renderTail(37, 9);
+			const fresh = new Markdown(source, 0, 0, markdownTheme()).renderTail(37, 9);
+			assert.deepEqual(incremental, fresh, JSON.stringify({ source }));
+		}
+		assert.deepEqual(markdown.render(37), renderFresh(source, 37));
+	}
 });
 
 test("append-only markdown lexing retains stable source tokens", () => {

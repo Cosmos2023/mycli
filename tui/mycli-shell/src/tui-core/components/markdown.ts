@@ -91,6 +91,7 @@ interface RenderedTokenCacheEntry {
 	code?: RenderedCodeTokenCache;
 	list?: RenderedFlatListTokenCache;
 	paragraph?: RenderedPlainParagraphCache;
+	blockquote?: RenderedPlainBlockquoteCache;
 }
 
 interface RenderedCodeTokenCache {
@@ -104,6 +105,13 @@ interface RenderedCodeTokenCache {
 interface RenderedPlainParagraphCache {
 	text: string;
 	sourceToken: Tokens.Paragraph;
+}
+
+interface RenderedPlainBlockquoteCache {
+	text: string;
+	lastSourceLineStart: number;
+	lastSourceLineOutputStart: number;
+	sourceToken: Tokens.Blockquote;
 }
 
 interface RenderedFlatListTokenCache {
@@ -432,6 +440,53 @@ export class Markdown implements Component {
 				};
 		}
 
+		if (token.type === "blockquote") {
+			const blockquoteToken = token as Tokens.Blockquote;
+			if (cached?.type === "blockquote" && cached.blockquote) {
+				const updated = this.updateRetainedPlainBlockquoteEntry(
+					cached,
+					blockquoteToken,
+					contentWidth,
+					width,
+					nextType,
+					contextKey,
+				);
+				if (updated) return updated;
+			}
+			const entry = {
+				type: token.type,
+				raw: token.raw,
+				contextKey,
+				nextType,
+				lines: this.renderTokenContentLines(token, contentWidth, width, nextType),
+			};
+			const plainText = this.retainablePlainBlockquoteText(blockquoteToken, nextType);
+			if (plainText === null || contextKey !== undefined || entry.lines.length === 0) return entry;
+			const lastSourceLineStart = plainText.lastIndexOf("\n") + 1;
+			const finalSourceLines = this.renderPlainBlockquoteText(
+				plainText.slice(lastSourceLineStart),
+				contentWidth,
+				width,
+				lastSourceLineStart > 0,
+			);
+			const lastSourceLineOutputStart = entry.lines.length - finalSourceLines.length;
+			if (
+				lastSourceLineOutputStart < 0 ||
+				!finalSourceLines.every(
+					(line, index) => entry.lines[lastSourceLineOutputStart + index] === line,
+				)
+			) return entry;
+			return {
+				...entry,
+				blockquote: {
+					text: plainText,
+					lastSourceLineStart,
+					lastSourceLineOutputStart,
+					sourceToken: blockquoteToken,
+				},
+			};
+		}
+
 		return {
 			type: token.type,
 			raw: token.raw,
@@ -664,6 +719,102 @@ export class Markdown implements Component {
 		paragraph.text = nextText;
 		paragraph.sourceToken = token;
 		return cached;
+	}
+
+	private retainablePlainBlockquoteText(
+		token: Tokens.Blockquote,
+		nextType: string | undefined,
+	): string | null {
+		if (nextType !== undefined || token.tokens.length !== 1) return null;
+		const paragraph = token.tokens[0];
+		if (
+			!paragraph ||
+			paragraph.type !== "paragraph" ||
+			token.text !== paragraph.text ||
+			paragraph.raw !== paragraph.text
+		) return null;
+		const inlineTokens = paragraph.tokens ?? [];
+		if (inlineTokens.length !== 1) return null;
+		const inline = inlineTokens[0];
+		if (
+			!inline ||
+			inline.type !== "text" ||
+			inline.raw !== paragraph.text ||
+			inline.text !== paragraph.text
+		) return null;
+		return paragraph.text;
+	}
+
+	private updateRetainedPlainBlockquoteEntry(
+		cached: RenderedTokenCacheEntry,
+		token: Tokens.Blockquote,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		const blockquote = cached.blockquote;
+		const nextText = this.retainablePlainBlockquoteText(token, nextType);
+		if (
+			!blockquote ||
+			nextText === null ||
+			contextKey !== undefined ||
+			this.appendedTokenSources.get(token) !== blockquote.sourceToken ||
+			!nextText.startsWith(blockquote.text) ||
+			blockquote.lastSourceLineOutputStart < 0 ||
+			blockquote.lastSourceLineOutputStart > cached.lines.length
+		) return null;
+
+		const replacement = this.renderPlainBlockquoteText(
+			nextText.slice(blockquote.lastSourceLineStart),
+			contentWidth,
+			width,
+			blockquote.lastSourceLineStart > 0,
+		);
+		const lastSourceLineStart = nextText.lastIndexOf("\n") + 1;
+		const finalSourceLines = this.renderPlainBlockquoteText(
+			nextText.slice(lastSourceLineStart),
+			contentWidth,
+			width,
+			lastSourceLineStart > 0,
+		);
+		const lastSourceLineOutputStart = blockquote.lastSourceLineOutputStart
+			+ replacement.length
+			- finalSourceLines.length;
+		cached.lines.splice(
+			blockquote.lastSourceLineOutputStart,
+			cached.lines.length - blockquote.lastSourceLineOutputStart,
+			...replacement,
+		);
+		cached.raw = token.raw;
+		cached.contextKey = contextKey;
+		cached.nextType = nextType;
+		blockquote.text = nextText;
+		blockquote.lastSourceLineStart = lastSourceLineStart;
+		blockquote.lastSourceLineOutputStart = lastSourceLineOutputStart;
+		blockquote.sourceToken = token;
+		return cached;
+	}
+
+	private renderPlainBlockquoteText(
+		text: string,
+		contentWidth: number,
+		width: number,
+		continuesPreviousLine: boolean,
+	): string[] {
+		const quoteStyle = (value: string) => this.theme.quote(this.theme.italic(value));
+		const quoteStylePrefix = this.getStylePrefix(quoteStyle);
+		const source = continuesPreviousLine ? `.\n${text}` : text;
+		const styledText = quoteStylePrefix
+			? quoteStyle(source.replace(/\x1b\[0m/g, `\x1b[0m${quoteStylePrefix}`))
+			: quoteStyle(source);
+		const quoteContentWidth = Math.max(1, contentWidth - 2);
+		const quoteLines = wrapTextWithAnsi(styledText, quoteContentWidth);
+		if (continuesPreviousLine) quoteLines.shift();
+		const logicalLines = quoteLines.map(
+			(line) => this.theme.quoteBorder("│ ") + line,
+		);
+		return this.renderLogicalLines(logicalLines, contentWidth, width);
 	}
 
 	private renderCodeTrailingLines(
