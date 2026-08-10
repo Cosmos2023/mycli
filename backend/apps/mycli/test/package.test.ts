@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { RIPGREP_TARGETS } from "@mycli/tools";
 
@@ -16,6 +18,8 @@ type PackageManifest = {
 	types?: string;
 	version?: string;
 };
+
+const ROOT = new URL("../../../../", import.meta.url);
 
 const packages = [
 	{
@@ -60,6 +64,7 @@ test("contracts production export targets compiled JavaScript and declarations",
 	assert.deepEqual(manifest.files, ["dist", "schemas"]);
 	assert.deepEqual(manifest.exports, {
 		".": {
+			"mycli-source": "./src/index.ts",
 			types: "./dist/index.d.ts",
 			import: "./dist/index.js",
 		},
@@ -73,20 +78,66 @@ test("TUI production exports target compiled JavaScript and declarations", () =>
 
 	assert.deepEqual(manifest.exports, {
 		".": {
+			"mycli-source": "./src/index.ts",
 			types: "./dist/index.d.ts",
 			import: "./dist/index.js",
 		},
 		"./gateway": {
+			"mycli-source": "./src/gateway.ts",
 			types: "./dist/gateway.d.ts",
 			import: "./dist/gateway.js",
 		},
 		"./gateway-transport": {
+			"mycli-source": "./src/adapters/gateway-transport.ts",
 			types: "./dist/adapters/gateway-transport.d.ts",
 			import: "./dist/adapters/gateway-transport.js",
 		},
 	});
 	assert.equal(manifest.types, "./dist/index.d.ts");
 	assertRuntimeMetadataUsesDist(manifest);
+});
+
+test("root development commands resolve every workspace package from source", () => {
+	const rootManifest = readManifest(ROOT);
+	const command = "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts";
+	assert.equal(rootManifest.scripts?.dev, command);
+	assert.equal(rootManifest.scripts?.mycli, command);
+
+	const packageNames = [
+		"@mycli/config",
+		"@mycli/contracts",
+		"@mycli/core",
+		"@mycli/integrations",
+		"@mycli/providers",
+		"@mycli/runtime",
+		"@mycli/storage",
+		"@mycli/tools",
+		"mycli-shell-tui",
+		"mycli-shell-tui/gateway",
+		"mycli-shell-tui/gateway-transport",
+	] as const;
+	const script = `process.stdout.write(JSON.stringify(${JSON.stringify(packageNames)}.map((name) => import.meta.resolve(name))))`;
+	const resolved = JSON.parse(execFileSync(
+		process.execPath,
+		["--conditions=mycli-source", "--input-type=module", "--eval", script],
+		{ cwd: fileURLToPath(ROOT), encoding: "utf8" },
+	)) as string[];
+
+	for (const [index, value] of resolved.entries()) {
+		assert.match(value, /\/(?:backend\/packages\/[^/]+|tui\/mycli-shell)\/src\//u, packageNames[index]);
+		assert.match(value, /\.ts$/u, packageNames[index]);
+	}
+});
+
+test("default workspace imports keep production packages on compiled output", () => {
+	const script = "process.stdout.write(import.meta.resolve('mycli-shell-tui/gateway-transport'))";
+	const resolved = execFileSync(
+		process.execPath,
+		["--input-type=module", "--eval", script],
+		{ cwd: fileURLToPath(ROOT), encoding: "utf8" },
+	);
+
+	assert.match(resolved, /\/tui\/mycli-shell\/dist\/adapters\/gateway-transport\.js$/u);
 });
 
 test("packed CLI smoke includes every local app and runtime dependency", () => {
@@ -135,10 +186,18 @@ function readManifest(root: URL): PackageManifest {
 }
 
 function assertRuntimeMetadataUsesDist(manifest: PackageManifest): void {
+	const exports = manifest.exports && typeof manifest.exports === "object"
+		? Object.fromEntries(Object.entries(manifest.exports).map(([name, value]) => {
+			if (!value || typeof value !== "object") return [name, value];
+			const production = { ...(value as Record<string, unknown>) };
+			delete production["mycli-source"];
+			return [name, production];
+		}))
+		: manifest.exports;
 	const runtimeMetadata = JSON.stringify({
 		bin: manifest.bin,
 		dependencies: manifest.dependencies,
-		exports: manifest.exports,
+		exports,
 		types: manifest.types,
 	});
 	assert.doesNotMatch(runtimeMetadata, /tsx|--import|src\/|(?<!\.d)\.ts"/);

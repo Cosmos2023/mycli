@@ -7,14 +7,17 @@
   "files": ["dist"],
   "exports": {
     ".": {
+      "mycli-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
     "./gateway": {
+      "mycli-source": "./src/gateway.ts",
       "types": "./dist/gateway.d.ts",
       "import": "./dist/gateway.js"
     },
     "./gateway-transport": {
+      "mycli-source": "./src/adapters/gateway-transport.ts",
       "types": "./dist/adapters/gateway-transport.d.ts",
       "import": "./dist/adapters/gateway-transport.js"
     }

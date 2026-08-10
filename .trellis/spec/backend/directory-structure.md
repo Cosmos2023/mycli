@@ -118,6 +118,73 @@ docs/                        User, architecture, migration, and parity documenta
 
 ---
 
+## Scenario: Source-Resolved Workspace Development
+
+### 1. Scope / Trigger
+
+- Trigger: changing a workspace package export, root development command, TypeScript source entry,
+  or any workflow where `npm run mycli` must observe unbuilt local source changes.
+
+### 2. Signatures
+
+- Source condition: `mycli-source`.
+- Development commands: `npm run mycli` and `npm run dev`.
+- Production condition: Node's default `import` condition.
+
+### 3. Contracts
+
+- Every `backend/packages/*` package exposes `mycli-source` for its public root export.
+- `mycli-shell-tui` exposes `mycli-source` for `.`, `./gateway`, and `./gateway-transport`.
+- Root development commands enable `--conditions=mycli-source` together with `--import tsx`, so
+  the app, its worker threads, backend workspace dependencies, and TUI all execute current `.ts`
+  sources without a preliminary build.
+- Default imports, the published app bin, package `types`, and packed smokes continue to resolve
+  compiled files under `dist`; source resolution is never enabled implicitly for consumers.
+- Adding a new runtime workspace package or public TUI subpath requires adding the same source
+  condition and extending the resolution regression test.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Root `npm run mycli` after a source-only edit | Resolve the edited workspace module from `src` |
+| Default package import | Resolve JavaScript from `dist` |
+| Worker spawned by the source CLI | Inherit the source condition and TypeScript loader |
+| Missing source condition on a dependency | Package resolution test fails with a `dist` path |
+| Packed or installed CLI | Run compiled JavaScript without `tsx` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: edit a TUI or runtime source file, restart `npm run mycli`, and observe the change directly.
+- Base: run a package consumer without custom conditions and load its compiled export.
+- Bad: rebuild only the TUI while a changed backend dependency still loads stale `dist` output.
+- Bad: point the default `import` condition at TypeScript and make the published CLI require `tsx`.
+
+### 6. Tests Required
+
+- Assert both root development scripts enable `mycli-source` and `tsx`.
+- Resolve every backend package plus all runtime TUI subpaths in a child Node process with the
+  source condition and assert each URL points to a `.ts` file under `src`.
+- Resolve a representative package without the source condition and assert it still points to
+  `dist/*.js`.
+- Keep workspace build, type-check, package tests, and packed CLI smoke green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```json
+{ "mycli": "node --import tsx backend/apps/mycli/src/cli.ts" }
+```
+
+#### Correct
+
+```json
+{ "mycli": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts" }
+```
+
+---
+
 ## Naming Conventions
 
 - TypeScript modules and package directories use lowercase kebab-case where a multiword filename is
