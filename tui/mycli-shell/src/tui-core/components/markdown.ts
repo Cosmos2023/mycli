@@ -89,6 +89,7 @@ interface RenderedTokenCacheEntry {
 	nextType?: string;
 	lines: string[];
 	code?: RenderedCodeTokenCache;
+	list?: RenderedFlatListTokenCache;
 	paragraph?: RenderedPlainParagraphCache;
 }
 
@@ -103,6 +104,22 @@ interface RenderedCodeTokenCache {
 interface RenderedPlainParagraphCache {
 	text: string;
 	sourceToken: Tokens.Paragraph;
+}
+
+interface RenderedFlatListTokenCache {
+	itemLineEnds: number[];
+	sourceToken: Tokens.List;
+}
+
+interface FlatListInfo {
+	lastItemOffset: number;
+	marker: string;
+	ordered: boolean;
+}
+
+interface AppendedListUpdate {
+	sourceToken: Tokens.List;
+	stableItemCount: number;
 }
 
 interface OpenFenceInfo {
@@ -142,7 +159,9 @@ export class Markdown implements Component {
 	private cachedSourceTokens: Token[] = [];
 	private cachedSourceTokenEnds: number[] = [];
 	private cachedOpenFences = new WeakMap<Token, OpenFenceInfo | null>();
+	private cachedFlatLists = new WeakMap<Token, FlatListInfo | null>();
 	private appendedTokenSources = new WeakMap<Token, Token>();
+	private appendedListUpdates = new WeakMap<Token, AppendedListUpdate>();
 	private normalizedTextExtendsLexedText = false;
 	private pendingNormalizedAppend = "";
 
@@ -196,7 +215,9 @@ export class Markdown implements Component {
 		this.cachedSourceTokens = [];
 		this.cachedSourceTokenEnds = [];
 		this.cachedOpenFences = new WeakMap();
+		this.cachedFlatLists = new WeakMap();
 		this.appendedTokenSources = new WeakMap();
+		this.appendedListUpdates = new WeakMap();
 		this.normalizedTextExtendsLexedText = false;
 		this.pendingNormalizedAppend = "";
 	}
@@ -359,6 +380,29 @@ export class Markdown implements Component {
 			return this.createRetainedCodeEntry(codeToken, contentWidth, width, nextType, contextKey);
 		}
 
+		if (token.type === "list") {
+			const listToken = token as Tokens.List;
+			if (cached?.type === "list" && cached.list) {
+				const updated = this.updateRetainedFlatListEntry(
+					cached,
+					listToken,
+					contentWidth,
+					width,
+					nextType,
+					contextKey,
+				);
+				if (updated) return updated;
+			}
+			const retained = this.createRetainedFlatListEntry(
+				listToken,
+				contentWidth,
+				width,
+				nextType,
+				contextKey,
+			);
+			if (retained) return retained;
+		}
+
 		if (token.type === "paragraph") {
 			const paragraphToken = token as Tokens.Paragraph;
 			if (cached?.type === "paragraph" && cached.paragraph) {
@@ -489,6 +533,76 @@ export class Markdown implements Component {
 		return cached;
 	}
 
+	private createRetainedFlatListEntry(
+		token: Tokens.List,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		if (!this.flatListInfo(token) || nextType !== undefined) return null;
+		const lines: string[] = [];
+		const itemLineEnds: number[] = [];
+		for (let index = 0; index < token.items.length; index += 1) {
+			lines.push(...this.renderLogicalLines(
+				this.renderListItem(token, token.items[index]!, index, 0, contentWidth),
+				contentWidth,
+				width,
+			));
+			itemLineEnds.push(lines.length);
+		}
+		return {
+			type: token.type,
+			raw: token.raw,
+			contextKey,
+			nextType,
+			lines,
+			list: { itemLineEnds, sourceToken: token },
+		};
+	}
+
+	private updateRetainedFlatListEntry(
+		cached: RenderedTokenCacheEntry,
+		token: Tokens.List,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		const list = cached.list;
+		const update = this.appendedListUpdates.get(token);
+		if (
+			!list ||
+			!update ||
+			update.sourceToken !== list.sourceToken ||
+			nextType !== undefined ||
+			!this.flatListInfo(token) ||
+			update.stableItemCount < 0 ||
+			update.stableItemCount >= token.items.length ||
+			update.stableItemCount > list.itemLineEnds.length
+		) return null;
+
+		const keepLineCount = update.stableItemCount === 0
+			? 0
+			: (list.itemLineEnds[update.stableItemCount - 1] ?? 0);
+		const replacement: string[] = [];
+		list.itemLineEnds.splice(update.stableItemCount);
+		for (let index = update.stableItemCount; index < token.items.length; index += 1) {
+			replacement.push(...this.renderLogicalLines(
+				this.renderListItem(token, token.items[index]!, index, 0, contentWidth),
+				contentWidth,
+				width,
+			));
+			list.itemLineEnds.push(keepLineCount + replacement.length);
+		}
+		cached.lines.splice(keepLineCount, cached.lines.length - keepLineCount, ...replacement);
+		cached.raw = token.raw;
+		cached.contextKey = contextKey;
+		cached.nextType = nextType;
+		list.sourceToken = token;
+		return cached;
+	}
+
 	private retainablePlainParagraphText(
 		token: Tokens.Paragraph,
 		nextType: string | undefined,
@@ -585,6 +699,13 @@ export class Markdown implements Component {
 			);
 			if (fenceUpdate) return fenceUpdate;
 			if (this.hasReferenceSyntax) return this.replaceSourceTokens(source);
+			const listUpdate = this.updateOpenListToken(
+				source,
+				reparseTokenIndex,
+				reparseOffset,
+				this.pendingNormalizedAppend,
+			);
+			if (listUpdate) return listUpdate;
 			const suffixSource = source.slice(reparseOffset);
 			const suffixTokens = this.lexSource(suffixSource);
 			const suffixEnds = this.tokenEndOffsets(suffixTokens, reparseOffset);
@@ -673,6 +794,110 @@ export class Markdown implements Component {
 			stablePrefixLength: tokenIndex,
 			changed: true,
 		};
+	}
+
+	private updateOpenListToken(
+		source: string,
+		tokenIndex: number,
+		sourceOffset: number,
+		appended: string,
+	): MarkdownTokenUpdate | null {
+		if (tokenIndex !== this.cachedSourceTokens.length - 1) return null;
+		const token = this.cachedSourceTokens[tokenIndex];
+		if (!token || token.type !== "list") return null;
+		const listToken = token as Tokens.List;
+		const listInfo = this.flatListInfo(listToken);
+		const lastItem = listToken.items[listToken.items.length - 1];
+		if (
+			!listInfo ||
+			!lastItem ||
+			!appended ||
+			appended.includes("\r") ||
+			listToken.raw.length !== (this.cachedLexedText?.length ?? 0) - sourceOffset
+		) return null;
+
+		const boundarySource = `${listToken.raw.slice(listInfo.lastItemOffset)}${appended}`;
+		const boundaryTokens = this.lexSource(boundarySource);
+		if (boundaryTokens.length !== 1 || boundaryTokens[0]?.type !== "list") return null;
+		const boundaryList = boundaryTokens[0] as Tokens.List;
+		const boundaryInfo = this.flatListInfo(boundaryList);
+		const boundaryFirstItem = boundaryList.items[0];
+		if (
+			!boundaryInfo ||
+			boundaryInfo.ordered !== listInfo.ordered ||
+			boundaryInfo.marker !== listInfo.marker ||
+			boundaryList.raw.length !== boundarySource.length ||
+			!boundaryFirstItem?.raw.startsWith(lastItem.raw)
+		) return null;
+
+		const stableItemCount = listToken.items.length - 1;
+		const nextRaw = `${listToken.raw.slice(0, listInfo.lastItemOffset)}${boundaryList.raw}`;
+		if (nextRaw.length !== source.length - sourceOffset) return null;
+		listToken.items.splice(stableItemCount, 1, ...boundaryList.items);
+		const nextToken: Tokens.List = {
+			...listToken,
+			raw: nextRaw,
+			items: listToken.items,
+		};
+
+		this.appendedTokenSources.set(nextToken, listToken);
+		this.appendedListUpdates.set(nextToken, { sourceToken: listToken, stableItemCount });
+		this.cachedFlatLists.set(nextToken, {
+			...listInfo,
+			lastItemOffset: listInfo.lastItemOffset + boundaryInfo.lastItemOffset,
+		});
+		this.cachedSourceTokens.splice(tokenIndex, 1, nextToken);
+		this.cachedSourceTokenEnds.splice(tokenIndex, 1, source.length);
+		this.commitLexedSource(source);
+		return {
+			tokens: this.cachedSourceTokens,
+			stablePrefixLength: tokenIndex,
+			changed: true,
+		};
+	}
+
+	private flatListInfo(token: Tokens.List): FlatListInfo | null {
+		if (this.cachedFlatLists.has(token)) {
+			return this.cachedFlatLists.get(token) ?? null;
+		}
+		if (token.loose || token.items.length === 0) {
+			this.cachedFlatLists.set(token, null);
+			return null;
+		}
+		const marker = this.flatListMarker(token.items[0]!, token.ordered);
+		let lastItemOffset = 0;
+		let eligible = marker !== null;
+		for (let index = 0; index < token.items.length; index += 1) {
+			const item = token.items[index]!;
+			eligible &&= this.isPlainFlatListItem(item) && this.flatListMarker(item, token.ordered) === marker;
+			if (index < token.items.length - 1) lastItemOffset += item.raw.length;
+		}
+		eligible &&= lastItemOffset + token.items[token.items.length - 1]!.raw.length <= token.raw.length;
+		const info = eligible ? { lastItemOffset, marker: marker!, ordered: token.ordered } : null;
+		this.cachedFlatLists.set(token, info);
+		return info;
+	}
+
+	private flatListMarker(item: Tokens.ListItem, ordered: boolean): string | null {
+		const match = /^(?:([*+-])|(\d{1,9})([.)]))[ \t]+/.exec(item.raw);
+		if (!match) return null;
+		if (ordered) return match[2] ? `#${match[3]}` : null;
+		return match[1] ?? null;
+	}
+
+	private isPlainFlatListItem(item: Tokens.ListItem): boolean {
+		if (item.loose || item.task || item.text.includes("\n") || item.tokens.length !== 1) return false;
+		const block = item.tokens[0];
+		if (!block || block.type !== "text" || block.raw !== item.text || block.text !== item.text) return false;
+		const inlineTokens = block.tokens ?? [];
+		if (inlineTokens.length !== 1) return false;
+		const inline = inlineTokens[0];
+		return Boolean(
+			inline &&
+			inline.type === "text" &&
+			inline.raw === item.text &&
+			inline.text === item.text,
+		);
 	}
 
 	private openFenceInfo(token: Token): OpenFenceInfo | null {
@@ -1118,46 +1343,54 @@ export class Markdown implements Component {
 	 */
 	private renderList(token: Tokens.List, depth: number, width: number, styleContext?: InlineStyleContext): string[] {
 		const lines: string[] = [];
-		const indent = "    ".repeat(depth);
-		// Use the list's start property (defaults to 1 for ordered lists)
-		const startNumber = typeof token.start === "number" ? token.start : 1;
-
 		for (let i = 0; i < token.items.length; i++) {
-			const item = token.items[i];
-			const bullet = token.ordered
-				? this.options.preserveOrderedListMarkers
-					? (this.getOrderedListMarker(item) ?? `${startNumber + i}. `)
-					: `${startNumber + i}. `
-				: "- ";
-			const taskMarker = item.task ? `[${item.checked ? "x" : " "}] ` : "";
-			const marker = bullet + taskMarker;
-			const firstPrefix = indent + this.theme.listBullet(marker);
-			const continuationPrefix = indent + " ".repeat(visibleWidth(marker));
-			const itemWidth = Math.max(1, width - visibleWidth(firstPrefix));
-			let renderedAnyLine = false;
+			lines.push(...this.renderListItem(token, token.items[i]!, i, depth, width, styleContext));
+		}
 
-			for (const itemToken of item.tokens) {
-				if (itemToken.type === "list") {
-					lines.push(...this.renderList(itemToken as Tokens.List, depth + 1, width, styleContext));
-					renderedAnyLine = true;
-					continue;
-				}
+		return lines;
+	}
 
-				const itemLines = this.renderToken(itemToken, itemWidth, undefined, styleContext);
-				for (const line of itemLines) {
-					for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
-						const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
-						lines.push(linePrefix + wrappedLine);
-						renderedAnyLine = true;
-					}
-				}
+	private renderListItem(
+		list: Tokens.List,
+		item: Tokens.ListItem,
+		index: number,
+		depth: number,
+		width: number,
+		styleContext?: InlineStyleContext,
+	): string[] {
+		const lines: string[] = [];
+		const indent = "    ".repeat(depth);
+		const startNumber = typeof list.start === "number" ? list.start : 1;
+		const bullet = list.ordered
+			? this.options.preserveOrderedListMarkers
+				? (this.getOrderedListMarker(item) ?? `${startNumber + index}. `)
+				: `${startNumber + index}. `
+			: "- ";
+		const taskMarker = item.task ? `[${item.checked ? "x" : " "}] ` : "";
+		const marker = bullet + taskMarker;
+		const firstPrefix = indent + this.theme.listBullet(marker);
+		const continuationPrefix = indent + " ".repeat(visibleWidth(marker));
+		const itemWidth = Math.max(1, width - visibleWidth(firstPrefix));
+		let renderedAnyLine = false;
+
+		for (const itemToken of item.tokens) {
+			if (itemToken.type === "list") {
+				lines.push(...this.renderList(itemToken as Tokens.List, depth + 1, width, styleContext));
+				renderedAnyLine = true;
+				continue;
 			}
 
-			if (!renderedAnyLine) {
-				lines.push(firstPrefix);
+			const itemLines = this.renderToken(itemToken, itemWidth, undefined, styleContext);
+			for (const line of itemLines) {
+				for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
+					const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
+					lines.push(linePrefix + wrappedLine);
+					renderedAnyLine = true;
+				}
 			}
 		}
 
+		if (!renderedAnyLine) lines.push(firstPrefix);
 		return lines;
 	}
 

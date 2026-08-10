@@ -11,9 +11,9 @@ function sourceTokens(markdown: Markdown): object[] {
 	return (markdown as unknown as { cachedSourceTokens: object[] }).cachedSourceTokens;
 }
 
-function renderedTokens(markdown: Markdown): Array<{ lines: string[]; code?: object; paragraph?: object }> {
+function renderedTokens(markdown: Markdown): Array<{ lines: string[]; code?: object; list?: object; paragraph?: object }> {
 	return (markdown as unknown as {
-		cachedTokens: Array<{ lines: string[]; code?: object; paragraph?: object }>;
+		cachedTokens: Array<{ lines: string[]; code?: object; list?: object; paragraph?: object }>;
 	}).cachedTokens;
 }
 
@@ -139,6 +139,79 @@ test("append-only markdown reparses the prior content block across trailing spac
 	markdown.setText(after);
 
 	assert.deepEqual(markdown.render(72), renderFresh(after, 72));
+});
+
+test("streaming flat lists retain items and render only their changed suffix", () => {
+	const baseTheme = markdownTheme();
+	let bulletRenders = 0;
+	const countingTheme: MarkdownTheme = {
+		...baseTheme,
+		listBullet: (text) => {
+			bulletRenders += 1;
+			return baseTheme.listBullet(text);
+		},
+	};
+	const before = Array.from({ length: 500 }, (_, index) => `- item ${index}`).join("\n");
+	const after = `${before}\n- item 500`;
+	const markdown = new Markdown(before, 0, 0, countingTheme);
+	markdown.renderTail(52, 12);
+	const listEntry = renderedTokens(markdown)[0];
+	const listLines = listEntry?.lines;
+	const firstItem = (sourceTokens(markdown)[0] as { items: object[] }).items[0];
+	const initialBulletRenders = bulletRenders;
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(52, 12);
+	const fresh = new Markdown(after, 0, 0, baseTheme).renderTail(52, 12);
+
+	assert.equal(initialBulletRenders, 500);
+	assert.equal(bulletRenders - initialBulletRenders, 2);
+	assert.ok(listEntry?.list);
+	assert.equal(renderedTokens(markdown)[0], listEntry);
+	assert.equal(renderedTokens(markdown)[0]?.lines, listLines);
+	assert.equal((sourceTokens(markdown)[0] as { items: object[] }).items[0], firstItem);
+	assert.deepEqual(incremental, fresh);
+});
+
+test("character-streamed lists preserve source boundaries and fallback variants", () => {
+	const base = Array.from({ length: 12 }, (_, index) => `- stable ${index}`).join("\n");
+	const cases = [
+		" extended after a retained trailing space",
+		"\n- new item\n- rich **bold** and `code`",
+		"\n  - nested child",
+		"\n\n- loose item",
+		"\n* changed marker",
+		"\n\nFinal paragraph.",
+	];
+
+	for (const appended of cases) {
+		let source = base;
+		const markdown = new Markdown(source, 0, 0, markdownTheme());
+		markdown.render(37);
+		for (const character of appended) {
+			source += character;
+			markdown.setText(source);
+			const incremental = markdown.renderTail(37, 9);
+			const fresh = new Markdown(source, 0, 0, markdownTheme()).renderTail(37, 9);
+			assert.deepEqual(incremental, fresh, JSON.stringify({ source }));
+		}
+		assert.deepEqual(markdown.render(37), renderFresh(source, 37));
+	}
+});
+
+test("streaming ordered lists retain numbering and source markers", () => {
+	const before = Array.from({ length: 40 }, (_, index) => `${index + 1}. item ${index}`).join("\n");
+	const after = `${before}\n99. source marker`;
+	const options = { preserveOrderedListMarkers: true };
+	const markdown = new Markdown(before, 0, 0, markdownTheme(), undefined, options);
+	markdown.renderTail(48, 10);
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(48, 10);
+	const fresh = new Markdown(after, 0, 0, markdownTheme(), undefined, options).renderTail(48, 10);
+
+	assert.deepEqual(incremental, fresh);
+	assert.match(incremental.lines.join("\n"), /99\. source marker/);
 });
 
 test("streaming open fences retain lexer prefixes and code layout", () => {
