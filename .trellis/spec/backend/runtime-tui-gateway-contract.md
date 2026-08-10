@@ -2952,11 +2952,17 @@ if (!settled && workerIsUnresponsive) {
   same section. A full-content change or hints for different sections discard the tail proof. The
   incremental path applies only to the final root content section, matching the shell's header then
   chat ownership; any other shape uses the complete bounded renderer.
-- Tail-line reconciliation falls back when width changes, the component boundary is invalid, line
-  growth would roll an already full bounded window, or tail shrinkage would require rows older than
-  the retained prefix. These transitions rerender the bounded tail so native scrollback observes
-  the same lines as a fresh render. A new volatile suffix may reuse already retained stable lines
-  for that frame, but leaves aggregate reuse disabled afterward.
+- Tail-line reconciliation falls back when width changes, the component boundary is invalid, or
+  tail shrinkage would require rows older than the retained prefix. Line growth may roll an already
+  full bounded window without a complete render: trim the displaced rows, advance a logical line
+  origin, and render only components at or after the validated boundary. Native scrollback must
+  still observe exactly the rows displaced by a fresh bounded render. A new volatile suffix may
+  reuse already retained stable lines for that frame, but leaves aggregate reuse disabled afterward.
+- Retained chunk starts use absolute logical row coordinates. The line array remains relative to
+  the current logical origin, and an offset identifies the first chunk that can still intersect the
+  retained window. Front trimming advances the origin and offset instead of rewriting every chunk.
+  Stale chunk metadata is compacted only after a bounded minimum prefix is stale and that prefix is
+  at least half the metadata array, preserving amortized append cost and absolute chunk starts.
 - Shell chrome containers may reuse rendered lines between viewport-height measurement and their
   later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
   outside the root render call and must not survive into the next frame.
@@ -3111,7 +3117,7 @@ if (!settled && workerIsUnresponsive) {
 | Validated final-section tail keeps the same bounded line count | Reuse retained prefix lines and render only components at or after `stablePrefixLength` |
 | Several tail updates arrive before rendering | Merge the proofs to the minimum stable prefix for that section |
 | Tail hints target different sections or a full mutation follows | Discard the tail proof and run the complete bounded renderer |
-| Tail grows past a full row cap | Recompute the bounded tail so dropped rows and native scrollback boundaries remain exact |
+| Tail grows past a full row cap | Trim displaced rows, advance the logical origin/chunk offset, render only the validated suffix, and preserve exact native scrollback boundaries |
 | Tail shrinks and retained rows cannot fill the cap | Recompute from earlier components to expose the correct older rows |
 | Tail boundary is invalid or changed section is not final | Ignore the hint and run the complete bounded renderer |
 | Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
@@ -3199,10 +3205,14 @@ if (!settled && workerIsUnresponsive) {
 - Good: 500 final-component updates over a 10,000-row bounded transcript reuse the retained line
   prefix, reducing the measured viewport work from about 150.7 ms to 6.6 ms while keeping output
   byte-identical.
+- Good: 500 one-row appends that continuously roll a full 10,000-row window advance retained
+  logical coordinates instead of rereading stable component keys; the measured viewport work is
+  about 6.6 ms versus 357.1 ms for forced complete bounded renders.
 - Base: a running Shell in the selected transcript tail returns an undefined render key, so its
   elapsed seconds update even when the owner revision is unchanged.
-- Base: a streamed paragraph crosses a wrap boundary while the replay window is full; that frame
-  runs the complete bounded renderer, then later same-line token updates resume suffix reuse.
+- Good: a streamed paragraph crosses a wrap boundary while the replay window is full; the viewport
+  drops the displaced row, advances its logical origin, and keeps suffix reuse without rescanning
+  the stable component prefix.
 - Good: appending one message to a 10,000-block transcript reads only the boundary and appended
   source blocks, retains the projected array, and keeps all stable components mounted.
 - Good: replacing a subagent boundary with a second `Read` replays the preceding context run and
@@ -3257,6 +3267,10 @@ if (!settled && workerIsUnresponsive) {
   true changed boundary earlier than the last update reports.
 - Bad: reuse a retained line prefix after tail shrinkage leaves fewer than `maxRenderedRows` lines;
   older components must be rendered to fill the newly exposed window.
+- Bad: run the complete bounded renderer whenever growth displaces one front row; this turns steady
+  streaming into a stable-prefix key scan on every frame.
+- Bad: subtract the dropped-row count from every retained chunk start. Chunk starts are absolute;
+  advance the logical origin and compact stale metadata only at the amortized threshold.
 - Bad: retain measured editor, status, or size-dependent pending lines across root frames; cursor,
   timer, input, and terminal-height state can change without a parent container rebuild.
 - Bad: opt a component into cross-frame chrome caching unless all display state is owned by an
@@ -3327,6 +3341,13 @@ if (!settled && workerIsUnresponsive) {
 - Tail-reconciliation tests use 10,000 stable components, replace only the final component, and
   assert no stable component key is reread. Runtime wiring tests assert the projected stable prefix
   reaches the viewport and the changed assistant output remains visible.
+- Bounded-window rolling tests fill 10,000 rows, grow the mutable tail by one row, and assert the
+  first retained row advances while every stable component key is read exactly once. Native
+  scrollback collection must receive the displaced visible-history row exactly once.
+- Metadata-compaction tests perform more than 1,024 bounded one-row appends and assert the final
+  retained window matches a fresh render while every appended component key is read exactly once;
+  replacing the final component afterward must use the preserved absolute chunk boundary and read
+  only that changed key again.
 - Fallback tests shrink a multi-line tail inside a full bounded window and assert older rows are
   exposed exactly as a fresh bounded render. Native scrollback and resize suites remain required.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
@@ -3423,6 +3444,25 @@ viewport.markSectionTailChanged(chatContainer, stablePrefixLength);
 
 The viewport reuses retained prefix lines only while the boundary, width, row cap, and component
 cacheability proofs remain valid; otherwise it falls back to the complete bounded renderer.
+
+#### Wrong
+
+```typescript
+if (combinedLines.length > maxRows) return renderCompleteBoundedTail();
+```
+
+#### Correct
+
+```typescript
+const trimmedRows = Math.max(0, combinedLines.length - maxRows);
+const lines = combinedLines.slice(trimmedRows);
+const lineOrigin = retainedLineOrigin + trimmedRows;
+const chunkOffset = trimChunkPrefix(chunks, retainedChunkOffset, lineOrigin);
+```
+
+Chunk starts stay in absolute logical coordinates. The retained line array is relative to
+`lineOrigin`, and stale metadata is removed only when amortized compaction is due. Shrinkage that
+needs unavailable older rows still uses the complete bounded fallback.
 
 #### Wrong
 
