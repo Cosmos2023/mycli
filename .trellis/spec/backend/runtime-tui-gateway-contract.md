@@ -2961,3 +2961,79 @@ const lines = component.renderTail
   ? component.renderTail(width, remainingRows).lines
   : component.render(width).slice(-remainingRows);
 ```
+
+## Scenario: Unix TUI Job-Control Suspend And Resume
+
+### 1. Scope / Trigger
+
+- Trigger: changing terminal ownership, raw input, `Ctrl+Z`, process signals, alternate-screen
+  behavior, frame scheduling, or resume-time resize handling.
+- This contract applies to the interactive Node TUI on Unix. Windows has no `SIGTSTP` job control
+  and retains its existing input behavior.
+
+### 2. Signatures
+
+- TUI hook: `TUI.onSuspend?: () -> boolean`, which requests process-group suspension.
+- Shell option: `MycliShellRuntimeOptions.onSuspend?: () -> boolean`.
+- Production callback: `process.kill(0, "SIGTSTP") -> boolean`.
+
+### 3. Contracts
+
+- A press event matching `Ctrl+Z` is intercepted before shell/editor input listeners only when an
+  `onSuspend` hook exists. Kitty key-release events never trigger suspension.
+- Before invoking the hook, the TUI stops its frame scheduler, shows the cursor, releases terminal
+  ownership, disables bracketed paste and mouse modes, leaves the alternate screen when active,
+  pauses input, and restores the previous raw-mode state.
+- Before the hook runs, the TUI queues a zero-delay resume callback. The production hook suspends
+  the complete foreground process group, not only the TUI module. A stopped process cannot execute
+  that callback, so it runs only after `SIGCONT` places the job back in the foreground. If job
+  control is unavailable or the signal fails, the next event-loop turn restores the TUI.
+- The resume callback reacquires terminal ownership, restores its input modes and
+  alternate screen, hides the cursor, reconnects output backpressure, and forces a full frame.
+- If columns or rows changed while suspended, the existing resize callback runs before that forced
+  frame so native scrollback reflow remains debounced and source-backed.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Unix `Ctrl+Z` with suspend hook | Release terminal, suspend process group, reacquire, force redraw |
+| Kitty `Ctrl+Z` key release | Ignore; do not suspend a second time |
+| Windows or missing hook | Preserve the existing focused-component input path |
+| Same dimensions after resume | Force redraw without source scrollback reflow |
+| Dimensions changed while stopped | Run resize hook, then force the resumed frame |
+| Alternate-screen mode | Leave before suspend and re-enter before repaint |
+| Suspend hook throws | Reacquire terminal ownership, consume the reserved key, and remain usable |
+
+### 5. Good/Base/Bad Cases
+
+- Good: suspend from an alternate-screen session, observe normal shell terminal state, run `fg`,
+  and receive one complete fresh TUI frame.
+- Base: resume at the same dimensions and reuse the durable runtime/session state.
+- Bad: send `SIGTSTP` while raw mode and bracketed paste remain enabled.
+- Bad: resume with the old diff baseline; a newly re-entered alternate screen may remain blank.
+- Bad: signal only the TUI process while the provider/runtime process continues in the background.
+
+### 6. Tests Required
+
+- TTY integration tests assert raw mode is false and alternate screen has been left inside the
+  suspend callback, then assert modes are restored and the changed frame is rendered afterward.
+- Tests assert a dimension change invokes the resize callback exactly once.
+- Tests assert key-release and failed-signal paths cannot double-suspend or strand raw-mode state.
+- Existing shutdown, resize, output-backpressure, input, native-scrollback, and frame-diff tests
+  remain green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+process.kill(process.pid, "SIGTSTP");
+```
+
+#### Correct
+
+```typescript
+ui.onSuspend = () => process.kill(0, "SIGTSTP");
+// TUI releases terminal ownership before this callback and forces a redraw after it returns.
+```

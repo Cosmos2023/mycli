@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type tty from "node:tty";
 import {
@@ -8,6 +9,8 @@ import {
 	TtyOpenError,
 	type TtyStreams,
 } from "../src/adapters/tty-terminal.ts";
+import { Text } from "../src/tui-core/components/text.ts";
+import { TUI } from "../src/tui-core/tui.ts";
 
 class FakeInput extends EventEmitter {
 	isRaw = false;
@@ -127,6 +130,84 @@ test("stream terminal can use alternate screen explicitly", () => {
 	assert.match(output.output, /\x1b\[\?1049h/);
 	assert.match(output.output, /\x1b\[\?1049l/);
 	assert.equal(terminal.nativeScrollback, false);
+});
+
+test("ctrl z releases terminal ownership and redraws after foreground resume", async () => {
+	const input = new FakeInput();
+	const output = new FakeOutput();
+	const terminal = new StreamTerminal({
+		input: input as unknown as tty.ReadStream,
+		output: output as unknown as tty.WriteStream,
+		close: () => {},
+	} satisfies TtyStreams, {
+		platform: "darwin",
+		alternateScreen: true,
+	});
+	const text = new Text("before suspend");
+	const ui = new TUI(terminal);
+	let suspendCalls = 0;
+	let resizeCalls = 0;
+	let leakedInputCalls = 0;
+	ui.addInputListener(() => {
+		leakedInputCalls += 1;
+		return undefined;
+	});
+	ui.onResize = () => {
+		resizeCalls += 1;
+	};
+	ui.onSuspend = () => {
+		suspendCalls += 1;
+		assert.equal(input.isRaw, false);
+		assert.match(output.output, /\x1b\[\?1049l$/u);
+		output.windowColumns = 72;
+		output.windowRows = 24;
+		text.setText("after resume");
+		return true;
+	};
+	ui.addChild(text);
+	ui.start();
+
+	input.emit("data", "\x1a");
+	assert.equal(input.isRaw, false);
+	await delay(25);
+
+	assert.equal(suspendCalls, 1);
+	assert.equal(resizeCalls, 1);
+	assert.equal(leakedInputCalls, 0);
+	assert.equal(input.isRaw, true);
+	assert.equal(output.output.match(/\x1b\[\?1049h/gu)?.length, 2);
+	assert.equal(output.output.match(/\x1b\[\?1049l/gu)?.length, 1);
+	assert.match(output.output, /after resume/u);
+	input.emit("data", "\x1b[122;5:3u");
+	assert.equal(suspendCalls, 1);
+
+	ui.stop();
+	assert.equal(input.isRaw, false);
+	assert.equal(output.output.match(/\x1b\[\?1049l/gu)?.length, 2);
+});
+
+test("failed ctrl z suspension reacquires terminal ownership", async () => {
+	const input = new FakeInput();
+	const output = new FakeOutput();
+	const terminal = new StreamTerminal({
+		input: input as unknown as tty.ReadStream,
+		output: output as unknown as tty.WriteStream,
+		close: () => {},
+	} satisfies TtyStreams, { platform: "darwin" });
+	const ui = new TUI(terminal);
+	ui.onSuspend = () => {
+		assert.equal(input.isRaw, false);
+		throw new Error("job control unavailable");
+	};
+	ui.start();
+
+	assert.doesNotThrow(() => input.emit("data", "\x1a"));
+	assert.equal(input.isRaw, false);
+	await delay(0);
+	assert.equal(input.isRaw, true);
+
+	ui.stop();
+	assert.equal(input.isRaw, false);
 });
 
 test("stream terminal refreshes dev tty dimensions on SIGWINCH", () => {

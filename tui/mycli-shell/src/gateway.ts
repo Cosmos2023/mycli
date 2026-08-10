@@ -803,6 +803,9 @@ async function main(): Promise<void> {
 		onDequeueQueuedInput: popLastQueuedFollowUp,
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
+		onSuspend: process.platform === "win32"
+			? undefined
+			: () => process.kill(0, "SIGTSTP"),
 		onApprovalRespond: respondApproval,
 		onClarificationRespond: respondClarification,
 		onApiKeyLogin: saveApiKey,

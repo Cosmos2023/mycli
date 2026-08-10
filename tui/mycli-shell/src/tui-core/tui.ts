@@ -302,6 +302,8 @@ export class TUI extends Container {
 	public onDebug?: () => void;
 	/** Optional owner hook for resize-sensitive source rebuilds. Return true to defer the normal redraw. */
 	public onResize?: () => boolean | void;
+	/** Optional Unix job-control hook that requests suspension of the foreground process group. */
+	public onSuspend?: () => boolean;
 	private readonly frameScheduler: FrameScheduler;
 	private renderingPaused = false;
 	private static readonly MIN_RENDER_INTERVAL_MS = 1_000 / 120;
@@ -317,6 +319,8 @@ export class TUI extends Container {
 	private pendingHistoryReplacesScrollback = false;
 	private nativeViewportAnchored = false;
 	private stopped = false;
+	private terminalOwned = false;
+	private suspendResumeTimer?: ReturnType<typeof setTimeout>;
 	private removeOutputDrainListener?: () => void;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -669,6 +673,12 @@ export class TUI extends Container {
 
 	start(): void {
 		this.stopped = false;
+		this.acquireTerminal();
+		this.requestRender();
+	}
+
+	private acquireTerminal(): void {
+		if (this.terminalOwned) return;
 		this.removeOutputDrainListener?.();
 		this.removeOutputDrainListener = this.terminal.onOutputDrain?.(() => {
 			this.frameScheduler.notifyReady();
@@ -681,10 +691,10 @@ export class TUI extends Container {
 				}
 			},
 		);
+		this.terminalOwned = true;
 		this.terminal.hideCursor();
 		this.queryCellSize();
 		this.frameScheduler.start();
-		this.requestRender();
 	}
 
 	addInputListener(listener: InputListener): () => void {
@@ -711,8 +721,12 @@ export class TUI extends Container {
 	stop(): void {
 		this.stopped = true;
 		this.frameScheduler.stop();
+		if (this.suspendResumeTimer) {
+			clearTimeout(this.suspendResumeTimer);
+			this.suspendResumeTimer = undefined;
+		}
 		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
-		if (this.previousLines.length > 0) {
+		if (this.terminalOwned && this.previousLines.length > 0) {
 			const targetRow = this.previousLines.length; // Line after the last content
 			const lineDiff = targetRow - this.hardwareCursorRow;
 			if (lineDiff > 0) {
@@ -723,10 +737,45 @@ export class TUI extends Container {
 			this.terminal.write("\r\n");
 		}
 
-		this.terminal.showCursor();
-		this.terminal.stop();
+		if (this.terminalOwned) {
+			this.terminal.showCursor();
+			this.terminal.stop();
+			this.terminalOwned = false;
+		}
 		this.removeOutputDrainListener?.();
 		this.removeOutputDrainListener = undefined;
+	}
+
+	private suspendToShell(): boolean {
+		if (!this.onSuspend || this.stopped) return false;
+		const previousColumns = this.terminal.columns;
+		const previousRows = this.terminal.rows;
+
+		this.frameScheduler.stop();
+		this.terminal.showCursor();
+		this.terminal.stop();
+		this.terminalOwned = false;
+		this.removeOutputDrainListener?.();
+		this.removeOutputDrainListener = undefined;
+
+		this.suspendResumeTimer = setTimeout(() => {
+			this.suspendResumeTimer = undefined;
+			if (this.stopped) return;
+			this.acquireTerminal();
+			if (
+				(previousColumns !== this.terminal.columns || previousRows !== this.terminal.rows) &&
+				this.onResize
+			) {
+				this.onResize();
+			}
+			this.requestRender(true);
+		}, 0);
+		try {
+			this.onSuspend();
+		} catch {
+			// The queued resume keeps the TUI usable when job control is unavailable.
+		}
+		return true;
 	}
 
 	requestRender(force = false): void {
@@ -743,6 +792,9 @@ export class TUI extends Container {
 	}
 
 	private handleInput(data: string): void {
+		if (!isKeyRelease(data) && matchesKey(data, "ctrl+z") && this.suspendToShell()) {
+			return;
+		}
 		if (this.inputListeners.size > 0) {
 			let current = data;
 			for (const listener of this.inputListeners) {

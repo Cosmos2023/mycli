@@ -73,6 +73,7 @@ export type MycliShellRuntimeOptions = {
 	onDequeueQueuedInput?: () => MycliShellQueuedInput | string | null | Promise<MycliShellQueuedInput | string | null>;
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
+	onSuspend?: () => boolean;
 	onModelSelect?: (model: MycliShellModel) => void | MycliShellModel | Promise<void | MycliShellModel>;
 	onPermissionSelect?: (profile: MycliShellPermissionProfile) => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onPermissionClearAllowances?: () => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
@@ -491,6 +492,7 @@ export class MycliShellRuntime {
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
 		this.ui.onResize = () => this.handleTerminalResize();
+		this.ui.onSuspend = options.onSuspend;
 		this.transcriptContainer.addChild(this.headerContainer);
 		this.transcriptContainer.addChild(this.chatContainer);
 		const configuredReplayMaxRows = options.transcriptReplayMaxRows;
