@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
-import { GatewayClient, GatewayRequestError } from "../src/adapters/gateway-client.ts";
+import {
+	GatewayClient,
+	GatewayRequestError,
+	type GatewayEvent,
+} from "../src/adapters/gateway-client.ts";
 import {
 	initialRuntimeState,
 	reduceRuntimeEvent,
@@ -127,6 +131,79 @@ test("gateway client ignores input after closure", async () => {
 	await setTimeout(10);
 
 	assert.deepEqual(events, []);
+	client.stop();
+});
+
+test("gateway client consumes a replayed event only once", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const client = new GatewayClient({ input, output });
+	client.start();
+
+	input.write(`${JSON.stringify({
+		jsonrpc: "2.0",
+		method: "message.delta",
+		params: { client_turn_id: "turn-1", text: "done" },
+	})}\n`);
+	await setTimeout(10);
+
+	const replayed = await client.waitForEvent("message.delta");
+	assert.equal(clientTurnId(replayed), "turn-1");
+	await assert.rejects(client.waitForEvent("message.delta", () => true, 5), /Timed out/);
+	client.stop();
+});
+
+test("gateway client does not replay an event that resolved a pending waiter", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const client = new GatewayClient({ input, output });
+	client.start();
+
+	const pending = client.waitForEvent("message.delta");
+	input.write(`${JSON.stringify({
+		jsonrpc: "2.0",
+		method: "message.delta",
+		params: { client_turn_id: "turn-1", text: "done" },
+	})}\n`);
+
+	await pending;
+	await assert.rejects(client.waitForEvent("message.delta", () => true, 5), /Timed out/);
+	client.stop();
+});
+
+test("gateway client bounds unmatched event replay", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const client = new GatewayClient({ input, output, eventReplayLimit: 2 });
+	client.start();
+
+	for (const clientTurnId of ["turn-1", "turn-2", "turn-3"]) {
+		input.write(`${JSON.stringify({
+			jsonrpc: "2.0",
+			method: "message.delta",
+			params: { client_turn_id: clientTurnId, text: clientTurnId },
+		})}\n`);
+	}
+	await setTimeout(10);
+
+	await assert.rejects(
+		client.waitForEvent(
+			"message.delta",
+			(event) => clientTurnId(event) === "turn-1",
+			5,
+		),
+		/Timed out/,
+	);
+	const second = await client.waitForEvent(
+		"message.delta",
+		(event) => clientTurnId(event) === "turn-2",
+	);
+	const third = await client.waitForEvent(
+		"message.delta",
+		(event) => clientTurnId(event) === "turn-3",
+	);
+	assert.equal(clientTurnId(second), "turn-2");
+	assert.equal(clientTurnId(third), "turn-3");
 	client.stop();
 });
 
@@ -264,3 +341,9 @@ test("same-session mutation keeps transcript and uses normal command projection"
 	assert.equal(state.transcript[0]?.id, "existing");
 	assert.equal(state.transcript[1]?.text, "Already using demo");
 });
+
+function clientTurnId(event: GatewayEvent): string | undefined {
+	return "client_turn_id" in event.params && typeof event.params.client_turn_id === "string"
+		? event.params.client_turn_id
+		: undefined;
+}

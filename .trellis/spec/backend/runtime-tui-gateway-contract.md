@@ -2903,6 +2903,9 @@ if (!settled && workerIsUnresponsive) {
   `RuntimeStateProjector.project(state, sessions, transcriptUpdate) -> MycliShellState`.
 - Stateless runtime projection oracle:
   `projectRuntimeState(state, sessions) -> MycliShellState`.
+- Gateway event replay:
+  `GatewayClient.waitForEvent(method, matches, timeoutMs) -> Promise<GatewayEvent>` with a default
+  unmatched-event replay limit of 256.
 
 ### 3. Contracts
 
@@ -2943,6 +2946,10 @@ if (!settled && workerIsUnresponsive) {
   shell reconciliation and subagent detection compare previous and next snapshots.
 - `projectRuntimeState` remains the full stateless behavior oracle for tests, resume, and fallback.
   Incremental output must be deeply equal to this function for the same runtime state.
+- Gateway event replay is a bounded race-recovery queue, not a session event log. An event that
+  resolves one or more already-pending waiters is not also retained, and an unmatched early event
+  may satisfy one future waiter exactly once. When the replay limit is reached, discard the oldest
+  unmatched events; streamed deltas must never grow client memory without bound.
 - The stateless `projectRuntimeState` path reconstructs shell block wrappers. Downstream incremental
   validation therefore compares the retained boundary by stable `id` and `kind`, not wrapper object
   identity. The runtime classifier remains responsible for proving the complete source prefix.
@@ -3067,6 +3074,9 @@ if (!settled && workerIsUnresponsive) {
 | Runtime appends or replaces the final immutable item | Reparse a bounded source suffix, snapshot affected arrays, and reuse unaffected arrays |
 | Active tail assistant receives live reasoning | Reproject from that assistant while retaining earlier shell blocks |
 | Runtime source reference or projection context disagrees with the hint | Ignore retained state and match `projectRuntimeState` |
+| Event matches one or more pending gateway waiters | Resolve every current match and do not retain a replay copy |
+| Future waiter matches one buffered early event | Remove that event and resolve the waiter exactly once |
+| Unmatched event count exceeds the replay limit | Discard the oldest entries and retain the newest bounded suffix |
 
 ### 5. Good/Base/Bad Cases
 
@@ -3102,6 +3112,8 @@ if (!settled && workerIsUnresponsive) {
   any runtime transcript item.
 - Good: a 10,000-item final message update reads only a bounded runtime suffix, returns a new shell
   transcript array, and preserves the stable block objects inside it.
+- Good: millions of streamed gateway deltas leave at most 256 unmatched replay events in the TUI
+  client rather than retaining the complete session event history.
 - Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
 - Bad: concatenate retained lexer tokens with an appended suffix without replaying the final
   non-space block; lists, blockquotes, fences, and tables can continue across the append boundary.
@@ -3140,6 +3152,8 @@ if (!settled && workerIsUnresponsive) {
   the caller loses the previous snapshot needed for reconciliation.
 - Bad: cache footer, approval, queue, permission, or session state inside the transcript projector;
   only the expensive runtime-to-shell transcript mapping is retained.
+- Bad: append every gateway notification to a permanent array, or let a handled lifecycle event
+  wake unrelated future waits after its original waiter has completed.
 
 ### 6. Tests Required
 
@@ -3196,6 +3210,8 @@ if (!settled && workerIsUnresponsive) {
   array while retaining stable message blocks.
 - Runtime projector tests assert unchanged events reuse all transcript-derived arrays and live
   reasoning replaces only the active tail assistant block.
+- Gateway client tests assert pending waiters share the live event without a replay copy, early
+  events are consumed once, and overflow discards the oldest unmatched event.
 - Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
   any tail-rendering change.
 
@@ -3214,6 +3230,20 @@ return lines.slice(-remainingRows);
 const lines = component.renderTail
   ? component.renderTail(width, remainingRows).lines
   : component.render(width).slice(-remainingRows);
+```
+
+#### Wrong
+
+```typescript
+this.events.push(event);
+```
+
+#### Correct
+
+```typescript
+if (!this.resolvePendingEvents(event)) {
+  this.rememberEvent(event);
+}
 ```
 
 #### Wrong

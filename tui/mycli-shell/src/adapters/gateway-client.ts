@@ -34,6 +34,8 @@ type PendingEvent = {
 	timer: NodeJS.Timeout;
 };
 
+const DEFAULT_EVENT_REPLAY_LIMIT = 256;
+
 function request(id: string, method: string, params: JsonObject = {}): RpcRequest {
 	return { jsonrpc: "2.0", id, method, params };
 }
@@ -80,6 +82,7 @@ export class GatewayClient {
 	private readonly pending = new Map<string, PendingRequest>();
 	private readonly pendingEvents: PendingEvent[] = [];
 	private readonly events: GatewayEvent[] = [];
+	private readonly eventReplayLimit: number;
 	private readline: Interface | null = null;
 	private closed = false;
 	private closeExpected = false;
@@ -90,8 +93,14 @@ export class GatewayClient {
 			output: NodeJS.WritableStream;
 			log?: (event: GatewayEvent) => void;
 			onClose?: (error: Error) => void;
+			eventReplayLimit?: number;
 		},
-	) {}
+	) {
+		const replayLimit = options.eventReplayLimit ?? DEFAULT_EVENT_REPLAY_LIMIT;
+		this.eventReplayLimit = Number.isSafeInteger(replayLimit) && replayLimit >= 0
+			? replayLimit
+			: DEFAULT_EVENT_REPLAY_LIMIT;
+	}
 
 	start(): void {
 		this.options.output.on?.("error", (error) => {
@@ -151,9 +160,11 @@ export class GatewayClient {
 		matches: (event: GatewayEvent) => boolean = () => true,
 		timeoutMs = 10000,
 	): Promise<GatewayEvent> {
-		const existing = this.events.find((event) => event.method === method && matches(event));
-		if (existing) {
-			return Promise.resolve(existing);
+		const existingIndex = this.events.findIndex(
+			(event) => event.method === method && matches(event),
+		);
+		if (existingIndex >= 0) {
+			return Promise.resolve(this.events.splice(existingIndex, 1)[0]!);
 		}
 		return new Promise((resolve, reject) => {
 			const pending: PendingEvent = {
@@ -210,20 +221,32 @@ export class GatewayClient {
 		}
 		if ("method" in message && !("id" in message)) {
 			const event = message as GatewayEvent;
-			this.events.push(event);
 			this.options.log?.(event);
-			this.resolvePendingEvents(event);
+			if (!this.resolvePendingEvents(event)) {
+				this.rememberEvent(event);
+			}
 		}
 	}
 
-	private resolvePendingEvents(event: GatewayEvent): void {
+	private rememberEvent(event: GatewayEvent): void {
+		if (this.eventReplayLimit === 0) return;
+		this.events.push(event);
+		if (this.events.length > this.eventReplayLimit) {
+			this.events.splice(0, this.events.length - this.eventReplayLimit);
+		}
+	}
+
+	private resolvePendingEvents(event: GatewayEvent): boolean {
+		let matched = false;
 		for (const pending of [...this.pendingEvents]) {
 			if (pending.method !== event.method || !pending.matches(event)) {
 				continue;
 			}
+			matched = true;
 			this.removePendingEvent(pending);
 			pending.resolve(event);
 		}
+		return matched;
 	}
 
 	private removePendingEvent(pending: PendingEvent): void {
@@ -244,6 +267,7 @@ export class GatewayClient {
 			clearTimeout(pending.timer);
 		}
 		this.pendingEvents.length = 0;
+		this.events.length = 0;
 	}
 
 	private closeFromError(error: Error): void {
