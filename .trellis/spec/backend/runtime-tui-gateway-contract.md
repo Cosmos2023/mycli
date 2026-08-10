@@ -2943,6 +2943,14 @@ if (!settled && workerIsUnresponsive) {
   next-token type, width, and reference-sensitive token context. Appending a reference-link
   definition must be able to change an earlier `[label][id]` token even when its raw source is
   unchanged.
+- Markdown also retains normalized source tokens for append-only streaming. When the source has no
+  reference-link syntax, it reparses from the final non-space top-level token, validates that token
+  raw lengths still cover the complete source, and splices only that suffix into retained lexer and
+  rendered-token arrays. Reference syntax, non-append edits, or source-coverage disagreement force
+  a full lex.
+- Incremental Markdown layout rechecks the rendered token immediately before the reparsed suffix
+  because its `nextType` may change. It updates the retained token-line total from the removed and
+  inserted suffix instead of summing every stable token on each bounded tail render.
 - Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
   the full-render behavior.
 
@@ -2956,7 +2964,9 @@ if (!settled && workerIsUnresponsive) {
 | Chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
 | Next root frame or direct container render | Render again; never reuse the prior frame's chrome lines |
 | Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
+| Append-only source has no reference-link syntax | Retain stable lexer tokens and reparse from the final non-space top-level token |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
+| Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
 | Tail includes the first assistant content row but not the leading blank | Preserve the assistant role bullet on that content row |
 | Tail source shrinks or its retained boundary `id`/`kind` changes | Reject incremental state and run a full projection |
@@ -2972,6 +2982,8 @@ if (!settled && workerIsUnresponsive) {
 
 - Good: a 100k-character streamed response renders only the bounded viewport tail while reporting
   the same total line count and visible bytes as a full render.
+- Good: appending to a response after hundreds of stable Markdown blocks retains their lexer and
+  rendered-token identities and parses only the active suffix.
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
@@ -2984,6 +2996,8 @@ if (!settled && workerIsUnresponsive) {
 - Good: a 10,000-item final message update reads only a bounded runtime suffix, returns a new shell
   transcript array, and preserves the stable block objects inside it.
 - Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
+- Bad: concatenate retained lexer tokens with an appended suffix without replaying the final
+  non-space block; lists, blockquotes, fences, and tables can continue across the append boundary.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
@@ -3003,6 +3017,8 @@ if (!settled && workerIsUnresponsive) {
 
 - Markdown tests compare incremental updates with fresh renders for paragraphs, lists, code,
   blockquotes, tables, reference definitions, and width changes.
+- Markdown lexer tests assert a long append-only stable prefix retains source-token identity, while
+  appended reference definitions rebuild reference-sensitive source tokens.
 - Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
   narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.

@@ -7,6 +7,10 @@ function renderFresh(text: string, width: number): string[] {
 	return new Markdown(text, 0, 0, markdownTheme()).render(width);
 }
 
+function sourceTokens(markdown: Markdown): object[] {
+	return (markdown as unknown as { cachedSourceTokens: object[] }).cachedSourceTokens;
+}
+
 test("incremental markdown rendering matches a fresh render", () => {
 	const width = 72;
 	const cases = [
@@ -62,15 +66,47 @@ test("incremental markdown rendering reuses stable token prefixes", () => {
 	assert.equal(headingRenders, initialHeadingRenders);
 });
 
+test("append-only markdown lexing retains stable source tokens", () => {
+	const stablePrefix = Array.from(
+		{ length: 500 },
+		(_, index) => `Paragraph ${index} remains stable.`,
+	).join("\n\n");
+	const before = `${stablePrefix}\n\nTail`;
+	const after = `${before} extended with more text`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.renderTail(80, 40);
+	const stableToken = sourceTokens(markdown)[0];
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(80, 40);
+	const fresh = new Markdown(after, 0, 0, markdownTheme()).renderTail(80, 40);
+
+	assert.equal(sourceTokens(markdown)[0], stableToken);
+	assert.deepEqual(incremental, fresh);
+});
+
+test("append-only markdown reparses the prior content block across trailing space", () => {
+	const before = "Stable paragraph.\n\n- one\n- two\n\n";
+	const after = `${before}- nested continuation`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.render(72);
+
+	markdown.setText(after);
+
+	assert.deepEqual(markdown.render(72), renderFresh(after, 72));
+});
+
 test("incremental markdown invalidates references resolved by appended definitions", () => {
 	const before = "See [docs][guide].\n\nTail paragraph.";
 	const after = `${before}\n\n[guide]: https://example.com`;
 	const markdown = new Markdown(before, 0, 0, markdownTheme());
 	markdown.render(80);
+	const unresolvedToken = sourceTokens(markdown)[0];
 
 	markdown.setText(after);
 
 	assert.deepEqual(markdown.render(80), renderFresh(after, 80));
+	assert.notEqual(sourceTokens(markdown)[0], unresolvedToken);
 });
 
 test("changing width invalidates incremental markdown token layout", () => {

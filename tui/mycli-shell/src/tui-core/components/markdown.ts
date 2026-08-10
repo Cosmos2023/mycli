@@ -90,8 +90,20 @@ interface RenderedTokenCacheEntry {
 	lines: string[];
 }
 
+interface MarkdownTokenUpdate {
+	tokens: Token[];
+	stablePrefixLength: number;
+	changed: boolean;
+}
+
+function normalizeMarkdownSource(source: string): string {
+	return source.replace(/\t/g, "   ");
+}
+
 export class Markdown implements Component {
 	private text: string;
+	private normalizedText: string;
+	private hasReferenceSyntax: boolean;
 	private paddingX: number; // Left/right padding
 	private paddingY: number; // Top/bottom padding
 	private defaultTextStyle?: DefaultTextStyle;
@@ -105,6 +117,10 @@ export class Markdown implements Component {
 	private cachedLines?: string[];
 	private cachedTokenWidth?: number;
 	private cachedTokens: RenderedTokenCacheEntry[] = [];
+	private cachedTokenLineCount = 0;
+	private cachedLexedText?: string;
+	private cachedSourceTokens: Token[] = [];
+	private cachedSourceTokenEnds: number[] = [];
 
 	constructor(
 		text: string,
@@ -115,6 +131,8 @@ export class Markdown implements Component {
 		options?: MarkdownOptions,
 	) {
 		this.text = text;
+		this.normalizedText = normalizeMarkdownSource(text);
+		this.hasReferenceSyntax = text.includes("[");
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 		this.theme = theme;
@@ -124,6 +142,14 @@ export class Markdown implements Component {
 
 	setText(text: string): void {
 		if (this.text === text) return;
+		if (text.startsWith(this.text)) {
+			const suffix = text.slice(this.text.length);
+			this.normalizedText += normalizeMarkdownSource(suffix);
+			this.hasReferenceSyntax ||= suffix.includes("[");
+		} else {
+			this.normalizedText = normalizeMarkdownSource(text);
+			this.hasReferenceSyntax = text.includes("[");
+		}
 		this.text = text;
 		this.cachedText = undefined;
 		this.cachedLines = undefined;
@@ -135,6 +161,10 @@ export class Markdown implements Component {
 		this.cachedLines = undefined;
 		this.cachedTokenWidth = undefined;
 		this.cachedTokens = [];
+		this.cachedTokenLineCount = 0;
+		this.cachedLexedText = undefined;
+		this.cachedSourceTokens = [];
+		this.cachedSourceTokenEnds = [];
 	}
 
 	render(width: number): string[] {
@@ -188,8 +218,7 @@ export class Markdown implements Component {
 
 		const contentWidth = Math.max(1, width - this.paddingX * 2);
 		const tokenLines = this.renderTokenLines(width, contentWidth);
-		let totalLines = this.paddingY * 2;
-		for (const entry of tokenLines) totalLines += entry.lines.length;
+		const totalLines = this.paddingY * 2 + this.cachedTokenLineCount;
 		if (totalLines === 0) {
 			return { lines: rowLimit > 0 ? [""] : [], totalLines: 1 };
 		}
@@ -215,12 +244,19 @@ export class Markdown implements Component {
 	}
 
 	private renderTokenLines(width: number, contentWidth: number): RenderedTokenCacheEntry[] {
-		const tokens = markdownParser.lexer(this.text.replace(/\t/g, "   "));
+		const tokenUpdate = this.updateSourceTokens();
+		if (!tokenUpdate.changed && this.cachedTokenWidth === width) {
+			return this.cachedTokens;
+		}
+
 		const previousTokens = this.cachedTokenWidth === width ? this.cachedTokens : [];
+		const renderStart = previousTokens.length > 0
+			? Math.max(0, Math.min(tokenUpdate.stablePrefixLength, previousTokens.length) - 1)
+			: 0;
 		const nextTokenCache: RenderedTokenCacheEntry[] = [];
-		for (let index = 0; index < tokens.length; index += 1) {
-			const token = tokens[index]!;
-			const nextType = tokens[index + 1]?.type;
+		for (let index = renderStart; index < tokenUpdate.tokens.length; index += 1) {
+			const token = tokenUpdate.tokens[index]!;
+			const nextType = tokenUpdate.tokens[index + 1]?.type;
 			const contextKey = token.raw.includes("[") ? JSON.stringify(token) : undefined;
 			const cached = previousTokens[index];
 			const lines = cached &&
@@ -232,9 +268,91 @@ export class Markdown implements Component {
 				: this.renderTokenContentLines(token, contentWidth, width, nextType);
 			nextTokenCache.push({ type: token.type, raw: token.raw, contextKey, nextType, lines });
 		}
+		const removed = this.cachedTokenWidth === width
+			? this.cachedTokens.splice(
+				renderStart,
+				this.cachedTokens.length - renderStart,
+				...nextTokenCache,
+			)
+			: this.cachedTokens;
+		const removedLineCount = removed.reduce((count, entry) => count + entry.lines.length, 0);
+		const addedLineCount = nextTokenCache.reduce((count, entry) => count + entry.lines.length, 0);
+		if (this.cachedTokenWidth === width) {
+			this.cachedTokenLineCount += addedLineCount - removedLineCount;
+		} else {
+			this.cachedTokens = nextTokenCache;
+			this.cachedTokenLineCount = addedLineCount;
+		}
 		this.cachedTokenWidth = width;
-		this.cachedTokens = nextTokenCache;
-		return nextTokenCache;
+		return this.cachedTokens;
+	}
+
+	private updateSourceTokens(): MarkdownTokenUpdate {
+		const source = this.normalizedText;
+		if (this.cachedLexedText === source) {
+			return { tokens: this.cachedSourceTokens, stablePrefixLength: this.cachedSourceTokens.length, changed: false };
+		}
+
+		if (this.canIncrementallyLex(source)) {
+			let reparseTokenIndex = this.cachedSourceTokens.length - 1;
+			while (reparseTokenIndex > 0 && this.cachedSourceTokens[reparseTokenIndex]?.type === "space") {
+				reparseTokenIndex -= 1;
+			}
+			const reparseOffset = reparseTokenIndex > 0
+				? (this.cachedSourceTokenEnds[reparseTokenIndex - 1] ?? 0)
+				: 0;
+			const suffixSource = source.slice(reparseOffset);
+			const suffixTokens = this.lexSource(suffixSource);
+			const suffixEnds = this.tokenEndOffsets(suffixTokens, reparseOffset);
+			if (suffixEnds.at(-1) === source.length || (suffixTokens.length === 0 && reparseOffset === source.length)) {
+				this.cachedSourceTokens.splice(
+					reparseTokenIndex,
+					this.cachedSourceTokens.length - reparseTokenIndex,
+					...suffixTokens,
+				);
+				this.cachedSourceTokenEnds.splice(
+					reparseTokenIndex,
+					this.cachedSourceTokenEnds.length - reparseTokenIndex,
+					...suffixEnds,
+				);
+				this.cachedLexedText = source;
+				return {
+					tokens: this.cachedSourceTokens,
+					stablePrefixLength: reparseTokenIndex,
+					changed: true,
+				};
+			}
+		}
+
+		const tokens = this.lexSource(source);
+		this.cachedSourceTokens = tokens;
+		this.cachedSourceTokenEnds = this.tokenEndOffsets(tokens);
+		this.cachedLexedText = source;
+		return { tokens, stablePrefixLength: 0, changed: true };
+	}
+
+	private canIncrementallyLex(source: string): boolean {
+		if (this.hasReferenceSyntax || this.cachedLexedText === undefined || this.cachedSourceTokens.length === 0) {
+			return false;
+		}
+		if (source.length <= this.cachedLexedText.length || !source.startsWith(this.cachedLexedText)) {
+			return false;
+		}
+		return this.cachedSourceTokenEnds.at(-1) === this.cachedLexedText.length;
+	}
+
+	private lexSource(source: string): Token[] {
+		return Array.from(markdownParser.lexer(source));
+	}
+
+	private tokenEndOffsets(tokens: Token[], initialOffset = 0): number[] {
+		const offsets: number[] = [];
+		let offset = initialOffset;
+		for (const token of tokens) {
+			offset += token.raw.length;
+			offsets.push(offset);
+		}
+		return offsets;
 	}
 
 	private renderTokenContentLines(
