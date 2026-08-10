@@ -92,6 +92,7 @@ interface RenderedTokenCacheEntry {
 	list?: RenderedFlatListTokenCache;
 	paragraph?: RenderedPlainParagraphCache;
 	blockquote?: RenderedPlainBlockquoteCache;
+	table?: RenderedTableTokenCache;
 }
 
 interface RenderedCodeTokenCache {
@@ -119,6 +120,28 @@ interface RenderedFlatListTokenCache {
 	sourceToken: Tokens.List;
 }
 
+interface TableRowMetrics {
+	naturalWidths: number[];
+	minWordWidths: number[];
+}
+
+interface TableColumnLayout extends TableRowMetrics {
+	columnWidths: number[];
+}
+
+interface RenderedTableLines {
+	lines: string[];
+	rowBoundaryStarts: number[];
+	bottomLineStart: number;
+}
+
+interface RenderedTableTokenCache extends TableColumnLayout {
+	rowBoundaryStarts: number[];
+	bottomLineStart: number;
+	finalRowMetrics: TableRowMetrics;
+	sourceToken: Tokens.Table;
+}
+
 interface FlatListInfo {
 	lastItemOffset: number;
 	marker: string;
@@ -128,6 +151,11 @@ interface FlatListInfo {
 interface AppendedListUpdate {
 	sourceToken: Tokens.List;
 	stableItemCount: number;
+}
+
+interface StreamingTableInfo {
+	headerSource: string;
+	lastRowOffset: number;
 }
 
 interface OpenFenceInfo {
@@ -168,6 +196,7 @@ export class Markdown implements Component {
 	private cachedSourceTokenEnds: number[] = [];
 	private cachedOpenFences = new WeakMap<Token, OpenFenceInfo | null>();
 	private cachedFlatLists = new WeakMap<Token, FlatListInfo | null>();
+	private cachedStreamingTables = new WeakMap<Token, StreamingTableInfo | null>();
 	private appendedTokenSources = new WeakMap<Token, Token>();
 	private appendedListUpdates = new WeakMap<Token, AppendedListUpdate>();
 	private normalizedTextExtendsLexedText = false;
@@ -224,6 +253,7 @@ export class Markdown implements Component {
 		this.cachedSourceTokenEnds = [];
 		this.cachedOpenFences = new WeakMap();
 		this.cachedFlatLists = new WeakMap();
+		this.cachedStreamingTables = new WeakMap();
 		this.appendedTokenSources = new WeakMap();
 		this.appendedListUpdates = new WeakMap();
 		this.normalizedTextExtendsLexedText = false;
@@ -403,6 +433,29 @@ export class Markdown implements Component {
 			}
 			const retained = this.createRetainedFlatListEntry(
 				listToken,
+				contentWidth,
+				width,
+				nextType,
+				contextKey,
+			);
+			if (retained) return retained;
+		}
+
+		if (token.type === "table") {
+			const tableToken = token as Tokens.Table;
+			if (cached?.type === "table" && cached.table) {
+				const updated = this.updateRetainedTableEntry(
+					cached,
+					tableToken,
+					contentWidth,
+					width,
+					nextType,
+					contextKey,
+				);
+				if (updated) return updated;
+			}
+			const retained = this.createRetainedTableEntry(
+				tableToken,
 				contentWidth,
 				width,
 				nextType,
@@ -658,6 +711,122 @@ export class Markdown implements Component {
 		return cached;
 	}
 
+	private createRetainedTableEntry(
+		token: Tokens.Table,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		if (nextType !== undefined || contextKey !== undefined || token.rows.length === 0) return null;
+		const layout = this.tableColumnLayout(token, contentWidth);
+		if (!layout) return null;
+		const rendered = this.renderTableLines(token, layout.columnWidths);
+		const lines = this.renderLogicalLines(rendered.lines, contentWidth, width);
+		if (lines.length !== rendered.lines.length) return null;
+		return {
+			type: token.type,
+			raw: token.raw,
+			contextKey,
+			nextType,
+			lines,
+			table: {
+				...layout,
+				rowBoundaryStarts: rendered.rowBoundaryStarts,
+				bottomLineStart: rendered.bottomLineStart,
+				finalRowMetrics: this.tableRowMetrics(token.rows[token.rows.length - 1]!, token.header.length),
+				sourceToken: token,
+			},
+		};
+	}
+
+	private updateRetainedTableEntry(
+		cached: RenderedTokenCacheEntry,
+		token: Tokens.Table,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		const table = cached.table;
+		if (
+			!table ||
+			nextType !== undefined ||
+			contextKey !== undefined ||
+			token.rows.length === 0 ||
+			this.appendedTokenSources.get(token) !== table.sourceToken ||
+			table.rowBoundaryStarts.length !== table.sourceToken.rows.length ||
+			token.header.length !== table.columnWidths.length ||
+			token.raw.length < table.sourceToken.raw.length
+		) return null;
+
+		const previousToken = table.sourceToken;
+		const appended = token.raw.slice(previousToken.raw.length);
+		const stableRowCount = previousToken.raw.endsWith("\n") || appended.startsWith("\n")
+			? previousToken.rows.length
+			: Math.max(0, previousToken.rows.length - 1);
+		if (stableRowCount > token.rows.length) return null;
+		const changedRows = token.rows.slice(stableRowCount);
+		if (stableRowCount < previousToken.rows.length && changedRows.length === 0) return null;
+
+		const changedMetrics = changedRows.map((row) => this.tableRowMetrics(row, token.header.length));
+		if (
+			stableRowCount < previousToken.rows.length &&
+			!this.tableMetricsDominate(changedMetrics[0]!, table.finalRowMetrics)
+		) return null;
+
+		const naturalWidths = [...table.naturalWidths];
+		const minWordWidths = [...table.minWordWidths];
+		for (const metrics of changedMetrics) {
+			for (let index = 0; index < token.header.length; index += 1) {
+				naturalWidths[index] = Math.max(naturalWidths[index] ?? 0, metrics.naturalWidths[index] ?? 0);
+				minWordWidths[index] = Math.max(minWordWidths[index] ?? 1, metrics.minWordWidths[index] ?? 1);
+			}
+		}
+		const columnWidths = this.resolveTableColumnWidths(
+			naturalWidths,
+			minWordWidths,
+			contentWidth,
+		);
+		if (!columnWidths || !this.numberArraysEqual(columnWidths, table.columnWidths)) return null;
+
+		if (changedRows.length > 0) {
+			const keepLineCount = stableRowCount < previousToken.rows.length
+				? table.rowBoundaryStarts[stableRowCount]
+				: table.bottomLineStart;
+			if (keepLineCount === undefined || keepLineCount < 0 || keepLineCount > cached.lines.length) return null;
+			const rendered = this.renderTableSuffix(changedRows, columnWidths);
+			const replacement = this.renderLogicalLines(rendered.lines, contentWidth, width);
+			if (replacement.length !== rendered.lines.length) return null;
+			cached.lines.splice(keepLineCount, cached.lines.length - keepLineCount, ...replacement);
+			table.rowBoundaryStarts.splice(
+				stableRowCount,
+				table.rowBoundaryStarts.length - stableRowCount,
+				...rendered.rowBoundaryStarts.map((start) => keepLineCount + start),
+			);
+			table.bottomLineStart = keepLineCount + rendered.bottomLineStart;
+			table.finalRowMetrics = changedMetrics[changedMetrics.length - 1]!;
+		}
+
+		cached.raw = token.raw;
+		cached.contextKey = contextKey;
+		cached.nextType = nextType;
+		table.naturalWidths = naturalWidths;
+		table.minWordWidths = minWordWidths;
+		table.columnWidths = columnWidths;
+		table.sourceToken = token;
+		return cached;
+	}
+
+	private tableMetricsDominate(next: TableRowMetrics, previous: TableRowMetrics): boolean {
+		return next.naturalWidths.every((width, index) => width >= (previous.naturalWidths[index] ?? 0)) &&
+			next.minWordWidths.every((width, index) => width >= (previous.minWordWidths[index] ?? 1));
+	}
+
+	private numberArraysEqual(left: readonly number[], right: readonly number[]): boolean {
+		return left.length === right.length && left.every((value, index) => value === right[index]);
+	}
+
 	private retainablePlainParagraphText(
 		token: Tokens.Paragraph,
 		nextType: string | undefined,
@@ -857,6 +1026,13 @@ export class Markdown implements Component {
 				this.pendingNormalizedAppend,
 			);
 			if (listUpdate) return listUpdate;
+			const tableUpdate = this.updateOpenTableToken(
+				source,
+				reparseTokenIndex,
+				reparseOffset,
+				this.pendingNormalizedAppend,
+			);
+			if (tableUpdate) return tableUpdate;
 			const suffixSource = source.slice(reparseOffset);
 			const suffixTokens = this.lexSource(suffixSource);
 			const suffixEnds = this.tokenEndOffsets(suffixTokens, reparseOffset);
@@ -1007,6 +1183,68 @@ export class Markdown implements Component {
 		};
 	}
 
+	private updateOpenTableToken(
+		source: string,
+		tokenIndex: number,
+		sourceOffset: number,
+		appended: string,
+	): MarkdownTokenUpdate | null {
+		if (tokenIndex !== this.cachedSourceTokens.length - 1) return null;
+		const token = this.cachedSourceTokens[tokenIndex];
+		if (!token || token.type !== "table") return null;
+		const tableToken = token as Tokens.Table;
+		const tableInfo = this.streamingTableInfo(tableToken);
+		if (
+			!tableInfo ||
+			!appended ||
+			appended.includes("\r") ||
+			tableToken.raw.length !== (this.cachedLexedText?.length ?? 0) - sourceOffset
+		) return null;
+
+		const boundarySource = tableToken.raw.slice(tableInfo.lastRowOffset) + appended;
+		const syntheticSource = tableInfo.headerSource + boundarySource;
+		const boundaryTokens = this.lexSource(syntheticSource);
+		if (boundaryTokens.length !== 1 || boundaryTokens[0]?.type !== "table") return null;
+		const boundaryTable = boundaryTokens[0] as Tokens.Table;
+		const boundaryInfo = this.streamingTableInfo(boundaryTable);
+		if (
+			!boundaryInfo ||
+			boundaryTable.raw.length !== syntheticSource.length ||
+			boundaryTable.header.length !== tableToken.header.length ||
+			!boundaryTable.header.every((cell, index) => cell.text === tableToken.header[index]?.text) ||
+			!boundaryTable.align.every((align, index) => align === tableToken.align[index]) ||
+			boundaryTable.rows.length === 0
+		) return null;
+
+		const stableRowCount = tableToken.rows.length - 1;
+		const rows = [...tableToken.rows.slice(0, stableRowCount), ...boundaryTable.rows];
+		const boundaryBody = boundaryTable.raw.slice(tableInfo.headerSource.length);
+		const raw = tableToken.raw.slice(0, tableInfo.lastRowOffset) + boundaryBody;
+		if (raw.length !== source.length - sourceOffset) return null;
+		const nextToken: Tokens.Table = {
+			...tableToken,
+			raw,
+			rows,
+		};
+		const nextLastRowOffset = tableInfo.lastRowOffset
+			+ boundaryInfo.lastRowOffset
+			- tableInfo.headerSource.length;
+
+		this.appendedTokenSources.set(nextToken, tableToken);
+		this.cachedStreamingTables.set(nextToken, {
+			headerSource: tableInfo.headerSource,
+			lastRowOffset: nextLastRowOffset,
+		});
+		this.cachedSourceTokens.splice(tokenIndex, 1, nextToken);
+		this.cachedSourceTokenEnds.splice(tokenIndex, 1, source.length);
+		this.commitLexedSource(source);
+		return {
+			tokens: this.cachedSourceTokens,
+			stablePrefixLength: tokenIndex,
+			changed: true,
+		};
+	}
+
 	private flatListInfo(token: Tokens.List): FlatListInfo | null {
 		if (this.cachedFlatLists.has(token)) {
 			return this.cachedFlatLists.get(token) ?? null;
@@ -1049,6 +1287,30 @@ export class Markdown implements Component {
 			inline.raw === item.text &&
 			inline.text === item.text,
 		);
+	}
+
+	private streamingTableInfo(token: Tokens.Table): StreamingTableInfo | null {
+		if (this.cachedStreamingTables.has(token)) {
+			return this.cachedStreamingTables.get(token) ?? null;
+		}
+		if (token.rows.length === 0 || token.raw.includes("\r")) {
+			this.cachedStreamingTables.set(token, null);
+			return null;
+		}
+		const headerEnd = token.raw.indexOf("\n");
+		const delimiterEnd = headerEnd < 0 ? -1 : token.raw.indexOf("\n", headerEnd + 1);
+		if (delimiterEnd < 0) {
+			this.cachedStreamingTables.set(token, null);
+			return null;
+		}
+		const sourceEnd = token.raw.endsWith("\n") ? token.raw.length - 1 : token.raw.length;
+		const lastRowOffset = token.raw.lastIndexOf("\n", sourceEnd - 1) + 1;
+		const headerSource = token.raw.slice(0, delimiterEnd + 1);
+		const info = lastRowOffset >= headerSource.length && lastRowOffset < token.raw.length
+			? { headerSource, lastRowOffset }
+			: null;
+		this.cachedStreamingTables.set(token, info);
+		return info;
 	}
 
 	private openFenceInfo(token: Token): OpenFenceInfo | null {
@@ -1580,18 +1842,9 @@ export class Markdown implements Component {
 		nextTokenType?: string,
 		styleContext?: InlineStyleContext,
 	): string[] {
-		const lines: string[] = [];
-		const numCols = token.header.length;
-
-		if (numCols === 0) {
-			return lines;
-		}
-
-		// Calculate border overhead: "│ " + (n-1) * " │ " + " │"
-		// = 2 + (n-1) * 3 + 2 = 3n + 1
-		const borderOverhead = 3 * numCols + 1;
-		const availableForCells = availableWidth - borderOverhead;
-		if (availableForCells < numCols) {
+		if (token.header.length === 0) return [];
+		const layout = this.tableColumnLayout(token, availableWidth, styleContext);
+		if (!layout) {
 			// Too narrow to render a stable table. Fall back to raw markdown.
 			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
 			if (nextTokenType && nextTokenType !== "space") {
@@ -1599,29 +1852,60 @@ export class Markdown implements Component {
 			}
 			return fallbackLines;
 		}
+		const rendered = this.renderTableLines(token, layout.columnWidths, styleContext);
+		if (nextTokenType && nextTokenType !== "space") rendered.lines.push("");
+		return rendered.lines;
+	}
 
-		const maxUnbrokenWordWidth = 30;
+	private tableColumnLayout(
+		token: Tokens.Table,
+		availableWidth: number,
+		styleContext?: InlineStyleContext,
+	): TableColumnLayout | null {
+		const numCols = token.header.length;
+		const borderOverhead = 3 * numCols + 1;
+		if (numCols === 0 || availableWidth - borderOverhead < numCols) return null;
 
-		// Calculate natural column widths (what each column needs without constraints)
-		const naturalWidths: number[] = [];
-		const minWordWidths: number[] = [];
-		for (let i = 0; i < numCols; i++) {
-			const headerText = this.renderInlineTokens(token.header[i].tokens || [], styleContext);
-			naturalWidths[i] = visibleWidth(headerText);
-			minWordWidths[i] = Math.max(1, this.getLongestWordWidth(headerText, maxUnbrokenWordWidth));
-		}
+		const headerMetrics = this.tableRowMetrics(token.header, numCols, styleContext);
+		const naturalWidths = [...headerMetrics.naturalWidths];
+		const minWordWidths = [...headerMetrics.minWordWidths];
 		for (const row of token.rows) {
-			for (let i = 0; i < row.length; i++) {
-				const cellText = this.renderInlineTokens(row[i].tokens || [], styleContext);
-				naturalWidths[i] = Math.max(naturalWidths[i] || 0, visibleWidth(cellText));
-				minWordWidths[i] = Math.max(
-					minWordWidths[i] || 1,
-					this.getLongestWordWidth(cellText, maxUnbrokenWordWidth),
-				);
+			const metrics = this.tableRowMetrics(row, numCols, styleContext);
+			for (let index = 0; index < numCols; index += 1) {
+				naturalWidths[index] = Math.max(naturalWidths[index] ?? 0, metrics.naturalWidths[index] ?? 0);
+				minWordWidths[index] = Math.max(minWordWidths[index] ?? 1, metrics.minWordWidths[index] ?? 1);
 			}
 		}
+		const columnWidths = this.resolveTableColumnWidths(naturalWidths, minWordWidths, availableWidth);
+		return columnWidths ? { naturalWidths, minWordWidths, columnWidths } : null;
+	}
 
-		let minColumnWidths = minWordWidths;
+	private tableRowMetrics(
+		row: readonly Tokens.TableCell[],
+		numCols: number,
+		styleContext?: InlineStyleContext,
+	): TableRowMetrics {
+		const maxUnbrokenWordWidth = 30;
+		const naturalWidths = new Array<number>(numCols).fill(0);
+		const minWordWidths = new Array<number>(numCols).fill(1);
+		for (let index = 0; index < Math.min(numCols, row.length); index += 1) {
+			const text = this.renderInlineTokens(row[index]!.tokens || [], styleContext);
+			naturalWidths[index] = visibleWidth(text);
+			minWordWidths[index] = Math.max(1, this.getLongestWordWidth(text, maxUnbrokenWordWidth));
+		}
+		return { naturalWidths, minWordWidths };
+	}
+
+	private resolveTableColumnWidths(
+		naturalWidths: readonly number[],
+		minWordWidths: readonly number[],
+		availableWidth: number,
+	): number[] | null {
+		const numCols = naturalWidths.length;
+		const borderOverhead = 3 * numCols + 1;
+		const availableForCells = availableWidth - borderOverhead;
+		if (numCols === 0 || availableForCells < numCols) return null;
+		let minColumnWidths = [...minWordWidths];
 		let minCellsWidth = minColumnWidths.reduce((a, b) => a + b, 0);
 
 		if (minCellsWidth > availableForCells) {
@@ -1656,15 +1940,15 @@ export class Markdown implements Component {
 
 		if (totalNaturalWidth <= availableWidth) {
 			// Everything fits naturally
-			columnWidths = naturalWidths.map((width, index) => Math.max(width, minColumnWidths[index]));
+			columnWidths = naturalWidths.map((width, index) => Math.max(width, minColumnWidths[index]!));
 		} else {
 			// Need to shrink columns to fit
 			const totalGrowPotential = naturalWidths.reduce((total, width, index) => {
-				return total + Math.max(0, width - minColumnWidths[index]);
+				return total + Math.max(0, width - minColumnWidths[index]!);
 			}, 0);
 			const extraWidth = Math.max(0, availableForCells - minCellsWidth);
 			columnWidths = minColumnWidths.map((minWidth, index) => {
-				const naturalWidth = naturalWidths[index];
+				const naturalWidth = naturalWidths[index]!;
 				const minWidthDelta = Math.max(0, naturalWidth - minWidth);
 				let grow = 0;
 				if (totalGrowPotential > 0) {
@@ -1679,7 +1963,7 @@ export class Markdown implements Component {
 			while (remaining > 0) {
 				let grew = false;
 				for (let i = 0; i < numCols && remaining > 0; i++) {
-					if (columnWidths[i] < naturalWidths[i]) {
+					if (columnWidths[i]! < naturalWidths[i]!) {
 						columnWidths[i]++;
 						remaining--;
 						grew = true;
@@ -1690,61 +1974,77 @@ export class Markdown implements Component {
 				}
 			}
 		}
+		return columnWidths;
+	}
 
-		// Render top border
+	private renderTableLines(
+		token: Tokens.Table,
+		columnWidths: readonly number[],
+		styleContext?: InlineStyleContext,
+	): RenderedTableLines {
+		const lines: string[] = [];
+		const rowBoundaryStarts: number[] = [];
 		const topBorderCells = columnWidths.map((w) => "─".repeat(w));
 		lines.push(`┌─${topBorderCells.join("─┬─")}─┐`);
+		lines.push(...this.renderTableRow(token.header, columnWidths, true, styleContext));
 
-		// Render header with wrapping
-		const headerCellLines: string[][] = token.header.map((cell, i) => {
+		const separatorLine = this.tableSeparatorLine(columnWidths);
+		if (token.rows.length === 0) lines.push(separatorLine);
+		for (const row of token.rows) {
+			rowBoundaryStarts.push(lines.length);
+			lines.push(separatorLine);
+			lines.push(...this.renderTableRow(row, columnWidths, false, styleContext));
+		}
+
+		const bottomLineStart = lines.length;
+		const bottomBorderCells = columnWidths.map((w) => "─".repeat(w));
+		lines.push(`└─${bottomBorderCells.join("─┴─")}─┘`);
+		return { lines, rowBoundaryStarts, bottomLineStart };
+	}
+
+	private renderTableSuffix(
+		rows: readonly Tokens.TableCell[][],
+		columnWidths: readonly number[],
+	): RenderedTableLines {
+		const lines: string[] = [];
+		const rowBoundaryStarts: number[] = [];
+		const separatorLine = this.tableSeparatorLine(columnWidths);
+		for (const row of rows) {
+			rowBoundaryStarts.push(lines.length);
+			lines.push(separatorLine);
+			lines.push(...this.renderTableRow(row, columnWidths, false));
+		}
+		const bottomLineStart = lines.length;
+		const bottomBorderCells = columnWidths.map((width) => "─".repeat(width));
+		lines.push(`└─${bottomBorderCells.join("─┴─")}─┘`);
+		return { lines, rowBoundaryStarts, bottomLineStart };
+	}
+
+	private renderTableRow(
+		row: readonly Tokens.TableCell[],
+		columnWidths: readonly number[],
+		header: boolean,
+		styleContext?: InlineStyleContext,
+	): string[] {
+		const cellLines = row.map((cell, index) => {
 			const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-			return this.wrapCellText(text, columnWidths[i]);
+			return this.wrapCellText(text, columnWidths[index]!);
 		});
-		const headerLineCount = Math.max(...headerCellLines.map((c) => c.length));
-
-		for (let lineIdx = 0; lineIdx < headerLineCount; lineIdx++) {
-			const rowParts = headerCellLines.map((cellLines, colIdx) => {
-				const text = cellLines[lineIdx] || "";
-				const padded = text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				return this.theme.bold(padded);
+		const lineCount = Math.max(...cellLines.map((cell) => cell.length));
+		const lines: string[] = [];
+		for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+			const rowParts = cellLines.map((wrapped, columnIndex) => {
+				const text = wrapped[lineIndex] || "";
+				const padded = text + " ".repeat(Math.max(0, columnWidths[columnIndex]! - visibleWidth(text)));
+				return header ? this.theme.bold(padded) : padded;
 			});
 			lines.push(`│ ${rowParts.join(" │ ")} │`);
 		}
-
-		// Render separator
-		const separatorCells = columnWidths.map((w) => "─".repeat(w));
-		const separatorLine = `├─${separatorCells.join("─┼─")}─┤`;
-		lines.push(separatorLine);
-
-		// Render rows with wrapping
-		for (let rowIndex = 0; rowIndex < token.rows.length; rowIndex++) {
-			const row = token.rows[rowIndex];
-			const rowCellLines: string[][] = row.map((cell, i) => {
-				const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-				return this.wrapCellText(text, columnWidths[i]);
-			});
-			const rowLineCount = Math.max(...rowCellLines.map((c) => c.length));
-
-			for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {
-				const rowParts = rowCellLines.map((cellLines, colIdx) => {
-					const text = cellLines[lineIdx] || "";
-					return text + " ".repeat(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				});
-				lines.push(`│ ${rowParts.join(" │ ")} │`);
-			}
-
-			if (rowIndex < token.rows.length - 1) {
-				lines.push(separatorLine);
-			}
-		}
-
-		// Render bottom border
-		const bottomBorderCells = columnWidths.map((w) => "─".repeat(w));
-		lines.push(`└─${bottomBorderCells.join("─┴─")}─┘`);
-
-		if (nextTokenType && nextTokenType !== "space") {
-			lines.push(""); // Add spacing after table
-		}
 		return lines;
+	}
+
+	private tableSeparatorLine(columnWidths: readonly number[]): string {
+		const cells = columnWidths.map((width) => "─".repeat(width));
+		return `├─${cells.join("─┼─")}─┤`;
 	}
 }

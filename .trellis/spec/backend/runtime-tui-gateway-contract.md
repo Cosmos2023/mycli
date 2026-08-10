@@ -2887,6 +2887,11 @@ if (!settled && workerIsUnresponsive) {
 - Plain blockquote layout cache:
   `RenderedPlainBlockquoteCache {text, lastSourceLineStart,
   lastSourceLineOutputStart, sourceToken}`.
+- Streaming table source cache:
+  `StreamingTableInfo {headerSource, lastRowOffset}`.
+- Retained table layout cache:
+  `RenderedTableTokenCache {naturalWidths, minWordWidths, columnWidths,
+  rowBoundaryStarts, bottomLineStart, finalRowMetrics, sourceToken}`.
 - Runtime update classifier:
   `classifyRuntimeTranscriptUpdate(previous, next) -> "unchanged" | "tail" | "replace"`.
 - Gateway runtime projector:
@@ -2987,6 +2992,15 @@ if (!settled && workerIsUnresponsive) {
   replacement can produce different control bytes even when it looks identical. Multiple quote
   blocks, rich inline syntax, nested blocks, reference syntax, or a following top-level token use
   the complete token-render path.
+- A final table without reference syntax may retain its header and stable row AST. The lexer builds
+  a synthetic boundary table from the cached header plus the previous final source row and appended
+  bytes, accepts only one complete Marked table token, then replaces the prior final row plus new
+  rows. Missing source coverage, carriage returns, table termination, header/alignment disagreement,
+  or an invalid boundary forces a full lex.
+- Table layout retains column metrics, rendered row boundaries, and the line array. It rerenders
+  only changed rows when replacing the prior final row cannot reduce any cached row metric and the
+  recomputed column widths remain identical. A width change or a semantic transition that can
+  shrink the replaced row rebuilds the complete table; table column widths depend on every row.
 - Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
   the full-render behavior.
 
@@ -3012,6 +3026,9 @@ if (!settled && workerIsUnresponsive) {
 | Plain blockquote receives a plain append | Re-render the prior final quote source line plus the appended text and retain the entry and line-array identities |
 | Blockquote receives rich inline content, a nested block, a second paragraph, or ends | Reject retained quote layout and match a fresh Marked render |
 | Retained quote suffix starts after an earlier styled line | Seed the active ANSI continuation state and require byte-equal output, not merely equal visible text |
+| Final table receives cells that preserve computed column widths | Reparse the final source row and render only changed/new rows plus the bottom border |
+| Appended table cell changes a column width | Reject retained layout and rebuild the complete table |
+| Appended table boundary ends the table or changes header/alignment semantics | Reject the boundary token and run a full lex/render |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
@@ -3039,6 +3056,8 @@ if (!settled && workerIsUnresponsive) {
   and the new item while retaining earlier item objects and rendered lines.
 - Good: appending one line to a 2,000-line plain blockquote rerenders only the previous final source
   line and the appended line while preserving ANSI bytes and the retained line array.
+- Good: appending one stable-width row to a 1,000-row table lexes the cached header plus final-row
+  boundary, retains earlier row AST and rendered lines, and renders only the new suffix.
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
@@ -3062,6 +3081,8 @@ if (!settled && workerIsUnresponsive) {
   streamed character.
 - Bad: render a retained styled quote line in isolation. The fresh render may canonicalize active
   cross-line ANSI state into a different escape sequence, violating byte-for-byte tail equivalence.
+- Bad: append a rendered table row without recomputing column widths. One wider cell can reflow the
+  header and every prior row even though their source is unchanged.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
@@ -3099,6 +3120,10 @@ if (!settled && workerIsUnresponsive) {
   output with a fresh render under explicit ANSI quote styles. Character-streamed tests cover CJK,
   long words, rich inline syntax, reference links, blank quote paragraphs, nested lists, and quote
   termination.
+- Table tests retain entry, line-array, and stable-row AST identities while column widths remain
+  fixed. Fresh-render differential tests stream characters through wider cells, bold/code, reference
+  links, escaped pipes, trailing newlines, and table termination; explicit tests assert a wider cell
+  replaces the retained entry.
 - Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
   narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.
@@ -3215,6 +3240,23 @@ const replacement = renderPlainQuote(
 The continuation flag reconstructs the ANSI state that the full multiline quote renderer carries
 across literal newlines. Cache creation accepts the fast path only after its final-line suffix is
 byte-equal to the full render.
+
+#### Wrong
+
+```typescript
+cached.lines.splice(cached.bottomLineStart, 1, renderRow(appendedRow), renderBottom());
+```
+
+#### Correct
+
+```typescript
+const nextWidths = resolveTableColumnWidths(retainedMetrics, changedRowMetrics, width);
+if (!arraysEqual(nextWidths, cached.columnWidths)) return renderCompleteTable(token);
+replaceRenderedTableSuffix(cached, changedRows, nextWidths);
+```
+
+Column metrics are the proof that the stable rendered prefix remains valid. Marked separately proves
+that the cached header plus final-row source boundary still forms exactly one complete table token.
 
 ## Scenario: No-Op Terminal Frame Suppression
 

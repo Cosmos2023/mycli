@@ -17,6 +17,7 @@ function renderedTokens(markdown: Markdown): Array<{
 	list?: object;
 	paragraph?: object;
 	blockquote?: object;
+	table?: object;
 }> {
 	return (markdown as unknown as {
 		cachedTokens: Array<{
@@ -25,6 +26,7 @@ function renderedTokens(markdown: Markdown): Array<{
 			list?: object;
 			paragraph?: object;
 			blockquote?: object;
+			table?: object;
 		}>;
 	}).cachedTokens;
 }
@@ -175,6 +177,81 @@ test("character-streamed blockquotes fall back across block and inline transitio
 			assert.deepEqual(incremental, fresh, JSON.stringify({ source }));
 		}
 		assert.deepEqual(markdown.render(37), renderFresh(source, 37));
+	}
+});
+
+test("streaming tables retain row layout while column widths stay stable", () => {
+	const baseTheme = markdownTheme();
+	const styledTheme: MarkdownTheme = {
+		...baseTheme,
+		bold: (text) => `\x1b[1m${text}\x1b[22m`,
+		code: (text) => `\x1b[33m${text}\x1b[39m`,
+	};
+	const before = [
+		"| Name | Value |",
+		"| --- | --- |",
+		...Array.from({ length: 500 }, (_, index) => `| stable value ${index} | **item ${index}** |`),
+	].join("\n");
+	const after = `${before}\n| appended 500 | **item 500** |`;
+	const markdown = new Markdown(before, 0, 0, styledTheme);
+	markdown.renderTail(72, 20);
+	const tableEntry = renderedTokens(markdown)[0];
+	const tableLines = tableEntry?.lines;
+	const firstRow = (sourceTokens(markdown)[0] as { rows: object[] }).rows[0];
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(72, 20);
+	const freshMarkdown = new Markdown(after, 0, 0, styledTheme);
+	const fresh = freshMarkdown.renderTail(72, 20);
+
+	assert.ok(tableEntry?.table);
+	assert.equal(renderedTokens(markdown)[0], tableEntry);
+	assert.equal(renderedTokens(markdown)[0]?.lines, tableLines);
+	assert.equal((sourceTokens(markdown)[0] as { rows: object[] }).rows[0], firstRow);
+	assert.deepEqual(incremental, fresh);
+	assert.deepEqual(markdown.render(72), freshMarkdown.render(72));
+});
+
+test("streaming tables rebuild when appended cells change column widths", () => {
+	const before = "| Name | Value |\n| --- | --- |\n| one | 1 |";
+	const after = `${before}\n| a substantially wider value | 2 |`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.render(80);
+	const tableEntry = renderedTokens(markdown)[0];
+
+	markdown.setText(after);
+
+	assert.deepEqual(markdown.render(80), renderFresh(after, 80));
+	assert.notEqual(renderedTokens(markdown)[0], tableEntry);
+});
+
+test("character-streamed tables preserve layout and fallback transitions", () => {
+	const base = [
+		"| Name | Value |",
+		"| --- | --- |",
+		...Array.from({ length: 12 }, (_, index) => `| stable value ${index} | item ${index} |`),
+	].join("\n");
+	const cases = [
+		"\n| appended | 12 |",
+		"\n| a substantially wider value than the retained column | 13 |",
+		"\n| **bold** and `code` | 14 |",
+		"\n| [linked](https://example.com) | 15 |",
+		"\n| escaped \\| pipe | 16 |",
+		"\n\nOutside paragraph.",
+	];
+
+	for (const appended of cases) {
+		let source = base;
+		const markdown = new Markdown(source, 0, 0, markdownTheme());
+		markdown.render(48);
+		for (const character of appended) {
+			source += character;
+			markdown.setText(source);
+			const incremental = markdown.renderTail(48, 12);
+			const fresh = new Markdown(source, 0, 0, markdownTheme()).renderTail(48, 12);
+			assert.deepEqual(incremental, fresh, JSON.stringify({ source }));
+		}
+		assert.deepEqual(markdown.render(48), renderFresh(source, 48));
 	}
 });
 
