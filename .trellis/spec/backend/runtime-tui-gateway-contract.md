@@ -2957,6 +2957,11 @@ if (!settled && workerIsUnresponsive) {
   a tail change, while retaining stable block objects inside their prefix. Unchanged categories are
   reused by array identity. It must not mutate arrays held by the previous `MycliShellState`, because
   shell reconciliation and subagent detection compare previous and next snapshots.
+- Combining an affected projection array uses the proof carried by its projected prefix and suffix.
+  Replacing exactly the final projected item creates one immutable `with(-1, item)` snapshot; a pure
+  append uses `concat(suffix)`. Context regrouping or any other general suffix replacement keeps the
+  defensive `slice(0, prefixLength)` plus suffix fallback. These fast paths must not mutate the
+  previous snapshot or weaken the stateless projection equivalence check.
 - `projectRuntimeState` remains the full stateless behavior oracle for tests, resume, and fallback.
   Incremental output must be deeply equal to this function for the same runtime state.
 - Gateway event replay is a bounded race-recovery queue, not a session event log. An event that
@@ -3085,6 +3090,9 @@ if (!settled && workerIsUnresponsive) {
 | Full replacement or session transition | Discard retained projection metadata and rebuild from source |
 | Runtime status changes with the same transcript array | Reuse all four runtime projection arrays by identity |
 | Runtime appends or replaces the final immutable item | Reparse a bounded source suffix, snapshot affected arrays, and reuse unaffected arrays |
+| Projected suffix replaces exactly the final item | Create one immutable snapshot with `previous.with(-1, item)` and no intermediate prefix array |
+| Projected suffix is a pure append | Create one result with `previous.concat(suffix)` and retain every previous item reference |
+| Projected suffix regroups or replaces a general range | Use the defensive prefix-slice plus suffix fallback |
 | Active tail assistant receives live reasoning | Reproject from that assistant while retaining earlier shell blocks |
 | Runtime source reference or projection context disagrees with the hint | Ignore retained state and match `projectRuntimeState` |
 | Active stream, final assistant, or reasoning item is the transcript tail | Locate it in constant time and create exactly one immutable array snapshot |
@@ -3129,6 +3137,10 @@ if (!settled && workerIsUnresponsive) {
   any runtime transcript item.
 - Good: a 10,000-item final message update reads only a bounded runtime suffix, returns a new shell
   transcript array, and preserves the stable block objects inside it.
+- Good: replacing the projected tail of a 50,000-item transcript creates only the immutable result
+  snapshot, without also allocating a sliced 49,999-item prefix.
+- Base: appending projected blocks uses `concat`, while a context-tool regroup still rebuilds the
+  affected general suffix through the defensive fallback.
 - Good: a provider delta on a 10,000-item transcript reads the active tail once, copies the array
   once, preserves every stable item reference, and leaves the previous snapshot unchanged.
 - Good: the matching validated `message.delta` classification reads only the active tail instead of
@@ -3235,7 +3247,9 @@ if (!settled && workerIsUnresponsive) {
   count indexed reads for a 10,000-item final update, and assert ordinary append updates the tool
   array while retaining stable message blocks.
 - Runtime projector tests assert unchanged events reuse all transcript-derived arrays and live
-  reasoning replaces only the active tail assistant block.
+  reasoning replaces only the active tail assistant block. Tail replacement and pure append must
+  preserve the previous snapshot, retain stable item identities, and match the stateless oracle;
+  context regrouping must continue to exercise the general fallback behavior.
 - Runtime reducer tests wrap a 10,000-item transcript in an indexed-read counter and assert active
   stream, reopened final, and reasoning tail updates perform at most one complete snapshot read,
   retain stable item identity, and do not mutate the previous array.
@@ -3353,6 +3367,28 @@ runtime.setState(shellState, { transcriptUpdate: update });
 
 The gateway retains only display projection work, uses the stateless projector as its fallback
 oracle, and passes the same update proof to downstream reconciliation.
+
+#### Wrong
+
+```typescript
+return [...previous.slice(0, prefixLength), ...suffix];
+```
+
+Using the general combiner for a proven final-item replacement allocates both a full prefix copy and
+the final result on every streamed delta.
+
+#### Correct
+
+```typescript
+if (prefixLength === previous.length - 1 && suffix.length === 1) {
+  return previous.with(-1, suffix[0]);
+}
+if (prefixLength === previous.length) return previous.concat(suffix);
+return [...previous.slice(0, prefixLength), ...suffix];
+```
+
+The bounded projector proof selects a single-allocation immutable fast path. General regrouping
+retains the safe suffix-replacement fallback.
 
 #### Wrong
 

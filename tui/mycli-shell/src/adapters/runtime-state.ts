@@ -338,6 +338,10 @@ function combineRuntimeTranscriptProjection(
 
 function combineRuntimeProjectionArray<T>(previous: T[], prefixLength: number, suffix: T[]): T[] {
 	if (prefixLength === previous.length && suffix.length === 0) return previous;
+	if (prefixLength === previous.length - 1 && suffix.length === 1) {
+		return previous.with(-1, suffix[0]!);
+	}
+	if (prefixLength === previous.length) return previous.concat(suffix);
 	return [...previous.slice(0, prefixLength), ...suffix];
 }
 
