@@ -74,6 +74,10 @@ export class AssistantMessageComponent extends Container {
 		return this.thinkingHidden ? "" : (this.thinking?.trim() ?? "");
 	}
 
+	holdsNativeScrollbackTail(): boolean {
+		return (this.textMarkdown ?? this.thinkingMarkdown)?.holdsStreamingTableTail() ?? false;
+	}
+
 	renderTail(width: number, maxRows: number): TailRenderResult {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const rowLimit = Math.max(0, Math.floor(maxRows));

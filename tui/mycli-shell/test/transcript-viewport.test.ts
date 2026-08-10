@@ -141,6 +141,25 @@ test("transcript viewport reuses stable tail chunks and rerenders invalidated co
 	assert.equal(active.renderCalls, 3);
 });
 
+test("transcript viewport bounds a native scrollback prefix before a held component", () => {
+	const components = Array.from({ length: 10 }, (_, index) => new CountingComponent(`line ${index}`));
+	const { viewport, transcript } = viewportHarness(components, 5, undefined, 2);
+
+	assert.deepEqual(
+		viewport.scrollbackPrefixBefore(transcript, 8, 80),
+		["line 5", "line 6", "line 7"],
+	);
+	assert.equal(components.slice(0, 5).every((component) => component.renderCalls === 0), true);
+	assert.equal(components.slice(5).every((component) => component.renderCalls === 1), true);
+
+	const shortComponents = Array.from({ length: 6 }, (_, index) => new CountingComponent(`short ${index}`));
+	const short = viewportHarness(shortComponents, 6, undefined, 3);
+	assert.deepEqual(
+		short.viewport.scrollbackPrefixBefore(short.transcript, 5, 80),
+		["short 0", "short 1", "short 2"],
+	);
+});
+
 test("transcript viewport retains bounded content for an unchanged owner revision", () => {
 	const components = Array.from({ length: 10_000 }, (_, index) => new CountingComponent(`line ${index}`));
 	let revision = 1;

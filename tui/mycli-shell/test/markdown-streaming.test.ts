@@ -350,6 +350,27 @@ test("streaming tables rebuild when appended cells change column widths", () => 
 	assert.notEqual(renderedTokens(markdown)[0], tableEntry);
 });
 
+test("streaming table holdback detection does not consume render updates", () => {
+	const markdown = new Markdown("Plain", 0, 0, markdownTheme());
+	assert.equal(markdown.holdsStreamingTableTail(), false);
+	assert.deepEqual(markdown.render(40), renderFresh("Plain", 40));
+
+	markdown.setText("Plain extended");
+	assert.equal(markdown.holdsStreamingTableTail(), false);
+	assert.deepEqual(markdown.render(40), renderFresh("Plain extended", 40));
+
+	const table = "| Name | Value |\n| - | - |\n| one | two |";
+	markdown.setText(table);
+	assert.equal(markdown.holdsStreamingTableTail(), true);
+	assert.deepEqual(markdown.render(40), renderFresh(table, 40));
+
+	const completed = `${table}\n\nDone.`;
+	markdown.setText(completed);
+	assert.equal(markdown.holdsStreamingTableTail(), true);
+	assert.deepEqual(markdown.render(40), renderFresh(completed, 40));
+	assert.equal(markdown.holdsStreamingTableTail(), false);
+});
+
 test("character-streamed tables preserve layout and fallback transitions", () => {
 	const base = [
 		"| Name | Value |",

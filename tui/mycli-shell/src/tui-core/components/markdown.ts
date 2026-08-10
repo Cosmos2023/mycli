@@ -4,6 +4,7 @@ import type { Component, TailRenderResult } from "../tui.ts";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
+const TABLE_DELIMITER_LINE_REGEX = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/mu;
 const ANSI_FULL_RESET = "\x1b[0m";
 
 class StrictStrikethroughTokenizer extends Tokenizer {
@@ -264,6 +265,27 @@ export class Markdown implements Component {
 		this.text = text;
 		this.cachedText = undefined;
 		this.cachedLines = undefined;
+	}
+
+	holdsStreamingTableTail(): boolean {
+		// Policy checks run before paint, so they must not consume updateSourceTokens().
+		let tokens = this.cachedSourceTokens;
+		if (this.cachedLexedText === undefined) {
+			tokens = this.lexSource(this.normalizedText);
+		} else if (this.cachedLexedText !== this.normalizedText) {
+			const candidate = this.normalizedTextExtendsLexedText
+				? this.cachedLexedText.slice(this.cachedLexedText.lastIndexOf("\n") + 1) + this.pendingNormalizedAppend
+				: this.normalizedText;
+			if (TABLE_DELIMITER_LINE_REGEX.test(candidate)) {
+				tokens = this.lexSource(this.normalizedText);
+			}
+		}
+		for (let index = tokens.length - 1; index >= 0; index -= 1) {
+			const token = tokens[index]!;
+			if (token.type === "space") continue;
+			return token.type === "table";
+		}
+		return false;
 	}
 
 	invalidate(): void {

@@ -2884,6 +2884,10 @@ if (!settled && workerIsUnresponsive) {
 - Transcript viewport change hints:
   `TranscriptViewportComponent.markContentChanged() -> void` and
   `TranscriptViewportComponent.markSectionTailChanged(section, stablePrefixLength) -> void`.
+- Native table holdback boundaries:
+  `Markdown.holdsStreamingTableTail() -> boolean`,
+  `AssistantMessageComponent.holdsNativeScrollbackTail() -> boolean`, and
+  `TranscriptViewportComponent.scrollbackPrefixBefore(section, componentIndex, width) -> string[]`.
 - Full transcript projection:
   `createTranscriptProjection(blocks) -> TranscriptProjectionState`.
 - Incremental tail projection:
@@ -3114,6 +3118,18 @@ if (!settled && workerIsUnresponsive) {
   only changed rows when replacing the prior final row cannot reduce any cached row metric and the
   recomputed column widths remain identical. A width change or a semantic transition that can
   shrink the replaced row rebuilds the complete table; table column widths depend on every row.
+- While a turn is active and the final assistant's last meaningful Markdown token is a table,
+  native scrollback holds that assistant instead of committing rows whose column widths may still
+  change. Detection may conservatively retain a previously rendered table for one frame, but must
+  not consume or mutate Markdown render-token updates.
+- A source replay or resize while a table tail is held rebuilds physical history from the bounded
+  component prefix before that assistant. This removes provisional rows that terminal-native
+  resize reflow may have moved into scrollback without inserting the held table into history or
+  scanning content older than the replay bound. The held suffix consumes both the replay-row budget
+  and live viewport height when calculating that safe prefix.
+- When the table ends, the turn completes, or another transcript block becomes the tail, replace
+  physical scrollback once from the complete bounded source and discard provisional logical deltas.
+  Ordinary paragraph, list, quote, and code streaming keeps incremental native-scrollback commits.
 - Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
   the full-render behavior.
 
@@ -3166,6 +3182,9 @@ if (!settled && workerIsUnresponsive) {
 | Final table receives cells that preserve computed column widths | Reparse the final source row and render only changed/new rows plus the bottom border |
 | Appended table cell changes a column width | Reject retained layout and rebuild the complete table |
 | Appended table boundary ends the table or changes header/alignment semantics | Reject the boundary token and run a full lex/render |
+| Active assistant ends in a Markdown table | Hold that assistant out of native scrollback while continuing to render its live viewport tail |
+| Terminal resizes while the table tail is held | Replace history from the bounded component prefix before the assistant, excluding provisional table rows |
+| Held table ends or the turn becomes terminal | Replace history once from the complete bounded transcript source, then resume ordinary delta collection |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
@@ -3217,6 +3236,9 @@ if (!settled && workerIsUnresponsive) {
   line and the appended line while preserving ANSI bytes and the retained line array.
 - Good: appending one stable-width row to a 1,000-row table lexes the cached header plus final-row
   boundary, retains earlier row AST and rendered lines, and renders only the new suffix.
+- Good: a wide row added to an active table may reflow every prior table row without leaving the
+  earlier narrow layout in native scrollback; resize keeps the table held, and completion performs
+  one canonical source-backed history replacement.
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
@@ -3282,6 +3304,8 @@ if (!settled && workerIsUnresponsive) {
   cross-line ANSI state into a different escape sequence, violating byte-for-byte tail equivalence.
 - Bad: append a rendered table row without recomputing column widths. One wider cell can reflow the
   header and every prior row even though their source is unchanged.
+- Bad: commit active table rows to native scrollback as though they were stable prose. A later wide
+  cell or terminal resize makes immutable history disagree with the canonical table layout.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
@@ -3363,6 +3387,10 @@ if (!settled && workerIsUnresponsive) {
   fixed. Fresh-render differential tests stream characters through wider cells, bold/code, reference
   links, escaped pipes, trailing newlines, and table termination; explicit tests assert a wider cell
   replaces the retained entry.
+- Table holdback tests assert detection does not consume pending Markdown render updates, ordinary
+  long prose still advances native scrollback, active table rows stay out before and after resize,
+  bounded safe-prefix replay excludes the held component, and completion performs one canonical
+  replacement with no duplicate table rows.
 - Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
   narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.
@@ -3731,6 +3759,32 @@ replaceRenderedTableSuffix(cached, changedRows, nextWidths);
 
 Column metrics are the proof that the stable rendered prefix remains valid. Marked separately proves
 that the cached header plus final-row source boundary still forms exactly one complete table token.
+
+#### Wrong
+
+```typescript
+ui.insertHistoryBeforeNextFrame(viewport.takeNewScrollbackLines(width, true));
+```
+
+#### Correct
+
+```typescript
+if (assistant.holdsNativeScrollbackTail()) {
+  viewport.discardPendingScrollbackLines();
+  if (sourceReplay) {
+    ui.insertHistoryBeforeNextFrame(
+      viewport.scrollbackPrefixBefore(chat, assistantIndex, width),
+      { replaceScrollback: true },
+    );
+  }
+  return;
+}
+if (tableTailWasHeld) queueNativeTranscriptHistory(true);
+```
+
+An active table is not stable history: any later row may change every column width. Resize replays
+only the bounded safe prefix before the assistant; completion performs one canonical full-source
+replacement before ordinary native-scrollback delta collection resumes.
 
 ## Scenario: No-Op Terminal Frame Suppression
 

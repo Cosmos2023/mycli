@@ -412,6 +412,46 @@ export class TranscriptViewportComponent implements Component {
 		return lines.slice(0, start);
 	}
 
+	scrollbackPrefixBefore(section: Container, componentIndex: number, width: number): string[] {
+		const sectionIndex = this.content.children.indexOf(section);
+		if (sectionIndex < 0) return [];
+		// The excluded suffix still owns replay rows and live viewport cells.
+		const suffixChunks: string[][] = [];
+		const prefixChunks: string[][] = [];
+		let renderedRows = 0;
+		sections: for (let currentSectionIndex = this.content.children.length - 1; currentSectionIndex >= 0; currentSectionIndex -= 1) {
+			const currentSection = this.content.children[currentSectionIndex]!;
+			const components = currentSection instanceof Container ? currentSection.children : [currentSection];
+			const targetIndex = currentSection === section
+				? Math.max(0, Math.min(componentIndex, components.length - 1))
+				: currentSectionIndex > sectionIndex
+					? 0
+					: components.length;
+			const end = components.length;
+			for (let index = end - 1; index >= 0; index -= 1) {
+				const isSuffix = currentSectionIndex > sectionIndex || (currentSection === section && index >= targetIndex);
+				const remaining = this.maxRenderedRows === undefined
+					? undefined
+					: this.maxRenderedRows - renderedRows;
+				if (remaining !== undefined && remaining <= 0) break sections;
+				const rendered = this.renderComponent(components[index]!, width, remaining);
+				(isSuffix ? suffixChunks : prefixChunks).push(rendered.lines);
+				renderedRows += rendered.lines.length;
+			}
+			if (this.maxRenderedRows !== undefined && renderedRows >= this.maxRenderedRows) break;
+		}
+		prefixChunks.reverse();
+		suffixChunks.reverse();
+		const prefixLines = prefixChunks.flat();
+		const lines = [...prefixLines, ...suffixChunks.flat()];
+		const height = Math.max(1, this.heightForWidth(width));
+		return prefixLines.slice(0, Math.min(prefixLines.length, this.visibleStart(lines, height)));
+	}
+
+	discardPendingScrollbackLines(): void {
+		this.clearPendingScrollbackLines();
+	}
+
 	takeNewScrollbackLines(width: number, refreshLines = false): string[] {
 		if (this.scrollOffset !== 0 || (!refreshLines && this.lastRenderedWidth !== width)) return [];
 		const height = Math.max(1, this.heightForWidth(width));
@@ -1054,6 +1094,7 @@ export class MycliShellRuntime {
 	private toolDetailMode: ToolDetailMode = "default";
 	private toolDetailProjection: ToolDetailProjectionCache | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
+	private nativeTranscriptDeltaHeld = false;
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
@@ -1601,6 +1642,22 @@ export class MycliShellRuntime {
 
 	private queueNativeTranscriptHistory(replaceScrollback = false): void {
 		if (!this.ui.terminal.nativeScrollback) return;
+		const heldTail = this.nativeScrollbackHeldTail();
+		if (heldTail) {
+			this.nativeTranscriptDeltaHeld = true;
+			this.transcriptViewport.discardPendingScrollbackLines();
+			const prefix = this.transcriptViewport.scrollbackPrefixBefore(
+				this.chatContainer,
+				heldTail.componentIndex,
+				this.ui.terminal.columns,
+			);
+			this.ui.insertHistoryBeforeNextFrame(prefix, {
+				clearViewport: true,
+				replaceScrollback,
+			});
+			return;
+		}
+		this.nativeTranscriptDeltaHeld = false;
 		const prefix = this.transcriptViewport.scrollbackPrefix(this.ui.terminal.columns);
 		this.ui.insertHistoryBeforeNextFrame(prefix, {
 			clearViewport: true,
@@ -1633,10 +1690,32 @@ export class MycliShellRuntime {
 	private queueNativeTranscriptDelta(refreshLines = false): void {
 		if (this.sessionTransitionDepth > 0) return;
 		if (!this.ui.terminal.nativeScrollback || !this.mainMounted) return;
+		if (this.nativeScrollbackHeldTail()) {
+			this.nativeTranscriptDeltaHeld = true;
+			this.transcriptViewport.discardPendingScrollbackLines();
+			return;
+		}
+		if (this.nativeTranscriptDeltaHeld) {
+			this.nativeTranscriptDeltaHeld = false;
+			this.queueNativeTranscriptHistory(true);
+			return;
+		}
 		const delta = this.transcriptViewport.takeNewScrollbackLines(this.ui.terminal.columns, refreshLines);
 		if (delta.length > 0) {
 			this.ui.insertHistoryBeforeNextFrame(delta, { clearViewport: !this.isTurnRunning() });
 		}
+	}
+
+	private nativeScrollbackHeldTail(): { componentIndex: number } | null {
+		if (!this.isTurnRunning()) return null;
+		const tail = this.projectedChatBlocks.at(-1);
+		if (tail?.kind !== "message" || tail.message.role !== "assistant") return null;
+		const component = this.chatBlocks.get(tail.id)?.component;
+		if (!(component instanceof AssistantMessageComponent) || !component.holdsNativeScrollbackTail()) {
+			return null;
+		}
+		const componentIndex = this.chatContainer.children.indexOf(component);
+		return componentIndex < 0 ? null : { componentIndex };
 	}
 
 	private transcriptBlockCount(state: MycliShellState): number {

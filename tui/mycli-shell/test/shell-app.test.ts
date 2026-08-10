@@ -10,6 +10,7 @@ import { TUI, visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
 import { BashExecutionComponent, FileChangeComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
+import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
@@ -5290,6 +5291,174 @@ test("mycli shell bounds native scrollback after initial history during assistan
 	assert.doesNotMatch(stripAnsi(terminal.output), /history message 0/);
 	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
 	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
+test("mycli shell commits displaced live assistant rows into native scrollback", async (t) => {
+	const terminal = new HeadlessTerminal({
+		columns: 72,
+		rows: 16,
+		scrollback: 500,
+		nativeScrollback: true,
+	});
+	const initialAssistant = {
+		id: "live-history-assistant",
+		role: "assistant" as const,
+		text: "streaming",
+	};
+	let state: MycliShellState = {
+		...sampleState(),
+		messages: [initialAssistant],
+		tools: [],
+		bash: [],
+		transcript: [{ id: initialAssistant.id, kind: "message", message: initialAssistant }],
+		footer: {
+			...sampleState().footer,
+			liveState: "Running",
+			liveStateKind: "running",
+			turnRunning: true,
+		},
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: state,
+		terminal,
+		transcriptReplayMaxRows: 32,
+	});
+	t.after(async () => {
+		await runtime.shutdown();
+		await terminal.flush();
+		terminal.dispose();
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await terminal.flush();
+	for (let lineCount = 40; lineCount <= 52; lineCount += 1) {
+		const assistant = {
+			...initialAssistant,
+			text: Array.from({ length: lineCount }, (_, index) => `live-history-${index}`).join("\n"),
+		};
+		state = {
+			...state,
+			messages: [assistant],
+			transcript: [{ id: assistant.id, kind: "message", message: assistant }],
+		};
+		runtime.setState(state, { transcriptUpdate: "tail" });
+		await setTimeout(16);
+		await terminal.flush();
+	}
+
+	const historyMarkers = terminal.historyLines().filter((line) => line.includes("live-history-"));
+	assert.ok(historyMarkers.length > 0);
+	assert.equal(new Set(historyMarkers).size, historyMarkers.length);
+});
+
+test("mycli shell holds mutable tables until source-backed native scrollback completion", async (t) => {
+	const terminal = new HeadlessTerminal({
+		columns: 72,
+		rows: 16,
+		scrollback: 500,
+		nativeScrollback: true,
+	});
+	const initialAssistant = {
+		id: "live-table-assistant",
+		role: "assistant" as const,
+		text: "streaming",
+	};
+	let state: MycliShellState = {
+		...sampleState(),
+		messages: [initialAssistant],
+		tools: [],
+		bash: [],
+		transcript: [{ id: initialAssistant.id, kind: "message", message: initialAssistant }],
+		footer: {
+			...sampleState().footer,
+			liveState: "Running",
+			liveStateKind: "running",
+			turnRunning: true,
+		},
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: state,
+		terminal,
+		transcriptReplayMaxRows: 32,
+	});
+	t.after(async () => {
+		await runtime.shutdown();
+		await terminal.flush();
+		terminal.dispose();
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await terminal.flush();
+	for (let rowCount = 20; rowCount <= 36; rowCount += 1) {
+		const rows = Array.from({ length: rowCount }, (_, index) =>
+			`| table-history-${index} | value |`
+		);
+		if (rowCount === 36) rows.push(`| table-history-wide | ${"wide".repeat(12)} |`);
+		const assistant = {
+			...initialAssistant,
+			text: [
+				"Table:",
+				"",
+				"| Name | Value |",
+				"| --- | --- |",
+				...rows,
+			].join("\n"),
+		};
+		state = {
+			...state,
+			messages: [assistant],
+			transcript: [{ id: assistant.id, kind: "message", message: assistant }],
+		};
+		runtime.setState(state, { transcriptUpdate: "tail" });
+		await setTimeout(16);
+		await terminal.flush();
+	}
+
+	assert.equal(
+		terminal.historyLines().filter((line) => line.includes("table-history-")).length,
+		0,
+	);
+	terminal.resize(64, 18);
+	await setTimeout(100);
+	await terminal.flush();
+	assert.equal(
+		terminal.historyLines().filter((line) => line.includes("table-history-")).length,
+		0,
+	);
+
+	const completedAssistant = {
+		...state.messages[0]!,
+		text: `${state.messages[0]!.text}\n\nDone.`,
+	};
+	const writesBeforeCompletion = terminal.writes.length;
+	state = {
+		...state,
+		messages: [completedAssistant],
+		transcript: [{
+			id: completedAssistant.id,
+			kind: "message",
+			message: completedAssistant,
+		}],
+		footer: {
+			...state.footer,
+			liveState: "Completed",
+			liveStateKind: "completed",
+			turnRunning: false,
+		},
+	};
+	runtime.setState(state, { transcriptUpdate: "tail" });
+	await setTimeout(25);
+	await terminal.flush();
+
+	const completedHistory = terminal.historyLines().filter((line) => line.includes("table-history-"));
+	assert.ok(completedHistory.length > 0);
+	assert.equal(new Set(completedHistory).size, completedHistory.length);
+	assert.ok(terminal.writes.slice(writesBeforeCompletion).join("").includes("\x1b[3J"));
+	assert.ok(terminal.visibleLines().some((line) => line.includes("Done.")));
 });
 
 test("mycli shell commits a resumed user message before a long streamed tail", async () => {
