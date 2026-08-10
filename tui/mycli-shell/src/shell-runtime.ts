@@ -405,21 +405,32 @@ export class TranscriptViewportComponent implements Component {
 class FrameCachedContainer extends Container {
 	private cachedFrameId: number | null = null;
 	private cachedWidth: number | null = null;
+	private cachedRevision: number | undefined;
 	private cachedLines: string[] = [];
 
-	constructor(private readonly activeFrameId: () => number | null) {
+	constructor(
+		private readonly activeFrameId: () => number | null,
+		private readonly cacheAcrossFrames = false,
+	) {
 		super();
 	}
 
 	override render(width: number): string[] {
 		const frameId = this.activeFrameId();
-		if (frameId !== null && frameId === this.cachedFrameId && width === this.cachedWidth) {
+		const revision = this.getRenderCacheKey();
+		const canReuse =
+			revision !== undefined &&
+			revision === this.cachedRevision &&
+			width === this.cachedWidth &&
+			(this.cacheAcrossFrames || (frameId !== null && frameId === this.cachedFrameId));
+		if (canReuse) {
 			return this.cachedLines;
 		}
 		const lines = super.render(width);
-		if (frameId !== null) {
+		if (revision !== undefined && (this.cacheAcrossFrames || frameId !== null)) {
 			this.cachedFrameId = frameId;
 			this.cachedWidth = width;
+			this.cachedRevision = revision;
 			this.cachedLines = lines;
 		}
 		return lines;
@@ -465,8 +476,8 @@ export class MycliShellRuntime {
 	readonly pendingMessagesContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly statusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly editorContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
-	readonly subagentTaskContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
-	readonly footerContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
+	readonly subagentTaskContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
+	readonly footerContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
 	readonly editor: CustomEditor;
 
 	private state: MycliShellState;

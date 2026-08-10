@@ -1884,7 +1884,7 @@ test("mycli shell runtime assembles mounted containers", () => {
 	assert.match(output, /deepseek-v4-flash/);
 });
 
-test("mycli shell runtime reuses chrome layout only within one root render frame", () => {
+test("mycli shell runtime keeps dynamic chrome caching local to one root render frame", () => {
 	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal: new TestTerminal() });
 	const renderEditor = runtime.editor.render.bind(runtime.editor);
 	let editorRenders = 0;
@@ -1901,6 +1901,113 @@ test("mycli shell runtime reuses chrome layout only within one root render frame
 	runtime.editorContainer.render(100);
 	runtime.editorContainer.render(100);
 	assert.equal(editorRenders, 4);
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Waiting" },
+	});
+	const status = runtime.statusContainer.children[0];
+	assert.ok(status);
+	const renderStatus = status.render.bind(status);
+	let statusRenders = 0;
+	status.render = (width) => {
+		statusRenders += 1;
+		return renderStatus(width);
+	};
+	runtime.ui.render(100);
+	runtime.ui.render(100);
+	assert.equal(statusRenders, 2);
+});
+
+test("mycli shell runtime caches the stable footer across streaming frames", () => {
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [{ id: "assistant-1", role: "assistant", text: "hel" }],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hel" } },
+		],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal: new TestTerminal() });
+	const footer = runtime.footerContainer.children.at(-1);
+	assert.ok(footer);
+	const renderFooter = footer.render.bind(footer);
+	let footerRenders = 0;
+	footer.render = (width) => {
+		footerRenders += 1;
+		return renderFooter(width);
+	};
+
+	runtime.ui.render(100);
+	runtime.ui.render(100);
+	runtime.setState({
+		...initial,
+		messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
+		transcript: [
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
+		],
+	});
+	runtime.ui.render(100);
+	assert.equal(footerRenders, 1);
+
+	runtime.ui.render(80);
+	assert.equal(footerRenders, 2);
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, model: "gpt-5.5" },
+	});
+	const rebuiltFooter = runtime.footerContainer.children.at(-1);
+	assert.ok(rebuiltFooter);
+	assert.notEqual(rebuiltFooter, footer);
+	assert.match(stripAnsi(runtime.ui.render(80).join("\n")), /gpt-5\.5/);
+});
+
+test("mycli shell runtime caches the stable subagent panel across streaming frames", () => {
+	const base = subagentPanelState();
+	const initial: MycliShellState = {
+		...base,
+		messages: [{ id: "assistant-1", role: "assistant", text: "hel" }],
+		transcript: [
+			...(base.transcript ?? []),
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hel" } },
+		],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal: new TestTerminal() });
+	const panel = runtime.subagentTaskContainer.children[0];
+	assert.ok(panel);
+	const renderPanel = panel.render.bind(panel);
+	let panelRenders = 0;
+	panel.render = (width) => {
+		panelRenders += 1;
+		return renderPanel(width);
+	};
+
+	runtime.ui.render(100);
+	runtime.ui.render(100);
+	runtime.setState({
+		...initial,
+		messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
+		transcript: [
+			...(base.transcript ?? []),
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
+		],
+	});
+	runtime.ui.render(100);
+	assert.equal(panelRenders, 1);
+
+	runtime.ui.render(80);
+	assert.equal(panelRenders, 2);
+
+	const changedTranscript = (runtime.getState().transcript ?? []).map((block) =>
+		block.kind === "subagent" && block.subagent.status === "running"
+			? { ...block, subagent: { ...block.subagent, toolCalls: (block.subagent.toolCalls ?? 0) + 1 } }
+			: block,
+	);
+	runtime.setState({ ...runtime.getState(), transcript: changedTranscript });
+	assert.notEqual(runtime.subagentTaskContainer.children[0], panel);
+	runtime.ui.render(80);
 });
 
 test("mycli shell runtime updates footer actions with turn and queue state", () => {

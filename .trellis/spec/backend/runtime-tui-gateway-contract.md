@@ -3029,8 +3029,10 @@ if (!settled && workerIsUnresponsive) {
 | `maxRows <= 0` | Return `lines=[]` while preserving the exact `totalLines` count |
 | Component has no `renderTail` | Render normally and slice the returned lines |
 | Width or render revision changes | Reject the cached tail and render for the new identity |
-| Chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
-| Next root frame or direct container render | Render again; never reuse the prior frame's chrome lines |
+| Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
+| Editor, status, or size-dependent pending content reaches the next root frame | Render again because child-owned state may change without a parent rebuild |
+| State-owned static footer or subagent chrome reaches the next root frame | Reuse lines only when the parent container revision and width are unchanged |
+| Static chrome parent rebuilds or terminal width changes | Reject the cross-frame cache and render its children again |
 | Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
 | Append-only source has no reference-link syntax | Retain stable lexer tokens and reparse from the final non-space top-level token |
 | Top-level unclosed fence receives a non-closing append | Update the final code token and retained code-line suffix without full lex or layout |
@@ -3122,8 +3124,11 @@ if (!settled && workerIsUnresponsive) {
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
-- Bad: retain measured editor/status/footer lines across root frames; cursor, timer, and input state
-  can change without a parent container rebuild.
+- Bad: retain measured editor, status, or size-dependent pending lines across root frames; cursor,
+  timer, input, and terminal-height state can change without a parent container rebuild.
+- Bad: opt a component into cross-frame chrome caching unless all display state is owned by an
+  immutable child replacement and parent-container revision. Footer and subagent task chrome meet
+  that contract; dynamic children do not.
 - Bad: call `JSON.stringify` on the accumulated assistant block for every streaming delta.
 - Bad: validate incremental shell projection with wrapper reference equality; gateway projection
   recreates those wrappers even when the runtime transcript prefix is unchanged.
@@ -3171,7 +3176,9 @@ if (!settled && workerIsUnresponsive) {
 - Viewport tests use a 10,000-line component with separate full/tail counters and assert the
   bounded path never calls full render.
 - Shell layout tests count editor child renders and assert one render inside a root frame, another
-  render in the next frame, and no cache reuse for direct container calls.
+  render in the next frame, and no cache reuse for direct dynamic-container calls. Footer and
+  subagent panel tests assert reuse across unrelated streaming frames, plus invalidation on parent
+  rebuild and terminal-width change.
 - Assistant streaming tests assert the retained component updates without consulting the generic
   serialized block-signature path.
 - Projection tests count indexed source reads across 10,000 blocks and assert a final assistant
