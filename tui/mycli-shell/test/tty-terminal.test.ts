@@ -147,6 +147,7 @@ test("ctrl z releases terminal ownership and redraws after foreground resume", a
 	const ui = new TUI(terminal);
 	let suspendCalls = 0;
 	let resizeCalls = 0;
+	let resumeCalls = 0;
 	let leakedInputCalls = 0;
 	ui.addInputListener(() => {
 		leakedInputCalls += 1;
@@ -154,6 +155,9 @@ test("ctrl z releases terminal ownership and redraws after foreground resume", a
 	});
 	ui.onResize = () => {
 		resizeCalls += 1;
+	};
+	ui.onResume = () => {
+		resumeCalls += 1;
 	};
 	ui.onSuspend = () => {
 		suspendCalls += 1;
@@ -173,6 +177,7 @@ test("ctrl z releases terminal ownership and redraws after foreground resume", a
 
 	assert.equal(suspendCalls, 1);
 	assert.equal(resizeCalls, 1);
+	assert.equal(resumeCalls, 0);
 	assert.equal(leakedInputCalls, 0);
 	assert.equal(input.isRaw, true);
 	assert.equal(output.output.match(/\x1b\[\?1049h/gu)?.length, 2);

@@ -317,6 +317,8 @@ export class TUI extends Container {
 	public onResize?: () => boolean | void;
 	/** Optional Unix job-control hook that requests suspension of the foreground process group. */
 	public onSuspend?: () => boolean;
+	/** Optional owner hook for source-backed restoration after terminal ownership is reacquired. */
+	public onResume?: () => void;
 	private readonly frameScheduler: FrameScheduler;
 	private renderingPaused = false;
 	private static readonly MIN_RENDER_INTERVAL_MS = 1_000 / 120;
@@ -783,11 +785,12 @@ export class TUI extends Container {
 			this.suspendResumeTimer = undefined;
 			if (this.stopped) return;
 			this.acquireTerminal();
-			if (
-				(previousColumns !== this.terminal.columns || previousRows !== this.terminal.rows) &&
-				this.onResize
-			) {
+			const dimensionsChanged =
+				previousColumns !== this.terminal.columns || previousRows !== this.terminal.rows;
+			if (dimensionsChanged && this.onResize) {
 				this.onResize();
+			} else if (!dimensionsChanged) {
+				this.onResume?.();
 			}
 			this.requestRender(true);
 		}, 0);

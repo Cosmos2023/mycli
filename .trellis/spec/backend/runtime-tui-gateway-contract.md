@@ -3998,7 +3998,9 @@ cell buffer represents the complete terminal text.
 
 ### 2. Signatures
 
-- TUI hook: `TUI.onSuspend?: () -> boolean`, which requests process-group suspension.
+- TUI hooks: `TUI.onSuspend?: () -> boolean`, which requests process-group suspension, and
+  `TUI.onResume?: () -> void`, which lets the owner restore source-backed terminal content after
+  terminal ownership is reacquired without a resize.
 - Shell option: `MycliShellRuntimeOptions.onSuspend?: () -> boolean`.
 - Production callback: `process.kill(0, "SIGTSTP") -> boolean`.
 
@@ -4014,7 +4016,11 @@ cell buffer represents the complete terminal text.
   that callback, so it runs only after `SIGCONT` places the job back in the foreground. If job
   control is unavailable or the signal fails, the next event-loop turn restores the TUI.
 - The resume callback reacquires terminal ownership, restores its input modes and
-  alternate screen, hides the cursor, reconnects output backpressure, and forces a full frame.
+  alternate screen, hides the cursor, reconnects output backpressure, invokes the resume hook when
+  dimensions are unchanged, and forces a full frame.
+- In inline native-scrollback mode, the shell resume hook replaces scrollback from the bounded
+  canonical transcript source. This removes job-control text and stale pre-suspend rows before the
+  live viewport is repainted. Alternate-screen mode needs only its newly entered buffer repaint.
 - If columns or rows changed while suspended, the existing resize callback runs before that forced
   frame so native scrollback reflow remains debounced and source-backed.
 
@@ -4025,7 +4031,8 @@ cell buffer represents the complete terminal text.
 | Unix `Ctrl+Z` with suspend hook | Release terminal, suspend process group, reacquire, force redraw |
 | Kitty `Ctrl+Z` key release | Ignore; do not suspend a second time |
 | Windows or missing hook | Preserve the existing focused-component input path |
-| Same dimensions after resume | Force redraw without source scrollback reflow |
+| Same dimensions after native-scrollback resume | Replace scrollback from transcript source, then force redraw |
+| Same dimensions after alternate-screen resume | Force redraw in the newly entered buffer |
 | Dimensions changed while stopped | Run resize hook, then force the resumed frame |
 | Alternate-screen mode | Leave before suspend and re-enter before repaint |
 | Suspend hook throws | Reacquire terminal ownership, consume the reserved key, and remain usable |
@@ -4034,7 +4041,9 @@ cell buffer represents the complete terminal text.
 
 - Good: suspend from an alternate-screen session, observe normal shell terminal state, run `fg`,
   and receive one complete fresh TUI frame.
-- Base: resume at the same dimensions and reuse the durable runtime/session state.
+- Good: suspend from an inline session, let the shell print job-control text, run `fg`, and receive
+  exactly one canonical transcript without the shell text or stale frame rows.
+- Base: resume at the same dimensions and rebuild only from bounded durable runtime/session state.
 - Bad: send `SIGTSTP` while raw mode and bracketed paste remain enabled.
 - Bad: resume with the old diff baseline; a newly re-entered alternate screen may remain blank.
 - Bad: signal only the TUI process while the provider/runtime process continues in the background.
@@ -4044,6 +4053,8 @@ cell buffer represents the complete terminal text.
 - TTY integration tests assert raw mode is false and alternate screen has been left inside the
   suspend callback, then assert modes are restored and the changed frame is rendered afterward.
 - Tests assert a dimension change invokes the resize callback exactly once.
+- A headless terminal integration test asserts same-size native resume emits `CSI 3 J`, removes
+  shell job-control text, and renders each canonical transcript row once.
 - Tests assert key-release and failed-signal paths cannot double-suspend or strand raw-mode state.
 - Existing shutdown, resize, output-backpressure, input, native-scrollback, and frame-diff tests
   remain green.
@@ -4060,5 +4071,6 @@ process.kill(process.pid, "SIGTSTP");
 
 ```typescript
 ui.onSuspend = () => process.kill(0, "SIGTSTP");
-// TUI releases terminal ownership before this callback and forces a redraw after it returns.
+ui.onResume = () => queueNativeTranscriptHistory(true);
+// TUI releases terminal ownership before suspension, then replaces inline history from source.
 ```

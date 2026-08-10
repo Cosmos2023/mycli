@@ -5920,6 +5920,57 @@ test("mycli shell rebuilds native scrollback from transcript source after resize
 	assert.equal(output.match(/history message 11(?:\D|$)/g)?.length, 1);
 });
 
+test("mycli shell rebuilds native scrollback from transcript source after foreground resume", async (t) => {
+	const terminal = new HeadlessTerminal({
+		columns: 80,
+		rows: 12,
+		scrollback: 500,
+		nativeScrollback: true,
+	});
+	let suspendCalls = 0;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 18 }, (_, index) => ({
+				id: `resume-history-${index}`,
+				role: index % 2 === 0 ? "user" as const : "assistant" as const,
+				text: index === 0 ? "resume canonical history" : `resume history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+		onSuspend: () => {
+			suspendCalls += 1;
+			terminal.write("shell-suspend-marker\r\n");
+			return true;
+		},
+	});
+	t.after(async () => {
+		await runtime.shutdown();
+		await terminal.flush();
+		terminal.dispose();
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await terminal.flush();
+	const writesBeforeSuspend = terminal.writes.length;
+
+	terminal.sendInput("\x1a");
+	await setTimeout(25);
+	await terminal.flush();
+
+	assert.equal(suspendCalls, 1);
+	const resumeWrites = terminal.writes.slice(writesBeforeSuspend).join("");
+	assert.match(resumeWrites, /\x1b\[3J/);
+	const physicalLines = [...terminal.historyLines(), ...terminal.visibleLines()];
+	assert.equal(physicalLines.filter((line) => line.includes("shell-suspend-marker")).length, 0);
+	assert.equal(physicalLines.filter((line) => line.includes("resume canonical history")).length, 1);
+});
+
 test("mycli shell coalesces rapid native resize events into one source rebuild", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;

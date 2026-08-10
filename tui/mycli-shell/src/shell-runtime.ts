@@ -1102,6 +1102,11 @@ export class MycliShellRuntime {
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
 		this.ui.onResize = () => this.handleTerminalResize();
 		this.ui.onSuspend = options.onSuspend;
+		this.ui.onResume = () => {
+			if (this.ui.terminal.nativeScrollback && this.mainMounted) {
+				this.queueNativeTranscriptHistory(true);
+			}
+		};
 		this.transcriptContainer.addChild(this.headerContainer);
 		this.transcriptContainer.addChild(this.chatContainer);
 		const configuredReplayMaxRows = options.transcriptReplayMaxRows;
