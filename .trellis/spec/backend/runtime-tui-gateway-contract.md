@@ -2879,6 +2879,10 @@ if (!settled && workerIsUnresponsive) {
   {projection, stablePrefixLength, replacedBlocks}`.
 - Runtime update classifier:
   `classifyRuntimeTranscriptUpdate(previous, next) -> "unchanged" | "tail" | "replace"`.
+- Gateway runtime projector:
+  `RuntimeStateProjector.project(state, sessions, transcriptUpdate) -> MycliShellState`.
+- Stateless runtime projection oracle:
+  `projectRuntimeState(state, sessions) -> MycliShellState`.
 
 ### 3. Contracts
 
@@ -2903,7 +2907,22 @@ if (!settled && workerIsUnresponsive) {
 - Runtime transcript classification owns the `tail` guarantee. It emits `tail` only for an append,
   a final-item replacement, or a reasoning update whose assistant is at the tail. Workspace,
   turn-running, and tool-detail changes force `replace`.
-- `projectRuntimeState` reconstructs shell block wrappers on every state projection. Incremental
+- The gateway owns one `RuntimeStateProjector`. It computes the update kind once, projects one shell
+  snapshot, and shares that snapshot with the mounted full TUI or native chat runtime. The retained
+  projector is display-only state; canonical runtime transcript items remain immutable and owned by
+  `RuntimeShellState`.
+- An `unchanged` runtime projection reuses message, tool, bash, and shell-transcript arrays only when
+  the source transcript array, active assistant, live reasoning, workspace, turn-running state, and
+  tool-detail default still match the retained projection context.
+- A runtime `tail` projection validates immutable source-item references at the last or penultimate
+  boundary, then reparses only appended items, the replaced final item, or the active tail assistant
+  affected by live reasoning. Boundary or context mismatch falls back to stateless full projection.
+- Runtime projection returns new array snapshots for tail changes while retaining stable block
+  objects inside their prefix. It must not mutate arrays held by the previous `MycliShellState`,
+  because shell reconciliation and subagent detection compare previous and next snapshots.
+- `projectRuntimeState` remains the full stateless behavior oracle for tests, resume, and fallback.
+  Incremental output must be deeply equal to this function for the same runtime state.
+- The stateless `projectRuntimeState` path reconstructs shell block wrappers. Downstream incremental
   validation therefore compares the retained boundary by stable `id` and `kind`, not wrapper object
   identity. The runtime classifier remains responsible for proving the complete source prefix.
 - Projection state retains projected blocks, ordered source spans, source length, and the final two
@@ -2943,6 +2962,10 @@ if (!settled && workerIsUnresponsive) {
 | Tail appends after a stable non-context block | Read/project only appended source blocks and retain the complete projected prefix |
 | Tail touches a context run | Replay from that run's recorded source start and preserve grouping semantics |
 | Full replacement or session transition | Discard retained projection metadata and rebuild from source |
+| Runtime status changes with the same transcript array | Reuse all four runtime projection arrays by identity |
+| Runtime appends or replaces the final immutable item | Reparse a bounded source suffix and emit immutable shell-array snapshots |
+| Active tail assistant receives live reasoning | Reproject from that assistant while retaining earlier shell blocks |
+| Runtime source reference or projection context disagrees with the hint | Ignore retained state and match `projectRuntimeState` |
 
 ### 5. Good/Base/Bad Cases
 
@@ -2955,6 +2978,10 @@ if (!settled && workerIsUnresponsive) {
   source blocks, retains the projected array, and keeps all stable components mounted.
 - Good: replacing a subagent boundary with a second `Read` replays the preceding context run and
   creates the same group as a fresh full projection.
+- Good: a status-only gateway event reuses the complete shell transcript arrays without touching
+  any runtime transcript item.
+- Good: a 10,000-item final message update reads only a bounded runtime suffix, returns a new shell
+  transcript array, and preserves the stable block objects inside it.
 - Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
@@ -2966,6 +2993,10 @@ if (!settled && workerIsUnresponsive) {
   recreates those wrappers even when the runtime transcript prefix is unchanged.
 - Bad: build a new projected prefix array on each stream delta; source scanning may be gone while
   linear allocation remains.
+- Bad: mutate retained `MycliShellState.transcript`, `messages`, `tools`, or `bash` arrays in place;
+  the caller loses the previous snapshot needed for reconciliation.
+- Bad: cache footer, approval, queue, permission, or session state inside the transcript projector;
+  only the expensive runtime-to-shell transcript mapping is retained.
 
 ### 6. Tests Required
 
@@ -2986,6 +3017,11 @@ if (!settled && workerIsUnresponsive) {
   changes, subagent boundaries, expanded context tools, and invalid-boundary full fallback.
 - Shell runtime tests reconstruct stable shell block wrappers as the gateway does, then assert the
   existing prefix components retain object identity after a hinted append.
+- Runtime projector tests compare every incremental result with stateless `projectRuntimeState`,
+  count indexed reads for a 10,000-item final update, and assert ordinary append updates the tool
+  array while retaining stable message blocks.
+- Runtime projector tests assert unchanged events reuse all transcript-derived arrays and live
+  reasoning replaces only the active tail assistant block.
 - Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
   any tail-rendering change.
 
@@ -3026,6 +3062,28 @@ reconcileSuffix(projection.blocks, stablePrefixLength, replacedBlocks);
 
 The runtime-supplied tail classification protects the source prefix. Source spans identify the
 smallest grouping-sensitive suffix, and reconciliation keeps stable components mounted.
+
+#### Wrong
+
+```typescript
+runtimeState = nextState;
+runtime.setState(projectRuntimeState(runtimeState));
+```
+
+Every status, tool-progress, and token event reparses all durable transcript items and recreates
+every shell wrapper.
+
+#### Correct
+
+```typescript
+const update = classifyRuntimeTranscriptUpdate(runtimeState, nextState);
+runtimeState = nextState;
+const shellState = runtimeStateProjector.project(runtimeState, sessions, update);
+runtime.setState(shellState, { transcriptUpdate: update });
+```
+
+The gateway retains only display projection work, uses the stateless projector as its fallback
+oracle, and passes the same update proof to downstream reconciliation.
 
 ## Scenario: No-Op Terminal Frame Suppression
 

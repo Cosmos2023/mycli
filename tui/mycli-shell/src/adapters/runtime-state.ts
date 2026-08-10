@@ -174,11 +174,271 @@ export function initialRuntimeState(): RuntimeShellState {
 	};
 }
 
+type RuntimeTranscriptProjection = {
+	messages: MycliShellMessage[];
+	tools: MycliShellTool[];
+	bash: MycliShellBash[];
+	transcript: MycliShellTranscriptBlock[];
+};
+
+type RuntimeProjectionCounts = {
+	messages: number;
+	tools: number;
+	bash: number;
+	transcript: number;
+};
+
+type RuntimeTranscriptProjectionCache = {
+	projection: RuntimeTranscriptProjection;
+	sourceTranscript: RuntimeTranscriptItem[];
+	sourceLength: number;
+	penultimateSourceItem?: RuntimeTranscriptItem;
+	lastSourceItem?: RuntimeTranscriptItem;
+	lastSourcePrefix: RuntimeProjectionCounts;
+	activeAssistantItemId: string | null;
+	activeAssistantSourceIndex: number | null;
+	activeAssistantPrefix: RuntimeProjectionCounts | null;
+	liveReasoningText?: string;
+	liveReasoningKind?: string;
+	workspace: string;
+	turnRunning: boolean;
+	toolDetailsDefault: MycliShellVisualSettings["toolDetailsDefault"];
+};
+
+export type RuntimeTranscriptUpdateKind = "unchanged" | "tail" | "replace";
+
+/** Retains runtime-to-shell transcript work across gateway state projections. */
+export class RuntimeStateProjector {
+	private cache: RuntimeTranscriptProjectionCache | null = null;
+
+	project(
+		state: RuntimeShellState,
+		sessions: MycliShellSession[] = [],
+		transcriptUpdate: RuntimeTranscriptUpdateKind = "replace",
+	): MycliShellState {
+		let projection: RuntimeTranscriptProjection | null = null;
+		let activeAssistantSourceIndex: number | null | undefined;
+		if (this.cache && projectionContextMatches(this.cache, state)) {
+			if (transcriptUpdate === "unchanged" && unchangedProjectionSource(this.cache, state)) {
+				projection = this.cache.projection;
+			} else if (transcriptUpdate === "tail") {
+				const tail = projectRuntimeTranscriptTail(state, this.cache);
+				projection = tail?.projection ?? null;
+				activeAssistantSourceIndex = tail?.activeAssistantSourceIndex;
+			}
+		}
+
+		if (!projection) {
+			projection = projectRuntimeTranscriptRange(state, 0);
+		}
+		if (projection !== this.cache?.projection) {
+			this.cache = runtimeTranscriptProjectionCache(
+				state,
+				projection,
+				activeAssistantSourceIndex,
+			);
+		}
+		return projectRuntimeShellState(state, sessions, projection);
+	}
+}
+
+function unchangedProjectionSource(
+	cache: RuntimeTranscriptProjectionCache,
+	state: RuntimeShellState,
+): boolean {
+	return cache.sourceTranscript === state.transcript &&
+		cache.activeAssistantItemId === state.activeAssistantItemId &&
+		cache.liveReasoningText === state.liveReasoning?.text &&
+		cache.liveReasoningKind === state.liveReasoning?.kind;
+}
+
+function projectionContextMatches(
+	cache: RuntimeTranscriptProjectionCache,
+	state: RuntimeShellState,
+): boolean {
+	return cache.workspace === state.workspace &&
+		cache.turnRunning === state.turnRunning &&
+		cache.toolDetailsDefault === state.settings.toolDetailsDefault;
+}
+
+function projectRuntimeTranscriptTail(
+	state: RuntimeShellState,
+	cache: RuntimeTranscriptProjectionCache,
+): { projection: RuntimeTranscriptProjection; activeAssistantSourceIndex?: number | null } | null {
+	const source = state.transcript;
+	if (source.length < cache.sourceLength) return null;
+	if (
+		cache.sourceLength > 0 &&
+		source.length > cache.sourceLength &&
+		source[cache.sourceLength - 1] !== cache.lastSourceItem
+	) {
+		return null;
+	}
+	if (
+		source.length === cache.sourceLength &&
+		source.length > 1 &&
+		source[source.length - 2] !== cache.penultimateSourceItem
+	) {
+		return null;
+	}
+
+	let sourceStart = source.length > cache.sourceLength
+		? cache.sourceLength
+		: source.length;
+	let prefix = projectionCounts(cache.projection);
+	if (
+		source.length === cache.sourceLength &&
+		source.length > 0 &&
+		source[source.length - 1] !== cache.lastSourceItem
+	) {
+		sourceStart = source.length - 1;
+		prefix = cache.lastSourcePrefix;
+	}
+
+	const reasoningChanged =
+		cache.liveReasoningText !== state.liveReasoning?.text ||
+		cache.liveReasoningKind !== state.liveReasoning?.kind;
+	const activeAssistantChanged = cache.activeAssistantItemId !== state.activeAssistantItemId;
+	if (reasoningChanged || activeAssistantChanged) {
+		if (
+			activeAssistantChanged ||
+			cache.activeAssistantSourceIndex === null ||
+			cache.activeAssistantPrefix === null
+		) {
+			return null;
+		}
+		if (cache.activeAssistantSourceIndex < sourceStart) {
+			sourceStart = cache.activeAssistantSourceIndex;
+			prefix = cache.activeAssistantPrefix;
+		}
+	}
+
+	if (sourceStart === source.length) {
+		return { projection: cache.projection, activeAssistantSourceIndex: cache.activeAssistantSourceIndex };
+	}
+	const suffix = projectRuntimeTranscriptRange(state, sourceStart);
+	return {
+		projection: combineRuntimeTranscriptProjection(cache.projection, prefix, suffix),
+		activeAssistantSourceIndex: cache.activeAssistantSourceIndex,
+	};
+}
+
+function combineRuntimeTranscriptProjection(
+	previous: RuntimeTranscriptProjection,
+	prefix: RuntimeProjectionCounts,
+	suffix: RuntimeTranscriptProjection,
+): RuntimeTranscriptProjection {
+	return {
+		messages: [...previous.messages.slice(0, prefix.messages), ...suffix.messages],
+		tools: [...previous.tools.slice(0, prefix.tools), ...suffix.tools],
+		bash: [...previous.bash.slice(0, prefix.bash), ...suffix.bash],
+		transcript: [...previous.transcript.slice(0, prefix.transcript), ...suffix.transcript],
+	};
+}
+
+function runtimeTranscriptProjectionCache(
+	state: RuntimeShellState,
+	projection: RuntimeTranscriptProjection,
+	activeAssistantSourceIndexHint?: number | null,
+): RuntimeTranscriptProjectionCache {
+	const source = state.transcript;
+	const total = projectionCounts(projection);
+	const lastSourceSuffix = source.length > 0
+		? projectRuntimeTranscriptRange(state, source.length - 1)
+		: emptyRuntimeTranscriptProjection();
+	const lastSourcePrefix = subtractProjectionCounts(total, projectionCounts(lastSourceSuffix));
+	const activeAssistantSourceIndex = resolveActiveAssistantSourceIndex(
+		state,
+		activeAssistantSourceIndexHint,
+	);
+	const activeAssistantSuffix = activeAssistantSourceIndex === null
+		? null
+		: activeAssistantSourceIndex === source.length - 1
+			? lastSourceSuffix
+			: projectRuntimeTranscriptRange(state, activeAssistantSourceIndex);
+	return {
+		projection,
+		sourceTranscript: source,
+		sourceLength: source.length,
+		penultimateSourceItem: source.length >= 2 ? source[source.length - 2] : undefined,
+		lastSourceItem: source.at(-1),
+		lastSourcePrefix,
+		activeAssistantItemId: state.activeAssistantItemId,
+		activeAssistantSourceIndex,
+		activeAssistantPrefix: activeAssistantSuffix
+			? subtractProjectionCounts(total, projectionCounts(activeAssistantSuffix))
+			: null,
+		liveReasoningText: state.liveReasoning?.text,
+		liveReasoningKind: state.liveReasoning?.kind,
+		workspace: state.workspace,
+		turnRunning: state.turnRunning,
+		toolDetailsDefault: state.settings.toolDetailsDefault,
+	};
+}
+
+function resolveActiveAssistantSourceIndex(
+	state: RuntimeShellState,
+	hint?: number | null,
+): number | null {
+	const activeId = state.activeAssistantItemId;
+	if (!activeId) return null;
+	if (hint !== undefined && hint !== null && state.transcript[hint]?.id === activeId) return hint;
+	const index = state.transcript.findLastIndex((item) => item.id === activeId);
+	return index >= 0 ? index : null;
+}
+
+function projectRuntimeTranscriptRange(
+	state: RuntimeShellState,
+	sourceStart: number,
+): RuntimeTranscriptProjection {
+	const shell = projectRuntimeShellState(state, [], undefined, sourceStart);
+	return {
+		messages: shell.messages,
+		tools: shell.tools,
+		bash: shell.bash,
+		transcript: shell.transcript ?? [],
+	};
+}
+
+function emptyRuntimeTranscriptProjection(): RuntimeTranscriptProjection {
+	return { messages: [], tools: [], bash: [], transcript: [] };
+}
+
+function projectionCounts(projection: RuntimeTranscriptProjection): RuntimeProjectionCounts {
+	return {
+		messages: projection.messages.length,
+		tools: projection.tools.length,
+		bash: projection.bash.length,
+		transcript: projection.transcript.length,
+	};
+}
+
+function subtractProjectionCounts(
+	total: RuntimeProjectionCounts,
+	suffix: RuntimeProjectionCounts,
+): RuntimeProjectionCounts {
+	return {
+		messages: total.messages - suffix.messages,
+		tools: total.tools - suffix.tools,
+		bash: total.bash - suffix.bash,
+		transcript: total.transcript - suffix.transcript,
+	};
+}
+
 export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShellSession[] = []): MycliShellState {
-	const messages: MycliShellMessage[] = [];
-	const tools: MycliShellTool[] = [];
-	const bash: MycliShellBash[] = [];
-	const transcript: MycliShellTranscriptBlock[] = [];
+	return projectRuntimeShellState(state, sessions);
+}
+
+function projectRuntimeShellState(
+	state: RuntimeShellState,
+	sessions: MycliShellSession[] = [],
+	projectedTranscript?: RuntimeTranscriptProjection,
+	sourceStart = 0,
+): MycliShellState {
+	const messages: MycliShellMessage[] = projectedTranscript?.messages ?? [];
+	const tools: MycliShellTool[] = projectedTranscript?.tools ?? [];
+	const bash: MycliShellBash[] = projectedTranscript?.bash ?? [];
+	const transcript: MycliShellTranscriptBlock[] = projectedTranscript?.transcript ?? [];
 	const pendingSteers = state.localPendingSteers.map((item) => ({
 		text: item.message,
 		hasImages: item.attachments.length > 0,
@@ -201,7 +461,11 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		hasImages: item.hasImages,
 	})));
 
-	for (let transcriptIndex = 0; transcriptIndex < state.transcript.length; transcriptIndex += 1) {
+	for (
+		let transcriptIndex = projectedTranscript ? state.transcript.length : sourceStart;
+		transcriptIndex < state.transcript.length;
+		transcriptIndex += 1
+	) {
 		const item = state.transcript[transcriptIndex]!;
 		if (isInternalTaskNotification(item.text)) {
 			continue;

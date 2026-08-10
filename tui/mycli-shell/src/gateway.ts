@@ -3,8 +3,8 @@ import { pathToFileURL } from "node:url";
 import { GatewayClient, GatewayRequestError, type GatewayEvent } from "./adapters/gateway-client.ts";
 import {
 	initialRuntimeState,
-	projectRuntimeState,
 	reduceRuntimeEvent,
+	RuntimeStateProjector,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateAfterSessionResume,
@@ -98,9 +98,10 @@ let localDispatchEligible = false;
 let localDispatchScheduled = false;
 let interruptRequested = false;
 let resubmitPendingSteersAfterInterrupt = false;
+const runtimeStateProjector = new RuntimeStateProjector();
 
-function currentShellState(): MycliShellState {
-	return projectRuntimeState(runtimeState, sessions);
+function currentShellState(transcriptUpdate: "unchanged" | "tail" | "replace" = "unchanged"): MycliShellState {
+	return runtimeStateProjector.project(runtimeState, sessions, transcriptUpdate);
 }
 
 function setRuntimeState(
@@ -108,19 +109,24 @@ function setRuntimeState(
 	options: { replaceSessionTranscript?: boolean } = {},
 ): void {
 	const previousState = runtimeState;
+	const transcriptUpdate = options.replaceSessionTranscript
+		? "replace"
+		: classifyRuntimeTranscriptUpdate(previousState, nextState);
 	runtimeState = nextState;
-	if (runtime) {
-		const shellState = currentShellState();
+	const shellState = runtime || nativeRuntime
+		? currentShellState(transcriptUpdate)
+		: null;
+	if (runtime && shellState) {
 		if (options.replaceSessionTranscript) {
 			runtime.replaceSessionState(shellState);
 		} else {
 			runtime.setState(shellState, {
-				transcriptUpdate: classifyRuntimeTranscriptUpdate(previousState, nextState),
+				transcriptUpdate,
 			});
 		}
 	}
-	if (nativeRuntime) {
-		nativeRuntime.setState(currentShellState());
+	if (nativeRuntime && shellState) {
+		nativeRuntime.setState(shellState);
 	}
 }
 

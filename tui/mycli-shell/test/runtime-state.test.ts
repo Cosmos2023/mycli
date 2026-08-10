@@ -5,6 +5,7 @@ import {
 	initialRuntimeState,
 	projectRuntimeState,
 	reduceRuntimeEvent,
+	RuntimeStateProjector,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateAfterSessionResume,
@@ -28,6 +29,102 @@ import {
 	type RuntimeShellState,
 } from "../src/adapters/runtime-state.ts";
 import { canonicalToolName } from "../src/components/tool-display.ts";
+
+test("runtime state projector reuses transcript snapshots for non-transcript updates", () => {
+	const projector = new RuntimeStateProjector();
+	const state: RuntimeShellState = {
+		...initialRuntimeState(),
+		transcript: [
+			{ id: "user-1", type: "user", text: "hello", metadata: {} },
+			{ id: "assistant-1", type: "assistant_final", text: "world", metadata: {} },
+		],
+	};
+	const initial = projector.project(state, [], "replace");
+	const updated = projector.project({ ...state, status: { state: "running" } }, [], "unchanged");
+
+	assert.equal(updated.messages, initial.messages);
+	assert.equal(updated.tools, initial.tools);
+	assert.equal(updated.bash, initial.bash);
+	assert.equal(updated.transcript, initial.transcript);
+	assert.equal(updated.footer.liveState, "Idle");
+});
+
+test("runtime state projector reads only a bounded suffix for a 10000-item tail update", () => {
+	const projector = new RuntimeStateProjector();
+	const transcript: RuntimeShellState["transcript"] = Array.from(
+		{ length: 10_000 },
+		(_, index) => ({ id: `user-${index}`, type: "user", text: `message ${index}`, metadata: {} }),
+	);
+	const state: RuntimeShellState = { ...initialRuntimeState(), transcript };
+	const initial = projector.project(state, [], "replace");
+	const nextTranscript = [
+		...transcript.slice(0, -1),
+		{ id: "user-9999", type: "user", text: "updated tail", metadata: {} },
+	];
+	const expected = projectRuntimeState({ ...state, transcript: nextTranscript });
+	let indexedReads = 0;
+	const countedTranscript = new Proxy(nextTranscript, {
+		get(target, property, receiver) {
+			if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) indexedReads += 1;
+			return Reflect.get(target, property, receiver);
+		},
+	});
+
+	const updated = projector.project({ ...state, transcript: countedTranscript }, [], "tail");
+
+	assert.deepEqual(updated, expected);
+	assert.ok(indexedReads <= 12, `expected bounded runtime tail reads, received ${indexedReads}`);
+	assert.notEqual(updated.transcript, initial.transcript);
+	assert.equal(updated.transcript?.[5_000], initial.transcript?.[5_000]);
+});
+
+test("runtime state projector appends projected tool arrays while retaining message blocks", () => {
+	const projector = new RuntimeStateProjector();
+	const user = { id: "user-1", type: "user", text: "inspect", metadata: {} };
+	const state: RuntimeShellState = { ...initialRuntimeState(), transcript: [user] };
+	const initial = projector.project(state, [], "replace");
+	const tool = {
+		id: "tool-1",
+		type: "tool_summary",
+		text: "Read src/app.ts",
+		metadata: { tool_name: "Read", path: "src/app.ts", success: true },
+	};
+	const nextState: RuntimeShellState = { ...state, transcript: [user, tool] };
+
+	const updated = projector.project(nextState, [], "tail");
+
+	assert.deepEqual(updated, projectRuntimeState(nextState));
+	assert.equal(updated.transcript?.[0], initial.transcript?.[0]);
+	assert.equal(updated.transcript?.[1]?.kind, "tool");
+	assert.equal(updated.tools.length, 1);
+});
+
+test("runtime state projector reprojects live reasoning only from the tail assistant", () => {
+	const projector = new RuntimeStateProjector();
+	const transcript: RuntimeShellState["transcript"] = [
+		{ id: "user-1", type: "user", text: "inspect", metadata: {} },
+		{ id: "assistant-1", type: "assistant_stream", text: "working", metadata: {} },
+	];
+	const state: RuntimeShellState = {
+		...initialRuntimeState(),
+		transcript,
+		activeAssistantItemId: "assistant-1",
+		liveReasoning: { text: "first thought", kind: "reasoning" },
+	};
+	const initial = projector.project(state, [], "replace");
+	const nextState = {
+		...state,
+		liveReasoning: { text: "updated thought", kind: "reasoning" },
+	};
+	const updated = projector.project(nextState, [], "tail");
+
+	assert.deepEqual(updated, projectRuntimeState(nextState));
+	assert.equal(updated.transcript?.[0], initial.transcript?.[0]);
+	assert.notEqual(updated.transcript?.[1], initial.transcript?.[1]);
+	const assistant = updated.messages[1];
+	assert.equal(assistant?.role, "assistant");
+	assert.equal(assistant?.role === "assistant" ? assistant.thinking : undefined, "updated thought");
+});
 
 test("canonical shell tool names preserve Shell and legacy Bash", () => {
 	assert.equal(canonicalToolName("Shell"), "Shell");
