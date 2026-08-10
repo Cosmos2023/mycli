@@ -11,6 +11,12 @@ function sourceTokens(markdown: Markdown): object[] {
 	return (markdown as unknown as { cachedSourceTokens: object[] }).cachedSourceTokens;
 }
 
+function renderedTokens(markdown: Markdown): Array<{ lines: string[]; code?: object }> {
+	return (markdown as unknown as {
+		cachedTokens: Array<{ lines: string[]; code?: object }>;
+	}).cachedTokens;
+}
+
 test("incremental markdown rendering matches a fresh render", () => {
 	const width = 72;
 	const cases = [
@@ -94,6 +100,144 @@ test("append-only markdown reparses the prior content block across trailing spac
 	markdown.setText(after);
 
 	assert.deepEqual(markdown.render(72), renderFresh(after, 72));
+});
+
+test("streaming open fences retain lexer prefixes and code layout", () => {
+	const before = "# Stable\n\n```ts\nconst values = [1, 2]";
+	const after = `${before};\nconst next = values.map((value) => value * 2);`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.renderTail(52, 20);
+	const stableHeading = sourceTokens(markdown)[0];
+	const codeEntry = renderedTokens(markdown).at(-1);
+	const codeLines = codeEntry?.lines;
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(52, 20);
+	const fresh = new Markdown(after, 0, 0, markdownTheme()).renderTail(52, 20);
+
+	assert.equal(sourceTokens(markdown)[0], stableHeading);
+	assert.equal(renderedTokens(markdown).at(-1), codeEntry);
+	assert.equal(renderedTokens(markdown).at(-1)?.lines, codeLines);
+	assert.deepEqual(incremental, fresh);
+});
+
+test("streaming open fences render only the changed code suffix", () => {
+	const baseTheme = markdownTheme();
+	let codeLineRenders = 0;
+	const countingTheme: MarkdownTheme = {
+		...baseTheme,
+		codeBlock: (text) => {
+			codeLineRenders += 1;
+			return baseTheme.codeBlock(text);
+		},
+	};
+	const before = `\`\`\`ts\n${Array.from(
+		{ length: 500 },
+		(_, index) => `const value${index} = [${index}];`,
+	).join("\n")}`;
+	const markdown = new Markdown(before, 0, 0, countingTheme);
+	markdown.renderTail(72, 20);
+	const initialRenders = codeLineRenders;
+
+	markdown.setText(`${before}\nconst finalValue = [500];`);
+	markdown.renderTail(72, 20);
+
+	assert.equal(initialRenders, 500);
+	assert.equal(codeLineRenders - initialRenders, 2);
+});
+
+test("streaming fence closure falls back to full markdown tokenization", () => {
+	const before = "# Stable\n\n```ts\nconst values = [1, 2]";
+	const after = `${before}\n\`\`\`\n\nDone.`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.render(72);
+	const stableHeading = sourceTokens(markdown)[0];
+
+	markdown.setText(after);
+
+	assert.deepEqual(markdown.render(72), renderFresh(after, 72));
+	assert.notEqual(sourceTokens(markdown)[0], stableHeading);
+});
+
+test("streaming fences distinguish inline markers and preserve fallback variants", () => {
+	const cases = [
+		{
+			before: "```ts\nconst marker = \"```\";",
+			after: "```ts\nconst marker = \"```\";\nconst ready = true;",
+		},
+		{
+			before: "~~~js\nconst values = [1]",
+			after: "~~~js\nconst values = [1]\nvalues.push(2)",
+		},
+		{
+			before: "  ```ts\n  const value = 1",
+			after: "  ```ts\n  const value = 1\n  const next = 2",
+		},
+		{
+			before: "````ts\nconst value = 1",
+			after: "````ts\nconst value = 1\n````~\n\nDone.",
+		},
+	];
+
+	for (const { before, after } of cases) {
+		const markdown = new Markdown(before, 0, 0, markdownTheme());
+		markdown.render(48);
+		markdown.setText(after);
+
+		assert.deepEqual(markdown.render(48), renderFresh(after, 48));
+	}
+});
+
+test("chunked fenced code streaming stays equal through closure", () => {
+	let source = "# Stable\n\n```ts\n";
+	const markdown = new Markdown(source, 0, 0, markdownTheme());
+	markdown.render(44);
+	const chunks = [
+		"const values = [1, 2]",
+		"\n",
+		"\nconst doubled = values.map((value) => value * 2)",
+		"\nconst marker = \"```\";",
+		"\n",
+		"```",
+		"\n\nDone with **streaming**.",
+	];
+
+	for (const chunk of chunks) {
+		source += chunk;
+		markdown.setText(source);
+
+		assert.deepEqual(markdown.render(44), renderFresh(source, 44));
+		const incrementalTail = markdown.renderTail(44, 8);
+		const freshTail = new Markdown(source, 0, 0, markdownTheme()).renderTail(44, 8);
+		assert.deepEqual(incrementalTail, freshTail);
+	}
+});
+
+test("highlighted and previewed code blocks keep the complete render fallback", () => {
+	const before = "```ts\nconst one = 1;\nconst two = 2;";
+	const after = `${before}\nconst three = 3;`;
+	const baseTheme = markdownTheme();
+	const highlightedTheme: MarkdownTheme = {
+		...baseTheme,
+		highlightCode: (code) => code.split("\n").map((line) => baseTheme.codeBlock(line.toUpperCase())),
+	};
+	const highlighted = new Markdown(before, 0, 0, highlightedTheme);
+	highlighted.render(60);
+	highlighted.setText(after);
+	const highlightedFresh = new Markdown(after, 0, 0, highlightedTheme);
+	const highlightedResult = highlighted.render(60);
+
+	assert.equal(renderedTokens(highlighted).at(-1)?.code, undefined);
+	assert.deepEqual(highlightedResult, highlightedFresh.render(60));
+
+	const previewed = new Markdown(before, 0, 0, baseTheme, undefined, { codeBlockPreviewLines: 2 });
+	previewed.render(60);
+	previewed.setText(after);
+	const previewedFresh = new Markdown(after, 0, 0, baseTheme, undefined, { codeBlockPreviewLines: 2 });
+	const previewedResult = previewed.render(60);
+
+	assert.equal(renderedTokens(previewed).at(-1)?.code, undefined);
+	assert.deepEqual(previewedResult, previewedFresh.render(60));
 });
 
 test("incremental markdown invalidates references resolved by appended definitions", () => {

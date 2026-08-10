@@ -2951,6 +2951,15 @@ if (!settled && workerIsUnresponsive) {
 - Incremental Markdown layout rechecks the rendered token immediately before the reparsed suffix
   because its `nextType` may change. It updates the retained token-line total from the removed and
   inserted suffix instead of summing every stable token on each bounded tail render.
+- An append-only, top-level, unclosed backtick or tilde fence may update its final `code` token from
+  the normalized appended suffix without invoking the full Markdown lexer. The retained token must
+  cover the previous source tail exactly, and the appended boundary must not contain a valid closing
+  fence under Marked's opening-marker plus trailing-marker grammar. Indented fences,
+  carriage-return input, closing fences, and boundary disagreement fall back to Marked.
+- Without syntax highlighting or code-preview truncation, rendered code tokens retain source-line
+  end offsets and update only the previous final source line plus appended lines. A proven token
+  lineage permits this path without rescanning complete `raw` and `text` prefixes; unproven token
+  replacements keep the defensive prefix checks.
 - Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
   the full-render behavior.
 
@@ -2965,6 +2974,9 @@ if (!settled && workerIsUnresponsive) {
 | Next root frame or direct container render | Render again; never reuse the prior frame's chrome lines |
 | Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
 | Append-only source has no reference-link syntax | Retain stable lexer tokens and reparse from the final non-space top-level token |
+| Top-level unclosed fence receives a non-closing append | Update the final code token and retained code-line suffix without full lex or layout |
+| Append closes a fence or the fence is indented | Reject the fence fast path and match a fresh Marked render |
+| Code highlighting or preview truncation is configured | Use the existing complete token-render path |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
@@ -2984,6 +2996,8 @@ if (!settled && workerIsUnresponsive) {
   the same total line count and visible bytes as a full render.
 - Good: appending to a response after hundreds of stable Markdown blocks retains their lexer and
   rendered-token identities and parses only the active suffix.
+- Good: appending one line to a 10,000-line open code fence invokes code-line rendering only for
+  the previous final line and the appended line.
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
@@ -2998,6 +3012,8 @@ if (!settled && workerIsUnresponsive) {
 - Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
 - Bad: concatenate retained lexer tokens with an appended suffix without replaying the final
   non-space block; lists, blockquotes, fences, and tables can continue across the append boundary.
+- Bad: treat a line-start closing fence as code content, or manually reproduce Marked's indented
+  fence compensation; both change the parsed transcript when streaming reaches the fence boundary.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
@@ -3019,6 +3035,11 @@ if (!settled && workerIsUnresponsive) {
   blockquotes, tables, reference definitions, and width changes.
 - Markdown lexer tests assert a long append-only stable prefix retains source-token identity, while
   appended reference definitions rebuild reference-sensitive source tokens.
+- Open-fence tests compare incremental and fresh full/tail rendering through character appends,
+  blank lines, inline fence markers, ordinary and mixed-marker closing fences, tilde fences, and
+  indented-fence fallback.
+- Code-layout tests count theme `codeBlock` calls and assert a 500-line append renders exactly the
+  previous final line and the new line while retaining the code entry and line-array identities.
 - Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
   narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.

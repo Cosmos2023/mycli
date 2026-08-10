@@ -88,6 +88,20 @@ interface RenderedTokenCacheEntry {
 	contextKey?: string;
 	nextType?: string;
 	lines: string[];
+	code?: RenderedCodeTokenCache;
+}
+
+interface RenderedCodeTokenCache {
+	text: string;
+	lang: string | undefined;
+	openingLineCount: number;
+	bodyLineEnds: number[];
+	sourceToken: Tokens.Code;
+}
+
+interface OpenFenceInfo {
+	bodyOffset: number;
+	closingPattern: RegExp;
 }
 
 interface MarkdownTokenUpdate {
@@ -121,6 +135,10 @@ export class Markdown implements Component {
 	private cachedLexedText?: string;
 	private cachedSourceTokens: Token[] = [];
 	private cachedSourceTokenEnds: number[] = [];
+	private cachedOpenFences = new WeakMap<Token, OpenFenceInfo | null>();
+	private appendedCodeTokenSources = new WeakMap<Token, Token>();
+	private normalizedTextExtendsLexedText = false;
+	private pendingNormalizedAppend = "";
 
 	constructor(
 		text: string,
@@ -144,11 +162,17 @@ export class Markdown implements Component {
 		if (this.text === text) return;
 		if (text.startsWith(this.text)) {
 			const suffix = text.slice(this.text.length);
-			this.normalizedText += normalizeMarkdownSource(suffix);
+			const normalizedSuffix = normalizeMarkdownSource(suffix);
+			this.normalizedText += normalizedSuffix;
+			if (this.normalizedTextExtendsLexedText) {
+				this.pendingNormalizedAppend += normalizedSuffix;
+			}
 			this.hasReferenceSyntax ||= suffix.includes("[");
 		} else {
 			this.normalizedText = normalizeMarkdownSource(text);
 			this.hasReferenceSyntax = text.includes("[");
+			this.normalizedTextExtendsLexedText = false;
+			this.pendingNormalizedAppend = "";
 		}
 		this.text = text;
 		this.cachedText = undefined;
@@ -165,6 +189,10 @@ export class Markdown implements Component {
 		this.cachedLexedText = undefined;
 		this.cachedSourceTokens = [];
 		this.cachedSourceTokenEnds = [];
+		this.cachedOpenFences = new WeakMap();
+		this.appendedCodeTokenSources = new WeakMap();
+		this.normalizedTextExtendsLexedText = false;
+		this.pendingNormalizedAppend = "";
 	}
 
 	render(width: number): string[] {
@@ -253,29 +281,33 @@ export class Markdown implements Component {
 		const renderStart = previousTokens.length > 0
 			? Math.max(0, Math.min(tokenUpdate.stablePrefixLength, previousTokens.length) - 1)
 			: 0;
+		const removedLineCount = previousTokens
+			.slice(renderStart)
+			.reduce((count, entry) => count + entry.lines.length, 0);
 		const nextTokenCache: RenderedTokenCacheEntry[] = [];
 		for (let index = renderStart; index < tokenUpdate.tokens.length; index += 1) {
 			const token = tokenUpdate.tokens[index]!;
 			const nextType = tokenUpdate.tokens[index + 1]?.type;
-			const contextKey = token.raw.includes("[") ? JSON.stringify(token) : undefined;
+			const contextKey = token.type !== "code" && token.raw.includes("[")
+				? JSON.stringify(token)
+				: undefined;
 			const cached = previousTokens[index];
-			const lines = cached &&
-				cached.type === token.type &&
-				cached.raw === token.raw &&
-				cached.contextKey === contextKey &&
-				cached.nextType === nextType
-				? cached.lines
-				: this.renderTokenContentLines(token, contentWidth, width, nextType);
-			nextTokenCache.push({ type: token.type, raw: token.raw, contextKey, nextType, lines });
+			nextTokenCache.push(this.renderTokenCacheEntry(
+				token,
+				contentWidth,
+				width,
+				nextType,
+				contextKey,
+				cached,
+			));
 		}
-		const removed = this.cachedTokenWidth === width
-			? this.cachedTokens.splice(
+		if (this.cachedTokenWidth === width) {
+			this.cachedTokens.splice(
 				renderStart,
 				this.cachedTokens.length - renderStart,
 				...nextTokenCache,
-			)
-			: this.cachedTokens;
-		const removedLineCount = removed.reduce((count, entry) => count + entry.lines.length, 0);
+			);
+		}
 		const addedLineCount = nextTokenCache.reduce((count, entry) => count + entry.lines.length, 0);
 		if (this.cachedTokenWidth === width) {
 			this.cachedTokenLineCount += addedLineCount - removedLineCount;
@@ -287,13 +319,159 @@ export class Markdown implements Component {
 		return this.cachedTokens;
 	}
 
+	private renderTokenCacheEntry(
+		token: Token,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+		cached: RenderedTokenCacheEntry | undefined,
+	): RenderedTokenCacheEntry {
+		if (
+			cached &&
+			cached.type === token.type &&
+			cached.raw === token.raw &&
+			cached.contextKey === contextKey &&
+			cached.nextType === nextType
+		) {
+			return cached;
+		}
+
+		if (token.type === "code" && this.canRetainCodeLayout()) {
+			const codeToken = token as Tokens.Code;
+			if (cached?.type === "code" && cached.code) {
+				const updated = this.updateRetainedCodeEntry(
+					cached,
+					codeToken,
+					contentWidth,
+					width,
+					nextType,
+					contextKey,
+				);
+				if (updated) return updated;
+			}
+			return this.createRetainedCodeEntry(codeToken, contentWidth, width, nextType, contextKey);
+		}
+
+		return {
+			type: token.type,
+			raw: token.raw,
+			contextKey,
+			nextType,
+			lines: this.renderTokenContentLines(token, contentWidth, width, nextType),
+		};
+	}
+
+	private canRetainCodeLayout(): boolean {
+		return this.theme.highlightCode === undefined &&
+			(this.options.codeBlockPreviewLines === undefined || this.options.codeBlockPreviewLines <= 0);
+	}
+
+	private createRetainedCodeEntry(
+		token: Tokens.Code,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry {
+		const indent = this.theme.codeBlockIndent ?? "  ";
+		const opening = this.renderLogicalLines(
+			[this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)],
+			contentWidth,
+			width,
+		);
+		const lines = [...opening];
+		const bodyLineEnds: number[] = [];
+		for (const codeLine of token.text.split("\n")) {
+			lines.push(...this.renderLogicalLines(
+				[`${indent}${this.theme.codeBlock(codeLine)}`],
+				contentWidth,
+				width,
+			));
+			bodyLineEnds.push(lines.length);
+		}
+		lines.push(...this.renderCodeTrailingLines(contentWidth, width, nextType));
+		return {
+			type: token.type,
+			raw: token.raw,
+			contextKey,
+			nextType,
+			lines,
+			code: {
+				text: token.text,
+				lang: token.lang,
+				openingLineCount: opening.length,
+				bodyLineEnds,
+				sourceToken: token,
+			},
+		};
+	}
+
+	private updateRetainedCodeEntry(
+		cached: RenderedTokenCacheEntry,
+		token: Tokens.Code,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		const code = cached.code;
+		const appendProven = code && this.appendedCodeTokenSources.get(token) === code.sourceToken;
+		if (
+			!code ||
+			code.lang !== token.lang ||
+			(!appendProven && (
+				!token.raw.startsWith(cached.raw) ||
+				!token.text.startsWith(code.text)
+			))
+		) {
+			return null;
+		}
+
+		const stableBodyLineCount = Math.max(0, code.bodyLineEnds.length - 1);
+		const keepLineCount = stableBodyLineCount === 0
+			? code.openingLineCount
+			: (code.bodyLineEnds[stableBodyLineCount - 1] ?? code.openingLineCount);
+		const sourceStart = code.text.lastIndexOf("\n") + 1;
+		const indent = this.theme.codeBlockIndent ?? "  ";
+		const replacement: string[] = [];
+		code.bodyLineEnds.splice(stableBodyLineCount);
+		for (const codeLine of token.text.slice(sourceStart).split("\n")) {
+			replacement.push(...this.renderLogicalLines(
+				[`${indent}${this.theme.codeBlock(codeLine)}`],
+				contentWidth,
+				width,
+			));
+			code.bodyLineEnds.push(keepLineCount + replacement.length);
+		}
+		replacement.push(...this.renderCodeTrailingLines(contentWidth, width, nextType));
+		cached.lines.splice(keepLineCount, cached.lines.length - keepLineCount, ...replacement);
+		cached.raw = token.raw;
+		cached.contextKey = contextKey;
+		cached.nextType = nextType;
+		code.text = token.text;
+		code.sourceToken = token;
+		return cached;
+	}
+
+	private renderCodeTrailingLines(
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+	): string[] {
+		return this.renderLogicalLines([
+			this.theme.codeBlockBorder("```"),
+			...(nextType && nextType !== "space" ? [""] : []),
+		], contentWidth, width);
+	}
+
 	private updateSourceTokens(): MarkdownTokenUpdate {
 		const source = this.normalizedText;
 		if (this.cachedLexedText === source) {
 			return { tokens: this.cachedSourceTokens, stablePrefixLength: this.cachedSourceTokens.length, changed: false };
 		}
 
-		if (this.canIncrementallyLex(source)) {
+		if (this.canReuseAppendedSource(source)) {
 			let reparseTokenIndex = this.cachedSourceTokens.length - 1;
 			while (reparseTokenIndex > 0 && this.cachedSourceTokens[reparseTokenIndex]?.type === "space") {
 				reparseTokenIndex -= 1;
@@ -301,6 +479,14 @@ export class Markdown implements Component {
 			const reparseOffset = reparseTokenIndex > 0
 				? (this.cachedSourceTokenEnds[reparseTokenIndex - 1] ?? 0)
 				: 0;
+			const fenceUpdate = this.updateOpenFenceToken(
+				source,
+				reparseTokenIndex,
+				reparseOffset,
+				this.pendingNormalizedAppend,
+			);
+			if (fenceUpdate) return fenceUpdate;
+			if (this.hasReferenceSyntax) return this.replaceSourceTokens(source);
 			const suffixSource = source.slice(reparseOffset);
 			const suffixTokens = this.lexSource(suffixSource);
 			const suffixEnds = this.tokenEndOffsets(suffixTokens, reparseOffset);
@@ -315,7 +501,7 @@ export class Markdown implements Component {
 					this.cachedSourceTokenEnds.length - reparseTokenIndex,
 					...suffixEnds,
 				);
-				this.cachedLexedText = source;
+				this.commitLexedSource(source);
 				return {
 					tokens: this.cachedSourceTokens,
 					stablePrefixLength: reparseTokenIndex,
@@ -324,21 +510,106 @@ export class Markdown implements Component {
 			}
 		}
 
-		const tokens = this.lexSource(source);
-		this.cachedSourceTokens = tokens;
-		this.cachedSourceTokenEnds = this.tokenEndOffsets(tokens);
-		this.cachedLexedText = source;
-		return { tokens, stablePrefixLength: 0, changed: true };
+		return this.replaceSourceTokens(source);
 	}
 
-	private canIncrementallyLex(source: string): boolean {
-		if (this.hasReferenceSyntax || this.cachedLexedText === undefined || this.cachedSourceTokens.length === 0) {
+	private canReuseAppendedSource(source: string): boolean {
+		if (
+			this.cachedLexedText === undefined ||
+			this.cachedSourceTokens.length === 0 ||
+			!this.normalizedTextExtendsLexedText ||
+			this.pendingNormalizedAppend.length === 0
+		) {
 			return false;
 		}
-		if (source.length <= this.cachedLexedText.length || !source.startsWith(this.cachedLexedText)) {
+		if (source.length !== this.cachedLexedText.length + this.pendingNormalizedAppend.length) {
 			return false;
 		}
 		return this.cachedSourceTokenEnds.at(-1) === this.cachedLexedText.length;
+	}
+
+	private updateOpenFenceToken(
+		source: string,
+		tokenIndex: number,
+		sourceOffset: number,
+		appended: string,
+	): MarkdownTokenUpdate | null {
+		if (tokenIndex !== this.cachedSourceTokens.length - 1) return null;
+		const token = this.cachedSourceTokens[tokenIndex];
+		if (!token || token.type !== "code") return null;
+		const fence = this.openFenceInfo(token);
+		if (!fence) return null;
+
+		if (
+			!appended ||
+			appended.includes("\r") ||
+			token.raw.length !== (this.cachedLexedText?.length ?? 0) - sourceOffset
+		) return null;
+		const boundarySource = token.raw.slice(token.raw.lastIndexOf("\n") + 1) + appended;
+		if (this.hasClosingFence(boundarySource, fence)) return null;
+
+		const raw = `${token.raw}${appended}`;
+		const body = raw.slice(fence.bodyOffset);
+		const nextToken: Tokens.Code = {
+			...(token as Tokens.Code),
+			raw,
+			text: body.endsWith("\n") ? body.slice(0, -1) : body,
+		};
+		this.appendedCodeTokenSources.set(nextToken, token);
+		this.cachedSourceTokens.splice(tokenIndex, 1, nextToken);
+		this.cachedSourceTokenEnds.splice(tokenIndex, 1, source.length);
+		this.cachedOpenFences.set(nextToken, fence);
+		this.commitLexedSource(source);
+		return {
+			tokens: this.cachedSourceTokens,
+			stablePrefixLength: tokenIndex,
+			changed: true,
+		};
+	}
+
+	private openFenceInfo(token: Token): OpenFenceInfo | null {
+		if (this.cachedOpenFences.has(token)) {
+			return this.cachedOpenFences.get(token) ?? null;
+		}
+		if (token.type !== "code" || (token as Tokens.Code).codeBlockStyle === "indented") {
+			this.cachedOpenFences.set(token, null);
+			return null;
+		}
+		const opening = /^( {0,3})(`{3,}|~{3,})[^\n]*\n/.exec(token.raw);
+		if (!opening || opening[1] !== "") {
+			this.cachedOpenFences.set(token, null);
+			return null;
+		}
+		const markerText = opening[2]!;
+		const trailingFenceMarkers = "[~`]*";
+		const fence: OpenFenceInfo = {
+			bodyOffset: opening[0].length,
+			closingPattern: new RegExp(
+				`(?:^|\\n) {0,3}${markerText}${trailingFenceMarkers}[ \\t]*(?:\\n|$)`,
+			),
+		};
+		const body = token.raw.slice(fence.bodyOffset);
+		const result = this.hasClosingFence(body, fence) ? null : fence;
+		this.cachedOpenFences.set(token, result);
+		return result;
+	}
+
+	private hasClosingFence(source: string, fence: OpenFenceInfo): boolean {
+		return fence.closingPattern.test(source);
+	}
+
+	private replaceSourceTokens(source: string): MarkdownTokenUpdate {
+		const tokens = this.lexSource(source);
+		this.cachedSourceTokens = tokens;
+		this.cachedSourceTokenEnds = this.tokenEndOffsets(tokens);
+		this.commitLexedSource(source);
+		return { tokens, stablePrefixLength: 0, changed: true };
+	}
+
+	private commitLexedSource(source: string): void {
+		this.cachedLexedText = source;
+		this.normalizedTextExtendsLexedText = true;
+		this.pendingNormalizedAppend = "";
 	}
 
 	private lexSource(source: string): Token[] {
@@ -361,8 +632,20 @@ export class Markdown implements Component {
 		width: number,
 		nextTokenType?: string,
 	): string[] {
+		return this.renderLogicalLines(
+			this.renderToken(token, contentWidth, nextTokenType),
+			contentWidth,
+			width,
+		);
+	}
+
+	private renderLogicalLines(
+		logicalLines: string[],
+		contentWidth: number,
+		width: number,
+	): string[] {
 		const wrappedLines: string[] = [];
-		for (const line of this.renderToken(token, contentWidth, nextTokenType)) {
+		for (const line of logicalLines) {
 			if (isImageLine(line)) {
 				wrappedLines.push(line);
 				continue;
