@@ -76,6 +76,8 @@ test("runtime state projector reads only a bounded suffix for a 10000-item tail 
 	assert.ok(indexedReads <= 12, `expected bounded runtime tail reads, received ${indexedReads}`);
 	assert.notEqual(updated.transcript, initial.transcript);
 	assert.equal(updated.transcript?.[5_000], initial.transcript?.[5_000]);
+	assert.equal(updated.tools, initial.tools);
+	assert.equal(updated.bash, initial.bash);
 });
 
 test("runtime state projector appends projected tool arrays while retaining message blocks", () => {
@@ -96,6 +98,8 @@ test("runtime state projector appends projected tool arrays while retaining mess
 	assert.deepEqual(updated, projectRuntimeState(nextState));
 	assert.equal(updated.transcript?.[0], initial.transcript?.[0]);
 	assert.equal(updated.transcript?.[1]?.kind, "tool");
+	assert.equal(updated.messages, initial.messages);
+	assert.equal(updated.bash, initial.bash);
 	assert.equal(updated.tools.length, 1);
 });
 

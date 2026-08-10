@@ -329,11 +329,16 @@ function combineRuntimeTranscriptProjection(
 	suffix: RuntimeTranscriptProjection,
 ): RuntimeTranscriptProjection {
 	return {
-		messages: [...previous.messages.slice(0, prefix.messages), ...suffix.messages],
-		tools: [...previous.tools.slice(0, prefix.tools), ...suffix.tools],
-		bash: [...previous.bash.slice(0, prefix.bash), ...suffix.bash],
-		transcript: [...previous.transcript.slice(0, prefix.transcript), ...suffix.transcript],
+		messages: combineRuntimeProjectionArray(previous.messages, prefix.messages, suffix.messages),
+		tools: combineRuntimeProjectionArray(previous.tools, prefix.tools, suffix.tools),
+		bash: combineRuntimeProjectionArray(previous.bash, prefix.bash, suffix.bash),
+		transcript: combineRuntimeProjectionArray(previous.transcript, prefix.transcript, suffix.transcript),
 	};
+}
+
+function combineRuntimeProjectionArray<T>(previous: T[], prefixLength: number, suffix: T[]): T[] {
+	if (prefixLength === previous.length && suffix.length === 0) return previous;
+	return [...previous.slice(0, prefixLength), ...suffix];
 }
 
 function runtimeTranscriptProjectionCache(

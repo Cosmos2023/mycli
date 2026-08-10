@@ -2917,9 +2917,10 @@ if (!settled && workerIsUnresponsive) {
 - A runtime `tail` projection validates immutable source-item references at the last or penultimate
   boundary, then reparses only appended items, the replaced final item, or the active tail assistant
   affected by live reasoning. Boundary or context mismatch falls back to stateless full projection.
-- Runtime projection returns new array snapshots for tail changes while retaining stable block
-  objects inside their prefix. It must not mutate arrays held by the previous `MycliShellState`,
-  because shell reconciliation and subagent detection compare previous and next snapshots.
+- Runtime projection returns new array snapshots only for transcript-derived categories affected by
+  a tail change, while retaining stable block objects inside their prefix. Unchanged categories are
+  reused by array identity. It must not mutate arrays held by the previous `MycliShellState`, because
+  shell reconciliation and subagent detection compare previous and next snapshots.
 - `projectRuntimeState` remains the full stateless behavior oracle for tests, resume, and fallback.
   Incremental output must be deeply equal to this function for the same runtime state.
 - The stateless `projectRuntimeState` path reconstructs shell block wrappers. Downstream incremental
@@ -2963,7 +2964,7 @@ if (!settled && workerIsUnresponsive) {
 | Tail touches a context run | Replay from that run's recorded source start and preserve grouping semantics |
 | Full replacement or session transition | Discard retained projection metadata and rebuild from source |
 | Runtime status changes with the same transcript array | Reuse all four runtime projection arrays by identity |
-| Runtime appends or replaces the final immutable item | Reparse a bounded source suffix and emit immutable shell-array snapshots |
+| Runtime appends or replaces the final immutable item | Reparse a bounded source suffix, snapshot affected arrays, and reuse unaffected arrays |
 | Active tail assistant receives live reasoning | Reproject from that assistant while retaining earlier shell blocks |
 | Runtime source reference or projection context disagrees with the hint | Ignore retained state and match `projectRuntimeState` |
 
