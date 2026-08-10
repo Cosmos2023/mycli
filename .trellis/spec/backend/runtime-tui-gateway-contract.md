@@ -3551,6 +3551,10 @@ that the cached header plus final-row source boundary still forms exactly one co
 - A middle interval ends with the terminal segment reset but does not erase the stable suffix. When
   the changed interval reaches the new semantic line end, it additionally emits `EL` so shortened
   content cannot leave stale cells behind.
+- Raw ANSI string inequality is not sufficient evidence of a changed frame. Inline and native
+  rendering both precompute semantic patches for same-length frames; when every patch is empty,
+  update the retained raw-line baseline and emit no content transaction. Hardware cursor movement
+  remains independently eligible for one cursor-only transaction.
 
 ### 4. Validation & Error Matrix
 
@@ -3569,6 +3573,7 @@ that the cached header plus final-row source boundary still forms exactly one co
 | Equal semantic suffix after changed cells | Leave suffix cells untouched; do not emit `EL` |
 | Changed interval reaches new line end | Reset styles and emit `EL` to clear any stale tail |
 | Diff boundary intersects a wide cell | Expand to the complete grapheme cell span |
+| Different SGR/OSC bytes produce equal semantic cells | Zero content writes in both render modes |
 
 ### 5. Good/Base/Bad Cases
 
@@ -3578,12 +3583,16 @@ that the cached header plus final-row source boundary still forms exactly one co
   old snapshots are evicted at the configured bound.
 - Good: a one-cell spinner change before `Working (24s · esc to interrupt)` writes only the spinner
   cell and terminal resets; the stable suffix remains in the terminal buffer.
+- Good: canonical-equivalent SGR ordering updates the retained raw-line baseline without emitting
+  an empty synchronized-output pair.
 - Bad: write `CSI ?2026h`, cursor-hide, and `CSI ?2026l` for every unchanged state event.
 - Bad: suppress a cursor-only move because the line bytes are equal; IME placement becomes stale.
 - Bad: include `maxWidth` in the snapshot key or use an unbounded map, causing duplicate parsing or
   memory growth without changing terminal-cell semantics.
 - Bad: append `EL` to every middle-of-line patch; it erases the suffix that the diff intentionally
   retained and produces visible flicker until another write reconstructs it.
+- Bad: treat `previousLine !== nextLine` as proof that terminal cells changed and write cursor
+  movement plus synchronized-output wrappers around an otherwise empty patch.
 
 ### 6. Tests Required
 
@@ -3613,6 +3622,8 @@ that the cached header plus final-row source boundary still forms exactly one co
 - Unit-test minimal changed intervals for a spinner, style-only cells, and CJK wide cells. Assert the
   patch omits the stable suffix and `EL`; a headless terminal integration test must still converge
   to the complete expected line.
+- Render semantically equal but byte-distinct SGR lines in inline and native-scrollback modes;
+  clear captured writes before the second frame and assert that both modes emit zero writes.
 
 ### 7. Wrong vs Correct
 
@@ -3658,6 +3669,20 @@ content = `${reset}${replacement}${reset}${changedThroughLineEnd ? "\x1b[K" : ""
 ```
 
 Middle patches preserve equal suffix cells. Tail patches clear through the terminal line end.
+
+#### Wrong
+
+```typescript
+if (previousLine !== nextLine) terminal.write(synchronizedEmptyPatch);
+```
+
+#### Correct
+
+```typescript
+if (linePatch?.content === "") updateRetainedBaselineWithoutContentWrite();
+```
+
+Cursor-only changes are evaluated after semantic content suppression, not suppressed with it.
 
 #### Wrong
 

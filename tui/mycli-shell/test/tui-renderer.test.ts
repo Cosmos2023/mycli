@@ -179,6 +179,34 @@ test("unchanged native scrollback frames emit no terminal writes", async (t) => 
 	assert.equal(terminal.writes.length, 0);
 });
 
+for (const nativeScrollback of [false, true]) {
+	test(`semantically unchanged ${nativeScrollback ? "native" : "inline"} frames emit no terminal writes`, async (t) => {
+		const terminal = new HeadlessTerminal({
+			columns: 40,
+			rows: 6,
+			nativeScrollback,
+		});
+		const component = new MutableLines(["\x1b[1;31mstable frame"]);
+		const ui = new TUI(terminal);
+		t.after(async () => {
+			ui.stop();
+			await terminal.flush();
+			terminal.dispose();
+		});
+		ui.addChild(component);
+		if (nativeScrollback) ui.insertHistoryBeforeNextFrame(["committed history"]);
+		ui.start();
+		await renderFrame(ui, terminal);
+		terminal.writes.length = 0;
+
+		component.setLines(["\x1b[31;1mstable frame"]);
+		await renderFrame(ui, terminal);
+
+		assert.equal(terminal.writes.length, 0);
+		assert.equal(terminal.visibleLines()[0], "stable frame");
+	});
+}
+
 test("hardware cursor movement still renders when frame cells are unchanged", async (t) => {
 	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
 	const component = new MutableCursorLine(1);

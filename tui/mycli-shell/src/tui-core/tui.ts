@@ -7,7 +7,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FrameScheduler } from "./frame-scheduler.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
-import { TerminalLineDiffer, TERMINAL_SEGMENT_RESET } from "./screen-buffer.ts";
+import {
+	TerminalLineDiffer,
+	TERMINAL_SEGMENT_RESET,
+	type TerminalLinePatch,
+} from "./screen-buffer.ts";
 import type { Terminal } from "./terminal.ts";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
@@ -1582,6 +1586,29 @@ export class TUI extends Container {
 			return;
 		}
 
+		let preparedLinePatches: Map<number, TerminalLinePatch | null> | null = null;
+		if (newLines.length === this.previousLines.length) {
+			preparedLinePatches = new Map();
+			let semanticFrameChanged = false;
+			for (let i = firstChanged; i <= lastChanged; i++) {
+				const previousLine = this.previousLines[i] ?? "";
+				const nextLine = newLines[i] ?? "";
+				if (previousLine === nextLine) continue;
+				const linePatch = this.lineDiffer.diff(previousLine, nextLine, width);
+				preparedLinePatches.set(i, linePatch);
+				if (linePatch === null || linePatch.content) semanticFrameChanged = true;
+			}
+			if (!semanticFrameChanged) {
+				this.positionHardwareCursor(cursorPos, newLines.length);
+				this.previousLines = newLines;
+				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+				this.previousWidth = width;
+				this.previousHeight = height;
+				this.previousViewportTop = prevViewportTop;
+				return;
+			}
+		}
+
 		// All changes are in deleted lines (nothing to render, just clear)
 		if (firstChanged >= newLines.length) {
 			if (this.previousLines.length > newLines.length) {
@@ -1705,7 +1732,11 @@ export class TUI extends Container {
 				throw new Error(errorMsg);
 			}
 			const previousLine = this.previousLines[i];
-			const linePatch = previousLine === undefined ? null : this.lineDiffer.diff(previousLine, line, width);
+			const linePatch = previousLine === undefined
+				? null
+				: preparedLinePatches?.has(i)
+					? preparedLinePatches.get(i) ?? null
+					: this.lineDiffer.diff(previousLine, line, width);
 			if (linePatch === null) {
 				buffer += `\x1b[2K${line}`;
 			} else if (linePatch.content) {
