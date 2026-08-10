@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FrameScheduler } from "./frame-scheduler.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
-import { diffTerminalLine, TERMINAL_SEGMENT_RESET } from "./screen-buffer.ts";
+import { TerminalLineDiffer, TERMINAL_SEGMENT_RESET } from "./screen-buffer.ts";
 import type { Terminal } from "./terminal.ts";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
@@ -300,6 +300,7 @@ export class TUI extends Container {
 	private renderFrameSequence = 0;
 	private activeRenderFrame: number | null = null;
 	private previousLines: string[] = [];
+	private readonly lineDiffer = new TerminalLineDiffer();
 	private previousKittyImageIds = new Set<number>();
 	private previousWidth = 0;
 	private previousHeight = 0;
@@ -1352,7 +1353,7 @@ export class TUI extends Container {
 			if (previousFrame[row] === frameLines[row]) continue;
 			const previousLine = previousFrame[row] ?? "";
 			const nextLine = frameLines[row] ?? "";
-			const linePatch = diffTerminalLine(previousLine, nextLine, width);
+			const linePatch = this.lineDiffer.diff(previousLine, nextLine, width);
 			if (linePatch === null) {
 				buffer += `\x1b[${row + 1};1H\x1b[2K${nextLine}`;
 				finalCursorRow = row;
@@ -1704,7 +1705,7 @@ export class TUI extends Container {
 				throw new Error(errorMsg);
 			}
 			const previousLine = this.previousLines[i];
-			const linePatch = previousLine === undefined ? null : diffTerminalLine(previousLine, line, width);
+			const linePatch = previousLine === undefined ? null : this.lineDiffer.diff(previousLine, line, width);
 			if (linePatch === null) {
 				buffer += `\x1b[2K${line}`;
 			} else if (linePatch.content) {

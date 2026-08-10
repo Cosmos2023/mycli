@@ -3516,6 +3516,8 @@ that the cached header plus final-row source boundary still forms exactly one co
   positionKnown: boolean }`.
 - Frame request: `TUI.requestRender(force?: boolean) -> void`.
 - Terminal output boundary: `Terminal.write(data: string) -> void`.
+- Retained line differ:
+  `TerminalLineDiffer.diff(previousLine, nextLine, maxWidth) -> TerminalLinePatch | null`.
 
 ### 3. Contracts
 
@@ -3534,6 +3536,15 @@ that the cached header plus final-row source boundary still forms exactly one co
   optional visible hardware cursor.
 - A real content, image, or cursor change remains one atomic terminal write. Force redraw, resize,
   resume, and terminal ownership transitions continue to invalidate the appropriate baseline.
+- Each `TUI` instance owns one bounded `TerminalLineDiffer`. It retains semantic terminal-cell
+  snapshots across inline and native-scrollback frames so the current `nextLine` snapshot becomes
+  the following frame's reusable `previousLine` snapshot.
+- The snapshot-cache key is the exact normalized ANSI line. Terminal width is not part of the key
+  because semantic cell snapshots are width-independent; `maxWidth` is applied only when building
+  the changed suffix patch.
+- The cache uses bounded least-recently-used eviction and retains both valid snapshots and `null`
+  fallback results. Image lines bypass semantic snapshotting, while unsupported control sequences
+  continue to return `null` and trigger a full-line repaint.
 
 ### 4. Validation & Error Matrix
 
@@ -3546,13 +3557,20 @@ that the cached header plus final-row source boundary still forms exactly one co
 | Marker returns after marker-free content repaint | Reacquire its absolute row and column |
 | Changed line or removed Kitty image | One synchronized frame write |
 | Forced redraw or terminal reacquisition | Rebuild the frame; never reuse stale cursor state |
+| Positive safe-integer snapshot bound | Retain no more than that many exact line snapshots |
+| Invalid, non-positive, or unsafe snapshot bound | Fall back to the finite default bound |
+| Image line or unsupported control sequence | Bypass/fail semantic diffing and repaint the line |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: duplicate status projection schedules a frame but produces no PTY bytes.
 - Base: one streamed token changes a suffix and uses the existing ANSI-safe cell patch.
+- Good: a streamed line's next snapshot is reused as the previous snapshot on the following frame;
+  old snapshots are evicted at the configured bound.
 - Bad: write `CSI ?2026h`, cursor-hide, and `CSI ?2026l` for every unchanged state event.
 - Bad: suppress a cursor-only move because the line bytes are equal; IME placement becomes stale.
+- Bad: include `maxWidth` in the snapshot key or use an unbounded map, causing duplicate parsing or
+  memory growth without changing terminal-cell semantics.
 
 ### 6. Tests Required
 
@@ -3576,6 +3594,9 @@ that the cached header plus final-row source boundary still forms exactly one co
   preserve an unchanged prefix and emit just the replacement suffix.
 - Existing atomic-frame, output-backpressure, wide-cell, resize, suspend/resume, and terminal
   cleanup tests remain green.
+- Unit-test retained line snapshots with an injectable snapshot function: chained frame diffs reuse
+  the shared line, configured bounds evict the least-recently-used line, and invalid bounds retain
+  the finite default behavior.
 
 ### 7. Wrong vs Correct
 
@@ -3591,6 +3612,22 @@ terminal.write(`\x1b[?2026h${cursorHide}\x1b[?2026l`);
 if (frameChanged) writeFrame();
 else positionHardwareCursorOnlyWhenChanged();
 ```
+
+#### Wrong
+
+```typescript
+const previous = snapshotTerminalCells(previousLine);
+const next = snapshotTerminalCells(nextLine);
+```
+
+#### Correct
+
+```typescript
+const linePatch = this.lineDiffer.diff(previousLine, nextLine, width);
+```
+
+The retained differ is owned by the `TUI`, shared by both rendering modes, and bounded independently
+of terminal width.
 
 #### Wrong
 
