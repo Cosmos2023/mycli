@@ -2466,6 +2466,34 @@ test("mycli shell runtime keeps Codex-style working status below the transcript 
 	assert.equal(stripAnsi(runtime.statusContainer.render(100).join("\n")), "");
 });
 
+test("working status reuses stable animation frames and invalidates elapsed time and width", () => {
+	const terminal = new TestTerminal();
+	let now = 10_000;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running", turnRunning: true },
+		},
+		terminal,
+		now: () => now,
+	});
+	const activity = runtime.statusContainer.children[0];
+	assert.ok(activity);
+
+	const first = activity.render(100);
+	assert.equal(activity.render(100), first);
+
+	now = 11_000;
+	const elapsed = activity.render(100);
+	assert.notEqual(elapsed, first);
+	assert.match(stripAnsi(elapsed.join("\n")), /Working \(1s • esc to interrupt\)/);
+	assert.equal(activity.render(100), elapsed);
+
+	const resized = activity.render(80);
+	assert.notEqual(resized, elapsed);
+	assert.equal(activity.render(80), resized);
+});
+
 test("working elapsed continues while the active turn waits on a tool", () => {
 	const terminal = new TestTerminal();
 	let now = 10_000;

@@ -3031,6 +3031,8 @@ if (!settled && workerIsUnresponsive) {
 | Width or render revision changes | Reject the cached tail and render for the new identity |
 | Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
 | Editor, status, or size-dependent pending content reaches the next root frame | Render again because child-owned state may change without a parent rebuild |
+| Working status receives an unrelated frame with the same width, spinner frame, and elapsed second | Reuse the component's rendered lines while the parent remains frame-local |
+| Spinner frame, elapsed second, or status width changes | Reject the working-status component cache and render fresh lines |
 | State-owned static footer or subagent chrome reaches the next root frame | Reuse lines only when the parent container revision and width are unchanged |
 | Static chrome parent rebuilds or terminal width changes | Reject the cross-frame cache and render its children again |
 | Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
@@ -3179,6 +3181,8 @@ if (!settled && workerIsUnresponsive) {
   render in the next frame, and no cache reuse for direct dynamic-container calls. Footer and
   subagent panel tests assert reuse across unrelated streaming frames, plus invalidation on parent
   rebuild and terminal-width change.
+- Working-status tests assert stable animation keys retain the exact rendered line array, while an
+  elapsed-second or width transition replaces it. The status parent remains frame-local.
 - Assistant streaming tests assert the retained component updates without consulting the generic
   serialized block-signature path.
 - Projection tests count indexed source reads across 10,000 blocks and assert a final assistant

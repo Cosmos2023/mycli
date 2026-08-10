@@ -146,6 +146,10 @@ class TurnActivityComponent implements Component {
 	private readonly frames = ["◐", "◓", "◑", "◒"];
 	private frameIndex = 0;
 	private intervalId: NodeJS.Timeout | null = null;
+	private cachedWidth: number | null = null;
+	private cachedFrameIndex: number | null = null;
+	private cachedElapsedSeconds: number | null = null;
+	private cachedLines: string[] = [];
 
 	constructor(
 		private readonly ui: TUI,
@@ -164,20 +168,37 @@ class TurnActivityComponent implements Component {
 		this.intervalId = null;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cachedWidth = null;
+		this.cachedFrameIndex = null;
+		this.cachedElapsedSeconds = null;
+		this.cachedLines = [];
+	}
 
 	render(width: number): string[] {
 		const frame = this.frames[this.frameIndex] ?? this.frames[0] ?? "";
 		const elapsedSeconds = elapsedSecondsFor(this.now() - this.startedAtMs);
+		if (
+			width === this.cachedWidth &&
+			this.frameIndex === this.cachedFrameIndex &&
+			elapsedSeconds === this.cachedElapsedSeconds
+		) {
+			return this.cachedLines;
+		}
 		const header = new Text(
 			`${theme.fg("accent", frame)} ${theme.fg("muted", `Working (${formatElapsedCompact(elapsedSeconds)} • esc to interrupt)`)}`,
 			1,
 			0,
 		).render(width);
 		const detail = this.detailText();
-		return detail
+		const lines = detail
 			? [...header, ...new Text(theme.fg("dim", `  └ ${detail}`), 1, 0).render(width).slice(0, 2)]
 			: header;
+		this.cachedWidth = width;
+		this.cachedFrameIndex = this.frameIndex;
+		this.cachedElapsedSeconds = elapsedSeconds;
+		this.cachedLines = lines;
+		return lines;
 	}
 
 	private detailText(): string | null {
