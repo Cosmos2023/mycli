@@ -11,9 +11,9 @@ function sourceTokens(markdown: Markdown): object[] {
 	return (markdown as unknown as { cachedSourceTokens: object[] }).cachedSourceTokens;
 }
 
-function renderedTokens(markdown: Markdown): Array<{ lines: string[]; code?: object }> {
+function renderedTokens(markdown: Markdown): Array<{ lines: string[]; code?: object; paragraph?: object }> {
 	return (markdown as unknown as {
-		cachedTokens: Array<{ lines: string[]; code?: object }>;
+		cachedTokens: Array<{ lines: string[]; code?: object; paragraph?: object }>;
 	}).cachedTokens;
 }
 
@@ -70,6 +70,45 @@ test("incremental markdown rendering reuses stable token prefixes", () => {
 
 	assert.ok(initialHeadingRenders > 0);
 	assert.equal(headingRenders, initialHeadingRenders);
+});
+
+test("streaming plain paragraphs retain their final visual-line layout", () => {
+	const before = Array.from({ length: 500 }, (_, index) => `word${index}`).join(" ");
+	const after = `${before} with an incrementally wrapped suffix`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.renderTail(52, 12);
+	const paragraphEntry = renderedTokens(markdown)[0];
+	const paragraphLines = paragraphEntry?.lines;
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(52, 12);
+	const fresh = new Markdown(after, 0, 0, markdownTheme()).renderTail(52, 12);
+
+	assert.ok(paragraphEntry?.paragraph);
+	assert.equal(renderedTokens(markdown)[0], paragraphEntry);
+	assert.equal(renderedTokens(markdown)[0]?.lines, paragraphLines);
+	assert.deepEqual(incremental, fresh);
+});
+
+test("character-streamed paragraphs fall back across inline markdown transitions", () => {
+	const target = [
+		"Plain words, punctuation, 中文内容, and a verylongwordthatwrapsacrossrows. ",
+		"Visit https://example.com, then use **bold** and `code`.",
+	].join("");
+	let source = "";
+	const markdown = new Markdown(source, 0, 0, markdownTheme());
+
+	for (const character of target) {
+		source += character;
+		markdown.setText(source);
+		for (const width of [18, 41]) {
+			const incremental = markdown.renderTail(width, 10);
+			const fresh = new Markdown(source, 0, 0, markdownTheme()).renderTail(width, 10);
+			assert.deepEqual(incremental, fresh, JSON.stringify({ source, width }));
+		}
+	}
+
+	assert.equal(renderedTokens(markdown)[0]?.paragraph, undefined);
 });
 
 test("append-only markdown lexing retains stable source tokens", () => {

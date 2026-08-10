@@ -2960,6 +2960,11 @@ if (!settled && workerIsUnresponsive) {
   end offsets and update only the previous final source line plus appended lines. A proven token
   lineage permits this path without rescanning complete `raw` and `text` prefixes; unproven token
   replacements keep the defensive prefix checks.
+- A final paragraph that Marked tokenizes as one unstyled inline `text` token may retain its rendered
+  entry and line array across an append. Layout restarts from the previous final visual line, whose
+  source suffix is validated against the retained paragraph text. Newlines, following block tokens,
+  default text styling, inline Markdown transitions, and source-line disagreement use the complete
+  token-render path.
 - Width changes and explicit invalidation clear token layout caches. An unbounded viewport keeps
   the full-render behavior.
 
@@ -2977,6 +2982,8 @@ if (!settled && workerIsUnresponsive) {
 | Top-level unclosed fence receives a non-closing append | Update the final code token and retained code-line suffix without full lex or layout |
 | Append closes a fence or the fence is indented | Reject the fence fast path and match a fresh Marked render |
 | Code highlighting or preview truncation is configured | Use the existing complete token-render path |
+| Plain final paragraph receives a plain-text append | Rewrap its previous final visual line and retain the entry and line-array identities |
+| Paragraph append becomes a URL, code span, emphasis, link, or new block | Reject retained paragraph layout and match a fresh render |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
 | Tail omits the assistant's leading blank row | Do not synthesize its OSC 133 start marker in the truncated tail |
@@ -2998,6 +3005,8 @@ if (!settled && workerIsUnresponsive) {
   rendered-token identities and parses only the active suffix.
 - Good: appending one line to a 10,000-line open code fence invokes code-line rendering only for
   the previous final line and the appended line.
+- Good: appending words to a 10,000-word plain paragraph rewraps only its previous final visual line
+  after Marked confirms that the paragraph still contains one plain inline token.
 - Base: a small component without `renderTail` follows the existing full-render path.
 - Good: a width change recomputes wrapping and remains equal to a newly constructed Markdown
   component.
@@ -3014,6 +3023,8 @@ if (!settled && workerIsUnresponsive) {
   non-space block; lists, blockquotes, fences, and tables can continue across the append boundary.
 - Bad: treat a line-start closing fence as code content, or manually reproduce Marked's indented
   fence compensation; both change the parsed transcript when streaming reaches the fence boundary.
+- Bad: infer that appended paragraph text remains plain from its characters alone; URL and inline
+  Markdown transitions must first be accepted by Marked before retained layout is reused.
 - Bad: call recursive `invalidate()` for every assistant delta and erase all stable Markdown
   token chunks.
 - Bad: cache one tail without including the remaining-row budget in its identity.
@@ -3040,6 +3051,9 @@ if (!settled && workerIsUnresponsive) {
   indented-fence fallback.
 - Code-layout tests count theme `codeBlock` calls and assert a 500-line append renders exactly the
   previous final line and the new line while retaining the code entry and line-array identities.
+- Plain-paragraph tests retain the rendered entry and line-array identities, then compare bounded
+  output with a fresh render. Character-streamed tests cross URL, emphasis, code-span, CJK, and
+  long-word boundaries to verify that inline transitions fall back without changing bytes.
 - Markdown and assistant tests assert `renderTail(...).lines` equals a full-render tail for zero,
   narrow, exact, and oversized row bounds; assert `totalLines` equals full length.
 - Assistant tests include visible and hidden thinking, role prefixes, spacing, and OSC 133 markers.

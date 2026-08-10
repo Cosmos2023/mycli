@@ -89,6 +89,7 @@ interface RenderedTokenCacheEntry {
 	nextType?: string;
 	lines: string[];
 	code?: RenderedCodeTokenCache;
+	paragraph?: RenderedPlainParagraphCache;
 }
 
 interface RenderedCodeTokenCache {
@@ -97,6 +98,11 @@ interface RenderedCodeTokenCache {
 	openingLineCount: number;
 	bodyLineEnds: number[];
 	sourceToken: Tokens.Code;
+}
+
+interface RenderedPlainParagraphCache {
+	text: string;
+	sourceToken: Tokens.Paragraph;
 }
 
 interface OpenFenceInfo {
@@ -136,7 +142,7 @@ export class Markdown implements Component {
 	private cachedSourceTokens: Token[] = [];
 	private cachedSourceTokenEnds: number[] = [];
 	private cachedOpenFences = new WeakMap<Token, OpenFenceInfo | null>();
-	private appendedCodeTokenSources = new WeakMap<Token, Token>();
+	private appendedTokenSources = new WeakMap<Token, Token>();
 	private normalizedTextExtendsLexedText = false;
 	private pendingNormalizedAppend = "";
 
@@ -190,7 +196,7 @@ export class Markdown implements Component {
 		this.cachedSourceTokens = [];
 		this.cachedSourceTokenEnds = [];
 		this.cachedOpenFences = new WeakMap();
-		this.appendedCodeTokenSources = new WeakMap();
+		this.appendedTokenSources = new WeakMap();
 		this.normalizedTextExtendsLexedText = false;
 		this.pendingNormalizedAppend = "";
 	}
@@ -353,6 +359,35 @@ export class Markdown implements Component {
 			return this.createRetainedCodeEntry(codeToken, contentWidth, width, nextType, contextKey);
 		}
 
+		if (token.type === "paragraph") {
+			const paragraphToken = token as Tokens.Paragraph;
+			if (cached?.type === "paragraph" && cached.paragraph) {
+				const updated = this.updateRetainedPlainParagraphEntry(
+					cached,
+					paragraphToken,
+					contentWidth,
+					width,
+					nextType,
+					contextKey,
+				);
+				if (updated) return updated;
+			}
+			const entry = {
+				type: token.type,
+				raw: token.raw,
+				contextKey,
+				nextType,
+				lines: this.renderTokenContentLines(token, contentWidth, width, nextType),
+			};
+			const plainText = this.retainablePlainParagraphText(paragraphToken, nextType);
+			return plainText === null
+				? entry
+				: {
+					...entry,
+					paragraph: { text: plainText, sourceToken: paragraphToken },
+				};
+		}
+
 		return {
 			type: token.type,
 			raw: token.raw,
@@ -416,7 +451,7 @@ export class Markdown implements Component {
 		contextKey: string | undefined,
 	): RenderedTokenCacheEntry | null {
 		const code = cached.code;
-		const appendProven = code && this.appendedCodeTokenSources.get(token) === code.sourceToken;
+		const appendProven = code && this.appendedTokenSources.get(token) === code.sourceToken;
 		if (
 			!code ||
 			code.lang !== token.lang ||
@@ -451,6 +486,69 @@ export class Markdown implements Component {
 		cached.nextType = nextType;
 		code.text = token.text;
 		code.sourceToken = token;
+		return cached;
+	}
+
+	private retainablePlainParagraphText(
+		token: Tokens.Paragraph,
+		nextType: string | undefined,
+	): string | null {
+		if (this.defaultTextStyle !== undefined || nextType !== undefined || token.text.includes("\n")) {
+			return null;
+		}
+		const inlineTokens = token.tokens ?? [];
+		if (inlineTokens.length !== 1) return null;
+		const inline = inlineTokens[0];
+		if (
+			!inline ||
+			inline.type !== "text" ||
+			inline.raw !== token.text ||
+			inline.text !== token.text
+		) return null;
+		return token.text;
+	}
+
+	private updateRetainedPlainParagraphEntry(
+		cached: RenderedTokenCacheEntry,
+		token: Tokens.Paragraph,
+		contentWidth: number,
+		width: number,
+		nextType: string | undefined,
+		contextKey: string | undefined,
+	): RenderedTokenCacheEntry | null {
+		const paragraph = cached.paragraph;
+		const nextText = this.retainablePlainParagraphText(token, nextType);
+		const appendProven = paragraph && this.appendedTokenSources.get(token) === paragraph.sourceToken;
+		if (
+			!paragraph ||
+			nextText === null ||
+			contextKey !== undefined ||
+			(!appendProven && (
+				!token.raw.startsWith(cached.raw) ||
+				!nextText.startsWith(paragraph.text)
+			)) ||
+			cached.lines.length === 0
+		) return null;
+
+		const previousText = paragraph.text.trimEnd();
+		const previousLine = cached.lines[cached.lines.length - 1]!;
+		const leftMargin = " ".repeat(this.paddingX);
+		if (!previousLine.startsWith(leftMargin)) return null;
+		const previousLineText = previousLine.slice(leftMargin.length).trimEnd();
+		if (!previousLineText || !previousText.endsWith(previousLineText)) return null;
+
+		const sourceStart = previousText.length - previousLineText.length;
+		const replacement = this.renderLogicalLines(
+			[nextText.slice(sourceStart)],
+			contentWidth,
+			width,
+		);
+		cached.lines.splice(cached.lines.length - 1, 1, ...replacement);
+		cached.raw = token.raw;
+		cached.contextKey = contextKey;
+		cached.nextType = nextType;
+		paragraph.text = nextText;
+		paragraph.sourceToken = token;
 		return cached;
 	}
 
@@ -491,6 +589,16 @@ export class Markdown implements Component {
 			const suffixTokens = this.lexSource(suffixSource);
 			const suffixEnds = this.tokenEndOffsets(suffixTokens, reparseOffset);
 			if (suffixEnds.at(-1) === source.length || (suffixTokens.length === 0 && reparseOffset === source.length)) {
+				const previousReparseToken = this.cachedSourceTokens[reparseTokenIndex];
+				const nextReparseToken = suffixTokens[0];
+				if (
+					previousReparseToken &&
+					nextReparseToken &&
+					nextReparseToken.raw.length >= previousReparseToken.raw.length &&
+					(this.cachedSourceTokenEnds[reparseTokenIndex] ?? -1) === reparseOffset + previousReparseToken.raw.length
+				) {
+					this.appendedTokenSources.set(nextReparseToken, previousReparseToken);
+				}
 				this.cachedSourceTokens.splice(
 					reparseTokenIndex,
 					this.cachedSourceTokens.length - reparseTokenIndex,
@@ -555,7 +663,7 @@ export class Markdown implements Component {
 			raw,
 			text: body.endsWith("\n") ? body.slice(0, -1) : body,
 		};
-		this.appendedCodeTokenSources.set(nextToken, token);
+		this.appendedTokenSources.set(nextToken, token);
 		this.cachedSourceTokens.splice(tokenIndex, 1, nextToken);
 		this.cachedSourceTokenEnds.splice(tokenIndex, 1, source.length);
 		this.cachedOpenFences.set(nextToken, fence);
