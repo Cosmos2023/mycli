@@ -2962,6 +2962,85 @@ const lines = component.renderTail
   : component.render(width).slice(-remainingRows);
 ```
 
+## Scenario: No-Op Terminal Frame Suppression
+
+### 1. Scope / Trigger
+
+- Trigger: changing frame scheduling, terminal line diffing, native scrollback repainting, hardware
+  cursor positioning, or repeated runtime state projection.
+- The scheduler retains the Codex-compatible 120 FPS ceiling; this contract prevents a scheduled
+  draw with no visible change from becoming terminal output.
+
+### 2. Signatures
+
+- Retained cursor state:
+  `HardwareCursorUpdate { sequence: string; row: number; col: number; visible: boolean;
+  positionKnown: boolean }`.
+- Frame request: `TUI.requestRender(force?: boolean) -> void`.
+- Terminal output boundary: `Terminal.write(data: string) -> void`.
+
+### 3. Contracts
+
+- Coalesced draw requests may still evaluate the current bounded frame, but emit zero terminal
+  writes when cells, Kitty image ownership, hardware cursor row/column, and cursor visibility are
+  unchanged.
+- Inline and native-scrollback modes apply the same no-op rule. Native mode must not emit an empty
+  synchronized-output pair merely because a frame was requested.
+- Hardware cursor state is retained after every full frame, cell patch, cursor-only update,
+  explicit hide, terminal release, and terminal reacquisition.
+- A content write without a cursor marker invalidates retained row/column certainty. The next
+  marker-bearing frame must issue an absolute cursor position even when its logical position equals
+  the last known marker position.
+- If the cursor marker moves while rendered cells stay identical, emit one synchronized cursor
+  update and preserve the screen contents. This is required for IME candidate positioning and the
+  optional visible hardware cursor.
+- A real content, image, or cursor change remains one atomic terminal write. Force redraw, resize,
+  resume, and terminal ownership transitions continue to invalidate the appropriate baseline.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Repeated inline render with identical frame and cursor | Zero terminal writes |
+| Repeated native-scrollback render with identical frame and cursor | Zero terminal writes |
+| Same cells, different cursor column | One synchronized cursor write |
+| Same cells, cursor visibility toggled | One synchronized cursor write |
+| Marker returns after marker-free content repaint | Reacquire its absolute row and column |
+| Changed line or removed Kitty image | One synchronized frame write |
+| Forced redraw or terminal reacquisition | Rebuild the frame; never reuse stale cursor state |
+
+### 5. Good/Base/Bad Cases
+
+- Good: duplicate status projection schedules a frame but produces no PTY bytes.
+- Base: one streamed token changes a suffix and uses the existing ANSI-safe cell patch.
+- Bad: write `CSI ?2026h`, cursor-hide, and `CSI ?2026l` for every unchanged state event.
+- Bad: suppress a cursor-only move because the line bytes are equal; IME placement becomes stale.
+
+### 6. Tests Required
+
+- Renderer tests clear captured writes after an initial frame, request an identical inline frame,
+  and assert the write count remains zero.
+- Repeat the same assertion after native scrollback has anchored a committed history row.
+- Render an identical line with a moved `CURSOR_MARKER` and assert one synchronized absolute-column
+  update plus unchanged visible cells.
+- Existing atomic-frame, output-backpressure, wide-cell, resize, suspend/resume, and terminal
+  cleanup tests remain green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+terminal.write(`\x1b[?2026h${cursorHide}\x1b[?2026l`);
+```
+
+#### Correct
+
+```typescript
+if (frameChanged) writeFrame();
+else positionHardwareCursorOnlyWhenChanged();
+```
+
 ## Scenario: Unix TUI Job-Control Suspend And Resume
 
 ### 1. Scope / Trigger

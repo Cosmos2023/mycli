@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { TUI, type Component } from "../src/tui-core/tui.ts";
+import { CURSOR_MARKER, TUI, type Component } from "../src/tui-core/tui.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
 class MutableLines implements Component {
@@ -13,6 +13,32 @@ class MutableLines implements Component {
 
 	render(): string[] {
 		return [...this.lines];
+	}
+
+	invalidate(): void {}
+}
+
+class MutableCursorLine implements Component {
+	constructor(
+		private cursorCol: number,
+		private text = "cursor",
+		private cursorVisible = true,
+	) {}
+
+	setCursorCol(cursorCol: number): void {
+		this.cursorCol = cursorCol;
+	}
+
+	setFrame(text: string, cursorVisible: boolean): void {
+		this.text = text;
+		this.cursorVisible = cursorVisible;
+	}
+
+	render(): string[] {
+		if (!this.cursorVisible) return [this.text];
+		return [
+			`${this.text.slice(0, this.cursorCol)}${CURSOR_MARKER}${this.text.slice(this.cursorCol)}`,
+		];
 	}
 
 	invalidate(): void {}
@@ -110,6 +136,94 @@ test("coalesced streaming updates leave only the newest frame visible", async (t
 	await terminal.flush();
 
 	assert.equal(terminal.visibleLines()[0], "final answer");
+});
+
+test("unchanged frames emit no terminal writes", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
+	const ui = new TUI(terminal);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(new MutableLines(["stable frame"]));
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 0);
+});
+
+test("unchanged native scrollback frames emit no terminal writes", async (t) => {
+	const terminal = new HeadlessTerminal({
+		columns: 40,
+		rows: 6,
+		nativeScrollback: true,
+	});
+	const ui = new TUI(terminal);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(new MutableLines(["stable native frame"]));
+	ui.insertHistoryBeforeNextFrame(["committed history"]);
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 0);
+});
+
+test("hardware cursor movement still renders when frame cells are unchanged", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
+	const component = new MutableCursorLine(1);
+	const ui = new TUI(terminal, true);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.start();
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	component.setCursorCol(4);
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 1);
+	assert.match(terminal.writes[0]!, /\x1b\[5G\x1b\[\?25h/u);
+	assert.equal(terminal.visibleLines()[0], "cursor");
+});
+
+test("cursor position is reacquired after a marker-free content frame", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
+	const component = new MutableCursorLine(4);
+	const ui = new TUI(terminal, false);
+	t.after(async () => {
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.start();
+	await renderFrame(ui, terminal);
+
+	component.setFrame("changed", false);
+	await renderFrame(ui, terminal);
+	terminal.writes.length = 0;
+
+	component.setFrame("changed", true);
+	await renderFrame(ui, terminal);
+
+	assert.equal(terminal.writes.length, 1);
+	assert.match(terminal.writes[0]!, /\x1b\[5G\x1b\[\?25l/u);
+	assert.equal(terminal.visibleLines()[0], "changed");
 });
 
 test("a frame update is emitted as one synchronized terminal write", async (t) => {
