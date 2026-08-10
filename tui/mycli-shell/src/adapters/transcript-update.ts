@@ -6,13 +6,13 @@ export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
 export function classifyRuntimeTranscriptUpdate(
 	previous: RuntimeShellState,
 	next: RuntimeShellState,
+	eventType?: string,
 ): TranscriptUpdateKind {
-	if (
-		previous.workspace !== next.workspace ||
-		previous.turnRunning !== next.turnRunning ||
-		previous.settings.toolDetailsDefault !== next.settings.toolDetailsDefault
-	) {
+	if (projectionContextChanged(previous, next)) {
 		return "replace";
+	}
+	if (eventType === "message.delta" && isActiveAssistantTailDelta(previous, next)) {
+		return "tail";
 	}
 
 	const transcriptUpdate = classifyTranscriptArrays(previous.transcript, next.transcript);
@@ -24,6 +24,30 @@ export function classifyRuntimeTranscriptUpdate(
 		return activeAssistantIsAtTail(next) ? "tail" : "replace";
 	}
 	return transcriptUpdate;
+}
+
+function projectionContextChanged(
+	previous: RuntimeShellState,
+	next: RuntimeShellState,
+): boolean {
+	return previous.workspace !== next.workspace ||
+		previous.turnRunning !== next.turnRunning ||
+		previous.settings.toolDetailsDefault !== next.settings.toolDetailsDefault;
+}
+
+function isActiveAssistantTailDelta(
+	previous: RuntimeShellState,
+	next: RuntimeShellState,
+): boolean {
+	const activeId = next.activeAssistantItemId;
+	const nextTail = next.transcript.at(-1);
+	if (!activeId || nextTail?.id !== activeId) return false;
+	if (next.transcript.length === previous.transcript.length + 1) {
+		return true;
+	}
+	if (next.transcript.length !== previous.transcript.length) return false;
+	return previous.activeAssistantItemId === activeId &&
+		previous.transcript.at(-1)?.id === activeId;
 }
 
 function activeAssistantIsAtTail(state: RuntimeShellState): boolean {

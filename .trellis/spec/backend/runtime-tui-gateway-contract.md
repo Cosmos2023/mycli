@@ -2898,7 +2898,8 @@ if (!settled && workerIsUnresponsive) {
   `RenderedRichParagraphCache {stableInlineCount, stableOutputLineCount,
   stableTailSource, sourceToken}`.
 - Runtime update classifier:
-  `classifyRuntimeTranscriptUpdate(previous, next) -> "unchanged" | "tail" | "replace"`.
+  `classifyRuntimeTranscriptUpdate(previous, next, eventType?) ->
+  "unchanged" | "tail" | "replace"`.
 - Stream reducers:
   `applyAssistantDelta(items, assistantId, text) -> RuntimeTranscriptItem[]` and
   `applyReasoning(items, text, metadata) -> RuntimeTranscriptItem[]`.
@@ -2937,6 +2938,11 @@ if (!settled && workerIsUnresponsive) {
 - Runtime transcript classification owns the `tail` guarantee. It emits `tail` only for an append,
   a final-item replacement, or a reasoning update whose assistant is at the tail. Workspace,
   turn-running, and tool-detail changes force `replace`.
+- The gateway passes the validated direct event type, including the inner `runtime.event.type`, to
+  the classifier. A `message.delta` may bypass stable-prefix comparison only when its reducer shape
+  proves that the active assistant replaced the existing tail or appended one new tail item.
+  Non-tail active items, projection-context changes, and calls without a validated event type keep
+  the complete classifier. The hint must not be inferred from arbitrary next-state contents.
 - The gateway owns one `RuntimeStateProjector`. It computes the update kind once, projects one shell
   snapshot, and shares that snapshot with the mounted full TUI or native chat runtime. The retained
   projector is display-only state; canonical runtime transcript items remain immutable and owned by
@@ -3083,6 +3089,8 @@ if (!settled && workerIsUnresponsive) {
 | Runtime source reference or projection context disagrees with the hint | Ignore retained state and match `projectRuntimeState` |
 | Active stream, final assistant, or reasoning item is the transcript tail | Locate it in constant time and create exactly one immutable array snapshot |
 | Active assistant ID exists away from the tail | Use the compatibility search and preserve its original transcript position |
+| Validated `message.delta` replaces or appends the active assistant tail | Classify as `tail` without reading the stable transcript prefix |
+| `message.delta` targets a non-tail assistant or changes projection context | Ignore the hint and run the safe replacement path |
 | Event matches one or more pending gateway waiters | Resolve every current match and do not retain a replay copy |
 | Future waiter matches one buffered early event | Remove that event and resolve the waiter exactly once |
 | Unmatched event count exceeds the replay limit | Discard the oldest entries and retain the newest bounded suffix |
@@ -3123,6 +3131,8 @@ if (!settled && workerIsUnresponsive) {
   transcript array, and preserves the stable block objects inside it.
 - Good: a provider delta on a 10,000-item transcript reads the active tail once, copies the array
   once, preserves every stable item reference, and leaves the previous snapshot unchanged.
+- Good: the matching validated `message.delta` classification reads only the active tail instead of
+  comparing all 10,000 stable item references again.
 - Good: millions of streamed gateway deltas leave at most 256 unmatched replay events in the TUI
   client rather than retaining the complete session event history.
 - Bad: cache by token `raw` alone; later reference definitions can change an earlier token AST.
@@ -3161,6 +3171,9 @@ if (!settled && workerIsUnresponsive) {
   linear allocation remains.
 - Bad: call `findIndex` before checking the active tail, then combine separately sliced prefix and
   suffix arrays; that adds a full history scan and multiple allocations to every provider delta.
+- Bad: globally treat arrays with matching tail boundaries as append-only. Only the validated
+  `message.delta` reducer shape owns that proof; session replacement and ordinary state updates do
+  not.
 - Bad: mutate retained `MycliShellState.transcript`, `messages`, `tools`, or `bash` arrays in place;
   the caller loses the previous snapshot needed for reconciliation.
 - Bad: cache footer, approval, queue, permission, or session state inside the transcript projector;
@@ -3226,6 +3239,8 @@ if (!settled && workerIsUnresponsive) {
 - Runtime reducer tests wrap a 10,000-item transcript in an indexed-read counter and assert active
   stream, reopened final, and reasoning tail updates perform at most one complete snapshot read,
   retain stable item identity, and do not mutate the previous array.
+- Classifier tests assert validated existing-tail and first-token `message.delta` updates avoid
+  stable-prefix reads, while non-tail active items and projection-context changes still replace.
 - Gateway client tests assert pending waiters share the live event without a replay copy, early
   events are consumed once, and overflow discards the oldest unmatched event.
 - Native scrollback, resize, frame-diff, and transcript replay regressions must remain green after
@@ -3277,6 +3292,23 @@ if (matchesActiveAssistant(items[lastIndex])) {
   return items.with(lastIndex, updated);
 }
 return replaceAfterCompatibilitySearch(items, updated);
+```
+
+#### Wrong
+
+```typescript
+if (previous.transcript.at(-1) === next.transcript[previous.transcript.length - 1]) {
+  return "tail";
+}
+```
+
+#### Correct
+
+```typescript
+if (eventType === "message.delta" && isActiveAssistantTailDelta(previous, next)) {
+  return "tail";
+}
+return classifyTranscriptArrays(previous, next);
 ```
 
 #### Wrong

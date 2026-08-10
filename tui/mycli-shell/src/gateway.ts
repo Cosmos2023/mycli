@@ -106,12 +106,12 @@ function currentShellState(transcriptUpdate: "unchanged" | "tail" | "replace" = 
 
 function setRuntimeState(
 	nextState: RuntimeShellState,
-	options: { replaceSessionTranscript?: boolean } = {},
+	options: { replaceSessionTranscript?: boolean; eventType?: string } = {},
 ): void {
 	const previousState = runtimeState;
 	const transcriptUpdate = options.replaceSessionTranscript
 		? "replace"
-		: classifyRuntimeTranscriptUpdate(previousState, nextState);
+		: classifyRuntimeTranscriptUpdate(previousState, nextState, options.eventType);
 	runtimeState = nextState;
 	const shellState = runtime || nativeRuntime
 		? currentShellState(transcriptUpdate)
@@ -172,7 +172,7 @@ function handleGatewayEvent(event: GatewayEvent): void {
 		interruptRequested = false;
 		resubmitPendingSteersAfterInterrupt = false;
 	}
-	setRuntimeState(nextState);
+	setRuntimeState(nextState, { eventType: runtimeEventType(event) });
 	if (event.method === "turn.started") {
 		backendTurnBusy = true;
 	}
@@ -188,6 +188,12 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	} else if (shouldResolveInterrupt && !backendTurnBusy) {
 		scheduleNextLocalInput();
 	}
+}
+
+function runtimeEventType(event: GatewayEvent): string {
+	return event.method === "runtime.event" && typeof event.params.type === "string"
+		? event.params.type
+		: event.method;
 }
 
 async function send(
