@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
 import { realpath, stat } from "node:fs/promises";
 import {
 	isAbsolute,
@@ -7,7 +6,10 @@ import {
 	resolve,
 	sep,
 } from "node:path";
-import { formatShellResult } from "./shell-result.ts";
+import {
+	DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS,
+	formatShellResult,
+} from "./shell-result.ts";
 import {
 	createShellEnvironment,
 	type ShellEnvironmentResult,
@@ -37,7 +39,6 @@ import type {
 const DEFAULT_YIELD_TIME_MS = 10_000;
 const MIN_YIELD_TIME_MS = 250;
 const MAX_YIELD_TIME_MS = 30_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = Math.floor(TOOL_RESULT_OUTPUT_MAX_CHARS / 4);
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_ROWS = 24;
 const DEFAULT_COLUMNS = 80;
@@ -101,7 +102,7 @@ export class ShellTool implements ToolAdapter {
 			"timeoutSeconds",
 		);
 		this.#maxOutputTokens = positiveInteger(
-			options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+			options.maxOutputTokens ?? DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS,
 			"maxOutputTokens",
 		);
 		this.#rows = positiveInteger(options.rows ?? DEFAULT_ROWS, "rows");
@@ -297,9 +298,9 @@ export function shellFailure(errorKind: string, message: string): ToolAdapterRes
 
 export function boundedOutputBudget(
 	value: unknown,
-	maximum = DEFAULT_MAX_OUTPUT_TOKENS,
+	maximum = DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS,
 ): number | undefined {
-	const candidate = value ?? DEFAULT_MAX_OUTPUT_TOKENS;
+	const candidate = value ?? DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS;
 	return isPositiveInteger(candidate) ? Math.min(candidate, maximum) : undefined;
 }
 

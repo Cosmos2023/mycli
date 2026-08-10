@@ -12,6 +12,8 @@
 ### 2. Signatures
 
 - Shared limit: `TOOL_RESULT_OUTPUT_MAX_CHARS = 8_000` from `@mycli/core`.
+- Shell default model-output limit: `DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS = 2_000` and
+  `DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS = 500` from `@mycli/tools`.
 - Execution boundary: `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
 - Persistence boundary: `SQLiteSessionStore.appendToolResult(input) -> void`.
 - Terminal failure: `SQLiteSessionStore.failTurn(input) -> RuntimeTurnRecord`.
@@ -26,6 +28,10 @@
 - Individual tools may use tighter domain-specific limits, but they must not define a larger
   persistence contract. `SQLiteSessionStore.appendToolResult` rejects output above the shared limit
   as defense in depth.
+- `Shell`, `Bash`, `WriteStdin`, `ShellOutput`, and `BashOutput` use the shared Shell default of
+  2,000 model-visible characters per call. A requested `max_output_tokens` may lower that budget but
+  cannot raise it above the tool instance's configured maximum. Multiple incremental results remain
+  separate replay items until compaction; there is no process-wide cumulative output budget.
 - Calls and results are persisted in provider order. Each persisted call id has at most one result,
   and a result must match the pending call id and tool name.
 - The compatibility `ProviderRequest.messages` view must equal the text-only projection of
@@ -56,6 +62,7 @@
 | Condition | Required behavior |
 | --- | --- |
 | Adapter output exceeds 8,000 characters | Truncate in `ToolRouter` and record omitted count |
+| Default Shell or WriteStdin model output exceeds 2,000 characters | Preserve bounded head/tail output and truncation metadata within 2,000 characters |
 | Oversized result reaches storage directly | Reject with bounded `persistence_error` |
 | Result call id or tool name differs from next pending call | Reject without changing call order |
 | Assistant tool calls include non-empty text | Preserve the text once in both `messages` and `items` |
@@ -71,6 +78,8 @@
 
 - Good: a tool emits 9,000 characters; the router persists 8,000 characters with an omitted count,
   and the next Responses request contains one call followed by one result.
+- Good: Shell emits 50,000 characters; its adapter retains a 2,000-character head/tail result before
+  the router and storage boundaries.
 - Base: a completed tool output under the limit is persisted unchanged and replayed once.
 - Good: a legacy failed turn has a call but no result; replay supplies a deterministic unavailable
   result without editing the database.
@@ -83,6 +92,8 @@
 ### 6. Tests Required
 
 - Tool-router unit test asserts exact 8,000-character output, truncation flag, and omitted count.
+- Shell and WriteStdin unit tests assert their default 2,000-character result cannot be raised by a
+  larger model-requested `max_output_tokens` value.
 - Storage test rejects a directly supplied oversized result.
 - Storage test asserts `failTurn` closes every pending call before later replay.
 - Replay regression asserts terminal legacy calls receive exactly one synthetic result while active
@@ -128,7 +139,8 @@ store.failTurn(failure);
 
 - Bootstrap developer instructions are merged into the leading system prefix; the wire request does
   not use the unsupported `developer` role. A later developer-authority timeline context is mapped
-  to a `system` message at its chronological position and must not be moved back into that prefix.
+  to a fenced `user` message at its chronological position and must not be moved back into that
+  prefix or projected as another DeepSeek `system` message.
 - The OpenAI JS SDK sends unknown request fields literally. DeepSeek `thinking` must therefore be a
   top-level request body field. Do not send Python SDK-style `extra_body.thinking`; the JS SDK does
   not expand it.

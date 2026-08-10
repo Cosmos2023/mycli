@@ -2175,6 +2175,10 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 - A foreground process may complete or atomically yield into the background without respawn or
   cursor reset. `WriteStdin` accepts non-empty input only for PTY/ConPTY, uses empty input as a
   bounded poll, and maps the interrupt character to process interruption.
+- Default `Shell` and `WriteStdin` model results are bounded to 2,000 characters per call, including
+  response metadata and the head/tail truncation marker. Model-requested `max_output_tokens` may
+  lower but must not raise that default. Each poll returns only output newer than the model cursor;
+  retained incremental results still accumulate in provider history until compaction.
 - Manager methods require `ownerSessionId`. A session cannot list, read, write, resize, interrupt,
   or stop another session's shell.
 - `read-only` and `workspace-write` require the platform sandbox wrapper/helper and fail with
@@ -2199,6 +2203,8 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   or Python.
 - Unknown shell id -> `shell_not_found`; wrong owner -> `shell_session_forbidden`.
 - Input after terminal completion -> `shell_already_completed`.
+- Shell or WriteStdin requests an output budget above the default -> clamp the model-visible result
+  to 2,000 characters while retaining the original/omitted output counters.
 - Resize on pipe or closed terminal -> `shell_resize_failed`.
 - Timeout -> terminal `timed_out`; interrupt -> `interrupted`; targeted/global stop -> `killed`.
 - Backend/gateway close with live children -> terminate the complete owned process tree and publish
@@ -2228,7 +2234,8 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 
 - Tools unit tests cover bounded output/cursor eviction, invalid UTF-8 replacement, environment,
   approval proposals, owner isolation, yield/poll/input/resize, timeout, interrupt, targeted stop,
-  capacity eviction, lifecycle ordering, and close cleanup with fake transports.
+  capacity eviction, lifecycle ordering, default 2,000-character Shell/WriteStdin model output, and
+  close cleanup with fake transports.
 - Native integration tests cover pipe IO/process trees plus Unix PTY or Windows ConPTY input,
   resize, interrupt, exit, and orphan cleanup on Node 22.19 and Node 24.
 - Backend integration uses a fake Responses provider to assert approval before spawn, exactly one

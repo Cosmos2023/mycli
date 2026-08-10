@@ -92,7 +92,11 @@ export { ShellOutputBuffer } from "./shell-output-buffer.ts";
 export type { ShellOutputRead } from "./shell-output-buffer.ts";
 export { TerminalOutputNormalizer } from "./terminal-output-normalizer.ts";
 export type { NormalizedOutput } from "./terminal-output-normalizer.ts";
-export { formatShellResult } from "./shell-result.ts";
+export {
+	DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS,
+	DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS,
+	formatShellResult,
+} from "./shell-result.ts";
 export type {
 	FormattedShellResult,
 	ShellResultInput,

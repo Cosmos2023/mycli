@@ -2,8 +2,8 @@ import type {
 	ShellInteractionRequest,
 	ShellSessionSnapshot,
 } from "./shell-session-manager.ts";
-import { TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
 import { WRITE_STDIN_TOOL_DEFINITION } from "./shell-manifest.ts";
+import { DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS } from "./shell-result.ts";
 import {
 	boundedOutputBudget,
 	defaultChunkId,
@@ -20,8 +20,6 @@ const MIN_INPUT_WAIT_MS = 250;
 const MAX_INPUT_WAIT_MS = 30_000;
 const MIN_POLL_WAIT_MS = 5_000;
 const MAX_POLL_WAIT_MS = 300_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = Math.floor(TOOL_RESULT_OUTPUT_MAX_CHARS / 4);
-
 export interface ShellInteractionManager {
 	interact(request: ShellInteractionRequest): Promise<ShellSessionSnapshot>;
 }
@@ -40,7 +38,7 @@ export class WriteStdinTool implements ToolAdapter {
 
 	constructor(options: WriteStdinToolOptions) {
 		this.#manager = options.manager;
-		this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+		this.#maxOutputTokens = options.maxOutputTokens ?? DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS;
 		if (!Number.isSafeInteger(this.#maxOutputTokens) || this.#maxOutputTokens <= 0) {
 			throw new RangeError("maxOutputTokens must be a positive safe integer");
 		}

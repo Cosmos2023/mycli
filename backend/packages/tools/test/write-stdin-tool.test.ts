@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS,
 	type ShellInteractionRequest,
 	type ShellSessionSnapshot,
 	WriteStdinTool,
@@ -35,7 +36,7 @@ test("WriteStdin accepts legacy ids and applies poll and input wait bounds", asy
 			yieldTimeMs: 30_000,
 		},
 	]);
-	assert.ok(input.modelOutput.length <= 40_000);
+	assert.equal(input.modelOutput.length, DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS);
 	assert.equal(input.summary.includes("private-input"), false);
 	assert.equal(JSON.stringify(input.metadata).includes("private-input"), false);
 });

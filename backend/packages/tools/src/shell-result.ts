@@ -1,3 +1,8 @@
+export const DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS = 2_000;
+export const DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS = Math.floor(
+	DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS / 4,
+);
+
 export interface ShellResultInput {
 	readonly chunkId: string;
 	readonly wallTimeSeconds: number;

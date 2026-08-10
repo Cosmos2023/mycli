@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ShellLifecycleEvent } from "@mycli/core";
 import {
+	DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS,
 	executionPolicy,
 	resolveShellProfile,
 	ShellTool,
@@ -51,6 +52,7 @@ test("Shell defaults cwd and forwards immutable execution context", async (t) =>
 		publishLifecycle,
 	});
 	assert.equal(result.success, true);
+	assert.equal(result.modelOutput.length, DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS);
 	assert.match(result.modelOutput, /Process exited with code 0/u);
 	assert.equal(JSON.stringify(result.metadata).includes("printf ready"), false);
 	assert.equal(result.summary.includes("printf ready"), false);
@@ -61,7 +63,7 @@ test("Shell resolves an in-workspace cwd and clamps yield and output budget", as
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
 	const work = join(root, "nested");
 	await mkdir(work);
-	const manager = new StartManager(completedSnapshot());
+	const manager = new StartManager(completedSnapshot("x".repeat(50_000)));
 	const tool = new ShellTool({
 		workspaceRoot: root,
 		manager,
@@ -81,7 +83,7 @@ test("Shell resolves an in-workspace cwd and clamps yield and output budget", as
 	assert.equal(manager.starts[0]?.cwd, await realpath(work));
 	assert.equal(manager.starts[0]?.tty, true);
 	assert.equal(manager.starts[0]?.yieldTimeMs, 250);
-	assert.ok(result.modelOutput.length <= 40_000);
+	assert.equal(result.modelOutput.length, DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS);
 });
 
 test("Shell confines workspace cwd and allows an outside cwd only with full access", async (t) => {
