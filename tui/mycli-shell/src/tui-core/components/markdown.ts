@@ -105,6 +105,8 @@ interface RenderedCodeTokenCache {
 
 interface RenderedPlainParagraphCache {
 	text: string;
+	lastSourceLineStart?: number;
+	lastSourceLineOutputStart?: number;
 	sourceToken: Tokens.Paragraph;
 }
 
@@ -485,12 +487,29 @@ export class Markdown implements Component {
 				lines: this.renderTokenContentLines(token, contentWidth, width, nextType),
 			};
 			const plainText = this.retainablePlainParagraphText(paragraphToken, nextType);
-			return plainText === null
-				? entry
-				: {
-					...entry,
-					paragraph: { text: plainText, sourceToken: paragraphToken },
-				};
+			if (plainText === null) return entry;
+			const paragraph: RenderedPlainParagraphCache = {
+				text: plainText,
+				sourceToken: paragraphToken,
+			};
+			const lastSourceLineStart = plainText.lastIndexOf("\n") + 1;
+			if (lastSourceLineStart > 0) {
+				const finalSourceLines = this.renderLogicalLines(
+					[plainText.slice(lastSourceLineStart)],
+					contentWidth,
+					width,
+				);
+				const lastSourceLineOutputStart = entry.lines.length - finalSourceLines.length;
+				if (
+					lastSourceLineOutputStart < 0 ||
+					!finalSourceLines.every(
+						(line, index) => entry.lines[lastSourceLineOutputStart + index] === line,
+					)
+				) return entry;
+				paragraph.lastSourceLineStart = lastSourceLineStart;
+				paragraph.lastSourceLineOutputStart = lastSourceLineOutputStart;
+			}
+			return { ...entry, paragraph };
 		}
 
 		if (token.type === "blockquote") {
@@ -831,7 +850,7 @@ export class Markdown implements Component {
 		token: Tokens.Paragraph,
 		nextType: string | undefined,
 	): string | null {
-		if (this.defaultTextStyle !== undefined || nextType !== undefined || token.text.includes("\n")) {
+		if (this.defaultTextStyle !== undefined || nextType !== undefined) {
 			return null;
 		}
 		const inlineTokens = token.tokens ?? [];
@@ -867,6 +886,38 @@ export class Markdown implements Component {
 			)) ||
 			cached.lines.length === 0
 		) return null;
+		if (
+			paragraph.lastSourceLineStart !== undefined &&
+			paragraph.lastSourceLineOutputStart !== undefined
+		) {
+			const replacement = this.renderLogicalLines(
+				[nextText.slice(paragraph.lastSourceLineStart)],
+				contentWidth,
+				width,
+			);
+			const lastSourceLineStart = nextText.lastIndexOf("\n") + 1;
+			const finalSourceLines = this.renderLogicalLines(
+				[nextText.slice(lastSourceLineStart)],
+				contentWidth,
+				width,
+			);
+			const lastSourceLineOutputStart = paragraph.lastSourceLineOutputStart
+				+ replacement.length
+				- finalSourceLines.length;
+			cached.lines.splice(
+				paragraph.lastSourceLineOutputStart,
+				cached.lines.length - paragraph.lastSourceLineOutputStart,
+				...replacement,
+			);
+			cached.raw = token.raw;
+			cached.contextKey = contextKey;
+			cached.nextType = nextType;
+			paragraph.text = nextText;
+			paragraph.lastSourceLineStart = lastSourceLineStart;
+			paragraph.lastSourceLineOutputStart = lastSourceLineOutputStart;
+			paragraph.sourceToken = token;
+			return cached;
+		}
 
 		const previousText = paragraph.text.trimEnd();
 		const previousLine = cached.lines[cached.lines.length - 1]!;
@@ -886,6 +937,16 @@ export class Markdown implements Component {
 		cached.contextKey = contextKey;
 		cached.nextType = nextType;
 		paragraph.text = nextText;
+		const lastSourceLineStart = nextText.lastIndexOf("\n") + 1;
+		if (lastSourceLineStart > 0) {
+			const finalSourceLines = this.renderLogicalLines(
+				[nextText.slice(lastSourceLineStart)],
+				contentWidth,
+				width,
+			);
+			paragraph.lastSourceLineStart = lastSourceLineStart;
+			paragraph.lastSourceLineOutputStart = cached.lines.length - finalSourceLines.length;
+		}
 		paragraph.sourceToken = token;
 		return cached;
 	}

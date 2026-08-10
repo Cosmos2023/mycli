@@ -104,6 +104,50 @@ test("streaming plain paragraphs retain their final visual-line layout", () => {
 	assert.deepEqual(incremental, fresh);
 });
 
+test("streaming soft-line paragraphs retain their final source-line layout", () => {
+	const before = Array.from({ length: 500 }, (_, index) => `soft line ${index} with 中文`).join("\n");
+	const after = `${before}\nappended soft line with a verylongwordthatwrapsacrossrows`;
+	const markdown = new Markdown(before, 0, 0, markdownTheme());
+	markdown.renderTail(52, 12);
+	const paragraphEntry = renderedTokens(markdown)[0];
+	const paragraphLines = paragraphEntry?.lines;
+
+	markdown.setText(after);
+	const incremental = markdown.renderTail(52, 12);
+	const fresh = new Markdown(after, 0, 0, markdownTheme()).renderTail(52, 12);
+
+	assert.ok(paragraphEntry?.paragraph);
+	assert.equal(renderedTokens(markdown)[0], paragraphEntry);
+	assert.equal(renderedTokens(markdown)[0]?.lines, paragraphLines);
+	assert.deepEqual(incremental, fresh);
+});
+
+test("character-streamed soft-line paragraphs fall back across block transitions", () => {
+	const base = Array.from({ length: 12 }, (_, index) => `stable soft line ${index}`).join("\n");
+	const cases = [
+		" continued with 中文",
+		"\nappended plain line",
+		"\n- list item",
+		"\n# heading",
+		"\n**bold** and `code`",
+		"\n\nSecond paragraph.",
+	];
+
+	for (const appended of cases) {
+		let source = base;
+		const markdown = new Markdown(source, 0, 0, markdownTheme());
+		markdown.render(37);
+		for (const character of appended) {
+			source += character;
+			markdown.setText(source);
+			const incremental = markdown.renderTail(37, 9);
+			const fresh = new Markdown(source, 0, 0, markdownTheme()).renderTail(37, 9);
+			assert.deepEqual(incremental, fresh, JSON.stringify({ source }));
+		}
+		assert.deepEqual(markdown.render(37), renderFresh(source, 37));
+	}
+});
+
 test("character-streamed paragraphs fall back across inline markdown transitions", () => {
 	const target = [
 		"Plain words, punctuation, 中文内容, and a verylongwordthatwrapsacrossrows. ",

@@ -2976,10 +2976,11 @@ if (!settled && workerIsUnresponsive) {
   lineage permits this path without rescanning complete `raw` and `text` prefixes; unproven token
   replacements keep the defensive prefix checks.
 - A final paragraph that Marked tokenizes as one unstyled inline `text` token may retain its rendered
-  entry and line array across an append. Layout restarts from the previous final visual line, whose
-  source suffix is validated against the retained paragraph text. Newlines, following block tokens,
-  default text styling, inline Markdown transitions, and source-line disagreement use the complete
-  token-render path.
+  entry and line array across an append. A single-source-line paragraph restarts layout from the
+  previous final visual line. A soft-line paragraph restarts from its previous final source line and
+  retains that source/output boundary in the cache. The source suffix is validated against the
+  retained paragraph text. Following block tokens, default text styling, inline Markdown
+  transitions, and source-line disagreement use the complete token-render path.
 - A final tight, flat list whose items contain only plain inline text may retain its item AST and
   rendered line boundaries. The lexer reparses from the cached source offset of the previous final
   item, replaces that item plus appended items, and layout rerenders the same suffix. The cached
@@ -3019,6 +3020,7 @@ if (!settled && workerIsUnresponsive) {
 | Append closes a fence or the fence is indented | Reject the fence fast path and match a fresh Marked render |
 | Code highlighting or preview truncation is configured | Use the existing complete token-render path |
 | Plain final paragraph receives a plain-text append | Rewrap its previous final visual line and retain the entry and line-array identities |
+| Plain soft-line paragraph receives a plain-text append | Rewrap its previous final source line and retain the entry and line-array identities |
 | Paragraph append becomes a URL, code span, emphasis, link, or new block | Reject retained paragraph layout and match a fresh render |
 | Tight flat list receives a same-marker plain append | Reparse and rerender the previous final item plus appended items |
 | List has unowned trailing source bytes | Start the boundary at the cached final-item source offset, not `list.raw.length - item.raw.length` |
@@ -3052,6 +3054,8 @@ if (!settled && workerIsUnresponsive) {
   the previous final line and the appended line.
 - Good: appending words to a 10,000-word plain paragraph rewraps only its previous final visual line
   after Marked confirms that the paragraph still contains one plain inline token.
+- Good: appending one line to a 5,000-line soft-line paragraph rerenders only the previous final
+  source line and appended lines after the same Marked validation.
 - Good: appending one item to a 2,000-item tight list reparses and rerenders only the old final item
   and the new item while retaining earlier item objects and rendered lines.
 - Good: appending one line to a 2,000-line plain blockquote rerenders only the previous final source
@@ -3076,6 +3080,8 @@ if (!settled && workerIsUnresponsive) {
   fence compensation; both change the parsed transcript when streaming reaches the fence boundary.
 - Bad: infer that appended paragraph text remains plain from its characters alone; URL and inline
   Markdown transitions must first be accepted by Marked before retained layout is reused.
+- Bad: use the complete multiline paragraph as the wrap input after every soft-line append; stable
+  source lines already have byte-equal retained output.
 - Bad: derive a list boundary with `list.raw.length - lastItem.raw.length`; Marked may retain trailing
   spaces in the list token while excluding them from the final item, which drops spaces on the next
   streamed character.
@@ -3109,9 +3115,10 @@ if (!settled && workerIsUnresponsive) {
   indented-fence fallback.
 - Code-layout tests count theme `codeBlock` calls and assert a 500-line append renders exactly the
   previous final line and the new line while retaining the code entry and line-array identities.
-- Plain-paragraph tests retain the rendered entry and line-array identities, then compare bounded
-  output with a fresh render. Character-streamed tests cross URL, emphasis, code-span, CJK, and
-  long-word boundaries to verify that inline transitions fall back without changing bytes.
+- Plain-paragraph tests retain the rendered entry and line-array identities for both single-line and
+  soft-line sources, then compare bounded output with a fresh render. Character-streamed tests cross
+  URL, emphasis, code-span, CJK, long-word, list, heading, and second-paragraph boundaries to verify
+  that inline and block transitions fall back without changing bytes.
 - Flat-list tests count bullet renders and assert an append renders only the old final item and new
   items while retaining entry, line-array, and stable-item identities. Character-streamed tests
   cover trailing spaces, partial markers, rich inline content, nesting, loose lists, marker changes,
