@@ -148,8 +148,13 @@ data is retained in SQLite so a resumed provider turn does not depend on the ori
   Chat Completions, Responses, and Anthropic serialization.
 - Approval and clarification suspension that survives restart and resumes the owning turn once.
 - Structured context compaction, memory extraction, context diagnostics, and usage accounting.
-- `Read`, `Edit`, `Patch`, `Write`, `AskUserQuestion`, `Shell`, and `WriteStdin`, with hidden
-  compatibility routes for shell polling and control.
+- `Read`, `Edit`, `Patch`, `Write`, `AskUserQuestion`, `Shell`, `WriteStdin`, `web_fetch`, and
+  `tool_search`, with hidden compatibility routes for shell polling and control.
+- `web_fetch` retrieves only bounded public HTTP(S) text under a network-enabled execution policy;
+  it blocks private/local targets and fences returned content as untrusted external data.
+- MCP and plugin schemas are discovered through `tool_search` and become visible only after the
+  search result is durably persisted for the current turn. Their adapters, approvals, and sandbox
+  policy remain active throughout.
 - Persistent PTY/ConPTY shells, background jobs, `/ps`, `/stop`, output cursors, interruption, and
   owner-scoped cleanup.
 - Managed Shell processes resolve `rg` from the current optional platform package, the legacy

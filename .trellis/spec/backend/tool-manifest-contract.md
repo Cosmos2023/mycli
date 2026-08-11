@@ -285,6 +285,102 @@ local/remote MCP discovery and management, Plugin API v2, skills, and
 session-owned subagents. Hosted MCP OAuth, a plugin/skill marketplace, and
 skill synchronization remain out of scope.
 
+## Scenario: Bounded Public Web Fetch
+
+### 1. Scope / Trigger
+
+- Trigger: changing `web_fetch`, its manifest metadata, network execution policy, DNS/HTTP
+  transport, content extraction, or model-visible external content.
+
+### 2. Signatures
+
+- Provider route: `web_fetch({url})`.
+- Stable manifest id: `builtin:web_fetch`; toolset: `web`.
+- Transfer bounds: 30 seconds, five redirects, one MiB response body, and the shared 8,000-character
+  tool-result limit.
+
+### 3. Contracts
+
+- Accept only unauthenticated `http:` and `https:` URLs while the active execution policy has
+  `network=enabled`. Approval never widens a disabled network policy.
+- Reject literal or resolved loopback, unspecified, private, link-local, carrier-grade NAT,
+  multicast, reserved, documentation, benchmark, and metadata addresses. If any DNS answer is
+  unsafe, fail closed.
+- Pin the socket lookup to a previously validated DNS answer. Handle redirects manually and repeat
+  URL, DNS, and address validation for every hop.
+- Reject oversized, compressed, or binary responses. Parse only HTML, JSON, and textual media,
+  omit non-content HTML nodes, and fence successful output as untrusted external data with its final
+  public URL.
+- Never accept caller-provided cookies, credentials, arbitrary headers, request bodies, JavaScript
+  execution, or browser state through this tool.
+
+### 4. Validation & Error Matrix
+
+- Network disabled -> `network_disabled` before DNS or connection.
+- Unsupported or credentialed URL -> `invalid_url` before network activity.
+- Unsafe literal/DNS answer -> `unsafe_address`; unsafe redirect target -> `unsafe_redirect`.
+- Timeout or interruption -> bounded timeout/interrupted result and cancelled in-flight work.
+- Declared or streamed body above one MiB -> `response_too_large`.
+- Binary or unsupported encoding -> `unsupported_content_type` or
+  `unsupported_content_encoding`.
+
+### 5. Tests Required
+
+- Manifest/schema/effect metadata and stable ordering.
+- Literal IPv4/IPv6, mixed DNS answers, pinned lookup, rebinding, and redirect revalidation.
+- Timeout, abort, redirect count, declared/streamed size, HTML/JSON/text projection, binary and
+  encoding rejection, external-content fencing, and exact output bounds.
+
+## Scenario: Durable Deferred Integration Discovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing `tool_search`, MCP/plugin composition, provider-visible tool exposure,
+  tool-result effect persistence, approval reconstruction, or continuation signatures.
+
+### 2. Signatures
+
+- Provider route: `tool_search({query, limit?})`; `limit` defaults to 8 and is bounded to 1-16.
+- Stable manifest id: `builtin:tool_search`; toolset: `discovery`.
+- Durable effect: `tool_activation` metadata containing unique validated provider route names.
+
+### 3. Contracts
+
+- Built-ins, `Skill`, and subagent coordination routes remain directly visible. MCP and plugin
+  schemas are withheld in an immutable deferred catalog while every adapter remains registered in
+  `ToolRouter` and participates in duplicate route/id validation.
+- Search bounded name, description, source, and origin metadata with deterministic lexical ranking
+  and stable route/id tie-breakers. Results expose summaries and names, never copied input schemas.
+- Append the validated activation effect atomically with a successful `tool_search` result. Only
+  after that append succeeds may the provider loop add current-catalog definitions to the next
+  `ProviderRequest.tools` array.
+- Activations are scoped by session and turn, restored from SQLite when approval/clarification or a
+  restart reconstructs the execution context, and resolved against the child runtime's allowed
+  catalog. Ignore unknown, stale, duplicate, or disallowed names.
+- A schema addition invalidates provider continuation and clears the previous response id before
+  canonical replay. A repeated activation that adds no schema leaves exposure and continuation
+  eligibility unchanged.
+- Never inject schemas into user, developer, context, or tool-result text. A new user turn returns
+  to the direct tool surface plus `tool_search`.
+
+### 4. Validation & Error Matrix
+
+- Blank query or limit outside 1-16 -> bounded `invalid_arguments` result and no activation.
+- No match -> successful empty result with unchanged exposure.
+- Activation append fails -> terminal `persistence_error` and no later provider request.
+- Provider calls a deferred route not present in the request exposure -> `tool_protocol_error`
+  before adapter execution.
+
+### 5. Tests Required
+
+- Deterministic search/ranking, result bounds, schema omission, source/origin matching, and invalid
+  arguments.
+- Direct/deferred composition, adapter retention, duplicate conflict rejection, child allowed scope,
+  and stable ordering.
+- SQLite atomic append, validation, reopen recovery, turn isolation, and stale-name filtering.
+- Provider requests before/after activation, persistence failure fencing, activated execution,
+  repeated activation, approval reconstruction, and continuation invalidation only on schema change.
+
 ## Scenario: Node M7 Combined Extension Tools And MCP Schemas
 
 ### 1. Scope / Trigger

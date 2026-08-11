@@ -129,7 +129,14 @@ reports `model_input_ledger` integrity without opening the store in migration/wr
 
 The public built-in manifest is Node-owned. `Read` covers bounded discovery; mutation tools share a
 snapshot/history runtime; shell adapters share one owner-scoped process manager. Provider tool
-exposure is frozen at turn start and is also enforced as an execution authorization set.
+exposure starts from a deterministic direct set and is also enforced as an execution authorization
+set. A successful, durably persisted `tool_search` result may append selected MCP or plugin schemas
+to the current turn only; a new turn starts from the direct set again.
+
+`web_fetch` is the bounded public HTTP(S) retrieval boundary. It requires a network-enabled
+execution policy, rejects local/private/reserved addresses before connection, pins validated DNS
+answers, revalidates redirects, and caps time, redirects, transfer bytes, media types, and
+model-visible output. Returned page content is fenced as untrusted external data.
 
 Restricted shell execution is fail-closed. Native helpers under `native/` and packaged assets under
 `backend/packages/tools/native/` are Node runtime assets and must not be removed as part of language

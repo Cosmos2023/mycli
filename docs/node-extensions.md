@@ -16,6 +16,19 @@ but do not construct a provider or start the interactive runtime.
 Every parser bounds file size, item count, names, and diagnostic output. A malformed entry remains
 visible as a diagnostic and does not prevent unrelated entries from loading.
 
+## Deferred Tool Discovery
+
+MCP and plugin adapters start with the runtime and remain routable, but their provider schemas are
+not included in the initial request. The stable `tool_search` built-in searches their bounded name,
+description, source, and origin metadata. A successful result activates at most 16 matching routes
+for later provider steps in the same turn.
+
+Activation metadata is appended atomically with the `tool_search` result before any selected schema
+enters a provider request. Approval or process restart reconstructs the current turn's exposure from
+SQLite and the current allowed catalog; missing or stale routes are ignored. Activations do not
+carry into the next user turn, and actual MCP/plugin execution still follows its normal approval,
+hook, timeout, sandbox, and cancellation policy.
+
 ## Management Commands
 
 These commands work without a TTY and before backend/provider/TUI startup:
@@ -92,7 +105,8 @@ timeout_seconds = 20
 
 Environment placeholders resolve by name. Values are passed only to the MCP client and are never
 returned by list, inspect, doctor, or runtime diagnostics. MCP tool ids use
-`mcp:<server>:<tool>`. An MCP tool requires one-time approval before execution.
+`mcp:<server>:<tool>`. Use `tool_search` to activate a matching MCP schema for the current turn; an
+MCP tool still requires one-time approval before execution.
 
 `mcp list`, `mcp inspect`, and doctor may connect to enabled servers to verify discovery. They use
 the same timeout, sandbox, cancellation, and cleanup path as runtime startup and close every client
@@ -152,10 +166,11 @@ Node plugins use the process-isolated Plugin API v2. Production entries must be 
 for the author contract and [migration/python-plugins-to-v2.md](migration/python-plugins-to-v2.md)
 for Python migration.
 
-Plugin tools use stable ids `plugin:<plugin-id>:<tool-name>` and require one-time approval. Plugin
-commands are provider-free. Plugin hooks join the normal ordered hook pipeline. The worker receives
-only a minimal environment plus explicitly declared names, and every invocation is bounded by
-protocol size, timeout, outstanding-request, and output limits.
+Plugin tools use stable ids `plugin:<plugin-id>:<tool-name>`, are activated for a turn through
+`tool_search`, and require one-time approval. Plugin commands are provider-free. Plugin hooks join
+the normal ordered hook pipeline. The worker receives only a minimal environment plus explicitly
+declared names, and every invocation is bounded by protocol size, timeout, outstanding-request, and
+output limits.
 
 ## Doctor And Troubleshooting
 
