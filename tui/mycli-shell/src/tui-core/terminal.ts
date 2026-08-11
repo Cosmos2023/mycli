@@ -82,6 +82,8 @@ export interface Terminal {
 	get nativeScrollback(): boolean;
 	// Whether rendering currently owns the terminal's alternate screen buffer.
 	readonly alternateScreen?: boolean;
+	enterAlternateScreen?(): void;
+	leaveAlternateScreen?(): void;
 
 	// Cursor positioning (relative to current position)
 	moveBy(lines: number): void; // Move cursor up (negative) or down (positive) by N lines
@@ -118,6 +120,7 @@ export class ProcessTerminal implements Terminal {
 	private stdinDataHandler?: (data: string) => void;
 	private progressInterval?: ReturnType<typeof setInterval>;
 	private readonly outputBackpressure = new OutputBackpressureTracker(process.stdout);
+	private _alternateScreen = false;
 	private writeLogPath = (() => {
 		const env = process.env.MYCLI_TUI_WRITE_LOG || "";
 		if (!env) return "";
@@ -138,7 +141,23 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	get nativeScrollback(): boolean {
-		return false;
+		return !this._alternateScreen;
+	}
+
+	get alternateScreen(): boolean {
+		return this._alternateScreen;
+	}
+
+	enterAlternateScreen(): void {
+		if (this._alternateScreen) return;
+		this.write("\x1b[?1049h");
+		this._alternateScreen = true;
+	}
+
+	leaveAlternateScreen(): void {
+		if (!this._alternateScreen) return;
+		this.write("\x1b[?1049l");
+		this._alternateScreen = false;
 	}
 
 	get outputBackpressured(): boolean {
@@ -444,6 +463,7 @@ export class ProcessTerminal implements Terminal {
 			setKittyProtocolActive(false);
 		}
 		this.disableModifyOtherKeys();
+		this.leaveAlternateScreen();
 
 		// Clean up StdinBuffer
 		if (this.stdinBuffer) {

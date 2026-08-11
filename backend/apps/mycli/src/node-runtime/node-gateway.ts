@@ -36,7 +36,12 @@ import {
 	SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
 	StorageFailure,
 } from "@mycli/storage";
-import type { TranscriptItem, TurnReservation } from "@mycli/storage";
+import type {
+	LoadShellOutputPageInput,
+	ShellOutputPage,
+	TranscriptItem,
+	TurnReservation,
+} from "@mycli/storage";
 import type { PermissionProfile, ShellSessionSnapshot } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import {
@@ -183,6 +188,7 @@ export interface CreateNodeGatewayOptions {
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
 	readonly loadTranscript?: (sessionId: string) => readonly TranscriptItem[];
+	readonly loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
 	readonly loadTurnRollouts?: (sessionId: string) => readonly JsonObject[];
 	readonly memoryCommands?: NodeGatewayMemoryCommands;
 	readonly backgroundTaskCommands?: NodeGatewayBackgroundTaskCommands;
@@ -475,6 +481,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#sessionTree(request.params);
 			case "shell.list":
 				return this.#shellList();
+			case "shell.output.load":
+				return this.#shellOutput(request.params);
 			case "shell.stop":
 				return this.#shellStop(request.params);
 			case "shell.stop_all":
@@ -597,6 +605,27 @@ class InProcessNodeGateway implements NodeGateway {
 			metadata: {},
 		}));
 		return { session_id: sessionId, items, next_before: null };
+	}
+
+	#shellOutput(params: JsonObject): JsonObject {
+		const load = this.#options.loadShellOutput;
+		if (!load) {
+			throw new GatewayFailure("unavailable_feature", "Full Shell transcript output is unavailable.");
+		}
+		const sessionId = optionalString(params.session_id) ?? this.#sessionId();
+		const callId = optionalString(params.call_id);
+		const page = load({
+			sessionId,
+			shellId: requiredString(params.shell_id, "shell_id"),
+			...(callId ? { callId } : {}),
+			...(params.after_sequence === undefined ? {} : {
+				afterSequence: optionalNonNegativeInteger(params.after_sequence, "after_sequence"),
+			}),
+			...(params.limit_chars === undefined ? {} : {
+				limitChars: positiveIntegerParameter(params.limit_chars, "limit_chars"),
+			}),
+		});
+		return shellOutputPagePayload(page);
 	}
 
 	#commandList(params: JsonObject): JsonObject {
@@ -3124,6 +3153,27 @@ function paginatedTranscript(
 	};
 }
 
+function shellOutputPagePayload(page: ShellOutputPage): JsonObject {
+	return {
+		session_id: page.sessionId,
+		shell_id: page.shellId,
+		...(page.callId ? { call_id: page.callId } : {}),
+		chunks: page.chunks.map((chunk) => ({
+			sequence: chunk.sequence,
+			cursor_start: chunk.cursorStart,
+			cursor_end: chunk.cursorEnd,
+			omitted_before: chunk.omittedBefore,
+			output: chunk.output,
+		})),
+		next_after_sequence: page.nextAfterSequence,
+		available: page.available,
+		complete: page.complete,
+		omitted_chars: page.omittedChars,
+		captured_chars: page.capturedChars,
+		output_chars: page.outputChars,
+	};
+}
+
 function approvalRequest(
 	approval: PendingSessionApproval,
 	generation: number,
@@ -3310,6 +3360,20 @@ function positiveInteger(value: unknown): number | undefined {
 		&& value > 0
 		? value
 		: undefined;
+}
+
+function optionalNonNegativeInteger(value: unknown, name: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+		throw new GatewayFailure("invalid_params", `${name} must be a non-negative safe integer.`);
+	}
+	return value;
+}
+
+function positiveIntegerParameter(value: unknown, name: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+		throw new GatewayFailure("invalid_params", `${name} must be a positive safe integer.`);
+	}
+	return value;
 }
 
 function permissionProfile(value: unknown): PermissionProfile {

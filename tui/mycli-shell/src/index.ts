@@ -29,6 +29,8 @@ export type {
 	MycliShellVisualSettings,
 	MycliShellTool,
 	MycliShellToolStatus,
+	MycliShellTranscriptOutput,
+	MycliShellTranscriptOutputRequest,
 } from "./model.ts";
 export { MycliShellApp, renderMycliShell } from "./shell-app.ts";
 export {
@@ -65,6 +67,7 @@ export type {
 export { runSetupTui } from "./setup.ts";
 export type { RunSetupTuiOptions } from "./setup.ts";
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
+export { TranscriptViewerComponent } from "./components/transcript-viewer.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";
 export { UserMessageComponent } from "./components/user-message.ts";
 export { createMycliKeybindings, installMycliKeybindings, type AppKeybinding } from "./keybindings.ts";

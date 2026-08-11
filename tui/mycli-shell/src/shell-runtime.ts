@@ -4,7 +4,13 @@ import { SelectList, type SelectItem } from "./tui-core/components/select-list.t
 import { Spacer } from "./tui-core/components/spacer.ts";
 import { Text } from "./tui-core/components/text.ts";
 import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
-import { Container, TUI, type Component } from "./tui-core/tui.ts";
+import {
+	Container,
+	TUI,
+	type Component,
+	type OverlayHandle,
+	type TUIScreenSnapshot,
+} from "./tui-core/tui.ts";
 import { matchesKey } from "./tui-core/keys.ts";
 import { visibleWidth } from "./tui-core/utils.ts";
 import { CombinedAutocompleteProvider, type SlashCommand } from "./tui-core/autocomplete.ts";
@@ -27,6 +33,8 @@ import type {
 	MycliShellSubagent,
 	MycliShellTool,
 	MycliShellTranscriptBlock,
+	MycliShellTranscriptOutput,
+	MycliShellTranscriptOutputRequest,
 	MycliShellVisualSettings,
 } from "./model.ts";
 import { ApprovalSelectorComponent } from "./components/approval-selector.ts";
@@ -53,6 +61,7 @@ import { SessionTreeSelectorComponent } from "./components/session-tree-selector
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { BackgroundSubagentDialogComponent, isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
+import { shellOutputKey, TranscriptViewerComponent } from "./components/transcript-viewer.ts";
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { isLocalImageAttachmentPath } from "./local-image-attachments.ts";
@@ -90,6 +99,9 @@ export type MycliShellRuntimeOptions = {
 	onSessionTreeSelect?: (node: MycliShellSessionTreeNode) => void | Promise<void>;
 	onSettingsChange?: (settings: MycliShellVisualSettings) => MycliShellVisualSettings | Promise<MycliShellVisualSettings>;
 	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
+	onTranscriptOutputLoad?: (
+		request: MycliShellTranscriptOutputRequest,
+	) => MycliShellTranscriptOutput | Promise<MycliShellTranscriptOutput>;
 	onApprovalRespond?: (
 		decisionId: string,
 		choice: string,
@@ -149,6 +161,16 @@ type ToolDetailProjectionCache = {
 type TurnActivityStatus = {
 	text: string;
 	detail?: string;
+};
+
+type ActiveTranscriptViewer = {
+	readonly component: TranscriptViewerComponent;
+	readonly handle: OverlayHandle;
+	readonly screen: TUIScreenSnapshot;
+	readonly enteredAlternateScreen: boolean;
+	readonly loading: Set<string>;
+	readonly loadedSignatures: Map<string, string>;
+	blocksSource: readonly MycliShellTranscriptBlock[];
 };
 
 const NATIVE_RESIZE_REFLOW_DEBOUNCE_MS = 75;
@@ -1095,6 +1117,7 @@ export class MycliShellRuntime {
 	private toolDetailProjection: ToolDetailProjectionCache | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
 	private nativeTranscriptDeltaHeld = false;
+	private transcriptViewer: ActiveTranscriptViewer | null = null;
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
@@ -1168,6 +1191,7 @@ export class MycliShellRuntime {
 			this.runAsyncAction(() => this.restoreQueuedInput(), "Queued message restore failed");
 		});
 		this.editor.onAction("app.tools.expand", () => this.toggleToolDetails());
+		this.editor.onAction("app.transcript.open", () => this.showTranscriptViewer());
 		this.ui.addInputListener((data) => this.handleGlobalInput(data));
 		this.editorContainer.addChild(this.editor);
 		if (!options.requireTrust) {
@@ -1204,6 +1228,7 @@ export class MycliShellRuntime {
 		}
 		this.updateStatusTiming(previousState, effectiveState);
 		this.state = effectiveState;
+		this.updateTranscriptViewer(effectiveState);
 		if (this.mainMounted) {
 			this.rebuildChangedSections(previousState, effectiveState, options.transcriptUpdate);
 		}
@@ -1273,6 +1298,7 @@ export class MycliShellRuntime {
 
 	async shutdown(): Promise<void> {
 		this.stopTurnActivity();
+		this.closeTranscriptViewer();
 		if (this.nativeResizeTimer) {
 			clearTimeout(this.nativeResizeTimer);
 			this.nativeResizeTimer = undefined;
@@ -1296,6 +1322,10 @@ export class MycliShellRuntime {
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			this.runAsyncAction(() => this.handleCtrlC(), "Interrupt request failed");
+			return { consume: true };
+		}
+		if (matchesKey(data, "ctrl+t")) {
+			this.showTranscriptViewer();
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+o")) {
@@ -1451,6 +1481,48 @@ export class MycliShellRuntime {
 			const overlay = new CommandResultOverlayComponent(result, done);
 			return { component: overlay, focus: overlay };
 		});
+	}
+
+	showTranscriptViewer(): void {
+		if (this.transcriptViewer || !this.mainMounted) return;
+		const terminal = this.ui.terminal;
+		const screen = this.ui.captureScreen();
+		const enteredAlternateScreen = terminal.alternateScreen !== true
+			&& terminal.enterAlternateScreen !== undefined;
+		if (enteredAlternateScreen) terminal.enterAlternateScreen?.();
+		const component = new TranscriptViewerComponent({
+			blocks: this.transcriptBlocksForState(this.state),
+			rows: () => terminal.rows,
+			...(this.state.footer.sessionName ? { sessionLabel: this.state.footer.sessionName } : {}),
+			onClose: () => this.closeTranscriptViewer(),
+		});
+		const handle = this.ui.showOverlay(component, {
+			width: "100%",
+			maxHeight: "100%",
+			anchor: "top-left",
+		});
+		this.transcriptViewer = {
+			component,
+			handle,
+			screen,
+			enteredAlternateScreen,
+			loading: new Set(),
+			loadedSignatures: new Map(),
+			blocksSource: this.state.transcript ?? [],
+		};
+		this.ui.requestRender(true);
+		this.hydrateTranscriptShellOutputs(this.state);
+	}
+
+	closeTranscriptViewer(): void {
+		const viewer = this.transcriptViewer;
+		if (!viewer) return;
+		this.transcriptViewer = null;
+		viewer.handle.hide();
+		if (viewer.enteredAlternateScreen) this.ui.terminal.leaveAlternateScreen?.();
+		this.ui.restoreScreen(viewer.screen);
+		this.queueNativeTranscriptDelta(true);
+		this.ui.requestRender();
 	}
 
 	async handleClientAction(action: string, args: string): Promise<void> {
@@ -1969,6 +2041,7 @@ export class MycliShellRuntime {
 		const shortcuts = [
 			rawKeyHint("ctrl+p", "commands"),
 			rawKeyHint("?", "help"),
+			rawKeyHint("ctrl+t", "transcript"),
 			rawKeyHint("ctrl+o", "tools"),
 			rawKeyHint("ctrl+d", "exit"),
 		].join(theme.fg("muted", " · "));
@@ -1996,17 +2069,82 @@ export class MycliShellRuntime {
 	}
 
 	private legacyTranscriptBlocks(): MycliShellTranscriptBlock[] {
+		return this.transcriptBlocksForState(this.state);
+	}
+
+	private transcriptBlocksForState(state: MycliShellState): MycliShellTranscriptBlock[] {
+		if (state.transcript?.length) return state.transcript;
 		const blocks: MycliShellTranscriptBlock[] = [];
-		for (const message of this.state.messages) {
+		for (const message of state.messages) {
 			blocks.push({ id: message.id, kind: "message", message });
 		}
-		for (const tool of this.state.tools) {
+		for (const tool of state.tools) {
 			blocks.push({ id: tool.id, kind: "tool", tool });
 		}
-		for (const bash of this.state.bash) {
+		for (const bash of state.bash) {
 			blocks.push({ id: bash.id, kind: "bash", bash });
 		}
 		return blocks;
+	}
+
+	private updateTranscriptViewer(state: MycliShellState): void {
+		const viewer = this.transcriptViewer;
+		if (!viewer) return;
+		const blocks = this.transcriptBlocksForState(state);
+		const source = state.transcript ?? blocks;
+		if (viewer.blocksSource !== source) {
+			viewer.blocksSource = source;
+			viewer.component.updateBlocks(blocks);
+		}
+		this.hydrateTranscriptShellOutputs(state);
+	}
+
+	private hydrateTranscriptShellOutputs(state: MycliShellState): void {
+		const viewer = this.transcriptViewer;
+		const load = this.options.onTranscriptOutputLoad;
+		const sessionId = state.sessionId;
+		if (!viewer || !load || !sessionId) return;
+		for (const block of this.transcriptBlocksForState(state)) {
+			if (block.kind !== "bash") continue;
+			const bash = block.bash;
+			const shellId = bash.shellId;
+			if (!shellId) continue;
+			const key = shellOutputKey(shellId, bash.callId);
+			const signature = [
+				bash.status,
+				bash.sequence ?? "",
+				bash.outputChars ?? "",
+				bash.omittedOutputChars ?? "",
+			].join(":");
+			const loadedSignature = viewer.loadedSignatures.get(key);
+			if (loadedSignature === signature || viewer.loading.has(key)) continue;
+			viewer.loading.add(key);
+			viewer.component.setLoadingCount(viewer.loading.size);
+			this.ui.requestRender();
+			const request: MycliShellTranscriptOutputRequest = {
+				sessionId,
+				shellId,
+				...(bash.callId ? { callId: bash.callId } : {}),
+			};
+			void Promise.resolve(load(request)).then(
+				(output) => {
+					if (this.transcriptViewer !== viewer) return;
+					viewer.loadedSignatures.set(key, signature);
+					viewer.component.setShellOutput(output);
+				},
+				() => {
+					if (this.transcriptViewer !== viewer) return;
+					viewer.loadedSignatures.set(key, signature);
+					viewer.component.setError("Some full Shell output could not be loaded.");
+				},
+			).finally(() => {
+				if (this.transcriptViewer !== viewer) return;
+				viewer.loading.delete(key);
+				viewer.component.setLoadingCount(viewer.loading.size);
+				this.ui.requestRender();
+				this.hydrateTranscriptShellOutputs(this.state);
+			});
+		}
 	}
 
 	private syncChatBlocks(blocks: MycliShellTranscriptBlock[], tailOnly: boolean): number {
@@ -2749,7 +2887,7 @@ export class MycliShellRuntime {
 		this.addSystemNotice(
 			[
 				"Hotkeys",
-				"ctrl+p commands · ? help",
+				"ctrl+p commands · ? help · ctrl+t transcript",
 				"enter send/steer · esc interrupt",
 				"ctrl+l model · ctrl+o tools · ctrl+x permissions",
 				"ctrl+c clear/exit · tab follow-up · alt+up/shift+left edit follow-up",

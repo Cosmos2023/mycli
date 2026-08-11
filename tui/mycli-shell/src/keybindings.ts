@@ -11,6 +11,7 @@ declare module "./tui-core/keybindings.ts" {
 		"app.interrupt": true;
 		"app.exit": true;
 		"app.tools.expand": true;
+		"app.transcript.open": true;
 		"app.model.select": true;
 		"app.commandPalette": true;
 		"app.help": true;
@@ -28,6 +29,7 @@ const APP_KEYBINDINGS = {
 	"app.interrupt": { defaultKeys: "escape", description: "Interrupt / cancel" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" },
+	"app.transcript.open": { defaultKeys: "ctrl+t", description: "Open transcript" },
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Select model" },
 	"app.commandPalette": { defaultKeys: "ctrl+p", description: "Open commands" },
 	"app.help": { defaultKeys: "?", description: "Open help" },

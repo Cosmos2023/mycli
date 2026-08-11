@@ -107,6 +107,21 @@ export type MycliShellBash = {
 	expanded?: boolean;
 };
 
+export type MycliShellTranscriptOutputRequest = {
+	sessionId: string;
+	shellId: string;
+	callId?: string;
+};
+
+export type MycliShellTranscriptOutput = MycliShellTranscriptOutputRequest & {
+	output: string;
+	available: boolean;
+	complete: boolean;
+	omittedChars: number;
+	capturedChars: number;
+	outputChars: number;
+};
+
 type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "max_tool_calls" | string;
 
 export type MycliShellSubagent = {
@@ -429,6 +444,7 @@ export type MycliShellPermissionState = {
 };
 
 export type MycliShellState = {
+	sessionId?: string;
 	title?: string;
 	messages: MycliShellMessage[];
 	tools: MycliShellTool[];

@@ -1103,6 +1103,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				agentInteractiveRequests,
 				loadConversation: (sessionId) => store.loadConversation(sessionId),
 				loadTranscript: (sessionId) => canonicalTranscript(store, sessionId),
+				loadShellOutput: (input) => store.loadShellOutputPage(input),
 				loadTurnRollouts: (sessionId) => store.loadTurnRollouts(sessionId),
 				memoryCommands: {
 					directory: () => activeMemoryStore().directory(),

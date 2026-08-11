@@ -113,7 +113,7 @@ type StoreConstructor = new (options: {
 	readonly busyTimeoutMs?: number;
 }) => Store;
 
-test("initializes the complete schema-v6 shape plus durable model-input state", async (t) => {
+test("initializes the complete schema-v7 shape plus durable model-input state", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const fixture = await databaseFixture(t);
 	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
@@ -151,6 +151,7 @@ test("initializes the complete schema-v6 shape plus durable model-input state", 
 		"provider_input_timeline_events",
 		"provider_request_manifests",
 		"provider_step_events",
+		"shell_output_chunks",
 	]) {
 		assert.ok(tables.includes(table), `missing table ${table}`);
 	}
@@ -175,15 +176,16 @@ test("initializes the complete schema-v6 shape plus durable model-input state", 
 		"provider_request_manifests_no_delete",
 		"provider_step_events_no_update",
 		"provider_step_events_no_delete",
+		"shell_output_chunks_no_update",
 	]) {
 		assert.ok(triggers.includes(trigger), `missing trigger ${trigger}`);
 	}
-	assert.equal((database.prepare("SELECT version FROM schema_version").get() as { version: number }).version, 6);
+	assert.equal((database.prepare("SELECT version FROM schema_version").get() as { version: number }).version, 7);
 	const runtimeTurnColumns = database.prepare("PRAGMA table_info(runtime_turns)").all()
 		.map((row) => String((row as { name: unknown }).name));
 	assert.ok(runtimeTurnColumns.includes("owner_id"));
 	assert.ok(runtimeTurnColumns.includes("owner_pid"));
-	assert.equal(storage.SCHEMA_VERSION, 6);
+	assert.equal(storage.SCHEMA_VERSION, 7);
 });
 
 test("opens an existing schema-v2 database additively without changing existing messages", async (t) => {
@@ -237,7 +239,7 @@ test("opens an existing schema-v2 database additively without changing existing 
 	assert.equal(count(migrated, "agent_threads"), 0);
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-			6,
+			7,
 	);
 });
 
@@ -256,7 +258,7 @@ test("opens an existing schema-v3 database and adds the mailbox table", async (t
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-			6,
+			7,
 	);
 	assert.equal(
 		Number((migrated.prepare(`
@@ -308,7 +310,7 @@ test("opens an existing schema-v4 database and adds model-input ledger tables", 
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-		6,
+		7,
 	);
 	for (const table of [
 		"model_input_blobs",
@@ -340,7 +342,7 @@ test("opens an existing schema-v5 database and adds provider timeline storage", 
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-		6,
+			7,
 	);
 	assert.equal(count(migrated, "provider_input_timeline_events"), 0);
 	const triggers = migrated.prepare(`
@@ -351,6 +353,32 @@ test("opens an existing schema-v5 database and adds provider timeline storage", 
 		"provider_input_timeline_events_no_delete",
 		"provider_input_timeline_events_no_update",
 	]);
+});
+
+test("opens an existing schema-v6 database and adds append-only shell output storage", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
+	const database = await openDatabase(fixture.dbPath);
+	database.exec("DROP TRIGGER shell_output_chunks_no_update");
+	database.exec("DROP TABLE shell_output_chunks");
+	database.prepare("UPDATE schema_version SET version = 6").run();
+	database.close();
+
+	const reopened = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => reopened.close());
+	const migrated = await openDatabase(fixture.dbPath);
+	t.after(() => migrated.close());
+	assert.equal(
+		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
+		7,
+	);
+	assert.equal(count(migrated, "shell_output_chunks"), 0);
+	const triggers = migrated.prepare(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'trigger' AND name = 'shell_output_chunks_no_update'
+	`).all() as readonly { name: string }[];
+	assert.deepEqual(triggers.map((row) => row.name), ["shell_output_chunks_no_update"]);
 });
 
 test("reserves a turn atomically and deduplicates the same fingerprint", async (t) => {

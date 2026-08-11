@@ -103,6 +103,7 @@
 	"settings.load",
 	"settings.save",
 	"shell.list",
+	"shell.output.load",
 	"shell.stop",
 	"shell.stop_all",
 	"shutdown",

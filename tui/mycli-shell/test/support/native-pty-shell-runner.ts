@@ -114,6 +114,10 @@ try {
 	runtime.editor.setText("pty-ready 北京🚄");
 	runtime.ui.requestRender();
 	await delay(140);
+	runtime.showTranscriptViewer();
+	await delay(60);
+	runtime.closeTranscriptViewer();
+	await delay(60);
 } finally {
 	await runtime.shutdown();
 }

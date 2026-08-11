@@ -116,3 +116,111 @@ test("bounds retained shell output and records omitted characters", async (t) =>
 	assert.equal(String(metadata?.output).length, SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS);
 	assert.equal(metadata?.omitted_output_chars, 123);
 });
+
+test("stores full shell output as append-only pages outside bounded history", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-output-pages-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db") });
+	t.after(() => store.close());
+	store.reserveTurn({
+		sessionId: "session-a",
+		clientTurnId: "client-a",
+		clientUserMessageId: "client-a",
+		turnId: "turn-a",
+		requestFingerprint: `sha256:${"c".repeat(64)}`,
+		workspaceRoot: root,
+		threadId: "thread-a",
+		userText: "print output",
+		startedAt: "2026-08-11T00:00:00.000Z",
+	});
+
+	for (const [sequence, cursorStart, output, omittedBefore] of [
+		[2, 0, "first\n", 0],
+		[3, 6, "second\n", 0],
+		[4, 20, "tail\n", 7],
+	] as const) {
+		store.upsertShellSnapshot({
+			sessionId: "session-a",
+			callId: "call-shell-1",
+			shellId: "shell-a",
+			payload: { command_preview: "printf", output, process_state: "running" },
+			outputChunk: {
+				sequence,
+				cursorStart,
+				cursorEnd: cursorStart + output.length,
+				omittedBefore,
+				output,
+			},
+		});
+	}
+
+	const first = store.loadShellOutputPage({
+		sessionId: "session-a",
+		shellId: "shell-a",
+		callId: "call-shell-1",
+		limitChars: 8,
+	});
+	assert.equal(first.available, true);
+	assert.equal(first.complete, false);
+	assert.equal(first.omittedChars, 7);
+	assert.equal(first.outputChars, 25);
+	assert.equal(first.chunks.map((chunk) => chunk.output).join(""), "first\n");
+	assert.equal(first.nextAfterSequence, 2);
+
+	const second = store.loadShellOutputPage({
+		sessionId: "session-a",
+		shellId: "shell-a",
+		afterSequence: first.nextAfterSequence ?? 0,
+		limitChars: 64,
+	});
+	assert.equal(second.nextAfterSequence, null);
+	assert.deepEqual(second.chunks.map((chunk) => [chunk.sequence, chunk.omittedBefore, chunk.output]), [
+		[3, 0, "second\n"],
+		[4, 7, "tail\n"],
+	]);
+
+	const history = JSON.stringify(store.loadHistoryItems("session-a"));
+	assert.equal(history.includes("first\\nsecond"), false);
+	assert.equal(store.loadShellOutputPage({
+		sessionId: "session-a",
+		shellId: "missing",
+	}).available, false);
+});
+
+test("rejects duplicate shell chunk sequences instead of overwriting output", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-output-append-only-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db") });
+	t.after(() => store.close());
+	store.reserveTurn({
+		sessionId: "session-a",
+		clientTurnId: "client-a",
+		clientUserMessageId: "client-a",
+		turnId: "turn-a",
+		requestFingerprint: `sha256:${"d".repeat(64)}`,
+		workspaceRoot: root,
+		threadId: "thread-a",
+		userText: "print output",
+		startedAt: "2026-08-11T00:00:00.000Z",
+	});
+	const write = (output: string) => store.upsertShellSnapshot({
+		sessionId: "session-a",
+		callId: "call-shell-1",
+		shellId: "shell-a",
+		payload: { output },
+		outputChunk: {
+			sequence: 2,
+			cursorStart: 0,
+			cursorEnd: output.length,
+			omittedBefore: 0,
+			output,
+		},
+	});
+
+	write("original");
+	assert.throws(() => write("changed"), /persistence_error/u);
+	assert.equal(store.loadShellOutputPage({
+		sessionId: "session-a",
+		shellId: "shell-a",
+	}).chunks[0]?.output, "original");
+});

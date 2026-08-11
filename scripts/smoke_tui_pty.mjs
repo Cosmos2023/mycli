@@ -98,7 +98,9 @@ try {
 	assert.match(output, /\x1b\[\?2004l/u);
 	assert.match(output, /\x1b\[<u/u);
 	assert.match(output, /\x1b\[\?25h/u);
-	assert.doesNotMatch(output, /\x1b\[\?1049[hl]/u);
+	assert.equal(output.match(/\x1b\[\?1049h/gu)?.length, 1);
+	assert.equal(output.match(/\x1b\[\?1049l/gu)?.length, 1);
+	assert.ok(output.indexOf("\x1b[?1049h") < output.indexOf("\x1b[?1049l"));
 } finally {
 	if (!exited) await transport.terminate().catch(() => undefined);
 	await transport.close();

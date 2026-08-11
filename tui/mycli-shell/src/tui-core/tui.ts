@@ -244,6 +244,21 @@ type ActiveOverlayFocusRestoreState = EligibleOverlayFocusRestoreState | Blocked
 type OverlayFocusRestoreState = { status: "inactive" } | ActiveOverlayFocusRestoreState;
 type OverlayFocusRestorePolicy = "clear" | "preserve";
 
+export interface TUIScreenSnapshot {
+	readonly previousLines: readonly string[];
+	readonly previousKittyImageIds: ReadonlySet<number>;
+	readonly previousWidth: number;
+	readonly previousHeight: number;
+	readonly cursorRow: number;
+	readonly hardwareCursorRow: number;
+	readonly hardwareCursorCol: number;
+	readonly hardwareCursorVisible: boolean;
+	readonly hardwareCursorPositionKnown: boolean;
+	readonly maxLinesRendered: number;
+	readonly previousViewportTop: number;
+	readonly nativeViewportAnchored: boolean;
+}
+
 /**
  * Container - a component that contains other components
  */
@@ -364,6 +379,41 @@ export class TUI extends Container {
 
 	get activeRenderFrameId(): number | null {
 		return this.activeRenderFrame;
+	}
+
+	captureScreen(): TUIScreenSnapshot {
+		return Object.freeze({
+			previousLines: Object.freeze([...this.previousLines]),
+			previousKittyImageIds: new Set(this.previousKittyImageIds),
+			previousWidth: this.previousWidth,
+			previousHeight: this.previousHeight,
+			cursorRow: this.cursorRow,
+			hardwareCursorRow: this.hardwareCursorRow,
+			hardwareCursorCol: this.hardwareCursorCol,
+			hardwareCursorVisible: this.hardwareCursorVisible,
+			hardwareCursorPositionKnown: this.hardwareCursorPositionKnown,
+			maxLinesRendered: this.maxLinesRendered,
+			previousViewportTop: this.previousViewportTop,
+			nativeViewportAnchored: this.nativeViewportAnchored,
+		});
+	}
+
+	restoreScreen(snapshot: TUIScreenSnapshot): void {
+		this.previousLines = [...snapshot.previousLines];
+		this.previousKittyImageIds = new Set(snapshot.previousKittyImageIds);
+		this.previousWidth = snapshot.previousWidth;
+		this.previousHeight = snapshot.previousHeight;
+		this.cursorRow = snapshot.cursorRow;
+		this.hardwareCursorRow = snapshot.hardwareCursorRow;
+		this.hardwareCursorCol = snapshot.hardwareCursorCol;
+		this.hardwareCursorVisible = snapshot.hardwareCursorVisible;
+		this.hardwareCursorPositionKnown = snapshot.hardwareCursorPositionKnown;
+		this.maxLinesRendered = snapshot.maxLinesRendered;
+		this.previousViewportTop = snapshot.previousViewportTop;
+		this.nativeViewportAnchored = snapshot.nativeViewportAnchored;
+		this.pendingHistoryLines = null;
+		this.pendingHistoryClearsViewport = false;
+		this.pendingHistoryReplacesScrollback = false;
 	}
 
 	override render(width: number): string[] {

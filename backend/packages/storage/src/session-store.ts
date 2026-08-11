@@ -15,7 +15,10 @@ import type {
 	QueuedInput,
 	RuntimeErrorCode,
 } from "@mycli/core";
-import type { ShellTranscriptStore } from "./shell-transcript-store.ts";
+import type {
+	ShellOutputTranscriptReader,
+	ShellTranscriptStore,
+} from "./shell-transcript-store.ts";
 import type { SubagentTaskStore } from "./subagent-task-store.ts";
 import type { AgentThreadStore } from "./agent-thread-store.ts";
 
@@ -477,7 +480,7 @@ export interface TurnStore {
 	close(): void;
 }
 
-export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscriptStore {
+export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscriptStore, ShellOutputTranscriptReader {
 	readonly agentThreads: AgentThreadStore;
 	readonly subagentTasks: SubagentTaskStore;
 	forkAgentConversation(input: ForkAgentConversationInput): ForkAgentConversationResult;

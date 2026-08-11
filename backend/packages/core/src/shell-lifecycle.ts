@@ -1,3 +1,5 @@
+export const SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS = 16_384;
+
 export type ShellLifecycleKind =
 	| "shell.started"
 	| "shell.output"

@@ -285,14 +285,25 @@ function legacyToolPreambleItem(item: ParsedHistoryItem): TranscriptItem {
 }
 
 function visibleToolMetadata(item: ParsedHistoryItem): Readonly<Record<string, unknown>> {
-	const visible = visibleMetadata(item.metadata);
-	if (item.toolName?.trim().toLowerCase() !== "skill") return visible;
+	const visible = { ...visibleMetadata(item.metadata) };
 	const argumentsValue = recordValue(item.metadata.arguments);
-	const skillName = boundedSkillName(argumentsValue.name)
-		?? boundedSkillName(argumentsValue.skill_name);
-	return skillName
-		? Object.freeze({ ...visible, skill_name: skillName })
-		: visible;
+	const normalizedName = normalizedToolName(item.toolName);
+	if (normalizedName === "skill") {
+		const skillName = boundedSkillName(argumentsValue.name)
+			?? boundedSkillName(argumentsValue.skill_name);
+		if (skillName) visible.skill_name = skillName;
+	}
+	if (normalizedName === "writestdin" || normalizedName === "shelloutput" || normalizedName === "bashoutput") {
+		const shellId = boundedIdentity(argumentsValue.shell_id, 256)
+			?? boundedIdentity(argumentsValue.session_id, 256)
+			?? boundedIdentity(argumentsValue.bash_id, 256);
+		if (shellId) visible.shell_id = shellId;
+	}
+	return Object.freeze(visible);
+}
+
+function normalizedToolName(name: string | undefined): string {
+	return name?.trim().toLowerCase().replace(/[_-]/gu, "") ?? "";
 }
 
 function toolResultItem(item: ParsedHistoryItem): TranscriptItem {
@@ -350,7 +361,9 @@ function shellSessionItem(item: ParsedHistoryItem): TranscriptItem {
 }
 
 function mergeToolItems(start: TranscriptItem, finish: TranscriptItem): TranscriptItem {
-	const shellSnapshot = typeof start.metadata?.shell_id === "string";
+	const normalizedName = normalizedToolName(start.tool_name ?? finish.tool_name);
+	const shellSnapshot = typeof start.metadata?.shell_id === "string"
+		&& (normalizedName === "shell" || normalizedName === "bash" || normalizedName === "runshell");
 	return freezeItem({
 		...start,
 		tool_name: start.tool_name ?? finish.tool_name,

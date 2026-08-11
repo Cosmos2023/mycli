@@ -954,6 +954,89 @@ test("runtime adapter folds resumed ShellOutput rows into their Shell command", 
 	assert.equal(shell.bash[0]?.outputPreview, "started\ndone\n");
 });
 
+test("runtime adapter keeps a completed resumed Shell terminal after a legacy WriteStdin poll", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "completed-shell",
+				type: "tool_summary",
+				text: "Shell command",
+				metadata: {
+					tool_name: "Shell",
+					call_id: "shell-call",
+					shell_id: "c4b19812",
+					command: "echo hi",
+					terminal_state: "completed",
+					process_state: "completed",
+					exit_code: 0,
+					status: "done",
+					success: true,
+				},
+			},
+			{
+				id: "legacy-write-stdin",
+				type: "tool_summary",
+				text: "WriteStdin",
+				metadata: {
+					tool_name: "WriteStdin",
+					call_id: "poll-call",
+					shell_id: "c4b19812",
+					status: "done",
+					success: true,
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.bash.length, 1);
+	assert.equal(shell.bash[0]?.command, "echo hi");
+	assert.equal(shell.bash[0]?.status, "success");
+	assert.equal(shell.bash[0]?.terminalState, "completed");
+	assert.equal(shell.tools.some((tool) => tool.name === "WriteStdin"), false);
+});
+
+test("runtime adapter hides successful orphan polling rows on resume", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: ["WriteStdin", "ShellOutput", "BashOutput"].map((toolName, index) => ({
+			id: `orphan-poll-${index}`,
+			type: "tool_summary",
+			text: toolName,
+			metadata: {
+				tool_name: toolName,
+				call_id: `poll-call-${index}`,
+				status: "done",
+				success: true,
+			},
+		})),
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.tools.length, 0);
+	assert.equal(shell.bash.length, 0);
+});
+
+test("runtime adapter preserves failed orphan polling rows on resume", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: "failed-orphan-poll",
+			type: "tool_summary",
+			text: "WriteStdin",
+			metadata: {
+				tool_name: "WriteStdin",
+				call_id: "failed-poll-call",
+				status: "failed",
+				success: false,
+			},
+		}],
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.tools.length, 1);
+	assert.equal(shell.tools[0]?.name, "WriteStdin");
+	assert.equal(shell.tools[0]?.status, "error");
+});
+
 test("runtime adapter reduces live gateway events", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithUserMessage(state, "hello");
@@ -3286,6 +3369,24 @@ test("background Bash tool completion cannot settle a live process", () => {
 	});
 
 	assert.equal(projectRuntimeState(state).bash[0]?.status, "running");
+});
+
+test("successful orphan polling lifecycle stays hidden", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "orphan-poll",
+		call_id: "orphan-poll-call",
+		name: "WriteStdin",
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		tool_id: "orphan-poll",
+		call_id: "orphan-poll-call",
+		name: "WriteStdin",
+		success: true,
+	});
+
+	assert.equal(state.transcript.some((item) => item.id === "orphan-poll"), false);
+	assert.equal(projectRuntimeState(state).tools.length, 0);
 });
 
 test("ShellOutput updates the original Shell card without creating a polling card", () => {

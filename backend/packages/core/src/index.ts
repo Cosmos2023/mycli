@@ -67,6 +67,7 @@ export type {
 	ShellLifecycleKind,
 	ShellTransportKind,
 } from "./shell-lifecycle.ts";
+export { SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS } from "./shell-lifecycle.ts";
 export {
 	ApprovalConflictError,
 	createWaitingApproval,

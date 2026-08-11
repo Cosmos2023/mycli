@@ -54,7 +54,46 @@ test("accumulates bounded output and ignores stale event sequences", async () =>
 
 	assert.equal(writes.length, 2);
 	assert.equal(writes.at(-1)?.payload.output, "ready\ndone");
+	assert.deepEqual(writes.map((write) => write.outputChunk), [
+		{
+			sequence: 2,
+			cursorStart: 0,
+			cursorEnd: 5,
+			omittedBefore: 0,
+			output: "ready",
+		},
+		{
+			sequence: 3,
+			cursorStart: 5,
+			cursorEnd: 10,
+			omittedBefore: 0,
+			output: "\ndone",
+		},
+	]);
 	assert.deepEqual(published.map((event) => event.sequence), [2, 3]);
+});
+
+test("records lifecycle cursor gaps without copying omitted output into the snapshot", async () => {
+	const writes: UpsertShellSnapshotInput[] = [];
+	const projector = new ShellLifecycleProjector({
+		store: { upsertShellSnapshot: (input) => { writes.push(input); } },
+	});
+
+	await projector.accept(shellEvent({
+		kind: "shell.output",
+		sequence: 2,
+		outputDelta: "tail",
+		nextCursor: 100,
+		omittedOutputChars: 96,
+	}));
+
+	assert.deepEqual(writes[0]?.outputChunk, {
+		sequence: 2,
+		cursorStart: 96,
+		cursorEnd: 100,
+		omittedBefore: 96,
+		output: "tail",
+	});
 });
 
 test("redacts sensitive command previews before persistence and publication", async () => {

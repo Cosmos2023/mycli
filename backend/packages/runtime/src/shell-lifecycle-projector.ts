@@ -21,6 +21,7 @@ interface ShellProjectionState {
 	readonly sequence: number;
 	readonly output: string;
 	readonly omittedOutputChars: number;
+	readonly nextCursor: number;
 }
 
 export class ShellLifecycleProjector {
@@ -72,13 +73,24 @@ export class ShellLifecycleProjector {
 		const callId = event.callId ?? event.shellId;
 		const projectedEvent = sanitizedLifecycleEvent(event);
 		const payload = shellSnapshotPayload(projectedEvent, output, omittedOutputChars);
+		const nextCursor = event.nextCursor ?? (previous?.nextCursor ?? 0) + (event.outputDelta?.length ?? 0);
+		const cursorStart = Math.max(0, nextCursor - (event.outputDelta?.length ?? 0));
 		this.#store.upsertShellSnapshot({
 			sessionId: event.ownerSessionId,
 			callId,
 			shellId: event.shellId,
 			payload,
+			...(event.outputDelta ? {
+				outputChunk: {
+					sequence: event.sequence,
+					cursorStart,
+					cursorEnd: nextCursor,
+					omittedBefore: Math.max(0, cursorStart - (previous?.nextCursor ?? 0)),
+					output: event.outputDelta,
+				},
+			} : {}),
 		});
-		this.#state.set(key, { sequence: event.sequence, output, omittedOutputChars });
+		this.#state.set(key, { sequence: event.sequence, output, omittedOutputChars, nextCursor });
 		for (const listener of this.#listeners) listener(projectedEvent);
 		if (event.background && event.kind === "shell.completed" && this.#projectTaskOutput) {
 			try {

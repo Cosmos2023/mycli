@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_V2_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -466,5 +466,28 @@ END;
 CREATE TRIGGER IF NOT EXISTS provider_input_timeline_events_no_delete
 BEFORE DELETE ON provider_input_timeline_events BEGIN
     SELECT RAISE(ABORT, 'provider_input_timeline_events are append-only');
+END;
+`;
+
+export const SCHEMA_V7_SQL = `
+CREATE TABLE IF NOT EXISTS shell_output_chunks (
+    session_id TEXT NOT NULL,
+    shell_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    event_sequence INTEGER NOT NULL,
+    cursor_start INTEGER NOT NULL,
+    cursor_end INTEGER NOT NULL,
+    omitted_before INTEGER NOT NULL DEFAULT 0,
+    output_text TEXT NOT NULL,
+    PRIMARY KEY (session_id, shell_id, event_sequence),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_shell_output_chunks_call_sequence
+ON shell_output_chunks(session_id, call_id, event_sequence);
+
+CREATE TRIGGER IF NOT EXISTS shell_output_chunks_no_update
+BEFORE UPDATE ON shell_output_chunks BEGIN
+    SELECT RAISE(ABORT, 'shell_output_chunks are append-only');
 END;
 `;

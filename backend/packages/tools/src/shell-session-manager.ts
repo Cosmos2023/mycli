@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
-import type { ShellLifecycleEvent, ShellLifecycleKind } from "@mycli/core";
+import {
+	SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS,
+	type ShellLifecycleEvent,
+	type ShellLifecycleKind,
+} from "@mycli/core";
 import { startPipeTransport } from "./pipe-transport.ts";
 import { ShellOutputBuffer } from "./shell-output-buffer.ts";
 import {
@@ -155,9 +159,10 @@ export class ShellSessionManager {
 			options.outputEventIntervalMs ?? DEFAULT_OUTPUT_EVENT_INTERVAL_MS,
 			"outputEventIntervalMs",
 		);
-		this.#outputEventMaxChars = positiveInteger(
+		this.#outputEventMaxChars = boundedPositiveInteger(
 			options.outputEventMaxChars ?? DEFAULT_OUTPUT_EVENT_MAX_CHARS,
 			"outputEventMaxChars",
+			SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS,
 		);
 		this.#transportFactory = options.transportFactory ?? startPipeTransport;
 		this.#createShellId = options.createShellId ?? (() => randomBytes(4).toString("hex"));
@@ -471,16 +476,16 @@ export class ShellSessionManager {
 	#flushLifecycleOutput(session: SessionRecord): void {
 		const chunk = session.output.read(session.lifecycleCursor);
 		session.lifecycleCursor = chunk.nextCursor;
+		session.lifecycleOmittedChars += chunk.omittedChars;
 		if (!chunk.text) return;
-		const discardedChars = Math.max(0, chunk.text.length - this.#outputEventMaxChars);
-		const outputDelta = discardedChars === 0
-			? chunk.text
-			: chunk.text.slice(-this.#outputEventMaxChars);
-		session.lifecycleOmittedChars += chunk.omittedChars + discardedChars;
-		this.#publish(session, "shell.output", {
-			outputDelta,
-			nextCursor: chunk.nextCursor,
-		});
+		const retainedStartCursor = chunk.nextCursor - chunk.text.length;
+		for (let offset = 0; offset < chunk.text.length; offset += this.#outputEventMaxChars) {
+			const outputDelta = chunk.text.slice(offset, offset + this.#outputEventMaxChars);
+			this.#publish(session, "shell.output", {
+				outputDelta,
+				nextCursor: retainedStartCursor + offset + outputDelta.length,
+			});
+		}
 	}
 
 	#startAbsoluteTimeout(session: SessionRecord): void {
@@ -826,6 +831,14 @@ function positiveInteger(value: number, name: string): number {
 		throw new RangeError(`${name} must be a positive safe integer`);
 	}
 	return value;
+}
+
+function boundedPositiveInteger(value: number, name: string, maximum: number): number {
+	const validated = positiveInteger(value, name);
+	if (validated > maximum) {
+		throw new RangeError(`${name} must be at most ${maximum}`);
+	}
+	return validated;
 }
 
 function nonNegativeInteger(value: number, name: string): number {

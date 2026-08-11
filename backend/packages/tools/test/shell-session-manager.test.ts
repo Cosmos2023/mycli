@@ -75,6 +75,37 @@ test("model and lifecycle cursors consume output independently", async () => {
 	assert.equal(lifecycleOutput(events), "abcdef");
 });
 
+test("large lifecycle output is split without discarding retained characters", async () => {
+	const events: ShellLifecycleEvent[] = [];
+	const factory = new FakeShellTransportFactory();
+	const manager = new ShellSessionManager({
+		transportFactory: factory.create,
+		createShellId: () => "a1b2c3d4",
+		outputEventIntervalMs: 0,
+		outputEventMaxChars: 4,
+	});
+	await manager.start(shellStart({
+		background: true,
+		publishLifecycle: (event) => events.push(event),
+	}));
+	const transport = factory.transports[0];
+	assert.ok(transport);
+
+	transport.emitOutput({ sequence: 1, stream: "stdout", data: "abcdefghij" });
+	await eventually(() => lifecycleOutput(events) === "abcdefghij");
+
+	const outputEvents = events.filter((event) => event.kind === "shell.output");
+	assert.deepEqual(outputEvents.map((event) => event.outputDelta), ["abcd", "efgh", "ij"]);
+	assert.deepEqual(outputEvents.map((event) => event.nextCursor), [4, 8, 10]);
+	assert.deepEqual(outputEvents.map((event) => event.omittedOutputChars), [0, 0, 0]);
+});
+
+test("lifecycle output event bounds cannot exceed the persistence chunk contract", () => {
+	assert.throws(() => new ShellSessionManager({
+		outputEventMaxChars: 16_385,
+	}), /outputEventMaxChars must be at most 16384/u);
+});
+
 test("empty polling wakes as soon as new output arrives", async () => {
 	const factory = new FakeShellTransportFactory();
 	const manager = new ShellSessionManager({

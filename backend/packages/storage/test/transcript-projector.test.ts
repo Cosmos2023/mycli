@@ -166,13 +166,57 @@ test("repairs legacy Node tool preambles and projects a safe Skill name", () => 
 	assert.equal(JSON.stringify(projected).includes("private rationale"), false);
 });
 
+test("projects only the parent shell id from legacy polling tool arguments", () => {
+	const projected = projectTranscript([
+		{
+			...historyItem("write-stdin", "turn-1", "tool_call", "", {
+				arguments: {
+					session_id: "c4b19812",
+					chars: "private input",
+				},
+			}),
+			tool_name: "WriteStdin",
+			call_id: "call-write-stdin",
+		},
+		{
+			...historyItem("shell-output", "turn-1", "tool_call", "", {
+				arguments: { shell_id: "shell-output-id", cursor: 10 },
+			}),
+			tool_name: "ShellOutput",
+			call_id: "call-shell-output",
+		},
+		{
+			...historyItem("bash-output", "turn-1", "tool_call", "", {
+				arguments: { bash_id: "bash-output-id", cursor: 20 },
+			}),
+			tool_name: "BashOutput",
+			call_id: "call-bash-output",
+		},
+		{
+			...historyItem("write-stdin-result", "turn-1", "tool_result", "poll output", {
+				success: true,
+			}),
+			tool_name: "WriteStdin",
+			call_id: "call-write-stdin",
+		},
+	], []);
+
+	assert.equal(projected.length, 3);
+	assert.equal(projected[0]?.metadata?.shell_id, "c4b19812");
+	assert.equal(projected[1]?.metadata?.shell_id, "shell-output-id");
+	assert.equal(projected[2]?.metadata?.shell_id, "bash-output-id");
+	assert.deepEqual(projected.map((item) => item.status), ["completed", "running", "running"]);
+	assert.equal(JSON.stringify(projected).includes("private input"), false);
+	assert.equal(projected.some((item) => "arguments" in (item.metadata ?? {})), false);
+});
+
 test("merges shell snapshots into the originating tool and marks historical running state stale", () => {
 	const completed = projectTranscript([
 		{
 			...historyItem("call-item", "turn-1", "tool_call", "Run tests", {
 				arguments: { command: "private command" },
 			}),
-			tool_name: "Shell",
+			tool_name: "run_shell",
 			call_id: "call-shell-1",
 		},
 		{
@@ -187,7 +231,14 @@ test("merges shell snapshots into the originating tool and marks historical runn
 				tty: false,
 				yielded: true,
 			}),
-			tool_name: "Shell",
+			tool_name: "run_shell",
+			call_id: "call-shell-1",
+		},
+		{
+			...historyItem("result-item", "turn-1", "tool_result", "generic result", {
+				success: true,
+			}),
+			tool_name: "run_shell",
 			call_id: "call-shell-1",
 		},
 	], []);

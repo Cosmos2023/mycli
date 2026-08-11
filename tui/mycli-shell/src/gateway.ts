@@ -51,6 +51,7 @@ import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
 import { clientActionFromResult, slashCommandsFromResult } from "./adapters/slash-commands.ts";
 import { commandResultFromGateway } from "./adapters/command-results.ts";
+import { loadFullShellOutput } from "./adapters/shell-output.ts";
 import type { MycliShellCommandSpec } from "./model.ts";
 import {
 	closeGatewayTransport,
@@ -841,6 +842,7 @@ async function main(): Promise<void> {
 		onSessionTreeLoad: loadSessionTree,
 		onSettingsChange: saveSettings,
 		onResourceLoad: loadResources,
+		onTranscriptOutputLoad: (request) => loadFullShellOutput(send, request),
 		commands: slashCommands,
 	});
 	runtime.start();

@@ -10,6 +10,7 @@ import {
 	SCHEMA_V2_SQL,
 	SCHEMA_V5_SQL,
 	SCHEMA_V6_SQL,
+	SCHEMA_V7_SQL,
 	SCHEMA_VERSION,
 	SQLiteSessionStore,
 } from "@mycli/storage";
@@ -178,6 +179,7 @@ test("storage doctor validates SQLite through a read-only connection and creates
 	database.exec(SCHEMA_V2_SQL);
 	database.exec(SCHEMA_V5_SQL);
 	database.exec(SCHEMA_V6_SQL);
+	database.exec(SCHEMA_V7_SQL);
 	database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
 	database.close();
 	const before = await stat(databasePath);
@@ -205,6 +207,7 @@ test("storage doctor reports incomplete and corrupt model-input ledgers read-onl
 	database.exec(SCHEMA_V2_SQL);
 	database.exec(SCHEMA_V5_SQL);
 	database.exec(SCHEMA_V6_SQL);
+	database.exec(SCHEMA_V7_SQL);
 	database.exec("PRAGMA foreign_keys = OFF");
 	database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
 	database.prepare(`

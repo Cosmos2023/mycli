@@ -25,6 +25,7 @@ import {
 	SCHEMA_V2_SQL,
 	SCHEMA_V5_SQL,
 	SCHEMA_V6_SQL,
+	SCHEMA_V7_SQL,
 	SCHEMA_VERSION,
 } from "./schema.ts";
 import {
@@ -33,7 +34,11 @@ import {
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
-import { shellHistoryItem } from "./shell-transcript-store.ts";
+import {
+	shellHistoryItem,
+	validateShellOutputChunk,
+	validateShellOutputPageInput,
+} from "./shell-transcript-store.ts";
 import type {
 	AppendSessionSummaryInput,
 	AppendAssistantToolCallsInput,
@@ -75,7 +80,12 @@ import type {
 	SessionVacuumResult,
 	TurnReservation,
 } from "./session-store.ts";
-import type { UpsertShellSnapshotInput } from "./shell-transcript-store.ts";
+import type {
+	LoadShellOutputPageInput,
+	ShellOutputChunk,
+	ShellOutputPage,
+	UpsertShellSnapshotInput,
+} from "./shell-transcript-store.ts";
 import { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 import { stableJson } from "./stable-json.ts";
 import { SQLiteSubagentTaskRepository } from "./subagent-task-store.ts";
@@ -103,6 +113,7 @@ import {
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 const TOOL_ACTIVATION_NAME = /^[A-Za-z0-9_]{1,128}$/u;
 const MAX_TOOL_ACTIVATION_NAMES = 16;
+const MAX_SHELL_OUTPUT_PAGE_ROWS = 257;
 
 export interface SQLiteSessionStoreOptions {
 	readonly dbPath: string;
@@ -127,6 +138,24 @@ interface RuntimeTurnRow {
 	readonly completed_at: unknown;
 	readonly owner_id: unknown;
 	readonly owner_pid: unknown;
+}
+
+interface ShellOutputChunkRow {
+	readonly call_id: unknown;
+	readonly event_sequence: unknown;
+	readonly cursor_start: unknown;
+	readonly cursor_end: unknown;
+	readonly omitted_before: unknown;
+	readonly output_text: unknown;
+}
+
+interface ShellOutputTotalsRow {
+	readonly chunk_count: unknown;
+	readonly first_cursor: unknown;
+	readonly output_chars: unknown;
+	readonly captured_chars: unknown;
+	readonly omitted_chars: unknown;
+	readonly call_id: unknown;
 }
 
 const RUNTIME_TURN_COLUMNS = `
@@ -948,6 +977,24 @@ export class SQLiteSessionStore implements SessionStore {
 	upsertShellSnapshot(input: UpsertShellSnapshotInput): void {
 		this.#write(() => {
 			const payload = shellHistoryItem(input, this.#threadId(input.sessionId));
+			if (input.outputChunk) {
+				const chunk = validateShellOutputChunk(input.outputChunk);
+				this.#database.prepare(`
+					INSERT INTO shell_output_chunks (
+						session_id, shell_id, call_id, event_sequence,
+						cursor_start, cursor_end, omitted_before, output_text
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				`).run(
+					input.sessionId,
+					input.shellId,
+					input.callId,
+					chunk.sequence,
+					chunk.cursorStart,
+					chunk.cursorEnd,
+					chunk.omittedBefore,
+					chunk.output,
+				);
+			}
 			const itemId = String(payload.id);
 			const row = this.#database.prepare(`
 				SELECT sequence_no
@@ -969,6 +1016,83 @@ export class SQLiteSessionStore implements SessionStore {
 				`).run(input.sessionId, itemId, stableJson(payload));
 			}
 		});
+	}
+
+	loadShellOutputPage(input: LoadShellOutputPageInput): ShellOutputPage {
+		try {
+			const normalized = validateShellOutputPageInput(input);
+			const callClause = normalized.callId === undefined ? "" : " AND call_id = ?";
+			const queryParameters = normalized.callId === undefined
+				? [normalized.sessionId, normalized.shellId, normalized.afterSequence]
+				: [normalized.sessionId, normalized.shellId, normalized.callId, normalized.afterSequence];
+			const rows = this.#database.prepare(`
+				SELECT call_id, event_sequence, cursor_start, cursor_end,
+				       omitted_before, output_text
+				FROM shell_output_chunks
+				WHERE session_id = ? AND shell_id = ?${callClause}
+				  AND event_sequence > ?
+				ORDER BY event_sequence
+				LIMIT ${MAX_SHELL_OUTPUT_PAGE_ROWS}
+			`).all(...queryParameters) as readonly ShellOutputChunkRow[];
+			const selected: ShellOutputChunk[] = [];
+			let selectedChars = 0;
+			for (const row of rows) {
+				const chunk = shellOutputChunkFromRow(row);
+				if (selected.length > 0 && selectedChars + chunk.output.length > normalized.limitChars) break;
+				selected.push(chunk);
+				selectedChars += chunk.output.length;
+			}
+			const lastSequence = selected.at(-1)?.sequence;
+			const hasMore = lastSequence !== undefined && (
+				selected.length < rows.length || this.#database.prepare(`
+					SELECT 1 AS present
+					FROM shell_output_chunks
+					WHERE session_id = ? AND shell_id = ?${callClause}
+					  AND event_sequence > ?
+					LIMIT 1
+				`).get(...(
+					normalized.callId === undefined
+						? [normalized.sessionId, normalized.shellId, lastSequence]
+						: [normalized.sessionId, normalized.shellId, normalized.callId, lastSequence]
+				)) !== undefined
+			);
+			const totals = this.#database.prepare(`
+				SELECT COUNT(*) AS chunk_count,
+				       MIN(cursor_start) AS first_cursor,
+				       MAX(cursor_end) AS output_chars,
+				       COALESCE(SUM(LENGTH(output_text)), 0) AS captured_chars,
+				       COALESCE(SUM(omitted_before), 0) AS omitted_chars,
+				       MIN(call_id) AS call_id
+				FROM shell_output_chunks
+				WHERE session_id = ? AND shell_id = ?${callClause}
+			`).get(...(
+				normalized.callId === undefined
+					? [normalized.sessionId, normalized.shellId]
+					: [normalized.sessionId, normalized.shellId, normalized.callId]
+			)) as ShellOutputTotalsRow;
+			const chunkCount = Number(totals.chunk_count ?? 0);
+			const outputChars = Number(totals.output_chars ?? 0);
+			const capturedChars = Number(totals.captured_chars ?? 0);
+			const omittedChars = Number(totals.omitted_chars ?? 0);
+			const available = chunkCount > 0;
+			return Object.freeze({
+				sessionId: normalized.sessionId,
+				shellId: normalized.shellId,
+				...(typeof totals.call_id === "string" ? { callId: totals.call_id } : {}),
+				chunks: Object.freeze(selected),
+				nextAfterSequence: hasMore ? lastSequence ?? null : null,
+				available,
+				complete: available
+					&& Number(totals.first_cursor) === 0
+					&& omittedChars === 0
+					&& capturedChars === outputChars,
+				omittedChars,
+				capturedChars,
+				outputChars,
+			});
+		} catch (error) {
+			throw storageError(error);
+		}
 	}
 
 	importLegacyConversation(input: ImportLegacyConversationInput): boolean {
@@ -1177,7 +1301,7 @@ export class SQLiteSessionStore implements SessionStore {
 				const version = this.#database.prepare(
 					"SELECT version FROM schema_version LIMIT 1",
 				).get() as { version: unknown } | undefined;
-				if (version && ![2, 3, 4, 5, SCHEMA_VERSION].includes(Number(version.version))) {
+				if (version && ![2, 3, 4, 5, 6, SCHEMA_VERSION].includes(Number(version.version))) {
 					throw new StorageFailure("unsupported session schema version", {
 						expected_version: SCHEMA_VERSION,
 						actual_version: typeof version.version === "number" ? version.version : null,
@@ -1188,6 +1312,7 @@ export class SQLiteSessionStore implements SessionStore {
 			this.#ensureRuntimeTurnOwnershipColumns();
 			this.#database.exec(SCHEMA_V5_SQL);
 			this.#database.exec(SCHEMA_V6_SQL);
+			this.#database.exec(SCHEMA_V7_SQL);
 			this.#database.exec(BACKFILL_SEARCH_SQL);
 			this.#database.prepare("DELETE FROM schema_version").run();
 			this.#database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
@@ -1487,6 +1612,25 @@ export class SQLiteSessionStore implements SessionStore {
 			VALUES (?, ?, ?)
 		`).run(sessionId, String(payload.turn_id), stableJson(payload));
 	}
+}
+
+function shellOutputChunkFromRow(row: ShellOutputChunkRow): ShellOutputChunk {
+	if (
+		typeof row.event_sequence !== "number"
+		|| typeof row.cursor_start !== "number"
+		|| typeof row.cursor_end !== "number"
+		|| typeof row.omitted_before !== "number"
+		|| typeof row.output_text !== "string"
+	) {
+		throw new StorageFailure("invalid shell output chunk row");
+	}
+	return validateShellOutputChunk({
+		sequence: row.event_sequence,
+		cursorStart: row.cursor_start,
+		cursorEnd: row.cursor_end,
+		omittedBefore: row.omitted_before,
+		output: row.output_text,
+	});
 }
 
 function userMessage(input: ReserveTurnInput): Readonly<Record<string, unknown>> {

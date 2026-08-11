@@ -51,6 +51,8 @@ const REQUIRED_SCHEMA_OBJECTS = Object.freeze(new Map<string, string>([
 	["provider_request_manifests_no_delete", "trigger"],
 	["provider_step_events_no_update", "trigger"],
 	["provider_step_events_no_delete", "trigger"],
+	["shell_output_chunks", "table"],
+	["shell_output_chunks_no_update", "trigger"],
 ]));
 const MODEL_INPUT_TABLES = Object.freeze([
 	"model_input_blobs",

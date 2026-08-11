@@ -129,7 +129,8 @@ test("stream terminal can use alternate screen explicitly", () => {
 
 	assert.match(output.output, /\x1b\[\?1049h/);
 	assert.match(output.output, /\x1b\[\?1049l/);
-	assert.equal(terminal.nativeScrollback, false);
+	assert.equal(terminal.alternateScreen, false);
+	assert.equal(terminal.nativeScrollback, true);
 });
 
 test("ctrl z releases terminal ownership and redraws after foreground resume", async () => {

@@ -619,6 +619,7 @@ function projectRuntimeShellState(
 	}
 
 	return {
+		...(state.sessionId ? { sessionId: state.sessionId } : {}),
 		title: "mycli",
 		messages,
 		tools,
@@ -864,8 +865,8 @@ function coalesceResumedShellOutputItems(items: RuntimeTranscriptItem[]): Runtim
 			const merged = mergeShellOutputIntoExecution(coalesced, metadata);
 			if (merged !== null) {
 				coalesced = merged;
-				continue;
 			}
+			continue;
 		}
 		coalesced.push(item);
 	}
@@ -3330,6 +3331,7 @@ function applyToolLifecycle(items: RuntimeTranscriptItem[], method: string, para
 		if (merged !== null) {
 			return merged;
 		}
+		return withoutPollingItem;
 	}
 	const rawPayload = recordValue(params.raw_payload);
 	const backgroundStillRunning =
@@ -3426,13 +3428,18 @@ function mergeShellOutputIntoExecution(
 		stringValue(params.terminal_state) ??
 		undefined;
 	const exitCode = numberValue(rawPayload.exit_code) ?? numberValue(params.exit_code) ?? undefined;
+	const effectiveTerminalState = terminalState ?? stringValue(metadata.terminal_state) ?? undefined;
+	const effectiveExitCode = exitCode ?? numberValue(metadata.exit_code) ?? undefined;
 	const commandPreview =
 		stringValue(metadata.command_preview) ??
+		stringValue(metadata.command) ??
 		stringValue(existingDisplay.target) ??
 		"command";
 	const nextMetadata: Record<string, unknown> = {
 		...metadata,
 		shell_id: shellId,
+		command_preview: commandPreview,
+		command: stringValue(metadata.command) ?? commandPreview,
 		transport:
 			stringValue(rawPayload.transport) ??
 			stringValue(params.transport) ??
@@ -3456,8 +3463,8 @@ function mergeShellOutputIntoExecution(
 			booleanValue(params.yielded) ??
 			booleanValue(incomingMetrics.yielded) ??
 			booleanValue(metadata.yielded),
-		terminal_state: terminalState ?? stringValue(metadata.terminal_state),
-		exit_code: exitCode ?? numberValue(metadata.exit_code) ?? undefined,
+		terminal_state: effectiveTerminalState,
+		exit_code: effectiveExitCode,
 		output_chars:
 			numberValue(rawPayload.output_chars) ??
 			numberValue(params.output_chars) ??
@@ -3469,16 +3476,22 @@ function mergeShellOutputIntoExecution(
 			numberValue(metadata.omitted_output_chars) ??
 			0,
 		output_preview: outputPreview || undefined,
-		status: terminalState ? (terminalState === "completed" && (exitCode === undefined || exitCode === 0) ? "done" : "failed") : "running",
-		success: terminalState ? terminalState === "completed" && (exitCode === undefined || exitCode === 0) : undefined,
+		status: effectiveTerminalState
+			? (effectiveTerminalState === "completed" && (effectiveExitCode === undefined || effectiveExitCode === 0)
+				? "done"
+				: "failed")
+			: "running",
+		success: effectiveTerminalState
+			? effectiveTerminalState === "completed" && (effectiveExitCode === undefined || effectiveExitCode === 0)
+			: undefined,
 	};
 	nextMetadata.display = shellDisplayEnvelope({
 		metadata: { ...nextMetadata, display: { ...existingDisplay, ...incomingDisplay, target: existingDisplay.target } },
 		shellId,
 		commandPreview,
 		outputPreview,
-		terminalState,
-		exitCode,
+		terminalState: effectiveTerminalState,
+		exitCode: effectiveExitCode,
 	});
 	const merged: RuntimeTranscriptItem = {
 		...existing,

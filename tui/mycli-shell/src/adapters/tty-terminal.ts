@@ -91,7 +91,8 @@ export class StreamTerminal implements Terminal {
 
 	private readonly platform: NodeJS.Platform;
 	private readonly resizeSignalSource: ResizeSignalSource;
-	readonly alternateScreen: boolean;
+	private readonly startInAlternateScreen: boolean;
+	private _alternateScreen = false;
 
 	constructor(
 		private readonly streams: TtyStreams,
@@ -99,7 +100,7 @@ export class StreamTerminal implements Terminal {
 	) {
 		this.platform = options.platform ?? process.platform;
 		this.resizeSignalSource = options.resizeSignalSource ?? process;
-		this.alternateScreen = options.alternateScreen ?? false;
+		this.startInAlternateScreen = options.alternateScreen ?? false;
 		this.outputBackpressure = new OutputBackpressureTracker(streams.output);
 	}
 
@@ -108,7 +109,23 @@ export class StreamTerminal implements Terminal {
 	}
 
 	get nativeScrollback(): boolean {
-		return !this.alternateScreen;
+		return !this._alternateScreen;
+	}
+
+	get alternateScreen(): boolean {
+		return this._alternateScreen;
+	}
+
+	enterAlternateScreen(): void {
+		if (this._alternateScreen) return;
+		this.write("\x1b[?1049h");
+		this._alternateScreen = true;
+	}
+
+	leaveAlternateScreen(): void {
+		if (!this._alternateScreen) return;
+		this.write("\x1b[?1049l");
+		this._alternateScreen = false;
 	}
 
 	get outputBackpressured(): boolean {
@@ -136,7 +153,7 @@ export class StreamTerminal implements Terminal {
 		}
 		this.streams.input.setEncoding("utf8");
 		this.streams.input.resume();
-		if (this.alternateScreen) this.write("\x1b[?1049h");
+		if (this.startInAlternateScreen) this.enterAlternateScreen();
 		this.write("\x1b[?2004h");
 		this.streams.output.on("resize", this.resizeHandler);
 		if (this.platform !== "win32") {
@@ -177,7 +194,7 @@ export class StreamTerminal implements Terminal {
 		if (this.streams.input.setRawMode) {
 			this.streams.input.setRawMode(this.wasRaw);
 		}
-		if (this.alternateScreen) this.write("\x1b[?1049l");
+		this.leaveAlternateScreen();
 	}
 
 	private windowSize(): [number, number] | undefined {

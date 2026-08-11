@@ -28,6 +28,8 @@ function defaultKeyForAction(action: string): string {
 			return "ctrl+d";
 		case "app.tools.expand":
 			return "ctrl+o";
+		case "app.transcript.open":
+			return "ctrl+t";
 		case "app.model.select":
 			return "ctrl+l";
 		case "app.message.followUp":

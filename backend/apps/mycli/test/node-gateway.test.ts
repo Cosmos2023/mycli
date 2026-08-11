@@ -18,7 +18,12 @@ import {
 	type TurnSubmission,
 } from "@mycli/runtime";
 import { StorageFailure } from "@mycli/storage";
-import type { SessionOverview, TranscriptItem } from "@mycli/storage";
+import type {
+	LoadShellOutputPageInput,
+	SessionOverview,
+	ShellOutputPage,
+	TranscriptItem,
+} from "@mycli/storage";
 import type { ShellSessionSnapshot } from "@mycli/tools";
 import {
 	createNodeGateway,
@@ -111,6 +116,7 @@ function gatewayHarness(options: {
 	turnRollouts?: readonly Readonly<Record<string, unknown>>[];
 	agentInteractiveRequests?: AgentInteractiveRequestGateway;
 	cooperativeInterrupt?: boolean;
+	loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -343,6 +349,7 @@ function gatewayHarness(options: {
 				agentInteractiveRequests: options.agentInteractiveRequests,
 			} : {}),
 			loadConversation: () => options.conversation ?? [],
+		...(options.loadShellOutput ? { loadShellOutput: options.loadShellOutput } : {}),
 		loadTurnRollouts: () => options.turnRollouts ?? [],
 		sessionCommands: {
 			fork: (input: {
@@ -574,6 +581,7 @@ test("every advertised canonical TUI RPC is routed by the Node gateway", async (
 		["model.select", {}],
 		["settings.save", {}],
 		["shell.list", {}],
+		["shell.output.load", {}],
 		["shell.stop", {}],
 		["shell.stop_all", {}],
 		["status.inspect", {}],
@@ -588,6 +596,76 @@ test("every advertised canonical TUI RPC is routed by the Node gateway", async (
 			`${method} is advertised but not routed`,
 		);
 	}
+	await harness.gateway.close();
+});
+
+test("shell output RPC returns bounded append-only pages without changing transcript bootstrap", async () => {
+	const calls: LoadShellOutputPageInput[] = [];
+	const harness = gatewayHarness({
+		loadShellOutput: (input) => {
+			calls.push(input);
+			return {
+				sessionId: input.sessionId,
+				shellId: input.shellId,
+				callId: input.callId,
+				chunks: [{
+					sequence: 7,
+					cursorStart: 12,
+					cursorEnd: 17,
+					omittedBefore: 12,
+					output: "tail\n",
+				}],
+				nextAfterSequence: 7,
+				available: true,
+				complete: false,
+				omittedChars: 12,
+				capturedChars: 5,
+				outputChars: 17,
+			};
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	assert.equal(calls.length, 0);
+	assert.doesNotMatch(JSON.stringify(harness.messages), /tail\\n/u);
+
+	const response = await harness.send("shell.output.load", {
+		session_id: "session-node",
+		shell_id: "shell-a",
+		call_id: "call-a",
+		after_sequence: 3,
+		limit_chars: 4096,
+	});
+	assert.deepEqual(calls, [{
+		sessionId: "session-node",
+		shellId: "shell-a",
+		callId: "call-a",
+		afterSequence: 3,
+		limitChars: 4096,
+	}]);
+	assert.deepEqual("result" in response ? response.result : null, {
+		session_id: "session-node",
+		shell_id: "shell-a",
+		call_id: "call-a",
+		chunks: [{
+			sequence: 7,
+			cursor_start: 12,
+			cursor_end: 17,
+			omitted_before: 12,
+			output: "tail\n",
+		}],
+		next_after_sequence: 7,
+		available: true,
+		complete: false,
+		omitted_chars: 12,
+		captured_chars: 5,
+		output_chars: 17,
+	});
+
+	const invalid = await harness.send("shell.output.load", {
+		shell_id: "shell-a",
+		after_sequence: -1,
+	});
+	assert.equal("error" in invalid ? invalid.error.code : null, "invalid_params");
 	await harness.gateway.close();
 });
 

@@ -58,6 +58,7 @@ export {
 	SCHEMA_V2_SQL,
 	SCHEMA_V5_SQL,
 	SCHEMA_V6_SQL,
+	SCHEMA_V7_SQL,
 	SCHEMA_VERSION,
 } from "./schema.ts";
 export { SQLiteSessionStore } from "./sqlite-session-store.ts";
@@ -148,10 +149,22 @@ export { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 export type { SQLiteSessionStateRepositoryOptions } from "./sqlite-session-state.ts";
 export {
 	SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
+	SHELL_TRANSCRIPT_CHUNK_MAX_CHARS,
+	SHELL_TRANSCRIPT_PAGE_DEFAULT_CHARS,
+	SHELL_TRANSCRIPT_PAGE_MAX_CHARS,
+	shellOutputPageLimit,
 	sanitizeShellSnapshotPayload,
 	shellHistoryItem,
+	validateShellOutputChunk,
+	validateShellOutputPageInput,
 } from "./shell-transcript-store.ts";
 export type {
+	LoadShellOutputPageInput,
+	ShellOutputChunk,
+	ShellOutputChunkInput,
+	ShellOutputPage,
+	ShellOutputTranscriptReader,
+	ValidatedShellOutputPageInput,
 	ShellTranscriptStore,
 	UpsertShellSnapshotInput,
 } from "./shell-transcript-store.ts";

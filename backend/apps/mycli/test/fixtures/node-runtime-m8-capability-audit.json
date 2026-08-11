@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 36,
+	"rpc_count": 37,
     "event_count": 42,
     "required_rpc": [
       "session.bootstrap",
@@ -15,6 +15,7 @@
       "turn.steer",
       "turn.follow_up",
 		"shell.list",
+		"shell.output.load",
 		"shell.stop",
 		"shell.stop_all",
       "resource.list",

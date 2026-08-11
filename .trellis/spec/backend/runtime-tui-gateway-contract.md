@@ -2161,6 +2161,9 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 - Lifecycle events: `shell.started`, `shell.output`, `shell.completed`, `shell.removed`, and
   `shell.list.updated`.
 - Durable history item: `type="shell_session"` with bounded sanitized metadata and output.
+- TUI command projection:
+  `commandDisplayLines(command, headerPrefix, suffix, width) -> string[]`, with two continuation
+  rows before an omission row.
 - Verification commands: `npm run test:m6` and, only after offline gates, `npm run smoke:m6`.
 
 ### 3. Contracts
@@ -2192,6 +2195,20 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   fields such as shell id, state, transport, TTY/yield flags, sequence, timestamps, counters,
   terminal state, exit code, cleanup result, sanitized command preview, and bounded output.
   Diagnostics exclude raw command, stdin, environment values, provider payloads, and secrets.
+- The collapsed Shell card renders the complete retained command preview when it fits the terminal.
+  It wraps by terminal cell width, keeps the first row beside `Running` or `Ran`, renders at most two
+  `  │ ` continuation rows, and only then emits `  │ … +N lines`. It must not apply a fixed
+  character limit such as 72 characters before width-aware wrapping. Global tool-detail expansion
+  continues to render every retained logical command line.
+- Shell command continuations, terminal status, retained output, and expanded command details share
+  one cell-relative gutter: continuation rows use `  │ `, the first result row uses `  └ `, and
+  later result rows use four spaces. A component-level horizontal padding must be applied equally
+  outside those prefixes; it must not be encoded into only one branch.
+- A collapsed-output omission is a subsequent output row, not a card-level notice. Render it between
+  the retained head and tail as `    … +N lines (ctrl+t to view transcript)`, using the configured
+  `app.transcript.open` binding. `Ctrl+O` remains the main-view tool-detail toggle. Apply the same
+  placement and prefix whether `N` comes from viewport truncation or persisted `hiddenLineCount`
+  metadata.
 - Backend close aborts the active turn, terminates every owned live process tree, closes each
   transport, drains lifecycle persistence, and only then closes SQLite. Historical records remain
   durable, but live OS processes are never reconstructed after restart.
@@ -2209,6 +2226,11 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 - Input after terminal completion -> `shell_already_completed`.
 - Shell or WriteStdin requests an output budget above the default -> clamp the model-visible result
   to 2,000 characters while retaining the original/omitted output counters.
+- Retained command fits the available terminal width -> show it completely with no omission marker.
+- Wrapped command exceeds the two-row continuation budget -> show the first two continuation rows
+  plus an omission row with the hidden visual-row count; expanded detail remains complete.
+- Completed output exceeds the five-row budget or carries `hiddenLineCount` -> retain head and tail,
+  place one omission row between them, and align its ellipsis with subsequent output text.
 - Resize on pipe or closed terminal -> `shell_resize_failed`.
 - Timeout -> terminal `timed_out`; interrupt -> `interrupted`; targeted/global stop -> `killed`.
 - Backend/gateway close with live children -> terminate the complete owned process tree and publish
@@ -2227,12 +2249,19 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 - Good: an empty `WriteStdin` polls only output newer than the model cursor while lifecycle and
   model cursors remain independent.
 - Base: a short `tty=false` command completes through pipe without entering the background list.
+- Base: a command longer than 72 characters remains fully visible on a wide terminal.
+- Good: a multiline or narrow-terminal command wraps under a stable `  │ ` gutter and only hides
+  rows after the Codex-style continuation budget is exhausted.
+- Good: a weather preview renders `  └ <head>`, then `    … +17 lines (...)`, then
+  `    <tail>` with the omission and tail starting in the same terminal column.
 - Bad: create a manager inside `NodeTurnRuntime` or a tool adapter; yielded processes disappear
   when the provider step ends or a session binding is recreated.
 - Bad: catch native PTY failure and retry through pipe/Python; the command may run with different
   semantics or be duplicated.
 - Bad: print an endpoint, API key, prompt, command, stdin, provider text, raw shell output, or local
   path from the live smoke.
+- Bad: call a fixed-length `shortPreview(command)` before terminal layout; ordinary commands become
+  unreadable even when the viewport has enough space.
 
 ### 6. Tests Required
 
@@ -2250,6 +2279,11 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   commands/stdin/provider output do not appear.
 - Python/Node M6 parity asserts output buffers, decoder behavior, model result bounds, permission
   profiles, and a sanitized scenario corpus.
+- TUI component tests cover short commands, commands over 72 characters on wide terminals,
+  multiline commands, very long single-line commands, exact omission counts, expanded full detail,
+  CJK/long-token width safety, and equal terminal columns for continuation `│` and result `└`
+  gutters, including truncated running output. Completed-output tests assert both viewport-derived
+  and persisted omission markers remain between retained head/tail rows and share the tail column.
 - Run `npm run contracts:check`, `npm run typecheck`, `npm run lint`, `npm run test:m5`,
   `npm run test:m6`, `npm test`, `npm run smoke:package`, and `git diff --check` before one
   authorized `npm run smoke:m6`.
@@ -2275,6 +2309,124 @@ const shellManager = new ShellSessionManager({
 });
 const runtime = new NodeTurnRuntime({ toolRouter: shellRouter(shellManager) });
 await gatewayClose({ shellManager, drainLifecycle, closeStore });
+```
+
+Shell command layout is width-aware before it is bounded:
+
+```typescript
+const segments = wrapTextWithAnsi(command, availableWidth);
+const shown = segments.slice(0, 3);
+return segments.length > shown.length
+	? [...shown, `  │ … +${segments.length - shown.length} lines`]
+	: shown;
+```
+
+## Scenario: Codex-Style Full Transcript Viewer
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Shell lifecycle output, readable transcript projection, `shell.output.load`,
+  terminal alternate-screen ownership, `app.transcript.open`, or transcript viewer rendering.
+- The viewer is a local diagnostic projection. Full Shell output must not become provider input or
+  enlarge ordinary session bootstrap payloads.
+
+### 2. Signatures
+
+- Database table:
+  `shell_output_chunks(session_id, shell_id, call_id, event_sequence, cursor_start, cursor_end,
+  omitted_before, output_text)` with primary key `(session_id, shell_id, event_sequence)`.
+- Shared chunk bound: `SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS=16_384` in `@mycli/core`.
+- Storage reader:
+  `loadShellOutputPage({sessionId, shellId, callId?, afterSequence?, limitChars?}) -> ShellOutputPage`.
+- Gateway RPC:
+  `shell.output.load({session_id?, shell_id, call_id?, after_sequence?, limit_chars?})`.
+- TUI loader:
+  `loadFullShellOutput(send, {sessionId, shellId, callId?}) -> MycliShellTranscriptOutput`.
+- Terminal lifecycle:
+  `enterAlternateScreen()`, `leaveAlternateScreen()`, `captureScreen()`, and `restoreScreen(snapshot)`.
+- Viewer entry:
+  `MycliShellRuntime.showTranscriptViewer()` through `app.transcript.open` / `Ctrl+T`.
+
+### 3. Contracts
+
+- The inline Shell card keeps a bounded head/tail output projection. `Ctrl+O` toggles retained
+  main-view tool details; `Ctrl+T` opens the independent full-session viewer.
+- The viewer enters the alternate screen, owns input while open, renders canonical committed
+  transcript blocks plus the current live tail, and restores the captured inline render baseline
+  and editor focus on every close path.
+- `Esc` and `q` close. Arrows and `j`/`k` move one line; PageUp/PageDown move one viewport; Home/End
+  and `g`/`G` jump to the start/end. Resize reflows at the new cell width without resuming tail
+  following after a user has scrolled away. Live appends remain visible only while following tail.
+- Shell manager output-event bounds split one retained output read into multiple consecutive
+  lifecycle events. They must not discard characters merely because one 50 ms batch exceeds the
+  shared per-event/persistence chunk bound. Only output evicted from the manager's bounded buffer
+  is omitted; manager configuration above the shared maximum is rejected at construction.
+- The lifecycle projector persists each non-empty `outputDelta` as one append-only chunk in the same
+  transaction as the bounded `shell_session` snapshot, before publishing the event to listeners.
+- `shell.output.load` is paginated by event sequence. A non-terminal page returns
+  `next_after_sequence` equal to its last chunk sequence; chunk cursors and sequences are monotonic.
+  Cursor gaps and incomplete aggregate metadata produce visible unavailable-output markers.
+- Full output is fetched only after the viewer opens. It is absent from `transcript.load`,
+  `session.bootstrap`, readable bounded snapshots, provider transcript replay, and model input.
+- A session without chunk rows returns `available=false`; the viewer keeps its bounded saved output
+  and renders an explicit older-session notice instead of claiming the output is complete.
+- `shell_output_chunks` rejects updates. Session deletion may cascade to its diagnostic chunks under
+  the existing storage-retention boundary.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing/invalid `shell_id`, cursor, or page limit | Gateway `invalid_params`; no storage read |
+| Runtime has no Shell output reader | Gateway `unavailable_feature` |
+| No chunk rows for the requested Shell | Empty page, `available=false`, `complete=false` |
+| Duplicate event sequence or chunk update | SQLite constraint/append-only failure; preserve prior rows |
+| Shell lifecycle event bound exceeds 16,384 characters | Reject manager configuration before execution |
+| Chunk cursor range does not equal output length | Reject before persistence or viewer assembly |
+| Page cursor stalls, regresses, or differs from its last chunk sequence | Abort hydration with a bounded viewer error |
+| Persisted cursor gap or incomplete aggregate totals | Render an explicit unavailable-output marker |
+| Viewer closes, runtime shuts down, or PTY exits | Leave alternate screen once and restore normal terminal state |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a 100 KiB command result stays compact inline, opens complete in `Ctrl+T`, and never appears
+  in the next provider request.
+- Good: a large output burst becomes several ordered lifecycle chunks with continuous cursors.
+- Base: an older session shows its saved tail plus an explicit full-output-unavailable notice.
+- Bad: include chunk rows in session bootstrap so the viewer opens without an RPC.
+- Bad: truncate a lifecycle batch to the newest 4,096 characters and label the discarded prefix as
+  a storage gap even though it was still retained by the Shell manager.
+- Bad: leave `?1049h` active after `Esc`, shutdown, an exception, or PTY completion.
+
+### 6. Tests Required
+
+- Tools tests assert oversized lifecycle batches split into ordered deltas with continuous
+  `nextCursor` values and zero false omissions.
+- Runtime/storage tests assert snapshot-plus-chunk transaction ordering, append-only failures,
+  schema migration, pagination, call filtering, cursor gaps, and bounded normal history.
+- Gateway tests assert RPC catalog presence, payload mapping, defaults, invalid parameters, and no
+  eager inclusion in bootstrap/transcript responses.
+- TUI tests cover `Ctrl+T`, `Esc`/`q`, focus restoration, line/page/start/end navigation, live-tail
+  following, manual-scroll retention across resize, legacy fallback, and on-demand hydration.
+- PTY smoke asserts one ordered `?1049h` / `?1049l` pair while native scrollback, final frame,
+  bracketed paste, cursor visibility, and clean exit remain intact.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const outputDelta = retained.slice(-OUTPUT_EVENT_MAX_CHARS);
+bootstrap.shell_output = store.loadAllShellOutput(sessionId);
+```
+
+#### Correct
+
+```typescript
+for (const outputDelta of splitRetainedOutput(retained, OUTPUT_EVENT_MAX_CHARS)) {
+	publishShellOutput({ outputDelta, nextCursor: cursor += outputDelta.length });
+}
+const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
 ```
 
 ## Scenario: Node Integration Composition And Session-Owned Subagents
@@ -4178,6 +4330,8 @@ emit({ type: "plan_updated", items });
 ### 2. Signatures
 
 - Projection predicate: `suppressGenericToolRow(tool: MycliShellTool) -> boolean`.
+- Storage projection: `visibleToolMetadata(item) -> Readonly<Record<string, unknown>>`.
+- Resume normalization: `coalesceResumedShellOutputItems(items) -> RuntimeTranscriptItem[]`.
 - Suppressed normalized names: `askuserquestion`, `followuptask`, `interruptagent`, `killshell`,
   `listagents`, `sendmessage`, `spawnagent`, `toolsearch`, `updateplan`, and `waitagent`.
 
@@ -4193,6 +4347,17 @@ emit({ type: "plan_updated", items });
   process, or network effects remain visible by default.
 - Live events and resumed transcript items pass through the same TUI projection predicate so a
   restart cannot reintroduce a generic row hidden during the original run.
+- `WriteStdin`, `ShellOutput`, and `BashOutput` are polling lifecycle aliases rather than generic
+  suppressed tools. Storage may derive only their bounded parent `shell_id` from structured
+  `arguments.shell_id`, `arguments.session_id`, or `arguments.bash_id`; it must not expose the raw
+  argument object or input text in readable snapshots.
+- Successful polling rows merge into the matching Shell card and never render independently. A
+  successful orphan poll is omitted as a display-only compatibility fallback; failed or cancelled
+  orphan polls remain visible. A poll without terminal metadata must preserve an existing parent
+  Shell terminal state and exit code instead of changing a completed Shell back to running.
+- Poll merging must preserve the parent command across gateway generations. Resolve it from
+  `command_preview`, then legacy `command`, then the existing display target; write the resolved
+  value back as canonical `command_preview` instead of replacing it with a placeholder.
 
 ### 4. Validation & Error Matrix
 
@@ -4203,6 +4368,11 @@ emit({ type: "plan_updated", items });
 | Dedicated plan or subagent state exists | Preserve that semantic state |
 | Unknown or side-effecting tool | Render by default |
 | Transcript is resumed | Apply the same status-sensitive predicate without rewriting history |
+| Poll arguments contain a recognized parent id | Project only canonical `shell_id`; drop all other arguments |
+| Successful poll has no matching parent Shell | Omit the independent poll row |
+| Failed or cancelled poll has no matching parent Shell | Preserve the error/cancelled row |
+| Poll omits terminal state after parent Shell completed | Keep the parent's terminal state, exit code, and status |
+| Resumed parent stores its command only in legacy `metadata.command` | Preserve that command on the merged Shell card |
 
 ### 5. Good/Base/Bad Cases
 
@@ -4210,8 +4380,12 @@ emit({ type: "plan_updated", items });
 - Good: repeated successful `wait_agent` calls leave the transcript stable while the footer carries
   live waiting state.
 - Base: a failed `tool_search` renders a compact error row.
+- Base: a legacy `WriteStdin(arguments.session_id=...)` snapshot merges into its completed Shell
+  card without exposing stdin or rendering a second card.
 - Bad: delete the canonical tool call/result or filter it from provider replay.
 - Bad: hide every MCP/plugin tool based only on a naming convention.
+- Bad: treat every projected tool carrying `shell_id` as the Shell execution itself; polling tools
+  still complete independently even though their display is folded into the parent Shell card.
 
 ### 6. Tests Required
 
@@ -4219,6 +4393,11 @@ emit({ type: "plan_updated", items });
   normalized names.
 - Resume tests feed equivalent persisted tool items through `runtimeStateFromTranscript` and assert
   the same visible tool list.
+- Storage projection tests cover all three polling aliases, each accepted parent-id argument name,
+  completed poll status, and exclusion of raw arguments/private stdin.
+- Live and resume tests cover successful orphan suppression, failed orphan visibility, and a
+  terminal parent Shell followed by a poll without terminal metadata; the legacy
+  `metadata.command` value must survive unchanged.
 - Plan and subagent tests assert their dedicated semantic blocks remain available.
 - Existing Shell polling, mutation, Read grouping, and provider replay tests remain green.
 
@@ -4236,4 +4415,13 @@ history = history.filter((item) => item.toolName !== "wait_agent");
 const tool = toolFromTranscriptItem(item, workspace, detailMode);
 if (suppressGenericToolRow(tool)) continue;
 // Canonical history and model replay remain unchanged.
+```
+
+For Shell polling, normalize only the parent identifier and preserve terminal ownership:
+
+```typescript
+const effectiveTerminalState = incomingTerminalState ?? existingTerminalState;
+const commandPreview = metadata.command_preview ?? metadata.command ?? display.target;
+if (successfulPoll && !matchingShell) continue;
+// Failed polling calls remain visible; append-only history remains unchanged.
 ```

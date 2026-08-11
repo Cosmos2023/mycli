@@ -274,6 +274,19 @@ class TestTerminal implements Terminal {
 		this.output += data;
 	}
 
+	enterAlternateScreen(): void {
+		if (this.alternateScreen) return;
+		this.write("\x1b[?1049h");
+		this.alternateScreen = true;
+		this.nativeScrollback = false;
+	}
+
+	leaveAlternateScreen(): void {
+		if (!this.alternateScreen) return;
+		this.write("\x1b[?1049l");
+		this.alternateScreen = false;
+	}
+
 	moveBy(): void {}
 	hideCursor(): void {}
 	showCursor(): void {}
@@ -1656,7 +1669,7 @@ test("tool rendering shows mutation diffs instead of success summaries", () => {
 	assert.match(output, /\+new/);
 });
 
-test("bash rendering keeps long commands folded in a Codex-style command cell", () => {
+test("bash rendering shows a Codex-style bounded command continuation", () => {
 	const longCommand = ["python - <<'PY'", ...Array.from({ length: 20 }, () => "print('hello')"), "PY"].join("\n");
 	const rendered = new BashExecutionComponent({
 		id: "bash",
@@ -1666,11 +1679,13 @@ test("bash rendering keeps long commands folded in a Codex-style command cell", 
 
 	const output = stripAnsi(rendered.render(100).join("\n"));
 
-	assert.match(output, /• Running python - <<'PY'…/);
-	assert.doesNotMatch(output, /print\('hello'\)/);
+	assert.match(output, /• Running python - <<'PY'/);
+	assert.equal(output.match(/print\('hello'\)/gu)?.length, 2);
+	assert.match(output, /… \+19 lines/);
+	assert.doesNotMatch(output, /\n\s+PY\s*$/u);
 });
 
-test("multiline Shell command preview uses one bounded ellipsis", () => {
+test("multiline Shell command uses terminal width before truncating", () => {
 	const rendered = new BashExecutionComponent({
 		id: "shell-long-first-line",
 		command: `\n${"x".repeat(100)}\necho hidden`,
@@ -1679,25 +1694,96 @@ test("multiline Shell command preview uses one bounded ellipsis", () => {
 
 	const output = stripAnsi(rendered.render(120).join("\n"));
 
-	assert.match(output, /x…/);
-	assert.doesNotMatch(output, /……/);
-	assert.doesNotMatch(output, /echo hidden/);
+	assert.match(output, new RegExp(`x{100}`));
+	assert.match(output, /│ echo hidden/);
+	assert.doesNotMatch(output, /… \+/);
+});
+
+test("single-line Shell command longer than 72 characters stays visible when it fits", () => {
+	const command = `echo ${"x".repeat(80)}`;
+	const rendered = new BashExecutionComponent({
+		id: "shell-wide-command",
+		command,
+		status: "success",
+	});
+
+	const output = stripAnsi(rendered.render(140).join("\n"));
+
+	assert.match(output, new RegExp(command));
+	assert.doesNotMatch(output, /… \+/);
+});
+
+test("very long single-line Shell command shows two continuation rows then an omission", () => {
+	const rendered = new BashExecutionComponent({
+		id: "shell-very-long-command",
+		command: "x".repeat(200),
+		status: "success",
+	});
+
+	const output = stripAnsi(rendered.render(40).join("\n"));
+
+	assert.equal(output.match(/│/gu)?.length, 3);
+	assert.match(output, /… \+4 lines/);
+});
+
+test("wrapped Shell command stays width safe with CJK and long tokens", () => {
+	const width = 24;
+	const rendered = new BashExecutionComponent({
+		id: "shell-cjk-command",
+		command: `echo ${"测试".repeat(30)}`,
+		status: "running",
+		background: true,
+	});
+
+	const lines = rendered.render(width);
+
+	assert.ok(lines.length > 1);
+	assert.ok(lines.every((line) => visibleWidth(line) <= width));
+	assert.match(stripAnsi(lines.join("\n")), /… \+/);
+});
+
+test("Shell command continuations and result branches share one Codex gutter", () => {
+	const rendered = new BashExecutionComponent({
+		id: "shell-aligned-gutter",
+		command: [
+			"curl -s --max-time 20 'https://wttr.in/Beijing?format=3'",
+			"curl -s --max-time 20 'https://wttr.in/Beijing_zh?format=3'",
+		].join(" ; "),
+		status: "error",
+		exitCode: 6,
+		terminalState: "failed",
+		outputPreview: "curl: (6) Could not resolve host: wttr.in",
+	});
+
+	const lines = rendered.render(80).map((line) => stripAnsi(line));
+	const continuation = lines.find((line) => line.includes("│"));
+	const resultBranches = lines.filter((line) => line.includes("└"));
+
+	assert.ok(continuation);
+	assert.equal(resultBranches.length, 2);
+	assert.ok(resultBranches.every((line) => line.indexOf("└") === continuation.indexOf("│")));
 });
 
 test("running Shell output keeps only the newest five visual rows", () => {
 	const rendered = new BashExecutionComponent({
 		id: "shell-running-output",
-		command: "generate output",
+		command: `generate output ${"x".repeat(100)}`,
 		status: "running",
 		outputPreview: Array.from({ length: 7 }, (_, index) => `output ${index + 1}`).join("\n"),
 	});
 
-	const output = stripAnsi(rendered.render(100).join("\n"));
+	const lines = rendered.render(100).map((line) => stripAnsi(line));
+	const output = lines.join("\n");
+	const continuation = lines.find((line) => line.includes("│"));
+	const retainedOutputStart = lines.find((line) => line.includes("└ output 3"));
 
 	assert.doesNotMatch(output, /output 1/);
 	assert.doesNotMatch(output, /output 2/);
 	assert.match(output, /└ output 3/);
 	assert.match(output, /output 7/);
+	assert.ok(continuation);
+	assert.ok(retainedOutputStart);
+	assert.equal(retainedOutputStart.indexOf("└"), continuation.indexOf("│"));
 });
 
 test("completed Shell output keeps a five-row head and tail summary", () => {
@@ -1708,15 +1794,46 @@ test("completed Shell output keeps a five-row head and tail summary", () => {
 		outputPreview: Array.from({ length: 7 }, (_, index) => `output ${index + 1}`).join("\n"),
 	});
 
-	const output = stripAnsi(rendered.render(100).join("\n"));
+	const lines = rendered.render(100).map((line) => stripAnsi(line));
+	const output = lines.join("\n");
+	const firstOutput = lines.find((line) => line.includes("└ output 1"));
+	const omission = lines.find((line) => line.includes("… +3 lines"));
+	const tailOutput = lines.find((line) => line.includes("output 6"));
 
 	assert.match(output, /output 1/);
 	assert.match(output, /output 2/);
 	assert.doesNotMatch(output, /output 3/);
 	assert.doesNotMatch(output, /output 5/);
-	assert.match(output, /3 more lines/);
+	assert.match(output, /… \+3 lines \(ctrl\+t to view transcript\)/);
 	assert.match(output, /output 6/);
 	assert.match(output, /output 7/);
+	assert.ok(firstOutput);
+	assert.ok(omission);
+	assert.ok(tailOutput);
+	assert.equal(omission.indexOf("…"), firstOutput.indexOf("└") + 2);
+	assert.equal(tailOutput.indexOf("output 6"), omission.indexOf("…"));
+});
+
+test("completed Shell keeps a backend omission between retained head and tail", () => {
+	const rendered = new BashExecutionComponent({
+		id: "shell-backend-omission",
+		command: "curl -s 'https://wttr.in/Beijing?1&lang=zh'",
+		status: "success",
+		outputPreview: "天气预报： Beijing\n关注 @igor_chubin 获取 wttr.in 动态",
+		hiddenLineCount: 17,
+	});
+
+	const lines = rendered.render(100).map((line) => stripAnsi(line));
+	const headIndex = lines.findIndex((line) => line.includes("└ 天气预报"));
+	const omissionIndex = lines.findIndex((line) => line.includes("… +17 lines"));
+	const tailIndex = lines.findIndex((line) => line.includes("关注 @igor_chubin"));
+
+	assert.ok(headIndex >= 0);
+	assert.ok(omissionIndex > headIndex);
+	assert.ok(tailIndex > omissionIndex);
+	assert.equal(lines[omissionIndex]?.indexOf("…"), lines[headIndex]?.indexOf("└") + 2);
+	assert.equal(lines[tailIndex]?.indexOf("关注"), lines[omissionIndex]?.indexOf("…"));
+	assert.match(lines[omissionIndex] ?? "", /… \+17 lines \(ctrl\+t to view transcript\)/);
 });
 
 test("Codex-style foreground Bash shows elapsed interrupt hint", () => {
@@ -1763,7 +1880,11 @@ test("expanded Shell command renders active profile and legacy Bash label", () =
 });
 
 test("expanded Shell command reveals the complete command and retained output", () => {
-	const command = ["python - <<'PY'", "print('complete command')", "PY"].join("\n");
+	const command = [
+		"python - <<'PY'",
+		...Array.from({ length: 8 }, (_, index) => `print('complete command ${index + 1}')`),
+		"PY",
+	].join("\n");
 	const outputPreview = Array.from({ length: 7 }, (_, index) => `retained output ${index + 1}`).join("\n");
 	const rendered = new BashExecutionComponent({
 		id: "shell-expanded-details",
@@ -1778,7 +1899,9 @@ test("expanded Shell command reveals the complete command and retained output", 
 	const output = stripAnsi(rendered.render(100).join("\n"));
 
 	assert.match(output, /Command:/);
-	assert.match(output, /print\('complete command'\)/);
+	assert.match(output, /… \+/);
+	assert.match(output, /print\('complete command 8'\)/);
+	assert.match(output, /\n\s+PY\s*$/mu);
 	assert.match(output, /retained output 1/);
 	assert.match(output, /retained output 7/);
 });
@@ -4096,6 +4219,152 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.equal(runtime.getState().messages.length, 0);
 	assert.equal(runtime.getState().tools.length, 0);
 	assert.equal(runtime.getState().transcript?.length, 0);
+});
+
+test("ctrl+t owns the alternate screen and restores editor focus on close", async () => {
+	const terminal = new TestTerminal();
+	const submitted: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), sessionId: "session-a" },
+		terminal,
+		onSubmit: (text) => { submitted.push(text); },
+	});
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+
+	terminal.input?.("\x14");
+	await setTimeout(25);
+	assert.equal(terminal.alternateScreen, true);
+	assert.match(terminal.output, /\x1b\[\?1049h/u);
+	assert.match(stripAnsi(terminal.output), /Transcript/u);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.equal(terminal.alternateScreen, false);
+	assert.match(terminal.output, /\x1b\[\?1049l/u);
+
+	terminal.input?.("restored");
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.deepEqual(submitted, ["restored"]);
+
+	terminal.input?.("\x14");
+	await setTimeout(25);
+	terminal.input?.("q");
+	await setTimeout(25);
+	assert.equal(terminal.alternateScreen, false);
+	assert.equal(terminal.output.match(/\x1b\[\?1049h/gu)?.length, 2);
+	assert.equal(terminal.output.match(/\x1b\[\?1049l/gu)?.length, 2);
+});
+
+test("transcript viewer hydrates full Shell output only after it opens", async () => {
+	const terminal = new TestTerminal();
+	const requests: Array<{ sessionId: string; shellId: string; callId?: string }> = [];
+	const bash = {
+		id: "shell-full-output",
+		command: "generate output",
+		status: "success" as const,
+		shellId: "shell-a",
+		callId: "call-a",
+		outputPreview: "saved tail",
+		omittedOutputChars: 20,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			sessionId: "session-a",
+			messages: [],
+			tools: [],
+			bash: [bash],
+			transcript: [{ id: bash.id, kind: "bash", bash }],
+		},
+		terminal,
+		onTranscriptOutputLoad: async (request) => {
+			requests.push(request);
+			return {
+				...request,
+				output: "complete head\ncomplete middle\ncomplete tail",
+				available: true,
+				complete: true,
+				omittedChars: 0,
+				capturedChars: 44,
+				outputChars: 44,
+			};
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	assert.deepEqual(requests, []);
+	terminal.output = "";
+
+	terminal.input?.("\x14");
+	await setTimeout(50);
+
+	assert.deepEqual(requests, [{ sessionId: "session-a", shellId: "shell-a", callId: "call-a" }]);
+	assert.match(stripAnsi(terminal.output), /complete middle/u);
+	assert.doesNotMatch(stripAnsi(terminal.output), /Full output was not retained/u);
+});
+
+test("transcript viewer refreshes full output while a Shell is still running", async () => {
+	const terminal = new TestTerminal();
+	let loadedOutput = "first live chunk";
+	let loadCount = 0;
+	const bash = {
+		id: "shell-live-output",
+		command: "stream output",
+		status: "running" as const,
+		shellId: "shell-live",
+		callId: "call-live",
+		sequence: 1,
+		outputChars: loadedOutput.length,
+		outputPreview: loadedOutput,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			sessionId: "session-a",
+			messages: [],
+			tools: [],
+			bash: [bash],
+			transcript: [{ id: bash.id, kind: "bash", bash }],
+		},
+		terminal,
+		onTranscriptOutputLoad: async (request) => {
+			loadCount += 1;
+			return {
+				...request,
+				output: loadedOutput,
+				available: true,
+				complete: true,
+				omittedChars: 0,
+				capturedChars: loadedOutput.length,
+				outputChars: loadedOutput.length,
+			};
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x14");
+	await setTimeout(50);
+	assert.equal(loadCount, 1);
+
+	loadedOutput = "first live chunk\nsecond live chunk";
+	const nextBash = {
+		...bash,
+		sequence: 2,
+		outputChars: loadedOutput.length,
+		outputPreview: loadedOutput,
+	};
+	runtime.setState({
+		...runtime.getState(),
+		bash: [nextBash],
+		transcript: [{ id: nextBash.id, kind: "bash", bash: nextBash }],
+	}, { transcriptUpdate: "tail" });
+	await setTimeout(50);
+
+	assert.equal(loadCount, 2);
+	assert.match(stripAnsi(terminal.output), /second live chunk/u);
 });
 
 test("mycli shell runtime contains asynchronous submit failures at the editor boundary", async () => {
