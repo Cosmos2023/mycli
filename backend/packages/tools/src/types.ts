@@ -89,6 +89,7 @@ export interface ToolExecutionResult {
 	readonly errorKind?: string;
 	readonly metadata: Readonly<Record<string, unknown>>;
 	readonly planUpdate?: PlanUpdateEffect;
+	readonly toolActivation?: ToolActivationEffect;
 }
 
 export interface ToolAdapterResult {
@@ -98,6 +99,7 @@ export interface ToolAdapterResult {
 	readonly errorKind?: string;
 	readonly metadata: Readonly<Record<string, unknown>>;
 	readonly planUpdate?: PlanUpdateEffect;
+	readonly toolActivation?: ToolActivationEffect;
 }
 
 export interface PlanUpdateEffect {
@@ -107,6 +109,16 @@ export interface PlanUpdateEffect {
 		readonly text: string;
 		readonly status: "pending" | "in_progress" | "completed";
 	}[];
+}
+
+export interface ToolActivationEffect {
+	readonly names: readonly string[];
+}
+
+export interface DeferredToolCandidate {
+	readonly definition: ToolDefinition;
+	readonly source: "mcp" | "plugin";
+	readonly originMetadata: Readonly<Record<string, string>>;
 }
 
 export interface ToolAdapter {

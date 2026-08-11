@@ -4,11 +4,28 @@ export {
 	EDIT_TOOL_DEFINITION,
 	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
+	TOOL_SEARCH_TOOL_DEFINITION,
 	UPDATE_PLAN_TOOL_DEFINITION,
+	WEB_FETCH_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
 export { AskUserQuestionTool } from "./ask-user-question-tool.ts";
 export { UpdatePlanTool } from "./update-plan-tool.ts";
+export { ToolSearchTool } from "./tool-search-tool.ts";
+export {
+	isPublicIpAddress,
+	normalizePublicUrl,
+	PinnedPublicWebFetcher,
+	resolvePublicTarget,
+	WebFetchTool,
+} from "./web-fetch-tool.ts";
+export type {
+	PinnedPublicWebFetcherOptions,
+	PublicWebFetcher,
+	WebFetchLookup,
+	WebFetchResponse,
+	WebFetchToolOptions,
+} from "./web-fetch-tool.ts";
 export {
 	loadLocalImages,
 	LocalImageInputError,
@@ -256,10 +273,12 @@ export type {
 export type {
 	BuiltInToolManifest,
 	CombinedToolManifest,
+	DeferredToolCandidate,
 	ExtensionToolManifestEntry,
 	ExtensionToolSource,
 	ManifestToolRegistration,
 	PlanUpdateEffect,
+	ToolActivationEffect,
 	ToolAdapter,
 	ToolAdapterResult,
 	ToolExecutionOptions,

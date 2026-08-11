@@ -31,6 +31,8 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		{ id: "file", tool_count: 4 },
 		{ id: "interaction", tool_count: 1 },
 		{ id: "planning", tool_count: 1 },
+		{ id: "web", tool_count: 1 },
+		{ id: "discovery", tool_count: 1 },
 		{ id: "terminal", tool_count: 6 },
 	]);
 	assert.deepEqual(manifest.tools.map((tool) => tool.name), [
@@ -40,6 +42,8 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"Write",
 		"AskUserQuestion",
 		"update_plan",
+		"web_fetch",
+		"tool_search",
 		"Shell",
 		"WriteStdin",
 		"Bash",
@@ -54,6 +58,8 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"builtin:Write",
 		"builtin:AskUserQuestion",
 		"builtin:update_plan",
+		"builtin:web_fetch",
+		"builtin:tool_search",
 		"builtin:Shell",
 		"builtin:WriteStdin",
 		"builtin:Bash",
@@ -114,6 +120,22 @@ test("planning manifest entry is low-risk non-mutating and sequential", () => {
 	assert.deepEqual(requiredFields(plan.inputSchema), ["plan"]);
 });
 
+test("web and discovery manifest entries preserve bounded schemas and effect metadata", () => {
+	const manifest = builtinManifest();
+	const webFetch = manifest.tools.find((tool) => tool.name === "web_fetch");
+	const toolSearch = manifest.tools.find((tool) => tool.name === "tool_search");
+	assert.ok(webFetch && toolSearch);
+	assert.deepEqual(webFetch.effects, { filesystem: "none", network: true, process: false });
+	assert.deepEqual(toolSearch.effects, { filesystem: "none", network: false, process: false });
+	for (const tool of [webFetch, toolSearch]) {
+		assert.equal(tool.risk_level, "low");
+		assert.equal(tool.approval_policy, "auto_allow");
+		assert.equal(tool.supports_parallel_tool_calls, true);
+	}
+	assert.deepEqual(requiredFields(webFetch.inputSchema), ["url"]);
+	assert.deepEqual(requiredFields(toolSearch.inputSchema), ["query"]);
+});
+
 test("exposure planner preserves manifest order and provider schemas", () => {
 	const manifest = builtinManifest();
 	const planToolExposure = requiredFunction("planToolExposure");
@@ -129,6 +151,8 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 		"Write",
 		"AskUserQuestion",
 		"update_plan",
+		"web_fetch",
+		"tool_search",
 		"Shell",
 		"WriteStdin",
 	]);
@@ -143,7 +167,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	}[];
 	assert.deepEqual(
 		fileExposure.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan"],
+		["Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "web_fetch", "tool_search"],
 	);
 	assert.deepEqual(
 		(planToolExposure(manifest) as readonly { readonly name: string }[])
