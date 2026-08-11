@@ -128,6 +128,91 @@ store.appendToolResult(result);                    // Storage enforces the same 
 store.failTurn(failure);
 ```
 
+## Scenario: Manifest-Gated Parallel Tool Phases
+
+### 1. Scope / Trigger
+
+- Trigger: changing assistant tool-batch processing, tool concurrency metadata, approval or hook
+  ordering, active-tool interruption, tool-result persistence, or provider continuation replay.
+- This contract overlaps independent tool IO without changing the canonical provider-order
+  transcript.
+
+### 2. Signatures
+
+- Capability query:
+  `ToolRouterContract.supportsParallelToolCalls?(call: CanonicalToolCall) -> boolean`.
+- Execution boundary:
+  `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
+- Scheduling boundary: `NodeTurnRuntime` partitions one provider tool-call batch into consecutive
+  parallel-safe phases separated by single-call barriers.
+
+### 3. Contracts
+
+- The complete assistant tool-call batch is persisted before any call starts.
+- A call may join a parallel phase only when the active router explicitly returns `true` after
+  approval evaluation and pre-tool hook modification. Missing capability metadata, unknown tools,
+  extension tools, clarification tools, planning tools, Shell, and mutations are sequential.
+- Pending safe calls flush before a sequential call, approval suspension, denied call, or hook
+  barrier. The barrier runs alone before collection of the next safe phase.
+- Calls in one safe phase may execute concurrently, but lifecycle completion, result persistence,
+  post-tool hooks, checkpoints, generated context, and provider replay are applied in the original
+  provider order.
+- A failed or interrupted parallel phase aborts its siblings, emits exactly one terminal lifecycle
+  event for every started call, persists no late phase result, and prevents another provider request.
+- Active execution tracking uses the full raw call id as its internal key. Bounded call ids are for
+  public events only and must not collapse distinct active calls with the same displayed prefix.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Consecutive manifest-approved calls | Start concurrently and apply results in provider order |
+| Sequential call after safe calls | Flush the safe phase, then run the barrier alone |
+| Approval request after safe calls | Flush and persist prior results before durable suspension |
+| Hook changes a safe call to a sequential route | Reclassify the modified call as a barrier |
+| Missing or throwing capability query | Fail closed to sequential execution |
+| Parallel call unexpectedly requests clarification | Fail with bounded `tool_protocol_error` |
+| One parallel call throws or the turn is interrupted | Abort siblings, terminalize each start once, persist no phase result |
+| Distinct long call ids share a bounded prefix | Track and interrupt both independently |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `Read`, `Read`, `Write`, `Read` runs as a two-call safe phase, one Write barrier, then one
+  safe phase; results replay as `Read`, `Read`, `Write`, `Read`.
+- Base: an unclassified router or a batch of mutation calls keeps the prior sequential behavior.
+- Bad: use unconditional `Promise.all`, persist whichever result finishes first, or trust
+  extension-supplied fields to opt external tools into concurrency.
+
+### 6. Tests Required
+
+- A controlled fixture proves two safe calls both start before either is released.
+- Reverse completion still persists and replays results in provider order.
+- A safe-safe-sequential-safe batch proves phase barriers and start ordering.
+- Approval suspension persists the earlier safe phase and retains untouched remaining calls.
+- Parallel failure and interruption emit one terminal event per started call and no late result.
+- A bounded-call-id collision regression proves the active execution map retains both raw ids.
+- Runtime, tools, app, and TUI suites remain green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const results = await Promise.all(calls.map((call) => router.execute(call, options)));
+for (const result of results) store.appendToolResult(result);
+```
+
+#### Correct
+
+```typescript
+for (const phase of manifestGatedProviderOrderPhases(calls)) {
+  const results = phase.parallel
+    ? await Promise.all(phase.calls.map((call) => router.execute(call, options)))
+    : [await router.execute(phase.calls[0], options)];
+  for (const result of results) store.appendToolResult(result);
+}
+```
+
 ## Scenario: DeepSeek Thinking Tool Continuation
 
 ### 1. Scope / Trigger

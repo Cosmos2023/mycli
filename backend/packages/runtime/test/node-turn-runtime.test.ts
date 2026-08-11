@@ -1136,6 +1136,183 @@ test("executes multiple calls sequentially in provider order", async () => {
 	]);
 });
 
+test("executes safe tool phases concurrently and preserves provider result order around barriers", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new ControlledToolRouter(trace, new Set(["Read"]));
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-read-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read-2", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read-3", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[
+			{ type: "text_delta", text: "All tools completed." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const running = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [READ_TOOL_DEFINITION, WRITE_TOOL_DEFINITION],
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	await router.waitForStarted(2);
+	assert.deepEqual(router.startedCallIds, ["call-read-1", "call-read-2"]);
+	router.release("call-read-2");
+	assert.equal(store.toolResults.length, 0);
+	router.release("call-read-1");
+
+	await router.waitForStarted(3);
+	assert.deepEqual(router.startedCallIds, ["call-read-1", "call-read-2", "call-write"]);
+	assert.deepEqual(store.toolResults.map((entry) => entry.result.callId), ["call-read-1", "call-read-2"]);
+	router.release("call-write");
+
+	await router.waitForStarted(4);
+	assert.deepEqual(router.startedCallIds, ["call-read-1", "call-read-2", "call-write", "call-read-3"]);
+	router.release("call-read-3");
+
+	const result = await running;
+	assert.equal(result.status, "completed");
+	assert.deepEqual(store.toolResults.map((entry) => entry.result.callId), [
+		"call-read-1",
+		"call-read-2",
+		"call-write",
+		"call-read-3",
+	]);
+});
+
+test("interrupts every active call in a parallel tool phase exactly once", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new ControlledToolRouter(trace, new Set(["Read"]));
+	const emitted: RuntimeEvent[] = [];
+	const controller = new AbortController();
+	const running = createRuntime({
+		store,
+		provider: scriptedProvider(trace, [], [[
+			{ type: "tool_call", callId: "call-read-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read-2", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		]]),
+		toolRouter: router,
+	}).submit(submission(), (event) => { emitted.push(event); }, { signal: controller.signal });
+
+	await router.waitForStarted(2);
+	controller.abort();
+	const result = await running;
+
+	assert.equal(result.status, "interrupted");
+	assert.equal(result.error_code, "interrupted");
+	assert.equal(store.toolResults.length, 0);
+	assert.deepEqual(emitted.filter((event) => event.type === "tool_execution_started").map(
+		(event) => event.callId,
+	), ["call-read-1", "call-read-2"]);
+	assert.deepEqual(emitted.filter((event) => event.type === "tool_execution_failed").map(
+		(event) => [event.callId, event.errorKind],
+	), [
+		["call-read-1", "tool_interrupted"],
+		["call-read-2", "tool_interrupted"],
+	]);
+	assert.equal(emitted.some((event) => event.type === "tool_execution_completed"), false);
+});
+
+test("tracks parallel calls by their full ids when bounded event ids collide", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new ControlledToolRouter(trace, new Set(["Read"]));
+	const emitted: RuntimeEvent[] = [];
+	const controller = new AbortController();
+	const sharedPrefix = "x".repeat(256);
+	const runtime = createRuntime({
+		store,
+		provider: scriptedProvider(trace, [], [[
+			{ type: "tool_call", callId: `${sharedPrefix}-1`, name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: `${sharedPrefix}-2`, name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		]]),
+		toolRouter: router,
+	});
+	const running = runtime.submit(submission(), (event) => { emitted.push(event); }, {
+		signal: controller.signal,
+	});
+
+	await router.waitForStarted(2);
+	const interrupted = await runtime.forceInterrupt({
+		clientTurnId: "client-turn-1",
+		turnId: "turn-1",
+	}, (event) => { emitted.push(event); });
+
+	assert.equal(interrupted.status, "interrupted");
+	assert.equal(emitted.filter((event) => event.type === "tool_execution_failed").length, 2);
+	controller.abort();
+	await running;
+	assert.equal(emitted.filter((event) => event.type === "tool_execution_failed").length, 2);
+});
+
+test("fails a parallel phase without persisting sibling results or duplicating terminal events", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new ControlledToolRouter(trace, new Set(["Read"]));
+	const emitted: RuntimeEvent[] = [];
+	const running = createRuntime({
+		store,
+		provider: scriptedProvider(trace, [], [[
+			{ type: "tool_call", callId: "call-read-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read-2", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		]]),
+		toolRouter: router,
+	}).submit(submission(), (event) => { emitted.push(event); }, {
+		signal: new AbortController().signal,
+	});
+
+	await router.waitForStarted(2);
+	router.fail("call-read-1");
+	const result = await running;
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "provider_error");
+	assert.equal(store.toolResults.length, 0);
+	assert.deepEqual(emitted.filter((event) => event.type === "tool_execution_failed").map(
+		(event) => [event.callId, event.errorKind],
+	), [
+		["call-read-1", "tool_execution_failed"],
+		["call-read-2", "tool_interrupted"],
+	]);
+	assert.equal(emitted.some((event) => event.type === "tool_execution_completed"), false);
+});
+
+test("flushes a safe phase before approval and preserves untouched remaining calls", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new SequencedRouter(trace, new Set(["Read"]));
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const result = await createRuntime({
+		store,
+		provider: scriptedProvider(trace, [], [[
+			{ type: "tool_call", callId: "call-read-before", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read-after", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		]]),
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace", autoApproveMedium: false }),
+		approvalCoordinator: approvals.coordinator,
+		toolDefinitions: [READ_TOOL_DEFINITION, WRITE_TOOL_DEFINITION],
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "in_progress");
+	assert.deepEqual(store.toolResults.map((entry) => entry.result.callId), ["call-read-before"]);
+	assert.equal(approvals.pending()?.decisionId, "call-write");
+	assert.deepEqual(approvals.pending()?.remainingCalls.map((call) => call.callId), ["call-read-after"]);
+	assert.ok(trace.indexOf("persist:result:call-read-before") < trace.indexOf("approval:suspend"));
+	assert.equal(trace.includes("tool:call-read-after"), false);
+});
+
 test("persists a structured plan update before emitting its runtime event", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -3146,16 +3323,106 @@ function shellLifecycleEvent(): ShellLifecycleEvent {
 
 class SequencedRouter implements ToolRouterContract {
 	readonly #trace: string[];
+	readonly #parallelToolNames: ReadonlySet<string>;
 	calls = 0;
 
-	constructor(trace: string[]) {
+	constructor(trace: string[], parallelToolNames: ReadonlySet<string> = new Set()) {
 		this.#trace = trace;
+		this.#parallelToolNames = parallelToolNames;
+	}
+
+	supportsParallelToolCalls(call: CanonicalToolCall): boolean {
+		return this.#parallelToolNames.has(call.name);
 	}
 
 	async execute(call: CanonicalToolCall): Promise<ToolExecutionResult> {
 		this.calls += 1;
 		this.#trace.push(`tool:${call.callId}`);
 		return successResult(call.callId);
+	}
+}
+
+class ControlledToolRouter implements ToolRouterContract {
+	readonly #trace: string[];
+	readonly #parallelToolNames: ReadonlySet<string>;
+	readonly #pending = new Map<string, {
+		readonly call: CanonicalToolCall;
+		readonly signal: AbortSignal;
+		readonly onAbort: () => void;
+		readonly resolve: (result: ToolExecutionResult) => void;
+		reject(error: Error): void;
+	}>();
+	readonly #startedWaiters: Array<{ readonly count: number; resolve(): void }> = [];
+	readonly startedCallIds: string[] = [];
+
+	constructor(trace: string[], parallelToolNames: ReadonlySet<string>) {
+		this.#trace = trace;
+		this.#parallelToolNames = parallelToolNames;
+	}
+
+	supportsParallelToolCalls(call: CanonicalToolCall): boolean {
+		return this.#parallelToolNames.has(call.name);
+	}
+
+	async execute(call: CanonicalToolCall, options: ToolExecutionOptions): Promise<ToolExecutionResult> {
+		this.startedCallIds.push(call.callId);
+		this.#trace.push(`tool:start:${call.callId}`);
+		this.#resolveStartedWaiters();
+		return await new Promise<ToolExecutionResult>((resolve, reject) => {
+			const onAbort = () => {
+				this.#pending.delete(call.callId);
+				const error = new Error("tool interrupted");
+				error.name = "AbortError";
+				reject(error);
+			};
+			this.#pending.set(call.callId, { call, signal: options.signal, onAbort, resolve, reject });
+			if (options.signal.aborted) onAbort();
+			else options.signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	release(callId: string): void {
+		const pending = this.#pending.get(callId);
+		assert.ok(pending, `tool ${callId} must be pending`);
+		this.#pending.delete(callId);
+		pending.signal.removeEventListener("abort", pending.onAbort);
+		this.#trace.push(`tool:finish:${callId}`);
+		pending.resolve({
+			...successResult(callId),
+			toolName: pending.call.name,
+		});
+	}
+
+	fail(callId: string): void {
+		const pending = this.#pending.get(callId);
+		assert.ok(pending, `tool ${callId} must be pending`);
+		this.#pending.delete(callId);
+		pending.signal.removeEventListener("abort", pending.onAbort);
+		this.#trace.push(`tool:fail:${callId}`);
+		pending.reject(new Error("controlled tool failure"));
+	}
+
+	waitForStarted(count: number): Promise<void> {
+		if (this.startedCallIds.length >= count) return Promise.resolve();
+		return new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error(`timed out waiting for ${count} tools`)), 1_000);
+			this.#startedWaiters.push({
+				count,
+				resolve: () => {
+					clearTimeout(timeout);
+					resolve();
+				},
+			});
+		});
+	}
+
+	#resolveStartedWaiters(): void {
+		for (let index = this.#startedWaiters.length - 1; index >= 0; index -= 1) {
+			const waiter = this.#startedWaiters[index]!;
+			if (this.startedCallIds.length < waiter.count) continue;
+			this.#startedWaiters.splice(index, 1);
+			waiter.resolve();
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import type {
 export interface ToolRouterOptions {
 	readonly adapters: readonly ToolAdapter[];
 	readonly exposure: readonly ToolDefinition[];
+	readonly parallelToolNames?: ReadonlySet<string>;
 }
 
 interface Route {
@@ -24,8 +25,10 @@ interface Route {
 
 export class ToolRouter implements ToolRouterContract {
 	readonly #routes = new Map<string, Route>();
+	readonly #parallelToolNames: ReadonlySet<string>;
 
 	constructor(options: ToolRouterOptions) {
+		this.#parallelToolNames = new Set(options.parallelToolNames ?? []);
 		const ajv = new Ajv2020({ allErrors: true, strict: true });
 		for (const adapter of options.adapters) {
 			const name = adapter.definition.name;
@@ -37,6 +40,10 @@ export class ToolRouter implements ToolRouterContract {
 				validate: ajv.compile(adapter.definition.inputSchema),
 			});
 		}
+	}
+
+	supportsParallelToolCalls(call: CanonicalToolCall): boolean {
+		return this.#routes.has(call.name) && this.#parallelToolNames.has(call.name);
 	}
 
 	async execute(

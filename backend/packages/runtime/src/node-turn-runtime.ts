@@ -284,6 +284,12 @@ interface PendingToolBatch {
 	readonly responseId?: string;
 }
 
+interface PreparedParallelToolCall {
+	readonly index: number;
+	readonly call: CanonicalToolCall;
+	readonly executionCall: CanonicalToolCall;
+}
+
 interface ProviderLoopState {
 	readonly history: readonly CanonicalConversationItem[];
 	readonly freshItemIds: ReadonlySet<string>;
@@ -302,11 +308,17 @@ interface PreparedTurn {
 
 interface ActiveToolExecution {
 	readonly turnId: string;
+	readonly trackingCallId: string;
 	readonly callId: string;
 	readonly toolName: string;
 	readonly startedAt: number;
 	readonly interruptErrorKind: "tool_interrupted" | "effect_outcome_unknown";
 	terminalEmitted: boolean;
+}
+
+interface PendingToolExecutionResult {
+	readonly active: ActiveToolExecution;
+	readonly result: ToolExecutionResult;
 }
 
 interface AgentBudgetState {
@@ -326,7 +338,7 @@ export class NodeTurnRuntime {
 	#collaborationMode = "default";
 	#executionPolicyConfiguration: ExecutionPolicyConfiguration | undefined;
 	readonly queueCoordinator: QueueCoordinator | undefined;
-	readonly #activeToolExecutions = new Map<string, ActiveToolExecution>();
+	readonly #activeToolExecutions = new Map<string, Map<string, ActiveToolExecution>>();
 
 	constructor(options: NodeTurnRuntimeOptions) {
 		this.#options = options;
@@ -479,7 +491,7 @@ export class NodeTurnRuntime {
 			message: "turn interrupted",
 			completedAt: this.#options.clock(),
 		});
-		this.#interruptActiveTool(input.turnId, emit);
+		this.#interruptActiveTools(input.turnId, emit);
 		await this.#writeTerminalSnapshot(interrupted);
 		this.#options.executionPolicyCoordinator?.finishTurn(input.turnId);
 		emit({ type: "turn_interrupted", message: "turn interrupted" });
@@ -1317,12 +1329,41 @@ export class NodeTurnRuntime {
 	): Promise<RuntimeTurnRecord | undefined> {
 		const { submission, turnId, config, emit, signal } = context;
 		const deferredContextItems: Array<Omit<AppendContextItemInput, "sessionId">> = [];
+		const pendingParallelCalls: PreparedParallelToolCall[] = [];
+		const flushParallelCalls = async (): Promise<RuntimeTurnRecord | undefined> => {
+			if (pendingParallelCalls.length === 0) return undefined;
+			const phase = pendingParallelCalls.splice(0);
+			const results = await this.#executeParallelToolPhase(phase, context);
+			for (const [phaseIndex, prepared] of phase.entries()) {
+				const suspended = await this.#applyToolExecutionResult({
+					context,
+					batch,
+					accumulatedUsage,
+					deferredContextItems,
+					index: prepared.index,
+					call: prepared.call,
+					executionCall: prepared.executionCall,
+					result: results[phaseIndex]!,
+					executed: true,
+					allowClarification: false,
+				});
+				if (suspended) return suspended;
+			}
+			return undefined;
+		};
+
 		for (const [index, call] of batch.calls.entries()) {
 			const wallClockExhausted = this.#wallClockExhausted();
 			if (wallClockExhausted) throw new AgentBudgetExhaustedError(wallClockExhausted);
 			assertNotAborted(signal);
+			if (!this.#supportsParallelToolCall(call)) {
+				const earlierSuspension = await flushParallelCalls();
+				if (earlierSuspension) return earlierSuspension;
+			}
 			const policy = await this.#options.approvalPolicy?.evaluate(call, context.executionPolicy);
 			if (policy?.kind === "request") {
+				const earlierSuspension = await flushParallelCalls();
+				if (earlierSuspension) return earlierSuspension;
 				const coordinator = this.#options.approvalCoordinator;
 				if (!coordinator) {
 					throw new ProviderFailure({
@@ -1331,9 +1372,9 @@ export class NodeTurnRuntime {
 					});
 				}
 				this.#persistDeferredContextItems(deferredContextItems, signal);
-					const pending = coordinator.suspend({
-						clientTurnId: submission.clientTurnId,
-						clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
+				const pending = coordinator.suspend({
+					clientTurnId: submission.clientTurnId,
+					clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
 					turnId,
 					userMessage: submission.message,
 					providerProtocol: config.protocol,
@@ -1370,96 +1411,210 @@ export class NodeTurnRuntime {
 
 			let executionCall = call;
 			let blockedByHook: ToolExecutionResult | undefined;
-				if (policy?.kind !== "deny" && context.hookCoordinator) {
-					const before = await context.hookCoordinator.beforeTool(call, signal);
-					context.hookContexts.append({
-						point: "pre_tool_use",
-						contexts: before.contexts,
-					});
+			if (policy?.kind !== "deny" && context.hookCoordinator) {
+				const before = await context.hookCoordinator.beforeTool(call, signal);
+				context.hookContexts.append({
+					point: "pre_tool_use",
+					contexts: before.contexts,
+				});
 				if (before.status === "deny") {
 					blockedByHook = hookDeniedResult(call, before.errorKind);
 				} else {
 					executionCall = before.call;
 				}
 			}
-			const result = policy?.kind === "deny"
-				? policyDeniedResult(call, policy)
-				: blockedByHook ?? await this.#executeTool(executionCall, context);
-			if (policy?.kind === "deny" || blockedByHook) emitToolResult(result, 0, emit);
-			const clarification = clarificationRequest(result);
-			if (clarification) {
-				const coordinator = this.#options.clarificationCoordinator;
-				if (!coordinator) {
-					throw new ProviderFailure({
-						code: "unsupported_capability",
-						message: "clarification continuation is not configured",
-					});
-				}
-				this.#persistDeferredContextItems(deferredContextItems, signal);
-				const pending = coordinator.suspend({
-					clientTurnId: submission.clientTurnId,
-					clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
-					turnId,
-					userMessage: submission.message,
-					providerProtocol: config.protocol,
+
+			if (policy?.kind === "deny" || blockedByHook) {
+				const earlierSuspension = await flushParallelCalls();
+				if (earlierSuspension) return earlierSuspension;
+				const result = policy?.kind === "deny"
+					? policyDeniedResult(call, policy)
+					: blockedByHook!;
+				const suspended = await this.#applyToolExecutionResult({
+					context,
+					batch,
+					accumulatedUsage,
+					deferredContextItems,
+					index,
 					call,
-					remainingCalls: batch.calls.slice(index + 1),
-					conversation: this.#options.store.loadConversation(this.#options.sessionId),
-					assistantText: batch.assistantText,
-					...(batch.responseId ? { responseId: batch.responseId } : {}),
-					usage: accumulatedUsage,
-					...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
-					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
-					...clarification,
+					executionCall,
+					result,
+					executed: false,
+					allowClarification: true,
 				});
-				emit({
-					type: "clarification_requested",
-					clientTurnId: pending.clientTurnId,
-					turnId: pending.turnId,
-					requestId: pending.requestId,
-					callId: boundedCallId(pending.call.callId),
-					toolName: boundedToolName(pending.call.name),
-					question: pending.question,
-					options: pending.options,
-					header: pending.header,
-					multiSelect: pending.multiSelect,
-				});
-				const running = this.#runningTurn(pending.clientTurnId);
-				await this.#writeTerminalSnapshot(running);
-				return running;
-				}
-				const contextItem = this.#persistToolResult(submission.clientTurnId, turnId, result);
-				if (contextItem) deferredContextItems.push(contextItem);
-				if (result.success && result.planUpdate) {
-					emit({
-						type: "plan_updated",
-						...(result.planUpdate.explanation
-							? { explanation: result.planUpdate.explanation }
-							: {}),
-						items: result.planUpdate.items,
-					});
-				}
-				if (policy?.kind !== "deny" && !blockedByHook) {
-					this.#options.agentCheckpoint?.({
-						kind: "tool_call",
-						committed: true,
-						turnId,
-						callId: executionCall.callId,
-						mutating: this.#options.isMutatingTool?.(executionCall.name) ?? true,
-					});
-				}
-				if (policy?.kind !== "deny" && !blockedByHook) {
-					const after = await context.hookCoordinator?.afterTool(executionCall, result, signal);
-					if (after) {
-						context.hookContexts.append({
-							point: "post_tool_use",
-							contexts: after.contexts,
-						});
-					}
-				}
-			assertNotAborted(signal);
+				if (suspended) return suspended;
+				continue;
+			}
+
+			if (this.#supportsParallelToolCall(executionCall)) {
+				pendingParallelCalls.push({ index, call, executionCall });
+				continue;
+			}
+
+			const earlierSuspension = await flushParallelCalls();
+			if (earlierSuspension) return earlierSuspension;
+			const result = await this.#executeTool(executionCall, context);
+			const suspended = await this.#applyToolExecutionResult({
+				context,
+				batch,
+				accumulatedUsage,
+				deferredContextItems,
+				index,
+				call,
+				executionCall,
+				result,
+				executed: true,
+				allowClarification: true,
+			});
+			if (suspended) return suspended;
 		}
+		const trailingSuspension = await flushParallelCalls();
+		if (trailingSuspension) return trailingSuspension;
 		this.#persistDeferredContextItems(deferredContextItems, signal);
+		return undefined;
+	}
+
+	#supportsParallelToolCall(call: CanonicalToolCall): boolean {
+		try {
+			return this.#options.toolRouter?.supportsParallelToolCalls?.(call) === true;
+		} catch {
+			return false;
+		}
+	}
+
+	async #executeParallelToolPhase(
+		phase: readonly PreparedParallelToolCall[],
+		context: TurnExecutionContext,
+	): Promise<readonly ToolExecutionResult[]> {
+		const controller = new AbortController();
+		const phaseContext = Object.freeze({
+			...context,
+			signal: AbortSignal.any([context.signal, controller.signal]),
+		});
+		try {
+			const outcomes = await Promise.all(phase.map(async (prepared) => (
+				await this.#runTool(prepared.executionCall, phaseContext)
+			)));
+			if (outcomes.some((outcome) => clarificationRequest(outcome.result) !== undefined)) {
+				throw new ProviderFailure({
+					code: "tool_protocol_error",
+					message: "parallel tool requested clarification",
+				});
+			}
+			for (const outcome of outcomes) {
+				this.#completeToolExecution(outcome.active, outcome.result, context.emit);
+			}
+			return outcomes.map((outcome) => outcome.result);
+		} catch (error) {
+			controller.abort();
+			this.#interruptActiveTools(context.turnId, context.emit);
+			throw error;
+		}
+	}
+
+	async #applyToolExecutionResult(input: {
+		readonly context: TurnExecutionContext;
+		readonly batch: PendingToolBatch;
+		readonly accumulatedUsage: ProviderUsage;
+		readonly deferredContextItems: Array<Omit<AppendContextItemInput, "sessionId">>;
+		readonly index: number;
+		readonly call: CanonicalToolCall;
+		readonly executionCall: CanonicalToolCall;
+		readonly result: ToolExecutionResult;
+		readonly executed: boolean;
+		readonly allowClarification: boolean;
+	}): Promise<RuntimeTurnRecord | undefined> {
+		const {
+			context,
+			batch,
+			accumulatedUsage,
+			deferredContextItems,
+			index,
+			call,
+			executionCall,
+			result,
+			executed,
+			allowClarification,
+		} = input;
+		const { submission, turnId, config, emit, signal } = context;
+		if (!executed) emitToolResult(result, 0, emit);
+		const clarification = clarificationRequest(result);
+		if (clarification) {
+			if (!allowClarification) {
+				throw new ProviderFailure({
+					code: "tool_protocol_error",
+					message: "parallel tool requested clarification",
+				});
+			}
+			const coordinator = this.#options.clarificationCoordinator;
+			if (!coordinator) {
+				throw new ProviderFailure({
+					code: "unsupported_capability",
+					message: "clarification continuation is not configured",
+				});
+			}
+			this.#persistDeferredContextItems(deferredContextItems, signal);
+			const pending = coordinator.suspend({
+				clientTurnId: submission.clientTurnId,
+				clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
+				turnId,
+				userMessage: submission.message,
+				providerProtocol: config.protocol,
+				call,
+				remainingCalls: batch.calls.slice(index + 1),
+				conversation: this.#options.store.loadConversation(this.#options.sessionId),
+				assistantText: batch.assistantText,
+				...(batch.responseId ? { responseId: batch.responseId } : {}),
+				usage: accumulatedUsage,
+				...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
+				...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
+				...clarification,
+			});
+			emit({
+				type: "clarification_requested",
+				clientTurnId: pending.clientTurnId,
+				turnId: pending.turnId,
+				requestId: pending.requestId,
+				callId: boundedCallId(pending.call.callId),
+				toolName: boundedToolName(pending.call.name),
+				question: pending.question,
+				options: pending.options,
+				header: pending.header,
+				multiSelect: pending.multiSelect,
+			});
+			const running = this.#runningTurn(pending.clientTurnId);
+			await this.#writeTerminalSnapshot(running);
+			return running;
+		}
+
+		const contextItem = this.#persistToolResult(submission.clientTurnId, turnId, result);
+		if (contextItem) deferredContextItems.push(contextItem);
+		if (result.success && result.planUpdate) {
+			emit({
+				type: "plan_updated",
+				...(result.planUpdate.explanation
+					? { explanation: result.planUpdate.explanation }
+					: {}),
+				items: result.planUpdate.items,
+			});
+		}
+		if (executed) {
+			this.#options.agentCheckpoint?.({
+				kind: "tool_call",
+				committed: true,
+				turnId,
+				callId: executionCall.callId,
+				mutating: this.#options.isMutatingTool?.(executionCall.name) ?? true,
+			});
+			const after = await context.hookCoordinator?.afterTool(executionCall, result, signal);
+			if (after) {
+				context.hookContexts.append({
+					point: "post_tool_use",
+					contexts: after.contexts,
+				});
+			}
+		}
+		assertNotAborted(signal);
 		return undefined;
 	}
 
@@ -1510,12 +1665,22 @@ export class NodeTurnRuntime {
 		call: CanonicalToolCall,
 		context: TurnExecutionContext,
 	): Promise<ToolExecutionResult> {
+		const outcome = await this.#runTool(call, context);
+		this.#completeToolExecution(outcome.active, outcome.result, context.emit);
+		return outcome.result;
+	}
+
+	async #runTool(
+		call: CanonicalToolCall,
+		context: TurnExecutionContext,
+	): Promise<PendingToolExecutionResult> {
 		const { emit, signal } = context;
 		const router = this.#options.toolRouter;
 		if (!router) throw new ProviderFailure({
 			code: "unsupported_capability",
 			message: "tool execution is not configured",
 		});
+		assertNotAborted(signal);
 		this.#options.agentCheckpoint?.({
 			kind: "tool_call",
 			committed: false,
@@ -1553,8 +1718,7 @@ export class NodeTurnRuntime {
 				diagnostics: { tool_name: boundedToolName(call.name) },
 			});
 		}
-		this.#completeToolExecution(activeTool, result, emit);
-		return result;
+		return { active: activeTool, result };
 	}
 
 	#beginToolExecution(
@@ -1566,13 +1730,19 @@ export class NodeTurnRuntime {
 	): ActiveToolExecution {
 		const active: ActiveToolExecution = {
 			turnId,
+			trackingCallId: callId,
 			callId: boundedCallId(callId),
 			toolName: boundedToolName(toolName),
 			startedAt: this.#options.monotonicClock?.() ?? performance.now(),
 			interruptErrorKind,
 			terminalEmitted: false,
 		};
-		this.#activeToolExecutions.set(turnId, active);
+		let activeForTurn = this.#activeToolExecutions.get(turnId);
+		if (!activeForTurn) {
+			activeForTurn = new Map();
+			this.#activeToolExecutions.set(turnId, activeForTurn);
+		}
+		activeForTurn.set(active.trackingCallId, active);
 		emit({
 			type: "tool_execution_started",
 			callId: active.callId,
@@ -1593,9 +1763,12 @@ export class NodeTurnRuntime {
 		emitToolResult(result, boundedDurationMs(active.startedAt, finishedAt), emit);
 	}
 
-	#interruptActiveTool(turnId: string, emit: (event: RuntimeEvent) => void): void {
+	#interruptActiveTools(turnId: string, emit: (event: RuntimeEvent) => void): void {
 		const active = this.#activeToolExecutions.get(turnId);
-		if (active) this.#interruptToolExecution(active, emit);
+		if (!active) return;
+		for (const execution of [...active.values()]) {
+			this.#interruptToolExecution(execution, emit);
+		}
 	}
 
 	#interruptToolExecution(
@@ -1630,9 +1803,10 @@ export class NodeTurnRuntime {
 	}
 
 	#forgetToolExecution(active: ActiveToolExecution): void {
-		if (this.#activeToolExecutions.get(active.turnId) === active) {
-			this.#activeToolExecutions.delete(active.turnId);
-		}
+		const activeForTurn = this.#activeToolExecutions.get(active.turnId);
+		if (activeForTurn?.get(active.trackingCallId) !== active) return;
+		activeForTurn.delete(active.trackingCallId);
+		if (activeForTurn.size === 0) this.#activeToolExecutions.delete(active.turnId);
 	}
 
 	#persistToolResult(

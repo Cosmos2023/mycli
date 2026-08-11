@@ -508,6 +508,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			? [tool.name]
 			: [];
 	}));
+	const parallelAgentTools = new Set(toolManifest.tools.flatMap((tool) => (
+		tool.supports_parallel_tool_calls
+			? [tool.name]
+			: []
+	)));
 	const contextItemCoordinator = new ContextItemCoordinator({
 		extractArtifact: skillInvocationArtifactFromMetadata,
 	});
@@ -632,6 +637,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		const toolRouter = new ToolRouter({
 			adapters,
 			exposure: plannedTools({ shell: true }),
+			parallelToolNames: parallelAgentTools,
 		});
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
 			sessionId,

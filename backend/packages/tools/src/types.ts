@@ -130,6 +130,7 @@ export interface ToolAdapter {
 }
 
 export interface ToolRouterContract {
+	supportsParallelToolCalls?(call: CanonicalToolCall): boolean;
 	execute(
 		call: CanonicalToolCall,
 		options: ToolExecutionOptions,

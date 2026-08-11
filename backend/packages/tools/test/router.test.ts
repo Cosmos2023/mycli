@@ -39,6 +39,21 @@ test("routes a valid exposed call with parsed arguments", async () => {
 	assert.deepEqual(result, success("call-1"));
 });
 
+test("reports parallel support only for explicitly configured routes", () => {
+	const router = createRouter(adapterThatMustNotRun(), new Set(["Read"]));
+
+	assert.equal(router.supportsParallelToolCalls?.({
+		callId: "call-read",
+		name: "Read",
+		argumentsJson: "{}",
+	}), true);
+	assert.equal(router.supportsParallelToolCalls?.({
+		callId: "call-unknown",
+		name: "Unknown",
+		argumentsJson: "{}",
+	}), false);
+});
+
 test("returns bounded failures for malformed and non-object JSON", async () => {
 	const router = createRouter(adapterThatMustNotRun());
 	for (const argumentsJson of ["{", "[1,2]", "null"] as const) {
@@ -151,6 +166,11 @@ interface Adapter {
 }
 
 interface Router {
+	supportsParallelToolCalls?(call: {
+		readonly callId: string;
+		readonly name: string;
+		readonly argumentsJson: string;
+	}): boolean;
 	execute(call: {
 		readonly callId: string;
 		readonly name: string;
@@ -162,12 +182,20 @@ interface Router {
 	}>;
 }
 
-function createRouter(adapter: Adapter): Router {
+function createRouter(adapter: Adapter, parallelToolNames?: ReadonlySet<string>): Router {
 	const ToolRouter = Reflect.get(tools, "ToolRouter") as unknown as
-		| (new (options: { readonly adapters: readonly Adapter[]; readonly exposure: readonly unknown[] }) => Router)
+		| (new (options: {
+			readonly adapters: readonly Adapter[];
+			readonly exposure: readonly unknown[];
+			readonly parallelToolNames?: ReadonlySet<string>;
+		}) => Router)
 		| undefined;
 	assert.equal(typeof ToolRouter, "function", "ToolRouter must be exported");
-	return new ToolRouter!({ adapters: [adapter], exposure: [readDefinition] });
+	return new ToolRouter!({
+		adapters: [adapter],
+		exposure: [readDefinition],
+		...(parallelToolNames ? { parallelToolNames } : {}),
+	});
 }
 
 function adapterThatMustNotRun(): Adapter {

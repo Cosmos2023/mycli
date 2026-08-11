@@ -43,6 +43,8 @@ Each tool entry must include:
 - `description`: provider-visible description
 - `parameters`: provider-visible parameter schema rows
 - `risk_level`: `low`, `medium`, or `high`
+- `supports_parallel_tool_calls`: whether the built-in tool may join a
+  consecutive parallel-safe runtime phase
 - `approval_policy`: stable policy string such as `auto_allow`,
   `auto_allow_or_request`, or `shell_safety_analysis`
 - `capability_tags`: bounded machine-readable tags
@@ -56,6 +58,14 @@ Each tool entry must include:
 - The manifest is read-only. Building or validating it must not create files,
   logs, sessions, traces, shell processes, provider requests, or network calls.
 - Built-in tool ids and names must be unique.
+- `supports_parallel_tool_calls` is a conservative execution opt-in, not only
+  discovery metadata. The Node runtime derives its parallel route set from the
+  built-in manifest only; extension entries, missing metadata, unknown routes,
+  and router implementations without the optional capability query remain
+  sequential.
+- A pre-tool hook may change the routed tool. The runtime must re-evaluate the
+  modified route against the router's parallel set before scheduling it; a
+  modified non-parallel route is a barrier.
 - `ToolRegistry.render_for_model()` remains the provider-facing schema surface;
   manifest additions must not change provider schema ordering or contents unless
   the tool spec itself intentionally changes.
@@ -125,6 +135,9 @@ Required tests for manifest changes:
 - Safety policy remains aligned with manifest risk/approval metadata for core
   local tools.
 - Existing tool tests continue to pass.
+- Router tests assert that only an exposed route in the explicit built-in
+  parallel set reports parallel support; unknown and unclassified routes do
+  not opt in.
 
 ## Scenario: OpenAI-Compatible Tool Projection
 
