@@ -30,6 +30,7 @@ import type {
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
+import { shellCallRequestsSandboxOverride } from "@mycli/tools";
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
@@ -317,6 +318,9 @@ export class ApprovalContinuationCoordinator {
 				callId: pending.call.callId,
 				publishLifecycle: this.#publishLifecycle,
 				...(input.executionPolicy ? { executionPolicy: input.executionPolicy } : {}),
+				...(shellCallRequestsSandboxOverride(pending.call)
+					? { sandboxOverrideApproved: true }
+					: {}),
 			});
 		} catch {
 			return this.#interruptUnknown(executing);

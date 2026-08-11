@@ -117,6 +117,51 @@ test("Shell confines workspace cwd and allows an outside cwd only with full acce
 	assert.equal(manager.starts[0]?.cwd, await realpath(outside));
 });
 
+test("Shell requires runtime authorization before using an escalated process profile", async (t) => {
+	const parent = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(parent, { recursive: true, force: true })));
+	const root = join(parent, "workspace");
+	const outside = join(parent, "outside");
+	await Promise.all([mkdir(root), mkdir(outside)]);
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({
+		workspaceRoot: root,
+		manager,
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/sh" }),
+		platform: "linux",
+		processSandboxProbes: { platform: "linux", isExecutable: () => false },
+	});
+	const restricted = {
+		...executionOptions(root),
+		executionPolicy: executionPolicy("workspace", root),
+	};
+
+	const forged = await tool.execute({
+		command: "pwd",
+		cwd: outside,
+		sandbox_permissions: "require_escalated",
+	}, restricted);
+	const invalid = await tool.execute({
+		command: "pwd",
+		sandbox_permissions: "host",
+	}, restricted);
+	const approved = await tool.execute({
+		command: "pwd",
+		cwd: outside,
+		sandbox_permissions: "require_escalated",
+	}, {
+		...restricted,
+		sandboxOverrideApproved: true,
+	});
+
+	assert.equal(forged.errorKind, "sandbox_override_not_approved");
+	assert.equal(invalid.errorKind, "invalid_sandbox_permissions");
+	assert.equal(approved.success, true);
+	assert.equal(manager.starts.length, 1);
+	assert.equal(manager.starts[0]?.executable, "/bin/sh");
+	assert.equal(manager.starts[0]?.cwd, await realpath(outside));
+});
+
 test("Shell sanitizes environment and applies the frozen sandbox before manager start", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));

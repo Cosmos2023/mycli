@@ -13,6 +13,7 @@ import {
 	type ExecPolicyRule,
 } from "./exec-policy-proposal.ts";
 import {
+	isKnownDangerousShellSegment,
 	isKnownSafeShellSegment,
 	parseShellCommand,
 	type ShellCommandKind,
@@ -23,6 +24,7 @@ import {
 	type PermissionProfile,
 } from "./execution-policy.ts";
 import { builtinToolManifest } from "./manifest.ts";
+import { parseShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
 
 const MAX_PREVIEW_CHARS = 512;
 const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/u;
@@ -47,6 +49,7 @@ interface ApprovalPolicyDecisionBase {
 
 export interface ApprovalPolicyAllow extends ApprovalPolicyDecisionBase {
 	readonly kind: "allow";
+	readonly sandboxOverrideApproved?: boolean;
 }
 
 export interface ApprovalPolicyRequest extends ApprovalPolicyDecisionBase {
@@ -207,6 +210,13 @@ export class ApprovalPolicy {
 		if (typeof command !== "string" || !command.trim()) {
 			return deny(call, "Shell command is not valid for the active policy.");
 		}
+		const sandboxPermissions = call.name === "Shell"
+			? parseShellSandboxPermissions(argumentsValue.sandbox_permissions)
+			: "use_default";
+		if (!sandboxPermissions) {
+			return deny(call, "Shell sandbox permissions are not valid for the active policy.");
+		}
+		const requestsSandboxOverride = sandboxPermissions === "require_escalated";
 		const parsed = parseShellCommand(command, { shellKind: this.#shellKind });
 		const rules = Object.freeze([...this.#execPolicyRules, ...this.#sessionRules]);
 		if (parsed.kind === "invalid") {
@@ -238,32 +248,67 @@ export class ApprovalPolicy {
 					APPROVAL_OPTIONS,
 				);
 			}
-			if (match?.decision === "allow" || isKnownSafeShellSegment(segment, {
+			if (match?.decision === "allow") continue;
+			if (requestsSandboxOverride && !fullAccess) {
+				return this.#shellApprovalRequest(
+					call,
+					argumentsValue,
+					approvalPolicy,
+					rules,
+					segment.words,
+					"Shell sandbox override requires approval.",
+				);
+			}
+			if (isKnownSafeShellSegment(segment, {
 				shellKind: this.#shellKind,
 				platform: this.#platform,
+				workspaceRoot: this.#workspaceRoot,
 			})) continue;
 			if (fullAccess) continue;
-
-			const commandPattern = boundedPattern(segment.words.slice(0, 3));
-			const proposal = validateExecPolicyProposal({
-				toolName: call.name,
-				argumentsValue,
+			const dangerous = isKnownDangerousShellSegment(segment, {
 				shellKind: this.#shellKind,
-				rules,
-				approvalPolicy,
 			});
-			const proposed = proposal.pattern;
-			return shellRequest(
+			if (call.name === "Shell" && !dangerous) continue;
+			return this.#shellApprovalRequest(
 				call,
-				commandPattern,
-				proposed,
-				"Unknown Shell command requires approval.",
-				proposed
-					? Object.freeze([...SHELL_APPROVAL_OPTIONS, "always_allow"] as const)
-					: SHELL_APPROVAL_OPTIONS,
+				argumentsValue,
+				approvalPolicy,
+				rules,
+				segment.words,
+				dangerous
+					? "Dangerous Shell command requires approval."
+					: "Unknown Shell command requires approval.",
 			);
 		}
-		return allow(call, `${call.name} command allowed`);
+		return allow(call, `${call.name} command allowed`, requestsSandboxOverride);
+	}
+
+	#shellApprovalRequest(
+		call: CanonicalToolCall,
+		argumentsValue: Readonly<Record<string, unknown>>,
+		approvalPolicy: string,
+		rules: readonly ExecPolicyRule[],
+		words: readonly string[],
+		reason: string,
+	): ApprovalPolicyRequest {
+		const commandPattern = boundedPattern(words.slice(0, 3));
+		const proposal = validateExecPolicyProposal({
+			toolName: call.name,
+			argumentsValue,
+			shellKind: this.#shellKind,
+			rules,
+			approvalPolicy,
+		});
+		const proposed = proposal.pattern;
+		return shellRequest(
+			call,
+			commandPattern,
+			proposed,
+			reason,
+			proposed
+				? Object.freeze([...SHELL_APPROVAL_OPTIONS, "always_allow"] as const)
+				: SHELL_APPROVAL_OPTIONS,
+		);
 	}
 
 	#projectWorkspacePath(rawPath: string): string | undefined {
@@ -368,13 +413,18 @@ function mutationPreviewPath(rawPath: string): string | undefined {
 	return posix.basename(normalized.replaceAll("\\", "/")) || "file";
 }
 
-function allow(call: CanonicalToolCall, preview: string): ApprovalPolicyAllow {
+function allow(
+	call: CanonicalToolCall,
+	preview: string,
+	sandboxOverrideApproved = false,
+): ApprovalPolicyAllow {
 	return Object.freeze({
 		kind: "allow" as const,
 		callId: call.callId,
 		toolName: call.name,
 		preview: bounded(preview),
 		reason: "Tool is allowed by the active policy.",
+		...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
 	});
 }
 

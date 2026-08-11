@@ -22,6 +22,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
 | [Context Management Contract](./context-management-contract.md) | Project context files, cache classes, fencing, and context diagnostics | Active |
 | [Tool Manifest Contract](./tool-manifest-contract.md) | Built-in local tool registry and manifest metadata | Active |
+| [Shell Execution Policy Contract](./shell-execution-policy-contract.md) | Sandbox-first Shell classification, approval, escalation, and recovery | Active |
 | [Plugin Runtime Contract](./plugin-runtime-contract.md) | Minimal local plugin manifest, loading, hook/tool registration, and diagnostics | Active |
 | [Read-only Tool Output Contract](./read-only-tool-output-contract.md) | Model-visible LS/Glob/Grep/Read discovery output | Active |
 | [File Mutation Tool Contract](./file-mutation-tool-contract.md) | Write/Edit/Patch safety, diffs, and diagnostics | Active |

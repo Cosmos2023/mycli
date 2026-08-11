@@ -82,7 +82,7 @@ test("full access skips routine approval for valid tools", () => {
 		extensionTools: [{ name: "McpSearch", approvalPolicy: "request" }],
 	});
 	const shell = toolCall("Shell", { command: "python deploy.py" });
-	assert.equal(policy.evaluate(shell).kind, "request");
+	assert.equal(policy.evaluate(shell).kind, "allow");
 
 	policy.configurePermissionProfile("full-access");
 
@@ -91,7 +91,7 @@ test("full access skips routine approval for valid tools", () => {
 	assert.equal(policy.evaluate(writeCall("../outside.txt")).kind, "allow");
 	assert.equal(policy.evaluate(writeCall("/private/outside.txt")).kind, "allow");
 	assert.equal(policy.evaluate(toolCall("McpSearch", { query: "docs" })).kind, "allow");
-	assert.equal(policy.evaluate(shell, WORKSPACE_EXECUTION_POLICY).kind, "request");
+	assert.equal(policy.evaluate(shell, WORKSPACE_EXECUTION_POLICY).kind, "allow");
 });
 
 test("full access keeps explicit rules and invalid calls fail closed", () => {
@@ -123,6 +123,10 @@ test("full access keeps explicit rules and invalid calls fail closed", () => {
 		name: "Shell",
 		argumentsJson: "not-json",
 	}).kind, "deny");
+	assert.equal(deny.evaluate(toolCall("Shell", {
+		command: "pwd",
+		sandbox_permissions: "invalid",
+	})).kind, "deny");
 	assert.equal(deny.evaluate(toolCall("Unknown", {})).kind, "deny");
 });
 
@@ -146,17 +150,29 @@ test("full access never prompts for complex or malformed shell commands", () => 
 	assert.equal(restricted.evaluate(toolCall("Shell", { command: "echo ready > output.txt" })).kind, "deny");
 });
 
-test("shell policy allows known-safe commands and requests narrow approval options", () => {
+test("shell policy runs safe and unknown commands in the active sandbox", () => {
 	const policy = approvalPolicy({ autoApproveMedium: true });
 
 	assert.equal(policy.evaluate(toolCall("Shell", { command: "pwd" })).kind, "allow");
-	const withoutProposal = policy.evaluate(toolCall("Shell", { command: "python script.py" }));
+	assert.equal(policy.evaluate(toolCall("Shell", { command: "python script.py" })).kind, "allow");
+	assert.equal(policy.evaluate(toolCall("Bash", { command: "python script.py" })).kind, "request");
+	assert.equal(policy.evaluate(toolCall("Shell", { command: "rm -rf build" })).kind, "request");
+	assert.equal(policy.evaluate(toolCall("Shell", { command: "echo ready > output.txt" })).kind, "request");
+});
+
+test("restricted Shell escalation requests approval and validates the enum", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	const withoutProposal = policy.evaluate(toolCall("Shell", {
+		command: "python script.py",
+		sandbox_permissions: "require_escalated",
+	}));
 	assert.equal(withoutProposal.kind, "request");
 	assert.deepEqual(withoutProposal.options, ["approve_once", "reject", "allow_session"]);
 
 	const persistent = policy.evaluate(toolCall("Shell", {
 		command: "python -m pytest -q",
 		prefix_rule: ["python", "-m", "pytest"],
+		sandbox_permissions: "require_escalated",
 	}));
 	assert.equal(persistent.kind, "request");
 	assert.deepEqual(persistent.options, [
@@ -167,6 +183,10 @@ test("shell policy allows known-safe commands and requests narrow approval optio
 	]);
 	assert.deepEqual(persistent.proposedExecPolicyPattern, ["python", "-m", "pytest"]);
 	assert.deepEqual(persistent.commandPattern, ["python", "-m", "pytest"]);
+	assert.equal(policy.evaluate(toolCall("Shell", {
+		command: "pwd",
+		sandbox_permissions: "invalid",
+	})).kind, "deny");
 });
 
 test("explicit project policy has precedence and persistent options cannot override ask or deny", () => {
@@ -200,16 +220,43 @@ test("explicit project policy has precedence and persistent options cannot overr
 	assert.equal(ask.options?.includes("always_allow"), false);
 });
 
+test("explicit rules remain authoritative for restricted Shell escalation", () => {
+	const call = toolCall("Shell", {
+		command: "python -m pytest -q",
+		sandbox_permissions: "require_escalated",
+	});
+	const rule = (decision: "allow" | "ask" | "deny") => approvalPolicy({
+		autoApproveMedium: true,
+		execPolicyRules: [{
+			source: "project",
+			index: 0,
+			pattern: ["python", "-m", "pytest"],
+			decision,
+		}],
+	});
+
+	const allowed = rule("allow").evaluate(call);
+	assert.equal(allowed.kind, "allow");
+	assert.equal(allowed.sandboxOverrideApproved, true);
+	assert.equal(rule("ask").evaluate(call).kind, "request");
+	assert.equal(rule("deny").evaluate(call).kind, "deny");
+});
+
 test("session allowances immediately authorize the exact command prefix", () => {
 	const policy = approvalPolicy({ autoApproveMedium: true });
-	const call = toolCall("Shell", { command: "python -m pytest -q" });
+	const call = toolCall("Shell", {
+		command: "python -m pytest -q",
+		sandbox_permissions: "require_escalated",
+	});
 	const requested = policy.evaluate(call);
 	assert.equal(requested.kind, "request");
 	assert.ok(requested.commandPattern);
 
 	policy.allowSession?.(requested.commandPattern ?? []);
 
-	assert.equal(policy.evaluate(call).kind, "allow");
+	const allowed = policy.evaluate(call);
+	assert.equal(allowed.kind, "allow");
+	assert.equal(allowed.sandboxOverrideApproved, true);
 });
 
 test("session allowances can be listed, revoked, and cleared without changing persistent rules", () => {
@@ -244,6 +291,7 @@ function approvalPolicy(options: {
 		readonly options?: readonly string[];
 		readonly commandPattern?: readonly string[];
 		readonly proposedExecPolicyPattern?: readonly string[];
+		readonly sandboxOverrideApproved?: boolean;
 	};
 	allowSession?(pattern: readonly string[]): void;
 	listSessionAllowances?(): readonly (readonly string[])[];
@@ -266,6 +314,7 @@ function approvalPolicy(options: {
 				readonly options?: readonly string[];
 				readonly commandPattern?: readonly string[];
 				readonly proposedExecPolicyPattern?: readonly string[];
+				readonly sandboxOverrideApproved?: boolean;
 			};
 			allowSession?(pattern: readonly string[]): void;
 			listSessionAllowances?(): readonly (readonly string[])[];

@@ -111,6 +111,19 @@ test("approval execution forwards the frozen execution policy", async () => {
 	assert.equal(fixture.executionOptions?.executionPolicy, executionPolicy);
 });
 
+test("approval recovery derives sandbox override authorization from the persisted Shell call", async () => {
+	const fixture = approvalFixture({ shellApproval: true });
+	fixture.coordinator.suspend(suspension(true, true));
+
+	await fixture.reopen().resolve({
+		decisionId: "call-1",
+		choice: "approve_once",
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(fixture.executionOptions?.sandboxOverrideApproved, true);
+});
+
 test("reject commits a denied result without executing the tool", async () => {
 	const fixture = approvalFixture();
 	fixture.coordinator.suspend(suspension());
@@ -280,7 +293,7 @@ function approvalFixture(options: {
 	readonly effectStatus?: ApprovalResolution["status"];
 	readonly executeAbort?: boolean;
 	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
-	readonly shellApproval?: boolean;
+		readonly shellApproval?: boolean;
 	readonly refreshFailure?: boolean;
 } = {}) {
 	const trace: string[] = [];
@@ -451,13 +464,13 @@ function shellLifecycleEvent(): ShellLifecycleEvent {
 	};
 }
 
-function suspension(shell = false) {
+function suspension(shell = false, escalated = false) {
 	return {
 		clientTurnId: "client-1",
 		turnId: "turn-1",
 		userMessage: shell ? "run the tests" : "write the notes",
 		providerProtocol: "responses" as const,
-		call: shell ? shellCall() : writeCall(),
+		call: shell ? shellCall(escalated) : writeCall(),
 		remainingCalls: Object.freeze([] as CanonicalToolCall[]),
 		conversation: Object.freeze([{ role: "user" as const, content: "write the notes" }]),
 		assistantText: "",
@@ -472,13 +485,14 @@ function suspension(shell = false) {
 	};
 }
 
-function shellCall(): CanonicalToolCall {
+function shellCall(escalated = false): CanonicalToolCall {
 	return {
 		callId: "call-1",
 		name: "Shell",
 		argumentsJson: JSON.stringify({
 			command: "python -m pytest -q",
 			prefix_rule: ["python", "-m", "pytest"],
+			...(escalated ? { sandbox_permissions: "require_escalated" } : {}),
 		}),
 	};
 }

@@ -2571,6 +2571,106 @@ test("evaluates approvals with the frozen turn execution policy", async () => {
 	assert.deepEqual(seenProfiles, [profile]);
 });
 
+test("runtime forwards an exact Shell sandbox override authorization to the router", async () => {
+	const trace: string[] = [];
+	const router = new FakeRouter(trace, {
+		callId: "call-shell",
+		toolName: "Shell",
+		success: true,
+		modelOutput: "Process exited with code 0",
+		summary: "Shell completed",
+		metadata: {},
+	});
+	const provider = scriptedProvider(trace, [], [[
+		{
+			type: "tool_call",
+			callId: "call-shell",
+			name: "Shell",
+			argumentsJson: JSON.stringify({
+				command: "python script.py",
+				sandbox_permissions: "require_escalated",
+			}),
+		},
+		{ type: "completed", responseId: "resp-shell" },
+	], [
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+
+	const result = await createRuntime({
+		store: new FakeStore(trace),
+		provider,
+		toolRouter: router,
+		toolDefinitions: [SHELL_TOOL_DEFINITION],
+		approvalPolicy: {
+			evaluate: (call) => ({
+				kind: "allow",
+				callId: call.callId,
+				toolName: call.name,
+				preview: "Shell command allowed",
+				reason: "Approved by exact execution rule.",
+				sandboxOverrideApproved: true,
+			}),
+		},
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(router.options?.sandboxOverrideApproved, true);
+});
+
+test("runtime withholds Shell sandbox override authorization after a hook changes the call", async () => {
+	const trace: string[] = [];
+	const router = new FakeRouter(trace, {
+		callId: "call-shell",
+		toolName: "Shell",
+		success: true,
+		modelOutput: "Process exited with code 0",
+		summary: "Shell completed",
+		metadata: {},
+	});
+	const provider = scriptedProvider(trace, [], [[
+		{
+			type: "tool_call",
+			callId: "call-shell",
+			name: "Shell",
+			argumentsJson: JSON.stringify({
+				command: "python script.py",
+				sandbox_permissions: "require_escalated",
+			}),
+		},
+		{ type: "completed", responseId: "resp-shell" },
+	], [
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const hookRunner: HookRunnerContract = {
+		run: async (input) => input.point === "pre_tool_use"
+			? [{
+				hookId: "modify-shell",
+				result: { action: "modify", arguments: { command: "python changed.py" } },
+			}]
+			: [],
+	};
+
+	await createRuntime({
+		store: new FakeStore(trace),
+		provider,
+		toolRouter: router,
+		toolDefinitions: [SHELL_TOOL_DEFINITION],
+		hookRunner,
+		approvalPolicy: {
+			evaluate: (call) => ({
+				kind: "allow",
+				callId: call.callId,
+				toolName: call.name,
+				preview: "Shell command allowed",
+				reason: "Approved by exact execution rule.",
+				sandboxOverrideApproved: true,
+			}),
+		},
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(router.options?.sandboxOverrideApproved, undefined);
+});
+
 test("execution policy configuration updates routine approval profile", () => {
 	const approvalPolicy = new ApprovalPolicy({
 		workspaceRoot: "/workspace",
@@ -2580,7 +2680,7 @@ test("execution policy configuration updates routine approval profile", () => {
 	const shellCall: CanonicalToolCall = {
 		callId: "call-shell",
 		name: "Shell",
-		argumentsJson: JSON.stringify({ command: "python deploy.py" }),
+		argumentsJson: JSON.stringify({ command: "rm -rf build" }),
 	};
 	const runtime = createRuntime({
 		store: new FakeStore([]),

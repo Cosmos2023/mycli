@@ -161,6 +161,11 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	const writeStdin = manifest.tools.find((tool) => tool.name === "WriteStdin");
 	assert.ok(shell && writeStdin);
 	assert.deepEqual(requiredFields(shell.inputSchema), ["command"]);
+	const shellProperties = Reflect.get(shell.inputSchema, "properties") as Readonly<Record<string, unknown>>;
+	assert.deepEqual(
+		shellProperties.sandbox_permissions,
+		{ type: "string", enum: ["use_default", "require_escalated"] },
+	);
 	assert.deepEqual(requiredFields(writeStdin.inputSchema), ["session_id"]);
 	const fileExposure = planToolExposure(manifest, { shell: false }) as readonly {
 		readonly name: string;

@@ -1453,7 +1453,13 @@ export class NodeTurnRuntime {
 
 			const earlierSuspension = await flushParallelCalls();
 			if (earlierSuspension) return earlierSuspension;
-			const result = await this.#executeTool(executionCall, context);
+			const result = await this.#executeTool(
+				executionCall,
+				context,
+				policy?.kind === "allow"
+					&& policy.sandboxOverrideApproved === true
+					&& sameToolCall(call, executionCall),
+			);
 			const suspended = await this.#applyToolExecutionResult({
 				context,
 				batch,
@@ -1664,8 +1670,9 @@ export class NodeTurnRuntime {
 	async #executeTool(
 		call: CanonicalToolCall,
 		context: TurnExecutionContext,
+		sandboxOverrideApproved = false,
 	): Promise<ToolExecutionResult> {
-		const outcome = await this.#runTool(call, context);
+		const outcome = await this.#runTool(call, context, sandboxOverrideApproved);
 		this.#completeToolExecution(outcome.active, outcome.result, context.emit);
 		return outcome.result;
 	}
@@ -1673,6 +1680,7 @@ export class NodeTurnRuntime {
 	async #runTool(
 		call: CanonicalToolCall,
 		context: TurnExecutionContext,
+		sandboxOverrideApproved = false,
 	): Promise<PendingToolExecutionResult> {
 		const { emit, signal } = context;
 		const router = this.#options.toolRouter;
@@ -1704,6 +1712,7 @@ export class NodeTurnRuntime {
 				callId: call.callId,
 				publishLifecycle: this.#options.publishLifecycle,
 				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
+				...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
 			});
 			assertNotAborted(signal);
 		} catch (error) {
@@ -2095,6 +2104,12 @@ export class NodeTurnRuntime {
 			return false;
 		}
 	}
+}
+
+function sameToolCall(left: CanonicalToolCall, right: CanonicalToolCall): boolean {
+	return left.callId === right.callId
+		&& left.name === right.name
+		&& left.argumentsJson === right.argumentsJson;
 }
 
 function clarificationRequest(result: ToolExecutionResult): {

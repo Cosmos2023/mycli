@@ -26,6 +26,12 @@ const SHELL_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 		required: false,
 		description: "Optional executable prefix proposed for persistent approval; it is never executed.",
 	},
+	{
+		name: "sandbox_permissions",
+		type: "string",
+		required: false,
+		description: "Use require_escalated only when the command must run outside the active sandbox.",
+	},
 ]);
 
 export const SHELL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
@@ -44,6 +50,10 @@ export const SHELL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 				type: "array",
 				items: { type: "string", minLength: 1 },
 				minItems: 1,
+			},
+			sandbox_permissions: {
+				type: "string",
+				enum: ["use_default", "require_escalated"],
 			},
 		},
 		required: ["command"],

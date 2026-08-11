@@ -14,7 +14,10 @@ import {
 	createShellEnvironment,
 	type ShellEnvironmentResult,
 } from "./shell-environment.ts";
-import { hasUnrestrictedFilesystem } from "./execution-policy.ts";
+import {
+	executionPolicy,
+	hasUnrestrictedFilesystem,
+} from "./execution-policy.ts";
 import {
 	prepareSandboxedProcess,
 	ProcessSandboxError,
@@ -26,6 +29,7 @@ import type {
 	ShellStartRequest,
 } from "./shell-session-manager.ts";
 import { SHELL_TOOL_DEFINITION } from "./shell-manifest.ts";
+import { parseShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
 import {
 	resolveShellProfile,
 	type ShellProfile,
@@ -117,6 +121,21 @@ export class ShellTool implements ToolAdapter {
 	): Promise<ToolAdapterResult> {
 		const command = stringValue(argumentsValue.command);
 		if (!command) return shellFailure("invalid_arguments", "Shell command is required.");
+		const sandboxPermissions = parseShellSandboxPermissions(argumentsValue.sandbox_permissions);
+		if (!sandboxPermissions) {
+			return shellFailure(
+				"invalid_sandbox_permissions",
+				"Shell sandbox permissions are invalid.",
+			);
+		}
+		if (sandboxPermissions === "require_escalated"
+			&& !hasUnrestrictedFilesystem(options.executionPolicy)
+			&& options.sandboxOverrideApproved !== true) {
+			return shellFailure(
+				"sandbox_override_not_approved",
+				"Shell sandbox override was not approved by the runtime.",
+			);
+		}
 		const tty = argumentsValue.tty ?? false;
 		if (typeof tty !== "boolean") {
 			return shellFailure("invalid_tty", "Shell tty must be a boolean.");
@@ -142,7 +161,7 @@ export class ShellTool implements ToolAdapter {
 			yieldTimeMs: clamp(yieldValue, MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
 			maxOutputTokens: outputBudget,
 			timeoutSeconds: this.#timeoutSeconds,
-		}, options);
+		}, options, sandboxPermissions === "require_escalated");
 	}
 
 	async executeLegacy(
@@ -173,14 +192,18 @@ export class ShellTool implements ToolAdapter {
 	async #invoke(
 		invocation: ShellInvocation,
 		options: ToolExecutionOptions,
+		requireEscalated = false,
 	): Promise<ToolAdapterResult> {
 		if (!options.executionPolicy) {
 			return shellFailure("sandbox_unavailable", "Shell execution policy is unavailable.");
 		}
+		const effectivePolicy = requireEscalated
+			? executionPolicy("full-access", this.#workspaceRoot)
+			: options.executionPolicy;
 		const cwd = await resolveShellCwd(
 			this.#workspaceRoot,
 			invocation.cwd,
-			hasUnrestrictedFilesystem(options.executionPolicy),
+			hasUnrestrictedFilesystem(effectivePolicy),
 		);
 		if (typeof cwd !== "string") return cwd;
 		let launch: SandboxedProcessLaunch;
@@ -195,7 +218,7 @@ export class ShellTool implements ToolAdapter {
 				this.#profile.executable,
 				...this.#profile.execArgv(invocation.command),
 			], {
-				...options.executionPolicy,
+				...effectivePolicy,
 				workspaceRoot: this.#workspaceRoot,
 				cwd,
 			}, {

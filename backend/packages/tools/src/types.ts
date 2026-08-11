@@ -78,6 +78,7 @@ export interface ToolExecutionOptions {
 	readonly callId: string;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly executionPolicy?: ExecutionPolicy;
+	readonly sandboxOverrideApproved?: boolean;
 }
 
 export interface ToolExecutionResult {

@@ -73,6 +73,35 @@ test("classifies known-safe POSIX commands and wrappers without widening mutatin
 	assert.deepEqual(composite.commandPattern, ["python", "script.py"]);
 });
 
+test("keeps Git reads safe only for non-executing options and workspace-confined -C", () => {
+	const options = { shellKind: "posix" as const, workspaceRoot: "/workspace" };
+	for (const command of [
+		"git --no-pager status --short",
+		"git -C nested status",
+		"git -C nested -C .. status",
+		"git branch --list 'feature/*'",
+	]) {
+		assert.equal(classifyShellCommand(command, options).decision, "safe", command);
+	}
+	for (const command of [
+		"git -C ../outside status",
+		"git -c core.pager=cat status",
+		"git --paginate status",
+		"git --git-dir=.git status",
+		"git log --exec=touch",
+		"git diff --textconv",
+	]) {
+		assert.notEqual(classifyShellCommand(command, options).decision, "safe", command);
+	}
+});
+
+test("classifies Codex force-delete POSIX forms as dangerous", () => {
+	for (const command of ["rm -f output.txt", "rm -rf build", "sudo rm -rf /"]) {
+		assert.equal(classifyShellCommand(command, { shellKind: "posix" }).decision, "dangerous", command);
+	}
+	assert.equal(classifyShellCommand("rm output.txt", { shellKind: "posix" }).decision, "unknown");
+});
+
 test("parses and classifies PowerShell and CMD with shell-specific escaping", () => {
 	for (const command of [
 		"Get-ChildItem -Force | Select-Object Name",
@@ -93,5 +122,40 @@ test("parses and classifies PowerShell and CMD with shell-specific escaping", ()
 	}).decision, "safe");
 	for (const command of ["echo %PATH%", "dir > files.txt", "dir & del /q output.txt"]) {
 		assert.notEqual(classifyShellCommand(command, { shellKind: "cmd" }).decision, "safe", command);
+	}
+});
+
+test("classifies Windows aliases nested mutation force deletion and GUI launches", () => {
+	for (const command of [
+		"gci -Force | select Name",
+		"gc README.md | measure -Line",
+		"gc README.md | sort-object",
+		"rvpa .",
+	]) {
+		assert.equal(classifyShellCommand(command, { shellKind: "powershell" }).decision, "safe", command);
+	}
+	assert.notEqual(classifyShellCommand(
+		"Write-Output (Set-Content notes.txt data)",
+		{ shellKind: "powershell" },
+	).decision, "safe");
+	assert.notEqual(classifyShellCommand(
+		"sort-object README.md",
+		{ shellKind: "powershell" },
+	).decision, "safe");
+	for (const command of [
+		"Remove-Item notes.txt -Force",
+		"Start-Process https://example.com",
+		"explorer.exe https://example.com",
+		"rundll32.exe url.dll,FileProtocolHandler https://example.com",
+	]) {
+		assert.equal(classifyShellCommand(command, { shellKind: "powershell" }).decision, "dangerous", command);
+	}
+	for (const command of [
+		"del /f notes.txt",
+		"rmdir /s /q build",
+		"start https://example.com",
+		"msedge.exe https://example.com",
+	]) {
+		assert.equal(classifyShellCommand(command, { shellKind: "cmd" }).decision, "dangerous", command);
 	}
 });

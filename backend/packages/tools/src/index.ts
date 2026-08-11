@@ -161,6 +161,11 @@ export type {
 	ShellStartManager,
 	ShellToolOptions,
 } from "./shell-tool.ts";
+export {
+	parseShellSandboxPermissions,
+	shellCallRequestsSandboxOverride,
+} from "./shell-sandbox-permissions.ts";
+export type { ShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
 export { WriteStdinTool } from "./write-stdin-tool.ts";
 export type {
 	ShellInteractionManager,

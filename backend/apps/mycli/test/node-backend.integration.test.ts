@@ -928,7 +928,7 @@ test("Node backend runs a spawned subagent through the shared Node runtime", {
 	}
 });
 
-test("Node backend keeps child approval non-terminal and resumes the same child session", {
+test("Node backend approves a child Shell sandbox escalation and resumes the same child session", {
 	timeout: 15_000,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-child-approval-"));
@@ -963,7 +963,11 @@ test("Node backend keeps child approval non-terminal and resumes the same child 
 							type: "function_call",
 							call_id: "call-child-shell",
 							name: "Shell",
-							arguments: JSON.stringify({ command, yield_time_ms: 3_000 }),
+							arguments: JSON.stringify({
+								command,
+								yield_time_ms: 3_000,
+								sandbox_permissions: "require_escalated",
+							}),
 						},
 					})}\n\n`);
 					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-shell\"}}\n\n");
