@@ -9,6 +9,7 @@ export type {
 	AppendAssistantToolCallsInput,
 	AppendContextItemInput,
 	AppendToolResultInput,
+	StoredPlanUpdate,
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
 	CommitCompactionInput,

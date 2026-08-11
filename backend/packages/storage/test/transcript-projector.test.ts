@@ -237,6 +237,23 @@ test("projects reasoning summaries and unknown visible items without provider me
 	assert.equal(JSON.stringify(projected).includes("internal provider capability"), false);
 });
 
+test("projects plan metadata only for plan update items", () => {
+	const planMetadata = {
+		source: "update_plan",
+		explanation: "Start implementation",
+		completed: 0,
+		total: 1,
+		items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
+	};
+	const projected = projectTranscript([
+		historyItem("plan", "turn-1", "plan_update", "Updated Plan", planMetadata),
+		historyItem("notice", "turn-1", "warning", "Visible warning", planMetadata),
+	], []);
+
+	assert.deepEqual(projected[0]?.metadata, planMetadata);
+	assert.equal(projected[1]?.metadata, undefined);
+});
+
 test("applies pagination after approval normalization", () => {
 	const projected = projectTranscript([
 		historyItem("first", "turn-1", "user_message", "first"),

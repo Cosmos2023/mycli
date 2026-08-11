@@ -2822,6 +2822,9 @@ function planUpdateFromPayload(
 		folded: false,
 		metadata: {
 			source: stringValue(payload.source) ?? "Plan",
+			...(stringValue(payload.explanation)
+				? { explanation: stringValue(payload.explanation) }
+				: {}),
 			completed,
 			total: steps.length,
 			items: steps,
@@ -2841,6 +2844,7 @@ function planUpdateFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellPl
 		id: item.id,
 		title: item.text.trim() || "Updated Plan",
 		source: stringValue(metadata.source) ?? undefined,
+		explanation: stringValue(metadata.explanation) ?? undefined,
 		steps,
 		completed: steps.filter((step) => step.status === "completed").length,
 		total: steps.length,

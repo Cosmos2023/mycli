@@ -100,6 +100,8 @@ import {
 	imageBlocks,
 } from "./canonical-images.ts";
 
+const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
+
 export interface SQLiteSessionStoreOptions {
 	readonly dbPath: string;
 	readonly clock?: () => string;
@@ -408,7 +410,16 @@ export class SQLiteSessionStore implements SessionStore {
 			if (expected.name !== input.result.toolName) {
 				throw new StorageFailure("tool result name does not match call");
 			}
+			if (input.planUpdate && (!input.result.success || input.result.toolName !== "update_plan")) {
+				throw new StorageFailure("plan update requires a successful update_plan result");
+			}
 			this.#appendToolResultRecords(running, input);
+			if (input.planUpdate) {
+				this.#appendHistoryItem(
+					input.sessionId,
+					planUpdateHistoryItem(running, input, this.#threadId(input.sessionId)),
+				);
+			}
 			if (input.contextItem) {
 				this.#appendContextItemRecords({
 					sessionId: input.sessionId,
@@ -1648,6 +1659,63 @@ function toolResultHistoryItem(
 		metadata: {
 			...toolResultMetadata(turn, input),
 			transcript_content: input.result.output,
+		},
+	};
+}
+
+function planUpdateHistoryItem(
+	turn: RuntimeTurnRecord,
+	input: AppendToolResultInput,
+	threadId: string,
+): Readonly<Record<string, unknown>> {
+	const update = input.planUpdate;
+	if (!update) throw new StorageFailure("plan update is missing");
+	if (!Array.isArray(update.items)) throw new StorageFailure("plan update items are invalid");
+	if (update.items.length > 128) throw new StorageFailure("plan update exceeds item limit");
+	let inProgress = 0;
+	const items = update.items.map((item) => {
+		if (
+			typeof item !== "object"
+			|| item === null
+			|| typeof item.id !== "string"
+			|| typeof item.text !== "string"
+			|| !item.id.trim()
+			|| item.id.length > 128
+			|| !item.text.trim()
+			|| item.text.length > 4_096
+		) {
+			throw new StorageFailure("plan update item is invalid");
+		}
+		if (!PLAN_STATUSES.has(item.status)) throw new StorageFailure("plan update status is invalid");
+		if (item.status === "in_progress") inProgress += 1;
+		return Object.freeze({
+			id: item.id,
+			text: item.text,
+			status: item.status,
+		});
+	});
+	if (inProgress > 1) throw new StorageFailure("plan update has multiple active items");
+	if (
+		update.explanation !== undefined
+		&& (typeof update.explanation !== "string" || update.explanation.length > 4_096)
+	) {
+		throw new StorageFailure("plan update explanation exceeds limit");
+	}
+	return {
+		id: `${turn.turn_id}:plan-update:${input.result.callId}`,
+		thread_id: threadId,
+		turn_id: turn.turn_id,
+		type: "plan_update",
+		text: "Updated Plan",
+		tool_name: input.result.toolName,
+		call_id: input.result.callId,
+		metadata: {
+			source: input.result.toolName,
+			...(update.explanation ? { explanation: update.explanation } : {}),
+			completed: items.filter((item) => item.status === "completed").length,
+			total: items.length,
+			items,
+			model_visible: false,
 		},
 	};
 }

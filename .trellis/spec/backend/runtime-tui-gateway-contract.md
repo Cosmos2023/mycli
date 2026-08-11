@@ -335,11 +335,15 @@ and tool execution. A later permission change does not affect a running turn.
   - `client_turn_id`: string for the turn whose active plan changed.
   - `plan_steps`: array of rendered `"<status>: <content>"` rows, where status
     is normally `pending`, `in_progress`, or `completed`.
+  - `plan.items`: structured ordered rows with `id`, `text`, and `status`.
+  - `explanation`: optional bounded explanation supplied to `update_plan`.
+  - `completed` and `total`: bounded task counts derived by the gateway.
   - `source`: optional short source label, normally the tool name that updated
     the plan.
-  - The runtime should emit this event immediately after the `Plan` /
-    `update_plan` tool mutates plan state, before the turn completes, so clients
-    can update a Claude Code-style active plan panel in place.
+  - The runtime emits this event only after the successful `update_plan` result
+    and model-hidden `plan_update` history item commit atomically. The TUI appends
+    an immutable plan item and derives its compact progress indicator from the
+    latest item; it does not mutate an active-plan panel in place.
 - `turn.status` is the normalized turn outcome/status event for clients that
   want one small routing payload instead of deriving outcomes from
   `turn.completed`, `turn.failed`, `turn.interrupted`, and `status.update`:
@@ -4073,4 +4077,93 @@ process.kill(process.pid, "SIGTSTP");
 ui.onSuspend = () => process.kill(0, "SIGTSTP");
 ui.onResume = () => queueNativeTranscriptHistory(true);
 // TUI releases terminal ownership before suspension, then replaces inline history from source.
+```
+
+## Scenario: Durable Append-Only Plan Updates
+
+### 1. Scope / Trigger
+
+- Trigger: changing `update_plan` execution effects, runtime event ordering, plan history storage,
+  transcript projection, `plan.updated`, TUI plan rendering, or resume behavior.
+
+### 2. Signatures
+
+- Runtime event: `plan_updated {explanation?, items: {id, text, status}[]}`.
+- Durable history item: `type=plan_update`, `text="Updated Plan"`, `call_id`, `tool_name`, and
+  model-hidden metadata `{source, explanation?, completed, total, items, model_visible:false}`.
+- Gateway event: `plan.updated {client_turn_id, plan_steps, plan:{items}, source, completed, total,
+  explanation?}`.
+- TUI model: `MycliShellPlanUpdate {id, title, source?, explanation?, steps, completed, total}`.
+
+### 3. Contracts
+
+- A successful `update_plan` tool call/result remains in the canonical provider conversation. The
+  structured `plan_update` display copy is appended to history in the same SQLite transaction as
+  its tool result and never enters provider input.
+- Storage accepts a plan effect only from a successful result whose tool name is `update_plan`.
+  It validates item count, ids, text, statuses, explanation length, and the single-active-item
+  invariant again at the durable boundary.
+- Runtime emits `plan_updated` only after persistence succeeds. The gateway then derives rendered
+  rows and counts without reading provider arguments or private metadata.
+- Every successful call is retained as real tool activity, including an identical repeated plan.
+  Append-only history is authoritative; no component rewrites an earlier plan item or silently
+  removes a repeated call.
+- Live TUI handling appends one immutable plan transcript item. Resume projects the model-hidden
+  durable copy into the same shape, displays the optional explanation, and derives task progress
+  from the latest valid plan update.
+- Plan metadata has a dedicated readable-transcript allowlist. `source`, `explanation`, `completed`,
+  `total`, and `items` are projected only when the item type is `plan_update`; other history types
+  cannot expose those fields by supplying lookalike metadata.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Successful valid update | Commit tool result then `plan_update`; emit live event afterward |
+| Failed result with a plan effect | Reject the storage write and append neither row |
+| Wrong tool name with a plan effect | Reject the storage write and append neither row |
+| More than 128 items, blank/oversized text, invalid status, or two active items | Reject atomically |
+| Gateway/TUI receives malformed structured items | Ignore the plan update rather than partially render it |
+| Resume after process restart | Restore all durable plan items without adding provider messages |
+| Non-plan item contains plan-like metadata | Omit the plan-only fields from readable transcript |
+
+### 5. Good/Base/Bad Cases
+
+- Good: persist `tool_result` and its hidden plan display copy atomically, then publish
+  `plan.updated`; a restart reconstructs the same visible plan update.
+- Base: an empty plan renders a bounded cleared-plan history item and clears derived progress.
+- Bad: emit the live event before the durable write and show state that resume cannot recover.
+- Bad: put the structured display copy in provider conversation, rewrite an earlier history row,
+  or keep a mutable active-plan panel as the source of truth.
+- Bad: add plan fields to the generic transcript metadata allowlist.
+
+### 6. Tests Required
+
+- Tool/runtime tests assert the structured effect and persistence-before-event ordering.
+- SQLite tests assert one model-visible tool result, one model-hidden history copy, atomic rejection
+  of failed/spoofed effects, and bounded plan validation.
+- Gateway contract tests assert structured items, explanation, source, counts, and legacy rendered
+  `plan_steps` on both direct and mirrored runtime events.
+- TUI reducer/component tests assert live rendering, resume rendering, explanation wrapping, empty
+  plans, malformed-item rejection, immutable transcript order, and latest-plan progress derivation.
+- Transcript projector tests assert the plan-only allowlist cannot leak through other item types.
+- A real two-step Responses integration test asserts provider continuation contains only the tool
+  call/result while `transcript.load` restores the hidden plan copy.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+emit({ type: "plan_updated", items });
+store.appendToolResult({ ...result, planUpdate: { items } });
+activePlan.items = items;
+```
+
+#### Correct
+
+```typescript
+store.appendToolResult({ ...result, planUpdate: { items } });
+emit({ type: "plan_updated", items });
+// TUI appends the event; resume derives the same item from durable history.
 ```

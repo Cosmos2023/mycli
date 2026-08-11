@@ -101,6 +101,8 @@ Use planning only when it helps the task.
 
 - Skip planning for straightforward tasks.
 - Do not make single-step plans.
+- Use `update_plan` to publish the complete current plan, not only the changed step.
+- Keep at most one step `in_progress`; mark work `completed` promptly and advance the next step.
 - When you create a plan, update it after completing one of its stated steps.
 - Keep plans concrete, ordered, and verifiable.
 - Do not use a plan as a substitute for doing the work.

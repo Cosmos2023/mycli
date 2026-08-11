@@ -4,9 +4,11 @@ export {
 	EDIT_TOOL_DEFINITION,
 	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
+	UPDATE_PLAN_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
 export { AskUserQuestionTool } from "./ask-user-question-tool.ts";
+export { UpdatePlanTool } from "./update-plan-tool.ts";
 export {
 	loadLocalImages,
 	LocalImageInputError,
@@ -257,6 +259,7 @@ export type {
 	ExtensionToolManifestEntry,
 	ExtensionToolSource,
 	ManifestToolRegistration,
+	PlanUpdateEffect,
 	ToolAdapter,
 	ToolAdapterResult,
 	ToolExecutionOptions,

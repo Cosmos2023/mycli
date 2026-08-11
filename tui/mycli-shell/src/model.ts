@@ -22,6 +22,7 @@ export type MycliShellPlanUpdate = {
 	id: string;
 	title: string;
 	source?: string;
+	explanation?: string;
 	steps: MycliShellPlanStep[];
 	completed: number;
 	total: number;

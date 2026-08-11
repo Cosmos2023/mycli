@@ -200,6 +200,84 @@ Correct:
 // Continuation input replays the canonical function_call and function_call_output items.
 ```
 
+## Scenario: Codex-Style Node Planning Toolset
+
+### 1. Scope / Trigger
+
+- Trigger: changing the Node planning tool schema, built-in tool ordering, risk/effect metadata,
+  provider exposure, or system instructions for multi-step work.
+
+### 2. Signatures
+
+- Provider route: `update_plan({explanation?, plan})`.
+- `plan` is the complete ordered list of `{step, status}` rows; status is `pending`,
+  `in_progress`, or `completed`.
+- Tool result effect: `PlanUpdateEffect {explanation?, items: {id, text, status}[]}`.
+- Built-in manifest toolset: `{id: "planning", tool_count: 1}`.
+
+### 3. Contracts
+
+- `update_plan` follows the Codex TODO/checklist protocol. It replaces the displayed plan with the
+  complete supplied list; it does not accept Python's historical add/start/complete/remove
+  operation payloads.
+- `explanation` is optional and bounded to 4,096 characters. `plan` is required, may be empty to
+  clear the plan, and contains at most 128 items. Step text is non-empty and bounded to 4,096
+  characters, unknown fields are rejected, and at most one item is `in_progress`.
+- Generated item ids are deterministic within an update: `step-1`, `step-2`, and so on.
+- The manifest classifies the tool as `toolset=planning`, `risk_level=low`,
+  `approval_policy=auto_allow`, `supports_parallel_tool_calls=false`, and
+  `effects={filesystem:none, network:false, process:false}`.
+- Planning is a non-mutating agent checkpoint. It must not trigger mutation approval, file-history
+  capture, sandbox escalation, or the subagent mutating-tool checkpoint path.
+- The canonical system prompt names `update_plan`, requires the complete current plan on every
+  call, and tells the model to keep at most one active step. Simple tasks still skip planning.
+
+### 4. Validation & Error Matrix
+
+- Missing/non-array `plan` or an invalid item -> `invalid_arguments` at the router schema boundary,
+  or bounded `invalid_plan` if an adapter is called directly.
+- More than one `in_progress` item -> failed `invalid_plan` result with no `PlanUpdateEffect`.
+- Empty `plan` -> successful `Cleared plan` result and an empty structured effect.
+- Optional explanation omitted/empty -> successful update without an explanation field.
+
+### 5. Good/Base/Bad Cases
+
+- Good: publish completed/current/pending steps as one full plan, then publish the next full state
+  after finishing the current step.
+- Base: expose `update_plan` to both root and child runtimes through the same manifest order.
+- Bad: classify planning as a filesystem mutation or request approval for it.
+- Bad: send only the changed row, permit two active rows, or expose both `Plan` and `update_plan`.
+
+### 6. Tests Required
+
+- Manifest tests assert toolset count, stable ordering, exact route/id, schema, non-parallel flag,
+  approval policy, and no-effect profile.
+- Adapter tests cover a structured full plan, empty clear, invalid item/status, bounds, and multiple
+  active rows.
+- Runtime composition tests assert root and child provider schemas expose exactly `update_plan`.
+- Prompt parity tests assert Node and Python load the same versioned canonical template and that it
+  names the complete-plan behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await updatePlan({ operation: "complete", item_id: "step-1" });
+```
+
+#### Correct
+
+```typescript
+await updatePlan({
+  explanation: "Implementation finished",
+  plan: [
+    { step: "Inspect runtime", status: "completed" },
+    { step: "Run verification", status: "in_progress" },
+  ],
+});
+```
+
 ## Non-goals
 
 This manifest does not productize ACP, browser, or computer-use. M7 includes

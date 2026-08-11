@@ -126,7 +126,9 @@ export function sanitizeTranscriptItem(value: unknown): TranscriptItem | undefin
 	const status = boundedIdentity(raw.status, 100);
 	const exitCode = safeInteger(raw.exit_code);
 	const durationMs = safeInteger(raw.duration_ms);
-	const metadata = visibleMetadata(recordValue(raw.metadata));
+	const metadata = raw.type === "plan_update"
+		? visiblePlanMetadata(recordValue(raw.metadata))
+		: visibleMetadata(recordValue(raw.metadata));
 	const omitted = Math.max(
 		text?.omitted ?? 0,
 		output?.omitted ?? 0,
@@ -223,7 +225,9 @@ function visibleItem(item: ParsedHistoryItem): TranscriptItem | undefined {
 	const snapshotType = SNAPSHOT_TYPES.get(item.type) ?? (item.text ? "status" : undefined);
 	if (!snapshotType) return undefined;
 	const bounded = boundedHeadTail(item.text);
-	const metadata = visibleMetadata(item.metadata);
+	const metadata = item.type === "plan_update"
+		? visiblePlanMetadata(item.metadata)
+		: visibleMetadata(item.metadata);
 	return freezeItem({
 		id: item.id,
 		type: snapshotType,
@@ -415,6 +419,35 @@ function visibleMetadata(metadata: Readonly<Record<string, unknown>>): Readonly<
 	}
 	for (const key of ["background", "tty", "yielded"] as const) {
 		if (typeof metadata[key] === "boolean") visible[key] = metadata[key];
+	}
+	return Object.freeze(visible);
+}
+
+function visiblePlanMetadata(
+	metadata: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	const visible: Record<string, unknown> = {};
+	const source = boundedIdentity(metadata.source, 128);
+	const explanation = boundedIdentity(metadata.explanation, 4_096);
+	if (source) visible.source = source;
+	if (explanation) visible.explanation = explanation;
+	for (const key of ["completed", "total"] as const) {
+		const value = safeInteger(metadata[key]);
+		if (value !== undefined && value >= 0 && value <= 128) visible[key] = value;
+	}
+	if (Array.isArray(metadata.items)) {
+		const items = metadata.items.slice(0, 128).flatMap((value, index) => {
+			const item = recordValue(value);
+			const text = boundedIdentity(item.text, 4_096);
+			const status = boundedIdentity(item.status, 32);
+			if (!text || !["pending", "in_progress", "completed"].includes(status ?? "")) return [];
+			return [Object.freeze({
+				id: boundedIdentity(item.id, 128) ?? `step-${index + 1}`,
+				text,
+				status,
+			})];
+		});
+		if (items.length === metadata.items.length) visible.items = Object.freeze(items);
 	}
 	return Object.freeze(visible);
 }

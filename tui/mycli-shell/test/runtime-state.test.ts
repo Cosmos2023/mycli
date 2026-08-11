@@ -1654,6 +1654,7 @@ test("runtime adapter appends every live Plan update", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "plan.updated", {
 		client_turn_id: "c1",
+		explanation: "Start implementation",
 		plan: {
 			items: [
 				{ id: "inspect", text: "Inspect runtime", status: "in_progress" },
@@ -1679,6 +1680,8 @@ test("runtime adapter appends every live Plan update", () => {
 
 	assert.deepEqual(shell.transcript?.map((block) => block.kind), ["plan_update", "plan_update"]);
 	assert.deepEqual(shell.footer.taskProgress, { completed: 1, total: 1 });
+	const first = shell.transcript?.[0];
+	assert.equal(first?.kind === "plan_update" ? first.planUpdate.explanation : undefined, "Start implementation");
 });
 
 test("runtime adapter accepts compatibility Plan strings and preserves evidence", () => {

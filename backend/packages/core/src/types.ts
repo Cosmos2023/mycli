@@ -216,6 +216,15 @@ export type RuntimeEvent =
 		readonly errorKind?: string;
 		readonly metadata: Readonly<Record<string, unknown>>;
 	}
+	| {
+		readonly type: "plan_updated";
+		readonly explanation?: string;
+		readonly items: readonly {
+			readonly id: string;
+			readonly text: string;
+			readonly status: "pending" | "in_progress" | "completed";
+		}[];
+	}
 	| { readonly type: "turn_completed"; readonly assistantText: string; readonly usage: ProviderUsage }
 	| { readonly type: "turn_failed"; readonly code: RuntimeErrorCode; readonly message: string }
 	| { readonly type: "turn_interrupted"; readonly message: string };

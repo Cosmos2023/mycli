@@ -85,7 +85,7 @@ test("completes and persists a Node-only Responses Read turn", async (t) => {
 	assert.equal((final.params as Record<string, unknown>).text, "README inspected.");
 	assert.equal(requestBodies.length, 2);
 	assert.deepEqual(toolNames(requestBodies[0]?.tools), [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);

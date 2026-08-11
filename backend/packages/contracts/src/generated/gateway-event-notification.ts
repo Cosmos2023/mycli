@@ -492,6 +492,7 @@ export interface Plan {
 export interface Plan1 {
   client_turn_id: string;
   completed?: number;
+  explanation?: string;
   plan?: {
     [k: string]: any;
   };

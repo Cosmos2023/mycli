@@ -30,6 +30,7 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 	assert.deepEqual(manifest.toolsets, [
 		{ id: "file", tool_count: 4 },
 		{ id: "interaction", tool_count: 1 },
+		{ id: "planning", tool_count: 1 },
 		{ id: "terminal", tool_count: 6 },
 	]);
 	assert.deepEqual(manifest.tools.map((tool) => tool.name), [
@@ -38,6 +39,7 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"Patch",
 		"Write",
 		"AskUserQuestion",
+		"update_plan",
 		"Shell",
 		"WriteStdin",
 		"Bash",
@@ -51,6 +53,7 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"builtin:Patch",
 		"builtin:Write",
 		"builtin:AskUserQuestion",
+		"builtin:update_plan",
 		"builtin:Shell",
 		"builtin:WriteStdin",
 		"builtin:Bash",
@@ -97,6 +100,20 @@ test("mutation manifest entries preserve schemas safety and effects", () => {
 	assert.deepEqual(requiredFields(write.inputSchema), ["file_path", "content"]);
 });
 
+test("planning manifest entry is low-risk non-mutating and sequential", () => {
+	const plan = builtinManifest().tools.find((tool) => tool.name === "update_plan");
+	assert.ok(plan);
+	assert.equal(plan.risk_level, "low");
+	assert.equal(plan.supports_parallel_tool_calls, false);
+	assert.equal(plan.approval_policy, "auto_allow");
+	assert.deepEqual(plan.effects, { filesystem: "none", network: false, process: false });
+	assert.deepEqual(plan.parameters.map((parameter) => [parameter.name, parameter.required]), [
+		["explanation", false],
+		["plan", true],
+	]);
+	assert.deepEqual(requiredFields(plan.inputSchema), ["plan"]);
+});
+
 test("exposure planner preserves manifest order and provider schemas", () => {
 	const manifest = builtinManifest();
 	const planToolExposure = requiredFunction("planToolExposure");
@@ -111,6 +128,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 		"Patch",
 		"Write",
 		"AskUserQuestion",
+		"update_plan",
 		"Shell",
 		"WriteStdin",
 	]);
@@ -125,7 +143,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	}[];
 	assert.deepEqual(
 		fileExposure.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write", "AskUserQuestion"],
+		["Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan"],
 	);
 	assert.deepEqual(
 		(planToolExposure(manifest) as readonly { readonly name: string }[])

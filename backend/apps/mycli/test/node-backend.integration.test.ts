@@ -138,7 +138,7 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		(capture.requestBody?.tools as Array<Record<string, unknown>> | undefined)
 			?.map((tool) => tool.name),
 			[
-				"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill",
+				"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent",
 		],
@@ -197,6 +197,120 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		assert.equal(continuation?.history_boundary, submittedTurnId);
 	} finally {
 		reopened.close();
+	}
+});
+
+test("Node backend executes update_plan and restores its model-hidden transcript item", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-plan-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const requestBodies: Record<string, unknown>[] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (requestBodies.length === 1) {
+				response.write(`data: ${JSON.stringify({
+					type: "response.output_item.done",
+					item: {
+						type: "function_call",
+						call_id: "call-plan",
+						name: "update_plan",
+						arguments: JSON.stringify({
+							explanation: "Start implementation",
+							plan: [
+								{ step: "Inspect runtime", status: "completed" },
+								{ step: "Wire plan updates", status: "in_progress" },
+							],
+						}),
+					},
+				})}\n\n`);
+				response.write('data: {"type":"response.completed","response":{"id":"resp-plan"}}\n\n');
+			} else {
+				response.write('data: {"type":"response.output_text.delta","delta":"Plan recorded."}\n\n');
+				response.write('data: {"type":"response.completed","response":{"id":"resp-final"}}\n\n');
+			}
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(root, { recursive: true, force: true });
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "plan-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "submit-plan", "turn.submit", {
+		message: "Plan the implementation.",
+		client_turn_id: "plan-turn",
+		client_user_message_id: "plan-message",
+	});
+	const update = await waitFor(() => event(messages, "plan.updated"));
+	assert.deepEqual(update.params, {
+		client_turn_id: "plan-turn",
+		plan_steps: ["completed: Inspect runtime", "in_progress: Wire plan updates"],
+		plan: {
+			items: [
+				{ id: "step-1", text: "Inspect runtime", status: "completed" },
+				{ id: "step-2", text: "Wire plan updates", status: "in_progress" },
+			],
+		},
+		source: "update_plan",
+		completed: 1,
+		total: 2,
+		explanation: "Start implementation",
+	});
+	await waitFor(() => messages.find((message) =>
+		message.method === "message.complete" && paramValue(message, "final") === true));
+	assert.equal(requestBodies.length, 2);
+	assert.equal(toolNames(requestBodies[0]?.tools).includes("update_plan"), true);
+	assert.match(JSON.stringify(requestBodies[1]?.input), /Plan updated\./u);
+
+	writeRequest(backend, "plan-transcript", "transcript.load", { session_id: "plan-session" });
+	const transcript = await waitFor(() => response(messages, "plan-transcript"));
+	const items = resultValue(transcript, "items") as readonly Record<string, unknown>[];
+	const restored = items.find((item) => item.type === "plan_update");
+	assert.equal(restored?.text, "Updated Plan");
+	assert.deepEqual((restored?.metadata as Record<string, unknown> | undefined)?.items, [
+		{ id: "step-1", text: "Inspect runtime", status: "completed" },
+		{ id: "step-2", text: "Wire plan updates", status: "in_progress" },
+	]);
+	assert.equal(
+		(restored?.metadata as Record<string, unknown> | undefined)?.explanation,
+		"Start implementation",
+	);
+
+	writeRequest(backend, "shutdown-plan", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+	const store = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		assert.deepEqual(store.loadConversationItems("plan-session").map((item) => item.type), [
+			"user", "assistant_tool_calls", "tool_result", "assistant",
+		]);
+	} finally {
+		store.close();
 	}
 });
 
@@ -755,7 +869,7 @@ test("Node backend runs a spawned subagent through the shared Node runtime", {
 	assert.equal(parentRequests.length, 2);
 	assert.equal(childRequests.length, 1);
 	assert.deepEqual(toolNames(childRequests[0]?.tools), [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
 	assert.match(String(childRequests[0]?.instructions), /^# Identity\n/u);
@@ -765,7 +879,7 @@ test("Node backend runs a spawned subagent through the shared Node runtime", {
 		.map((item) => String(item.content)).join("\n");
 	assert.match(childDeveloperContext, /Agent path: \/root\/explore/u);
 	assert.match(childDeveloperContext, /Assigned task: explore/u);
-	assert.match(childDeveloperContext, /Tool scope: AskUserQuestion, Edit, Patch, Read, Skill, Write/u);
+	assert.match(childDeveloperContext, /Tool scope: AskUserQuestion, Edit, Patch, Read, Skill, Write, update_plan/u);
 	assert.match(childDeveloperContext, /Permission profile: workspace/u);
 	assert.match(childDeveloperContext, /Sandbox mode: workspace-write/u);
 	assert.deepEqual(childInput.at(-1), { role: "user", content: "Inspect the repository." });
@@ -1998,12 +2112,12 @@ test("Node backend exposes Shell only on turns accepted after workspace trust", 
 	await waitFor(() => finalMessageCount(messages) === 2);
 
 	assert.deepEqual(requestTools[0], [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Skill",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);
 	assert.deepEqual(requestTools[1], [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "Shell", "WriteStdin",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Shell", "WriteStdin",
 		"Skill", "spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);

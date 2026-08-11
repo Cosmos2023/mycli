@@ -46,4 +46,5 @@ test("complete Node system prompt contains the Python workflow contract", () => 
 		assert.ok(prompt.includes(section), `missing ${section}`);
 	}
 	assert.ok(prompt.length > 8_000);
+	assert.match(prompt, /Use `update_plan` to publish the complete current plan/u);
 });

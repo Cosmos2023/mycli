@@ -756,6 +756,7 @@ test("mycli shell renders complete Plan updates in transcript order", () => {
 					id: "plan-1",
 					title: "Updated Plan",
 					source: "Plan",
+					explanation: "Runtime wiring is ready.",
 					completed: 1,
 					total: 3,
 					steps: [
@@ -775,6 +776,7 @@ test("mycli shell renders complete Plan updates in transcript order", () => {
 	assert.ok(planIndex >= 0, output);
 	assert.ok(footerIndex > planIndex, output);
 	assert.match(output, /✔ Inspect runtime/);
+	assert.match(output, /Runtime wiring is ready\./);
 	assert.match(output, /□ Render Plan history/);
 	assert.match(output, /□ Verify resume/);
 	assert.doesNotMatch(output, /\[plan\]/);

@@ -2246,6 +2246,19 @@ class InProcessNodeGateway implements NodeGateway {
 			case "tool_execution_failed":
 				this.#emitToolFinished(active, event, false);
 				break;
+			case "plan_updated": {
+				const completed = event.items.filter((item) => item.status === "completed").length;
+				this.#emitRuntime("plan.updated", {
+					client_turn_id: active.clientTurnId,
+					plan_steps: event.items.map((item) => `${item.status}: ${item.text}`),
+					plan: { items: event.items },
+					source: "update_plan",
+					completed,
+					total: event.items.length,
+					...(event.explanation ? { explanation: event.explanation } : {}),
+				});
+				break;
+			}
 			case "turn_completed":
 				if (active.terminalEmitted) {
 					if (active.controller.signal.aborted) {

@@ -135,6 +135,42 @@ export const ASK_USER_QUESTION_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	},
 });
 
+const UPDATE_PLAN_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
+	{ name: "explanation", type: "string", required: false },
+	{ name: "plan", type: "array", required: true },
+]);
+
+export const UPDATE_PLAN_TOOL_DEFINITION: ToolDefinition = deepFreeze({
+	id: "builtin:update_plan",
+	name: "update_plan",
+	description: [
+		"Updates the task plan.",
+		"Provide an optional explanation and a list of plan items, each with a step and status.",
+		"At most one step can be in_progress at a time.",
+	].join("\n"),
+	inputSchema: {
+		type: "object",
+		properties: {
+			explanation: { type: "string", maxLength: 4096 },
+			plan: {
+				type: "array",
+				maxItems: 128,
+				items: {
+					type: "object",
+					properties: {
+						step: { type: "string", minLength: 1, maxLength: 4096 },
+						status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+					},
+					required: ["step", "status"],
+					additionalProperties: false,
+				},
+			},
+		},
+		required: ["plan"],
+		additionalProperties: false,
+	},
+});
+
 const READ_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	...READ_TOOL_DEFINITION,
 	source: "builtin",
@@ -205,12 +241,27 @@ const ASK_USER_QUESTION_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	model_visible: true,
 });
 
+const UPDATE_PLAN_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
+	...UPDATE_PLAN_TOOL_DEFINITION,
+	source: "builtin",
+	toolset: "planning",
+	parameters: UPDATE_PLAN_PARAMETERS,
+	risk_level: "low",
+	supports_parallel_tool_calls: false,
+	approval_policy: "auto_allow",
+	capability_tags: ["planning", "workflow", "checklist"],
+	effects: { filesystem: "none", network: false, process: false },
+	availability: { status: "available" },
+	model_visible: true,
+});
+
 const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 	schema_version: 1,
 	source: "builtin",
 	toolsets: [
 		{ id: "file", tool_count: 4 },
 		{ id: "interaction", tool_count: 1 },
+		{ id: "planning", tool_count: 1 },
 		{ id: "terminal", tool_count: SHELL_MANIFEST_ENTRIES.length },
 	],
 	tools: [
@@ -219,6 +270,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		PATCH_MANIFEST_ENTRY,
 		WRITE_MANIFEST_ENTRY,
 		ASK_USER_QUESTION_MANIFEST_ENTRY,
+		UPDATE_PLAN_MANIFEST_ENTRY,
 		...SHELL_MANIFEST_ENTRIES,
 	],
 });

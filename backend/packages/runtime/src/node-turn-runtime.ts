@@ -1405,6 +1405,15 @@ export class NodeTurnRuntime {
 				}
 				const contextItem = this.#persistToolResult(submission.clientTurnId, turnId, result);
 				if (contextItem) deferredContextItems.push(contextItem);
+				if (result.success && result.planUpdate) {
+					emit({
+						type: "plan_updated",
+						...(result.planUpdate.explanation
+							? { explanation: result.planUpdate.explanation }
+							: {}),
+						items: result.planUpdate.items,
+					});
+				}
 				if (policy?.kind !== "deny" && !blockedByHook) {
 					this.#options.agentCheckpoint?.({
 						kind: "tool_call",
@@ -1614,6 +1623,7 @@ export class NodeTurnRuntime {
 			summary: result.summary,
 			metadata: result.metadata,
 			...(result.errorKind ? { errorKind: result.errorKind } : {}),
+			...(result.planUpdate ? { planUpdate: result.planUpdate } : {}),
 		});
 		return contextItem;
 	}

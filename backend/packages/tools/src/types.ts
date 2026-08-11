@@ -88,6 +88,7 @@ export interface ToolExecutionResult {
 	readonly summary: string;
 	readonly errorKind?: string;
 	readonly metadata: Readonly<Record<string, unknown>>;
+	readonly planUpdate?: PlanUpdateEffect;
 }
 
 export interface ToolAdapterResult {
@@ -96,6 +97,16 @@ export interface ToolAdapterResult {
 	readonly summary: string;
 	readonly errorKind?: string;
 	readonly metadata: Readonly<Record<string, unknown>>;
+	readonly planUpdate?: PlanUpdateEffect;
+}
+
+export interface PlanUpdateEffect {
+	readonly explanation?: string;
+	readonly items: readonly {
+		readonly id: string;
+		readonly text: string;
+		readonly status: "pending" | "in_progress" | "completed";
+	}[];
 }
 
 export interface ToolAdapter {

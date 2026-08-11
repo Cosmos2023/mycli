@@ -83,6 +83,16 @@ export interface AppendToolResultInput {
 	readonly metadata?: Readonly<Record<string, unknown>>;
 	readonly errorKind?: string;
 	readonly contextItem?: Omit<AppendContextItemInput, "sessionId">;
+	readonly planUpdate?: StoredPlanUpdate;
+}
+
+export interface StoredPlanUpdate {
+	readonly explanation?: string;
+	readonly items: readonly {
+		readonly id: string;
+		readonly text: string;
+		readonly status: "pending" | "in_progress" | "completed";
+	}[];
 }
 
 export interface ProjectedFileChange {

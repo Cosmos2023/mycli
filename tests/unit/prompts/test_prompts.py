@@ -47,7 +47,7 @@ def test_build_system_prompt_loads_fixed_english_template() -> None:
 def test_build_system_prompt_guides_bounded_read_usage() -> None:
     prompt = build_system_prompt()
 
-    assert SYSTEM_PROMPT_VERSION == "2026-07-codex-style-base-v3"
+    assert SYSTEM_PROMPT_VERSION == "2026-08-codex-style-base-v4"
     assert "Use `Read` for file contents" in prompt
     assert "`Read` calls must include explicit `offset` and `limit` arguments" in prompt
     assert "Do not use Shell `cat` or broad shell output to read files" in prompt
@@ -62,6 +62,7 @@ def test_build_system_prompt_guides_tool_scheduling_and_planning() -> None:
     assert "Tool parallelism is controlled by the runtime, model capability, and tool metadata" in prompt
     assert "Do not repeat identical tool calls to force parallel work" in prompt
     assert "Plan Tool" in prompt
+    assert "Use `update_plan` to publish the complete current plan" in prompt
     assert "Do not make single-step plans" in prompt
     assert "Do not fix unrelated bugs or broken tests" in prompt
 

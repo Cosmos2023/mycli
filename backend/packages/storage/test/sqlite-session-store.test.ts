@@ -86,6 +86,14 @@ interface Store {
 			readonly text: string;
 			readonly metadata: CanonicalContextMetadata;
 		};
+		readonly planUpdate?: {
+			readonly explanation?: string;
+			readonly items: readonly {
+				readonly id: string;
+				readonly text: string;
+				readonly status: "pending" | "in_progress" | "completed";
+			}[];
+		};
 	}): void;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;
@@ -610,6 +618,74 @@ test("persists provider replay state and context with its tool result", async (t
 		store.loadHistoryItems("session-1").map((item) => item.type),
 		["user_message", "tool_call", "tool_result", "skill_instructions"],
 	);
+});
+
+test("persists plan updates after tool results without duplicating model conversation", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "",
+		calls: [{
+			callId: "call-plan",
+			name: "update_plan",
+			argumentsJson: JSON.stringify({
+				explanation: "Start implementation",
+				plan: [{ step: "Wire runtime", status: "in_progress" }],
+			}),
+		}],
+	});
+	assert.throws(() => store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: {
+			callId: "call-plan",
+			toolName: "update_plan",
+			output: "update_plan failed",
+			success: false,
+		},
+		summary: "update_plan failed",
+		planUpdate: {
+			items: [{ id: "step-1", text: "Must not persist", status: "in_progress" }],
+		},
+	}), /plan update requires a successful update_plan result/u);
+	store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: {
+			callId: "call-plan",
+			toolName: "update_plan",
+			output: "Plan updated.",
+			success: true,
+		},
+		summary: "Updated plan with 1 steps",
+		planUpdate: {
+			explanation: "Start implementation",
+			items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
+		},
+	});
+
+	assert.deepEqual(
+		store.loadConversationItems("session-1").map((item) => item.type),
+		["user", "assistant_tool_calls", "tool_result"],
+	);
+	assert.deepEqual(
+		store.loadHistoryItems("session-1").map((item) => item.type),
+		["user_message", "tool_call", "tool_result", "plan_update"],
+	);
+	const update = storage.projectTranscript(store.loadHistoryItems("session-1"), []).at(-1);
+	assert.equal(update?.type, "plan_update");
+	assert.deepEqual(update?.metadata, {
+		source: "update_plan",
+		explanation: "Start implementation",
+		completed: 0,
+		total: 1,
+		items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
+	});
 });
 
 test("persists only bounded Python-compatible mutation file changes", async (t) => {

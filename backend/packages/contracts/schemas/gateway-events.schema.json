@@ -594,6 +594,9 @@
         "completed": {
           "type": "integer"
         },
+        "explanation": {
+          "type": "string"
+        },
         "plan": {
           "type": "object"
         },

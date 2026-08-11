@@ -16,6 +16,12 @@ export class PlanUpdateComponent implements Component {
 		const safeWidth = Math.max(1, width);
 		const title = this.update.title.trim() || "Updated Plan";
 		const lines = ["", this.fit(theme.fg("accent", theme.bold(`• ${title}`)), safeWidth)];
+		const explanation = this.update.explanation?.replace(/[\r\n\t]+/g, " ").trim();
+		if (explanation) {
+			for (const line of wrapTextWithAnsi(explanation, Math.max(1, safeWidth - 2))) {
+				lines.push(this.fit(theme.fg("muted", `  ${line}`), safeWidth));
+			}
+		}
 		if (this.update.steps.length === 0) {
 			lines.push(this.fit(theme.fg("muted", "  (no steps provided)"), safeWidth));
 			return lines;

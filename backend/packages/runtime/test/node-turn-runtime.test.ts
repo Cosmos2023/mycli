@@ -35,6 +35,7 @@ import {
 	ASK_USER_QUESTION_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
+	UPDATE_PLAN_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 	ToolRouter,
 	type ToolExecutionResult,
@@ -1132,6 +1133,65 @@ test("executes multiple calls sequentially in provider order", async () => {
 		"provider:2",
 		"complete",
 	]);
+});
+
+test("persists a structured plan update before emitting its runtime event", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [
+		[
+			{
+				type: "tool_call",
+				callId: "call-plan",
+				name: "update_plan",
+				argumentsJson: JSON.stringify({
+					plan: [{ step: "Wire runtime", status: "in_progress" }],
+				}),
+			},
+			{ type: "completed", responseId: "resp-plan" },
+		],
+		[
+			{ type: "text_delta", text: "Plan recorded." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const router: ToolRouterContract = {
+		execute: async (call) => ({
+			callId: call.callId,
+			toolName: call.name,
+			success: true,
+			modelOutput: "Plan updated.",
+			summary: "Updated plan with 1 steps",
+			metadata: {},
+			planUpdate: {
+				explanation: "Start implementation",
+				items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
+			},
+		}),
+	};
+	const emitted: RuntimeEvent[] = [];
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [UPDATE_PLAN_TOOL_DEFINITION],
+	}).submit(submission(), (event) => {
+		trace.push(`event:${event.type}`);
+		emitted.push(event);
+	}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(store.toolResults[0]?.planUpdate, {
+		explanation: "Start implementation",
+		items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
+	});
+	assert.ok(trace.indexOf("persist:result:call-plan") < trace.indexOf("event:plan_updated"));
+	assert.deepEqual(emitted.find((event) => event.type === "plan_updated"), {
+		type: "plan_updated",
+		explanation: "Start implementation",
+		items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
+	});
 });
 
 test("strict mutation policy durably suspends before requesting approval", async () => {

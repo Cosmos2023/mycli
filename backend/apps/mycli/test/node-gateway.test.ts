@@ -2498,6 +2498,49 @@ test("projects bounded tool and mutation lifecycle events without sensitive fiel
 	await harness.gateway.close();
 });
 
+test("projects structured plan updates with Codex explanation and task counts", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "plan the work",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	harness.emit({
+		type: "plan_updated",
+		explanation: "Start implementation",
+		items: [
+			{ id: "step-1", text: "Inspect runtime", status: "completed" },
+			{ id: "step-2", text: "Wire plan updates", status: "in_progress" },
+		],
+	});
+
+	const direct = await waitFor(() => notification(harness.messages, "plan.updated"));
+	parseGatewayEvent(direct);
+	assert.deepEqual(direct.params, {
+		client_turn_id: "client-turn",
+		plan_steps: ["completed: Inspect runtime", "in_progress: Wire plan updates"],
+		plan: {
+			items: [
+				{ id: "step-1", text: "Inspect runtime", status: "completed" },
+				{ id: "step-2", text: "Wire plan updates", status: "in_progress" },
+			],
+		},
+		source: "update_plan",
+		completed: 1,
+		total: 2,
+		explanation: "Start implementation",
+	});
+	const mirror = await waitFor(() => notifications(harness.messages, "runtime.event")
+		.find((message) => message.params.type === "plan.updated"));
+	parseGatewayEvent(mirror);
+	assert.deepEqual(mirror.params.payload, direct.params);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
 test("projects compaction lifecycle events with the canonical bounded payload", async () => {
 	const harness = gatewayHarness();
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
