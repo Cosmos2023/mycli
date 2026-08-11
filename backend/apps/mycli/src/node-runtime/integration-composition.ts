@@ -128,6 +128,11 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	publishSubagent(subagent: Readonly<Record<string, unknown>>): void;
 }
 
+export interface RuntimeToolRegistrationPartition {
+	readonly direct: readonly IntegrationRegistration[];
+	readonly deferred: readonly (IntegrationRegistration & { readonly source: "mcp" | "plugin" })[];
+}
+
 const SOURCE_ORDER: Readonly<Record<IntegrationCompositionSourceId, number>> = Object.freeze({
 	skill: 0,
 	mcp: 1,
@@ -136,6 +141,22 @@ const SOURCE_ORDER: Readonly<Record<IntegrationCompositionSourceId, number>> = O
 });
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+
+export function partitionRuntimeToolRegistrations(
+	registrations: readonly IntegrationRegistration[],
+): RuntimeToolRegistrationPartition {
+	const visible = registrations.filter((registration) => registration.modelVisible !== false);
+	return Object.freeze({
+		direct: Object.freeze(visible.filter((registration) => !isDeferredRegistration(registration))),
+		deferred: Object.freeze(visible.filter(isDeferredRegistration)),
+	});
+}
+
+function isDeferredRegistration(
+	registration: IntegrationRegistration,
+): registration is IntegrationRegistration & { readonly source: "mcp" | "plugin" } {
+	return registration.source === "mcp" || registration.source === "plugin";
+}
 
 export async function createIntegrationComposition(
 	options: CreateIntegrationCompositionOptions,

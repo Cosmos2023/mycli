@@ -10,6 +10,7 @@ export type {
 	AppendContextItemInput,
 	AppendToolResultInput,
 	StoredPlanUpdate,
+	StoredToolActivation,
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
 	CommitCompactionInput,

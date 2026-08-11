@@ -94,7 +94,9 @@ interface Store {
 				readonly status: "pending" | "in_progress" | "completed";
 			}[];
 		};
+		readonly toolActivation?: { readonly names: readonly string[] };
 	}): void;
+	loadToolActivations(sessionId: string, turnId: string): readonly string[];
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;
 	recoverInterruptedTurn(
@@ -686,6 +688,95 @@ test("persists plan updates after tool results without duplicating model convers
 		total: 1,
 		items: [{ id: "step-1", text: "Wire runtime", status: "in_progress" }],
 	});
+});
+
+test("persists bounded tool_search activations and restores them after reopen", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	let store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "",
+		calls: [{
+			callId: "call-search",
+			name: "tool_search",
+			argumentsJson: '{"query":"docs"}',
+		}],
+	});
+	store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: {
+			callId: "call-search",
+			toolName: "tool_search",
+			output: '{"tools":[{"name":"docs_search"}]}',
+			success: true,
+		},
+		summary: "Activated 2 deferred tools",
+		toolActivation: { names: ["docs_search", "calendar_list"] },
+	});
+	assert.deepEqual(store.loadToolActivations("session-1", "turn-1"), [
+		"docs_search",
+		"calendar_list",
+	]);
+	assert.deepEqual(store.loadToolActivations("session-1", "turn-2"), []);
+	store.close();
+
+	store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	assert.deepEqual(store.loadToolActivations("session-1", "turn-1"), [
+		"docs_search",
+		"calendar_list",
+	]);
+	assert.deepEqual(store.loadToolActivations("session-1", "turn-2"), []);
+});
+
+test("rejects malformed or mismatched tool activation effects", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "",
+		calls: [{ callId: "call-read", name: "Read", argumentsJson: "{}" }],
+	});
+	assert.throws(() => store.appendToolResult({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		result: { callId: "call-read", toolName: "Read", output: "done", success: true },
+		summary: "Read",
+		toolActivation: { names: ["docs_search"] },
+	}), /tool activation requires a successful tool_search result/u);
+
+	const second = await databaseFixture(t);
+	const secondStore = new SQLiteSessionStore({ dbPath: second.dbPath, clock: fixedClock });
+	t.after(() => secondStore.close());
+	secondStore.reserveTurn({ ...submission(second.root), threadId: "thread-1" });
+	secondStore.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "",
+		calls: [{ callId: "call-search", name: "tool_search", argumentsJson: "{}" }],
+	});
+	for (const names of [["bad-route"], ["duplicate", "duplicate"], Array.from({ length: 17 }, (_, index) => `tool_${index}`)]) {
+		assert.throws(() => secondStore.appendToolResult({
+			sessionId: "session-1",
+			clientTurnId: "client-1",
+			result: {
+				callId: "call-search",
+				toolName: "tool_search",
+				output: "search result",
+				success: true,
+			},
+			summary: "Search",
+			toolActivation: { names },
+		}), /tool activation/u);
+	}
 });
 
 test("persists only bounded Python-compatible mutation file changes", async (t) => {

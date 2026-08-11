@@ -108,8 +108,8 @@ import {
 	FileMutationRuntime,
 	FileSnapshotStore,
 	PatchTool,
-		planToolExposure,
-		parseShellCommand,
+	planToolExposure,
+	parseShellCommand,
 	ReadTool,
 	resolveShellProfile,
 	ShellOutputTool,
@@ -118,14 +118,17 @@ import {
 	startNodePtyTransport,
 	startPipeTransport,
 	ToolRouter,
+	ToolSearchTool,
 	KillShellTool,
 	UpdatePlanTool,
+	WebFetchTool,
 	loadLocalImages,
 	WriteStdinTool,
 	WriteTool,
 } from "@mycli/tools";
 import {
 	createRuntimeIntegrationComposition,
+	partitionRuntimeToolRegistrations,
 	type IntegrationCommandService,
 	type RuntimeIntegrationComposition,
 } from "./integration-composition.ts";
@@ -484,12 +487,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		}
 		throw error;
 	}
-	const extensionDefinitions = Object.freeze(integrationComposition.registrations
+	const partitionedRegistrations = partitionRuntimeToolRegistrations(
+		integrationComposition.registrations,
+	);
+	const directExtensionRegistrations = partitionedRegistrations.direct;
+	const deferredRegistrations = partitionedRegistrations.deferred;
+	const directExtensionDefinitions = Object.freeze(directExtensionRegistrations
+		.map((registration) => registration.definition));
+	const deferredDefinitions = Object.freeze(deferredRegistrations
 		.filter((registration) => registration.modelVisible !== false)
 		.map((registration) => registration.definition));
 	const allToolExposure = Object.freeze([
 		...planToolExposure(toolManifest, { shell: true }),
-		...extensionDefinitions,
+		...directExtensionDefinitions,
+		...deferredDefinitions,
 	]);
 	const mutatingAgentTools = new Set(integrationComposition.manifest.tools.flatMap((tool) => {
 		if (!("effects" in tool)) return [tool.name];
@@ -581,6 +592,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			env: runtimeEnvironment,
 			profile: shellProfile,
 		});
+		const allowedDeferredDefinitions = filterToolDefinitions(
+			deferredDefinitions,
+			runtimeOptions.allowedTools,
+		);
+		const allowedDeferredNames = new Set(allowedDeferredDefinitions.map((tool) => tool.name));
 		const adapters = [
 			new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
@@ -588,6 +604,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new WriteTool({ runtime: mutationRuntime }),
 			new AskUserQuestionTool(),
 			new UpdatePlanTool(),
+			new WebFetchTool(),
+			new ToolSearchTool(deferredRegistrations
+				.filter((registration) => allowedDeferredNames.has(registration.definition.name))
+				.map((registration) => ({
+					definition: registration.definition,
+					source: registration.source,
+					originMetadata: registration.originMetadata,
+				}))),
 			shellTool,
 			new WriteStdinTool({ manager: shellManager }),
 			new BashTool({ shell: shellTool }),
@@ -601,7 +625,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		) => filterToolDefinitions(
 			Object.freeze([
 				...planToolExposure(toolManifest, capabilities),
-				...extensionDefinitions,
+				...directExtensionDefinitions,
 			]),
 			runtimeOptions.allowedTools,
 		);
@@ -787,6 +811,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			publishLifecycle,
 			executionPolicyCoordinator,
 			planTools: plannedTools,
+			deferredTools: allowedDeferredDefinitions,
+			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
 			toolRouter,
 			hookRunner: integrationComposition.hookRunner,
 				contextItemCoordinator,

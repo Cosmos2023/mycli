@@ -143,10 +143,11 @@ async function runSmoke(sourceConfig, protocol) {
 		await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" }, deadlineAt);
 		send(backend, "turn", "turn.submit", {
 			message: [
-				"Activate the review skill, then call mcp_local_echo once with text m7-smoke,",
-				"then call plugin_good_echo once with text m7-smoke, then call spawn_agent once",
-				"with task_name m7-smoke and a short message. Call wait_agent, then finish after",
-				"the child completion notification arrives.",
+				"Activate the review skill, use tool_search to discover and activate mcp_local_echo,",
+				"then call mcp_local_echo once with text m7-smoke. Use tool_search again to discover",
+				"and activate plugin_good_echo, then call it once with text m7-smoke. Call spawn_agent",
+				"once with task_name m7-smoke and a short message. Call wait_agent, then finish after",
+				"the child completion notification arrives. Use a tool_search limit of 1 each time.",
 			].join(" "),
 			client_turn_id: clientTurnId,
 			client_user_message_id: `user-${randomUUID()}`,
@@ -201,6 +202,7 @@ async function runSmoke(sourceConfig, protocol) {
 		const persisted = persistedState(homeDir, sessionId, counts);
 		const completed = terminal.method === "message.complete"
 			&& Object.values(counts).every((count) => count === 1)
+			&& toolSearchCount(messages) === 2
 			&& hookCompleted
 			&& approvalCount === 2
 			&& persisted
@@ -294,7 +296,7 @@ function persistedState(homeDir, sessionId, counts) {
 		const history = store.loadHistoryItems(sessionId);
 		const tasks = store.subagentTasks.list(sessionId);
 		return history.some((item) => item.type === "skill_instructions")
-			&& history.filter((item) => item.type === "tool_result").length === 5
+			&& history.filter((item) => item.type === "tool_result").length === 7
 			&& tasks.length === 1
 			&& tasks[0]?.status === "completed"
 			&& Object.values(counts).every((count) => count === 1);
@@ -313,6 +315,12 @@ function toolCounts(messages) {
 		else if (name === "spawn_agent") counts.subagent += 1;
 	}
 	return counts;
+}
+
+function toolSearchCount(messages) {
+	return events(messages, "tool.complete").filter((message) => (
+		isObject(message.params) && message.params.name === "tool_search"
+	)).length;
 }
 
 function send(backend, id, method, params) {

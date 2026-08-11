@@ -126,6 +126,8 @@ export interface NodeTurnRuntimeOptions {
 	readonly random?: () => number;
 	readonly monotonicClock?: () => number;
 	readonly planTools?: (capabilities: { readonly shell: boolean }) => readonly ToolDefinition[];
+	readonly deferredTools?: readonly ToolDefinition[];
+	readonly loadToolActivations?: (turnId: string) => readonly string[];
 	readonly executionPolicyCoordinator?: ExecutionPolicyCoordinatorContract;
 	readonly toolRouter?: ToolRouterContract;
 	readonly approvalPolicy?: ApprovalPolicyContract;
@@ -664,6 +666,8 @@ export class NodeTurnRuntime {
 		const instructionSnapshot = this.#options.resolveInstructionSnapshot?.()
 			?? this.#fallbackInstructionSnapshot;
 		const instructions = instructionSnapshot.content;
+		const plannedTools = this.#options.planTools?.({ shell: turnPolicy?.toolsEnabled ?? false }) ?? [];
+		const tools = this.#toolExposureForTurn(plannedTools, turnId);
 		if (config.sessionId !== this.#options.sessionId) {
 			throw configFailure("resolved session does not match runtime session");
 		}
@@ -678,7 +682,7 @@ export class NodeTurnRuntime {
 			instructions,
 			instructionSnapshot,
 			hookContexts: new HookContextAccumulator(),
-			tools: this.#options.planTools?.({ shell: turnPolicy?.toolsEnabled ?? false }) ?? [],
+			tools,
 			...(turnPolicy ? { executionPolicy: turnPolicy.profile } : {}),
 			requestConfig: {
 				provider: config.provider,
@@ -721,11 +725,12 @@ export class NodeTurnRuntime {
 			config,
 			provider,
 			instructions,
-			tools,
+			tools: initialTools,
 			requestConfig,
 			emit,
 			signal,
 		} = context;
+		let tools = initialTools;
 		let history = initial.history;
 		let previousResponseId = initial.previousResponseId;
 		let accumulatedUsage = initial.accumulatedUsage;
@@ -756,6 +761,13 @@ export class NodeTurnRuntime {
 					history = this.#options.store.loadConversationItems(this.#options.sessionId);
 					pendingBatch = undefined;
 					assertNotAborted(signal);
+					const refreshedTools = this.#toolExposureForTurn(tools, turnId);
+					if (!sameToolExposure(tools, refreshedTools)) {
+						const invalidation = this.#invalidateProviderContinuation("tool_exposure_changed");
+						if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
+						tools = refreshedTools;
+						previousResponseId = undefined;
+					}
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
@@ -1123,6 +1135,19 @@ export class NodeTurnRuntime {
 				...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
 			};
 		}
+	}
+
+	#toolExposureForTurn(
+		baseTools: readonly ToolDefinition[],
+		turnId: string,
+	): readonly ToolDefinition[] {
+		const activated = new Set(this.#options.loadToolActivations?.(turnId) ?? []);
+		if (activated.size === 0) return baseTools;
+		const existing = new Set(baseTools.map((tool) => tool.name));
+		const additions = (this.#options.deferredTools ?? []).filter(
+			(tool) => activated.has(tool.name) && !existing.has(tool.name),
+		);
+		return additions.length === 0 ? baseTools : Object.freeze([...baseTools, ...additions]);
 	}
 
 	#appendProviderStepLifecycle(
@@ -1624,6 +1649,7 @@ export class NodeTurnRuntime {
 			metadata: result.metadata,
 			...(result.errorKind ? { errorKind: result.errorKind } : {}),
 			...(result.planUpdate ? { planUpdate: result.planUpdate } : {}),
+			...(result.toolActivation ? { toolActivation: result.toolActivation } : {}),
 		});
 		return contextItem;
 	}
@@ -1953,6 +1979,13 @@ function continuationRecord(item: CanonicalConversationItem): Readonly<Record<st
 		};
 	}
 	return { ...item };
+}
+
+function sameToolExposure(
+	left: readonly ToolDefinition[],
+	right: readonly ToolDefinition[],
+): boolean {
+	return left.length === right.length && left.every((tool, index) => tool.name === right[index]?.name);
 }
 
 function providerStepOutput(

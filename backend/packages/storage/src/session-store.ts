@@ -84,6 +84,7 @@ export interface AppendToolResultInput {
 	readonly errorKind?: string;
 	readonly contextItem?: Omit<AppendContextItemInput, "sessionId">;
 	readonly planUpdate?: StoredPlanUpdate;
+	readonly toolActivation?: StoredToolActivation;
 }
 
 export interface StoredPlanUpdate {
@@ -93,6 +94,10 @@ export interface StoredPlanUpdate {
 		readonly text: string;
 		readonly status: "pending" | "in_progress" | "completed";
 	}[];
+}
+
+export interface StoredToolActivation {
+	readonly names: readonly string[];
 }
 
 export interface ProjectedFileChange {
@@ -480,6 +485,7 @@ export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscr
 	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord;
 	saveClarificationSuspension(input: SaveClarificationSuspensionInput): void;
 	commitClarificationResponse(input: CommitClarificationResponseInput): void;
+	loadToolActivations(sessionId: string, turnId: string): readonly string[];
 }
 
 type DiagnosticValue = string | number | boolean | null;

@@ -138,7 +138,8 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		(capture.requestBody?.tools as Array<Record<string, unknown>> | undefined)
 			?.map((tool) => tool.name),
 			[
-				"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
+				"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "web_fetch",
+				"tool_search", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent",
 		],
@@ -869,7 +870,8 @@ test("Node backend runs a spawned subagent through the shared Node runtime", {
 	assert.equal(parentRequests.length, 2);
 	assert.equal(childRequests.length, 1);
 	assert.deepEqual(toolNames(childRequests[0]?.tools), [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "web_fetch",
+		"tool_search", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
 	assert.match(String(childRequests[0]?.instructions), /^# Identity\n/u);
@@ -879,7 +881,10 @@ test("Node backend runs a spawned subagent through the shared Node runtime", {
 		.map((item) => String(item.content)).join("\n");
 	assert.match(childDeveloperContext, /Agent path: \/root\/explore/u);
 	assert.match(childDeveloperContext, /Assigned task: explore/u);
-	assert.match(childDeveloperContext, /Tool scope: AskUserQuestion, Edit, Patch, Read, Skill, Write, update_plan/u);
+	assert.match(
+		childDeveloperContext,
+		/Tool scope: AskUserQuestion, Edit, Patch, Read, Skill, Write, tool_search, update_plan, web_fetch/u,
+	);
 	assert.match(childDeveloperContext, /Permission profile: workspace/u);
 	assert.match(childDeveloperContext, /Sandbox mode: workspace-write/u);
 	assert.deepEqual(childInput.at(-1), { role: "user", content: "Inspect the repository." });
@@ -2112,14 +2117,15 @@ test("Node backend exposes Shell only on turns accepted after workspace trust", 
 	await waitFor(() => finalMessageCount(messages) === 2);
 
 	assert.deepEqual(requestTools[0], [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Skill",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "web_fetch",
+		"tool_search", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);
 	assert.deepEqual(requestTools[1], [
-		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "Shell", "WriteStdin",
-		"Skill", "spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
-		"wait_agent",
+		"Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "web_fetch",
+		"tool_search", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
+		"followup_task", "interrupt_agent", "list_agents", "wait_agent",
 	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
 	assert.equal(await backend.completion, 0);

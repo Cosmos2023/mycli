@@ -12,6 +12,7 @@ import {
 } from "@mycli/tools";
 import {
 	createIntegrationComposition,
+	partitionRuntimeToolRegistrations,
 	type IntegrationCompositionSource,
 } from "../src/node-runtime/integration-composition.ts";
 
@@ -103,6 +104,26 @@ test("integration composition rejects duplicate routes and preserves the package
 	]);
 	assert.equal(runtimePackage.dependencies?.["@mycli/integrations"], undefined);
 	assert.equal(integrationsPackage.dependencies?.["@mycli/runtime"], undefined);
+});
+
+test("runtime tool partition keeps stable controls direct and defers MCP and plugin schemas", () => {
+	const hidden = defineIntegrationRegistration({
+		...registration("HiddenPlugin", "plugin"),
+		modelVisible: false,
+	});
+	const partition = partitionRuntimeToolRegistrations([
+		registration("Skill", "skill"),
+		registration("McpSearch", "mcp"),
+		registration("PluginStatus", "plugin"),
+		registration("spawn_agent", "subagent"),
+		hidden,
+	]);
+
+	assert.deepEqual(partition.direct.map((item) => item.definition.name), ["Skill", "spawn_agent"]);
+	assert.deepEqual(partition.deferred.map((item) => item.definition.name), ["McpSearch", "PluginStatus"]);
+	assert.equal(Object.isFrozen(partition), true);
+	assert.equal(Object.isFrozen(partition.direct), true);
+	assert.equal(Object.isFrozen(partition.deferred), true);
 });
 
 function source(

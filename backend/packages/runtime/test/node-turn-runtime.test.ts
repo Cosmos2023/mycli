@@ -35,6 +35,7 @@ import {
 	ASK_USER_QUESTION_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
+	TOOL_SEARCH_TOOL_DEFINITION,
 	UPDATE_PLAN_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 	ToolRouter,
@@ -1194,6 +1195,306 @@ test("persists a structured plan update before emitting its runtime event", asyn
 	});
 });
 
+test("exposes deferred tools only after a durable tool_search activation", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const continuation = continuationFixture(trace);
+	const deferred: ToolDefinition = Object.freeze({
+		id: "plugin:docs:search",
+		name: "docs_search",
+		description: "Search documents",
+		inputSchema: Object.freeze({
+			type: "object",
+			properties: Object.freeze({ query: Object.freeze({ type: "string" }) }),
+			required: Object.freeze(["query"]),
+			additionalProperties: false,
+		}),
+	});
+	const provider = scriptedProvider(trace, requests, [
+		[
+			{ type: "tool_call", callId: "call-search", name: "tool_search", argumentsJson: '{"query":"docs"}' },
+			{ type: "completed", responseId: "resp-search" },
+		],
+		[
+			{ type: "tool_call", callId: "call-docs", name: "docs_search", argumentsJson: '{"query":"runtime"}' },
+			{ type: "completed", responseId: "resp-docs" },
+		],
+		[
+			{ type: "text_delta", text: "Found it." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const router: ToolRouterContract = {
+		execute: async (call) => {
+			trace.push(`tool:${call.callId}`);
+			return call.name === "tool_search"
+				? {
+					callId: call.callId,
+					toolName: call.name,
+					success: true,
+					modelOutput: '{"tools":[{"name":"docs_search"}]}',
+					summary: "Activated 1 deferred tool",
+					metadata: {},
+					toolActivation: { names: ["docs_search"] },
+				}
+				: {
+					callId: call.callId,
+					toolName: call.name,
+					success: true,
+					modelOutput: "Document result",
+					summary: "Searched documents",
+					metadata: {},
+				};
+		},
+	};
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [TOOL_SEARCH_TOOL_DEFINITION],
+		deferredTools: [deferred],
+		loadToolActivations: () => store.toolResults.flatMap(
+			(result) => result.toolActivation?.names ?? [],
+		),
+		providerContinuation: continuation.coordinator,
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["tool_search"]);
+	assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+	assert.deepEqual(requests[2]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+	assert.equal(requests[1]?.previousResponseId, undefined);
+	assert.ok(trace.indexOf("persist:result:call-search") < trace.indexOf("provider:2"));
+	assert.ok(trace.indexOf("tool:call-docs") < trace.indexOf("provider:3"));
+	assert.equal(trace.filter((item) => item === "continuation:invalid:tool_exposure_changed").length, 1);
+});
+
+test("does not expose tool_search activations when result persistence fails", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	store.failToolResultPersistence = true;
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "tool_call", callId: "call-search", name: "tool_search", argumentsJson: '{"query":"docs"}' },
+		{ type: "completed", responseId: "resp-search" },
+	], [
+		{ type: "text_delta", text: "This request must never be sent." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: {
+			execute: async (call) => ({
+				callId: call.callId,
+				toolName: call.name,
+				success: true,
+				modelOutput: '{"tools":[{"name":"docs_search"}]}',
+				summary: "Activated 1 deferred tool",
+				metadata: {},
+				toolActivation: { names: ["docs_search"] },
+			}),
+		},
+		toolDefinitions: [TOOL_SEARCH_TOOL_DEFINITION],
+		deferredTools: [{
+			id: "plugin:docs:search",
+			name: "docs_search",
+			description: "Search documents",
+			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		}],
+		loadToolActivations: () => store.toolResults.flatMap(
+			(result) => result.toolActivation?.names ?? [],
+		),
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "persistence_error");
+	assert.equal(requests.length, 1);
+	assert.equal(store.toolResults.length, 0);
+	assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["tool_search"]);
+});
+
+test("keeps repeated activations stable without another continuation invalidation", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const continuation = continuationFixture(trace);
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "tool_call", callId: "call-search-1", name: "tool_search", argumentsJson: '{"query":"docs"}' },
+		{ type: "completed", responseId: "resp-search-1" },
+	], [
+		{ type: "tool_call", callId: "call-search-2", name: "tool_search", argumentsJson: '{"query":"docs"}' },
+		{ type: "completed", responseId: "resp-search-2" },
+	], [
+		{ type: "text_delta", text: "Ready." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: {
+			execute: async (call) => ({
+				callId: call.callId,
+				toolName: call.name,
+				success: true,
+				modelOutput: '{"tools":[{"name":"docs_search"}]}',
+				summary: "Activated 1 deferred tool",
+				metadata: {},
+				toolActivation: { names: ["docs_search"] },
+			}),
+		},
+		toolDefinitions: [TOOL_SEARCH_TOOL_DEFINITION],
+		deferredTools: [{
+			id: "plugin:docs:search",
+			name: "docs_search",
+			description: "Search documents",
+			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		}],
+		loadToolActivations: () => store.toolResults.flatMap(
+			(result) => result.toolActivation?.names ?? [],
+		),
+		providerContinuation: continuation.coordinator,
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(trace.filter((item) => item === "continuation:invalid:tool_exposure_changed").length, 1);
+	assert.equal(requests[1]?.previousResponseId, undefined);
+	assert.equal(requests[2]?.previousResponseId, "resp-search-2");
+});
+
+test("filters stale durable activations through the current deferred catalog", async () => {
+	const requests: ProviderRequest[] = [];
+	const runtime = createRuntime({
+		store: new FakeStore([]),
+		provider: scriptedProvider([], requests, [[
+			{ type: "text_delta", text: "Ready." },
+			{ type: "completed", responseId: "resp-final" },
+		]]),
+		toolRouter: new SequencedRouter([]),
+		toolDefinitions: [TOOL_SEARCH_TOOL_DEFINITION],
+		deferredTools: [{
+			id: "plugin:docs:search",
+			name: "docs_search",
+			description: "Search documents",
+			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		}, {
+			id: "plugin:calendar:list",
+			name: "calendar_list",
+			description: "List calendars",
+			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		}],
+		loadToolActivations: () => ["calendar_list", "missing_tool", "docs_search"],
+	});
+
+	await runtime.submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), [
+		"tool_search",
+		"docs_search",
+		"calendar_list",
+	]);
+});
+
+test("restores deferred tool exposure when an approval continuation rebuilds context", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const deferred: ToolDefinition = {
+		id: "plugin:docs:search",
+		name: "docs_search",
+		description: "Search documents",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	};
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "tool_call", callId: "call-search", name: "tool_search", argumentsJson: '{"query":"docs"}' },
+		{ type: "completed", responseId: "resp-search" },
+	], [
+		{ type: "tool_call", callId: "call-docs", name: "docs_search", argumentsJson: '{"query":"runtime"}' },
+		{ type: "completed", responseId: "resp-docs" },
+	], [
+		{ type: "text_delta", text: "Approved result." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const router: ToolRouterContract = {
+		execute: async (call) => call.name === "tool_search"
+			? {
+				callId: call.callId,
+				toolName: call.name,
+				success: true,
+				modelOutput: '{"tools":[{"name":"docs_search"}]}',
+				summary: "Activated 1 deferred tool",
+				metadata: {},
+				toolActivation: { names: ["docs_search"] },
+			}
+			: {
+				callId: call.callId,
+				toolName: call.name,
+				success: true,
+				modelOutput: "Document result",
+				summary: "Searched documents",
+				metadata: {},
+			},
+	};
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [TOOL_SEARCH_TOOL_DEFINITION],
+		deferredTools: [deferred],
+		loadToolActivations: () => store.toolResults.flatMap(
+			(result) => result.toolActivation?.names ?? [],
+		),
+		approvalPolicy: {
+			evaluate: (call) => call.name === "docs_search"
+				? {
+					kind: "request",
+					callId: call.callId,
+					toolName: call.name,
+					preview: "Search documents",
+					reason: "Approval required for deferred integration",
+					options: ["approve_once", "reject"] as const,
+				}
+				: {
+					kind: "allow",
+					callId: call.callId,
+					toolName: call.name,
+					preview: "Search tools",
+					reason: "Discovery is auto-allowed",
+				},
+		},
+		approvalCoordinator: approvals.coordinator,
+	});
+
+	const suspended = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+	assert.equal(suspended.status, "in_progress");
+	assert.equal(approvals.pending()?.decisionId, "call-docs");
+	assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+
+	const completed = await resolveApproval(runtime, {
+		decisionId: "call-docs",
+		choice: "approve_once",
+	}, () => undefined, new AbortController().signal);
+
+	assert.equal(completed.status, "completed");
+	assert.deepEqual(requests[2]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+});
+
 test("strict mutation policy durably suspends before requesting approval", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -2269,6 +2570,8 @@ function createRuntime(options: {
 	readonly runtimeConfig?: NodeRuntimeConfig;
 	readonly executionPolicyCoordinator?: NodeTurnRuntimeOptions["executionPolicyCoordinator"];
 	readonly planTools?: NonNullable<NodeTurnRuntimeOptions["planTools"]>;
+	readonly deferredTools?: NodeTurnRuntimeOptions["deferredTools"];
+	readonly loadToolActivations?: NodeTurnRuntimeOptions["loadToolActivations"];
 	readonly hookRunner?: HookRunnerContract;
 		readonly contextItemCoordinator?: ContextItemCoordinatorContract;
 		readonly agentBudget?: NodeTurnRuntimeOptions["agentBudget"];
@@ -2294,6 +2597,8 @@ function createRuntime(options: {
 		sleep: async () => {},
 		random: () => 0.5,
 		planTools: options.planTools ?? (() => options.toolDefinitions ?? [READ_TOOL_DEFINITION]),
+		...(options.deferredTools ? { deferredTools: options.deferredTools } : {}),
+		...(options.loadToolActivations ? { loadToolActivations: options.loadToolActivations } : {}),
 		toolRouter: options.toolRouter,
 		publishLifecycle: options.publishLifecycle ?? (() => undefined),
 		...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
@@ -2700,6 +3005,7 @@ class FakeStore implements TurnStore {
 	readonly completions: CompleteStoredTurnInput[] = [];
 	turn: RuntimeTurnRecord | undefined;
 	afterResultPersisted?: () => void;
+	failToolResultPersistence = false;
 
 	constructor(trace: string[]) {
 		this.trace = trace;
@@ -2750,6 +3056,9 @@ class FakeStore implements TurnStore {
 	}
 
 	appendToolResult(input: AppendToolResultInput): void {
+		if (this.failToolResultPersistence) {
+			throw new StorageFailure("tool result persistence failed");
+		}
 		this.trace.push(`persist:result:${input.result.callId}`);
 		this.toolResults.push(input);
 		this.items.push({ type: "tool_result", ...input.result });

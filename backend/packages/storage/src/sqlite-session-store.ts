@@ -101,6 +101,8 @@ import {
 } from "./canonical-images.ts";
 
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
+const TOOL_ACTIVATION_NAME = /^[A-Za-z0-9_]{1,128}$/u;
+const MAX_TOOL_ACTIVATION_NAMES = 16;
 
 export interface SQLiteSessionStoreOptions {
 	readonly dbPath: string;
@@ -306,6 +308,30 @@ export class SQLiteSessionStore implements SessionStore {
 				historyRows.map((row) => canonicalHistoryItem(row.payload_json)),
 				this.#activeToolCallIds(sessionId),
 			);
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	loadToolActivations(sessionId: string, turnId: string): readonly string[] {
+		try {
+			const rows = this.#database.prepare(`
+				SELECT payload_json
+				FROM conversation_messages
+				WHERE session_id = ?
+				  AND json_extract(payload_json, '$.metadata.turn_id') = ?
+				  AND json_extract(payload_json, '$.metadata.tool_name') = 'tool_search'
+				ORDER BY message_index
+			`).all(sessionId, turnId) as readonly { readonly payload_json: unknown }[];
+			const names = new Set<string>();
+			for (const row of rows) {
+				const payload = parsedRecord(row.payload_json, "conversation_messages");
+				const metadata = recordValue(payload.metadata);
+				for (const name of persistedToolActivationNames(metadata.tool_activation)) {
+					names.add(name);
+				}
+			}
+			return Object.freeze([...names]);
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -1358,6 +1384,7 @@ export class SQLiteSessionStore implements SessionStore {
 		turn: RuntimeTurnRecord,
 		input: AppendToolResultInput,
 	): void {
+		validateToolResultEffects(input);
 		const threadId = this.#threadId(input.sessionId);
 		this.#appendConversationMessage(
 			input.sessionId,
@@ -1738,7 +1765,50 @@ function toolResultMetadata(
 		...(mutationMetadata.file_changes
 			? { file_changes: mutationMetadata.file_changes }
 			: {}),
+		...(input.toolActivation ? {
+			tool_activation: {
+				version: 1,
+				names: validatedToolActivationNames(input.toolActivation.names),
+			},
+		} : {}),
 	};
+}
+
+function validateToolResultEffects(input: AppendToolResultInput): void {
+	if (input.toolActivation) {
+		if (!input.result.success || input.result.toolName !== "tool_search") {
+			throw new StorageFailure("tool activation requires a successful tool_search result");
+		}
+		validatedToolActivationNames(input.toolActivation.names);
+	}
+}
+
+function validatedToolActivationNames(value: readonly string[]): readonly string[] {
+	if (!Array.isArray(value) || value.length > MAX_TOOL_ACTIVATION_NAMES) {
+		throw new StorageFailure("tool activation exceeds name limit");
+	}
+	const names = value.map((name) => {
+		if (typeof name !== "string" || !TOOL_ACTIVATION_NAME.test(name)) {
+			throw new StorageFailure("tool activation name is invalid");
+		}
+		return name;
+	});
+	if (new Set(names).size !== names.length) {
+		throw new StorageFailure("tool activation names must be unique");
+	}
+	return Object.freeze(names);
+}
+
+function persistedToolActivationNames(value: unknown): readonly string[] {
+	const activation = recordValue(value);
+	if (activation.version !== 1 || !Array.isArray(activation.names)
+		|| activation.names.length > MAX_TOOL_ACTIVATION_NAMES) return [];
+	const names = activation.names.filter(
+		(name): name is string => typeof name === "string" && TOOL_ACTIVATION_NAME.test(name),
+	);
+	return names.length === activation.names.length && new Set(names).size === names.length
+		? names
+		: [];
 }
 
 function assistantHistoryItem(
