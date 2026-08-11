@@ -205,3 +205,36 @@ Added secure bounded web_fetch, durable turn-local tool_search activation for MC
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Codex-style transcript viewer
+
+**Date**: 2026-08-11
+**Task**: Codex-style transcript viewer
+**Branch**: `feature/mycli-node-runtime-rewrite`
+
+### Summary
+
+Added Ctrl+T alternate-screen transcript viewing with on-demand append-only Shell output, live-tail refresh, legacy fallback, and PTY coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7d889886` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
