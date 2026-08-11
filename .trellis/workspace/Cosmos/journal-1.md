@@ -70,7 +70,14 @@ Completed the Node-owned persistent shell milestone: bounded output, pipe and na
 
 ### Main Changes
 
-(Add details)
+- Added manifest-gated parallel phases for built-in `Read`, `web_fetch`, and
+  `tool_search` calls while retaining sequential barriers for mutations,
+  approvals, clarification, planning, Shell, and extension tools.
+- Preserved provider-order lifecycle completion, result persistence, hooks,
+  checkpoints, and replay even when parallel tools finish out of order.
+- Tracked active tools by full call id and added interruption, failure,
+  approval, barrier, and call-id collision regressions.
+- Documented the tool-manifest and provider-replay concurrency contracts.
 
 ### Git Commits
 
@@ -230,6 +237,44 @@ Added Ctrl+T alternate-screen transcript viewing with on-demand append-only Shel
 ### Testing
 
 - [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 7: Enable safe parallel tool batches
+
+**Date**: 2026-08-11
+**Task**: Enable safe parallel tool batches
+**Branch**: `feature/mycli-node-runtime-rewrite`
+
+### Summary
+
+Enabled manifest-gated concurrent execution for safe Node tool phases while preserving provider-order persistence, approvals, hooks, interruption, and sequential barriers.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c6f9a0cf` | feat(node-runtime): execute safe tool batches concurrently |
+
+### Testing
+
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] Runtime tests: 254 passed
+- [OK] Tools tests: 198 passed
+- [OK] App tests: 185 passed
+- [OK] TUI tests: 540 passed
 
 ### Status
 

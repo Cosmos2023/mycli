@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~240 | Active |
+| `journal-1.md` | ~273 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-08-11 | Enable safe parallel tool batches | `c6f9a0cf` | `feature/mycli-node-runtime-rewrite` |
 | 6 | 2026-08-11 | Codex-style transcript viewer | `7d889886` | `feature/mycli-node-runtime-rewrite` |
 | 5 | 2026-08-11 | Add Node web fetch and deferred tool discovery | `0fc2656d`, `932d20c9`, `5acb6bd5` | `feature/mycli-node-runtime-rewrite` |
 | 4 | 2026-08-06 | Complete Node runtime M8 promotion | `3965dc46`, `86951fa5`, `931dce4c` | `feature/mycli-node-runtime-rewrite` |
