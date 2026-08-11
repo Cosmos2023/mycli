@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
-- **Last Active**: 2026-08-06
+- **Total Sessions**: 5
+- **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~165 | Active |
+| `journal-1.md` | ~200 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-08-11 | Add Node web fetch and deferred tool discovery | `0fc2656d`, `932d20c9`, `5acb6bd5` | `feature/mycli-node-runtime-rewrite` |
 | 4 | 2026-08-06 | Complete Node runtime M8 promotion | `3965dc46`, `86951fa5`, `931dce4c` | `feature/mycli-node-runtime-rewrite` |
 | 3 | 2026-08-06 | Complete Node runtime M7 extension parity | `95b0e868` | `feature/mycli-node-runtime-rewrite` |
 | 2 | 2026-08-05 | Complete M6 persistent shell | `ff0b9e26`, `9318b85d`, `e91ccef7`, `2c803893`, `62da5544`, `9b1d91e3`, `0fe3081f`, `c0a729f7`, `1762c7c1`, `c48bc088`, `28cfdd3f`, `7a2d85c7` | `feature/mycli-node-runtime-rewrite` |

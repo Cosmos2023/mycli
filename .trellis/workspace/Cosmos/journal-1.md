@@ -19,7 +19,12 @@ Completed M5 persistent runtime recovery across session state, transcripts, queu
 
 ### Main Changes
 
-(Add details)
+- Added the bounded `web_fetch` adapter with network-policy, SSRF, pinned-DNS, redirect, transfer,
+  content-type, and untrusted-content controls.
+- Added deterministic `tool_search` discovery for deferred MCP/plugin schemas with append-only,
+  persist-before-expose activation and approval/restart recovery.
+- Updated M7 integration smoke, executable contracts, user documentation, and archived the completed
+  OpenSpec change after syncing its two capability specs.
 
 ### Git Commits
 
@@ -155,6 +160,43 @@ Closed Node TUI and slash-command parity, promoted npm startup to Node-only, ret
 ### Testing
 
 - [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: Add Node web fetch and deferred tool discovery
+
+**Date**: 2026-08-11
+**Task**: Add Node web fetch and deferred tool discovery
+**Branch**: `feature/mycli-node-runtime-rewrite`
+
+### Summary
+
+Added secure bounded web_fetch, durable turn-local tool_search activation for MCP/plugin schemas, integration recovery coverage, and archived OpenSpec contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0fc2656d` | feat(node-tools): add secure web fetch and deferred search |
+| `932d20c9` | feat(node-runtime): persist deferred tool activation |
+| `5acb6bd5` | docs(node-tools): archive web and discovery contracts |
+
+### Testing
+
+- [OK] Root build, typecheck, ESLint, and full npm workspace tests
+- [OK] Tools 195/195, runtime 248/248, storage 110/110, app 184/184
+- [OK] OpenSpec validation and `git diff --check`
 
 ### Status
 
