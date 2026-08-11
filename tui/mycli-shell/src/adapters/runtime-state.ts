@@ -35,6 +35,18 @@ import {
 } from "./command-results.ts";
 
 const TURN_INTERRUPTED_NOTICE = "Turn interrupted. The current turn was aborted; send a new message to continue.";
+const SEMANTIC_TOOL_ROW_NAMES = new Set([
+	"askuserquestion",
+	"followuptask",
+	"interruptagent",
+	"killshell",
+	"listagents",
+	"sendmessage",
+	"spawnagent",
+	"toolsearch",
+	"updateplan",
+	"waitagent",
+]);
 
 type RuntimeTranscriptItem = {
 	id: string;
@@ -547,6 +559,9 @@ function projectRuntimeShellState(
 				continue;
 			}
 			const tool = toolFromTranscriptItem(item, state.workspace, state.settings.toolDetailsDefault);
+			if (suppressGenericToolRow(tool)) {
+				continue;
+			}
 			if (isShellTool(tool.name)) {
 				const metadata = recordValue(item.metadata);
 				const display = toolDisplayFromMetadata(metadata);
@@ -2573,6 +2588,12 @@ function isFileMutationTool(name: string): boolean {
 
 function normalizeToolName(name: string): string {
 	return name.trim().toLowerCase().replace(/[_-]/g, "");
+}
+
+function suppressGenericToolRow(tool: MycliShellTool): boolean {
+	return tool.status !== "error"
+		&& tool.status !== "cancelled"
+		&& SEMANTIC_TOOL_ROW_NAMES.has(normalizeToolName(tool.name));
 }
 
 function fileChangeFallbackText(change: MycliShellFileChange): string {

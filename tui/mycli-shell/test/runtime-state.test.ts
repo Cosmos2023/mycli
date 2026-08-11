@@ -30,6 +30,19 @@ import {
 } from "../src/adapters/runtime-state.ts";
 import { canonicalToolName } from "../src/components/tool-display.ts";
 
+const SEMANTIC_TOOL_NAMES = [
+	"AskUserQuestion",
+	"followup_task",
+	"interrupt_agent",
+	"KillShell",
+	"list_agents",
+	"send_message",
+	"spawn_agent",
+	"tool_search",
+	"update_plan",
+	"wait_agent",
+] as const;
+
 function countedTranscriptWithTail(tail: RuntimeShellState["transcript"][number]): {
 	transcript: RuntimeShellState["transcript"];
 	countedTranscript: RuntimeShellState["transcript"];
@@ -1385,7 +1398,7 @@ test("runtime adapter keeps successful Task calls visible alongside the dedicate
 	assert.equal(shell.transcript?.filter((block) => block.kind === "subagent").length, 1);
 });
 
-test("runtime adapter renders every coordination tool and hides live provider mailbox payloads", () => {
+test("runtime adapter suppresses coordination rows and hides live provider mailbox payloads", () => {
 	let state = initialRuntimeState();
 	for (const [index, name] of [
 		"spawn_agent",
@@ -1416,16 +1429,108 @@ test("runtime adapter renders every coordination tool and hides live provider ma
 	});
 
 	const shell = projectRuntimeState(state);
-	assert.deepEqual(shell.tools.map((tool) => tool.name), [
-		"spawn_agent",
-		"send_message",
-		"followup_task",
-		"wait_agent",
-		"interrupt_agent",
-		"list_agents",
-	]);
-	assert.equal(shell.tools.every((tool) => tool.hidden === false), true);
+	assert.deepEqual(shell.tools, []);
 	assert.equal(JSON.stringify(shell.transcript).includes("provider-only completion"), false);
+});
+
+test("runtime adapter replaces successful control tools with semantic UI and keeps failures visible", () => {
+	let state = initialRuntimeState();
+	for (const [index, name] of SEMANTIC_TOOL_NAMES.entries()) {
+		state = reduceRuntimeEvent(state, "tool.start", {
+			tool_id: `success-${index}`,
+			call_id: `success-${index}`,
+			name,
+		});
+	}
+	assert.deepEqual(projectRuntimeState(state).tools, []);
+
+	for (const [index, name] of SEMANTIC_TOOL_NAMES.entries()) {
+		state = reduceRuntimeEvent(state, "tool.complete", {
+			tool_id: `success-${index}`,
+			call_id: `success-${index}`,
+			name,
+			success: true,
+			summary: `${name} completed`,
+		});
+		state = reduceRuntimeEvent(state, "tool.start", {
+			tool_id: `failure-${index}`,
+			call_id: `failure-${index}`,
+			name,
+		});
+		state = reduceRuntimeEvent(state, "tool.failed", {
+			tool_id: `failure-${index}`,
+			call_id: `failure-${index}`,
+			name,
+			success: false,
+			error: `${name} failed`,
+		});
+	}
+	state = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "turn-1",
+		plan: { items: [{ id: "inspect", text: "Inspect runtime", status: "completed" }] },
+		source: "update_plan",
+	});
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "agent-1",
+			child_session_id: "child-1",
+			role: "worker",
+			status: "running",
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.tools.map((tool) => [tool.name, tool.status]),
+		SEMANTIC_TOOL_NAMES.map((name) => [name, "error"]));
+	assert.equal(shell.transcript?.some((block) => block.kind === "plan_update"), true);
+	assert.equal(shell.transcript?.some((block) => block.kind === "subagent"), true);
+});
+
+test("runtime adapter applies semantic tool suppression to resumed transcripts", () => {
+	const items: Record<string, unknown>[] = SEMANTIC_TOOL_NAMES.flatMap((name, index) => [
+		{
+			id: `success-${index}`,
+			type: "tool_detail",
+			text: `${name} completed`,
+			metadata: { tool_name: name, call_id: `success-${index}`, success: true, status: "completed" },
+		},
+		{
+			id: `failure-${index}`,
+			type: "tool_detail",
+			text: `${name} failed`,
+			metadata: {
+				tool_name: name,
+				call_id: `failure-${index}`,
+				success: false,
+				status: "failed",
+				error: `${name} failed`,
+			},
+		},
+	]);
+	items.push({
+		id: "cancelled-wait",
+		type: "tool_detail",
+		text: "wait_agent cancelled",
+		metadata: {
+			tool_name: "wait_agent",
+			call_id: "cancelled-wait",
+			display: {
+				status: "cancelled",
+				summary: "Cancelled",
+				presentation: "control",
+				metrics: {},
+				truncated: false,
+				omitted_chars: 0,
+			},
+		},
+	});
+	const state = runtimeStateFromTranscript(initialRuntimeState(), { items });
+
+	assert.deepEqual(projectRuntimeState(state).tools.map((tool) => [tool.name, tool.status]), [
+		...SEMANTIC_TOOL_NAMES.map((name) => [name, "error"]),
+		["wait_agent", "cancelled"],
+	]);
 });
 
 test("runtime adapter keeps successful and failed Task rows visible when reloading history", () => {

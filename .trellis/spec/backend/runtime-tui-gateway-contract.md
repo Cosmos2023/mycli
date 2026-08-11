@@ -4167,3 +4167,73 @@ store.appendToolResult({ ...result, planUpdate: { items } });
 emit({ type: "plan_updated", items });
 // TUI appends the event; resume derives the same item from durable history.
 ```
+
+## Scenario: Semantic Tool Row Suppression
+
+### 1. Scope / Trigger
+
+- Trigger: changing Node TUI projection for tool lifecycle rows that are pure coordination or have
+  a dedicated semantic surface.
+
+### 2. Signatures
+
+- Projection predicate: `suppressGenericToolRow(tool: MycliShellTool) -> boolean`.
+- Suppressed normalized names: `askuserquestion`, `followuptask`, `interruptagent`, `killshell`,
+  `listagents`, `sendmessage`, `spawnagent`, `toolsearch`, `updateplan`, and `waitagent`.
+
+### 3. Contracts
+
+- Suppression is display-only. Reducer state, append-only history, tool results, provider replay,
+  trace data, and storage projection retain the original call and result.
+- Running and successful generic rows for `AskUserQuestion`, the subagent coordination toolset,
+  `KillShell`, `tool_search`, and `update_plan` are omitted. Their useful state is carried by the
+  clarification selector, durable task/mailbox state, the originating Shell state, deferred-tool
+  activation, live wait status, immutable `plan_update` blocks, and subagent task state.
+- Failed or cancelled calls are always visible. Unknown MCP/plugin tools and tools with filesystem,
+  process, or network effects remain visible by default.
+- Live events and resumed transcript items pass through the same TUI projection predicate so a
+  restart cannot reintroduce a generic row hidden during the original run.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Suppressed tool is running or successful | Omit only its generic tool row |
+| Suppressed tool fails or is cancelled | Render the normal error/cancelled tool row |
+| Dedicated plan or subagent state exists | Preserve that semantic state |
+| Unknown or side-effecting tool | Render by default |
+| Transcript is resumed | Apply the same status-sensitive predicate without rewriting history |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `update_plan` produces one `Updated Plan` block and no duplicate generic card.
+- Good: repeated successful `wait_agent` calls leave the transcript stable while the footer carries
+  live waiting state.
+- Base: a failed `tool_search` renders a compact error row.
+- Bad: delete the canonical tool call/result or filter it from provider replay.
+- Bad: hide every MCP/plugin tool based only on a naming convention.
+
+### 6. Tests Required
+
+- Reducer projection tests cover running/success suppression and failed-call visibility for all ten
+  normalized names.
+- Resume tests feed equivalent persisted tool items through `runtimeStateFromTranscript` and assert
+  the same visible tool list.
+- Plan and subagent tests assert their dedicated semantic blocks remain available.
+- Existing Shell polling, mutation, Read grouping, and provider replay tests remain green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+history = history.filter((item) => item.toolName !== "wait_agent");
+```
+
+#### Correct
+
+```typescript
+const tool = toolFromTranscriptItem(item, workspace, detailMode);
+if (suppressGenericToolRow(tool)) continue;
+// Canonical history and model replay remain unchanged.
+```
