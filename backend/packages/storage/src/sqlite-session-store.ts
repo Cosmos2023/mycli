@@ -1291,23 +1291,14 @@ export class SQLiteSessionStore implements SessionStore {
 	}
 
 	#initialize(): void {
+		const version = this.#schemaVersion();
+		this.#assertSupportedSchemaVersion(version);
+		if (version === SCHEMA_VERSION) return;
+
 		this.#write(() => {
-			const versionTable = this.#database.prepare(`
-				SELECT 1 AS present
-				FROM sqlite_master
-				WHERE type = 'table' AND name = 'schema_version'
-			`).get() as { present: number } | undefined;
-			if (versionTable) {
-				const version = this.#database.prepare(
-					"SELECT version FROM schema_version LIMIT 1",
-				).get() as { version: unknown } | undefined;
-				if (version && ![2, 3, 4, 5, 6, SCHEMA_VERSION].includes(Number(version.version))) {
-					throw new StorageFailure("unsupported session schema version", {
-						expected_version: SCHEMA_VERSION,
-						actual_version: typeof version.version === "number" ? version.version : null,
-					});
-				}
-			}
+			const lockedVersion = this.#schemaVersion();
+			this.#assertSupportedSchemaVersion(lockedVersion);
+			if (lockedVersion === SCHEMA_VERSION) return;
 			this.#database.exec(SCHEMA_V2_SQL);
 			this.#ensureRuntimeTurnOwnershipColumns();
 			this.#database.exec(SCHEMA_V5_SQL);
@@ -1316,6 +1307,28 @@ export class SQLiteSessionStore implements SessionStore {
 			this.#database.exec(BACKFILL_SEARCH_SQL);
 			this.#database.prepare("DELETE FROM schema_version").run();
 			this.#database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
+		});
+	}
+
+	#schemaVersion(): number | undefined {
+		const versionTable = this.#database.prepare(`
+			SELECT 1 AS present
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'schema_version'
+		`).get() as { present: number } | undefined;
+		if (!versionTable) return undefined;
+		const version = this.#database.prepare(
+			"SELECT version FROM schema_version LIMIT 1",
+		).get() as { version: unknown } | undefined;
+		if (!version) return undefined;
+		return typeof version.version === "number" ? version.version : Number.NaN;
+	}
+
+	#assertSupportedSchemaVersion(version: number | undefined): void {
+		if (version === undefined || [2, 3, 4, 5, 6, SCHEMA_VERSION].includes(version)) return;
+		throw new StorageFailure("unsupported session schema version", {
+			expected_version: SCHEMA_VERSION,
+			actual_version: Number.isFinite(version) ? version : null,
 		});
 	}
 

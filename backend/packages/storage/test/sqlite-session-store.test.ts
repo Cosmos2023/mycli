@@ -188,6 +188,23 @@ test("initializes the complete schema-v7 shape plus durable model-input state", 
 	assert.equal(storage.SCHEMA_VERSION, 7);
 });
 
+test("reopens the current schema without rewriting its migration marker", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
+	const database = await openDatabase(fixture.dbPath);
+	database.exec(`
+		CREATE TRIGGER reject_schema_version_rewrite
+		BEFORE DELETE ON schema_version BEGIN
+			SELECT RAISE(ABORT, 'current schema must not be migrated again');
+		END;
+	`);
+	database.close();
+
+	const reopened = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	reopened.close();
+});
+
 test("opens an existing schema-v2 database additively without changing existing messages", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const fixture = await databaseFixture(t);

@@ -86,6 +86,88 @@ Questions to answer:
   deleting the original messages.
 - Do not move or rewrite `~/.mycli/sessions.db` as part of storage layout work.
 
+## Scenario: Version-Gated SQLite Initialization
+
+### 1. Scope / Trigger
+
+- Trigger: changing `SQLiteSessionStore` construction, schema SQL, FTS backfill, or
+  `SCHEMA_VERSION` migration behavior.
+
+### 2. Signatures
+
+- Schema anchor: `SCHEMA_VERSION` in `backend/packages/storage/src/schema.ts`.
+- Migration entry: `SQLiteSessionStore.#initialize()`.
+- Durable commit marker: the single integer row in `schema_version`.
+
+### 3. Contracts
+
+- Read `schema_version` before acquiring a migration write lock. If it equals the current
+  `SCHEMA_VERSION`, return without replaying schema DDL, FTS backfills, or a version-row rewrite.
+- A missing version table or supported older version enters the additive migration inside the
+  store's `BEGIN IMMEDIATE` transaction.
+- After acquiring the migration write lock, read and validate the version again. A concurrent mycli
+  instance may have completed migration while this instance was waiting; the second instance must
+  then take the current-version fast path inside the transaction.
+- The version row is written only after all schema objects, ownership columns, and FTS backfills
+  complete. Transaction rollback must prevent a current version from being observable with a
+  partially applied migration.
+- Current-version corruption is a doctor/integrity failure, not an implicit startup repair. Do not
+  make every normal startup scan or rebuild current schema objects to mask external corruption.
+
+### 4. Validation & Error Matrix
+
+| Stored version | Required behavior |
+| --- | --- |
+| No version table or row | Initialize the complete current schema transactionally |
+| Supported v2-v6 | Run additive migration and preserve existing rows |
+| Current version | Open without schema write, DDL replay, or FTS backfill scan |
+| Unsupported numeric version | Fail with bounded expected/actual version diagnostics |
+| Invalid non-numeric version | Fail with a bounded null actual version |
+| Concurrent migration completes first | Recheck under lock and skip duplicate migration |
+
+### 5. Good/Base/Bad Cases
+
+- Good: reopening a large v7 database performs bounded version reads and immediately continues to
+  runtime recovery.
+- Base: a new empty path creates v7 and writes its commit marker once.
+- Bad: execute every `CREATE ... IF NOT EXISTS`, scan both FTS tables, and delete/reinsert the v7
+  marker on every CLI startup.
+
+### 6. Tests Required
+
+- Assert a current database reopens even when a test trigger rejects deletion of its version row.
+- Keep new-database schema-shape coverage for all required tables, indexes, and immutable triggers.
+- Keep explicit v2, v3, v4, v5, and v6 migration fixtures and verify preserved data plus v7 output.
+- Keep unsupported and malformed version failures bounded and free of database payloads.
+- Profile a representative populated database when changing initialization so migration work cannot
+  silently return to the routine startup path.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+this.#write(() => {
+  this.#database.exec(ALL_SCHEMA_SQL);
+  this.#database.exec(BACKFILL_SEARCH_SQL);
+  this.#rewriteSchemaVersion();
+});
+```
+
+#### Correct
+
+```typescript
+const version = this.#schemaVersion();
+this.#assertSupportedSchemaVersion(version);
+if (version === SCHEMA_VERSION) return;
+
+this.#write(() => {
+  const lockedVersion = this.#schemaVersion();
+  if (lockedVersion === SCHEMA_VERSION) return;
+  this.#migrateToCurrentVersion();
+});
+```
+
 ## Scenario: Readable Node Session Artifact Projection
 
 ### 1. Scope / Trigger
