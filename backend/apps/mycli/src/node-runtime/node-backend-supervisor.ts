@@ -1,6 +1,10 @@
 import { PassThrough } from "node:stream";
 import { Worker } from "node:worker_threads";
 import type { NodeBackend, StartNodeBackendOptions } from "./node-backend.ts";
+import type {
+	StartupProfileSnapshot,
+	StartupProfileStage,
+} from "./startup-profile.ts";
 
 type JsonObject = Record<string, unknown>;
 type RpcId = string | number | null;
@@ -62,6 +66,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 	#model: string | undefined;
 	#activeTurn: ActiveTurnIdentity | undefined;
 	#diagnostic = "";
+	#startupProfile: StartupProfileSnapshot | undefined;
 
 	constructor(options: SupervisedNodeBackendOptions) {
 		this.#options = {
@@ -128,6 +133,10 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 
 	diagnostic(): string {
 		return this.#diagnostic;
+	}
+
+	startupProfile(): StartupProfileSnapshot | undefined {
+		return this.#startupProfile;
 	}
 
 	#handleClientChunk(chunk: string): void {
@@ -243,6 +252,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 		const generation = ++this.#generation;
 		this.#workerLineBuffer = "";
 		this.#publishedInterrupts = new Set<string>();
+		this.#startupProfile = undefined;
 		const worker = new Worker(this.#workerUrl, {
 			workerData: { generation, options },
 		});
@@ -256,6 +266,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 					return;
 				}
 				if (message.type === "started") {
+					this.#startupProfile = startupProfileSnapshot(message.startupProfile);
 					started = true;
 					resolve();
 					return;
@@ -388,6 +399,44 @@ function isObject(value: unknown): value is JsonObject {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function startupProfileSnapshot(value: unknown): StartupProfileSnapshot | undefined {
+	if (!isObject(value) || value.scope !== "backend" || !Array.isArray(value.marks)) return undefined;
+	const marks = value.marks.flatMap((mark) => {
+		const elapsedMs = isObject(mark) ? mark.elapsedMs : undefined;
+		if (!isObject(mark)
+			|| !isBackendStartupStage(mark.stage)
+			|| typeof elapsedMs !== "number"
+			|| !Number.isSafeInteger(elapsedMs)
+			|| elapsedMs < 0) {
+			return [];
+		}
+		return [Object.freeze({ stage: mark.stage, elapsedMs })];
+	});
+	if (marks.length !== value.marks.length) return undefined;
+	return Object.freeze({ scope: "backend", marks: Object.freeze(marks) });
+}
+
+function isBackendStartupStage(value: unknown): value is StartupProfileStage {
+	return typeof value === "string" && [
+		"runtime_entered",
+		"config_ready",
+		"storage_ready",
+		"runtime_components_ready",
+		"integration_discovery_started",
+		"hooks_ready",
+		"skills_ready",
+		"mcp_cache_ready",
+		"plugins_ready",
+		"subagents_ready",
+		"integrations_ready",
+		"session_prepare_started",
+		"session_prepared",
+		"trust_ready",
+		"session_ready",
+		"gateway_ready",
+	].includes(value);
 }
 
 function rpcKey(id: RpcId): string {

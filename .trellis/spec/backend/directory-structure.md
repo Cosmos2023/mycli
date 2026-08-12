@@ -118,26 +118,47 @@ docs/                        User, architecture, migration, and parity documenta
 
 ---
 
-## Scenario: Source-Resolved Workspace Development
+## Scenario: Compiled CLI And Source-Resolved Development
 
 ### 1. Scope / Trigger
 
-- Trigger: changing a workspace package export, root development command, TypeScript source entry,
-  or any workflow where `npm run mycli` must observe unbuilt local source changes.
+- Trigger: changing a workspace package export, root command, TypeScript source entry, or the
+  production/development startup split.
 
 ### 2. Signatures
 
 - Source condition: `mycli-source`.
-- Development commands: `npm run mycli` and `npm run dev`.
+- Production command: `npm run mycli`.
+- Development command: `npm run dev`.
 - Production condition: Node's default `import` condition.
+- Startup profiler opt-in: `MYCLI_STARTUP_PROFILE=1`.
+- Startup report: `~/.mycli/logs/startup-profile.json`.
 
 ### 3. Contracts
 
-- Every `backend/packages/*` package exposes `mycli-source` for its public root export.
+- Every `backend/packages/*` package exposes `mycli-source` for its public root export and for any
+  startup-critical narrow subpath such as `@mycli/tools/ripgrep-runtime`.
 - `mycli-shell-tui` exposes `mycli-source` for `.`, `./gateway`, and `./gateway-transport`.
-- Root development commands enable `--conditions=mycli-source` together with `--import tsx`, so
-  the app, its worker threads, backend workspace dependencies, and TUI all execute current `.ts`
-  sources without a preliminary build.
+- `npm run mycli` executes `backend/apps/mycli/dist/cli.js` with default import conditions so
+  routine startup does not pay the `tsx` loader and on-demand transpilation cost.
+- `npm run dev` enables `--conditions=mycli-source` together with `--import tsx`, so the app, its
+  worker threads, backend workspace dependencies, and TUI execute current `.ts` sources without a
+  preliminary build.
+- A source checkout must run `npm run build` before its first `npm run mycli` and after source
+  changes intended for the compiled entry. Use `npm run dev` while iterating.
+- Interactive startup must not statically load provider-free management composition or setup
+  modules. Load those modules only after parsing a matching management command, and import
+  startup-critical helpers through narrow package subpaths instead of broad barrel exports.
+- Start the backend Worker and import `mycli-shell-tui/gateway` concurrently. The TUI may render
+  only after the backend transport is connected, and synchronous or asynchronous failure in either
+  branch must close the other branch and remove lifecycle hooks.
+- Expensive helpers that are unnecessary before first input readiness must initialize on first use.
+  In particular, `TokenCounter` loads `o200k_base` on the first non-empty `count()` call, caches the
+  encoder or permanent fallback decision once, and preserves exact token-count behavior.
+- Startup profiling is exact opt-in and best-effort. It may persist only the fixed `cli` / `backend`
+  scope, allowlisted stage names, and non-negative integer elapsed milliseconds. It must never
+  persist environment values, config payloads, credentials, paths, provider data, session ids, or
+  transcript content, and it must never affect startup success.
 - Default imports, the published app bin, package `types`, and packed smokes continue to resolve
   compiled files under `dist`; source resolution is never enabled implicitly for consumers.
 - Adding a new runtime workspace package or public TUI subpath requires adding the same source
@@ -147,26 +168,42 @@ docs/                        User, architecture, migration, and parity documenta
 
 | Condition | Required behavior |
 | --- | --- |
-| Root `npm run mycli` after a source-only edit | Resolve the edited workspace module from `src` |
+| Root `npm run mycli` after a complete build | Resolve the app and workspace modules from `dist` |
+| Root `npm run dev` after a source-only edit | Resolve the edited workspace module from `src` |
 | Default package import | Resolve JavaScript from `dist` |
 | Worker spawned by the source CLI | Inherit the source condition and TypeScript loader |
 | Missing source condition on a dependency | Package resolution test fails with a `dist` path |
 | Packed or installed CLI | Run compiled JavaScript without `tsx` |
+| `MYCLI_STARTUP_PROFILE` absent or not exactly `1` | Create no startup report |
+| Profiling write fails | Continue startup without a user-visible failure |
+| Token counter is constructed but unused | Do not load or initialize the tokenizer |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: edit a TUI or runtime source file, restart `npm run mycli`, and observe the change directly.
+- Good: use `npm run mycli` for a fast production-like startup from a current build.
+- Good: edit a TUI or runtime source file, restart `npm run dev`, and observe the change directly.
+- Good: compare repeated fixed-stage reports before and after a startup optimization.
 - Base: run a package consumer without custom conditions and load its compiled export.
 - Bad: rebuild only the TUI while a changed backend dependency still loads stale `dist` output.
 - Bad: point the default `import` condition at TypeScript and make the published CLI require `tsx`.
+- Bad: include raw environment, provider config, workspace paths, or session identifiers in startup
+  diagnostics, or move first-turn-required state behind a post-ready race.
 
 ### 6. Tests Required
 
-- Assert both root development scripts enable `mycli-source` and `tsx`.
+- Assert `npm run mycli` targets compiled JavaScript without `mycli-source` or `tsx`.
+- Assert `npm run dev` enables `mycli-source` and `tsx`.
 - Resolve every backend package plus all runtime TUI subpaths in a child Node process with the
   source condition and assert each URL points to a `.ts` file under `src`.
 - Resolve a representative package without the source condition and assert it still points to
   `dist/*.js`.
+- Assert TUI import starts before a deferred backend completes and that either startup failure closes
+  the other branch.
+- Assert profiling requires the exact opt-in, writes a private bounded report, and creates nothing
+  while disabled.
+- Assert the token encoder is loaded once on first non-empty count, exact counts remain unchanged,
+  and encoder failure selects the existing fallback once.
+- Use a real PTY to assert the compiled CLI reaches the input editor and exits cleanly.
 - Keep workspace build, type-check, package tests, and packed CLI smoke green.
 
 ### 7. Wrong vs Correct
@@ -174,13 +211,22 @@ docs/                        User, architecture, migration, and parity documenta
 #### Wrong
 
 ```json
-{ "mycli": "node --import tsx backend/apps/mycli/src/cli.ts" }
+{ "mycli": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts" }
 ```
 
 #### Correct
 
 ```json
-{ "mycli": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts" }
+{
+  "mycli": "node backend/apps/mycli/dist/cli.js",
+  "dev": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts"
+}
+```
+
+```typescript
+// Correct: pay the tokenizer cost only when exact counting is first required.
+const counter = new TokenCounter();
+counter.count(modelInput);
 ```
 
 ---

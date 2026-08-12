@@ -3,22 +3,27 @@
 import process from "node:process";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { initializeRipgrepEnvironment } from "@mycli/tools";
+import { initializeRipgrepEnvironment } from "@mycli/tools/ripgrep-runtime";
 import {
 	configureGatewayTransport,
 	type GatewayTransport,
 } from "mycli-shell-tui/gateway-transport";
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
-import { createDefaultManagementServices } from "./management/services.ts";
-import { runSetupCommand, type SetupInputStream, type SetupOutputStream } from "./management/setup.ts";
+import type { SetupInputStream, SetupOutputStream } from "./management/setup.ts";
 import type { ManagementExecutor } from "./management/types.ts";
-import {
-	type NodeBackend,
-	type StartNodeBackendOptions,
+import type {
+	NodeBackend,
+	StartNodeBackendOptions,
 } from "./node-runtime/node-backend.ts";
 import { startSupervisedNodeBackend } from "./node-runtime/node-backend-supervisor.ts";
+import {
+	StartupProfiler,
+	startupProfileEnabled,
+	writeStartupProfile,
+} from "./node-runtime/startup-profile.ts";
 
 const VERSION = "0.1.0";
 const HELP = `Usage: mycli [options]
@@ -64,6 +69,12 @@ export type RunCliOptions = {
 export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	const argv = options.argv ?? process.argv.slice(2);
 	const env = options.env ?? process.env;
+	const startupProfiler = new StartupProfiler({
+		enabled: startupProfileEnabled(env),
+		scope: "cli",
+		origin: 0,
+	});
+	startupProfiler.mark("module_ready");
 	initializeRipgrepEnvironment({ env, ...(options.homeDir ? { homeDir: options.homeDir } : {}) });
 	const cwd = options.cwd ?? process.cwd();
 	const stdin = options.stdin ?? process.stdin;
@@ -89,18 +100,24 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	if (mode.kind === "management") {
 		try {
 			const homeDir = options.homeDir ?? homedir();
-			const management = options.management ?? await createDefaultManagementServices({
-				workspaceRoot: cwd,
-				homeDir,
-				env,
-				setup: (signal) => runSetupCommand({
+			const management = options.management ?? await (async () => {
+				const [{ createDefaultManagementServices }, { runSetupCommand }] = await Promise.all([
+					import("./management/services.ts"),
+					import("./management/setup.ts"),
+				]);
+				return createDefaultManagementServices({
+					workspaceRoot: cwd,
 					homeDir,
-					isTty: stdin.isTTY === true && stdout.isTTY === true,
-					input: stdin as SetupInputStream,
-					output: stdout as SetupOutputStream,
-					signal,
-				}),
-			});
+					env,
+					setup: (signal) => runSetupCommand({
+						homeDir,
+						isTty: stdin.isTTY === true && stdout.isTTY === true,
+						input: stdin as SetupInputStream,
+						output: stdout as SetupOutputStream,
+						signal,
+					}),
+				});
+			})();
 			const response = await management.execute(mode.command, new AbortController().signal);
 			stdout.write(renderManagementResponse(mode.command, response));
 			return response.exitCode ?? (response.ok ? 0 : 1);
@@ -123,36 +140,48 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		return 2;
 	}
 
-	let backend: NodeBackend;
-	try {
-		backend = await (options.startNodeBackend ?? startSupervisedNodeBackend)({
-			cwd,
-			env,
-			args: backendArgs,
-		});
-	} catch (error) {
-		stderr.write(`[mycli] ${stableMessage(error, "node_backend_start_failed")}\n`);
-		return 2;
-	}
-
 	let expectedShutdown = false;
 	let childCompleted = false;
 	let tuiOwned = false;
 	let requestedExitCode: 0 | 130 | null = null;
 	let gatewayShutdown: (() => Promise<unknown>) | null = null;
 	let shutdownPromise: Promise<unknown> | null = null;
+	const deferredInput = new PassThrough();
+	const deferredOutput = new PassThrough();
+	let backendStart: Promise<NodeBackend>;
+	let resolvedBackend: NodeBackend | undefined;
+	try {
+		const started = (options.startNodeBackend ?? startSupervisedNodeBackend)({
+			cwd,
+			env,
+			args: backendArgs,
+		});
+		if (isNodeBackend(started)) resolvedBackend = started;
+		backendStart = Promise.resolve(started).then((running) => {
+			resolvedBackend = running;
+			return running;
+		});
+	} catch (error) {
+		stderr.write(`[mycli] ${stableMessage(error, "node_backend_start_failed")}\n`);
+		return 2;
+	}
 	const transport: GatewayTransport = {
-		...backend.transport,
+		input: deferredInput,
+		output: deferredOutput,
 		close: async () => {
 			expectedShutdown = true;
-			await backend.close();
+			const running = await backendStart.catch(() => undefined);
+			await running?.close();
 		},
 	};
 	const processHooks = options.processHooks ?? process;
 	const onProcessExit = (): void => {
-		if (!childCompleted) {
-			backend.kill();
+		if (childCompleted) return;
+		if (resolvedBackend) {
+			resolvedBackend.kill();
+			return;
 		}
+		void backendStart.then((running) => running.kill(), () => undefined);
 	};
 	const requestShutdown = (exitCode: 0 | 130): void => {
 		requestedExitCode ??= exitCode;
@@ -161,21 +190,58 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		).catch(() => undefined);
 	};
 	const onSigint = (): void => {
-		if (!tuiOwned) {
-			requestShutdown(130);
-		}
+		if (!tuiOwned) requestShutdown(130);
 	};
 	const onSigterm = (): void => requestShutdown(0);
 	processHooks.once("exit", onProcessExit);
 	processHooks.once("SIGINT", onSigint);
 	processHooks.once("SIGTERM", onSigterm);
-
 	try {
 		(options.configureTransport ?? configureGatewayTransport)(transport);
-		const tuiModule = await (options.importTui ?? (() => import("mycli-shell-tui/gateway")))();
+	} catch {
+		await backendStart.then((running) => running.close(), () => undefined);
+		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
+		stderr.write("[mycli] tui_start_failed: unable to start terminal UI\n");
+		return 1;
+	}
+	let tuiImport: Promise<unknown>;
+	try {
+		tuiImport = (options.importTui ?? (() => import("mycli-shell-tui/gateway")))();
+	} catch {
+		await backendStart.then((running) => running.close(), () => undefined);
+		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
+		stderr.write("[mycli] tui_start_failed: unable to start terminal UI\n");
+		return 1;
+	}
+	void tuiImport.then(gatewayStartupFrom, () => undefined).catch(() => undefined);
+
+	let backend: NodeBackend;
+	try {
+		backend = await backendStart;
+		startupProfiler.mark("backend_ready");
+	} catch (error) {
+		deferredInput.end();
+		deferredOutput.destroy();
+		await tuiImport.catch(() => undefined);
+		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
+		stderr.write(`[mycli] ${stableMessage(error, "node_backend_start_failed")}\n`);
+		return 2;
+	}
+	backend.transport.input.pipe(deferredInput);
+	deferredOutput.pipe(backend.transport.output);
+
+	try {
+		const tuiModule = await tuiImport;
 		gatewayShutdown = gatewayShutdownFrom(tuiModule);
 		await gatewayStartupFrom(tuiModule);
 		tuiOwned = true;
+		startupProfiler.mark("tui_ready");
+		await writeStartupProfile({
+			homeDir: options.homeDir ?? env.HOME?.trim() ?? env.USERPROFILE?.trim() ?? homedir(),
+			profiles: [startupProfiler.snapshot(), backend.startupProfile?.()].flatMap(
+				(profile) => profile ? [profile] : [],
+			),
+		});
 	} catch {
 		await backend.close().catch(() => undefined);
 		removeLifecycleHooks(processHooks, onProcessExit, onSigint, onSigterm);
@@ -238,6 +304,10 @@ function stableMessage(error: unknown, fallback: string): string {
 		return error.message;
 	}
 	return fallback;
+}
+
+function isNodeBackend(value: NodeBackend | Promise<NodeBackend>): value is NodeBackend {
+	return typeof value === "object" && value !== null && "transport" in value;
 }
 
 function gatewayStartupFrom(value: unknown): Promise<unknown> {

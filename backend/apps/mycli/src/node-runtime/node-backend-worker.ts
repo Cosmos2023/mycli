@@ -53,7 +53,11 @@ try {
 	});
 	void backend.completion.then(finish, () => finish(1));
 	await new Promise<void>((resolve) => setImmediate(resolve));
-	port.postMessage({ type: "started", generation: data.generation });
+	port.postMessage({
+		type: "started",
+		generation: data.generation,
+		startupProfile: backend.startupProfile?.(),
+	});
 } catch {
 	port.postMessage({
 		type: "start_error",

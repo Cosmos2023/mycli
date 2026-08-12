@@ -97,11 +97,21 @@ test("TUI production exports target compiled JavaScript and declarations", () =>
 	assertRuntimeMetadataUsesDist(manifest);
 });
 
-test("root development commands resolve every workspace package from source", () => {
+test("root commands separate the compiled CLI from source development", () => {
 	const rootManifest = readManifest(ROOT);
-	const command = "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts";
-	assert.equal(rootManifest.scripts?.dev, command);
-	assert.equal(rootManifest.scripts?.mycli, command);
+	assert.equal(
+		rootManifest.scripts?.dev,
+		"node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts",
+	);
+	assert.equal(rootManifest.scripts?.mycli, "node backend/apps/mycli/dist/cli.js");
+});
+
+test("compiled CLI does not load the backend implementation on the supervisor thread", () => {
+	const compiled = readFileSync(new URL("../dist/cli.js", import.meta.url), "utf8");
+	assert.doesNotMatch(compiled, /from ["']\.\/node-runtime\/node-backend\.js["']/u);
+});
+
+test("root development command resolves every workspace package from source", () => {
 
 	const packageNames = [
 		"@mycli/config",
@@ -112,6 +122,7 @@ test("root development commands resolve every workspace package from source", ()
 		"@mycli/runtime",
 		"@mycli/storage",
 		"@mycli/tools",
+		"@mycli/tools/ripgrep-runtime",
 		"mycli-shell-tui",
 		"mycli-shell-tui/gateway",
 		"mycli-shell-tui/gateway-transport",
@@ -130,14 +141,19 @@ test("root development commands resolve every workspace package from source", ()
 });
 
 test("default workspace imports keep production packages on compiled output", () => {
-	const script = "process.stdout.write(import.meta.resolve('mycli-shell-tui/gateway-transport'))";
+	const script = `process.stdout.write(JSON.stringify([
+		import.meta.resolve('mycli-shell-tui/gateway-transport'),
+		import.meta.resolve('@mycli/tools/ripgrep-runtime'),
+	]))`;
 	const resolved = execFileSync(
 		process.execPath,
 		["--input-type=module", "--eval", script],
 		{ cwd: fileURLToPath(ROOT), encoding: "utf8" },
 	);
 
-	assert.match(resolved, /\/tui\/mycli-shell\/dist\/adapters\/gateway-transport\.js$/u);
+	const [gatewayTransport, ripgrepRuntime] = JSON.parse(resolved) as string[];
+	assert.match(gatewayTransport ?? "", /\/tui\/mycli-shell\/dist\/adapters\/gateway-transport\.js$/u);
+	assert.match(ripgrepRuntime ?? "", /\/backend\/packages\/tools\/dist\/ripgrep-runtime\.js$/u);
 });
 
 test("packed CLI smoke includes every local app and runtime dependency", () => {

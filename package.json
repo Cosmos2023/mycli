@@ -16,7 +16,7 @@
     "contracts:check": "npm run check --workspace @mycli/contracts",
     "dev": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts",
     "lint": "eslint \"backend/apps/**/*.ts\" \"backend/packages/**/*.ts\"",
-    "mycli": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts",
+    "mycli": "node backend/apps/mycli/dist/cli.js",
     "pretest": "npm run build",
     "smoke:package": "node scripts/smoke_packed_cli.mjs",
     "smoke:tui-pty": "npm run build --workspace @mycli/tools && node scripts/smoke_tui_pty.mjs",

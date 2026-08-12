@@ -298,6 +298,27 @@ test("interactive startup configures transport before importing the TUI", async 
 	assert.equal(fake.closeCalls(), 1);
 });
 
+test("interactive startup imports the TUI while the Node backend is still starting", async () => {
+	const fake = fakeBackend();
+	const backendReady = deferred<NodeBackend>();
+	const tuiImported = deferred<void>();
+	const harness = cliHarness({
+		startNodeBackend: () => backendReady.promise,
+		configureTransport: () => undefined,
+		importTui: async () => {
+			tuiImported.resolve();
+			return { gatewayStartup: Promise.resolve() };
+		},
+	});
+
+	const running = runCli(harness.options);
+	await tuiImported.promise;
+	backendReady.resolve(fake.backend);
+	fake.completion.resolve(1);
+
+	assert.equal(await running, 1);
+});
+
 test("CLI validates TTY before starting the Node backend", async () => {
 	let starts = 0;
 	const harness = cliHarness({
@@ -389,6 +410,20 @@ test("asynchronous TUI startup failure exits one and prints only sanitized diagn
 	assert.match(harness.stderr.join(""), /tui_start_failed/);
 	assert.match(harness.stderr.join(""), /api_key=\[REDACTED\]/);
 	assert.doesNotMatch(harness.stderr.join(""), /private module path/);
+});
+
+test("synchronous TUI import failure closes the concurrently starting backend", async () => {
+	const fake = fakeBackend();
+	const harness = cliHarness({
+		startNodeBackend: () => fake.backend,
+		configureTransport: () => undefined,
+		importTui: () => { throw new Error("private module path"); },
+	});
+
+	assert.equal(await runCli(harness.options), 1);
+	assert.equal(fake.closeCalls(), 1);
+	assert.match(harness.stderr.join(""), /tui_start_failed/u);
+	assert.doesNotMatch(harness.stderr.join(""), /private module path/u);
 });
 
 test("SIGINT before TUI ownership closes the Node backend and returns 130", async () => {

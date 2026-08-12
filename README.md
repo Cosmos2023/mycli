@@ -39,6 +39,14 @@ npm run build
 npm run mycli
 ```
 
+`npm run mycli` runs the compiled production entry for the fastest startup. After changing
+TypeScript source, run `npm run build` again or use `npm run dev` to execute the current source
+directly through `tsx`.
+
+For local startup diagnosis, run `MYCLI_STARTUP_PROFILE=1 npm run mycli`. The latest report is
+written to `~/.mycli/logs/startup-profile.json` with stage names and elapsed milliseconds only.
+Profiling is disabled by default and never enters the session transcript or provider context.
+
 On first use, configure a provider through the setup wizard:
 
 ```bash

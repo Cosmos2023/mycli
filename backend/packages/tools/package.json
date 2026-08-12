@@ -13,6 +13,11 @@
       "mycli-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./ripgrep-runtime": {
+      "mycli-source": "./src/ripgrep-runtime.ts",
+      "types": "./dist/ripgrep-runtime.d.ts",
+      "import": "./dist/ripgrep-runtime.js"
     }
   },
   "scripts": {

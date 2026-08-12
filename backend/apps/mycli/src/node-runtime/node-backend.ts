@@ -141,6 +141,11 @@ import {
 } from "./node-gateway.ts";
 import { AgentInteractiveRequestBroker } from "./agent-interactive-requests.ts";
 import { resolveSessionInstructionSnapshot } from "./instruction-snapshot.ts";
+import {
+	StartupProfiler,
+	startupProfileEnabled,
+	type StartupProfileSnapshot,
+} from "./startup-profile.ts";
 import { packagedSystemPrompt } from "./system-prompt.ts";
 
 export interface NodeBackend {
@@ -149,6 +154,7 @@ export interface NodeBackend {
 	close(): Promise<void>;
 	kill(): void;
 	diagnostic(): string;
+	startupProfile?(): StartupProfileSnapshot | undefined;
 }
 
 export interface RecoverInterruptedTurnOptions {
@@ -170,6 +176,12 @@ const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
+	const startupProfiler = new StartupProfiler({
+		enabled: startupProfileEnabled(options.env),
+		scope: "backend",
+		origin: 0,
+	});
+	startupProfiler.mark("runtime_entered");
 	const overrides = parseOverrides(options.args);
 	let activeModelOverride = overrides.model;
 	const homeDir = runtimeHome(options.env);
@@ -179,6 +191,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		env: options.env,
 		overrides,
 	});
+	startupProfiler.mark("config_ready");
 	for (const recovery of options.recoverInterruptedTurns ?? []) {
 		if (recovery.sessionId !== config.sessionId) {
 			throw new Error("recovered_interrupt_session_mismatch");
@@ -207,6 +220,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		store.close();
 		throw error;
 	}
+	startupProfiler.mark("storage_ready");
 	const productSystemPrompt = packagedSystemPrompt();
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new ProviderRegistry();
@@ -398,6 +412,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			}
 		},
 	});
+	startupProfiler.mark("runtime_components_ready");
 	let integrationComposition: RuntimeIntegrationComposition;
 	try {
 		integrationComposition = await createRuntimeIntegrationComposition({
@@ -471,6 +486,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				resolveAgentRouteContext,
 			});
 		publishSubagentProjection = (value) => { integrationComposition.publishSubagent(value); };
+		startupProfiler.mark("integrations_ready");
 	} catch (error) {
 		try {
 			await shellManager.close().catch(() => undefined);
@@ -1055,7 +1071,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		};
 	};
 	try {
-			const prepare = (sessionId: string) => prepareStoredSession({
+		startupProfiler.mark("session_prepare_started");
+		const prepare = (sessionId: string) => prepareStoredSession({
 			sessionId,
 			store,
 			transcriptSnapshots,
@@ -1072,6 +1089,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			if (!hasCode(error, "session_not_found")) throw error;
 			initial = virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
 		}
+		startupProfiler.mark("session_prepared");
 		const sessionCoordinator = new SessionCoordinator<NodeGatewayRuntime>({
 			initial,
 			prepare,
@@ -1089,6 +1107,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 		});
 			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
+			startupProfiler.mark("trust_ready");
+			startupProfiler.mark("session_ready");
 				const gatewayIntegrations = integrationGateway(integrationComposition);
 				const activeMemoryStore = () => new MemoryStore({
 				homeDir,
@@ -1315,7 +1335,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				inputRolledBack: recovered.inputRolledBack,
 			});
 		}
-		return gateway;
+		startupProfiler.mark("gateway_ready");
+		return Object.freeze({
+			transport: gateway.transport,
+			completion: gateway.completion,
+			close: () => gateway.close(),
+			kill: () => gateway.kill(),
+			diagnostic: () => gateway.diagnostic(),
+			startupProfile: () => startupProfiler.snapshot(),
+		});
 	} catch (error) {
 		try {
 			await integrationComposition.close().catch(() => undefined);
