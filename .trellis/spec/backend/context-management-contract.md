@@ -50,6 +50,10 @@
   enforcement mechanism. It may include workspace root, filesystem policy,
   network policy, shell policy, approval policy, command/file/tool policy, and
   execpolicy status/count/source summary.
+- The model-visible `shell` name and `shell_kind` must be derived from the same frozen
+  `ShellProfile` instance used by the approval policy and Shell adapter. Known names are bounded to
+  `zsh`, `bash`, `sh`, `powershell`, and `cmd`; an unrecognized POSIX executable is rendered as
+  `posix`. Do not expose the executable path or the raw environment variable used to resolve it.
 - Runtime environment context remains `dynamic` and turn-scoped. It must not be
   part of the stable prefix, must not alter the cacheable prefix hash, and must
   be rendered before ephemeral runtime reminders and the current user request.

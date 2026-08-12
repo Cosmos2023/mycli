@@ -186,21 +186,22 @@ artifacts, and TUI behavior.
 
 ## Commands
 
-The interactive UI exposes a frozen Node-owned registry of 36 built-in slash commands. The main
+The interactive UI exposes a Node-owned registry of 35 built-in slash commands. The main
 families are:
 
 - Model and control: `/model`, `/plan`, `/mode`, `/permissions`, `/sandbox`.
 - Sessions and runtime: `/new`, `/resume`, `/fork`, `/status`, `/usage`, `/context`, `/compact`,
   `/stats`.
-- Extensions and resources: `/skills`, `/tools`, `/resources`, `/agents`, `/tasks`.
+- Extensions and resources: `/skills`, `/tools`, `/resources`, `/agents` (`/tasks` is a compatibility alias).
 - Memory and changes: `/memory`, `/changes`, `/undo`, `/trace`.
-- Shell and UI: `/ps`, `/stop`, `/details`, `/view`, `/hotkeys`, `/copy`, `/clear`.
+- Shell and UI: `/ps [stop-all]`, `/details`, `/view`, `/hotkeys`, `/copy`, `/clear`.
 - Account and exit: `/login`, `/trust`, `/help`, `/quit`.
 - Maintenance: `/session search`, `/session maintenance`.
 
 Aliases, argument policies, running-turn availability, and TUI/backend ownership are documented in
-[docs/commands.md](docs/commands.md). Unknown or malformed slash commands fail locally and are
-never sent to the model as ordinary user input.
+[docs/commands.md](docs/commands.md). Interactive input routes only registry-known names as
+commands, so absolute paths such as `/tmp` remain ordinary user input. Direct `command.run` calls
+with unknown names and malformed known commands fail locally.
 
 Provider-free management commands:
 

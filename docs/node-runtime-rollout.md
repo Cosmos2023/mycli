@@ -18,15 +18,15 @@ The current CLI:
 
 M8 retains provider protocols, transcript/session operations, approvals, clarifications, queues,
 compaction, memory, file tools, persistent shells, integrations, subagents, management commands,
-doctor, diagnostics, signals, shutdown, and all 36 Node-owned built-in slash commands.
+doctor, diagnostics, signals, shutdown, and all 35 Node-owned built-in slash commands.
 
 The current subagent implementation uses durable agent threads supervised entirely by Node. Agent
 state, mailbox delivery, frozen permissions, restart recovery, readable artifacts, and TUI
 projection are described in [node-agent-runtime.md](node-agent-runtime.md).
 
-The final gateway baseline matched the Python reference at 33 RPCs and 42 events. The audit then
-added three already-implemented shell control RPCs missing from both catalogs, so the frozen
-Node-only contract contains 36 RPCs and 42 events. The sanitized M2-M7 fixture corpus remains under
+The final gateway baseline matched the Python reference at 33 RPCs and 42 events. Later contract
+work added shell controls and explicit `session.new`, so the Node-only contract contains 38 RPCs
+and 42 events. The sanitized M2-M7 fixture corpus remains under
 `tests/fixtures` and is checksum-protected by the M8 audit.
 
 Intentional Node-surface retirements:
@@ -61,7 +61,7 @@ test.
 
 `smoke:m8` is provider-free. It starts the real backend with a disposable home and workspace,
 waits for `runtime.ready`, bootstraps a session, loads the 16-command visible TUI projection, and
-shuts down. The audit test separately freezes all 36 built-in commands, including hidden controls.
+shuts down. The audit test separately freezes all 35 built-in commands, including hidden controls.
 Its output is one structural JSON line with no paths, prompts, credentials, endpoint, provider
 payload, or tool output.
 

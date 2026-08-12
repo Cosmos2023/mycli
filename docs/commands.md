@@ -11,7 +11,7 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | `/tools permissions` |
 | `/sandbox` | optional `[read-only\|workspace-write\|danger-full-access\|next]` | backend | no | - |
 | `/settings` | none | opens settings | yes | - |
-| `/new` | none | starts a fresh local transcript | no | - |
+| `/new` | none | creates and switches to a fresh backend session | no | - |
 | `/resume` | optional `[session-id]` | picker when bare; backend when inline | no | `/session`, `/session list`, `/sessions`, `/session resume` |
 | `/fork` | optional `[source] [new-session] [message-index]` | backend | no | `/session fork` |
 | `/status` | none | backend | yes | `/session show` |
@@ -23,9 +23,9 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/tools` | optional `[list\|sets\|hooks\|extensions\|plugins]` | overlay | yes | `/hooks`, `/toolsets`, `/extensions`, `/plugin` |
 | `/resources` | none | opens resources | yes | - |
 | `/memory` | optional `[list\|path\|search\|add\|forget]` | overlay | yes | - |
-| `/tasks` | optional `[agents\|kill-agents]` | task view when bare; backend when inline | yes | `/jobs`, `/jobs subagents`, `/jobs kill-subagents`, `/subagents`, `/agents runs`, `/agents kill` |
-| `/ps` | none | backend | yes | `/tasks bashes`, `/bashes`, `/jobs bashes` |
-| `/stop` | none | backend | yes | - |
+| `/agents` | optional `[child-session-id\|kill <child-session-id>\|kill-all]` | agent view when bare; backend when inline | yes | `/tasks`, `/jobs`, `/jobs subagents`, `/jobs kill-subagents`, `/subagents`, `/agents runs`, `/agents kill` |
+| `/ps` | optional `[stop-all]` | lists or stops background terminals | yes | `/tasks bashes`, `/bashes`, `/jobs bashes` |
+| `/stop` | none | legacy alias that stops all background terminals | yes | - |
 | `/changes` | none | backend | yes | - |
 | `/undo` | none | backend | yes | `/changes undo` |
 | `/trace` | optional `[export\|logs]` | overlay | yes | `/trace-jsonl`, `/logs` |
@@ -36,14 +36,14 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/clear` | none | clears the local transcript view | no | - |
 | `/login` | none | opens provider setup | yes | - |
 | `/trust` | none | opens workspace trust | yes | - |
-| `/help` | none | opens the command palette | yes | - |
+| `/help` | none | opens unified shortcut and command help | yes | - |
 | `/quit` | none | exits mycli | yes | - |
 | `/session search` | optional `[query]` | backend | yes | `/search` |
 | `/session maintenance` | optional `[--apply-empty\|--apply-orphans\|--apply-vacuum]` | backend | yes | `/session-maintenance` |
 
 Prefix aliases can inject a canonical subcommand. For example, `/logs` resolves to
 `/trace logs`, `/trace-jsonl` resolves to `/trace export`, and `/subagents` resolves to
-`/tasks agents`.
+`/agents`.
 
 `/model` uses the same user-owned catalog in the Python and Node runtimes. The Node runtime
 bootstraps `~/.mycli/models.json` when it is missing, validates provider/protocol, endpoint,
@@ -52,7 +52,9 @@ to `~/.mycli/config.toml`. Catalog payloads sent to the TUI never include creden
 
 ## Error Contract
 
-- Unknown commands return `unknown_command` locally.
+- Direct `command.run` calls with unknown commands return `unknown_command` locally. Interactive
+  input routes only registry-known names as commands, so root absolute paths such as `/tmp` remain
+  ordinary user input.
 - A command used on the wrong surface returns `unavailable_surface`.
 - A command blocked by an active turn returns `unavailable_during_turn`.
 - Missing required arguments, extra arguments for a no-argument command, and invalid subactions

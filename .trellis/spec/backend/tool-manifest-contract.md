@@ -4,7 +4,9 @@
 
 `mycli` exposes built-in local tools through a stable read-only manifest. The
 manifest is the source of truth for local tool ids, toolset grouping, provider
-schema metadata, risk policy metadata, effect profile, and availability.
+schema metadata, risk policy metadata, effect profile, and availability. The
+executable adapter is authoritative for runtime concurrency; the manifest
+projects that capability for discovery and alignment checks.
 
 `ToolsetRegistry` exposes a second read-only manifest for extension
 foundation clients. It groups tools by toolset and reports enablement,
@@ -58,11 +60,10 @@ Each tool entry must include:
 - The manifest is read-only. Building or validating it must not create files,
   logs, sessions, traces, shell processes, provider requests, or network calls.
 - Built-in tool ids and names must be unique.
-- `supports_parallel_tool_calls` is a conservative execution opt-in, not only
-  discovery metadata. The Node runtime derives its parallel route set from the
-  built-in manifest only; extension entries, missing metadata, unknown routes,
-  and router implementations without the optional capability query remain
-  sequential.
+- `supports_parallel_tool_calls` is a conservative discovery projection of the
+  executable adapter capability, not a separate policy input. Missing adapter
+  capability, unknown routes, and router implementations without the optional
+  capability query remain sequential.
 - A pre-tool hook may change the routed tool. The runtime must re-evaluate the
   modified route against the router's parallel set before scheduling it; a
   modified non-parallel route is a barrier.
@@ -135,9 +136,90 @@ Required tests for manifest changes:
 - Safety policy remains aligned with manifest risk/approval metadata for core
   local tools.
 - Existing tool tests continue to pass.
-- Router tests assert that only an exposed route in the explicit built-in
-  parallel set reports parallel support; unknown and unclassified routes do
-  not opt in.
+- Router tests assert that only a resolved adapter with an exact `true`
+  capability reports parallel support; unknown and unclassified routes do not
+  opt in.
+
+## Scenario: Adapter-Owned Tool Concurrency Metadata
+
+### 1. Scope / Trigger
+
+- Trigger: changing `ToolAdapter`, `ToolRouter`, built-in adapter construction,
+  integration registration, combined manifest projection, or MCP tool/config
+  discovery.
+
+### 2. Signatures
+
+- Adapter capability: `ToolAdapter.supportsParallelToolCalls?: boolean`.
+- Router query:
+  `ToolRouter.supportsParallelToolCalls(call: CanonicalToolCall) -> boolean`.
+- Registration projection:
+  `IntegrationRegistration.supportsParallelToolCalls: boolean`.
+- MCP config: `supports_parallel_tool_calls = true|false`.
+- Manifest projection: `supports_parallel_tool_calls: boolean`.
+
+### 3. Contracts
+
+- The resolved executable adapter is the sole concurrency authority. Capability
+  absence and every value other than exact `true` mean sequential execution.
+- Built-in `Read`, `web_fetch`, and `tool_search` opt in. Shell/process tools,
+  file mutations, planning, interaction, polling, and subagent coordination
+  remain sequential.
+- `defineIntegrationRegistration()` derives its immutable projection from the
+  adapter. A caller-supplied registration field, provider definition, origin
+  metadata, or combined-manifest row cannot independently opt in.
+- MCP tools opt in when `annotations.readOnlyHint` is exactly `true`, or when
+  the owning server config explicitly sets
+  `supports_parallel_tool_calls=true`. Missing or malformed values fail closed.
+- Startup compares every built-in manifest row with its resolved adapter and
+  fails with `tool_parallel_capability_mismatch` on drift.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Adapter capability missing or false | Router reports sequential |
+| Unknown route | Router reports sequential |
+| MCP `readOnlyHint=true` | Resolved adapter and manifest opt in |
+| MCP hint false, missing, or non-boolean | Remain sequential |
+| MCP server config opt-in | Every tool from that server opts in |
+| Malformed server config value | Reject row with `invalid_parallel_tool_calls` |
+| Registration field disagrees with adapter | Derive from adapter and ignore the field |
+| Built-in manifest disagrees with adapter | Fail startup before accepting a turn |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an MCP read-only tool resolves to an opted-in adapter and a matching
+  combined-manifest row.
+- Base: a plugin adapter without capability metadata remains sequential.
+- Bad: maintain a second tool-name set in the app composition root or trust an
+  MCP/provider schema extension field without normalization.
+
+### 6. Tests Required
+
+- Router tests cover adapter opt-in, default false, and unknown routes.
+- Built-in startup tests cover manifest/adapter alignment.
+- Integration tests prove registration metadata is derived from the adapter.
+- MCP tests cover exact read-only hints, missing/malformed annotations, explicit
+  server opt-in, malformed config, router projection, and combined manifest.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+new ToolRouter({ adapters, exposure, parallelToolNames: new Set(["Read"]) });
+```
+
+#### Correct
+
+```typescript
+class ReadTool implements ToolAdapter {
+  readonly supportsParallelToolCalls = true;
+}
+
+const registration = defineIntegrationRegistration({ adapter, ...metadata });
+```
 
 ## Scenario: OpenAI-Compatible Tool Projection
 

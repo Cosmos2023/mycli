@@ -9,11 +9,11 @@ the sanitized M2-M7 corpus.
 
 ## Black-Box Result
 
-- The final cross-backend baseline advertised the same 33 RPC methods and 42 event streams. The
-  audit then fixed three shared catalog omissions for existing shell controls, so the frozen
-  Node contract advertises 36 RPC methods and 42 event streams.
-- The retained slash surface is frozen at 35 commands and 12 argument-prefix aliases. The retired
-  agent-profile browser is absent; runtime aliases such as `/agents runs` remain mapped to `/tasks`.
+- The final cross-backend baseline advertised the same 33 RPC methods and 42 event streams. Later
+  contract work added shell controls and explicit `session.new`, so the Node contract advertises
+  38 RPC methods and 42 event streams.
+- The retained slash surface contains 35 commands and 13 argument-prefix aliases. The retired
+  agent-profile browser is absent; `/agents` is canonical and `/tasks` remains a compatibility alias.
   Remaining commands keep frozen ownership, surfaces, running-turn policy, argument rules,
   presentation, and client actions.
 - Bootstrap/status, live user items, sessions/transcripts, approvals, clarifications, queues,

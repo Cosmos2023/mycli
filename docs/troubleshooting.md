@@ -55,7 +55,8 @@ does not call a model provider or repair files.
 
 ## Slash Command Failure
 
-- Use `/help` for the palette and [commands.md](commands.md) for hidden aliases and argument rules.
+- Use `Ctrl+P` for the searchable command palette, `/help` for shortcuts and command groups, and
+  [commands.md](commands.md) for hidden aliases and argument rules.
 - Commands marked unavailable during a turn must wait until the active turn is terminal.
 - Old `--runtime-backend` invocations are invalid in M8. Remove the flag instead of replacing its
   value.

@@ -373,6 +373,11 @@ and tool execution. A later permission change does not affect a running turn.
   - `turn.interrupt` requires the expected active `turn_id`. A mismatch returns
     `turn_id_mismatch` with the current `actual_turn_id`; the TUI may retry once
     for a lifecycle-notification race.
+  - If the TUI believes a turn is active but has no local `turn_id`, it must
+    recover the authoritative `turn_running` and `turn_id` through
+    `status.inspect` before sending `turn.interrupt`. If the inspected status is
+    idle or still has no `turn_id`, the TUI must clear its optimistic interrupt
+    state and must not send an incomplete interrupt request.
   - The accepted `turn.interrupt` RPC aborts the active controller, waits up to
     100 ms for cooperative runtime settlement, and then invokes the runtime's
     forced interruption boundary. That boundary atomically closes pending tool
@@ -1585,18 +1590,19 @@ const { gatewayStartup } = await import("mycli-shell-tui/gateway");
 await gatewayStartup;
 ```
 
-## Scenario: Atomic Node Session Resume
+## Scenario: Atomic Node Session Transitions
 
 ### 1. Scope / Trigger
-- Trigger: Changes to Node `session.list`, `session.resume`, `session.tree`,
+- Trigger: Changes to Node `session.list`, `session.new`, `session.resume`, `session.tree`,
   `transcript.load`, session-scoped status projection, or turn acceptance.
 - This boundary coordinates SQLite state preparation, runtime binding, and TUI
   visibility. A target session must never become partially visible.
 
 ### 2. Signatures
 - `SessionCoordinator.resume(sessionId) -> Promise<ActiveSessionSnapshot>`
+- `SessionCoordinator.startNew() -> Promise<ActiveSessionSnapshot>`
 - `SessionCoordinator.markExecuting(context, executing) -> boolean`
-- Gateway RPCs: `session.list`, `session.resume`, `session.tree`,
+- Gateway RPCs: `session.list`, `session.new`, `session.resume`, `session.tree`,
   `transcript.load`, and `turn.submit`.
 - Gateway events: `session.changed`, `status.changed`, and
   `approval.request`.
@@ -1605,6 +1611,9 @@ await gatewayStartup;
 - Resume uses prepare/commit: load and validate transcript, queue, suspended
   approval, compaction state, continuation state, workspace, and runtime
   binding before incrementing the active generation.
+- New-session creation uses the same transition claim and generation commit. It installs a fresh
+  backend runtime binding with an empty transcript and queue; the TUI must not clear local arrays
+  or fabricate a session id independently.
 - The coordinator holds a transition claim across the entire asynchronous
   prepare. A gateway turn must acquire the matching generation's execution
   claim before reserving a durable turn. Reservation failure releases the
@@ -1623,6 +1632,7 @@ await gatewayStartup;
 
 ### 4. Validation & Error Matrix
 - Missing resume target -> `session_not_found`; do not create a session.
+- Missing new-session factory -> `session_state_invalid`; keep the active generation unchanged.
 - Invalid or cross-session queue, suspended turn, approval, transcript, or
   continuation identity -> `session_state_invalid` with a fixed message.
 - Unsupported persisted state version ->
@@ -1636,6 +1646,8 @@ await gatewayStartup;
 ### 5. Good/Base/Bad Cases
 - Good: Claim transition, prepare target state, commit one generation, then
   emit the ordered target snapshot events.
+- Good: `/new` creates a distinct backend session id, emits `session.changed`, and becomes durable
+  on its first accepted turn.
 - Good: Claim execution for the current generation, reserve the turn, and
   release the claim if reservation fails.
 - Base: A configured but not-yet-persisted initial session is an empty virtual
@@ -1644,9 +1656,11 @@ await gatewayStartup;
   during the await; the resumed generation can then replace a running source.
 - Bad: Merge rejected steers into legacy steering text; the TUI displays a
   deferred input as if it can still steer the active turn.
+- Bad: clear only TUI messages and replace the footer session label while the backend continues to
+  submit into the previous session.
 
 ### 6. Tests Required
-- Pure coordinator tests for failed prepare, same-session idempotency,
+- Pure coordinator tests for failed prepare, fresh-session creation, same-session idempotency,
   monotonic generation, stale context rejection, executing-turn rejection,
   and transition/execution mutual exclusion across an async prepare.
 - Gateway tests for session catalog/tree/transcript responses, ordered resume
@@ -2204,6 +2218,11 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   one cell-relative gutter: continuation rows use `  │ `, the first result row uses `  └ `, and
   later result rows use four spaces. A component-level horizontal padding must be applied equally
   outside those prefixes; it must not be encoded into only one branch.
+- Top-level transcript headers for assistant messages, generic tools, collapsed context groups,
+  file changes, and Shell `Running` / `Ran` rows place their `•` marker in the same component-relative
+  column. Shared transcript-gutter constants own the zero-cell header indent, two-cell branch
+  indent, and four-cell detail indent; individual tool components must not add a private leading
+  cell.
 - A collapsed-output omission is a subsequent output row, not a card-level notice. Render it between
   the retained head and tail as `    … +N lines (ctrl+t to view transcript)`, using the configured
   `app.transcript.open` binding. `Ctrl+O` remains the main-view tool-detail toggle. Apply the same
@@ -2284,6 +2303,8 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   CJK/long-token width safety, and equal terminal columns for continuation `│` and result `└`
   gutters, including truncated running output. Completed-output tests assert both viewport-derived
   and persisted omission markers remain between retained head/tail rows and share the tail column.
+- TUI component tests assert assistant, generic-tool, collapsed-group, file-change, and Shell
+  top-level markers begin in the same component-relative column.
 - Run `npm run contracts:check`, `npm run typecheck`, `npm run lint`, `npm run test:m5`,
   `npm run test:m6`, `npm test`, `npm run smoke:package`, and `git diff --check` before one
   authorized `npm run smoke:m6`.
@@ -2462,6 +2483,23 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
 - Integration sources start in `skill -> mcp -> plugin -> subagent` order. Closable sources stop in
   reverse order, shutdown is idempotent and bounded, and partial startup failure closes every source
   that already initialized.
+- Interactive runtime startup may reuse a bounded, short-lived MCP tool catalog keyed by a
+  digest of the complete effective server configuration. Cache records contain descriptors and the
+  digest only; they never persist resource URIs, endpoints, commands, arguments, headers,
+  environment values, or credentials in recoverable form. `mcp list|inspect` and doctor remain live
+  probes and never use the interactive startup cache.
+- Interactive startup never waits for MCP network discovery. A valid cache snapshot is exposed
+  immediately; a missing, expired, malformed, oversized, or configuration-mismatched cache starts
+  with no MCP routes. In both cases live discovery runs in the background, starts servers
+  concurrently, and requests each server's tools and resources concurrently.
+- A successful live result atomically replaces only the MCP portion of the integration snapshot and
+  emits one direct `extension.updated({version})` notification. The TUI coalesces that notification,
+  refreshes `extension.manifest` and `resource.list`, and appends no transcript item. A failed live
+  refresh retains a valid cached MCP snapshot when one exists, otherwise it publishes only bounded
+  diagnostics. Shutdown aborts discovery and closes every initialized client.
+- Provider-visible definitions, tool-search candidates, approval metadata, adapter routes, and
+  parallel-call capability are frozen together at turn start. A background MCP refresh affects the
+  next turn only; it cannot change schemas or adapters inside a running or approval-suspended turn.
 - The built-in manifest stays immutable. The combined manifest rejects duplicate provider routes
   before a turn can execute and does not create a `runtime <-> integrations` package cycle.
 - Extension approval policy is explicit. Skill and local subagent control tools are auto-allowed;
@@ -2487,6 +2525,8 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
 
 - Source startup throws -> close initialized sources in reverse order, then return
   `integration_start_failed` without the raw exception.
+- MCP catalog cache read/write fails -> continue with live discovery or the already discovered live
+  result; cache failure never disables MCP or fails runtime startup by itself.
 - Duplicate source id -> `duplicate_integration_source`; duplicate tool route ->
   `duplicate_tool_route`; neither may mutate the built-in manifest.
 - Unknown extension approval route -> deny before adapter execution.
@@ -2519,6 +2559,12 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
 
 - Composition tests assert deterministic start/reverse-close, idempotent bounded shutdown, partial
   failure cleanup, built-in manifest immutability, collision rejection, and package DAG direction.
+- MCP manager tests assert cross-server and per-server discovery concurrency, deterministic result
+  order, cache hit without directory RPCs, configuration/TTL/corruption invalidation, private file
+  permissions, and absence of endpoint/header/environment secret values from cache content.
+- Backend startup tests hold an uncached MCP server open and assert `runtime.ready` arrives before
+  discovery completes; shutdown must abort and clean the background client. Tool/runtime tests
+  assert old and new turns retain their matching MCP catalog, route, and approval snapshot.
 - Runtime/tool tests assert `ownerSessionId` and `ownerTurnId` on ordinary execution and approval
   continuation, plus `spawn_agent` forwarding into the supervisor.
 - Controller tests use real SQLite task storage to assert dynamic session/turn ownership across
@@ -2832,6 +2878,11 @@ return backend.run(turn); // Ownership is fixed for the accepted turn.
   selection is visible in `/status`, subsequent turns and subagents, and after restart.
 - Explicitly retired commands remain absent. Behavioral parity must not reintroduce retired
   surfaces such as agent-profile management.
+- Interactive input classifies a Slash command only when its canonical name or alias appears in the
+  backend-provided routing-name set. Root absolute paths such as `/tmp` remain user messages;
+  direct `command.run` still returns bounded `unknown_command` errors.
+- `Ctrl+P` owns the searchable command palette. `?` and bare `/help` open unified shortcut and
+  command help. Running-turn availability and argument hints come from registry metadata.
 
 ### 4. Validation & Error Matrix
 

@@ -149,16 +149,23 @@ store.failTurn(failure);
 ### 3. Contracts
 
 - The complete assistant tool-call batch is persisted before any call starts.
-- A call may join a parallel phase only when the active router explicitly returns `true` after
-  approval evaluation and pre-tool hook modification. Missing capability metadata, unknown tools,
-  extension tools, clarification tools, planning tools, Shell, and mutations are sequential.
+- A call may join a parallel phase only when the active router resolves its executable adapter and
+  explicitly returns `true` after approval evaluation and pre-tool hook modification. Missing
+  capability metadata, unknown tools, clarification tools, planning tools, Shell, mutations, and
+  unclassified extensions are sequential.
 - Pending safe calls flush before a sequential call, approval suspension, denied call, or hook
   barrier. The barrier runs alone before collection of the next safe phase.
 - Calls in one safe phase may execute concurrently, but lifecycle completion, result persistence,
   post-tool hooks, checkpoints, generated context, and provider replay are applied in the original
   provider order.
-- A failed or interrupted parallel phase aborts its siblings, emits exactly one terminal lifecycle
-  event for every started call, persists no late phase result, and prevents another provider request.
+- Every started tool call owns an `AbortController`; the adapter receives a signal composed from
+  the turn, phase, and call signals. Force interruption aborts each active call without requiring
+  the submit signal's owner to abort it.
+- An ordinary `ToolExecutionResult` with `success=false` is data, not a scheduler exception. It is
+  persisted beside successful siblings in provider order and the provider loop may continue.
+- An unexpected adapter throw or interrupted parallel phase aborts its siblings, emits exactly one
+  terminal lifecycle event for every started call, persists no late phase result, and prevents
+  another provider request.
 - Active execution tracking uses the full raw call id as its internal key. Bounded call ids are for
   public events only and must not collapse distinct active calls with the same displayed prefix.
 
@@ -172,16 +179,20 @@ store.failTurn(failure);
 | Hook changes a safe call to a sequential route | Reclassify the modified call as a barrier |
 | Missing or throwing capability query | Fail closed to sequential execution |
 | Parallel call unexpectedly requests clarification | Fail with bounded `tool_protocol_error` |
-| One parallel call throws or the turn is interrupted | Abort siblings, terminalize each start once, persist no phase result |
+| One parallel call returns `success=false` | Persist every result in provider order and continue |
+| One parallel call throws or the turn is interrupted | Abort every active call, terminalize each start once, persist no phase result |
+| `forceInterrupt()` while adapters run | Abort per-call signals without mutating the caller's submit signal |
 | Distinct long call ids share a bounded prefix | Track and interrupt both independently |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: `Read`, `Read`, `Write`, `Read` runs as a two-call safe phase, one Write barrier, then one
   safe phase; results replay as `Read`, `Read`, `Write`, `Read`.
+- Good: two parallel reads return one ordinary failed result and one success; both replay in their
+  original call order and the model receives the continuation.
 - Base: an unclassified router or a batch of mutation calls keeps the prior sequential behavior.
-- Bad: use unconditional `Promise.all`, persist whichever result finishes first, or trust
-  extension-supplied fields to opt external tools into concurrency.
+- Bad: use unconditional `Promise.all`, persist whichever result finishes first, treat every failed
+  result as a phase exception, or trust extension-supplied fields to opt external tools in.
 
 ### 6. Tests Required
 
@@ -190,6 +201,9 @@ store.failTurn(failure);
 - A safe-safe-sequential-safe batch proves phase barriers and start ordering.
 - Approval suspension persists the earlier safe phase and retains untouched remaining calls.
 - Parallel failure and interruption emit one terminal event per started call and no late result.
+- An ordinary failed result remains isolated from a successful sibling and both persist in order.
+- Force interruption aborts every adapter signal while leaving the caller-owned submit signal
+  unchanged; the submitting promise settles from the durable interruption fence.
 - A bounded-call-id collision regression proves the active execution map retains both raw ids.
 - Runtime, tools, app, and TUI suites remain green.
 
