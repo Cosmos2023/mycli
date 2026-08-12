@@ -11,17 +11,15 @@ export interface TokenCounterOptions {
 }
 
 export class TokenCounter {
-	readonly #encoder: TokenEncoder | undefined;
+	readonly #loadEncoder: () => TokenEncoder;
 	readonly #maxCache: number;
 	readonly #cache = new Map<string, number>();
+	#encoder: TokenEncoder | undefined;
+	#encoderLoaded = false;
 
 	constructor(options: TokenCounterOptions = {}) {
 		this.#maxCache = cacheBound(options.maxCache ?? 10_000);
-		try {
-			this.#encoder = (options.loadEncoder ?? (() => getEncoding("o200k_base")))();
-		} catch {
-			this.#encoder = undefined;
-		}
+		this.#loadEncoder = options.loadEncoder ?? (() => getEncoding("o200k_base"));
 	}
 
 	count(text: string): number {
@@ -33,8 +31,9 @@ export class TokenCounter {
 			this.#cache.set(key, cached);
 			return cached;
 		}
-		const tokens = this.#encoder
-			? this.#encoder.encode(text).length
+		const encoder = this.#resolveEncoder();
+		const tokens = encoder
+			? encoder.encode(text).length
 			: fallbackTokenEstimate(text);
 		if (this.#maxCache > 0) {
 			this.#cache.set(key, tokens);
@@ -44,6 +43,17 @@ export class TokenCounter {
 			}
 		}
 		return tokens;
+	}
+
+	#resolveEncoder(): TokenEncoder | undefined {
+		if (this.#encoderLoaded) return this.#encoder;
+		this.#encoderLoaded = true;
+		try {
+			this.#encoder = this.#loadEncoder();
+		} catch {
+			this.#encoder = undefined;
+		}
+		return this.#encoder;
 	}
 }
 

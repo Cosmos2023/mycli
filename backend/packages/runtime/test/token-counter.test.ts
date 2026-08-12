@@ -18,6 +18,23 @@ const PYTHON_O200K_CORPUS = Object.freeze([
 	},
 ]);
 
+test("loads the encoder only when the first non-empty value is counted", () => {
+	let loads = 0;
+	const counter = new TokenCounter({
+		loadEncoder: () => {
+			loads += 1;
+			return { encode: (text) => [...text].map((_, index) => index) };
+		},
+	});
+
+	assert.equal(loads, 0);
+	assert.equal(counter.count(""), 0);
+	assert.equal(loads, 0);
+	assert.equal(counter.count("abc"), 3);
+	assert.equal(counter.count("def"), 3);
+	assert.equal(loads, 1);
+});
+
 test("matches Python o200k_base counts for the fixed fixture corpus", () => {
 	const counter = new TokenCounter();
 
@@ -27,13 +44,18 @@ test("matches Python o200k_base counts for the fixed fixture corpus", () => {
 });
 
 test("uses the exact Python fallback estimate when encoder loading fails", () => {
+	let loads = 0;
 	const counter = new TokenCounter({
-		loadEncoder: () => { throw new Error("unavailable"); },
+		loadEncoder: () => {
+			loads += 1;
+			throw new Error("unavailable");
+		},
 	});
 
 	assert.equal(counter.count(""), 0);
 	assert.equal(counter.count("abcd中"), 2);
 	assert.equal(counter.count("abc😀"), 2);
+	assert.equal(loads, 1);
 });
 
 test("caches encoder counts without retaining more than the configured bound", () => {
