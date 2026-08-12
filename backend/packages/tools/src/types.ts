@@ -35,11 +35,13 @@ export interface ManifestToolRegistration {
 	readonly source: ExtensionToolSource;
 	readonly definition: ToolDefinition;
 	readonly originMetadata: Readonly<Record<string, string>>;
+	readonly supportsParallelToolCalls: boolean;
 }
 
 export interface ExtensionToolManifestEntry extends ToolDefinition {
 	readonly source: ExtensionToolSource;
 	readonly toolset: "external";
+	readonly supports_parallel_tool_calls: boolean;
 	readonly availability: { readonly status: "available" };
 	readonly origin_metadata: Readonly<Record<string, string>>;
 }
@@ -124,6 +126,9 @@ export interface DeferredToolCandidate {
 
 export interface ToolAdapter {
 	readonly definition: ToolDefinition;
+	readonly supportsParallelToolCalls?: boolean;
+	beginTurn?(turnId: string): void;
+	finishTurn?(turnId: string): void;
 	execute(
 		argumentsValue: Readonly<Record<string, unknown>>,
 		options: ToolExecutionOptions,
@@ -131,7 +136,9 @@ export interface ToolAdapter {
 }
 
 export interface ToolRouterContract {
-	supportsParallelToolCalls?(call: CanonicalToolCall): boolean;
+	beginTurn?(turnId: string): void;
+	finishTurn?(turnId: string): void;
+	supportsParallelToolCalls?(call: CanonicalToolCall, turnId?: string): boolean;
 	execute(
 		call: CanonicalToolCall,
 		options: ToolExecutionOptions,

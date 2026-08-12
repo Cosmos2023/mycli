@@ -32,11 +32,26 @@ test("creates stable MCP registrations and validates arguments through the share
 	assert.equal(registration.id, "mcp:files:read_file");
 	assert.equal(registration.definition.name, "mcp_files_read_file");
 	assert.equal(registration.source, "mcp");
+	assert.equal(registration.supportsParallelToolCalls, false);
 	assert.deepEqual(registration.originMetadata, { server: "files", tool: "read_file" });
 	assert.equal(invalid.errorKind, "invalid_arguments");
 	assert.equal(valid.success, true);
 	assert.equal(valid.modelOutput, "file contents");
 	assert.equal(callCount, 1);
+});
+
+test("projects resolved MCP parallel capability through adapter router and manifest registration", () => {
+	const client: McpClientContract = {
+		callTool: async () => ({ content: [], isError: false }),
+	};
+	const registration = createMcpToolRegistration(client, descriptor(true));
+	const router = new ToolRouter({
+		adapters: [registration.adapter],
+		exposure: [registration.definition],
+	});
+
+	assert.equal(registration.supportsParallelToolCalls, true);
+	assert.equal(router.supportsParallelToolCalls(call("{}")), true);
 });
 
 test("adapts a Draft-07 MCP schema for the host AJV without mutating the descriptor", async () => {
@@ -136,7 +151,7 @@ test("rejects malformed MCP input schemas before registration", () => {
 	);
 });
 
-function descriptor(): McpToolDescriptor {
+function descriptor(supportsParallelToolCalls = false): McpToolDescriptor {
 	return {
 		serverId: "files",
 		name: "read_file",
@@ -147,6 +162,7 @@ function descriptor(): McpToolDescriptor {
 			required: ["path"],
 			additionalProperties: false,
 		},
+		supportsParallelToolCalls,
 	};
 }
 

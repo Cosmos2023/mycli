@@ -16,6 +16,7 @@ const registration: ManifestToolRegistration = {
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 	},
 	originMetadata: { server: "files", tool: "read" },
+	supportsParallelToolCalls: true,
 };
 
 test("projects extension registrations without mutating the built-in manifest", () => {
@@ -28,6 +29,7 @@ test("projects extension registrations without mutating the built-in manifest", 
 		id: "mcp:files:read",
 		source: "mcp",
 		toolset: "external",
+		supports_parallel_tool_calls: true,
 		availability: { status: "available" },
 		origin_metadata: { server: "files", tool: "read" },
 	});
@@ -77,6 +79,7 @@ test("projects one stable Skill route instead of one route per discovered skill"
 			},
 		},
 		originMetadata: { skill: "catalog" },
+		supportsParallelToolCalls: false,
 	}]);
 
 	assert.deepEqual(

@@ -126,7 +126,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly random?: () => number;
 	readonly monotonicClock?: () => number;
 	readonly planTools?: (capabilities: { readonly shell: boolean }) => readonly ToolDefinition[];
-	readonly deferredTools?: readonly ToolDefinition[];
+	readonly deferredTools?: readonly ToolDefinition[] | ((turnId: string) => readonly ToolDefinition[]);
 	readonly loadToolActivations?: (turnId: string) => readonly string[];
 	readonly executionPolicyCoordinator?: ExecutionPolicyCoordinatorContract;
 	readonly toolRouter?: ToolRouterContract;
@@ -162,9 +162,12 @@ export interface CompactionCoordinatorContract {
 }
 
 export interface ApprovalPolicyContract {
+	beginTurn?(turnId: string): void;
+	finishTurn?(turnId: string): void;
 	evaluate(
 		call: CanonicalToolCall,
 		executionPolicy?: ExecutionPolicy,
+		turnId?: string,
 	): ApprovalPolicyDecision | Promise<ApprovalPolicyDecision>;
 	configurePermissionProfile?(profile: PermissionProfile): void;
 }
@@ -311,6 +314,7 @@ interface ActiveToolExecution {
 	readonly trackingCallId: string;
 	readonly callId: string;
 	readonly toolName: string;
+	readonly abortController: AbortController;
 	readonly startedAt: number;
 	readonly interruptErrorKind: "tool_interrupted" | "effect_outcome_unknown";
 	terminalEmitted: boolean;
@@ -376,6 +380,12 @@ export class NodeTurnRuntime {
 		this.#executionPolicyConfiguration = Object.freeze({ ...input });
 		this.#options.executionPolicyCoordinator?.configure(input);
 		this.#options.approvalPolicy?.configurePermissionProfile?.(input.permission);
+	}
+
+	#finishTurn(turnId: string): void {
+		this.#options.toolRouter?.finishTurn?.(turnId);
+		this.#options.approvalPolicy?.finishTurn?.(turnId);
+		this.#options.executionPolicyCoordinator?.finishTurn(turnId);
 	}
 
 	configureRuntimeContext(input: { readonly collaborationMode: string }): void {
@@ -450,7 +460,7 @@ export class NodeTurnRuntime {
 			retainPolicy = result.status === "in_progress";
 			return result;
 		} finally {
-			if (!retainPolicy) this.#options.executionPolicyCoordinator?.finishTurn(turnId);
+			if (!retainPolicy) this.#finishTurn(turnId);
 		}
 	}
 
@@ -493,7 +503,7 @@ export class NodeTurnRuntime {
 		});
 		this.#interruptActiveTools(input.turnId, emit);
 		await this.#writeTerminalSnapshot(interrupted);
-		this.#options.executionPolicyCoordinator?.finishTurn(input.turnId);
+		this.#finishTurn(input.turnId);
 		emit({ type: "turn_interrupted", message: "turn interrupted" });
 		return interrupted;
 	}
@@ -540,7 +550,7 @@ export class NodeTurnRuntime {
 			if (activeTool) this.#interruptToolExecution(activeTool, emit);
 			await this.#writeTerminalSnapshot(resolution.turn);
 			emit({ type: "turn_interrupted", message: "turn interrupted" });
-			this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+			this.#finishTurn(pending.turnId);
 			return resolution.turn;
 		}
 		if (!resolution.continuation) {
@@ -549,7 +559,7 @@ export class NodeTurnRuntime {
 				pending.clientTurnId,
 			);
 			if (existing && existing.status !== "in_progress") {
-				this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+				this.#finishTurn(pending.turnId);
 				return existing;
 			}
 			throw new ApprovalNotPendingError();
@@ -577,7 +587,7 @@ export class NodeTurnRuntime {
 			} : {}),
 		});
 		if (resumed.status !== "in_progress") {
-			this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+			this.#finishTurn(pending.turnId);
 		}
 		return resumed;
 	}
@@ -624,7 +634,7 @@ export class NodeTurnRuntime {
 			} : {}),
 		});
 		if (resumed.status !== "in_progress") {
-			this.#options.executionPolicyCoordinator?.finishTurn(pending.turnId);
+			this.#finishTurn(pending.turnId);
 		}
 		return resumed;
 	}
@@ -674,6 +684,8 @@ export class NodeTurnRuntime {
 	): Promise<TurnExecutionContext> {
 		assertNotAborted(signal);
 		const turnPolicy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
+		this.#options.toolRouter?.beginTurn?.(turnId);
+		this.#options.approvalPolicy?.beginTurn?.(turnId);
 		const config = await this.#options.resolveConfig(submission);
 		const instructionSnapshot = this.#options.resolveInstructionSnapshot?.()
 			?? this.#fallbackInstructionSnapshot;
@@ -1156,7 +1168,10 @@ export class NodeTurnRuntime {
 		const activated = new Set(this.#options.loadToolActivations?.(turnId) ?? []);
 		if (activated.size === 0) return baseTools;
 		const existing = new Set(baseTools.map((tool) => tool.name));
-		const additions = (this.#options.deferredTools ?? []).filter(
+		const deferredTools = typeof this.#options.deferredTools === "function"
+			? this.#options.deferredTools(turnId)
+			: this.#options.deferredTools ?? [];
+		const additions = deferredTools.filter(
 			(tool) => activated.has(tool.name) && !existing.has(tool.name),
 		);
 		return additions.length === 0 ? baseTools : Object.freeze([...baseTools, ...additions]);
@@ -1356,11 +1371,15 @@ export class NodeTurnRuntime {
 			const wallClockExhausted = this.#wallClockExhausted();
 			if (wallClockExhausted) throw new AgentBudgetExhaustedError(wallClockExhausted);
 			assertNotAborted(signal);
-			if (!this.#supportsParallelToolCall(call)) {
+			if (!this.#supportsParallelToolCall(call, context.turnId)) {
 				const earlierSuspension = await flushParallelCalls();
 				if (earlierSuspension) return earlierSuspension;
 			}
-			const policy = await this.#options.approvalPolicy?.evaluate(call, context.executionPolicy);
+			const policy = await this.#options.approvalPolicy?.evaluate(
+				call,
+				context.executionPolicy,
+				context.turnId,
+			);
 			if (policy?.kind === "request") {
 				const earlierSuspension = await flushParallelCalls();
 				if (earlierSuspension) return earlierSuspension;
@@ -1446,7 +1465,7 @@ export class NodeTurnRuntime {
 				continue;
 			}
 
-			if (this.#supportsParallelToolCall(executionCall)) {
+				if (this.#supportsParallelToolCall(executionCall, context.turnId)) {
 				pendingParallelCalls.push({ index, call, executionCall });
 				continue;
 			}
@@ -1480,9 +1499,9 @@ export class NodeTurnRuntime {
 		return undefined;
 	}
 
-	#supportsParallelToolCall(call: CanonicalToolCall): boolean {
+	#supportsParallelToolCall(call: CanonicalToolCall, turnId: string): boolean {
 		try {
-			return this.#options.toolRouter?.supportsParallelToolCalls?.(call) === true;
+			return this.#options.toolRouter?.supportsParallelToolCalls?.(call, turnId) === true;
 		} catch {
 			return false;
 		}
@@ -1703,10 +1722,11 @@ export class NodeTurnRuntime {
 			"tool_interrupted",
 			emit,
 		);
+		const executionSignal = AbortSignal.any([signal, activeTool.abortController.signal]);
 		let result: ToolExecutionResult;
 		try {
 			result = await router.execute(call, {
-				signal,
+				signal: executionSignal,
 				ownerSessionId: this.#options.sessionId,
 				ownerTurnId: context.turnId,
 				callId: call.callId,
@@ -1714,9 +1734,9 @@ export class NodeTurnRuntime {
 				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
 				...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
 			});
-			assertNotAborted(signal);
+			assertNotAborted(executionSignal);
 		} catch (error) {
-			if (signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+			if (executionSignal.aborted || (error instanceof Error && error.name === "AbortError")) {
 				this.#interruptToolExecution(activeTool, emit);
 				throw error;
 			}
@@ -1742,6 +1762,7 @@ export class NodeTurnRuntime {
 			trackingCallId: callId,
 			callId: boundedCallId(callId),
 			toolName: boundedToolName(toolName),
+			abortController: new AbortController(),
 			startedAt: this.#options.monotonicClock?.() ?? performance.now(),
 			interruptErrorKind,
 			terminalEmitted: false,
@@ -1784,6 +1805,7 @@ export class NodeTurnRuntime {
 		active: ActiveToolExecution,
 		emit: (event: RuntimeEvent) => void,
 	): void {
+		active.abortController.abort(new DOMException("tool interrupted", "AbortError"));
 		this.#failToolExecution(active, active.interruptErrorKind, emit);
 	}
 

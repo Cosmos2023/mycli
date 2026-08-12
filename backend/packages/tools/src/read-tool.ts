@@ -49,6 +49,7 @@ export interface ReadToolOptions {
 
 export class ReadTool implements ToolAdapter {
 	readonly definition = READ_TOOL_DEFINITION;
+	readonly supportsParallelToolCalls = true;
 	readonly #workspaceRoot: string;
 	readonly #readRanges = new Map<string, Snapshot>();
 	readonly #snapshots: FileSnapshotStore;

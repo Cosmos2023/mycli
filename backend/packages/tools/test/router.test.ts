@@ -39,8 +39,11 @@ test("routes a valid exposed call with parsed arguments", async () => {
 	assert.deepEqual(result, success("call-1"));
 });
 
-test("reports parallel support only for explicitly configured routes", () => {
-	const router = createRouter(adapterThatMustNotRun(), new Set(["Read"]));
+test("reports parallel support only when the resolved adapter opts in", () => {
+	const router = createRouter({
+		...adapterThatMustNotRun(),
+		supportsParallelToolCalls: true,
+	});
 
 	assert.equal(router.supportsParallelToolCalls?.({
 		callId: "call-read",
@@ -50,6 +53,11 @@ test("reports parallel support only for explicitly configured routes", () => {
 	assert.equal(router.supportsParallelToolCalls?.({
 		callId: "call-unknown",
 		name: "Unknown",
+		argumentsJson: "{}",
+	}), false);
+	assert.equal(createRouter(adapterThatMustNotRun()).supportsParallelToolCalls?.({
+		callId: "call-sequential",
+		name: "Read",
 		argumentsJson: "{}",
 	}), false);
 });
@@ -160,8 +168,68 @@ test("bounds adapter output before it reaches session persistence", async () => 
 	assert.equal(Reflect.get(result, "metadata").model_output_omitted_chars, 1_000);
 });
 
+test("dynamic routes are versioned at turn boundaries", async () => {
+	const ToolRouter = Reflect.get(tools, "ToolRouter") as unknown as new (options: {
+		readonly adapters: readonly Adapter[];
+		readonly exposure: readonly unknown[];
+	}) => Router & {
+		beginTurn(turnId: string): void;
+		finishTurn(turnId: string): void;
+		replaceDynamicAdapters(adapters: readonly Adapter[]): void;
+	};
+	const router = new ToolRouter({ adapters: [adapterThatMustNotRun()], exposure: [readDefinition] });
+	const dynamic = (label: string): Adapter => ({
+		definition: {
+			id: "mcp:docs",
+			name: "McpDocs",
+			description: "MCP docs fixture",
+			inputSchema: {
+				type: "object",
+				properties: {},
+				required: [],
+				additionalProperties: false,
+			},
+		},
+		execute: async () => ({
+			success: true,
+			modelOutput: label,
+			summary: label,
+			metadata: {},
+		}),
+	});
+	const execute = (turnId: string) => router.execute({
+		callId: `call-${turnId}`,
+		name: "McpDocs",
+		argumentsJson: "{}",
+	}, {
+		signal: new AbortController().signal,
+		ownerSessionId: "session",
+		ownerTurnId: turnId,
+	});
+	router.replaceDynamicAdapters([dynamic("old")]);
+	router.beginTurn("turn-old");
+	router.replaceDynamicAdapters([dynamic("new")]);
+	router.beginTurn("turn-new");
+
+	assert.equal((await execute("turn-old")).modelOutput, "old");
+	assert.equal((await execute("turn-new")).modelOutput, "new");
+	router.finishTurn("turn-old");
+	router.finishTurn("turn-new");
+});
+
 interface Adapter {
-	readonly definition: typeof readDefinition;
+	readonly definition: {
+		readonly id: string;
+		readonly name: string;
+		readonly description: string;
+		readonly inputSchema: {
+			readonly type: "object";
+			readonly properties: Readonly<Record<string, unknown>>;
+			readonly required: readonly string[];
+			readonly additionalProperties: false;
+		};
+	};
+	readonly supportsParallelToolCalls?: boolean;
 	execute(argumentsValue: unknown, options: { readonly signal: AbortSignal }): Promise<unknown>;
 }
 
@@ -175,26 +243,28 @@ interface Router {
 		readonly callId: string;
 		readonly name: string;
 		readonly argumentsJson: string;
-	}, options: { readonly signal: AbortSignal }): Promise<{
+	}, options: {
+		readonly signal: AbortSignal;
+		readonly ownerSessionId?: string;
+		readonly ownerTurnId?: string;
+	}): Promise<{
 		readonly success: boolean;
 		readonly errorKind?: string;
 		readonly modelOutput: string;
 	}>;
 }
 
-function createRouter(adapter: Adapter, parallelToolNames?: ReadonlySet<string>): Router {
+function createRouter(adapter: Adapter): Router {
 	const ToolRouter = Reflect.get(tools, "ToolRouter") as unknown as
 		| (new (options: {
 			readonly adapters: readonly Adapter[];
 			readonly exposure: readonly unknown[];
-			readonly parallelToolNames?: ReadonlySet<string>;
 		}) => Router)
 		| undefined;
 	assert.equal(typeof ToolRouter, "function", "ToolRouter must be exported");
 	return new ToolRouter!({
 		adapters: [adapter],
 		exposure: [readDefinition],
-		...(parallelToolNames ? { parallelToolNames } : {}),
 	});
 }
 

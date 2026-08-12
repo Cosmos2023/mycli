@@ -1,5 +1,14 @@
 {
-  "$defs": {
+	"$defs": {
+		"extension.updated": {
+			"name": "extension.updated",
+			"additionalProperties": false,
+			"properties": {
+				"version": {"type": "integer", "minimum": 1}
+			},
+			"required": ["version"],
+			"type": "object"
+		},
     "approval.request": {
       "name": "approval.request",
       "properties": {
@@ -2211,7 +2220,17 @@
   },
   "$id": "https://mycli.local/contracts/gateway-events.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "oneOf": [
+	"oneOf": [
+		{
+			"additionalProperties": false,
+			"properties": {
+				"jsonrpc": {"const": "2.0"},
+				"method": {"const": "extension.updated"},
+				"params": {"$ref": "#/$defs/extension.updated"}
+			},
+			"required": ["jsonrpc", "method", "params"],
+			"type": "object"
+		},
     {
       "additionalProperties": false,
       "properties": {

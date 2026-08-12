@@ -89,6 +89,7 @@ function remoteConfig(
 		env: {},
 		headers,
 		enabled: true,
+		supportsParallelToolCalls: false,
 		timeoutMs: 1_000,
 	};
 }

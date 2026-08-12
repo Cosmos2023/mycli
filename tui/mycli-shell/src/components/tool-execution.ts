@@ -7,6 +7,11 @@ import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { shortPreview } from "./tool-display.ts";
 import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "./tool-presentation.ts";
+import {
+	TRANSCRIPT_BRANCH_INDENT,
+	TRANSCRIPT_DETAIL_INDENT,
+	TRANSCRIPT_HEADER_INDENT,
+} from "./transcript-gutter.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
 
 function formatDuration(ms: number | undefined): string | undefined {
@@ -37,8 +42,8 @@ export class ToolExecutionComponent extends Container {
 	private rebuild(): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(this.headerText(), 1, 0));
-		this.addChild(new Text(this.resultText(), 3, 0));
+		this.addChild(new Text(this.headerText(), TRANSCRIPT_HEADER_INDENT, 0));
+		this.addChild(new Text(this.resultText(), TRANSCRIPT_BRANCH_INDENT, 0));
 		const details = this.detailsComponent();
 		if (details) {
 			this.addChild(details);
@@ -69,7 +74,7 @@ export class ToolExecutionComponent extends Container {
 			return undefined;
 		}
 		if (this.tool.expanded) {
-			return new Text(this.styleDetailText(fullText), 5, 0);
+			return new Text(this.styleDetailText(fullText), TRANSCRIPT_DETAIL_INDENT, 0);
 		}
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
@@ -82,10 +87,17 @@ export class ToolExecutionComponent extends Container {
 					if (hiddenCount > 0) {
 						cachedLines = [
 							...cachedLines,
-							...new Text(theme.fg("muted", this.hiddenLinesText(hiddenCount)), 5, 0).render(width),
+							...new Text(
+								theme.fg("muted", this.hiddenLinesText(hiddenCount)),
+								TRANSCRIPT_DETAIL_INDENT,
+								0,
+							).render(width),
 						];
 					} else if (this.shouldShowCollapsedHint()) {
-						cachedLines = [...cachedLines, ...new Text(this.collapsedHint(), 5, 0).render(width)];
+						cachedLines = [
+							...cachedLines,
+							...new Text(this.collapsedHint(), TRANSCRIPT_DETAIL_INDENT, 0).render(width),
+						];
 					}
 					cachedWidth = width;
 				}
@@ -150,9 +162,9 @@ export class ToolExecutionComponent extends Container {
 	private truncateDetailText(text: string, width: number): { visualLines: string[]; skippedCount: number } {
 		const styled = this.styleDetailText(text);
 		if (!this.tool.contentPreview) {
-			return truncateToVisualLines(styled, this.previewLineLimit(), width, 5);
+			return truncateToVisualLines(styled, this.previewLineLimit(), width, TRANSCRIPT_DETAIL_INDENT);
 		}
-		const visualLines = new Text(styled, 5, 0).render(width);
+		const visualLines = new Text(styled, TRANSCRIPT_DETAIL_INDENT, 0).render(width);
 		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
 		if (visualLines.length <= presentation.writePreviewLines) {
 			return { visualLines, skippedCount: 0 };

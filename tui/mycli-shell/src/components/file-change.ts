@@ -4,6 +4,11 @@ import { Container, type Component } from "../tui-core/tui.ts";
 import type { MycliShellFileChange, MycliShellFileChangeEntry } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { renderUnifiedDiff } from "./diff-renderer.ts";
+import {
+	TRANSCRIPT_BRANCH_INDENT,
+	TRANSCRIPT_DETAIL_INDENT,
+	TRANSCRIPT_HEADER_INDENT,
+} from "./transcript-gutter.ts";
 
 
 const VERBS = {
@@ -39,34 +44,50 @@ export class FileChangeComponent extends Container {
 		this.addChild(new Spacer(1));
 		const glyphs = glyphsForTerminal();
 		if (this.fileChange.status === "error") {
-			this.addChild(new Text(theme.fg("error", `${glyphs.error} ${errorSummary(this.fileChange.summary)}`), 1, 0));
+			this.addChild(new Text(
+				theme.fg("error", `${glyphs.error} ${errorSummary(this.fileChange.summary)}`),
+				TRANSCRIPT_HEADER_INDENT,
+				0,
+			));
 			if (this.fileChange.error) {
-				this.addChild(new Text(theme.fg("error", `${glyphs.branch} ${this.fileChange.error}`), 2, 0));
+				this.addChild(new Text(
+					theme.fg("error", `${glyphs.branch} ${this.fileChange.error}`),
+					TRANSCRIPT_BRANCH_INDENT,
+					0,
+				));
 			}
 			return;
 		}
 		if (this.fileChange.status === "unchanged" || this.fileChange.files.length === 0) {
 			const target = this.fileChange.target ?? this.fileChange.files[0]?.path;
 			const text = target ? `No changes to ${target}` : "No changes";
-			this.addChild(new Text(`${theme.fg("accent", glyphs.bullet)} ${text}`, 1, 0));
+			this.addChild(new Text(
+				`${theme.fg("accent", glyphs.bullet)} ${text}`,
+				TRANSCRIPT_HEADER_INDENT,
+				0,
+			));
 			return;
 		}
 		if (this.fileChange.files.length === 1) {
 			const file = this.fileChange.files[0]!;
-			this.addChild(new Text(this.singleFileHeader(file, glyphs), 1, 0));
-			this.addChild(new FileDiffComponent(file, 4));
+			this.addChild(new Text(this.singleFileHeader(file, glyphs), TRANSCRIPT_HEADER_INDENT, 0));
+			this.addChild(new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT));
 			return;
 		}
 
 		const counts = aggregateCounts(this.fileChange.files);
 		this.addChild(new Text(
 			`${theme.fg("accent", glyphs.bullet)} Edited ${this.fileChange.files.length} files ${formatCounts(counts.added, counts.removed)}`,
-			1,
+			TRANSCRIPT_HEADER_INDENT,
 			0,
 		));
 		this.fileChange.files.forEach((file, index) => {
-			this.addChild(new Text(`${theme.fg("muted", glyphs.branch)} ${displayPath(file)} ${formatCounts(file.addedLines, file.removedLines)}`, 2, 0));
-			this.addChild(new FileDiffComponent(file, 4));
+			this.addChild(new Text(
+				`${theme.fg("muted", glyphs.branch)} ${displayPath(file)} ${formatCounts(file.addedLines, file.removedLines)}`,
+				TRANSCRIPT_BRANCH_INDENT,
+				0,
+			));
+			this.addChild(new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT));
 			if (index < this.fileChange.files.length - 1) {
 				this.addChild(new Spacer(1));
 			}

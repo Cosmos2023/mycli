@@ -3,6 +3,7 @@ import type {
 	DeferredToolCandidate,
 	ToolAdapter,
 	ToolAdapterResult,
+	ToolExecutionOptions,
 } from "./types.ts";
 
 const DEFAULT_RESULT_LIMIT = 8;
@@ -17,20 +18,40 @@ interface IndexedCandidate extends DeferredToolCandidate {
 
 export class ToolSearchTool implements ToolAdapter {
 	readonly definition = TOOL_SEARCH_TOOL_DEFINITION;
-	readonly #candidates: readonly IndexedCandidate[];
+	readonly supportsParallelToolCalls = true;
+	#candidates: readonly IndexedCandidate[];
+	readonly #turnCandidates = new Map<string, readonly IndexedCandidate[]>();
 
 	constructor(candidates: readonly DeferredToolCandidate[]) {
 		this.#candidates = Object.freeze(candidates.map(indexCandidate));
 	}
 
-	async execute(argumentsValue: Readonly<Record<string, unknown>>): Promise<ToolAdapterResult> {
+	beginTurn(turnId: string): void {
+		if (!this.#turnCandidates.has(turnId)) this.#turnCandidates.set(turnId, this.#candidates);
+	}
+
+	finishTurn(turnId: string): void {
+		this.#turnCandidates.delete(turnId);
+	}
+
+	replaceCandidates(candidates: readonly DeferredToolCandidate[]): void {
+		this.#candidates = Object.freeze(candidates.map(indexCandidate));
+	}
+
+	async execute(
+		argumentsValue: Readonly<Record<string, unknown>>,
+		options?: ToolExecutionOptions,
+	): Promise<ToolAdapterResult> {
 		const query = normalizedQuery(argumentsValue.query);
 		const limit = resultLimit(argumentsValue.limit);
 		if (!query || limit === undefined) {
 			return failure("Query must be non-empty and limit must be an integer from 1 through 16.");
 		}
 		const queryTokens = tokenize(query);
-		const matches = this.#candidates
+		const candidates = options?.ownerTurnId
+			? this.#turnCandidates.get(options.ownerTurnId) ?? this.#candidates
+			: this.#candidates;
+		const matches = candidates
 			.map((candidate) => ({ candidate, score: scoreCandidate(candidate, query, queryTokens) }))
 			.filter((match) => match.score > 0)
 			.sort((left, right) => right.score - left.score
@@ -52,7 +73,7 @@ export class ToolSearchTool implements ToolAdapter {
 				: `Activated ${names.length} deferred tool${names.length === 1 ? "" : "s"}`,
 			metadata: Object.freeze({
 				matched_count: names.length,
-				catalog_count: this.#candidates.length,
+				catalog_count: candidates.length,
 			}),
 			toolActivation: Object.freeze({ names }),
 		};

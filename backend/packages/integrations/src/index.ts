@@ -60,6 +60,12 @@ export type {
 } from "./hooks/types.ts";
 export { McpClient } from "./mcp/client.ts";
 export type { McpClientOptions } from "./mcp/client.ts";
+export { McpCatalogCache } from "./mcp/catalog-cache.ts";
+export type {
+	McpCachedServerCatalog,
+	McpCatalogCacheContract,
+	McpCatalogCacheOptions,
+} from "./mcp/catalog-cache.ts";
 export { discoverMcpConfig } from "./mcp/config.ts";
 export type { DiscoverMcpConfigOptions } from "./mcp/config.ts";
 export {

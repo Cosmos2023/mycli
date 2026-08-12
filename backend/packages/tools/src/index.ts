@@ -155,6 +155,7 @@ export { resolveShellProfile } from "./shell-profile.ts";
 export type {
 	ResolveShellProfileOptions,
 	ShellProfile,
+	ShellProfileName,
 } from "./shell-profile.ts";
 export { ShellTool } from "./shell-tool.ts";
 export type {

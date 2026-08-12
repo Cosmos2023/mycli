@@ -53,6 +53,8 @@ export class McpClient implements McpClientContract {
 					name,
 					description: stringValue(item.description) ?? "",
 					inputSchema: frozenRecord(item.inputSchema),
+					supportsParallelToolCalls: this.config.supportsParallelToolCalls
+						|| readOnlyHint(item.annotations),
 				})];
 			}));
 		});
@@ -250,6 +252,10 @@ function normalizeContent(value: unknown): readonly McpContentItem[] {
 
 function frozenRecord(value: unknown): Readonly<Record<string, unknown>> {
 	return Object.freeze(isRecord(value) ? { ...value } : {});
+}
+
+function readOnlyHint(value: unknown): boolean {
+	return isRecord(value) && value.readOnlyHint === true;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

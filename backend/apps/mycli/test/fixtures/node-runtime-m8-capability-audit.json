@@ -2,10 +2,11 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 37,
-    "event_count": 42,
+	"rpc_count": 38,
+    "event_count": 43,
     "required_rpc": [
       "session.bootstrap",
+	  "session.new",
       "status.inspect",
       "command.list",
       "command.run",
@@ -30,6 +31,7 @@
       "clarify.request",
       "turn.queue.updated",
       "shell.started",
+	  "extension.updated",
       "subagent.updated",
       "turn.completed",
       "turn.status"
@@ -37,8 +39,8 @@
   },
   "slash_commands": {
     "command_count": 35,
-    "prefixed_alias_count": 12,
-    "sha256": "b2bb8232fe848d4bf93a4badce335936537f335851a749f7b8ba13133a575033"
+	"prefixed_alias_count": 13,
+	"sha256": "da9e436ce374579cf73bd8f22066af392494424d791cc1fda1a1d5a71112fed9"
   },
   "tools": {
     "retained": [

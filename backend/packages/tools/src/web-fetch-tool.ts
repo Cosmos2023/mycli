@@ -55,6 +55,7 @@ export type WebFetchLookup = (hostname: string) => Promise<readonly LookupAddres
 
 export class WebFetchTool implements ToolAdapter {
 	readonly definition = WEB_FETCH_TOOL_DEFINITION;
+	readonly supportsParallelToolCalls = true;
 	readonly #fetcher: PublicWebFetcher;
 	readonly #timeoutMs: number;
 	readonly #maxRedirects: number;

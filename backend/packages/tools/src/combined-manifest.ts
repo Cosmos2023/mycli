@@ -48,6 +48,7 @@ function extensionEntry(registration: ManifestToolRegistration): ExtensionToolMa
 		id: registration.id,
 		source: registration.source,
 		toolset: "external" as const,
+		supports_parallel_tool_calls: registration.supportsParallelToolCalls,
 		availability: { status: "available" as const },
 		origin_metadata: { ...registration.originMetadata },
 	});

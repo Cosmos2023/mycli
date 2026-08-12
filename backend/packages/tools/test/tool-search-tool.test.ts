@@ -78,6 +78,31 @@ test("tool_search owns frozen copies of catalog definitions and metadata", async
 	assert.equal(result.modelOutput.includes("mutated"), false);
 });
 
+test("tool_search keeps a turn catalog stable across background replacement", async () => {
+	const tool = new ToolSearchTool([
+		candidate("mcp:docs:old", "docs_old", "Old docs", "mcp", { server: "docs" }),
+	]);
+	tool.beginTurn("turn-old");
+	tool.replaceCandidates([
+		candidate("mcp:docs:new", "docs_new", "New docs", "mcp", { server: "docs" }),
+	]);
+	const options = (turnId: string) => ({
+		signal: new AbortController().signal,
+		ownerSessionId: "session",
+		ownerTurnId: turnId,
+		callId: "call",
+		publishLifecycle: () => undefined,
+	});
+	const oldTurn = await tool.execute({ query: "docs" }, options("turn-old"));
+	tool.beginTurn("turn-new");
+	const newTurn = await tool.execute({ query: "docs" }, options("turn-new"));
+
+	assert.deepEqual(oldTurn.toolActivation, { names: ["docs_old"] });
+	assert.deepEqual(newTurn.toolActivation, { names: ["docs_new"] });
+	tool.finishTurn("turn-old");
+	tool.finishTurn("turn-new");
+});
+
 function candidate(
 	id: string,
 	name: string,

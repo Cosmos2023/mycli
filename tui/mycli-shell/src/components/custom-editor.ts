@@ -7,7 +7,6 @@ export class CustomEditor extends Editor {
 
 	public onEscape?: () => void;
 	public onCtrlD?: () => void;
-	public onPasteImage?: () => void;
 	public onExtensionShortcut?: (data: string) => boolean;
 	public shouldHandleAction?: (action: AppKeybinding) => boolean;
 
@@ -22,11 +21,6 @@ export class CustomEditor extends Editor {
 
 	override handleInput(data: string): void {
 		if (this.onExtensionShortcut?.(data)) {
-			return;
-		}
-
-		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
-			this.onPasteImage?.();
 			return;
 		}
 
@@ -51,9 +45,6 @@ export class CustomEditor extends Editor {
 		}
 
 		for (const [action, handler] of this.actionHandlers) {
-			if ((action === "app.commandPalette" || action === "app.help") && this.getText().length > 0) {
-				continue;
-			}
 			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
 				if (action === "app.message.followUp" && this.keybindings.matches(data, "tui.input.tab") && this.willUseTabForAutocomplete()) {
 					continue;

@@ -48,7 +48,7 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/compact",
 	"/skills",
 	"/tools",
-	"/tasks",
+	"/agents",
 	"/ps",
 	"/changes",
 	"/help",
@@ -175,6 +175,7 @@ function gatewayHarness(options: {
 		: undefined;
 	const shell = options.shell ? gatewayShellFixture() : undefined;
 	const subagentListeners = new Set<(subagent: Readonly<Record<string, unknown>>) => void>();
+	const extensionListeners = new Set<(version: number) => void>();
 	const memories: Record<string, unknown>[] = [{
 		filename: "architecture.md",
 		name: "Architecture",
@@ -229,11 +230,15 @@ function gatewayHarness(options: {
 				}
 				: undefined,
 		},
-		subscribeSubagents: (listener: (subagent: Readonly<Record<string, unknown>>) => void) => {
-			subagentListeners.add(listener);
-			return () => { subagentListeners.delete(listener); };
-		},
-	} : undefined;
+			subscribeSubagents: (listener: (subagent: Readonly<Record<string, unknown>>) => void) => {
+				subagentListeners.add(listener);
+				return () => { subagentListeners.delete(listener); };
+			},
+			subscribeExtensions: (listener: (version: number) => void) => {
+				extensionListeners.add(listener);
+				return () => { extensionListeners.delete(listener); };
+			},
+		} : undefined;
 	const reserve = options.reserve ?? ((submission: TurnSubmission) => {
 		const fingerprint = fingerprintSubmission({
 			message: submission.message,
@@ -509,9 +514,12 @@ function gatewayHarness(options: {
 		sessionCoordinator,
 		queue,
 		shell,
-		publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
-			for (const listener of subagentListeners) listener(subagent);
-		},
+			publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
+				for (const listener of subagentListeners) listener(subagent);
+			},
+			publishExtension: (version: number) => {
+				for (const listener of extensionListeners) listener(version);
+			},
 		taskInterruptions,
 		sessionCommandCalls,
 		savedApiKeys,
@@ -559,7 +567,7 @@ test("node gateway boots the real TUI startup sequence", async () => {
 });
 
 test("every advertised canonical TUI RPC is routed by the Node gateway", async () => {
-	const harness = gatewayHarness({ control: true, shell: true });
+	const harness = gatewayHarness({ control: true, sessions: {}, shell: true });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
 	const advertised = await harness.send("extension.manifest");
 	assert.ok("result" in advertised);
@@ -579,6 +587,7 @@ test("every advertised canonical TUI RPC is routed by the Node gateway", async (
 		["decision.resolve", {}],
 		["model.list", {}],
 		["model.select", {}],
+		["session.new", {}],
 		["settings.save", {}],
 		["shell.list", {}],
 		["shell.output.load", {}],
@@ -808,7 +817,7 @@ test("shell command routes expose ps and stop through the active owner manager",
 	assert.deepEqual("result" in ps ? ps.result.processes : [], [
 		assertedShellPayload("a1b2c3d4", 1),
 	]);
-	const stopped = await harness.send("command.run", { command: "/stop", surface: "tui" });
+	const stopped = await harness.send("command.run", { command: "/ps stop-all", surface: "tui" });
 	assert.equal("result" in stopped ? stopped.result.command_kind : null, "shell_stop");
 	assert.deepEqual("result" in stopped ? stopped.result.lines : [], [
 		"Stopping all background terminals.",
@@ -820,12 +829,12 @@ test("shell command routes expose ps and stop through the active owner manager",
 test("built-in TUI slash commands resolve to their canonical client actions", async () => {
 	const harness = gatewayHarness();
 	const cases = [
-		["/help", "help", "open_command_palette", "", "none"],
+		["/help", "help", "open_help", "", "none"],
 		["/model", "model", "open_model_selector", "", "transcript"],
 		["/permissions", "permissions", "open_permissions", "", "overlay"],
-		["/new", "new", "start_new_session", "", "none"],
 		["/session", "resume", "open_session_selector", "", "transcript"],
-		["/tasks", "tasks", "open_tasks", "", "transcript"],
+		["/agents", "agents", "open_agents", "", "transcript"],
+		["/tasks", "agents", "open_agents", "", "transcript"],
 		["/settings", "settings", "open_settings", "", "none"],
 		["/resources", "resources", "open_resources", "", "none"],
 		["/details", "details", "toggle_details", "", "none"],
@@ -894,7 +903,7 @@ test("integration commands are additive and cannot override built-in names or al
 		[...TUI_BUILTIN_COMMAND_NAMES, "/plugin:demo:status"],
 	);
 	const help = await harness.send("command.run", { command: "/help", surface: "tui" });
-	assert.equal("result" in help ? help.result.client_action : null, "open_command_palette");
+	assert.equal("result" in help ? help.result.client_action : null, "open_help");
 	await harness.gateway.close();
 });
 
@@ -984,6 +993,26 @@ test("mode sandbox resume and quit slash commands mutate their owning runtime st
 	assert.equal("result" in status ? status.result.collaboration_mode : null, "plan");
 	const quit = await harness.send("command.run", { command: "/quit", surface: "cli" });
 	assert.equal("result" in quit ? quit.result.exit_requested : false, true);
+	await harness.gateway.close();
+});
+
+test("new slash command switches to a fresh backend session generation", async () => {
+	const harness = gatewayHarness({ sessions: {} });
+
+	const created = await harness.send("command.run", { command: "/new", surface: "tui" });
+
+	assert.equal("result" in created ? created.result.mutated_session : false, true);
+	assert.equal("result" in created ? created.result.session_id : null, "fresh-1");
+	const status = await harness.send("status.get");
+	assert.equal("result" in status ? status.result.session_id : null, "fresh-1");
+	const sessions = await harness.send("session.list");
+	assert.equal(
+		"result" in sessions
+			? sessions.result.sessions.some((session: { id?: string; current?: boolean }) =>
+				session.id === "fresh-1" && session.current === true)
+			: false,
+		true,
+	);
 	await harness.gateway.close();
 });
 
@@ -1393,6 +1422,19 @@ test("subagent updates filter stale parent sessions after resume", async () => {
 		.find((message) => message.params.subagent.run_id === "task-target"));
 	assert.equal("parent_session_id" in current.params.subagent, false);
 	parseGatewayEvent(current);
+	await harness.gateway.close();
+});
+
+test("extension refresh publishes one schema-valid direct notification", async () => {
+	const harness = gatewayHarness({ integrations: true });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	harness.publishExtension(2);
+	const event = await waitFor(() => notification(harness.messages, "extension.updated"));
+	assert.deepEqual(event.params, { version: 2 });
+	parseGatewayEvent(event);
+	assert.equal(notifications(harness.messages, "runtime.event").some(
+		(message) => message.params.type === "extension.updated",
+	), false);
 	await harness.gateway.close();
 });
 
@@ -3112,6 +3154,7 @@ function gatewaySessionCoordinator(
 		readonly approvalOptions?: readonly PendingApprovalChoice[];
 	},
 ): SessionCoordinator<NodeGatewayRuntime> {
+	let freshSessionSequence = 0;
 	return new SessionCoordinator({
 		initial: preparedGatewaySession(
 			"session-node",
@@ -3138,6 +3181,10 @@ function gatewaySessionCoordinator(
 				options.approvalOptions,
 				options.targetPendingClarification ?? false,
 			);
+		},
+		create: () => {
+			freshSessionSequence += 1;
+			return preparedGatewaySession(`fresh-${freshSessionSequence}`, runtime, false, emptyQueue(`fresh-${freshSessionSequence}`));
 		},
 		listSessions: () => [
 			sessionOverview("target", "2026-08-04T00:00:01.000Z"),

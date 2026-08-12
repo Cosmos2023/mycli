@@ -1,6 +1,5 @@
 import { copyText } from "./adapters/clipboard.ts";
 import { isSlashCommandSubmission } from "./adapters/slash-commands.ts";
-import { SelectList, type SelectItem } from "./tui-core/components/select-list.ts";
 import { Spacer } from "./tui-core/components/spacer.ts";
 import { Text } from "./tui-core/components/text.ts";
 import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
@@ -44,9 +43,11 @@ import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
+import { CommandPaletteComponent } from "./components/command-palette.ts";
 import { CommandResultComponent } from "./components/command-result.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
+import { HelpOverlayComponent } from "./components/help-overlay.ts";
 import { FileChangeComponent } from "./components/file-change.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginFlowComponent } from "./components/login-flow.ts";
@@ -65,7 +66,7 @@ import { shellOutputKey, TranscriptViewerComponent } from "./components/transcri
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { isLocalImageAttachmentPath } from "./local-image-attachments.ts";
-import { getEditorTheme, getSelectListTheme, theme } from "./theme/theme.ts";
+import { getEditorTheme, theme } from "./theme/theme.ts";
 import {
 	createTranscriptProjection,
 	projectTranscriptTail,
@@ -113,6 +114,7 @@ export type MycliShellRuntimeOptions = {
 		clarification: MycliShellPendingClarification,
 	) => void | Promise<void>;
 	commands?: MycliShellCommandSpec[];
+	commandNames?: string[];
 	now?: () => number;
 	transcriptReplayMaxRows?: number;
 };
@@ -1157,12 +1159,12 @@ export class MycliShellRuntime {
 		this.editor.onSubmit = (text) => {
 			this.runAsyncAction(() => this.handleSubmit(text), "Message submission failed");
 		};
-		this.editor.onPasteImage = () => {
-			this.editor.insertTextAtCursor?.(" @");
-		};
 		this.editor.shouldHandleAction = (action) => {
 			if (action === "app.message.followUp") {
 				return this.isTurnRunning();
+			}
+			if (action === "app.message.dequeue") {
+				return this.hasQueuedInput();
 			}
 			return true;
 		};
@@ -1176,11 +1178,8 @@ export class MycliShellRuntime {
 			this.runAsyncAction(() => this.shutdown(), "Exit failed");
 		});
 		this.editor.onAction("app.commandPalette", () => this.showCommandPalette());
-		this.editor.onAction("app.help", () => this.showCommandPalette());
+		this.editor.onAction("app.help", () => this.showHelp());
 		this.editor.onAction("app.model.select", () => this.showModelSelector());
-		this.editor.onAction("app.mode.cycle", () => {
-			this.runAsyncAction(() => this.cycleCollaborationMode(), "Mode change failed");
-		});
 		this.editor.onAction("app.permissions.open", () => {
 			this.showPermissionSelector();
 		});
@@ -1456,23 +1455,24 @@ export class MycliShellRuntime {
 	showCommandPalette(): void {
 		const commands = this.commands();
 		this.showSelector((done) => {
-			const list = new SelectList(
-				commands.map((command) => ({
-					value: command.id,
-					label: command.name,
-					description: command.description,
-				})),
-				Math.min(10, Math.max(4, commands.length)),
-				getSelectListTheme(),
-				{ minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 28 },
-			);
-			list.onSelect = (item: SelectItem) => {
-				done();
-				const command = commands.find((candidate) => candidate.id === item.value);
-				if (command) void this.submitCommand(command.name);
-			};
-			list.onCancel = () => done();
-			return { component: list, focus: list };
+			const palette = new CommandPaletteComponent({
+				tui: this.ui,
+				commands,
+				turnRunning: this.isTurnRunning(),
+				onSelect: (command) => {
+					done();
+					void this.submitCommand(command.name);
+				},
+				onCancel: done,
+			});
+			return { component: palette, focus: palette };
+		});
+	}
+
+	showHelp(): void {
+		this.showSelector((done) => {
+			const help = new HelpOverlayComponent({ commands: this.commands(), onClose: done });
+			return { component: help, focus: help };
 		});
 	}
 
@@ -1528,16 +1528,17 @@ export class MycliShellRuntime {
 	async handleClientAction(action: string, args: string): Promise<void> {
 		const handlers: Record<string, () => void | Promise<void>> = {
 			open_command_palette: () => this.showCommandPalette(),
+			open_help: () => this.showHelp(),
 			open_model_selector: () => this.showModelSelector(args || undefined),
 			open_permissions: () => this.showPermissionSelector(),
 			open_settings: () => this.showSettingsSelector(),
 			open_session_selector: () => this.showSessionSelector(),
-			start_new_session: () => this.startNewLocalSession(),
 			open_resources: () => this.showResourceSelector(),
+			open_agents: () => this.showBackgroundSubagents(),
 			open_tasks: () => this.showBackgroundSubagents(),
 			toggle_details: () => this.toggleToolDetails(),
 			set_view_mode: () => this.setViewMode(args),
-			open_hotkeys: () => this.showHotkeys(),
+			open_hotkeys: () => this.showHelp(),
 			copy_last_response: () => this.copyLastAssistantMessage(),
 			clear_transcript: () => this.clearTranscript(),
 			open_login: () => this.showLoginFlow(),
@@ -2498,7 +2499,7 @@ export class MycliShellRuntime {
 		this.footerContainer.addChild(new Spacer(1));
 		this.footerContainer.addChild(new FooterComponent(this.state.footer, {
 			turnRunning: this.isTurnRunning(),
-			hasQueuedInput: this.state.footer.hasPendingInput === true,
+			hasQueuedInput: this.hasQueuedInput(),
 		}));
 	}
 
@@ -2512,7 +2513,7 @@ export class MycliShellRuntime {
 			this.showCommandPalette();
 			return;
 		}
-		if (isSlashCommandSubmission(input)) {
+		if (isSlashCommandSubmission(input, this.commandNames())) {
 			this.editor.addToHistory(input);
 			this.editor.setText("");
 			try {
@@ -2635,7 +2636,6 @@ export class MycliShellRuntime {
 			return;
 		}
 		if (this.editor.getText().length > 0) {
-			this.editor.setText("");
 			return;
 		}
 		this.restoreEditor();
@@ -2704,14 +2704,30 @@ export class MycliShellRuntime {
 		return ["waiting approval", "waiting clarification"].includes(liveState);
 	}
 
+	private hasQueuedInput(): boolean {
+		const pending = this.state.pendingInput;
+		return this.state.footer.hasPendingInput === true
+			|| Boolean(
+				pending
+				&& (pending.pendingSteers.length > 0
+					|| pending.rejectedSteers.length > 0
+					|| pending.followUps.length > 0),
+			);
+	}
+
 	private commands(): MycliShellCommandSpec[] {
 		return this.options.commands ?? [];
+	}
+
+	private commandNames(): string[] {
+		return this.options.commandNames ?? this.commands().map((command) => command.name);
 	}
 
 	private refreshAutocompleteProvider(): void {
 		const slashCommands: SlashCommand[] = this.commands().map((command) => ({
 			name: command.name.replace(/^\//, ""),
 			description: command.description,
+			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
 		}));
 		this.editor.setAutocompleteProvider(
 			new CombinedAutocompleteProvider(slashCommands, this.autocompleteBasePath()),
@@ -2732,13 +2748,6 @@ export class MycliShellRuntime {
 			return;
 		}
 		await this.options.onSubmit?.(command);
-	}
-
-	private async cycleCollaborationMode(): Promise<void> {
-		const currentMode = this.state.footer.collaborationMode ?? "default";
-		const nextMode = currentMode === "plan" ? "default" : "plan";
-		this.addSystemNotice(`Mode ${nextMode}`);
-		await this.submitCommand(`/mode ${nextMode}`);
 	}
 
 	private toggleToolDetails(): void {
@@ -2883,18 +2892,6 @@ export class MycliShellRuntime {
 		};
 	}
 
-	private showHotkeys(): void {
-		this.addSystemNotice(
-			[
-				"Hotkeys",
-				"ctrl+p commands · ? help · ctrl+t transcript",
-				"enter send/steer · esc interrupt",
-				"ctrl+l model · ctrl+o tools · ctrl+x permissions",
-				"ctrl+c clear/exit · tab follow-up · alt+up/shift+left edit follow-up",
-			].join("\n"),
-		);
-	}
-
 	private copyLastAssistantMessage(): void {
 		const message = [...this.state.messages].reverse().find((candidate) => candidate.role === "assistant" && candidate.text.trim());
 		if (!message) {
@@ -2903,22 +2900,6 @@ export class MycliShellRuntime {
 		}
 		const copied = copyText(message.text);
 		this.addSystemNotice(copied ? "Copied last assistant message." : "Clipboard unavailable. Last assistant message is still visible above.");
-	}
-
-	private startNewLocalSession(): void {
-		this.setState({
-			...this.state,
-			messages: [],
-			tools: [],
-			bash: [],
-			transcript: [],
-			pendingNotice: undefined,
-			footer: {
-				...this.state.footer,
-				sessionName: `session_${Date.now().toString(36)}`,
-				liveState: "New session",
-			},
-		});
 	}
 
 	private addSystemNotice(text: string): void {

@@ -264,6 +264,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
+	await waitFor(() => event(messages, "extension.updated"), 8_000);
 	await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" });
 	send(backend, "turn", "turn.submit", {
 		message: "Run the M7 extension chain.",

@@ -2791,18 +2791,25 @@ test("gateway steering retries a turn mismatch with stable user identity", () =>
 	assert.doesNotMatch(source, /send\("turn\.follow_up"/);
 });
 
-test("gateway interruption fences the active turn id and retries one lifecycle race", () => {
+test("gateway interruption recovers a missing active turn id and retries one lifecycle race", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const interruptBody = source.match(
 		/async function interruptTurn\([\s\S]*?\n\}/,
 	)?.[0] ?? "";
 
 	assert.match(interruptBody, /let expectedTurnId = runtimeState\.activeTurnId/);
+	assert.match(interruptBody, /if \(!expectedTurnId\) \{/);
+	assert.match(interruptBody, /send\("status\.inspect", \{\}, \{ recordErrors: false \}\)/);
+	assert.match(interruptBody, /backendTurnBusy = status\.turn_running === true/);
+	assert.match(interruptBody, /if \(!backendTurnBusy \|\| !expectedTurnId\) \{/);
+	assert.match(interruptBody, /clearOptimisticInterrupt\(\);\s*return false/);
 	assert.match(interruptBody, /turn_id: expectedTurnId/);
 	assert.match(interruptBody, /attempt < 2/);
 	assert.match(interruptBody, /error\.code === "turn_id_mismatch"/);
 	assert.match(interruptBody, /error\.data\.actual_turn_id/);
 	assert.match(interruptBody, /expectedTurnId = actualTurnId/);
+	assert.doesNotMatch(interruptBody, /!expectedTurnId && backendTurnBusy/);
+	assert.doesNotMatch(interruptBody, /\.\.\.\(expectedTurnId \?/);
 });
 
 test("runtime adapter syncs typed backend message queues", () => {

@@ -93,6 +93,7 @@ function stdioConfig(pidFile: string, timeoutMs: number): McpServerConfig {
 		env: { MCP_PID_FILE: pidFile },
 		headers: {},
 		enabled: true,
+		supportsParallelToolCalls: false,
 		timeoutMs,
 	};
 }

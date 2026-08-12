@@ -1,0 +1,3 @@
+export const TRANSCRIPT_HEADER_INDENT = 0;
+export const TRANSCRIPT_BRANCH_INDENT = 2;
+export const TRANSCRIPT_DETAIL_INDENT = 4;

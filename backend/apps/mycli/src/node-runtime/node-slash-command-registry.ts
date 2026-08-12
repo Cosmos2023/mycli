@@ -158,8 +158,7 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		presentation: "none",
 		visible: false,
 	}),
-	spec("new", "/new", "Start a fresh local transcript", {
-		tuiPolicy: tuiPolicy("start_new_session"),
+	spec("new", "/new", "Start a new session", {
 		surfaces: TUI_SURFACE,
 		presentation: "none",
 		availableDuringTurn: false,
@@ -211,13 +210,16 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		presentation: "overlay",
 		visible: false,
 	}),
-	spec("tasks", "/tasks", "Inspect or stop background agent tasks", {
-		argumentHint: "[agents|kill-agents]",
+	spec("agents", "/agents", "Inspect or stop background agents", {
+		argumentHint: "[child-session-id|kill <child-session-id>|kill-all]",
+		aliases: ["/tasks", "/jobs"],
 		argumentPolicy: "optional",
-		tuiPolicy: hybridPolicy("open_tasks"),
+		tuiPolicy: hybridPolicy("open_agents"),
 	}),
 	spec("ps", "/ps", "List background terminals", {
+		argumentHint: "[stop-all]",
 		aliases: ["/tasks bashes", "/bashes", "/jobs bashes"],
+		argumentPolicy: "optional",
 	}),
 	spec("stop", "/stop", "Stop all background terminals", {
 		presentation: "none",
@@ -279,7 +281,7 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		visible: false,
 	}),
 	spec("help", "/help", "Open command help", {
-		tuiPolicy: tuiPolicy("open_command_palette"),
+		tuiPolicy: tuiPolicy("open_help"),
 		presentation: "none",
 	}),
 	spec("quit", "/quit", "Exit mycli", {
@@ -305,12 +307,13 @@ const PREFIXED_ALIASES: readonly PrefixedAlias[] = Object.freeze([
 	{ prefix: "/toolsets", commandId: "tools", argsPrefix: "sets" },
 	{ prefix: "/extensions", commandId: "tools", argsPrefix: "extensions" },
 	{ prefix: "/plugin", commandId: "tools", argsPrefix: "plugins" },
-	{ prefix: "/jobs", commandId: "tasks" },
-	{ prefix: "/jobs subagents", commandId: "tasks", argsPrefix: "agents" },
-	{ prefix: "/jobs kill-subagents", commandId: "tasks", argsPrefix: "kill-agents" },
-	{ prefix: "/subagents", commandId: "tasks", argsPrefix: "agents" },
-	{ prefix: "/agents runs", commandId: "tasks", argsPrefix: "agents" },
-	{ prefix: "/agents kill", commandId: "tasks", argsPrefix: "kill-agents" },
+	{ prefix: "/tasks agents", commandId: "agents", argsPrefix: "agents" },
+	{ prefix: "/tasks kill-agents", commandId: "agents", argsPrefix: "kill-all" },
+	{ prefix: "/jobs subagents", commandId: "agents", argsPrefix: "agents" },
+	{ prefix: "/jobs kill-subagents", commandId: "agents", argsPrefix: "kill-all" },
+	{ prefix: "/subagents", commandId: "agents", argsPrefix: "agents" },
+	{ prefix: "/agents runs", commandId: "agents", argsPrefix: "agents" },
+	{ prefix: "/agents kill", commandId: "agents", argsPrefix: "kill" },
 	{ prefix: "/trace-jsonl", commandId: "trace", argsPrefix: "export" },
 	{ prefix: "/logs", commandId: "trace", argsPrefix: "logs" },
 ]);

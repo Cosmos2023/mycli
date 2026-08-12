@@ -7,6 +7,7 @@ import { keyHint } from "./keybinding-hints.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import { shortPreview } from "./tool-display.ts";
+import { TRANSCRIPT_BRANCH_INDENT, TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
 
 export type CollapsedToolGroupItem =
 	| { kind: "tool"; tool: MycliShellTool }
@@ -47,12 +48,16 @@ export class CollapsedToolGroupComponent extends Container {
 			return;
 		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(this.headerText(), 1, 0));
+		this.addChild(new Text(this.headerText(), TRANSCRIPT_HEADER_INDENT, 0));
 		const target = this.firstTarget();
 		if (target) {
-			this.addChild(new Text(theme.fg("muted", `⎿ ${target}`), 3, 0));
+			this.addChild(new Text(theme.fg("muted", `⎿ ${target}`), TRANSCRIPT_BRANCH_INDENT, 0));
 		}
-		this.addChild(new Text(theme.fg("muted", `... ${keyHint("app.tools.expand", "to expand")}`), 3, 0));
+		this.addChild(new Text(
+			theme.fg("muted", `... ${keyHint("app.tools.expand", "to expand")}`),
+			TRANSCRIPT_BRANCH_INDENT,
+			0,
+		));
 	}
 
 	private expanded(): boolean {
@@ -64,7 +69,7 @@ export class CollapsedToolGroupComponent extends Container {
 		const color = status === "error" ? "error" : "accent";
 		const action = status === "running" ? presentSummary(this.group.items) : pastSummary(this.group.items);
 		const suffix = statusSuffix(status);
-		return `${theme.fg(color, theme.bold("⏺"))} ${theme.fg(color, theme.bold(`${action}${suffix}`))}`;
+		return `${theme.fg(color, theme.bold("•"))} ${theme.fg(color, theme.bold(`${action}${suffix}`))}`;
 	}
 
 	private firstTarget(): string | undefined {

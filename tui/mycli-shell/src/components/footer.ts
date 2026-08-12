@@ -120,7 +120,7 @@ export class FooterComponent implements Component {
 	private actionStatusRow(width: number): string {
 		const actions = this.actionSegments();
 		const statuses = this.statusSegments();
-		const dropOrder = ["edit", "task", "reasoning", "model", "context", "follow-up"];
+		const dropOrder = ["edit", "commands", "task", "reasoning", "model", "context", "follow-up"];
 
 		for (const id of dropOrder) {
 			if (this.segmentsFit(actions, statuses, width)) break;
@@ -136,10 +136,12 @@ export class FooterComponent implements Component {
 	private actionSegments(): FooterSegment[] {
 		return [
 			{ id: "enter", text: rawKeyHint("enter", this.interaction.turnRunning ? "steer" : "send"), optional: false },
-			{ id: "follow-up", text: rawKeyHint("tab", "follow-up"), optional: true },
 			...(this.interaction.turnRunning
-				? [{ id: "interrupt", text: rawKeyHint("ctrl+c", "interrupt"), optional: false }]
-				: []),
+				? [
+					{ id: "follow-up", text: rawKeyHint("tab", "follow-up"), optional: true },
+					{ id: "interrupt", text: rawKeyHint("esc", "interrupt"), optional: false },
+				]
+				: [{ id: "commands", text: rawKeyHint("ctrl+p", "commands"), optional: true }]),
 			...(this.interaction.hasQueuedInput
 				? [{ id: "edit", text: rawKeyHint("alt+up", "edit follow-up"), optional: true }]
 				: []),

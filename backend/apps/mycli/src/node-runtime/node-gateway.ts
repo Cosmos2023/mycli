@@ -86,6 +86,7 @@ export interface NodeGatewayRuntime {
 		readonly permission: PermissionProfile;
 	}): void;
 	configureRuntimeContext?(input: { readonly collaborationMode: string }): void;
+	refreshExtensions?(): void;
 	reserve(submission: TurnSubmission): TurnReservation;
 	resolveApproval(
 		input: ResolveApprovalInput,
@@ -223,13 +224,15 @@ export interface NodeGatewayIntegrationCommands {
 }
 
 export interface NodeGatewayIntegrations {
-	readonly toolManifest?: JsonObject;
-	readonly diagnostics?: readonly JsonObject[];
+	readonly toolManifest?: JsonObject | (() => JsonObject | undefined);
+	readonly diagnostics?: readonly JsonObject[] | (() => readonly JsonObject[]);
+	toolNames?(): readonly string[];
 	listResources?(): readonly JsonObject[] | Promise<readonly JsonObject[]>;
 	readonly commands?: NodeGatewayIntegrationCommands;
 	subscribeSubagents?(
 		listener: (subagent: Readonly<Record<string, unknown>>) => void,
 	): () => void;
+	subscribeExtensions?(listener: (version: number) => void): () => void;
 }
 
 export interface NodeGateway {
@@ -290,6 +293,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#unsubscribeQueue: (() => void) | null = null;
 	#unsubscribeShell: (() => void) | null = null;
 	#unsubscribeSubagents: (() => void) | null = null;
+	#unsubscribeExtensions: (() => void) | null = null;
 	#unsubscribeAgentInteractiveRequests: (() => void) | null = null;
 	readonly #interactiveRequests: QueuedInteractiveRequest[] = [];
 	#trustState: WorkspaceTrustState;
@@ -321,6 +325,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#bindQueue();
 		this.#bindShellLifecycle();
 		this.#bindSubagents();
+		this.#bindExtensions();
 		this.#bindAgentInteractiveRequests();
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionId() });
 	}
@@ -333,8 +338,10 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#unsubscribeQueue = null;
 			this.#unsubscribeShell?.();
 			this.#unsubscribeShell = null;
-			this.#unsubscribeSubagents?.();
-			this.#unsubscribeSubagents = null;
+				this.#unsubscribeSubagents?.();
+				this.#unsubscribeSubagents = null;
+				this.#unsubscribeExtensions?.();
+				this.#unsubscribeExtensions = null;
 			this.#unsubscribeAgentInteractiveRequests?.();
 			this.#unsubscribeAgentInteractiveRequests = null;
 			this.#interactiveRequests.length = 0;
@@ -444,8 +451,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#updatePermissions(request.params);
 			case "extension.manifest":
 				return extensionManifest(
-					this.#options.toolNames ?? [],
-					this.#options.integrations?.toolManifest,
+					this.#options.integrations?.toolNames?.() ?? this.#options.toolNames ?? [],
+					integrationToolManifest(this.#options.integrations),
 				);
 			case "resource.list":
 				return this.#resourceList();
@@ -475,6 +482,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#traceExport(request.params);
 			case "session.list":
 				return this.#sessionList();
+			case "session.new":
+				return this.#sessionNew();
 			case "session.resume":
 				return this.#sessionResume(request.params);
 			case "session.tree":
@@ -634,10 +643,16 @@ class InProcessNodeGateway implements NodeGateway {
 		const integrationCommands = (this.#options.integrations?.commands?.list() ?? [])
 			.filter((command) =>
 				typeof command.name === "string" && !builtInNames.has(command.name.trim()));
-		return {
-			commands: [
+		const commands = [
 				...commandManifest(surface),
 				...integrationCommands,
+			];
+		return {
+			commands,
+			routing_names: [
+				...builtinCommandNames(),
+				...integrationCommands.flatMap((command) =>
+					typeof command.name === "string" ? [command.name.trim()] : []),
 			],
 		};
 	}
@@ -778,6 +793,10 @@ class InProcessNodeGateway implements NodeGateway {
 			};
 		}
 		if (invocation.commandId === "ps") {
+			if (invocation.args === "stop-all") {
+				const stopped = await this.#shellStopAll();
+				return shellStopCommandResult(stopped);
+			}
 			const context = this.#sessionContext();
 			const processes = this.#activeShells().map((snapshot) =>
 				shellSnapshotPayload(snapshot, context));
@@ -793,6 +812,12 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #coreCommand(invocation: ReturnType<typeof resolveSlashCommand>): Promise<JsonObject | undefined> {
+		if (invocation.commandId === "new") {
+			const created = await this.#sessionNew();
+			return noticeCommandResult(invocation, "New session", `session=${created.session_id}`, {
+				extra: { mutated_session: true, session_id: created.session_id },
+			});
+		}
 		if (invocation.commandId === "status") {
 			const status = this.#status();
 			const contextWindow = isObject(status.context_window) ? status.context_window : {};
@@ -851,7 +876,7 @@ class InProcessNodeGateway implements NodeGateway {
 			]);
 		}
 		if (invocation.commandId === "tools") {
-			const manifest = this.#options.integrations?.toolManifest;
+			const manifest = integrationToolManifest(this.#options.integrations);
 			const tools = isObject(manifest) && Array.isArray(manifest.tools) ? manifest.tools : [];
 			const toolRows = tools.flatMap((value, index) => {
 				if (!isObject(value)) return [];
@@ -878,7 +903,7 @@ class InProcessNodeGateway implements NodeGateway {
 				}));
 			}
 			if (invocation.args === "hooks") {
-				const diagnostics = this.#options.integrations?.diagnostics ?? [];
+				const diagnostics = integrationDiagnostics(this.#options.integrations);
 				const hooks = diagnostics.filter((value) =>
 					String(value.source ?? value.type ?? value.kind ?? "").toLocaleLowerCase().includes("hook"));
 				return listCommandResult(invocation, "Hooks", hooks.map((value, index) => ({
@@ -971,13 +996,18 @@ class InProcessNodeGateway implements NodeGateway {
 					detail: typeof value.detail === "string" ? value.detail : undefined,
 				}] : []));
 		}
-		if (invocation.commandId === "tasks") {
+		if (invocation.commandId === "agents") {
 			const tasks = this.#options.backgroundTaskCommands;
-			if (invocation.args.startsWith("agents kill ")) {
+			const args = invocation.args === "agents"
+				? ""
+				: invocation.args.startsWith("agents ")
+					? invocation.args.slice("agents ".length).trim()
+					: invocation.args;
+			if (args.startsWith("kill ")) {
 				if (!tasks) throw new GatewayFailure("method_not_found", "Background task controls are unavailable.");
-				const childSessionId = invocation.args.slice("agents kill ".length).trim();
+				const childSessionId = args.slice("kill ".length).trim();
 				if (!childSessionId) {
-					return errorCommandResult(invocation, "Child session ID is required", "/tasks agents kill <child-session-id>");
+					return errorCommandResult(invocation, "Child session ID is required", "/agents kill <child-session-id>");
 				}
 				const interrupted = await tasks.interrupt(this.#sessionId(), childSessionId);
 				return noticeCommandResult(
@@ -987,15 +1017,15 @@ class InProcessNodeGateway implements NodeGateway {
 					{ extra: { interrupted } },
 				);
 			}
-			if (invocation.args === "kill-agents") {
+			if (args === "kill-all" || args === "kill-agents") {
 				if (!tasks) throw new GatewayFailure("method_not_found", "Background task controls are unavailable.");
 				const interrupted = await tasks.interruptAll(this.#sessionId());
 				return noticeCommandResult(invocation, "Background agents", `interrupted=${interrupted}`, {
 					extra: { interrupted },
 				});
 			}
-			if (invocation.args === "agents" || invocation.args.startsWith("agents ")) {
-				const requested = invocation.args.slice("agents".length).trim();
+			if (!args || !args.includes(" ")) {
+				const requested = args;
 				const records = tasks?.list(this.#sessionId()) ?? [];
 				const selected = requested
 					? records.filter((record) => record.childSessionId === requested)
@@ -1010,20 +1040,10 @@ class InProcessNodeGateway implements NodeGateway {
 						: undefined,
 				})));
 			}
-			if (!invocation.args) {
-				const context = this.#sessionContext();
-				return listCommandResult(invocation, "Background terminals", this.#activeShells().map((shell) => ({
-					key: shell.shellId,
-					label: `shell ${shell.shellId}`,
-					values: [shell.commandPreview ?? "[redacted command]"],
-					status: shell.processState,
-					detail: `session ${context.sessionId}`,
-				})));
-			}
 			return errorCommandResult(
 				invocation,
-				"Unsupported tasks action",
-				"/tasks [agents [child-session-id]|kill-agents]",
+				"Unsupported agents action",
+				"/agents [child-session-id|kill <child-session-id>|kill-all]",
 			);
 		}
 		if (invocation.commandId === "memory") {
@@ -1418,8 +1438,7 @@ class InProcessNodeGateway implements NodeGateway {
 			};
 		}
 		const activeSessionId = coordinator.snapshot().sessionId;
-		return {
-			sessions: coordinator.listSessions({ limit: 20 }).map((item) => ({
+		const sessions: JsonObject[] = coordinator.listSessions({ limit: 20 }).map((item) => ({
 				id: item.sessionId,
 				workspace: item.workspaceRoot,
 				cwd: item.workspaceRoot,
@@ -1429,13 +1448,39 @@ class InProcessNodeGateway implements NodeGateway {
 				modified: item.lastActiveAt,
 				message_count: item.messageCount,
 				current: item.sessionId === activeSessionId,
-			})),
+			}));
+		if (!sessions.some((item) => item.id === activeSessionId)) {
+			sessions.unshift({
+				id: activeSessionId,
+				workspace: coordinator.snapshot().workspaceRoot,
+				cwd: coordinator.snapshot().workspaceRoot,
+				current: true,
+			});
+		}
+		return {
+			sessions,
 		};
+	}
+
+	async #sessionNew(): Promise<JsonObject> {
+		const coordinator = this.#options.sessionCoordinator;
+		if (!coordinator) throw new GatewayFailure("method_not_found", "New session creation is unavailable.");
+		this.#assertSessionTransitionAvailable(coordinator);
+		const snapshot = await coordinator.startNew();
+		await this.#activateSession(snapshot);
+		return this.#sessionTransitionPayload(snapshot);
 	}
 
 	async #sessionResume(params: JsonObject): Promise<JsonObject> {
 		const coordinator = this.#options.sessionCoordinator;
 		if (!coordinator) throw new GatewayFailure("method_not_found", "Session resume is unavailable.");
+		this.#assertSessionTransitionAvailable(coordinator);
+		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
+		await this.#activateSession(snapshot);
+		return this.#sessionTransitionPayload(snapshot);
+	}
+
+	#assertSessionTransitionAvailable(coordinator: SessionCoordinator<NodeGatewayRuntime>): void {
 		if (this.#activeTurn !== null) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
@@ -1446,7 +1491,9 @@ class InProcessNodeGateway implements NodeGateway {
 			|| this.#interactiveRequests.length > 0) {
 			throw new GatewayFailure("turn_in_progress", "A pending agent request owns the terminal.");
 		}
-		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
+	}
+
+	async #activateSession(snapshot: ReturnType<SessionCoordinator<NodeGatewayRuntime>["snapshot"]>): Promise<void> {
 		this.#trustState = await this.#loadWorkspaceTrust(snapshot.workspaceRoot);
 		this.#configureExecutionPolicy(snapshot.binding);
 		this.#bindQueue();
@@ -1464,6 +1511,11 @@ class InProcessNodeGateway implements NodeGateway {
 				clarificationRequest(snapshot.pendingClarification, snapshot.generation),
 			);
 		}
+	}
+
+	#sessionTransitionPayload(
+		snapshot: ReturnType<SessionCoordinator<NodeGatewayRuntime>["snapshot"]>,
+	): JsonObject {
 		return {
 			session_id: snapshot.sessionId,
 			generation: snapshot.generation,
@@ -2681,6 +2733,13 @@ class InProcessNodeGateway implements NodeGateway {
 		}) ?? null;
 	}
 
+	#bindExtensions(): void {
+		this.#unsubscribeExtensions = this.#options.integrations?.subscribeExtensions?.((version) => {
+			if (this.#closed) return;
+			this.#emitDirect("extension.updated", { version });
+		}) ?? null;
+	}
+
 	#bindAgentInteractiveRequests(): void {
 		this.#unsubscribeAgentInteractiveRequests = this.#options.agentInteractiveRequests?.subscribe(
 			(notification) => {
@@ -3423,6 +3482,22 @@ function extensionManifest(toolNames: readonly string[], toolManifest?: JsonObje
 		},
 		...(toolManifest ? { tool_manifest: toolManifest } : {}),
 	};
+}
+
+function integrationToolManifest(
+	integrations: NodeGatewayIntegrations | undefined,
+): JsonObject | undefined {
+	return typeof integrations?.toolManifest === "function"
+		? integrations.toolManifest()
+		: integrations?.toolManifest;
+}
+
+function integrationDiagnostics(
+	integrations: NodeGatewayIntegrations | undefined,
+): readonly JsonObject[] {
+	return typeof integrations?.diagnostics === "function"
+		? integrations.diagnostics()
+		: integrations?.diagnostics ?? [];
 }
 
 function boundedResource(value: JsonObject): JsonObject {

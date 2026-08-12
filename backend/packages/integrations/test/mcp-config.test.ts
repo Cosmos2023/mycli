@@ -24,6 +24,7 @@ test("loads all MCP root aliases with repository precedence and environment reso
 		'transport = "stdio"',
 		`command = ${JSON.stringify(process.execPath)}`,
 		'args = ["repo.mjs"]',
+		"supports_parallel_tool_calls = true",
 		"timeout_seconds = 3",
 		"",
 		"[mcp_servers.legacy]",
@@ -45,6 +46,8 @@ test("loads all MCP root aliases with repository precedence and environment reso
 	]);
 	assert.equal(discovery.get("local")?.command, process.execPath);
 	assert.deepEqual(discovery.get("local")?.args, ["repo.mjs"]);
+	assert.equal(discovery.get("local")?.supportsParallelToolCalls, true);
+	assert.equal(discovery.get("remote")?.supportsParallelToolCalls, false);
 	assert.equal(discovery.get("local")?.timeoutMs, 3_000);
 	assert.equal(discovery.get("legacy")?.enabled, false);
 	assert.deepEqual(discovery.get("remote")?.env, { ACCESS_TOKEN: "private-token" });
@@ -79,6 +82,11 @@ test("isolates malformed MCP rows and emits only bounded non-sensitive diagnosti
 		'command = "node"',
 		"timeout_seconds = 0",
 		"",
+		"[servers.bad_parallel]",
+		'transport = "stdio"',
+		'command = "node"',
+		'supports_parallel_tool_calls = "yes"',
+		"",
 		"[servers.missing_env]",
 		'transport = "stdio"',
 		'command = "node"',
@@ -107,6 +115,7 @@ test("isolates malformed MCP rows and emits only bounded non-sensitive diagnosti
 		[
 			"duplicate_server",
 			"invalid_args",
+			"invalid_parallel_tool_calls",
 			"invalid_server_id",
 			"invalid_timeout",
 			"invalid_url",

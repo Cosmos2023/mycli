@@ -49,7 +49,11 @@ import type {
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
-import { clientActionFromResult, slashCommandsFromResult } from "./adapters/slash-commands.ts";
+import {
+	clientActionFromResult,
+	slashCommandNamesFromResult,
+	slashCommandsFromResult,
+} from "./adapters/slash-commands.ts";
 import { commandResultFromGateway } from "./adapters/command-results.ts";
 import { loadFullShellOutput } from "./adapters/shell-output.ts";
 import type { MycliShellCommandSpec } from "./model.ts";
@@ -88,6 +92,7 @@ const client = new GatewayClient({
 let runtimeState: RuntimeShellState = initialRuntimeState();
 let sessions: MycliShellSession[] = [];
 let slashCommands: MycliShellCommandSpec[] = [];
+let slashCommandNames: string[] = [];
 let runtime: MycliShellRuntime | null = null;
 let nativeRuntime: NativeChatRuntime | null = null;
 let ttyStreams: TtyStreams | null = null;
@@ -99,6 +104,7 @@ let localDispatchEligible = false;
 let localDispatchScheduled = false;
 let interruptRequested = false;
 let resubmitPendingSteersAfterInterrupt = false;
+let extensionRefreshScheduled = false;
 const runtimeStateProjector = new RuntimeStateProjector();
 
 function currentShellState(transcriptUpdate: "unchanged" | "tail" | "replace" = "unchanged"): MycliShellState {
@@ -138,6 +144,10 @@ function refreshRuntime(): void {
 
 function handleGatewayEvent(event: GatewayEvent): void {
 	if (!eventDeduper.shouldConsume(event)) {
+		return;
+	}
+	if (event.method === "extension.updated") {
+		scheduleExtensionRefresh();
 		return;
 	}
 	if (
@@ -189,6 +199,18 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	} else if (shouldResolveInterrupt && !backendTurnBusy) {
 		scheduleNextLocalInput();
 	}
+}
+
+function scheduleExtensionRefresh(): void {
+	if (extensionRefreshScheduled) return;
+	extensionRefreshScheduled = true;
+	queueMicrotask(() => {
+		extensionRefreshScheduled = false;
+		void Promise.all([
+			send("extension.manifest", {}, { recordErrors: false }).then(verifyGatewayManifest),
+			loadResources(),
+		]).catch(() => undefined);
+	});
 }
 
 function runtimeEventType(event: GatewayEvent): string {
@@ -255,6 +277,7 @@ async function bootstrap(): Promise<void> {
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
 	const commandPayload = await send("command.list", { surface: commandSurface });
 	slashCommands = slashCommandsFromResult(commandPayload);
+	slashCommandNames = slashCommandNamesFromResult(commandPayload);
 	await loadSettings();
 	await loadSessions();
 	bootstrapped = true;
@@ -558,24 +581,40 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 			}),
 		);
 	}
-	let expectedTurnId = runtimeState.activeTurnId;
-	if (!expectedTurnId && backendTurnBusy) {
-		const status = await send("status.inspect", {}, { recordErrors: false });
-		expectedTurnId = stringField(status.turn_id) ?? null;
-		setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", status));
-	}
+	const clearOptimisticInterrupt = (): void => {
+		interruptRequested = false;
+		resubmitPendingSteersAfterInterrupt = false;
+		if (runtimeState.liveStatus?.state === "interrupting") {
+			setRuntimeState({
+				...runtimeState,
+				liveStatus: backendTurnBusy
+					? { state: "running", kind: "running", text: "Running" }
+					: null,
+			});
+		}
+	};
 	try {
+		let expectedTurnId = runtimeState.activeTurnId;
+		if (!expectedTurnId) {
+			const status = await send("status.inspect", {}, { recordErrors: false });
+			backendTurnBusy = status.turn_running === true;
+			setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", status));
+			expectedTurnId = stringField(status.turn_id) ?? null;
+			if (!backendTurnBusy || !expectedTurnId) {
+				clearOptimisticInterrupt();
+				return false;
+			}
+		}
 		for (let attempt = 0; attempt < 2; attempt += 1) {
 			try {
 				const result = await send("turn.interrupt", {
 					rollback_user_input: options.rollbackUserInput,
-					...(expectedTurnId ? { turn_id: expectedTurnId } : {}),
+					turn_id: expectedTurnId,
 				}, { recordErrors: false });
 				if (result.accepted !== true || result.requested !== true) {
-					interruptRequested = false;
-					resubmitPendingSteersAfterInterrupt = false;
 					backendTurnBusy = result.turn_running === true;
 					setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", result));
+					clearOptimisticInterrupt();
 					return false;
 				}
 				return true;
@@ -596,8 +635,7 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 		}
 		return false;
 	} catch (error) {
-		interruptRequested = false;
-		resubmitPendingSteersAfterInterrupt = false;
+		clearOptimisticInterrupt();
 		throw error;
 	}
 }
@@ -794,6 +832,8 @@ async function main(): Promise<void> {
 			onCommandSubmit: runCommand,
 			onExit: () => shutdown(0),
 			onInterruptExit: () => interruptExit(130),
+			commands: slashCommands,
+			commandNames: slashCommandNames,
 		});
 		nativeRuntime.start();
 		return;
@@ -844,6 +884,7 @@ async function main(): Promise<void> {
 		onResourceLoad: loadResources,
 		onTranscriptOutputLoad: (request) => loadFullShellOutput(send, request),
 		commands: slashCommands,
+		commandNames: slashCommandNames,
 	});
 	runtime.start();
 }

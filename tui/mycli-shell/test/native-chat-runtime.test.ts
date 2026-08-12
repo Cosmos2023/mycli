@@ -126,6 +126,7 @@ test("native chat runtime delegates every slash command including quit", async (
 		initialState: stateWithMessages(0),
 		streams: { input, output },
 		columns: () => 100,
+		commandNames: ["/help", "/status usage", "/quit"],
 		onCommandSubmit: (command) => {
 			commands.push(command);
 		},
@@ -151,6 +152,7 @@ test("native chat runtime submits an absolute path as ordinary user text", async
 		initialState: stateWithMessages(0),
 		streams: { input, output },
 		columns: () => 100,
+		commandNames: ["/help", "/status", "/quit"],
 		onSubmit: (text) => {
 			submitted.push(text);
 		},

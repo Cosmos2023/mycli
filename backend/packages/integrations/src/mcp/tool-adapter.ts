@@ -25,6 +25,7 @@ const METADATA_LIMIT = 12_000;
 
 class McpTool implements ToolAdapter {
 	readonly definition: ToolDefinition;
+	readonly supportsParallelToolCalls: boolean;
 	readonly #client: McpClientContract;
 	readonly #descriptor: McpToolDescriptor;
 
@@ -36,6 +37,7 @@ class McpTool implements ToolAdapter {
 		this.#client = client;
 		this.#descriptor = descriptor;
 		this.definition = definition;
+		this.supportsParallelToolCalls = descriptor.supportsParallelToolCalls;
 	}
 
 	async execute(

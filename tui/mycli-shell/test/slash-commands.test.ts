@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
 	clientActionFromResult,
+	isSlashCommandSubmission,
+	slashCommandNamesFromResult,
 	slashCommandsFromResult,
 } from "../src/adapters/slash-commands.ts";
 
@@ -47,6 +49,19 @@ test("command manifest parser preserves gateway order and rejects malformed rows
 			availableDuringTurn: true,
 		},
 	]);
+});
+
+test("routing names distinguish registered commands from root absolute paths", () => {
+	const names = slashCommandNamesFromResult({
+		routing_names: ["/status", "/status usage", "/settings", "/status", "invalid"],
+	});
+
+	assert.deepEqual(names, ["/status", "/status usage", "/settings"]);
+	assert.equal(isSlashCommandSubmission("/status usage", names), true);
+	assert.equal(isSlashCommandSubmission("/settings", names), true);
+	assert.equal(isSlashCommandSubmission("/tmp", names), false);
+	assert.equal(isSlashCommandSubmission("/etc hosts", names), false);
+	assert.equal(isSlashCommandSubmission("/does-not-exist", names), false);
 });
 
 

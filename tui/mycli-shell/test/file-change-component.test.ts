@@ -212,10 +212,10 @@ test("syntax highlighting skips diffs above two thousand lines", () => {
 test("file change component renders a single edited file without a tool card", () => {
 	const output = stripAnsi(renderFileChange(editedFileChange()).join("\n"));
 
-	assert.match(output, /• Edited src\/app\.py \(\+1 -1\)/);
+	assert.match(output, /^• Edited src\/app\.py \(\+1 -1\)/m);
 	assert.match(output, /24 - old/);
 	assert.match(output, /24 \+ new/);
-	assert.doesNotMatch(output, /⏺ Write|⏺ Edit|⎿ Wrote/);
+	assert.doesNotMatch(output, /• Write(?:\s|$)|• Edit(?:\s|$)|⎿ Wrote/m);
 });
 
 

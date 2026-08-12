@@ -2,6 +2,11 @@
 export type GatewayEventNotification =
   | {
       jsonrpc: "2.0";
+      method: "extension.updated";
+      params: Extension;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "approval.request";
       params: Approval;
     }
@@ -220,6 +225,9 @@ export type ShellOutput = Shell & {
 export type ShellRemoved = Shell;
 export type ShellStarted = Shell;
 
+export interface Extension {
+  version: number;
+}
 export interface Approval {
   action?: string;
   client_turn_id?: string;

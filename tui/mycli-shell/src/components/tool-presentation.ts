@@ -13,7 +13,7 @@ export type ToolPresentation = {
 
 const DEFAULT_PRESENTATION: ToolPresentation = {
 	label: "Tool",
-	icon: "⏺",
+	icon: "•",
 	accent: "accent",
 	previewLines: 12,
 	writePreviewLines: 10,

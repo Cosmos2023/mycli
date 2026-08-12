@@ -1,7 +1,7 @@
 import { createInterface, type Interface } from "node:readline";
 import { isSlashCommandSubmission } from "./adapters/slash-commands.ts";
 import { renderMycliShell, renderTranscriptBlocks } from "./shell-app.ts";
-import type { MycliShellState } from "./model.ts";
+import type { MycliShellCommandSpec, MycliShellState } from "./model.ts";
 
 type NativeChatStreams = {
 	input: NodeJS.ReadableStream;
@@ -17,6 +17,8 @@ export type NativeChatRuntimeOptions = {
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
 	onInterruptExit?: () => void | Promise<void>;
+	commands?: MycliShellCommandSpec[];
+	commandNames?: string[];
 	columns?: () => number;
 };
 
@@ -147,7 +149,10 @@ export class NativeChatRuntime {
 			this.readline?.prompt();
 			return;
 		}
-		if (isSlashCommandSubmission(text)) {
+		const commandNames = this.options.commandNames
+			?? this.options.commands?.map((command) => command.name)
+			?? [];
+		if (isSlashCommandSubmission(text, commandNames)) {
 			await this.options.onCommandSubmit?.(text);
 		} else if (this.state.pendingClarification) {
 			await this.options.onClarificationRespond?.(

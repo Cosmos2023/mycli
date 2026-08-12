@@ -43,9 +43,18 @@ export function slashCommandsFromResult(result: Record<string, unknown>): MycliS
 		.filter((command): command is MycliShellCommandSpec => command !== null);
 }
 
-export function isSlashCommandSubmission(text: string): boolean {
-	const firstToken = text.trim().split(/\s+/, 1)[0] ?? "";
-	return firstToken.startsWith("/") && !firstToken.slice(1).includes("/");
+export function slashCommandNamesFromResult(result: Record<string, unknown>): string[] {
+	if (!Array.isArray(result.routing_names)) return [];
+	return [...new Set(result.routing_names.flatMap((value) => {
+		if (typeof value !== "string") return [];
+		const name = value.trim();
+		return name.startsWith("/") ? [name] : [];
+	}))];
+}
+
+export function isSlashCommandSubmission(text: string, commandNames: readonly string[]): boolean {
+	const normalized = text.trim();
+	return commandNames.some((name) => normalized === name || normalized.startsWith(`${name} `));
 }
 
 export function clientActionFromResult(result: Record<string, unknown>): MycliShellClientAction | null {

@@ -66,6 +66,9 @@ export interface SessionGenerationContext {
 export interface SessionCoordinatorOptions<Binding> {
 	readonly initial: PreparedSession<Binding>;
 	readonly prepare: (sessionId: string) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
+	readonly create?: (
+		current: ActiveSessionSnapshot<Binding>,
+	) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
 	readonly listSessions: (query?: SessionListQuery) => readonly SessionOverview[];
 	readonly loadSessionLineage: (sessionId: string) => readonly SessionLineageNode[];
 	readonly failpoint?: RuntimeFailpointHook;
@@ -85,6 +88,7 @@ export class SessionTransitionError extends Error {
 
 export class SessionCoordinator<Binding> {
 	readonly #prepareSession: SessionCoordinatorOptions<Binding>["prepare"];
+	readonly #createSession: SessionCoordinatorOptions<Binding>["create"];
 	readonly #listSessions: SessionCoordinatorOptions<Binding>["listSessions"];
 	readonly #loadSessionLineage: SessionCoordinatorOptions<Binding>["loadSessionLineage"];
 	readonly #failpoint: RuntimeFailpointHook;
@@ -95,6 +99,7 @@ export class SessionCoordinator<Binding> {
 	constructor(options: SessionCoordinatorOptions<Binding>) {
 		this.#snapshot = activeSnapshot(options.initial, 1);
 		this.#prepareSession = options.prepare;
+		this.#createSession = options.create;
 		this.#listSessions = options.listSessions;
 		this.#loadSessionLineage = options.loadSessionLineage;
 		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
@@ -204,6 +209,37 @@ export class SessionCoordinator<Binding> {
 				throw new SessionTransitionError(
 					"session_state_invalid",
 					"prepared session identity does not match the requested session",
+				);
+			}
+			if (this.#snapshot.generation === Number.MAX_SAFE_INTEGER) {
+				throw new SessionTransitionError("session_state_invalid", "session generation is exhausted");
+			}
+			this.#snapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			this.#failpoint("session_after_commit");
+			return this.#snapshot;
+		} finally {
+			this.#transitioning = false;
+		}
+	}
+
+	async startNew(): Promise<ActiveSessionSnapshot<Binding>> {
+		if (!this.#createSession) {
+			throw new SessionTransitionError("session_state_invalid", "new session creation is unavailable");
+		}
+		if (this.#executing || this.#transitioning) {
+			throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
+		}
+		this.#transitioning = true;
+		try {
+			const prepared = freezePrepared(await this.#createSession(this.#snapshot));
+			this.#failpoint("session_after_prepare");
+			if (this.#executing) {
+				throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
+			}
+			if (prepared.sessionId === this.#snapshot.sessionId) {
+				throw new SessionTransitionError(
+					"session_state_invalid",
+					"new session identity matches the active session",
 				);
 			}
 			if (this.#snapshot.generation === Number.MAX_SAFE_INTEGER) {

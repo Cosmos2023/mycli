@@ -21,6 +21,7 @@ test("initializes one MCP protocol client and normalizes tools and resources", a
 					required: ["path"],
 					additionalProperties: false,
 				},
+				annotations: { readOnlyHint: true },
 			}] };
 		},
 		callTool: async (name, argumentsValue) => {
@@ -46,6 +47,7 @@ test("initializes one MCP protocol client and normalizes tools and resources", a
 	await Promise.all([client.close(), client.close()]);
 
 	assert.equal(tools[0]?.name, "read_file");
+	assert.equal(tools[0]?.supportsParallelToolCalls, true);
 	assert.deepEqual(tools[0]?.inputSchema.required, ["path"]);
 	assert.equal(result.content[0]?.type, "text");
 	assert.equal(resources[0]?.uri, "file:///README.md");
@@ -58,6 +60,30 @@ test("initializes one MCP protocol client and normalizes tools and resources", a
 		"readResource:file:///README.md",
 		"close",
 	]);
+});
+
+test("MCP parallel capability fails closed unless a read-only hint or server opt-in is true", async () => {
+	const rawTools = [
+		{ name: "missing", inputSchema: { type: "object" } },
+		{ name: "false_hint", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } },
+		{ name: "invalid_hint", inputSchema: { type: "object" }, annotations: { readOnlyHint: "true" } },
+		{ name: "read_only", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+	];
+	const protocol = (): McpProtocolClient => ({
+		connect: async () => undefined,
+		listTools: async () => ({ tools: rawTools }),
+		callTool: async () => ({ content: [], isError: false }),
+		listResources: async () => ({ resources: [] }),
+		readResource: async () => ({ contents: [] }),
+		close: async () => undefined,
+	});
+	const hinted = await new McpClient({ config: config(), protocol: protocol() })
+		.listTools(new AbortController().signal);
+	const optedIn = await new McpClient({ config: config(true), protocol: protocol() })
+		.listTools(new AbortController().signal);
+
+	assert.deepEqual(hinted.map((tool) => tool.supportsParallelToolCalls), [false, false, false, true]);
+	assert.deepEqual(optedIn.map((tool) => tool.supportsParallelToolCalls), [true, true, true, true]);
 });
 
 test("propagates abort and closes an interrupted stdio client", async () => {
@@ -122,7 +148,7 @@ test("preserves AbortError when interrupted stdio cleanup also fails", async () 
 	assert.equal(closeCount, 1);
 });
 
-function config(): McpServerConfig {
+function config(supportsParallelToolCalls = false): McpServerConfig {
 	return {
 		id: "files",
 		transport: "stdio",
@@ -131,6 +157,7 @@ function config(): McpServerConfig {
 		env: {},
 		headers: {},
 		enabled: true,
+		supportsParallelToolCalls,
 		timeoutMs: 1_000,
 	};
 }

@@ -83,7 +83,8 @@ export class ApprovalPolicy {
 	readonly #autoApproveMedium: boolean;
 	readonly #shellKind: ShellCommandKind;
 	readonly #platform: NodeJS.Platform;
-	readonly #extensionTools: ReadonlyMap<string, ExtensionToolApprovalPolicy>;
+	#extensionTools: ReadonlyMap<string, ExtensionToolApprovalPolicy>;
+	readonly #turnExtensionTools = new Map<string, ReadonlyMap<string, ExtensionToolApprovalPolicy>>();
 	#permissionProfile: PermissionProfile;
 	#execPolicyRules: readonly ExecPolicyRule[];
 	#sessionRules: readonly ExecPolicyRule[] = Object.freeze([]);
@@ -103,6 +104,20 @@ export class ApprovalPolicy {
 
 	configurePermissionProfile(profile: PermissionProfile): void {
 		this.#permissionProfile = profile;
+	}
+
+	beginTurn(turnId: string): void {
+		if (!this.#turnExtensionTools.has(turnId)) {
+			this.#turnExtensionTools.set(turnId, this.#extensionTools);
+		}
+	}
+
+	finishTurn(turnId: string): void {
+		this.#turnExtensionTools.delete(turnId);
+	}
+
+	replaceExtensionTools(tools: readonly ExtensionToolApprovalPolicy[]): void {
+		this.#extensionTools = extensionToolPolicies(tools);
 	}
 
 	replaceExecPolicyRules(rules: readonly ExecPolicyRule[]): void {
@@ -144,6 +159,7 @@ export class ApprovalPolicy {
 	evaluate(
 		call: CanonicalToolCall,
 		executionPolicy?: ExecutionPolicy,
+		turnId?: string,
 	): ApprovalPolicyDecision {
 		const fullAccess = executionPolicy === undefined
 			? this.#permissionProfile === "full-access"
@@ -153,7 +169,7 @@ export class ApprovalPolicy {
 		if (!argumentsValue) {
 			return deny(call, "Tool call is not valid for the active policy.");
 		}
-		if (!manifest) return this.#evaluateExtension(call, fullAccess);
+		if (!manifest) return this.#evaluateExtension(call, fullAccess, turnId);
 		if (call.name === "Shell" || call.name === "Bash") {
 			return this.#evaluateShell(call, argumentsValue, manifest.approval_policy, fullAccess);
 		}
@@ -184,8 +200,13 @@ export class ApprovalPolicy {
 		});
 	}
 
-	#evaluateExtension(call: CanonicalToolCall, fullAccess: boolean): ApprovalPolicyDecision {
-		const policy = this.#extensionTools.get(call.name);
+	#evaluateExtension(
+		call: CanonicalToolCall,
+		fullAccess: boolean,
+		turnId?: string,
+	): ApprovalPolicyDecision {
+		const policies = turnId ? this.#turnExtensionTools.get(turnId) ?? this.#extensionTools : this.#extensionTools;
+		const policy = policies.get(call.name);
 		if (!policy) return deny(call, "Tool call is not valid for the active policy.");
 		if (policy.approvalPolicy === "auto_allow" || fullAccess) {
 			return allow(call, `${call.name} local integration`);

@@ -15,7 +15,6 @@ import type {
 export interface ToolRouterOptions {
 	readonly adapters: readonly ToolAdapter[];
 	readonly exposure: readonly ToolDefinition[];
-	readonly parallelToolNames?: ReadonlySet<string>;
 }
 
 interface Route {
@@ -24,33 +23,56 @@ interface Route {
 }
 
 export class ToolRouter implements ToolRouterContract {
-	readonly #routes = new Map<string, Route>();
-	readonly #parallelToolNames: ReadonlySet<string>;
+	readonly #ajv = new Ajv2020({ allErrors: true, strict: true });
+	readonly #staticRoutes: ReadonlyMap<string, Route>;
+	#routes: ReadonlyMap<string, Route>;
+	#dynamicRoutes: ReadonlyMap<string, Route> = new Map();
+	readonly #turnRoutes = new Map<string, ReadonlyMap<string, Route>>();
+	readonly #turnDynamicRoutes = new Map<string, ReadonlyMap<string, Route>>();
 
 	constructor(options: ToolRouterOptions) {
-		this.#parallelToolNames = new Set(options.parallelToolNames ?? []);
-		const ajv = new Ajv2020({ allErrors: true, strict: true });
-		for (const adapter of options.adapters) {
-			const name = adapter.definition.name;
-			if (this.#routes.has(name)) {
-				throw new Error(`duplicate_tool: ${boundedName(name)}`);
-			}
-			this.#routes.set(name, {
-				adapter,
-				validate: ajv.compile(adapter.definition.inputSchema),
-			});
-		}
+		this.#staticRoutes = this.#compileRoutes(options.adapters);
+		this.#routes = this.#staticRoutes;
 	}
 
-	supportsParallelToolCalls(call: CanonicalToolCall): boolean {
-		return this.#routes.has(call.name) && this.#parallelToolNames.has(call.name);
+	beginTurn(turnId: string): void {
+		if (this.#turnRoutes.has(turnId)) return;
+		const routes = this.#routes;
+		this.#turnRoutes.set(turnId, routes);
+		this.#turnDynamicRoutes.set(turnId, this.#dynamicRoutes);
+		for (const adapter of uniqueAdapters(routes)) adapter.beginTurn?.(turnId);
+	}
+
+	finishTurn(turnId: string): void {
+		const routes = this.#turnRoutes.get(turnId);
+		if (!routes) return;
+		this.#turnRoutes.delete(turnId);
+		this.#turnDynamicRoutes.delete(turnId);
+		for (const adapter of uniqueAdapters(routes)) adapter.finishTurn?.(turnId);
+	}
+
+	replaceDynamicAdapters(adapters: readonly ToolAdapter[]): void {
+		const dynamic = this.#compileRoutes(adapters, this.#staticRoutes);
+		this.#dynamicRoutes = dynamic;
+		this.#routes = new Map([...this.#staticRoutes, ...dynamic]);
+	}
+
+	dynamicDefinitions(turnId?: string): readonly ToolDefinition[] {
+		const routes = turnId
+			? this.#turnDynamicRoutes.get(turnId) ?? this.#dynamicRoutes
+			: this.#dynamicRoutes;
+		return Object.freeze([...routes.values()].map((route) => route.adapter.definition));
+	}
+
+	supportsParallelToolCalls(call: CanonicalToolCall, turnId?: string): boolean {
+		return this.#routesFor(turnId).get(call.name)?.adapter.supportsParallelToolCalls === true;
 	}
 
 	async execute(
 		call: CanonicalToolCall,
 		options: ToolExecutionOptions,
 	): Promise<ToolExecutionResult> {
-		const route = this.#routes.get(call.name);
+		const route = this.#routesFor(options.ownerTurnId).get(call.name);
 		if (!route) {
 			return failure(call, "unknown_tool", "Tool is not available.");
 		}
@@ -76,6 +98,32 @@ export class ToolRouter implements ToolRouterContract {
 			toolName: call.name,
 		};
 	}
+
+	#routesFor(turnId: string | undefined): ReadonlyMap<string, Route> {
+		return turnId ? this.#turnRoutes.get(turnId) ?? this.#routes : this.#routes;
+	}
+
+	#compileRoutes(
+		adapters: readonly ToolAdapter[],
+		reserved: ReadonlyMap<string, Route> = new Map(),
+	): ReadonlyMap<string, Route> {
+		const routes = new Map<string, Route>();
+		for (const adapter of adapters) {
+			const name = adapter.definition.name;
+			if (reserved.has(name) || routes.has(name)) {
+				throw new Error(`duplicate_tool: ${boundedName(name)}`);
+			}
+			routes.set(name, {
+				adapter,
+				validate: this.#ajv.compile(adapter.definition.inputSchema),
+			});
+		}
+		return routes;
+	}
+}
+
+function uniqueAdapters(routes: ReadonlyMap<string, Route>): readonly ToolAdapter[] {
+	return [...new Set([...routes.values()].map((route) => route.adapter))];
 }
 
 function parseArguments(value: string): Readonly<Record<string, unknown>> | undefined {

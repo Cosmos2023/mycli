@@ -127,10 +127,37 @@ test("allows a validated read-only replay and exposes catalog lineage", async ()
 	);
 });
 
+test("starts a fresh prepared session in a new generation", async () => {
+	const coordinator = fixture({ createSessionId: "fresh" });
+	const previous = coordinator.snapshot();
+
+	const result = await coordinator.startNew();
+
+	assert.equal(result.sessionId, "fresh");
+	assert.equal(result.generation, previous.generation + 1);
+	assert.equal(result.workspaceRoot, previous.workspaceRoot);
+	assert.deepEqual(result.transcript, [transcriptItem("fresh")]);
+	assert.strictEqual(coordinator.snapshot(), result);
+});
+
+test("rejects new session creation while the active generation is executing", async () => {
+	const coordinator = fixture({ createSessionId: "fresh" });
+	const context = coordinator.context();
+	assert.equal(coordinator.markExecuting(context, true), true);
+
+	await assert.rejects(
+		() => coordinator.startNew(),
+		(error: unknown) => error instanceof SessionTransitionError
+			&& error.code === "turn_in_progress",
+	);
+	assert.equal(coordinator.snapshot().sessionId, "source");
+});
+
 function fixture(options: {
 	readonly targetFailure?: string;
 	readonly targetReadOnly?: boolean;
 	readonly prepared?: string[];
+	readonly createSessionId?: string;
 } = {}): SessionCoordinator<Binding> {
 	const overviews: readonly SessionOverview[] = [
 		overview("target", "2026-08-04T00:00:01.000Z"),
@@ -147,6 +174,9 @@ function fixture(options: {
 			}
 			return preparedSession(sessionId, options.targetReadOnly ?? false);
 		},
+		...(options.createSessionId ? {
+			create: (current) => preparedSession(options.createSessionId!, current.readOnly),
+		} : {}),
 		listSessions: () => overviews,
 		loadSessionLineage: (sessionId) => sessionId === "target"
 			? [

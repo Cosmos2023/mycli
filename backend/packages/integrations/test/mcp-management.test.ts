@@ -35,6 +35,7 @@ test("returns provider-free MCP management rows and closes discovery clients", a
 				name: "read_file",
 				description: "",
 				inputSchema: { type: "object", properties: {} },
+				supportsParallelToolCalls: false,
 			}],
 			callTool: async () => ({ content: [], isError: false }),
 			listResources: async () => [],

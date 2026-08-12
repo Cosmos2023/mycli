@@ -59,6 +59,7 @@ test("validates and freezes integration registrations", () => {
 				description: "Read a remote file.",
 				inputSchema: { type: "object", properties: {}, additionalProperties: false },
 			},
+			supportsParallelToolCalls: true,
 			execute: async () => ({
 				success: true,
 				modelOutput: "ok",
@@ -72,10 +73,15 @@ test("validates and freezes integration registrations", () => {
 	assert.equal(Object.isFrozen(registration), true);
 	assert.equal(Object.isFrozen(registration.originMetadata), true);
 	assert.equal(registration.modelVisible, true);
-	assert.equal(defineIntegrationRegistration({
+	assert.equal(registration.supportsParallelToolCalls, true);
+	const callerControlledRegistration = {
 		...registration,
+		supportsParallelToolCalls: false,
 		modelVisible: false,
-	}).modelVisible, false);
+	};
+	const redefined = defineIntegrationRegistration(callerControlledRegistration);
+	assert.equal(redefined.modelVisible, false);
+	assert.equal(redefined.supportsParallelToolCalls, true);
 	assert.throws(
 		() => defineIntegrationRegistration({
 			...registration,

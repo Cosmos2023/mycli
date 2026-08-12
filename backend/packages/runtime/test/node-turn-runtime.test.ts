@@ -1185,6 +1185,36 @@ test("executes safe tool phases concurrently and preserves provider result order
 	]);
 });
 
+test("isolates an ordinary failed result inside a successful parallel phase", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new ControlledToolRouter(trace, new Set(["Read"]));
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-read-failed", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "tool_call", callId: "call-read-success", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		],
+		[
+			{ type: "text_delta", text: "Handled both results." },
+			{ type: "completed", responseId: "resp-final" },
+		],
+	]);
+	const running = createRuntime({ store, provider, toolRouter: router })
+		.submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	await router.waitForStarted(2);
+	router.release("call-read-success");
+	router.releaseFailure("call-read-failed");
+	const result = await running;
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(store.toolResults.map((entry) => [entry.result.callId, entry.result.success]), [
+		["call-read-failed", false],
+		["call-read-success", true],
+	]);
+});
+
 test("interrupts every active call in a parallel tool phase exactly once", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -1248,8 +1278,9 @@ test("tracks parallel calls by their full ids when bounded event ids collide", a
 
 	assert.equal(interrupted.status, "interrupted");
 	assert.equal(emitted.filter((event) => event.type === "tool_execution_failed").length, 2);
-	controller.abort();
-	await running;
+	const settled = await running;
+	assert.equal(settled.status, "interrupted");
+	assert.equal(controller.signal.aborted, false);
 	assert.equal(emitted.filter((event) => event.type === "tool_execution_failed").length, 2);
 });
 
@@ -3490,6 +3521,23 @@ class ControlledToolRouter implements ToolRouterContract {
 		pending.resolve({
 			...successResult(callId),
 			toolName: pending.call.name,
+		});
+	}
+
+	releaseFailure(callId: string): void {
+		const pending = this.#pending.get(callId);
+		assert.ok(pending, `tool ${callId} must be pending`);
+		this.#pending.delete(callId);
+		pending.signal.removeEventListener("abort", pending.onAbort);
+		this.#trace.push(`tool:finish:${callId}`);
+		pending.resolve({
+			callId,
+			toolName: pending.call.name,
+			success: false,
+			modelOutput: "Read failed\nError kind: read_failed",
+			summary: "Read failed",
+			errorKind: "read_failed",
+			metadata: Object.freeze({}),
 		});
 	}
 

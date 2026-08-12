@@ -459,8 +459,8 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Read/);
 	assert.match(output, /Edit/);
 	assert.match(output, /Patch did not apply/);
-	assert.match(output, /^ • Ran pytest -q/m);
-	assert.doesNotMatch(output, /^  • Ran pytest -q/m);
+	assert.match(output, /^• Ran pytest -q/m);
+	assert.doesNotMatch(output, /^ • Ran pytest -q/m);
 	assert.match(output, /└ exit 1/);
 	assert.match(output, /Waiting for approval/);
 	assert.match(output, /^~\/Desktop\/mycli/m);
@@ -876,7 +876,7 @@ test("mycli shell renders transcript blocks in event order", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 	const userIndex = output.indexOf("read word.txt");
-	const toolIndex = output.indexOf("⏺ Read");
+	const toolIndex = output.indexOf("• Read");
 	const assistantIndex = output.lastIndexOf("done");
 
 	assert.ok(userIndex >= 0, output);
@@ -902,7 +902,7 @@ test("mycli shell renders tools marked hidden by legacy session state", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 
-	assert.match(output, /⏺ Read/);
+	assert.match(output, /• Read/);
 	assert.match(output, /legacy\.txt/);
 });
 
@@ -944,11 +944,11 @@ test("mycli shell collapses consecutive context tool calls like Claude Code", ()
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 
-	assert.match(output, /⏺ Read 1 file, searched 1 pattern, matched 1 glob/);
+	assert.match(output, /^• Read 1 file, searched 1 pattern, matched 1 glob/m);
 	assert.match(output, /⎿ src\/app\.py/);
 	assert.match(output, /ctrl\+o to expand/);
-	assert.doesNotMatch(output, /⏺ Grep/);
-	assert.doesNotMatch(output, /⏺ Glob/);
+	assert.doesNotMatch(output, /• Grep/);
+	assert.doesNotMatch(output, /• Glob/);
 });
 
 test("mycli shell keeps consecutive Shell commands in Codex-style command cells", () => {
@@ -1007,8 +1007,8 @@ test("mycli shell applies context tool grouping to legacy tool arrays", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 
-	assert.match(output, /⏺ Read 1 file, searched 1 pattern/);
-	assert.doesNotMatch(output, /⏺ Grep/);
+	assert.match(output, /• Read 1 file, searched 1 pattern/);
+	assert.doesNotMatch(output, /• Grep/);
 });
 
 test("mycli shell labels running and failed collapsed context groups", () => {
@@ -1024,7 +1024,7 @@ test("mycli shell labels running and failed collapsed context groups", () => {
 		pendingNotice: undefined,
 	};
 	const runningOutput = stripAnsi(renderMycliShell(runningState, 100).join("\n"));
-	assert.match(runningOutput, /⏺ Reading 1 file, searching 1 pattern · Running/);
+	assert.match(runningOutput, /• Reading 1 file, searching 1 pattern · Running/);
 
 	const failedState: MycliShellState = {
 		...runningState,
@@ -1034,7 +1034,7 @@ test("mycli shell labels running and failed collapsed context groups", () => {
 		],
 	};
 	const failedOutput = stripAnsi(renderMycliShell(failedState, 100).join("\n"));
-	assert.match(failedOutput, /⏺ Read 1 file, searched 1 pattern · Failed/);
+	assert.match(failedOutput, /• Read 1 file, searched 1 pattern · Failed/);
 });
 
 test("mycli shell does not collapse context tools across mutating tools", () => {
@@ -1053,9 +1053,9 @@ test("mycli shell does not collapse context tools across mutating tools", () => 
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 
-	assert.match(output, /⏺ Read/);
-	assert.match(output, /⏺ Write/);
-	assert.match(output, /⏺ Grep/);
+	assert.match(output, /^• Read/m);
+	assert.match(output, /^• Write/m);
+	assert.match(output, /^• Grep/m);
 	assert.doesNotMatch(output, /Read 1 file, searched 1 pattern/);
 });
 
@@ -1085,7 +1085,7 @@ test("file changes flush context groups and remain in transcript order", () => {
 
 	assert.ok(before >= 0 && changed > before && after > changed, output);
 	assert.equal((output.match(/Read 2 files/g) ?? []).length, 2);
-	assert.doesNotMatch(output, /fallback|⏺ Write|⏺ Edit/);
+	assert.doesNotMatch(output, /fallback|• Write(?:\s|$)|• Edit(?:\s|$)/m);
 });
 
 test("mycli shell expands collapsed context tool groups into individual tools", () => {
@@ -1103,8 +1103,8 @@ test("mycli shell expands collapsed context tool groups into individual tools", 
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 
-	assert.match(output, /⏺ Read/);
-	assert.match(output, /⏺ Grep/);
+	assert.match(output, /• Read/);
+	assert.match(output, /• Grep/);
 	assert.doesNotMatch(output, /Read 1 file, searched 1 pattern/);
 });
 
@@ -1137,7 +1137,8 @@ test("footer renders two quiet idle rows", () => {
 
 	assert.equal(lines.length, 2);
 	assert.match(output, /enter send/);
-	assert.match(output, /tab follow-up/);
+	assert.match(output, /ctrl\+p commands/);
+	assert.doesNotMatch(output, /tab follow-up/);
 	assert.match(output, /11\.3% ctx/);
 	assert.match(output, /deepseek-v4-flash/);
 	assert.doesNotMatch(output, /deepseek\/chat_completions|trust trusted|mode default|Idle|64k|R53k/);
@@ -1155,7 +1156,7 @@ test("footer exposes only actions and exceptional state that currently apply", (
 
 	assert.match(output, /enter steer/);
 	assert.match(output, /tab follow-up/);
-	assert.match(output, /ctrl\+c interrupt/);
+	assert.match(output, /esc interrupt/);
 	assert.match(output, /option\+up edit follow-up/);
 	assert.match(output, /trust\?/);
 	assert.match(output, /plan/);
@@ -1594,7 +1595,7 @@ test("skill rendering shows the concrete skill name without repeating it", () =>
 
 	const output = stripAnsi(rendered.render(80).join("\n"));
 
-	assert.match(output, /⏺ Skill repository-analysis/);
+	assert.match(output, /^• Skill repository-analysis/m);
 	assert.match(output, /⎿ Activated/);
 	assert.doesNotMatch(output, /⎿ repository-analysis/);
 });
@@ -1629,8 +1630,8 @@ test("tool rendering previews write content like coding-agent", () => {
 	});
 
 	let output = stripAnsi(collapsed.render(100).join("\n"));
-	assert.match(output, /⏺ Write/);
-	assert.doesNotMatch(output, /⏺ Write\(docs\/notes\.md\)/);
+	assert.match(output, /• Write/);
+	assert.doesNotMatch(output, /• Write\(docs\/notes\.md\)/);
 	assert.match(output, /⎿ docs\/notes\.md · Wrote 13 lines/);
 	assert.match(output, /doc line 1/);
 	assert.match(output, /doc line 10/);
@@ -1723,7 +1724,7 @@ test("very long single-line Shell command shows two continuation rows then an om
 	const output = stripAnsi(rendered.render(40).join("\n"));
 
 	assert.equal(output.match(/│/gu)?.length, 3);
-	assert.match(output, /… \+4 lines/);
+	assert.match(output, /… \+3 lines/);
 });
 
 test("wrapped Shell command stays width safe with CJK and long tokens", () => {
@@ -2204,7 +2205,7 @@ test("mycli shell runtime updates footer actions with turn and queue state", () 
 	});
 	output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
 	assert.match(output, /enter steer/);
-	assert.match(output, /ctrl\+c interrupt/);
+	assert.match(output, /esc interrupt/);
 	assert.doesNotMatch(output, /edit follow-up/);
 
 	runtime.setState({
@@ -2271,7 +2272,10 @@ test("running Write becomes one file change component and updates in place", () 
 	const completedComponent = runtime.chatContainer.children[0];
 	assert.ok(completedComponent instanceof FileChangeComponent);
 	assert.equal(runtime.chatContainer.children.length, 1);
-	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(100).join("\n")), /fallback|⏺ Write/);
+	assert.doesNotMatch(
+		stripAnsi(runtime.chatContainer.render(100).join("\n")),
+		/fallback|• Write(?:\s|$)/m,
+	);
 
 	runtime.setState({
 		...runtime.getState(),
@@ -2895,6 +2899,60 @@ test("mycli shell command palette replaces editor like coding-agent selector", a
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 });
 
+test("command palette preserves draft, searches metadata, and blocks unavailable commands", async () => {
+	const terminal = new TestTerminal();
+	const submitted: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		commands: [
+			slashCommand("usage", "/usage", "Show token usage"),
+			{
+				...slashCommand("agents", "/agents", "Inspect background workers"),
+				argumentHint: "[child-session-id]",
+				argumentPolicy: "optional",
+				availableDuringTurn: false,
+			},
+		],
+		onCommandSubmit: (command) => { submitted.push(command); },
+	});
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("keep this draft");
+
+	terminal.input?.("\x10");
+	await setTimeout(25);
+	terminal.input?.("workers");
+	await setTimeout(25);
+
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /\/agents \[child-session-id\]/);
+	assert.match(output, /unavailable while running/);
+	assert.doesNotMatch(output, /\/usage/);
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.deepEqual(submitted, []);
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.equal(runtime.editor.getText(), "keep this draft");
+});
+
+test("escape preserves an idle editor draft", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal });
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("draft remains");
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "draft remains");
+});
+
 test("mycli shell approval selector replaces editor and submits selected choice", async () => {
 	const terminal = new TestTerminal();
 	const approvals: Array<[string, string, string | undefined, number | undefined]> = [];
@@ -3331,12 +3389,15 @@ test("mycli shell palette uses only gateway command metadata", () => {
 	assert.doesNotMatch(output, /\/settings/);
 });
 
-test("mycli shell sends every registered or legacy slash input to gateway", async () => {
+test("mycli shell routes only registry-known slash input to gateway", async () => {
 	const submitted: string[] = [];
+	const messages: string[] = [];
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal: new TestTerminal(),
 		commands: [slashCommand("settings", "/settings", "Open settings")],
+		commandNames: ["/settings", "/status usage"],
+		onSubmit: (message) => { messages.push(message); },
 		onCommandSubmit: async (command) => {
 			submitted.push(command);
 		},
@@ -3346,7 +3407,8 @@ test("mycli shell sends every registered or legacy slash input to gateway", asyn
 	await runtime.editor.onSubmit?.("/status usage");
 	await runtime.editor.onSubmit?.("/does-not-exist");
 
-	assert.deepEqual(submitted, ["/settings", "/status usage", "/does-not-exist"]);
+	assert.deepEqual(submitted, ["/settings", "/status usage"]);
+	assert.deepEqual(messages, ["/does-not-exist"]);
 });
 
 test("mycli shell executes stable local client actions", async () => {
@@ -3526,14 +3588,6 @@ test("mycli shell dispatches every remaining local client action", async () => {
 	await paletteRuntime.handleClientAction("open_command_palette", "");
 	assert.notEqual(paletteRuntime.editorContainer.children[0], paletteRuntime.editor);
 	assert.match(stripAnsi(paletteRuntime.ui.render(100).join("\n")), /\/usage/);
-
-	const sessionRuntime = new MycliShellRuntime({
-		initialState: sampleState(),
-		terminal: new TestTerminal(),
-	});
-	await sessionRuntime.handleClientAction("start_new_session", "");
-	assert.equal(sessionRuntime.getState().messages.length, 0);
-	assert.equal(sessionRuntime.getState().footer.liveState, "New session");
 
 	const detailsRuntime = new MycliShellRuntime({
 		initialState: sampleState(),
@@ -5124,6 +5178,7 @@ test("mycli shell forwards backend slash commands instead of chatting them", asy
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal: new TestTerminal(),
+		commandNames: ["/changes", "/tasks agents", "/trace"],
 		onSubmit: (text) => {
 			submitted.push(text);
 		},
@@ -5138,11 +5193,14 @@ test("mycli shell forwards backend slash commands instead of chatting them", asy
 	await runtime.editor.onSubmit?.("/memroy");
 	await runtime.editor.onSubmit?.("/Users/cosmos/Desktop/demo 帮我在这个文件夹下新建一个文件夹，叫做game");
 
-	assert.deepEqual(submitted, ["/Users/cosmos/Desktop/demo 帮我在这个文件夹下新建一个文件夹，叫做game"]);
-	assert.deepEqual(commands, ["/changes", "/tasks agents child-session", "/trace export", "/memroy"]);
+	assert.deepEqual(submitted, [
+		"/memroy",
+		"/Users/cosmos/Desktop/demo 帮我在这个文件夹下新建一个文件夹，叫做game",
+	]);
+	assert.deepEqual(commands, ["/changes", "/tasks agents child-session", "/trace export"]);
 });
 
-test("mycli shell cycles collaboration mode with shift tab", async () => {
+test("mycli shell leaves shift tab available to the editor instead of changing mode", async () => {
 	const commands: string[] = [];
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
@@ -5157,14 +5215,7 @@ test("mycli shell cycles collaboration mode with shift tab", async () => {
 	await setTimeout(25);
 	terminal.input?.("\x1b[Z");
 	await setTimeout(25);
-	runtime.setState({
-		...runtime.getState(),
-		footer: { ...runtime.getState().footer, collaborationMode: "plan" },
-	});
-	terminal.input?.("\x1b[Z");
-	await setTimeout(25);
-
-	assert.deepEqual(commands, ["/mode plan", "/mode default"]);
+	assert.deepEqual(commands, []);
 });
 
 test("mycli shell opens permissions with ctrl x", async () => {
@@ -5262,7 +5313,7 @@ test("mycli shell local copy and hotkeys commands render useful feedback", async
 
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Copied last assistant message|Clipboard unavailable/);
-	assert.match(output, /Hotkeys/);
+	assert.match(output, /Help/);
 	assert.match(output, /ctrl\+l/);
 	assert.match(output, /ctrl\+o/);
 });

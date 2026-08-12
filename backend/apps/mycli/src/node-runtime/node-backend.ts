@@ -42,6 +42,7 @@ import {
 import {
 	skillInvocationArtifactFromMetadata,
 	serializeSubagentTaskNotification,
+	type IntegrationRegistration,
 	type ChildRuntimeCreateInput,
 	type ChildRuntimeEvent,
 	type ChildRuntimeFactory,
@@ -120,12 +121,16 @@ import {
 	ToolRouter,
 	ToolSearchTool,
 	KillShellTool,
+	type BuiltInToolManifest,
+	type CombinedToolManifest,
+	type ToolAdapter,
 	UpdatePlanTool,
 	WebFetchTool,
 	loadLocalImages,
 	WriteStdinTool,
 	WriteTool,
 } from "@mycli/tools";
+import type { ToolDefinition } from "@mycli/core";
 import {
 	createRuntimeIntegrationComposition,
 	partitionRuntimeToolRegistrations,
@@ -483,7 +488,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 			agentActivity,
 				agentMailbox,
-				resolveAgentRouteContext,
+			resolveAgentRouteContext,
+			onStartupStage: (stage) => { startupProfiler.mark(stage); },
 			});
 		publishSubagentProjection = (value) => { integrationComposition.publishSubagent(value); };
 		startupProfiler.mark("integrations_ready");
@@ -503,32 +509,34 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		}
 		throw error;
 	}
-	const partitionedRegistrations = partitionRuntimeToolRegistrations(
-		integrationComposition.registrations,
-	);
+	const partitionedRegistrations = partitionRuntimeToolRegistrations(integrationComposition.registrations);
 	const directExtensionRegistrations = partitionedRegistrations.direct;
-	const deferredRegistrations = partitionedRegistrations.deferred;
+	const staticDeferredRegistrations = partitionedRegistrations.deferred.filter(
+		(registration) => registration.source !== "mcp",
+	);
 	const directExtensionDefinitions = Object.freeze(directExtensionRegistrations
 		.map((registration) => registration.definition));
-	const deferredDefinitions = Object.freeze(deferredRegistrations
-		.filter((registration) => registration.modelVisible !== false)
-		.map((registration) => registration.definition));
-	const allToolExposure = Object.freeze([
-		...planToolExposure(toolManifest, { shell: true }),
-		...directExtensionDefinitions,
-		...deferredDefinitions,
-	]);
-	const mutatingAgentTools = new Set(integrationComposition.manifest.tools.flatMap((tool) => {
-		if (!("effects" in tool)) return [tool.name];
-		return tool.effects.filesystem === "write" || tool.effects.network || tool.effects.process
-			? [tool.name]
-			: [];
-	}));
-	const parallelAgentTools = new Set(toolManifest.tools.flatMap((tool) => (
-		tool.supports_parallel_tool_calls
-			? [tool.name]
-			: []
-	)));
+	const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(
+		integrationComposition.registrations,
+	).deferred;
+	let allToolExposure = runtimeToolExposure(
+		toolManifest,
+		directExtensionDefinitions,
+		currentDeferredRegistrations(),
+	);
+	const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
+	const refreshRuntimeExtensions = (): void => {
+		allToolExposure = runtimeToolExposure(
+			toolManifest,
+			directExtensionDefinitions,
+			currentDeferredRegistrations(),
+		);
+		for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
+		for (const runtime of runtimeBySessionId.values()) runtime.refreshExtensions?.();
+	};
+	const unsubscribeRuntimeExtensions = integrationComposition.subscribeExtensions(() => {
+		refreshRuntimeExtensions();
+	});
 	const contextItemCoordinator = new ContextItemCoordinator({
 		extractArtifact: skillInvocationArtifactFromMetadata,
 	});
@@ -607,40 +615,53 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			return loadExecPolicy;
 		};
-		const shellTool = new ShellTool({
+			const shellTool = new ShellTool({
 			workspaceRoot,
 			manager: shellManager,
 			env: runtimeEnvironment,
 			profile: shellProfile,
 		});
-		const allowedDeferredDefinitions = filterToolDefinitions(
-			deferredDefinitions,
-			runtimeOptions.allowedTools,
-		);
-		const allowedDeferredNames = new Set(allowedDeferredDefinitions.map((tool) => tool.name));
-		const adapters = [
-			new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
+			const allowedDeferredRegistrations = () => {
+				const allowedNames = runtimeOptions.allowedTools
+					? new Set(runtimeOptions.allowedTools)
+					: undefined;
+				return currentDeferredRegistrations().filter(
+					(registration) => !allowedNames || allowedNames.has(registration.definition.name),
+				);
+			};
+			const allowedStaticDeferredDefinitions = filterToolDefinitions(
+				staticDeferredRegistrations.map((registration) => registration.definition),
+				runtimeOptions.allowedTools,
+			);
+			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
+			const staticAdapters = [
+				new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
 			new AskUserQuestionTool(),
 			new UpdatePlanTool(),
 			new WebFetchTool(),
-			new ToolSearchTool(deferredRegistrations
-				.filter((registration) => allowedDeferredNames.has(registration.definition.name))
-				.map((registration) => ({
-					definition: registration.definition,
-					source: registration.source,
-					originMetadata: registration.originMetadata,
-				}))),
+				toolSearch,
 			shellTool,
 			new WriteStdinTool({ manager: shellManager }),
 			new BashTool({ shell: shellTool }),
 			new ShellOutputTool({ manager: shellManager }),
 			new BashOutputTool({ manager: shellManager }),
 			new KillShellTool({ manager: shellManager }),
-			...integrationComposition.registrations.map((registration) => registration.adapter),
-		];
+				...integrationComposition.registrations
+					.filter((registration) => registration.source !== "mcp")
+					.map((registration) => registration.adapter),
+			];
+			const adapterByName = new Map<string, ToolAdapter>(
+				staticAdapters.map((adapter) => [adapter.definition.name, adapter]),
+		);
+		for (const tool of toolManifest.tools) {
+			if ((adapterByName.get(tool.name)?.supportsParallelToolCalls === true)
+				!== tool.supports_parallel_tool_calls) {
+				throw new Error("tool_parallel_capability_mismatch");
+			}
+		}
 		const plannedTools = (
 			capabilities: { readonly shell: boolean },
 		) => filterToolDefinitions(
@@ -650,11 +671,26 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			]),
 			runtimeOptions.allowedTools,
 		);
-		const toolRouter = new ToolRouter({
-			adapters,
-			exposure: plannedTools({ shell: true }),
-			parallelToolNames: parallelAgentTools,
-		});
+			const toolRouter = new ToolRouter({
+				adapters: staticAdapters,
+				exposure: plannedTools({ shell: true }),
+			});
+			const refreshExtensions = (): void => {
+				const deferred = allowedDeferredRegistrations();
+				toolSearch.replaceCandidates(deferredCandidates(deferred));
+				toolRouter.replaceDynamicAdapters(deferred
+					.filter((registration) => registration.source === "mcp")
+					.map((registration) => registration.adapter));
+				approvalPolicy.replaceExtensionTools(integrationComposition.registrations.map(
+					(registration) => ({
+						name: registration.definition.name,
+						approvalPolicy: registration.source === "skill" || registration.source === "subagent"
+							? "auto_allow" as const
+							: "request" as const,
+					}),
+				));
+			};
+			refreshExtensions();
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
 			sessionId,
 			workspaceRoot,
@@ -817,6 +853,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					platform: process.platform,
 					node_version: process.version,
 					provider_protocol: activeConfig.protocol,
+					shell: shellProfile.name,
+					shell_kind: shellProfile.kind,
 				}),
 			}),
 				...(developerInstructions.length > 0 ? { developerInstructions } : {}),
@@ -833,7 +871,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			publishLifecycle,
 			executionPolicyCoordinator,
 			planTools: plannedTools,
-			deferredTools: allowedDeferredDefinitions,
+				deferredTools: (turnId) => Object.freeze([
+					...allowedStaticDeferredDefinitions,
+					...toolRouter.dynamicDefinitions(turnId),
+				]),
 			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
 			toolRouter,
 			hookRunner: integrationComposition.hookRunner,
@@ -844,13 +885,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				...(runtimeOptions.isMutatingTool ? {
 					isMutatingTool: runtimeOptions.isMutatingTool,
 				} : {}),
-				approvalPolicy: {
-				configurePermissionProfile: (profile) => {
+					approvalPolicy: {
+					beginTurn: (turnId) => { approvalPolicy.beginTurn(turnId); },
+					finishTurn: (turnId) => { approvalPolicy.finishTurn(turnId); },
+					configurePermissionProfile: (profile) => {
 					approvalPolicy.configurePermissionProfile(profile);
 				},
-				evaluate: async (call, executionPolicy) => {
-					await ensureExecPolicyLoaded();
-					return approvalPolicy.evaluate(call, executionPolicy);
+					evaluate: async (call, executionPolicy, turnId) => {
+						await ensureExecPolicyLoaded();
+						return approvalPolicy.evaluate(call, executionPolicy, turnId);
 				},
 			},
 			approvalCoordinator,
@@ -894,6 +937,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return parsed.segments[0]!.words;
 			};
 			const binding = Object.assign(runtime, {
+				refreshExtensions,
 				listCommandAllowances: () => approvalPolicy.listSessionAllowances(),
 				addCommandAllowance: (value: string) => {
 					approvalPolicy.allowSession(allowancePattern(value));
@@ -1069,30 +1113,31 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				}
 			},
 		};
-	};
-	try {
-		startupProfiler.mark("session_prepare_started");
-		const prepare = (sessionId: string) => prepareStoredSession({
+		};
+		try {
+			startupProfiler.mark("session_prepare_started");
+			const prepare = (sessionId: string) => prepareStoredSession({
 			sessionId,
 			store,
 			transcriptSnapshots,
 			sessionArtifacts,
 			artifactQueue,
 			createRuntime,
-				fallbackWorkspaceRoot: config.workspaceRoot,
-				repairAgentCompletions,
-			});
+			fallbackWorkspaceRoot: config.workspaceRoot,
+			repairAgentCompletions,
+		});
 		let initial: PreparedSession<NodeGatewayRuntime>;
 		try {
 			initial = await prepare(config.sessionId);
 		} catch (error) {
 			if (!hasCode(error, "session_not_found")) throw error;
-			initial = virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
-		}
-		startupProfiler.mark("session_prepared");
-		const sessionCoordinator = new SessionCoordinator<NodeGatewayRuntime>({
+				initial = virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
+			}
+			startupProfiler.mark("session_prepared");
+			const sessionCoordinator = new SessionCoordinator<NodeGatewayRuntime>({
 			initial,
 			prepare,
+			create: (current) => virtualSession(randomUUID(), current.workspaceRoot, createRuntime),
 			listSessions: (query) => listSessionsWithVirtualInitial(
 				store,
 				query ?? {},
@@ -1105,37 +1150,40 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				}
 				return store.loadSessionLineage(sessionId);
 			},
-		});
+			});
 			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
-				const gatewayIntegrations = integrationGateway(integrationComposition);
-				const activeMemoryStore = () => new MemoryStore({
-				homeDir,
-				workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
-				});
-				const activeFileHistory = () => new FileHistoryStore({
-					homeDir,
-					workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
-				});
-				const gateway = createNodeGateway({
+		const gatewayIntegrations = integrationGateway(
+			integrationComposition,
+			() => allToolExposure.map((tool) => tool.name),
+		);
+		const activeMemoryStore = () => new MemoryStore({
+			homeDir,
+			workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+		});
+		const activeFileHistory = () => new FileHistoryStore({
+			homeDir,
+			workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+		});
+		const gateway = createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
 			provider: config.provider,
 			model: config.model,
 			toolNames: allToolExposure.map((tool) => tool.name),
-				maxPromptTokens: config.maxPromptTokens,
-				runtime: initial.binding,
-				agentInteractiveRequests,
-				loadConversation: (sessionId) => store.loadConversation(sessionId),
-				loadTranscript: (sessionId) => canonicalTranscript(store, sessionId),
-				loadShellOutput: (input) => store.loadShellOutputPage(input),
-				loadTurnRollouts: (sessionId) => store.loadTurnRollouts(sessionId),
-				memoryCommands: {
-					directory: () => activeMemoryStore().directory(),
-					scan: async () => (await activeMemoryStore().scan()).map((memory) => ({ ...memory })),
-					remember: async (input) => ({ ...await activeMemoryStore().remember(input) }),
-					forget: async (query) => (await activeMemoryStore().forget(query)).map((memory) => ({
+			maxPromptTokens: config.maxPromptTokens,
+			runtime: initial.binding,
+			agentInteractiveRequests,
+			loadConversation: (sessionId) => store.loadConversation(sessionId),
+			loadTranscript: (sessionId) => canonicalTranscript(store, sessionId),
+			loadShellOutput: (input) => store.loadShellOutputPage(input),
+			loadTurnRollouts: (sessionId) => store.loadTurnRollouts(sessionId),
+			memoryCommands: {
+				directory: () => activeMemoryStore().directory(),
+				scan: async () => (await activeMemoryStore().scan()).map((memory) => ({ ...memory })),
+				remember: async (input) => ({ ...await activeMemoryStore().remember(input) }),
+				forget: async (query) => (await activeMemoryStore().forget(query)).map((memory) => ({
 						...memory,
 					})),
 				},
@@ -1311,6 +1359,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 			integrations: gatewayIntegrations,
 			close: async () => {
+				unsubscribeRuntimeExtensions();
 				try {
 					await integrationComposition.close();
 				} finally {
@@ -1330,20 +1379,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				}
 			},
 		});
-		for (const recovered of recoveredInterrupts) {
+			for (const recovered of recoveredInterrupts) {
 			gateway.publishRecoveredInterrupt(recovered.record, {
 				inputRolledBack: recovered.inputRolledBack,
 			});
-		}
-		startupProfiler.mark("gateway_ready");
-		return Object.freeze({
-			transport: gateway.transport,
-			completion: gateway.completion,
-			close: () => gateway.close(),
-			kill: () => gateway.kill(),
-			diagnostic: () => gateway.diagnostic(),
-			startupProfile: () => startupProfiler.snapshot(),
-		});
+			}
+			startupProfiler.mark("gateway_ready");
+			return Object.freeze({
+				transport: gateway.transport,
+				completion: gateway.completion,
+				close: () => gateway.close(),
+				kill: () => gateway.kill(),
+				diagnostic: () => gateway.diagnostic(),
+				startupProfile: () => startupProfiler.snapshot(),
+			});
 	} catch (error) {
 		try {
 			await integrationComposition.close().catch(() => undefined);
@@ -1470,19 +1519,58 @@ function filterToolDefinitions<Value extends { readonly name: string }>(
 	return Object.freeze(definitions.filter((definition) => names.has(definition.name)));
 }
 
+function runtimeToolExposure(
+	builtinManifest: BuiltInToolManifest,
+	direct: readonly ToolDefinition[],
+	deferred: readonly IntegrationRegistration[],
+): readonly ToolDefinition[] {
+	return Object.freeze([
+		...planToolExposure(builtinManifest, { shell: true }),
+		...direct,
+		...deferred.filter((registration) => registration.modelVisible !== false)
+			.map((registration) => registration.definition),
+	]);
+}
+
+function deferredCandidates(registrations: readonly IntegrationRegistration[]) {
+	return registrations.flatMap((registration) => (
+		registration.source === "mcp" || registration.source === "plugin"
+			? [{
+				definition: registration.definition,
+				source: registration.source,
+				originMetadata: registration.originMetadata,
+			}]
+			: []
+	));
+}
+
+function mutatingTools(manifest: CombinedToolManifest): Set<string> {
+	return new Set(manifest.tools.flatMap((tool) => {
+		if (!("effects" in tool)) return [tool.name];
+		return tool.effects.filesystem === "write" || tool.effects.network || tool.effects.process
+			? [tool.name]
+			: [];
+	}));
+}
+
 function integrationGateway(
 	composition: RuntimeIntegrationComposition,
+	toolNames: () => readonly string[],
 ): NodeGatewayIntegrations {
 		const integrations: NodeGatewayIntegrations = {
-			toolManifest: composition.manifest as unknown as Record<string, unknown>,
-			diagnostics: composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
-		listResources: () => composition.resources.map((resource) => ({ ...resource })),
+			toolManifest: () => composition.manifest as unknown as Record<string, unknown>,
+			diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+			toolNames,
+			listResources: () => composition.resources.map((resource) => ({ ...resource })),
 		...(composition.commands.length > 0 ? {
 			commands: combinedIntegrationCommands(composition.commands),
 		} : {}),
-		subscribeSubagents: (
+			subscribeSubagents: (
 			listener: (subagent: Readonly<Record<string, unknown>>) => void,
-		) => composition.subscribeSubagents(listener),
+			) => composition.subscribeSubagents(listener),
+			subscribeExtensions: (listener: (version: number) => void) => (
+				composition.subscribeExtensions(listener)
+			),
 	};
 	return Object.freeze(integrations);
 }

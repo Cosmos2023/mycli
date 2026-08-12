@@ -16,7 +16,9 @@ import {
 	LIST_AGENTS_TOOL_DEFINITION,
 	ListAgentsTool,
 	McpClient,
+	McpCatalogCache,
 	McpManager,
+	type McpManagerDiscovery,
 	PluginRuntime,
 	renderSkillCatalog,
 	SEND_AGENT_MESSAGE_TOOL_DEFINITION,
@@ -116,9 +118,19 @@ export interface CreateRuntimeIntegrationCompositionOptions {
 	) => AgentCoordinationRouteContext | undefined;
 	readonly maxAgentDepth?: number;
 	readonly closeTimeoutMs?: number;
+	readonly onStartupStage?: (stage: IntegrationStartupStage) => void;
 }
 
+export type IntegrationStartupStage =
+	| "integration_discovery_started"
+	| "hooks_ready"
+	| "skills_ready"
+	| "mcp_cache_ready"
+	| "plugins_ready"
+	| "subagents_ready";
+
 export interface RuntimeIntegrationComposition extends IntegrationComposition {
+	readonly version: number;
 	readonly hookRunner: HookRunnerContract;
 	readonly skillCatalog: string;
 	readonly subagentController?: SubagentController;
@@ -126,6 +138,7 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 		listener: (subagent: Readonly<Record<string, unknown>>) => void,
 	): () => void;
 	publishSubagent(subagent: Readonly<Record<string, unknown>>): void;
+	subscribeExtensions(listener: (version: number) => void): () => void;
 }
 
 export interface RuntimeToolRegistrationPartition {
@@ -231,12 +244,18 @@ export async function createRuntimeIntegrationComposition(
 	const subagentListeners = new Set<(
 		subagent: Readonly<Record<string, unknown>>,
 	) => void>();
+	const extensionListeners = new Set<(version: number) => void>();
+	const mcpRefreshController = new AbortController();
+	let startMcpRefresh: ((publish: (contribution: IntegrationCompositionContribution) => void) => void)
+		| undefined;
 	let subagentController: SubagentController | undefined;
+	options.onStartupStage?.("integration_discovery_started");
 	const hookDiscovery = await discoverHookConfig({
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
 		env: options.env,
 	});
+	options.onStartupStage?.("hooks_ready");
 	let skillRegistry: SkillRegistry | undefined;
 	const composition = await createIntegrationComposition({
 		builtinManifest: options.builtinManifest,
@@ -251,6 +270,7 @@ export async function createRuntimeIntegrationComposition(
 						sharedRepoRoot: join(options.workspaceRoot, ".agents", "skills"),
 						repoRoot: join(options.workspaceRoot, ".mycli", "skills"),
 					});
+					options.onStartupStage?.("skills_ready");
 					return {
 						registrations: [createSkillToolRegistration(skillRegistry)],
 						resources: skillResources(skillRegistry),
@@ -258,34 +278,49 @@ export async function createRuntimeIntegrationComposition(
 					};
 				},
 			},
-			{
-				id: "mcp",
-				start: async (signal) => {
-					const config = await discoverMcpConfig({
+				{
+					id: "mcp",
+					start: async (signal) => {
+						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal]);
+						const config = await discoverMcpConfig({
 						workspaceRoot: options.workspaceRoot,
 						homeDir: options.homeDir,
 						env: options.env,
 					});
 					const manager = new McpManager({
 						configs: config.servers,
+						catalogCache: new McpCatalogCache({
+							directory: join(options.homeDir, ".mycli", "cache"),
+						}),
 						createClient: (server) => new McpClient({
 							config: server,
 							cwd: options.workspaceRoot,
 							sandboxProfile: workspaceSandboxProfile(options.workspaceRoot),
 						}),
 					});
-					const discovery = await manager.discover(signal);
-					return {
-						registrations: discovery.registrations,
-						resources: mcpResources(discovery.resources),
-						diagnostics: [
-							...config.diagnostics.map((diagnostic) => ({ ...diagnostic })),
-							...discovery.servers.flatMap((server) => server.failureCategory
-								? [{ source: "mcp", label: server.serverId, errorClass: server.failureCategory }]
-								: []),
-						],
-						close: () => manager.close(),
-					};
+						const cached = await manager.loadCached(discoverySignal);
+						options.onStartupStage?.("mcp_cache_ready");
+						startMcpRefresh = (publish) => {
+							void manager.refresh(discoverySignal).then(
+								(discovery) => {
+									if (!discoverySignal.aborted) {
+										publish(mcpContribution(
+											config.diagnostics,
+											mergeMcpRefresh(cached, discovery),
+										));
+									}
+								},
+								() => {
+									if (!discoverySignal.aborted) {
+										publish(mcpRefreshFailure(config.diagnostics, cached));
+									}
+								},
+							);
+						};
+						return {
+							...mcpContribution(config.diagnostics, cached),
+							close: () => manager.close(),
+						};
 				},
 			},
 			{
@@ -297,6 +332,7 @@ export async function createRuntimeIntegrationComposition(
 						env: options.env,
 						sandboxProfile: pluginSandboxProfile,
 					}, signal);
+					options.onStartupStage?.("plugins_ready");
 					return {
 						registrations: runtime.tools,
 						hooks: runtime.hooks,
@@ -329,6 +365,7 @@ export async function createRuntimeIntegrationComposition(
 							: { maxAgentDepth: options.maxAgentDepth }),
 						});
 					subagentController.recoverAbandoned("parent runtime restarted");
+					options.onStartupStage?.("subagents_ready");
 					return {
 						registrations: subagentRegistrations(
 							subagentController,
@@ -355,15 +392,61 @@ export async function createRuntimeIntegrationComposition(
 			configuredExecutor,
 			pluginHooks: composition.hooks,
 		});
-		const resources = Object.freeze([
-			...composition.resources,
-			...hookResources(hookDiscovery.hooks),
-		]);
-		let closePromise: Promise<void> | undefined;
-		return Object.freeze({
-			...composition,
-			resources,
-			hookRunner,
+			const initialResources = Object.freeze([
+				...composition.resources,
+				...hookResources(hookDiscovery.hooks),
+			]);
+			let snapshot = runtimeIntegrationSnapshot({
+				version: 1,
+				builtinManifest: options.builtinManifest,
+				registrations: composition.registrations,
+				resources: initialResources,
+				diagnostics: composition.diagnostics,
+			});
+			const staticRegistrations = composition.registrations.filter(
+				(registration) => registration.source !== "mcp",
+			);
+			const staticResources = initialResources.filter((resource) => !isMcpResource(resource));
+			const staticDiagnostics = composition.diagnostics.filter((diagnostic) => !isMcpDiagnostic(diagnostic));
+			const publishMcp = (contribution: IntegrationCompositionContribution): void => {
+				try {
+					snapshot = runtimeIntegrationSnapshot({
+						version: snapshot.version + 1,
+						builtinManifest: options.builtinManifest,
+						registrations: orderedRegistrations([
+							...staticRegistrations,
+							...(contribution.registrations ?? []),
+						]),
+						resources: [...staticResources, ...(contribution.resources ?? [])],
+						diagnostics: [...staticDiagnostics, ...(contribution.diagnostics ?? [])],
+					});
+				} catch {
+					snapshot = runtimeIntegrationSnapshot({
+						version: snapshot.version + 1,
+						builtinManifest: options.builtinManifest,
+						registrations: snapshot.registrations,
+						resources: snapshot.resources,
+						diagnostics: [
+							...staticDiagnostics,
+							{ source: "mcp", label: "runtime", errorClass: "refresh_failed" },
+						],
+					});
+				}
+				for (const listener of extensionListeners) {
+					try { listener(snapshot.version); } catch { /* Observers cannot affect discovery. */ }
+				}
+			};
+			let closePromise: Promise<void> | undefined;
+			const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
+				get version() { return snapshot.version; },
+				get registrations() { return snapshot.registrations; },
+				get hooks() { return composition.hooks; },
+				get resources() { return snapshot.resources; },
+				get diagnostics() { return snapshot.diagnostics; },
+				get commands() { return composition.commands; },
+				get subagents() { return composition.subagents; },
+				get manifest() { return snapshot.manifest; },
+				hookRunner,
 			skillCatalog: skillRegistry ? renderSkillCatalog(skillRegistry) : "",
 			...(subagentController ? { subagentController } : {}),
 			subscribeSubagents: (
@@ -381,10 +464,20 @@ export async function createRuntimeIntegrationComposition(
 						}
 					}
 				},
-				close: () => closePromise ??= composition.close().finally(() => {
-				subagentListeners.clear();
-			}),
-		});
+				subscribeExtensions: (listener: (version: number) => void) => {
+					extensionListeners.add(listener);
+					return () => { extensionListeners.delete(listener); };
+				},
+				close: () => closePromise ??= (() => {
+					mcpRefreshController.abort();
+					return composition.close();
+				})().finally(() => {
+					subagentListeners.clear();
+					extensionListeners.clear();
+				}),
+			});
+			queueMicrotask(() => { startMcpRefresh?.(publishMcp); });
+			return runtimeComposition;
 	} catch {
 		await composition.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
@@ -399,6 +492,114 @@ function orderedSources(
 	return Object.freeze([...sources].sort((left, right) => (
 		SOURCE_ORDER[left.id] - SOURCE_ORDER[right.id]
 	)));
+}
+
+interface RuntimeIntegrationSnapshot {
+	readonly version: number;
+	readonly registrations: readonly IntegrationRegistration[];
+	readonly resources: readonly Readonly<Record<string, unknown>>[];
+	readonly diagnostics: readonly Readonly<Record<string, unknown>>[];
+	readonly manifest: CombinedToolManifest;
+}
+
+function runtimeIntegrationSnapshot(input: {
+	readonly version: number;
+	readonly builtinManifest: BuiltInToolManifest;
+	readonly registrations: readonly IntegrationRegistration[];
+	readonly resources: readonly Readonly<Record<string, unknown>>[];
+	readonly diagnostics: readonly Readonly<Record<string, unknown>>[];
+}): RuntimeIntegrationSnapshot {
+	const registrations = Object.freeze([...input.registrations]);
+	return Object.freeze({
+		version: input.version,
+		registrations,
+		resources: Object.freeze([...input.resources]),
+		diagnostics: Object.freeze([...input.diagnostics]),
+		manifest: combinedToolManifest(input.builtinManifest, registrations),
+	});
+}
+
+function mcpContribution(
+	configDiagnostics: readonly object[],
+	discovery: McpManagerDiscovery | undefined,
+): IntegrationCompositionContribution {
+	return Object.freeze({
+		registrations: discovery?.registrations ?? Object.freeze([]),
+		resources: discovery ? mcpResources(discovery.resources, discovery.servers) : Object.freeze([]),
+		diagnostics: Object.freeze([
+			...configDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
+			...(discovery?.servers.flatMap((server) => server.failureCategory
+				? [Object.freeze({ source: "mcp", label: server.serverId, errorClass: server.failureCategory })]
+				: []) ?? []),
+		]),
+	});
+}
+
+function mcpRefreshFailure(
+	configDiagnostics: readonly object[],
+	cached: McpManagerDiscovery | undefined,
+): IntegrationCompositionContribution {
+	return Object.freeze({
+		registrations: cached?.registrations ?? Object.freeze([]),
+		resources: cached ? mcpResources(cached.resources, cached.servers) : Object.freeze([]),
+		diagnostics: Object.freeze([
+			...configDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
+			Object.freeze({ source: "mcp", label: "runtime", errorClass: "refresh_failed" }),
+		]),
+	});
+}
+
+function mergeMcpRefresh(
+	cached: McpManagerDiscovery | undefined,
+	live: McpManagerDiscovery,
+): McpManagerDiscovery {
+	if (!cached) return live;
+	const failedServers = new Map(live.servers.flatMap((server) => (
+		server.status === "failed" ? [[server.serverId, server] as const] : []
+	)));
+	if (failedServers.size === 0) return live;
+	const cachedServers = new Map(cached.servers.map((server) => [server.serverId, server]));
+	const retainedServerIds = new Set([...failedServers.keys()].filter((serverId) => (
+		cachedServers.get(serverId)?.status === "ok"
+	)));
+	if (retainedServerIds.size === 0) return live;
+	return Object.freeze({
+		registrations: Object.freeze([
+			...live.registrations,
+			...cached.registrations.filter((registration) => (
+				retainedServerIds.has(registration.originMetadata.server ?? "")
+			)),
+		]),
+		resources: Object.freeze([
+			...live.resources,
+			...cached.resources.filter((resource) => retainedServerIds.has(resource.serverId)),
+		]),
+		servers: Object.freeze(live.servers.map((server) => {
+			if (!retainedServerIds.has(server.serverId)) return server;
+			const retained = cachedServers.get(server.serverId)!;
+			return Object.freeze({
+				...retained,
+				...(server.failureCategory ? { failureCategory: server.failureCategory } : {}),
+			});
+		})),
+	});
+}
+
+function orderedRegistrations(
+	registrations: readonly IntegrationRegistration[],
+): readonly IntegrationRegistration[] {
+	return Object.freeze([...registrations].sort((left, right) => {
+		const sourceOrder = SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source];
+		return sourceOrder || left.id.localeCompare(right.id, "en");
+	}));
+}
+
+function isMcpResource(resource: Readonly<Record<string, unknown>>): boolean {
+	return typeof resource.id === "string" && resource.id.startsWith("mcp:");
+}
+
+function isMcpDiagnostic(diagnostic: Readonly<Record<string, unknown>>): boolean {
+	return diagnostic.source === "mcp";
 }
 
 function skillResources(registry: SkillRegistry): readonly Readonly<Record<string, unknown>>[] {
@@ -425,8 +626,13 @@ function mcpResources(
 		readonly name: string;
 		readonly description: string;
 	}[],
+	servers: readonly {
+		readonly serverId: string;
+		readonly status: string;
+		readonly resourceCount: number;
+	}[],
 ): readonly Readonly<Record<string, unknown>>[] {
-	return resources.map((resource) => Object.freeze({
+	const projected = resources.map((resource) => Object.freeze({
 		id: `mcp:${resource.serverId}:${resource.uri}`.slice(0, 256),
 		type: "plugin",
 		name: `${resource.serverId} ${resource.name}`.slice(0, 256),
@@ -436,6 +642,22 @@ function mcpResources(
 		detail: `MCP resource ${resource.uri}`.slice(0, 512),
 		command: `/mcp inspect ${resource.serverId}`,
 	}));
+	const projectedServers = new Set(resources.map((resource) => resource.serverId));
+	for (const server of servers) {
+		if (server.status !== "ok" || server.resourceCount === 0
+			|| projectedServers.has(server.serverId)) continue;
+		projected.push(Object.freeze({
+			id: `mcp:${server.serverId}:resources`.slice(0, 256),
+			type: "plugin",
+			name: `${server.serverId} resources`.slice(0, 256),
+			source: "runtime",
+			enabled: true,
+			status: "enabled",
+			detail: `${server.resourceCount} cached MCP resources`.slice(0, 512),
+			command: `/mcp inspect ${server.serverId}`,
+		}));
+	}
+	return Object.freeze(projected);
 }
 
 function pluginResources(

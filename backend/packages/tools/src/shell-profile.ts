@@ -1,7 +1,10 @@
 import { win32 } from "node:path";
 
+export type ShellProfileName = "zsh" | "bash" | "sh" | "powershell" | "cmd" | "posix";
+
 export interface ShellProfile {
 	readonly kind: "posix" | "powershell" | "cmd";
+	readonly name: ShellProfileName;
 	readonly executable: string;
 	execArgv(command: string): readonly string[];
 }
@@ -22,6 +25,7 @@ export function resolveShellProfile(
 	const kind = profileKind(platform, executable);
 	return Object.freeze({
 		kind,
+		name: profileName(kind, executable),
 		executable,
 		execArgv: (command: string): readonly string[] => Object.freeze(
 			kind === "powershell"
@@ -49,6 +53,15 @@ function profileKind(
 	if (name === "pwsh" || name === "powershell") return "powershell";
 	if (name === "cmd") return "cmd";
 	return platform === "win32" ? "cmd" : "posix";
+}
+
+function profileName(
+	kind: ShellProfile["kind"],
+	executable: string,
+): ShellProfileName {
+	if (kind !== "posix") return kind;
+	const name = win32.basename(executable).toLowerCase();
+	return name === "zsh" || name === "bash" || name === "sh" ? name : "posix";
 }
 
 function environmentValue(

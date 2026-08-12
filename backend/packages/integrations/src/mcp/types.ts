@@ -9,6 +9,7 @@ export interface McpServerConfig {
 	readonly env: Readonly<Record<string, string>>;
 	readonly headers: Readonly<Record<string, string>>;
 	readonly enabled: boolean;
+	readonly supportsParallelToolCalls: boolean;
 	readonly timeoutMs: number;
 }
 
@@ -32,6 +33,7 @@ export interface McpToolDescriptor {
 	readonly name: string;
 	readonly description: string;
 	readonly inputSchema: Readonly<Record<string, unknown>>;
+	readonly supportsParallelToolCalls: boolean;
 }
 
 export interface McpContentItem {

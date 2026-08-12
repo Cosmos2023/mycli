@@ -142,6 +142,11 @@ function parseServer(
 		env: Object.freeze(stringMap(raw.env, env, true)),
 		headers: Object.freeze(stringMap(raw.headers, env, false)),
 		enabled: booleanValue(raw.enabled, true),
+		supportsParallelToolCalls: booleanValue(
+			raw.supports_parallel_tool_calls,
+			false,
+			"invalid_parallel_tool_calls",
+		),
 		timeoutMs: timeoutValue(raw),
 	});
 }
@@ -193,9 +198,9 @@ function stringMap(
 	return result;
 }
 
-function booleanValue(value: unknown, fallback: boolean): boolean {
+function booleanValue(value: unknown, fallback: boolean, errorClass = "invalid_enabled"): boolean {
 	if (value === undefined) return fallback;
-	if (typeof value !== "boolean") throw new McpConfigError("invalid_enabled");
+	if (typeof value !== "boolean") throw new McpConfigError(errorClass);
 	return value;
 }
 

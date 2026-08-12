@@ -9,6 +9,7 @@ test("resolves POSIX commands through login command argv", () => {
 	});
 
 	assert.equal(profile.kind, "posix");
+	assert.equal(profile.name, "zsh");
 	assert.equal(profile.executable, "/bin/zsh");
 	assert.deepEqual(profile.execArgv("npm test"), ["-lc", "npm test"]);
 });
@@ -24,6 +25,7 @@ test("resolves PowerShell and CMD command argv without a shell wrapper", () => {
 	});
 
 	assert.equal(powershell.kind, "powershell");
+	assert.equal(powershell.name, "powershell");
 	assert.deepEqual(powershell.execArgv("npm test"), [
 		"-NoLogo",
 		"-NoProfile",
@@ -31,6 +33,7 @@ test("resolves PowerShell and CMD command argv without a shell wrapper", () => {
 		"npm test",
 	]);
 	assert.equal(cmd.kind, "cmd");
+	assert.equal(cmd.name, "cmd");
 	assert.deepEqual(cmd.execArgv("npm test"), ["/d", "/s", "/c", "npm test"]);
 });
 
@@ -45,5 +48,17 @@ test("uses the active environment shell when no explicit path is configured", ()
 	});
 
 	assert.equal(posix.executable, "/bin/bash");
+	assert.equal(posix.name, "bash");
 	assert.equal(windows.executable, String.raw`C:\Windows\System32\cmd.exe`);
+	assert.equal(windows.name, "cmd");
+});
+
+test("does not expose an unrecognized executable name as a shell contract", () => {
+	const profile = resolveShellProfile({
+		platform: "linux",
+		shellPath: "/usr/local/bin/fish",
+	});
+
+	assert.equal(profile.kind, "posix");
+	assert.equal(profile.name, "posix");
 });

@@ -27,6 +27,51 @@ function finalMessageCount(messages: readonly Record<string, unknown>[]): number
 	}).length;
 }
 
+test("Node backend becomes ready before an uncached MCP discovery completes", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-background-mcp-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const mycli = join(workspace, ".mycli");
+	await Promise.all([mkdir(home), mkdir(mycli, { recursive: true })]);
+	await writeFile(join(mycli, "mcp_servers.toml"), [
+		"[servers.blocked]",
+		'transport = "stdio"',
+		`command = ${JSON.stringify(process.execPath)}`,
+		`args = ["-e", "setInterval(() => {}, 1000)"]`,
+		"timeout_seconds = 10",
+	].join("\n"), "utf8");
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	const startup = startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "background-mcp-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:1/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_MEMORY_ENABLED: "false",
+		},
+	});
+	const backend = await Promise.race([
+		startup,
+		new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error("backend startup waited for MCP discovery")), 2_000);
+		}),
+	]);
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"), 1_000);
+	assert.equal(event(messages, "extension.updated"), undefined);
+
+	writeRequest(backend, "shutdown-background-mcp", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
 test("Node backend composes config, provider streaming, gateway, and SQLite", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-backend-"));
 	const home = join(root, "home");
@@ -134,6 +179,16 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	assert.equal(requests, 1);
 	assert.equal(capture.requestBody?.model, "gpt-test");
 	assert.equal(capture.requestBody?.stream, true);
+	const modelInput = JSON.stringify(capture.requestBody?.input);
+	assert.match(modelInput, new RegExp(
+		`shell: ${process.platform === "win32" ? "cmd" : "sh"}`,
+		"u",
+	));
+	assert.match(modelInput, new RegExp(
+		`shell_kind: ${process.platform === "win32" ? "cmd" : "posix"}`,
+		"u",
+	));
+	assert.equal(modelInput.includes(process.platform === "win32" ? "cmd.exe" : "/bin/sh"), false);
 	assert.deepEqual(
 		(capture.requestBody?.tools as Array<Record<string, unknown>> | undefined)
 			?.map((tool) => tool.name),
@@ -171,6 +226,39 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	}).length === 2);
 	assert.equal(requests, 1);
 
+	writeRequest(backend, "new-session", "session.new", {});
+	const newSessionResponse = await waitFor(() => response(messages, "new-session"));
+	const newSessionId = resultValue(newSessionResponse, "session_id");
+	assert.equal(typeof newSessionId, "string");
+	assert.notEqual(newSessionId, "integration-session");
+	assert.equal(resultValue(newSessionResponse, "generation"), 2);
+
+	writeRequest(backend, "new-session-turn", "turn.submit", {
+		message: "hello from a new session",
+		client_turn_id: "new-session-turn",
+		client_user_message_id: "new-session-message",
+	});
+	await waitFor(() => messages.filter((message) => {
+		if (message.method !== "message.complete") return false;
+		const params = message.params as Record<string, unknown> | undefined;
+		return params?.final === true;
+	}).length === 3);
+	await waitFor(() => response(messages, "new-session-turn"));
+	assert.equal(requests, 2);
+
+	writeRequest(backend, "new-session-transcript", "transcript.load", {
+		session_id: newSessionId,
+	});
+	const newTranscriptResponse = await waitFor(() => response(messages, "new-session-transcript"));
+	const newTranscriptItems = resultValue(newTranscriptResponse, "items") as readonly Record<string, unknown>[];
+	assert.deepEqual(newTranscriptItems.slice(0, 2).map((item) => ({
+		type: item.type,
+		text: item.text,
+	})), [
+		{ type: "user", text: "hello from a new session" },
+		{ type: "assistant_final", text: "hello from node" },
+	]);
+
 	writeRequest(backend, "2", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	assert.equal(existsSync(join(home, ".mycli", "projects")), false);
@@ -182,6 +270,16 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 	assert.equal(snapshot.session_id, "integration-session");
 	assert.equal(snapshot.state, "idle");
 	assert.equal(JSON.stringify(snapshot.transcript).includes("hello from node"), true);
+	const newSessionSnapshot = JSON.parse(await readFile(
+		join(home, ".mycli", "sessions", String(newSessionId), "session.json"),
+		"utf8",
+	)) as Record<string, unknown>;
+	assert.equal(newSessionSnapshot.session_id, newSessionId);
+	assert.equal(newSessionSnapshot.state, "idle");
+	assert.equal(
+		JSON.stringify(newSessionSnapshot.transcript).includes("hello from a new session"),
+		true,
+	);
 	const reopened = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		const userHistory = reopened.loadHistoryItems("integration-session")[0];
@@ -196,6 +294,7 @@ test("Node backend composes config, provider streaming, gateway, and SQLite", as
 		assert.equal(continuation?.protocol, "responses");
 		assert.equal(continuation?.model, "gpt-test");
 		assert.equal(continuation?.history_boundary, submittedTurnId);
+		assert.equal(reopened.loadHistoryItems(String(newSessionId))[0]?.text, "hello from a new session");
 	} finally {
 		reopened.close();
 	}

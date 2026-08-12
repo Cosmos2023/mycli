@@ -17,6 +17,7 @@ export interface IntegrationRegistration {
 	readonly definition: ToolDefinition;
 	readonly adapter: ToolAdapter;
 	readonly originMetadata: Readonly<Record<string, string>>;
+	readonly supportsParallelToolCalls: boolean;
 	readonly modelVisible?: boolean;
 }
 
@@ -25,7 +26,7 @@ const SAFE_ORIGIN_KEY = /^[A-Za-z][A-Za-z0-9_-]*$/;
 const SENSITIVE_ORIGIN_KEY = /(?:authorization|cookie|key|password|secret|token)/iu;
 
 export function defineIntegrationRegistration(
-	input: IntegrationRegistration,
+	input: Omit<IntegrationRegistration, "supportsParallelToolCalls">,
 ): IntegrationRegistration {
 	if (!input.id || input.id.length > INTEGRATION_ID_MAX_LENGTH) {
 		throw new Error("invalid_integration_id");
@@ -59,6 +60,7 @@ export function defineIntegrationRegistration(
 		definition: freezeDefinition(input.definition),
 		adapter: input.adapter,
 		originMetadata: Object.freeze(Object.fromEntries(originEntries)),
+		supportsParallelToolCalls: input.adapter.supportsParallelToolCalls === true,
 		modelVisible: input.modelVisible ?? true,
 	});
 }

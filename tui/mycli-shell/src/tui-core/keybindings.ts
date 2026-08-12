@@ -46,6 +46,7 @@ export type Keybinding = keyof Keybindings;
 export interface KeybindingDefinition {
 	defaultKeys: KeyId | KeyId[];
 	description?: string;
+	context?: "editor" | "selector" | "app" | "global";
 }
 
 export type KeybindingDefinitions = Record<string, KeybindingDefinition>;
@@ -135,6 +136,7 @@ export const TUI_KEYBINDINGS = {
 
 export interface KeybindingConflict {
 	key: KeyId;
+	context: NonNullable<KeybindingDefinition["context"]>;
 	keybindings: string[];
 }
 
@@ -168,26 +170,31 @@ export class KeybindingsManager {
 		this.keysById.clear();
 		this.conflicts = [];
 
-		const userClaims = new Map<KeyId, Set<Keybinding>>();
-		for (const [keybinding, keys] of Object.entries(this.userBindings)) {
-			if (!(keybinding in this.definitions)) continue;
-			for (const key of normalizeKeys(keys)) {
-				const claimants = userClaims.get(key) ?? new Set<Keybinding>();
-				claimants.add(keybinding as Keybinding);
-				userClaims.set(key, claimants);
-			}
-		}
-
-		for (const [key, keybindings] of userClaims) {
-			if (keybindings.size > 1) {
-				this.conflicts.push({ key, keybindings: [...keybindings] });
-			}
-		}
-
+		const claims = new Map<string, {
+			key: KeyId;
+			context: NonNullable<KeybindingDefinition["context"]>;
+			keybindings: Set<Keybinding>;
+		}>();
 		for (const [id, definition] of Object.entries(this.definitions)) {
 			const userKeys = this.userBindings[id];
 			const keys = userKeys === undefined ? normalizeKeys(definition.defaultKeys) : normalizeKeys(userKeys);
 			this.keysById.set(id as Keybinding, keys);
+			const context = keybindingContext(id, definition);
+			for (const key of keys) {
+				const claimId = `${context}\0${key}`;
+				const claim = claims.get(claimId) ?? { key, context, keybindings: new Set<Keybinding>() };
+				claim.keybindings.add(id as Keybinding);
+				claims.set(claimId, claim);
+			}
+		}
+		for (const claim of claims.values()) {
+			if (claim.keybindings.size > 1) {
+				this.conflicts.push({
+					key: claim.key,
+					context: claim.context,
+					keybindings: [...claim.keybindings],
+				});
+			}
 		}
 	}
 
@@ -228,6 +235,17 @@ export class KeybindingsManager {
 		}
 		return resolved;
 	}
+}
+
+function keybindingContext(
+	id: string,
+	definition: KeybindingDefinition,
+): NonNullable<KeybindingDefinition["context"]> {
+	if (definition.context) return definition.context;
+	if (id.startsWith("tui.select.")) return "selector";
+	if (id.startsWith("tui.editor.") || id.startsWith("tui.input.")) return "editor";
+	if (id.startsWith("app.")) return "app";
+	return "global";
 }
 
 let globalKeybindings: KeybindingsManager | null = null;

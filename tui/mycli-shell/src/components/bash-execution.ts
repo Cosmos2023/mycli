@@ -6,13 +6,14 @@ import type { MycliShellBash } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { presentationForBash } from "./tool-presentation.ts";
+import { TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
 import { truncateToVisualLines, truncateVisualLinesBalanced } from "./visual-truncate.ts";
 
 const COMMAND_CONTINUATION_MAX_LINES = 2;
 const COMMAND_CONTINUATION_PREFIX = "  │ ";
 const COMMAND_OUTPUT_INITIAL_PREFIX = "  └ ";
 const COMMAND_OUTPUT_SUBSEQUENT_PREFIX = "    ";
-const SHELL_CELL_PADDING_X = 1;
+const SHELL_CELL_PADDING_X = TRANSCRIPT_HEADER_INDENT;
 
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;
