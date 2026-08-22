@@ -61,6 +61,12 @@ does not call a model provider or repair files.
 - Old `--runtime-backend` invocations are invalid in M8. Remove the flag instead of replacing its
   value.
 
+## Removed Python Entrypoint
+
+The former Python console script and wheel are no longer shipped. Install dependencies with
+`npm ci`, build with `npm run build`, and launch with `npm run mycli`; there is no compatibility
+fallback or manual session-data migration in the retirement step.
+
 ## Extension Failure
 
 - Use `hooks/plugins/mcp/subagents list --json` before starting the interactive runtime.

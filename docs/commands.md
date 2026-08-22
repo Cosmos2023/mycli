@@ -39,16 +39,84 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/help` | none | opens unified shortcut and command help | yes | - |
 | `/quit` | none | exits mycli | yes | - |
 | `/session search` | optional `[query]` | backend | yes | `/search` |
-| `/session maintenance` | optional `[--apply-empty\|--apply-orphans\|--apply-vacuum]` | backend | yes | `/session-maintenance` |
+| `/session maintenance` | optional `[--apply-empty\|--apply-payloads\|--apply-orphans\|--apply-vacuum\|--apply-transcript-normalization\|--apply-content-blobs\|--apply-content-blob-gc]` | backend | no | `/session-maintenance` |
+
+When the TUI is idle, `Shift+Tab` cycles between Default and Plan mode. The footer shows the
+shortcut while Plan mode is active and the terminal has enough room; overlays, selectors, and
+running turns keep ownership of the key.
 
 Prefix aliases can inject a canonical subcommand. For example, `/logs` resolves to
 `/trace logs`, `/trace-jsonl` resolves to `/trace export`, and `/subagents` resolves to
 `/agents`.
 
-`/model` uses the same user-owned catalog in the Python and Node runtimes. The Node runtime
-bootstraps `~/.mycli/models.json` when it is missing, validates provider/protocol, endpoint,
+`/session maintenance` is a dry-run report. `--apply-payloads` compacts eligible legacy terminal
+rollouts and removes inactive legacy continuation snapshots without deleting canonical transcript,
+compact, summary, or active recovery records. The reported payload bytes become reusable SQLite
+space; run the separate `--apply-vacuum` action only when physical file shrinkage is required.
+
+The same read-only report shows transcript-normalization status, bounded staging progress, opaque
+row counts, excluded active sessions, estimated temporary peak bytes, and available disk space.
+Production startup is fresh-only on schema v12. It creates v12 for a missing or empty database and
+rejects schema v9, v10, or v11 with expected/actual version diagnostics before opening a writable
+connection. There is no automatic or manual in-place v11-to-v12 migration.
+
+To switch an existing installation, stop every mycli process and archive `~/.mycli/sessions.db`
+together with adjacent `sessions.db-wal` and `sessions.db-shm` files as one set. Move that complete
+set out of the active location, then start mycli to create a fresh v12 database. Rollback requires a
+v11-capable binary and restoration of the complete archived set; sessions are not converted.
+
+Schema v12 stores transcript leaves and immutable model-input records in verified content blobs and
+keeps search terms in a contentless FTS index. Provider steps store a compact V3 manifest and request
+hash; the complete provider request is reconstructed from instruction/tool snapshots and the exact
+append-only timeline prefix, so no per-step full-request blob or repeated event-id array is written.
+On v12, the transcript-normalization and content-blob apply commands report `already_normalized` and
+`already_blob_backed` without changing storage.
+
+`--apply-content-blob-gc` explicitly deletes only blobs unreachable from both transcript and
+model-input reference tables. It reports deleted raw/stored bytes and reusable freelist bytes, is
+idempotent, and never runs `VACUUM`. Run doctor plus representative resume, pagination, search, and
+provider-ledger checks before the separate `--apply-vacuum` action is used for physical shrinkage.
+
+`/model` uses the user-owned `~/.mycli/models.json` catalog. The Node runtime bootstraps it when it
+is missing, validates provider/protocol, endpoint,
 `auth_ref`, and reasoning-effort compatibility on selection, and persists successful selections
 to `~/.mycli/config.toml`. Catalog payloads sent to the TUI never include credentials or `auth_ref`.
+
+The current catalog format groups models by provider so one endpoint and credential reference are
+shared without repetition:
+
+```json
+{
+  "version": 2,
+  "providers": {
+    "openai": {
+      "protocol": "responses",
+      "base_url": "https://api.openai.com/v1",
+      "auth_ref": "openai",
+      "options": { "store": false },
+      "models": {
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol",
+          "limits": {
+            "context_window_tokens": 1050000,
+            "max_output_tokens": 128000
+          },
+          "reasoning": {
+            "default": "low",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`context_window_tokens` is the total model window and `max_output_tokens` is the provider output
+ceiling. Without an explicit `max_prompt_tokens`, mycli uses their difference as the prompt budget.
+An explicit prompt budget remains a lower operator cap and is clamped to the model limit. Legacy
+catalogs with a top-level `models` array remain readable. API keys belong only in
+`~/.mycli/auth.json`; catalog `options` are validated request settings, not credential storage.
 
 ## Error Contract
 

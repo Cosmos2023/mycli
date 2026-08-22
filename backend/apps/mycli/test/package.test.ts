@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { RIPGREP_TARGETS } from "@mycli/tools";
@@ -106,6 +106,71 @@ test("root commands separate the compiled CLI from source development", () => {
 	assert.equal(rootManifest.scripts?.mycli, "node backend/apps/mycli/dist/cli.js");
 });
 
+test("milestone regression commands are Node-only", () => {
+	const scripts = readManifest(ROOT).scripts ?? {};
+	const expected = {
+		"test:m2": "npm run build && node --import tsx --test backend/apps/mycli/test/node-backend.integration.test.ts backend/apps/mycli/test/m2-smoke-runner.integration.test.ts",
+		"test:m3": "npm run build && node --import tsx --test backend/apps/mycli/test/m3-read-turn.integration.test.ts",
+		"test:m4": "npm run build && node --import tsx --test backend/apps/mycli/test/m4-file-mutation.integration.test.ts",
+		"test:m5": "npm run build && node --import tsx --test backend/apps/mycli/test/m5-state-recovery.integration.test.ts",
+		"test:m6": "npm run build && node --import tsx --test backend/apps/mycli/test/m6-persistent-shell.integration.test.ts",
+		"test:m7": "npm run build && node --import tsx --test backend/apps/mycli/test/m7-extensions.integration.test.ts",
+	};
+
+	assert.deepEqual(
+		Object.fromEntries(Object.keys(expected).map((name) => [name, scripts[name]])),
+		expected,
+	);
+	for (const command of Object.values(expected)) {
+		assert.doesNotMatch(command, /\b(?:python|pytest|uv)\b|\.py\b/u);
+	}
+});
+
+test("repository excludes the retired Python product and toolchain", () => {
+	for (const path of [
+		"src/mycli/",
+		"tests/unit/",
+		"tests/integration/",
+		"tests/support/",
+		"evaluation/",
+		"pyproject.toml",
+		"uv.lock",
+		".python-version",
+		"hatch_build.py",
+		"hatch_build_utils.py",
+		"scripts/check_qwen_cache.py",
+		"scripts/check_sub2api_cache.py",
+		"scripts/demo_responses_cache.py",
+		"scripts/prepare_ripgrep.py",
+		"scripts/probe_codex_responses_transport_cache.py",
+		"scripts/probe_mycli_runtime_cache.py",
+		"scripts/probe_subagent_profiles.py",
+		"backend/packages/storage/test/python-parity.test.ts",
+	]) {
+		assert.equal(existsSync(new URL(path, ROOT)), false, `${path} must stay retired`);
+	}
+	const sessionCorpusTest = readFileSync(
+		new URL("backend/packages/storage/test/session-corpus.test.ts", ROOT),
+		"utf8",
+	);
+	assert.doesNotMatch(sessionCorpusTest, /\b(?:python3?|PYTHONPATH)\b|from mycli\./iu);
+});
+
+test("cross-platform CI has no Python reference or wheel gate", () => {
+	const workflow = readFileSync(new URL(".github/workflows/cross-platform.yml", ROOT), "utf8");
+	for (const retiredMarker of [
+		"python-reference-gate:",
+		"astral-sh/setup-uv",
+		"src/mycli/native",
+		"uv sync",
+		"uv build --wheel",
+	]) {
+		assert.equal(workflow.includes(retiredMarker), false, retiredMarker);
+	}
+	assert.match(workflow, /^ {2}node-m8-gate:$/mu);
+	assert.match(workflow, /^ {2}windows-sandbox-helper:$/mu);
+});
+
 test("compiled CLI does not load the backend implementation on the supervisor thread", () => {
 	const compiled = readFileSync(new URL("../dist/cli.js", import.meta.url), "utf8");
 	assert.doesNotMatch(compiled, /from ["']\.\/node-runtime\/node-backend\.js["']/u);
@@ -159,6 +224,7 @@ test("default workspace imports keep production packages on compiled output", ()
 test("packed CLI smoke includes every local app and runtime dependency", () => {
 	const app = readManifest(packages[0].root);
 	const runtime = readManifest(new URL("../../../packages/runtime/", import.meta.url));
+	const root = readManifest(ROOT);
 	const smoke = readFileSync(
 		new URL("../../../../scripts/smoke_packed_cli.mjs", import.meta.url),
 		"utf8",
@@ -175,6 +241,9 @@ test("packed CLI smoke includes every local app and runtime dependency", () => {
 			`pack smoke is missing ${dependency}`,
 		);
 	}
+	assert.equal(root.scripts?.["smoke:package"], "node scripts/smoke_packed_cli.mjs");
+	assert.match(smoke, /process\.argv\.slice\(2\)\.includes\("--all-platforms"\)/u);
+	assert.match(smoke, /name === CURRENT_PLATFORM_PACKAGE/u);
 });
 
 test("tools optional dependencies match every ripgrep platform package", () => {

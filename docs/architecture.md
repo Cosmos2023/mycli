@@ -1,9 +1,8 @@
 # mycli Architecture
 
-mycli's npm application is a Node.js workspace. The interactive CLI, gateway, runtime, tools,
-providers, storage, extensions, contracts, and TUI have explicit package boundaries; no npm
-production package imports or starts Python. The original Python implementation is retained as an
-independently launched reference runtime.
+mycli is a Node.js npm workspace. The interactive CLI, gateway, runtime, tools, providers, storage,
+extensions, contracts, and TUI have explicit package boundaries. Node owns every production asset,
+generated declaration, test gate, and release package.
 
 ## Package Ownership
 
@@ -20,7 +19,7 @@ independently launched reference runtime.
 | `backend/packages/integrations` | Skills, MCP, hooks, plugins, subagents, discovery and management |
 | `tui/mycli-shell` | Terminal rendering, input, overlays, reducer state, gateway client |
 | `native/windows-sandbox-helper` | Language-neutral restricted-token Windows process helper |
-| `src/mycli` | Retained Python 3.13 reference implementation, launched with `uv run mycli` |
+| `tests/fixtures` | Frozen language-neutral M2-M7 regression corpora consumed by Node tests |
 
 Dependencies point from composition packages toward focused libraries. `core` and contracts do not
 depend on app infrastructure. Providers, filesystem, process launch, and SQLite remain behind
@@ -46,7 +45,7 @@ state before the UI is told to wait, allowing restart recovery without replaying
 ## Composition Root
 
 `backend/apps/mycli/src/cli.ts` parses provider-free management commands before TTY validation. Interactive
-startup unconditionally calls `startNodeBackend`; there is no runtime router or sidecar branch.
+startup unconditionally calls `startNodeBackend`; there is no alternate runtime branch.
 The Node backend owns provider construction, stores, trust, tools, integrations, shell managers,
 gateway transport, signals, and shutdown.
 
@@ -153,11 +152,10 @@ override built-in tools or slash commands. See [node-agent-runtime.md](node-agen
 
 ## Contracts And Tests
 
-Canonical schemas live in `backend/packages/contracts/schemas`; generation produces TypeScript plus the
-Python runtime's schema resource copies. The
-last Python/Node comparison corpus remains as sanitized JSON under `tests/fixtures/node_runtime_m2`
-through `node_runtime_m7`, with hashes owned by the M8 Node audit.
+Canonical schemas live in `backend/packages/contracts/schemas`; generation produces TypeScript
+declarations only. The final cross-runtime comparison corpus is retained as sanitized historical
+evidence under `tests/fixtures/node_runtime_m2` through `node_runtime_m7`, with hashes owned by the
+M8 Node audit.
 
 Node release gates cover build, contract drift, ESLint, TypeScript, Node unit/integration tests,
 provider-free M8 smoke, packed-install smoke, native process checks, and an opt-in Responses smoke.
-The retained Python runtime keeps separate pytest, ruff, mypy, packaging, and cross-backend gates.

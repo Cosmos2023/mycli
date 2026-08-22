@@ -4,8 +4,8 @@
 conversation, structured tool calls, file mutation, persistent shells, sessions, compaction,
 memory, MCP, skills, plugins, hooks, and subagents behind one terminal UI.
 
-The npm CLI production runtime is Node-only. The Python implementation, package, and tests remain
-available as an independently launched reference runtime; the Node CLI never falls back to it.
+The npm CLI is the only maintained product runtime. The repository does not ship a second runtime,
+fallback process, or language-specific compatibility writer.
 
 ## Requirements
 
@@ -13,7 +13,6 @@ available as an independently launched reference runtime; the Node CLI never fal
 - npm.
 - An API key for OpenAI Responses, OpenAI-compatible Chat Completions, or Anthropic Messages.
 - A real TTY for the interactive UI. Provider-free management commands also work without a TTY.
-- Python 3.13 and `uv` only when developing or launching the retained Python reference runtime.
 
 Persistent PTY support uses the pinned `node-pty@1.2.0-beta.15`. If npm cannot use a prebuilt
 binary, the host needs the normal `node-gyp` compiler prerequisites. These are install-time build
@@ -25,8 +24,8 @@ requirements, not mycli runtime dependencies.
 - `backend/packages/`: Node domain, runtime, storage, providers, integrations, tools, config, and contracts.
 - `tui/mycli-shell/`: terminal UI and gateway client.
 - `npm/ripgrep/<target>/`: release-only optional native packages, kept outside npm workspaces.
-- `native/`: platform helper source; `scripts/`: build, release, and smoke automation.
-- `src/mycli/` and `tests/`: retained Python reference runtime and its tests.
+- `native/`: platform helper source; `scripts/`: Node build, release, benchmark, and smoke automation.
+- `tests/fixtures/`: checksum-protected language-neutral regression corpora consumed by Node tests.
 - `docs/`: user, migration, architecture, and parity documentation.
 
 ## Install And Run
@@ -68,16 +67,9 @@ npm run mycli -- --session demo
 npm run mycli -- --model gpt-5.5
 ```
 
-`--runtime-backend`, `MYCLI_RUNTIME_BACKEND`, and the Python sidecar are retired. Passing the old
-flag is a usage error instead of silently selecting another runtime.
-
-The retained Python implementation is launched independently, between sessions rather than as an
-npm backend fallback:
-
-```bash
-uv sync --dev
-uv run mycli
-```
+`--runtime-backend` and `MYCLI_RUNTIME_BACKEND` are retired. Passing the old flag is a usage error;
+startup always uses the Node runtime. The former Python console script and wheel are no longer
+shipped, so existing users must install and launch the npm CLI shown above.
 
 ## Configuration
 
@@ -85,7 +77,8 @@ Setup writes user state under `~/.mycli`:
 
 - `config.toml`: provider, model, runtime, context, memory, shell, and TUI settings.
 - `auth.json`: API keys referenced by `auth_ref`.
-- `models.json`: the model catalog used by `/model`.
+- `models.json`: the provider-grouped model catalog used by `/model`, including reasoning and
+  context/output capabilities. Legacy flat catalogs remain readable.
 - `sessions.db`: durable session, turn, queue, approval, clarification, shell, and trace state.
 - `sessions/<session-id>/`: readable projections derived from SQLite: schema-v2 `session.json`,
   append-only `events.jsonl`, retained background output under `tasks/`, and subagent snapshots
@@ -158,6 +151,9 @@ data is retained in SQLite so a resumed provider turn does not depend on the ori
 - Structured context compaction, memory extraction, context diagnostics, and usage accounting.
 - `Read`, `Edit`, `Patch`, `Write`, `AskUserQuestion`, `Shell`, `WriteStdin`, `web_fetch`, and
   `tool_search`, with hidden compatibility routes for shell polling and control.
+- `Edit`, `Patch`, and `Write` keep the active turn filesystem policy by default. In a restricted
+  turn, `danger-full-access` is accepted only as a justified, one-time retry of the same operation
+  after workspace confinement returned `workspace_escape`, and still requires user approval.
 - `web_fetch` retrieves only bounded public HTTP(S) text under a network-enabled execution policy;
   it blocks private/local targets and fences returned content as untrusted external data.
 - MCP and plugin schemas are discovered through `tool_search` and become visible only after the
@@ -248,16 +244,14 @@ npm run typecheck
 npm run test:m8
 npm run smoke:m8
 npm run smoke:package
-uv run pytest -q
-uv run ruff check .
-uv run mypy src/mycli
 ```
 
 The packed smoke installs all local workspace tarballs, exercises the compiled CLI and native PTY,
 runs provider-free management commands, and fails if the npm artifact imports, starts, invokes, or
-probes for Python. CI runs the Node gate on Node 22.19 and Node 24 across Linux, macOS, and Windows,
-plus a Python 3.13 reference gate. A credential-gated Responses smoke runs only after the offline
-Node gates pass.
+probes for Python. It packages only the current ripgrep platform by default; release validation can
+package all six platform artifacts with `npm run smoke:package -- --all-platforms`. CI runs the Node
+gate on Node 22.19 and Node 24 across Linux, macOS, and Windows, plus native helper matrices. A
+credential-gated Responses smoke runs only after the offline Node gates pass.
 
 Canonical contracts live under `backend/packages/contracts/schemas`; generated TypeScript is checked for
 drift. The final M8 capability inventory is in
@@ -270,7 +264,7 @@ provider, native PTY, sandbox, session, extension, and recovery failures.
 
 M8 rollback means installing the previous release. There is no backend switch in the current
 build. Before rolling back, finish or interrupt the active turn, resolve pending input, stop owned
-background shells, and back up `~/.mycli`. Do not run old and new runtimes concurrently against the
+background shells, and back up `~/.mycli`. Do not run two package versions concurrently against the
 same active session database.
 
 See [docs/node-runtime-rollout.md](docs/node-runtime-rollout.md) for the release and rollback

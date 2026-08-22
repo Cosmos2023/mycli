@@ -1,1 +1,0 @@
-"""Prompt assets for mycli."""

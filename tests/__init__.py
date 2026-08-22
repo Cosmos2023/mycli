@@ -1,1 +1,0 @@
-"""mycli test suite."""

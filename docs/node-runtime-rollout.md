@@ -1,17 +1,17 @@
-# Node Runtime M8 Rollout
+# Node-Only Runtime Rollout
 
 ## Release Boundary
 
-M8 makes Node the only runtime started by the npm CLI. It follows a final black-box parity audit
-that closed every retained capability row before removing the sidecar selection path. The Python
-package remains available as an independently launched reference implementation.
+M8 established Node as the only npm runtime after a final black-box capability audit. The current
+release also retires the former Python package, wheel, tests, and toolchain, leaving one maintained
+product and one release gate.
 
 The current CLI:
 
 - starts `startNodeBackend` unconditionally for interactive use;
 - rejects the retired `--runtime-backend` flag;
 - ignores the retired backend-selection environment variable;
-- contains no Python import, sidecar startup, executable probe, or wheel path;
+- contains no alternate runtime startup, executable probe, or wheel path;
 - uses the existing TUI and terminal interaction model rather than redesigning it.
 
 ## Retained Surface
@@ -24,9 +24,9 @@ The current subagent implementation uses durable agent threads supervised entire
 state, mailbox delivery, frozen permissions, restart recovery, readable artifacts, and TUI
 projection are described in [node-agent-runtime.md](node-agent-runtime.md).
 
-The final gateway baseline matched the Python reference at 33 RPCs and 42 events. Later contract
-work added shell controls and explicit `session.new`, so the Node-only contract contains 38 RPCs
-and 42 events. The sanitized M2-M7 fixture corpus remains under
+The final pre-retirement gateway baseline contained 33 RPCs and 42 events. Later contract work
+added shell controls and explicit `session.new`, so the current contract contains 38 RPCs and 42
+events. The sanitized M2-M7 fixture corpus remains under
 `tests/fixtures` and is checksum-protected by the M8 audit.
 
 Intentional Node-surface retirements:
@@ -34,10 +34,11 @@ Intentional Node-surface retirements:
 - `LS`, `Glob`, and `Grep`; `Read` owns bounded discovery.
 - implicit subagent budgets; Node budgets are opt-in.
 - Python plugin source compatibility; Plugin API v2 is compiled ESM.
-- same-build Python backend fallback.
+- same-build alternate backend fallback.
 
-The Python source, packaging metadata, pytest suite, ruff/mypy checks, and `uv run mycli` entrypoint
-remain maintained. They are not bundled into or started by the npm package.
+The repository no longer ships the former Python console script or package metadata. Existing
+users move to the npm install and launch commands; retirement does not migrate, rewrite, or delete
+healthy schema-v12 session data.
 
 ## Offline Release Gate
 
@@ -55,9 +56,10 @@ npm run smoke:package
 ```
 
 CI runs this gate on Linux, macOS, and Windows with Node 22.19 and Node 24. The packed smoke creates
-workspace tarballs, installs them in a clean directory, checks the compiled CLI and native PTY,
-executes management commands with a clean home, and makes Python import/invocation/probing fail the
-test.
+workspace tarballs plus the current platform's ripgrep package, installs them in a clean directory,
+checks the compiled CLI and native PTY, executes management commands with a clean home, and makes
+Python import/invocation/probing fail the test. Before publishing every platform package, run
+`npm run smoke:package -- --all-platforms` to download and inspect all six ripgrep artifacts.
 
 `smoke:m8` is provider-free. It starts the real backend with a disposable home and workspace,
 waits for `runtime.ready`, bootstraps a session, loads the 16-command visible TUI projection, and
@@ -87,13 +89,13 @@ request in the same release run.
 1. Back up `~/.mycli` before upgrading a production workstation.
 2. Finish or interrupt active turns and resolve pending approvals/clarifications.
 3. Stop background shells and child tasks.
-4. Install the M8 package and run `mycli doctor`.
+4. Install the current npm package and run `mycli doctor`.
 5. Start one provider-free management command and one disposable session.
 6. Run the credential-gated Responses smoke only if the offline gates are green.
 7. Promote the release after platform jobs and cleanup checks pass.
 
-Do not run the old Python release and M8 concurrently against the same active session database.
-Durable schema compatibility does not make live process or continuation ownership shareable.
+Do not run two package versions concurrently against the same active session database. Durable
+schema compatibility does not make live process or continuation ownership shareable.
 
 The doctor report must include a healthy `model_input_ledger` row before resuming migrated
 sessions. The check is read-only and detects incomplete manifests, missing immutable references,
@@ -116,8 +118,8 @@ Before rollback:
 5. install the previous release;
 6. resume only after checking the target session with that release's doctor/status flow.
 
-Never keep Python as an unadvertised fallback or diagnostic probe in the M8 package. A rollback is
-a package-level operator decision made between turns, not an automatic retry path.
+Never add an unadvertised alternate runtime or diagnostic executable probe. A rollback is a
+package-level operator decision made between turns, not an automatic retry path.
 
 ## Troubleshooting
 

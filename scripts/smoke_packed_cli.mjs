@@ -25,11 +25,15 @@ const WORKSPACES = [
 	"mycli-shell-tui",
 	"@mycli/app",
 ];
-const PLATFORM_PACKAGES = Object.entries(RIPGREP_TARGETS).map(([target, info]) => ({
+const ALL_PLATFORM_PACKAGES = Object.entries(RIPGREP_TARGETS).map(([target, info]) => ({
 	name: info.npmPackage,
 	target,
 }));
 const CURRENT_PLATFORM_PACKAGE = RIPGREP_TARGETS[ripgrepPlatformKey()].npmPackage;
+const PACK_ALL_PLATFORMS = process.argv.slice(2).includes("--all-platforms");
+const PLATFORM_PACKAGES = PACK_ALL_PLATFORMS
+	? ALL_PLATFORM_PACKAGES
+	: ALL_PLATFORM_PACKAGES.filter(({ name }) => name === CURRENT_PLATFORM_PACKAGE);
 const NATIVE_PTY_SMOKE = String.raw`
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -300,6 +304,7 @@ try {
 		status: "completed",
 		packed_workspaces: WORKSPACES.length,
 		packed_platforms: PLATFORM_PACKAGES.length,
+		platform_scope: PACK_ALL_PLATFORMS ? "all" : "current",
 	})}\n`);
 } catch (error) {
 	const detail = error instanceof Error ? error.message : "unknown_error";

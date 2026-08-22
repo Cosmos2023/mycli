@@ -1,7 +1,7 @@
 # Windows Source Checkout
 
-mycli runs natively on Windows through Node.js. Git Bash and a Python runtime are not required by
-the installed npm CLI. Python 3.13 and `uv` are optional when running the retained Python reference.
+mycli runs natively on Windows through Node.js. Git Bash and a separate language runtime are not
+required by the installed npm CLI.
 
 ## Requirements
 
@@ -9,7 +9,6 @@ the installed npm CLI. Python 3.13 and `uv` are optional when running the retain
 - npm and Git.
 - Visual Studio Build Tools only when npm must compile a native dependency instead of using a
   prebuilt binary.
-- Python 3.13 and `uv` only for the retained reference implementation and its tests.
 
 Install and run from PowerShell:
 

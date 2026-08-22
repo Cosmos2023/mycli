@@ -6,9 +6,8 @@
 
 ## Overview
 
-The production CLI is a Node.js npm monorepo. The Python package remains in the same repository as
-an independently launched reference runtime. Keep those two runtime trees explicit: shared behavior
-is verified through contracts and parity tests, not by importing implementation code across them.
+The production CLI is a Node.js npm monorepo. Node owns every runtime asset, generated declaration,
+test gate, and release package; there is no maintained second implementation tree.
 
 ---
 
@@ -30,8 +29,7 @@ tui/mycli-shell/             Terminal UI and gateway client adapter
 npm/ripgrep/<target>/        Release-only optional native packages; not npm workspaces
 native/                      Native helper source built by the platform matrix
 scripts/                     Repository build, smoke, and release helpers
-src/mycli/                   Retained Python reference implementation
-tests/                       Python unit and integration tests
+tests/fixtures/               Frozen language-neutral regression corpora consumed by Node tests
 docs/                        User, architecture, migration, and parity documentation
 ```
 
@@ -49,7 +47,7 @@ docs/                        User, architecture, migration, and parity documenta
 - Keep the TUI dependent on contracts and gateway APIs, not backend implementation modules.
 - Put release-only native npm manifests under `npm/<component>/<target>`. Do not add mutually
   incompatible OS/CPU packages to the root workspace glob.
-- Do not move the retained Python implementation into Node packages or use it as an npm fallback.
+- Do not add an alternate product runtime, sidecar, or fallback implementation.
 - Tests must use framework temporary directories. They must not create `.tmp-*`, session homes,
   databases, or generated artifacts at repository root.
 
@@ -70,8 +68,8 @@ docs/                        User, architecture, migration, and parity documenta
 ### 3. Contracts
 
 - All Node backend implementation workspaces live under `backend/apps` or `backend/packages`.
-- `tui/`, `npm/`, `native/`, `scripts/`, and the retained Python `src/mycli/` tree remain at the
-  repository root and are not backend workspaces.
+- `tui/`, `npm/`, `native/`, `scripts/`, and `tests/fixtures/` remain at the repository root and
+  are not backend workspaces.
 - A backend file that resolves a root-level resource must account for the extra `backend/` path
   segment. Search both literal paths such as `packages/tools` and segmented construction such as
   `join(ROOT, "packages", "tools")` when changing the layout.
@@ -98,7 +96,7 @@ docs/                        User, architecture, migration, and parity documenta
 ### 6. Tests Required
 
 - Build and type-check every workspace from the repository root.
-- Run Node workspace tests and Python parity tests that launch TypeScript helpers.
+- Run Node workspace tests and the checksum-enforced M8 fixture audit.
 - Run the packed CLI smoke and assert all local workspaces and platform packages install.
 - Run a stale-path scan that includes literal paths and segmented `join`/`Path` construction.
 
@@ -235,7 +233,6 @@ counter.count(modelInput);
 
 - TypeScript modules and package directories use lowercase kebab-case where a multiword filename is
   needed; exported types and classes use PascalCase.
-- Python modules remain snake_case.
 - Native package child directories use the canonical target key, for example
   `npm/ripgrep/macos-aarch64` or `npm/ripgrep/windows-x86_64`.
 - Generated `dist/`, `vendor/`, cache, session, and test-home directories are ignored and must be

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## 项目使命
-- 构建一个基于 Python 3.13 的 coding agent，它不仅能够编写和修改代码，还能够分析文件、协助完成日常任务，并作为一个可靠的个人助手存在。
+- 构建一个基于 Node.js 与 TypeScript 的 coding agent，它不仅能够编写和修改代码，还能够分析文件、协助完成日常任务，并作为一个可靠的个人助手存在。
 - 即使项目当前规模较小，也要把这个仓库当作企业级代码库来建设。
 - 以可维护性、清晰边界、可测试性和安全执行为核心优化方向。
 
@@ -14,10 +14,11 @@
 - Agent 应该能够理解代码文件与非代码文件，总结关键发现，提出下一步建议，并在合适时执行边界明确的操作。
 
 ## 工程基线
-- Python 版本：3.13
-- 优先采用 `src/` 目录结构。
+- Node.js 版本：`>=22.19.0`，同时支持 Node 24。
+- 包管理与工作区：npm workspace，使用根目录 `package-lock.json`。
+- TypeScript 启用严格类型检查；生产入口必须编译到 `dist/`，开发入口通过 `mycli-source` 条件解析 `src/`。
 - 所有公共函数、类方法以及模块级接口，优先补齐显式类型标注。
-- 优先使用标准库。只有在第三方依赖能带来明确长期价值时才引入。
+- 优先使用 Node.js 标准库。只有在第三方依赖能带来明确长期价值时才引入。
 - 保持模块小而专一，确保结构易读、易查找。
 - 除非继承明显更合适，否则优先组合而不是继承。
 
@@ -25,53 +26,52 @@
 - 除非有充分理由，否则优先采用如下结构：
 
 ```text
-src/
-  mycli/
-    __init__.py
-    cli/
-    application/
-    domain/
-    agents/
+backend/
+  apps/mycli/
+  packages/
+    config/
+    contracts/
+    core/
+    integrations/
+    providers/
+    runtime/
+    storage/
     tools/
-    workflows/
-    services/
-    infrastructure/
-    schemas/
-    prompts/
-    utils/
+tui/mycli-shell/
+native/
+npm/ripgrep/
 tests/
-  unit/
-  integration/
+  fixtures/
 scripts/
 docs/
 ```
 
 - 目录职责说明：
-  - `cli/`：命令行入口与参数解析
-  - `application/`：用例编排与应用层调度逻辑
-  - `domain/`：核心业务规则与领域模型
-  - `agents/`：Agent 实现、规划、协调与执行策略
-  - `tools/`：文件、shell、git、搜索等工具适配层
-  - `workflows/`：可复用的任务流程，例如编码、评审、分析与日常助手流程
-  - `services/`：模型路由、记忆、索引、任务状态等横切服务
-  - `infrastructure/`：持久化、外部集成、SDK 封装与运行时适配器
-  - `schemas/`：类型化的请求与响应模型
-  - `prompts/`：提示词模板与系统指令构建逻辑
-  - `utils/`：小型通用辅助函数，不要把它变成杂物间
+  - `backend/apps/mycli/`：命令行入口、管理命令、运行时组装和 TUI gateway
+  - `backend/packages/core/`：不依赖基础设施的核心领域类型与规则
+  - `backend/packages/runtime/`：turn、worker、compaction、恢复与 Agent 调度
+  - `backend/packages/storage/`：SQLite、append-only transcript 与可读投影
+  - `backend/packages/providers/`：模型提供方协议与传输适配
+  - `backend/packages/tools/`：文件、shell、审批、sandbox 与 ripgrep 适配
+  - `backend/packages/integrations/`：MCP、skills、hooks、plugins 与 subagents
+  - `backend/packages/contracts/`：canonical JSON Schema、生成的 TypeScript 类型与验证
+  - `tui/mycli-shell/`：终端 UI、gateway client 与 reducer
+  - `tests/fixtures/`：由 Node 测试消费并校验哈希的语言无关回归数据
+  - `native/` 与 `npm/`：平台 helper 源码和发布专用原生 npm 包
 
 ## 编码规范
-- 遵循 PEP 8、PEP 257 以及现代 Python 类型标注实践。
+- 遵循仓库 ESLint、TypeScript strict mode 与现有 Node.js 模块风格。
 - 命名规则：
-  - 模块与包：`snake_case`
-  - 函数与变量：`snake_case`
+  - 多词模块与包：`kebab-case`
+  - 函数与变量：`camelCase`
   - 类：`PascalCase`
   - 常量：`UPPER_SNAKE_CASE`
 - 函数应保持单一职责，具备良好可读性。
 - 避免过度炫技式抽象。
-- 在合适情况下，优先使用 `pathlib.Path` 而不是原始字符串路径。
-- 应用行为优先使用 `logging`，避免直接使用 `print`。
+- 文件与路径处理优先使用 `node:path`、`node:url` 和 `node:fs` 的结构化 API。
+- 应用行为优先使用现有结构化诊断与事件边界；只在 CLI/stdout 协议边界直接输出。
 - 抛出明确、具体的异常，并尽量在最接近可恢复边界的位置处理错误。
-- 当数据结构相对稳定时，优先使用 dataclass 或类型化模型，而不是松散的字典。
+- 当数据结构相对稳定时，优先使用只读 interface/type 与运行时验证，而不是松散的 `Record<string, unknown>`。
 
 ## 架构规则
 - 不要把业务逻辑放进 CLI 处理器或基础设施适配层中。
@@ -79,9 +79,10 @@ docs/
 - 模型提供方、shell 调用、文件 IO 和外部集成都应放在清晰的接口之后。
 - Agent 工作流应设计为无需依赖真实外部服务也能测试。
 - 通过保持清晰的依赖方向避免循环引用：
-  - `domain` 不应依赖 `infrastructure`
-  - `application` 可以依赖 `domain`
-  - `infrastructure` 可以实现上层定义的接口
+  - `core` 与 `contracts` 不应依赖 app 组装层
+  - `runtime` 可以依赖 `core` 和上层定义的接口
+  - providers、storage、tools 与 integrations 通过明确接口接入 runtime
+  - TUI 依赖 contracts 与 gateway API，不依赖 backend 实现模块
 
 ## Codex 工作约定
 - 在开始编码前：
@@ -106,11 +107,12 @@ docs/
   - 边界或工具适配层相关的集成测试
   - 类型安全的接口定义
 - 如果相关工具链尚未搭建，应以干净、最小化的方式建立。
-- 在初始化阶段，优先采用以下工具：
-  - 依赖与环境管理：`uv`
-  - 格式化与 lint：`ruff`
-  - 测试：`pytest`
-  - 静态类型检查：`mypy`
+- 使用仓库现有工具链：
+  - 依赖与环境管理：`npm ci`
+  - lint：`npm run lint`
+  - 测试：Node `node:test` 与 `npm test`
+  - 静态类型检查：`npm run typecheck`
+  - contract drift：`npm run contracts:check`
 
 ## 安全与审批
 - 不要在日志或输出中暴露密钥、API Key、Token 或私有本地数据。
