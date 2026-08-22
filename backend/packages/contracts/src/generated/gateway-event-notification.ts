@@ -464,14 +464,45 @@ export interface Item {
 }
 export interface Item1 {
   client_turn_id: string;
-  item: {
-    client_user_message_id: string;
-    content: string;
-    id: string;
-    source: "submit" | "steer";
-    type: "user_message";
-    [k: string]: any;
-  };
+  item:
+    | {
+        client_user_message_id: string;
+        content: string;
+        id: string;
+        source: "submit" | "steer";
+        type: "user_message";
+        [k: string]: any;
+      }
+    | {
+        call_id: string;
+        content_chars?: number;
+        content_line_count?: number;
+        content_preview?: string;
+        content_truncated?: boolean;
+        diff?: string;
+        diff_chars?: number;
+        diff_truncated?: boolean;
+        /**
+         * @maxItems 64
+         */
+        file_changes?: {
+          added_lines: number;
+          diff: string;
+          kind: "add" | "update" | "delete" | "move";
+          omitted_chars: number;
+          path: string;
+          previous_path?: string;
+          removed_lines: number;
+          truncated: boolean;
+          version: 1;
+          [k: string]: any;
+        }[];
+        id: string;
+        name: string;
+        preview: string;
+        type: "file_change";
+        [k: string]: any;
+      };
   turn_id: string;
   [k: string]: any;
 }
@@ -539,6 +570,7 @@ export interface Shell {
   call_id?: string | null;
   cleanup_result?: string;
   command_preview: string;
+  description?: string;
   completed_at?: string;
   exit_code?: number;
   next_cursor?: number;

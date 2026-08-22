@@ -1,6 +1,6 @@
 # Runtime TUI Gateway Contract
 
-> Contract for Python and Node runtime events consumed by the Node TUI.
+> Contract for Node runtime events consumed by the Node TUI.
 
 ## Scenario: Durable Workspace Trust
 
@@ -53,9 +53,11 @@
   tool list for every provider step and approval continuation. A later trust or
   permission update affects the next turn only. Terminal completion releases
   the frozen turn; a waiting approval retains it.
-- The frozen provider tool list is also an execution authorization set. A
-  provider call for an unexposed tool fails with `tool_protocol_error` before
-  assistant tool-call persistence or adapter execution.
+- The frozen provider tool list gates adapter execution. A provider call for an
+  unexposed tool is persisted as a bounded failed tool result with
+  `errorKind=unsupported_tool` before approval, hooks, or adapter execution, and
+  the provider loop may recover on its next step instead of terminating with a
+  fatal `tool_protocol_error`.
 - Permission mapping is fixed: `read-only` uses read-only filesystem and no
   network/writable roots; `workspace` uses workspace-write with the canonical
   workspace writable and no network; `full-access` uses explicit
@@ -115,7 +117,8 @@
 - Bad: dismiss the gate before the runtime confirms durable persistence.
 - Bad: let persisted `untrusted` expose process tools in a Node provider request.
 - Bad: treat provider tool schemas as the only authorization boundary and route
-  an unexposed `Shell` call returned by the provider.
+  an unexposed `Shell` call returned by the provider to an adapter; persist the
+  bounded `unsupported_tool` result and let the model recover instead.
 - Bad: implement `full-access` ahead of explicit exec-policy evaluation or use
   it to bypass malformed-call validation, workspace trust, clarification, or
   provider authentication.
@@ -131,8 +134,8 @@
 - Node integration test: set trusted, close the backend, create a new backend
   with the same home/workspace, and assert bootstrap reports trusted.
 - Runtime unit tests: fail-closed initial coordinator state, immutable turn
-  profile across reconfiguration, terminal release, and rejection of an
-  unexposed provider tool call before persistence/execution.
+  profile across reconfiguration, terminal release, and persistence of an
+  `unsupported_tool` result for an unexposed provider call before execution.
 - Approval policy tests: workspace requests an unmatched routine Shell command;
   `full-access` allows it and a known request-policy extension, while explicit
   `ask` / `deny`, malformed arguments, and unknown tools are denied without a
@@ -183,18 +186,16 @@ and tool execution. A later permission change does not affect a running turn.
 ## Scenario: Approval And Live Status Events
 
 ### 1. Scope / Trigger
-- Trigger: Any change to `src/mycli/cli/node_tui/gateway.py`, the Node runtime
-  gateway, the Node TUI protocol types, or the reducer state that changes
-  runtime-to-TUI events.
-- This is a cross-layer contract. Python owns runtime semantics and JSON-RPC
-  emission; TypeScript owns rendering and reducer state.
+- Trigger: Any change to the Node runtime gateway, TUI protocol types, or reducer state that
+  changes runtime-to-TUI events.
+- This is a cross-layer contract. The Node gateway owns runtime semantics and JSON-RPC emission;
+  the TUI owns rendering and reducer state.
 - The target direction is Hermes-like channel separation, but existing mycli
   JSON-RPC method-name notifications remain compatible until a versioned
   envelope migration is introduced.
 
 ### 2. Signatures
-- Python event emitter:
-  `NodeTuiGateway._emit_event(method: str, params: dict[str, object]) -> None`
+- Node event emitter: `NodeGateway.#emitRuntime(method, params) -> void`.
 - Extension discovery request method: `extension.manifest`
 - Session bootstrap request method: `session.bootstrap`
 - Turn submit request method: `turn.submit`
@@ -262,6 +263,11 @@ and tool execution. A later permission change does not affect a running turn.
   - `preview`: human-readable operation preview
   - `reason`: optional human-readable rationale
   - `tool_name`: optional tool name
+  - File mutation requests may also carry either `content_preview`, `content_line_count`,
+    `content_chars`, and `content_truncated` for `Write`, or `diff`, `diff_chars`, and
+    `diff_truncated` for `Edit` / `Patch`. Runtime uses camel-case internally; the gateway owns the
+    canonical snake-case projection. These fields describe the proposal and arrive before tool
+    execution so the selector can render the exact change being approved.
   - `options`: array of `{choice, label}` rows matching runtime
     `DecisionAction` values
   - `choice` is a stable approval decision-choice value:
@@ -288,6 +294,8 @@ and tool execution. A later permission change does not affect a running turn.
 - `clarify.request` payload:
   - `client_turn_id`: optional string linking the clarification to the active
     turn
+  - `turn_id`: stable turn id used to cancel the suspended clarification with
+    `turn.interrupt`
   - `request_id`: stable string for this clarification request, normally the
     source tool call id
   - `tool_id`, `call_id`, and `tool_name`: diagnostic routing fields for the
@@ -383,6 +391,12 @@ and tool execution. A later permission change does not affect a running turn.
     forced interruption boundary. That boundary atomically closes pending tool
     results, persists the interrupted turn, writes the terminal snapshot, and
     fences all late completion writes before the gateway emits terminal events.
+  - When a clarification owns a suspended turn, the gateway reconstructs the
+    owning turn from the pending clarification, clears its continuation before
+    finalization, and applies the same durable interrupted-turn boundary. The
+    coordinator snapshot must also clear `pendingClarification` before the
+    authoritative `status.changed` event so the TUI does not remount the
+    selector.
   - The interrupt RPC response remains pending until the confirmed terminal
     interruption has been emitted. Multiple matching interrupt requests share
     the same in-flight interruption and resolve from the same terminal result.
@@ -435,11 +449,9 @@ and tool execution. A later permission change does not affect a running turn.
     `internal_error`, `invalid_params`, `method_not_found`,
     `turn_in_progress`, `decision_not_pending`, or
     `clarification_not_pending`, or `incompatible_protocol`
-  - Python exposes the source taxonomy as `GATEWAY_ERROR_CODES` from
-    `mycli.domain.runtime.gateway_contract`; Node TUI exposes the matching
+  - Canonical gateway contracts own the source taxonomy. The TUI exposes the matching
     `GATEWAY_ERROR_CODES` runtime constant and `GatewayErrorCode` type from
-    `tui/mycli-shell/src/adapters/gateway-client.ts`. Node tests must compare the TypeScript
-    constant against the Python extension manifest schema.
+    `tui/mycli-shell/src/adapters/gateway-client.ts`; tests compare it with the generated schema.
   - `message`: bounded user-facing error text
   - `detail`: optional bounded diagnostic detail
   - `method`: optional JSON-RPC request method that triggered the error
@@ -457,9 +469,8 @@ and tool execution. A later permission change does not affect a running turn.
   - `type`: original event method, for example `message.delta`
   - `payload`: original event params object
   - `timestamp`: UNIX timestamp seconds from the gateway process
-  - Python code should construct this payload through the runtime domain
-    contract `RuntimeEventEnvelope` and `RUNTIME_EVENT_ENVELOPE_VERSION` rather
-    than duplicating gateway-local dict literals.
+  - Gateway code constructs this payload through the canonical event contract rather than
+    duplicating incompatible local object shapes.
   - Existing method-name notifications remain the primary compatibility path.
     The gateway emits them unchanged and then emits the envelope mirror.
   - `runtime.event` must not recursively wrap another `runtime.event`.
@@ -468,6 +479,23 @@ and tool execution. A later permission change does not affect a running turn.
     outside the runtime event boundary during process bootstrap.
 - Tool lifecycle notifications come from real tool execution, not model-side
   tool-call request streaming:
+	- A validated `Write`, `Edit`, or `Patch` proposal emits
+	  `item.started(item.type=file_change)` before either `approval.request` or
+	  `tool.start`. The item carries the stable call id, bounded target preview,
+	  bounded compatibility `content_*` or `diff*` fields, and canonical
+	  `file_changes[]` entries with snake-case diff metadata. Approval and
+	  `full-access` execution use the same begin item; only the approval route
+	  mounts the bottom selector.
+	- A valid structured proposal projects directly to the file-change component:
+	  `Added/Edited <path> (+N -M)` followed by the numbered diff. It must not
+	  render a generic `Write/Edit/Patch <duration>` card, a raw-content detail
+	  block, or a `details hidden` footer. The global tool-detail toggle never
+	  hides file diffs.
+	- The proposal item is a live TUI projection. It is not persisted as a
+	  transcript row and is not reconstructed on resume. Later `tool.start`,
+	  `tool.complete`, or `tool.failed` updates the same TUI row by call id.
+	  Completion replaces the proposal with the canonical result `file_changes`;
+	  rejection/failure replaces it with one bounded failed-change row.
   - Every started, completed, or failed tool remains represented in the TUI
     transcript in `default`, `focus`, and `verbose` modes. View modes may change
     history scope and detail density, and consecutive context tools may collapse
@@ -545,13 +573,9 @@ and tool execution. A later permission change does not affect a running turn.
   - `payload_schema` is a discovery and compatibility surface, not a full
     runtime validator. It must cover every supported gateway event stream so
     external clients can inspect required fields without scraping prose docs.
-  - Node protocol code must keep a machine-readable
-    `GATEWAY_EVENT_PAYLOAD_CONTRACTS` map whose required fields, known
-    property names, and enum values match the Python manifest
-    `payload_schema` object for every known event method. Node tests should
-    compare that map against the live Python
-    `ExtensionManifestService().manifest()` output so Python/TypeScript drift is
-    caught before runtime.
+  - Node protocol code must keep a machine-readable `GATEWAY_EVENT_PAYLOAD_CONTRACTS` map whose
+    required fields, known property names, and enum values match the canonical gateway-event schema
+    for every known event method. Contract tests catch schema/declaration drift before runtime.
   - It must list machine-readable integration methods such as `trace.export`.
   - It must list runtime stream discovery surfaces such as `runtime.event`,
     `message.delta`, `tool.start`, `turn.status`, and `session.changed`.
@@ -608,6 +632,10 @@ and tool execution. A later permission change does not affect a running turn.
     result. The earlier compatibility `initialize` request must not re-emit the
     same prompt, so the normal startup handshake exposes one actionable
     approval rather than two.
+  - Restart and `session.resume` projection must not derive mutation detail from the pending
+    canonical tool call. Re-emitted approvals retain identity, path preview, reason, and choices but
+    omit `content_*` and `diff*`, keeping recovered TUI transcript metadata compact without adding
+    preview columns or fields to durable session state.
 - Running-turn queue RPCs:
   - `turn.steer` accepts `{message, expected_turn_id, client_turn_id?,
     client_user_message_id?, local_images?}`. A matching active turn produces
@@ -706,8 +734,7 @@ and tool execution. A later permission change does not affect a running turn.
   snapshot. The response and `turn.queue.updated` notification may arrive in
   either order; an older revision must not restore a consumed preview. An RPC
   failure keeps the local recovery path intact.
-- Preserve unknown compatible Python root and record fields when rewriting the
-  `input_queue` payload.
+- Preserve unknown compatible root and record fields when rewriting the `input_queue` payload.
 
 ### 4. Validation & Error Matrix
 
@@ -738,8 +765,8 @@ and tool execution. A later permission change does not affect a running turn.
 - Core/runtime tests for restore reconciliation, rejected-first order, capacity,
   idempotency, session isolation, terminal rejection, interrupt retention, and
   commit-before-provider ordering.
-- Storage tests proving queue history append plus pending removal roll back
-  together and Python optional fields survive snapshot CAS writes.
+- Storage tests proving queue history append plus pending removal roll back together and unknown
+  compatible optional fields survive snapshot CAS writes.
 - Gateway tests asserting event-before-response only after persistence, stale
   steer deferral, queue RPC revisions, sanitized errors, generation fencing,
   reservation-before-removal, reservation-failure retention, and queued-turn
@@ -784,9 +811,8 @@ queue.markStarted(record.queueId);
   - Workspace tooling such as `tsx` and `typescript` may resolve from the root
     `node_modules`; diagnostics and process launch code must recognize that
     layout instead of requiring duplicate nested installations.
-  - Canonical hand-edited schemas live under `backend/packages/contracts/schemas`.
-    Generated TypeScript declarations and Python JSON resources must be
-    regenerated together and must pass `npm run contracts:check`.
+  - Canonical hand-edited schemas live under `backend/packages/contracts/schemas`. Generated
+    TypeScript declarations must pass `npm run contracts:check`.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use
@@ -805,6 +831,10 @@ queue.markStarted(record.queueId);
     approval response keybindings.
   - `pendingClarification` is cleared by `clarify.respond`, terminal status, or
     a `status.changed` snapshot with `suspended_turn === false`.
+  - In the clarification selector, `Esc`/the cancel key interrupts the owning
+    suspended turn (the custom-answer subview uses `Esc` first to return to the
+    option list). The selector remains mounted until the confirmed interrupted
+    status clears `pendingClarification`.
   - While `pendingClarification` exists, plain TUI input submit sends
     `clarify.respond` with `{request_id, response}` instead of `turn.submit`.
     Slash commands remain slash commands.
@@ -813,10 +843,14 @@ queue.markStarted(record.queueId);
     label before sending `clarify.respond`. Non-matching text remains a
     free-form response. Multi-select clarification remains free-form until a
     dedicated selector exists.
-  - `tool.start`, `tool.complete`, and `tool.failed` are consumed by the Node
-    TUI reducer as `tool_summary` transcript rows. The reducer matches existing
-    rows by `tool_id` first and `call_id` second, so completion updates the
-    running row instead of appending duplicates.
+	- `tool.start`, `tool.complete`, and `tool.failed` are consumed by the Node
+	  TUI reducer as `tool_summary` transcript rows. The reducer matches existing
+	  rows by `tool_id` first and `call_id` second, so completion updates the
+	  running row instead of appending duplicates.
+	- `item.started(item.type=file_change)` creates that same matched row before
+	  execution. Valid top-level `file_changes` are authoritative even for a
+	  contributed mutation tool name; the row projects as a file change while
+	  its approval is pending and throughout full-access execution.
   - Live and resumed transcript projection preserve the same semantic order when an assistant
     preamble accompanies tool calls: one assistant row, then the tool rows, then later assistant
     text. A resumed tool row must not reuse the assistant preamble as its target or arguments.
@@ -1031,6 +1065,10 @@ queue.markStarted(record.queueId);
   original `AskUserQuestion` tool result.
 - Good: TUI lets a user type `1` or `TUI` for a single-select clarification
   option and sends the canonical option label in `clarify.respond`.
+- Good: TUI pressing `Esc` while the clarification options are visible sends
+  `turn.interrupt` with the request's `turn_id`; the runtime clears the durable
+  continuation and restores the editor only after `turn.interrupted` and
+  `status.changed(pending_clarification=false)` arrive.
 - Good: TUI renders active tool rows from `tool.start` and final summaries from
   `tool.complete` / `tool.failed` without waiting for `turn.completed`.
 - Good: TUI keeps a single row for the same tool id as it moves from running to
@@ -1051,8 +1089,7 @@ queue.markStarted(record.queueId);
   available for the next server turn.
 - Base: `npm ci` at the repository root installs both `@mycli/contracts` and
   `mycli-shell-tui` from the single root lockfile.
-- Bad: Editing a generated TypeScript declaration or Python schema copy by
-  hand causes the drift check to fail.
+- Bad: Editing a generated TypeScript declaration by hand causes the drift check to fail.
 - Bad: A `runtime.ready` notification without `session_id` is not forwarded to
   the TUI reducer.
 - Good: TUI shows a compact running reasoning preview without mixing reasoning
@@ -1106,11 +1143,10 @@ queue.markStarted(record.queueId);
   messages through lifecycle notification payloads.
 - Bad: Appending a new visible row on both `tool.start` and `tool.complete` for
   the same `tool_id`; that creates duplicated tool activity.
-- Bad: Adding new untyped event fields in Python without updating TypeScript
-  payload types and reducer tests.
-- Bad: Adding or changing Python `payload_schema.required`, `properties`, or
-  enum values without updating the TypeScript protocol contract map and
-  cross-language Node test.
+- Bad: Adding new untyped event fields without updating TypeScript payload types, canonical schemas,
+  and reducer tests.
+- Bad: Changing schema `required`, `properties`, or enum values without updating the TypeScript
+  protocol contract map and contract tests.
 - Bad: Feeding both direct method-name notifications and their `runtime.event`
   mirrors into the same visible reducer path without deduplication.
 - Bad: Emitting `turn.status(state=interrupted)` or resolving the interrupt RPC
@@ -1157,9 +1193,8 @@ queue.markStarted(record.queueId);
 - Node protocol typecheck/client test proving `clarify.request` payloads narrow
   in `GatewayClient.waitForEvent(...)`.
 - Node protocol test proving `KNOWN_GATEWAY_EVENT_METHODS` and
-  `GATEWAY_EVENT_PAYLOAD_CONTRACTS` stay aligned with Python supported event
-  streams and manifest payload-schema required fields, property names, and enum
-  values.
+  `GATEWAY_EVENT_PAYLOAD_CONTRACTS` stay aligned with canonical event streams and schema required
+  fields, property names, and enum values.
 - Reducer/rendering/status tests proving Node TUI consumes `clarify.request`,
   stores `pendingClarification`, renders a distinct clarification row, supports
   `runtime.event` envelope unwrap, and shows `clarification pending` metadata.
@@ -1216,7 +1251,7 @@ queue.markStarted(record.queueId);
   state cleared.
 - Node M5 integration proving restart bootstrap re-emits one persisted strict
   Write approval, `approve_once` executes the mutation exactly once, and the
-  original turn completes without starting Python.
+  original turn completes once.
 - Transcript reducer test proving blank final answers do not create visible
   assistant rows.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
@@ -1257,36 +1292,30 @@ queue.markStarted(record.queueId);
   not append transcript text.
 - Rendering test proving live status text is displayed instead of a hardcoded
   running label when present.
-- Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node
-  `typecheck`, and Node tests for protocol/reducer/rendering changes.
+- Run Node `lint`, `typecheck`, contracts check, and tests for protocol/reducer/rendering changes.
 - Root Node `test` and `typecheck` commands must resolve workspace tooling from
   the root installation. Direct TUI source launch may use its local `tsx` only
   as a compatibility fallback; missing dependencies should produce an
   actionable root `npm ci` message.
 - Contract catalog tests proving `runtime.ready` is present in the canonical
   event list and its payload requires `session_id`.
-- Cross-language fixture tests proving valid `runtime.ready` and
-  `rejected_steer` payloads pass in Ajv and Python `jsonschema`, while malformed
-  boundary payloads fail without leaking their content.
+- Contract fixture tests proving valid `runtime.ready` and `rejected_steer` payloads pass Ajv while
+  malformed boundary payloads fail without leaking their content.
 - Workspace tests proving the root lockfile owns both packages, no nested TUI
   lockfile is required, and generated outputs pass `npm run contracts:check`.
 
 ### 7. Wrong vs Correct
 
 Wrong:
-```python
-self._emit_event(
-    "turn.completed",
-    {"pending_decision": response.pending_decision is not None},
-)
+```typescript
+emit("turn.completed", { pendingDecision: response.pendingDecision !== undefined });
 ```
 
 Correct:
-```python
-if response.pending_decision is not None:
-    self._emit_event("approval.request", approval_payload)
-self._emit_event("turn.completed", {"turn_state": "waiting_approval"})
-self._emit_event("status.update", {"state": "waiting_approval", "text": "Waiting approval"})
+```typescript
+if (response.pendingDecision) emit("approval.request", approvalPayload);
+emit("turn.completed", { turnState: "waiting_approval" });
+emit("status.update", { state: "waiting_approval", text: "Waiting approval" });
 ```
 
 Wrong:
@@ -1362,7 +1391,7 @@ return bootstrap;
   TTY setup calls the in-process setup TUI; non-TTY setup and TUI startup failures use the plain
   interaction. A user cancel does not fall through from TUI to plain setup.
 - The setup TUI returns its result in memory and releases terminal ownership. The npm CLI does not
-  use `MYCLI_SETUP_STATE`, `MYCLI_SETUP_RESULT_PATH`, or a cross-runtime result file.
+  use `MYCLI_SETUP_STATE`, `MYCLI_SETUP_RESULT_PATH`, or an out-of-process result file.
 - Auth/config updates create a mode-`0700` user directory, write and fsync a sibling mode-`0600`
   temporary file under a short exclusive lock, rename atomically, fsync the directory where
   supported, and remove temporary/lock files. Concurrent auth merges serialize.
@@ -1399,8 +1428,8 @@ return bootstrap;
 - Invalid setup provider or blank endpoint/model/key -> bounded `setup_invalid_result`, no key output.
 - Atomic config/auth failure -> preserve the old target, clean temporary files, and return only
   `config_write_failed`, `auth_write_failed`, or `setup_write_failed` stable diagnostics.
-- Existing malformed user TOML -> fail the write and preserve the old file. Malformed auth JSON
-  remains Python-compatible and is treated as an empty auth store when replacing credentials.
+- Existing malformed user TOML -> fail the write and preserve the old file. Malformed legacy auth
+  JSON is treated as an empty auth store when replacing credentials.
 - Doctor collector throws -> `status=failed`, `message="diagnostic failed"`; do not include the raw
   exception, and continue with the next collector.
 - Doctor collector exceeds its deadline -> abort it, wait for bounded cleanup, emit
@@ -1445,7 +1474,7 @@ return bootstrap;
 - Setup tests cover all provider rows, stored-auth presence, success persistence, cancellation,
   TUI-to-plain fallback, pre-buffered pipe input, and key absence from output/response.
 - TUI tests assert direct submit/cancel Promise results, terminal cleanup, and in-memory setup
-  completion without a cross-runtime result file.
+  completion without an out-of-process result file.
 - Parser tests assert retired subagent-profile commands fail as unsupported arguments.
 - Doctor runner tests assert collector order, exception isolation, timeout cancellation plus
   cleanup, later-collector progress, stable counts, shared human/JSON data, and exit semantics.
@@ -1489,14 +1518,13 @@ const report = await runDoctorCollectors(collectors, signal, {
 });
 ```
 
-## Scenario: Node-Only npm Composition Root With Independent Python Reference
+## Scenario: Node-Only npm Composition Root
 
 ### 1. Scope / Trigger
 - Trigger: Changes to `backend/apps/mycli`, `startNodeBackend`, gateway transport injection, process
-  signals, package exports, npm startup, or the Node/Python runtime boundary.
-- The npm CLI owns the terminal and process lifecycle and starts only the Node backend. The Python
-  package remains independently launchable through `uv run mycli`; npm must never import, probe,
-  spawn, or fall back to it.
+  signals, package exports, or npm startup.
+- The npm CLI owns the terminal and process lifecycle and starts exactly one Node backend. No
+  alternate product runtime, probe, spawn, or fallback path exists.
 
 ### 2. Signatures
 - Node CLI: `mycli [--session <id>] [--model <model>]`.
@@ -1506,14 +1534,13 @@ const report = await runDoctorCollectors(collectors, signal, {
 - Backend lifecycle: `NodeBackend = {transport, completion, diagnostic(), close(), kill()}`.
 - Gateway module startup: `gatewayStartup: Promise<void>`
 - Gateway module shutdown: `gatewayShutdown() -> Promise<void>`
-- Independent Python entry point: `uv run mycli [python-runtime-options]`.
 
 ### 3. Contracts
 - Help, version, and provider-free management commands resolve before TTY checks or backend/TUI
   construction. Interactive mode accepts only `--session` and `--model` runtime options.
 - `--runtime-backend` is invalid usage. Retired environment values such as
   `MYCLI_RUNTIME_BACKEND`, `MYCLI_PYTHON`, and `MYCLI_SIDECAR_START_TIMEOUT_MS` cannot change npm
-  startup, trigger a Python lookup, or create a fallback path.
+  startup, trigger an executable lookup, or create a fallback path.
 - Interactive startup validates terminal stdin/stdout, constructs one Node backend, configures its
   transport, and only then imports the TUI gateway. No turn may start before gateway startup and
   `session.bootstrap(protocol_version=1)` complete.
@@ -1522,20 +1549,19 @@ const report = await runDoctorCollectors(collectors, signal, {
 - The first SIGINT before TUI ownership requests bounded shutdown and exit `130`; after ownership,
   SIGINT belongs to the TUI. SIGTERM requests gateway shutdown. A parent `exit` synchronously calls
   backend `kill()` when completion has not settled.
-- Python source, packaging metadata, tests, evaluation utilities, and Python 3.13 CI remain in the
-  repository. They form a separately launched reference runtime, not an npm dependency or hidden
-  rollback backend.
+- The repository contains no second runtime source, packaging metadata, compatibility test suite,
+  or language-specific release gate.
 - Production package exports and the `mycli` bin point only to compiled ESM and
   declarations under `dist`; production execution never requires `tsx`.
 
 ### 4. Validation & Error Matrix
 - `--help` / `--version` -> exit `0`, no TTY check and no backend/provider/TUI startup.
 - `--runtime-backend`, an unknown option, duplicate/missing runtime value, or malformed management
-  command -> exit `2` with bounded `invalid_arguments`; do not start Node or Python.
+  command -> exit `2` with bounded `invalid_arguments`; do not start the backend.
 - Non-TTY interactive launch -> exit `2` with `tty_required`; management commands remain available.
 - Node backend construction/configuration failure -> exit `2` with a stable bounded diagnostic.
-- TUI import/startup or unexpected Node backend completion -> exit `1`; do not retry through Python
-  and do not replay an accepted turn.
+- TUI import/startup or unexpected Node backend completion -> exit `1`; do not retry through another
+  implementation or replay an accepted turn.
 - Normal gateway/TUI shutdown plus Node backend completion `0` -> exit `0`.
 - SIGINT before TUI ownership -> bounded cleanup and exit `130`.
 - SIGINT after TUI ownership -> leave the first interrupt to the active TUI.
@@ -1548,14 +1574,13 @@ const report = await runDoctorCollectors(collectors, signal, {
   `mycli-shell-tui/gateway`, and await the exported startup promise.
 - Good: A packed npm installation starts an interactive Node backend with a failing Python marker
   on `PATH` and in `MYCLI_PYTHON`; the marker is never read or executed.
-- Base: `uv run mycli` starts the retained Python reference directly in a separate process chosen
-  by the operator between turns.
+- Base: a source checkout and packed install both start the same compiled Node composition.
 - Bad: Spawn a separate TUI child that owns terminal input; this breaks Windows
   raw-TTY ownership and splits signal handling.
 - Bad: Probe Python at npm startup even when the probe is described as diagnostics or rollback
   preparation.
-- Bad: Retry a failed Node operation through Python; model requests and tool
-  effects could be duplicated.
+- Bad: Retry a failed Node operation through another implementation; model requests and tool effects
+  could be duplicated.
 
 ### 6. Tests Required
 - CLI tests prove help/version and management do not start a backend, TTY validation precedes Node
@@ -1569,8 +1594,6 @@ const report = await runDoctorCollectors(collectors, signal, {
   `npm pack --dry-run` excludes source, fixtures, credentials, and local files.
 - Packed smoke installs all published workspaces in a clean temporary directory, scans package
   contents/startup imports, plants failing Python probes, and starts the packed Node backend.
-- The independent Python gate runs package build, ruff, mypy, pytest, and `uv run mycli --help`
-  separately; it does not exercise npm fallback behavior.
 - Run lifecycle tests on Node 22.19 across macOS, Linux, and Windows.
 
 ### 7. Wrong vs Correct
@@ -1578,7 +1601,7 @@ const report = await runDoctorCollectors(collectors, signal, {
 Wrong:
 ```typescript
 const backend = selectRuntimeBackend(process.env.MYCLI_RUNTIME_BACKEND);
-if (backend === "python-sidecar") await startPythonSidecar();
+if (backend === "legacy-sidecar") await startLegacySidecar();
 await import("mycli-shell-tui/gateway");
 ```
 
@@ -1614,6 +1637,8 @@ await gatewayStartup;
 - New-session creation uses the same transition claim and generation commit. It installs a fresh
   backend runtime binding with an empty transcript and queue; the TUI must not clear local arrays
   or fabricate a session id independently.
+- `transcript.load` for the current writable virtual session returns an empty writable page without
+  creating a durable session row. Missing non-current ids and missing `/resume` targets still fail.
 - The coordinator holds a transition claim across the entire asynchronous
   prepare. A gateway turn must acquire the matching generation's execution
   claim before reserving a durable turn. Reservation failure releases the
@@ -1623,6 +1648,13 @@ await gatewayStartup;
   present. Failed preparation emits none of these target-session events.
 - A readable snapshot without usable canonical SQLite state is display-only;
   `turn.submit` fails closed and the snapshot is never provider context.
+- Writable resume preparation retains only the bounded recent transcript snapshot. `transcript.load`
+  independently rebuilds complete filtered history and supports an opaque versioned `before` cursor
+  plus `limit` pagination, so old visible turns remain reachable without pinning every tool output
+  in `PreparedSession`. Initial bootstrap/resume requests ask for at most 500 projected items. The
+  TUI stores `next_before` and prepends one older page only when the transcript viewer reaches its
+  current top; it preserves the visible scroll position, deduplicates stable item ids, and prevents
+  concurrent duplicate page loads.
 - Legacy queue text arrays project pending steers as `queued_steering` and
   rejected steers plus ordinary follow-ups as `queued_follow_up`. Typed
   `queue_items` preserves separate `pending_steers`, `rejected_steers`, and
@@ -1720,17 +1752,30 @@ try {
   `finalizeApprovalContinuation(input)`.
 - Gateway RPC: `approval.respond` with `decision_id`, `choice`, optional
   `session_id`, and optional `generation`.
+- Internal approval detail:
+  `ApprovalPreviewDetails = {contentPreview?, contentLineCount?, contentChars?,
+  contentTruncated?, diff?, diffChars?, diffTruncated?}` plus canonical bounded
+  `fileChanges`; gateway output uses the corresponding snake-case field names and
+  `previous_path` for moves.
 - Node M5 choices: `approve_once` and `reject` only.
 
 ### 3. Contracts
 
-- `autoApproveMedium=true` remains the default Python-compatible behavior.
+- `autoApproveMedium=true` remains the legacy-compatible default behavior.
   Strict policy requests one-time approval for a valid workspace-local medium
   risk mutation and denies workspace escape before suspension.
 - Persist the assistant tool-call batch before policy evaluation. When approval
   is required, atomically save `pending_decision`, `suspended_turn`,
   `turn_record`, and a `waiting` effect checkpoint before emitting
   `approval.request`.
+- For the initial live request, prepare the mutation before policy resolution and emit its bounded
+  `fileChanges`. `Write` also publishes bounded compatibility content/count fields; `Edit` may
+  publish compatibility diff fields. Do not execute the router or emit `tool.start` until the user
+  approves. Do not reconstruct proposal details during restart or session recovery.
+- Mutation approval stores one host-only prepared guard under pending-decision metadata. It does not
+  duplicate content, diffs, absolute paths, or the guard into the suspended turn. The guard binds
+  effect identity, not a filesystem baseline. Approval execution rebuilds the semantic mutation
+  from the canonical call against current filesystem state while retaining path-confinement checks.
 - The tool call id is the stable `decision_id`. Gateway acceptance requires the
   active session, generation, backend binding, and decision id to match. A
   pending approval blocks ordinary `turn.submit` and `session.resume`.
@@ -1776,6 +1821,8 @@ try {
 - Restart with `waiting`, `completed`, or `rejected` -> restore the same
   continuation. Restart with `executing` -> interrupt with
   `effect_outcome_unknown` and execute zero tools.
+- Restart with `waiting` -> re-emit an actionable compact approval without `content_*` or `diff*`;
+  keep the stored canonical tool call only for the eventual approved execution.
 - Ordinary turn submission or session resume while approval owns the session ->
   `turn_in_progress` before a new reservation or generation is created.
 
@@ -1786,6 +1833,9 @@ try {
   provider request.
 - Good: A resolution persistence failure shows a bounded error and immediately
   restores the same actionable approval prompt.
+- Good: The TUI displays the prepared Write/Edit/Patch file changes for the initial live request;
+  a recovered request shows the compact path-level prompt and remains actionable without persisting
+  a second proposal copy.
 - Base: Default policy auto-allows a workspace-local mutation and creates no
   approval continuation.
 - Bad: Delete pending state before provider IO; a crash then loses the only
@@ -1794,11 +1844,13 @@ try {
   have reached the filesystem.
 - Bad: Emit terminal `turn.failed` while restoring pending approval; the TUI
   clears the decision details and cannot perform the safe retry.
+- Bad: Send raw camel-case runtime fields or the full arguments object through the gateway; clients
+  either miss the preview or receive data outside the allowlisted approval contract.
 
 ### 6. Tests Required
 
 - Policy unit tests for default allow, strict request, escape denial, malformed
-  calls, and bounded previews without content, hashes, or absolute paths.
+  calls, bounded path-only policy previews, and bounded detailed mutation approval previews.
 - Runtime tests for approve, reject, identical/conflicting responses, multiple
   approvals in one batch, original-user dedupe, completed effect reuse, and
   interruption during claimed execution. Assert lifecycle start precedes the
@@ -1806,13 +1858,14 @@ try {
 - Storage tests proving suspension rows and tool-result/checkpoint commits roll
   back together at failpoints.
 - Gateway tests for decision/session/generation ownership, pending-state
-  exclusion, sanitized resolution failure, re-emitted approval, and absence of
-  terminal failure while retry remains possible.
+  exclusion, camel-case-to-snake-case mutation preview projection, sanitized resolution failure,
+  re-emitted approval, and absence of terminal failure while retry remains possible.
 - Backend restart integration proving `executing` becomes
   `effect_outcome_unknown` without provider IO or tool replay, and a second
   restart finds no approval continuation to recover.
-- Run tools, runtime, storage, app, M4 Node integration, and Python parity
-  suites when this boundary changes.
+- Backend restart integration proving a `waiting` Write re-emits its decision/path/options without
+  any `content_*` or `diff*` fields and still executes the persisted call exactly once after approval.
+- Run tools, runtime, storage, app, and M4 Node integration suites when this boundary changes.
 
 ### 7. Wrong vs Correct
 
@@ -1840,6 +1893,37 @@ store.commitApprovalResult({
 });
 ```
 
+#### Wrong
+
+```typescript
+emitRuntime("approval.request", { ...event });
+```
+
+#### Correct
+
+```typescript
+emitRuntime("approval.request", {
+	...approvalIdentity,
+	...approvalPreviewPayload(event),
+});
+```
+
+#### Wrong
+
+```typescript
+const recoveredApproval = {
+	...approvalIdentity,
+	...fileMutationApprovalPreview(persistedCall),
+};
+```
+
+#### Correct
+
+```typescript
+const recoveredApproval = approvalIdentity;
+// persistedCall remains in suspended state for approved execution, not TUI reconstruction.
+```
+
 ## Scenario: Recoverable Node Context Compaction
 
 ### 1. Scope / Trigger
@@ -1853,6 +1937,8 @@ store.commitApprovalResult({
 
 - Runtime: `CompactionCoordinator.compact(input: CompactInput) -> Promise<CompactionResult>`.
 - Summary adapter: `summarizeCompactionWithProvider(provider, config, input) -> Promise<string>`.
+- Terminal runtime event:
+  `compaction_completed { status: "compressed" | "skipped" | "failed", beforeTokens, afterTokens }`.
 - Storage: `saveState(... compact_checkpoint ...)`, `loadHistoryItems(sessionId)`, and
   `commitCompaction({sessionId, replacementMessages, summary, checkpoint})`.
 - Gateway events: `compaction.started` and `compaction.completed`.
@@ -1861,7 +1947,7 @@ store.commitApprovalResult({
 
 - `TokenCounter` uses `js-tiktoken` with `o200k_base`. Encoder initialization failure uses
   `ceil(ascii_chars / 4) + non_ascii_chars`, with zero for empty input and a bounded LRU cache.
-- Node accepts the Python-compatible flat or sectioned compaction settings. In particular,
+- Node accepts the legacy flat or sectioned compaction settings. In particular,
   `[memory].enabled` maps to `memory_enabled`, `[context]` owns compaction fields, and an empty
   user `compaction_l4_trigger_ratios_by_model` table falls through to the project table.
 - The runtime commits queued steers before compaction. The reserved user history id and committed
@@ -1869,15 +1955,33 @@ store.commitApprovalResult({
 - Before summary provider IO, persist an `in_progress` checkpoint with a deterministic request
   fingerprint. A completed checkpoint increments `window_number`; `history_item_count` is the raw
   durable history length, not provider-projection length.
+- The local summary request output budget is
+  `min(model_max_output, max(4096, compaction_l4_expected_summary_tokens))` when a model output
+  limit exists, otherwise `max(4096, compaction_l4_expected_summary_tokens)`. The 4096-token floor
+  leaves room for reasoning-model internal tokens while the generated summary remains bounded.
 - A successful compact uses one `commitCompaction()` transaction for replacement messages,
   summary, completed checkpoint, and Responses continuation invalidation. Raw history and rollouts
   are never deleted.
+- Resume treats display history and provider history as independent projections. Display replay
+  filters all raw history without injecting `compaction_boundary.replacement_messages`; provider
+  replay selects the newest valid boundary replacement and appends only later conversation rows.
+  Multiple completed boundaries therefore preserve old visible turns without stacking old summary
+  windows into the next provider request.
 - Rehydration reuses the M4 real-workspace read policy, prefers successful Edit/Write/Patch paths
   over Read paths, excludes runtime state and plan prefixes, and enforces file count, item-token,
   total-token, byte, UTF-8, binary, and symlink bounds.
 - `compaction.started` is published only after the trigger enters compaction.
-  `compaction.completed` is published only after a successful compact commit or a minimum-savings
-  skip. Summary and commit failures do not publish completion.
+  `compaction.completed` is published after a successful compact commit, a minimum-savings skip,
+  or a summary-generation failure/interruption. Failed summaries report `status=failed` with
+  unchanged before/after token counts so the TUI closes the running lifecycle item. A commit
+  failure does not publish completion because durable replacement state is uncertain.
+- Each successful provider step with usage emits internal `provider_usage`. During an active turn,
+  `status.changed.context_window` prefers this latest step and reports `source=provider_live`.
+  Before the first live usage, a prior rollout is labeled `source=provider_previous`; it must not
+  be presented as current-turn usage.
+- Compaction lifecycle events temporarily project their before/after counts with
+  `source=runtime_estimate`; the next provider usage replaces that estimate. The TUI keeps the
+  existing footer layout and renders estimates with `~` and previous-turn values with `prev`.
 
 ### 4. Validation & Error Matrix
 
@@ -1887,10 +1991,10 @@ store.commitApprovalResult({
   bounded `config_error`.
 - Existing `in_progress` checkpoint -> delete the stale attempt, return `interrupted`, and send no
   summary request.
-- Aborted summary request -> clear the current attempt, return `interrupted`, and do not continue
-  the provider turn.
+- Aborted summary request -> clear the current attempt, publish failed completion, return
+  `interrupted`, and do not continue the provider turn.
 - Empty, over-budget, tool-calling, incomplete, or failed summary -> keep the prior provider
-  projection and publish no completion event.
+  projection and publish failed completion with no raw provider error detail.
 - `commitCompaction()` failure -> retain the durable `in_progress` checkpoint, keep the prior
   projection active, and publish no completion event.
 - Provider `context_window_exceeded` before any event -> at most one reactive compact and retry;
@@ -1903,23 +2007,30 @@ store.commitApprovalResult({
 - Base: below-threshold context returns `not_needed` without checkpoint writes or lifecycle events.
 - Good: a future user-initiated turn may start a new compact after an interrupted attempt, but the
   interrupted request itself is never replayed automatically.
-- Bad: derive `history_item_count` from compacted provider items; Python replay would append raw
-  history from the wrong offset.
+- Bad: derive `history_item_count` from compacted provider items; replay would append raw history
+  from the wrong offset.
 - Bad: publish `compaction.completed` before SQLite commit; the TUI would display state that cannot
   survive restart.
 
 ### 6. Tests Required
 
-- Config tests for Python defaults, sectioned memory/context fields, model-ratio precedence,
+- Config tests for resolved defaults, sectioned memory/context fields, model-ratio precedence,
   finite ranges, threshold/window relation, and rehydration budget relation.
-- Token tests against the fixed Python `o200k_base` corpus, fallback estimator, and LRU bound.
+- Token tests against the fixed `o200k_base` corpus, fallback estimator, and LRU bound.
 - Coordinator tests for fresh suffix exclusion, tail bounds, minimum savings, raw history
   preservation/count, window increment, provider summary validation, abort classification,
   stale in-progress recovery, commit failure, and secure bounded rehydration.
+- Storage and gateway tests for multiple completed boundaries, latest-window provider replay,
+  complete filtered transcript visibility, hidden replacement payloads, and pagination beyond the
+  bounded session snapshot.
 - Runtime tests for queue-before-compact ordering, config-per-turn coordinator creation,
   zero-event overflow retry, continuation invalidation, and no retry after provider output.
 - Gateway tests must parse both lifecycle payloads through the canonical event validator.
-- Run full Node build/test/lint/typecheck/contracts gates plus M4 Node/Python parity regressions.
+- Gateway and TUI tests must accept `compaction.completed(status=failed)` and close the running
+  compaction item without changing provider history.
+- Backend integration tests assert the summary request receives the resolved 4096-token default
+  budget rather than the former 600-token hard-coded cap.
+- Run full Node build/test/lint/typecheck/contracts gates plus M4 integration regressions.
 
 ### 7. Wrong vs Correct
 
@@ -1943,6 +2054,23 @@ store.commitCompaction({
 	checkpoint: completedCheckpoint,
 });
 emit(completedEvent);
+```
+
+#### Wrong: Leave a failed summary lifecycle open
+
+```typescript
+catch {
+	return result("failed", originalHistory, beforeTokens);
+}
+```
+
+#### Correct: Close the failed lifecycle without replacing history
+
+```typescript
+catch {
+	emit(completedEvent("failed", beforeTokens, beforeTokens));
+	return result("failed", originalHistory, beforeTokens);
+}
 ```
 
 ## Scenario: Validated Node Provider Continuation And HTTP Replay
@@ -2016,10 +2144,10 @@ emit(completedEvent);
 - Runtime tests assert exact continuation matching, malformed/oversized invalidation, Chat replay,
   provider rejection and compaction invalidation, approval snapshotting, and
   complete -> snapshot -> memory order.
-- Backend integration uses real SQLite and a fake HTTP provider to assert no Python start,
-  schema-v2 snapshot output, workspace memory composition, and complete continuation fields.
+- Backend integration uses real SQLite and a fake HTTP provider to assert schema-v2 snapshot output,
+  workspace memory composition, and complete continuation fields.
 - Gateway queue tests assert reservation before removal and at-most-one terminal drain.
-- Run core/runtime/app tests, M4 Node/Python parity, lint, typecheck, contracts drift, and build.
+- Run core/runtime/app tests, M4 integration, lint, typecheck, contracts drift, and build.
 
 ### 7. Wrong vs Correct
 
@@ -2051,20 +2179,18 @@ const snapshotWritten = await writeTerminalSnapshot(completed);
 if (snapshotWritten) await memory.applyExplicitActions(message);
 ```
 
-## Scenario: M5 Cross-Backend Recovery Corpus And Fault Injection
+## Scenario: M5 Node Recovery Fault Injection
 
 ### 1. Scope / Trigger
 
 - Trigger: changes to M5 session state serialization, recovery ordering, SQLite transactions,
   transcript snapshots, workspace memory writes, or session generation commits.
-- The parity gate spans Python and Node writers/readers. Fault injection must exercise the real
-  owning store or coordinator instead of a duplicate test-only state machine.
+- Fault injection must exercise the real owning store or coordinator instead of a duplicate
+  test-only state machine.
 
 ### 2. Signatures
 
-- Shared fixture: `tests/fixtures/node_runtime_m5/state_recovery_contract.json`.
-- Node JSONL helper command: `{action, db_path, fixture_path}` where `action` is `write`, `read`,
-  or `read_invalid`; each input line produces exactly one JSON array line.
+- Frozen audit fixture: `tests/fixtures/node_runtime_m5/state_recovery_contract.json`.
 - Runtime injection: `RuntimeFailpointHook = (name: RuntimeFailpoint) => void` on queue, approval,
   compaction, memory, and session coordinators. The default hook is a no-op.
 - Storage injection: `SQLiteSessionStoreOptions.stateFailpoint(name)` covers reservation and
@@ -2072,9 +2198,7 @@ if (snapshotWritten) await memory.applyExplicitActions(message);
 
 ### 3. Contracts
 
-- The four-way matrix is Python/Python, Python/Node, Node/Python, and Node/Node. Readers emit only
-  normalized ids, ordering, counts, enum states, error codes, and preservation booleans.
-- The shared corpus covers catalog/replay/summaries, pending and reconciled queues, waiting and
+- Node storage/runtime tests cover catalog/replay/summaries, pending and reconciled queues, waiting and
   legacy approval state, executing effects, completed compaction, ineligible Responses state,
   compatible unknown optional fields, malformed roots, and unsupported versions.
 - A `*_before_*` failpoint fires before the durable operation and leaves no new durable state.
@@ -2097,7 +2221,6 @@ if (snapshotWritten) await memory.applyExplicitActions(message);
 
 - Malformed persisted root -> `session_state_invalid`; do not return a partial normalized case.
 - Unsupported compact state version -> `session_state_version_unsupported` in both readers.
-- Node helper emits zero or multiple JSONL rows -> helper protocol failure.
 - Failure before reservation/save/prepare -> zero new durable records and no publication.
 - Failure after effect claim -> one `effect_outcome_unknown` result, zero tool retries.
 - Failure after tool result append inside its SQLite transaction -> roll back result and
@@ -2108,26 +2231,25 @@ if (snapshotWritten) await memory.applyExplicitActions(message);
 
 - Good: inject after queue save, reopen from the durable snapshot, and observe one pending record
   with no pre-crash publication.
-- Good: write compatible unknown fields in Python, read them through Node, and report only a
+- Good: write compatible unknown fields through the Node store, reload them, and report only a
   `preserved=true` structural assertion.
 - Base: with no failpoint callback, normal runtime behavior and event ordering are unchanged.
 - Bad: catch an injected crash as an ordinary summary failure and delete its in-progress
   checkpoint; restart could resend an already completed provider request.
-- Bad: print raw state, prompt, provider output, memory content, endpoint, or credentials from the
-  parity helper.
+- Bad: print raw state, prompt, provider output, memory content, endpoint, or credentials from test
+  diagnostics.
 
 ### 6. Tests Required
 
-- Pytest must run the four writer/reader directions and both invalid-state readers against the
-  shared sanitized fixture.
+- The M8 audit must continue checksum-verifying the frozen sanitized fixture.
 - Storage tests assert before/after reservation, queue history/removal rollback, approval
   suspension/result rollback, compact rollback, orphan interruption, and one synthetic unmatched
   tool result.
 - Runtime tests assert queue publication ordering, approval/effect recovery, filesystem-commit
   ambiguity, no compaction-summary replay, snapshot rename preservation, memory topic/index
   recovery, and session generation isolation.
-- Run `uv run pytest tests/integration/test_node_runtime_m5_parity.py -q`, storage/runtime package
-  tests, lint, typecheck, contracts drift, and the M4 regression gate.
+- Run storage/runtime package tests, lint, typecheck, contracts drift, and the M4/M5 regression
+  gates.
 
 ### 7. Wrong vs Correct
 
@@ -2173,7 +2295,8 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   `ShellOutput`, `BashOutput`, and `KillShell`.
 - Gateway control: `shell.list`, `shell.stop`, `shell.stop_all`; command routes `/ps` and `/stop`.
 - Lifecycle events: `shell.started`, `shell.output`, `shell.completed`, `shell.removed`, and
-  `shell.list.updated`.
+  `shell.list.updated`; each may carry the optional bounded display-only `description` from the
+  originating `Shell` call.
 - Durable history item: `type="shell_session"` with bounded sanitized metadata and output.
 - TUI command projection:
   `commandDisplayLines(command, headerPrefix, suffix, width) -> string[]`, with two continuation
@@ -2209,11 +2332,19 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   fields such as shell id, state, transport, TTY/yield flags, sequence, timestamps, counters,
   terminal state, exit code, cleanup result, sanitized command preview, and bounded output.
   Diagnostics exclude raw command, stdin, environment values, provider payloads, and secrets.
+- The optional Shell `description` travels through the in-memory session snapshot, live lifecycle,
+  gateway notification, and active-background bootstrap only. The durable `shell_session` snapshot
+  must omit it; the canonical tool call already owns provider replay, and restart/resume must not
+  synthesize a second description-bearing transcript record.
 - The collapsed Shell card renders the complete retained command preview when it fits the terminal.
   It wraps by terminal cell width, keeps the first row beside `Running` or `Ran`, renders at most two
   `  │ ` continuation rows, and only then emits `  │ … +N lines`. It must not apply a fixed
   character limit such as 72 characters before width-aware wrapping. Global tool-detail expansion
   continues to render every retained logical command line.
+- A Shell description is model-supplied runtime metadata and must not replace or duplicate the
+  command in the TUI. Collapsed and expanded headers always render `Running <command>` or
+  `Ran <command>` with the same width-aware bounds whether or not a description exists. Expanded
+  detail continues to render the complete `Command:` block.
 - Shell command continuations, terminal status, retained output, and expanded command details share
   one cell-relative gutter: continuation rows use `  │ `, the first result row uses `  └ `, and
   later result rows use four spaces. A component-level horizontal padding must be applied equally
@@ -2239,8 +2370,8 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 ### 4. Validation & Error Matrix
 
 - Missing required sandbox wrapper/helper -> `sandbox_unavailable`; spawn count remains zero.
-- `tty=true` plus unavailable/broken native PTY -> explicit shell failure; do not retry with pipe
-  or Python.
+- `tty=true` plus unavailable/broken native PTY -> explicit shell failure; do not retry with pipe or
+  another runtime.
 - Unknown shell id -> `shell_not_found`; wrong owner -> `shell_session_forbidden`.
 - Input after terminal completion -> `shell_already_completed`.
 - Shell or WriteStdin requests an output budget above the default -> clamp the model-visible result
@@ -2248,6 +2379,10 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 - Retained command fits the available terminal width -> show it completely with no omission marker.
 - Wrapped command exceeds the two-row continuation budget -> show the first two continuation rows
   plus an omission row with the hidden visual-row count; expanded detail remains complete.
+- Description present -> preserve it across subsequent output/completion events for that live
+  process, but render the same command-first Shell cell as the no-description path.
+- Description absent or unavailable after durable resume -> render the existing command title and
+  do not reconstruct description metadata from persisted shell snapshots.
 - Completed output exceeds the five-row budget or carries `hiddenLineCount` -> retain head and tail,
   place one omission row between them, and align its ellipsis with subsequent output text.
 - Resize on pipe or closed terminal -> `shell_resize_failed`.
@@ -2264,7 +2399,7 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
 
 - Good: approve one `Shell(tty=true)`, observe one PTY start and yield, send input through
   `WriteStdin`, observe one completion, persist one shell transcript, and close with zero active
-  shells and no Python process.
+  shells.
 - Good: an empty `WriteStdin` polls only output newer than the model cursor while lifecycle and
   model cursors remain independent.
 - Base: a short `tty=false` command completes through pipe without entering the background list.
@@ -2275,8 +2410,8 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   `    <tail>` with the omission and tail starting in the same terminal column.
 - Bad: create a manager inside `NodeTurnRuntime` or a tool adapter; yielded processes disappear
   when the provider step ends or a session binding is recreated.
-- Bad: catch native PTY failure and retry through pipe/Python; the command may run with different
-  semantics or be duplicated.
+- Bad: catch native PTY failure and retry through another transport/runtime; the command may run
+  with different semantics or be duplicated.
 - Bad: print an endpoint, API key, prompt, command, stdin, provider text, raw shell output, or local
   path from the live smoke.
 - Bad: call a fixed-length `shortPreview(command)` before terminal layout; ordinary commands become
@@ -2292,17 +2427,20 @@ store.commitCompaction({ sessionId, summary, replacementMessages, checkpoint });
   resize, interrupt, exit, and orphan cleanup on Node 22.19 and Node 24.
 - Backend integration uses a fake Responses provider to assert approval before spawn, exactly one
   PTY start/completion, `WriteStdin`, `max_output_tokens=64` on every request, durable shell state,
-  shutdown cleanup, and `python_started=false`.
+  and shutdown cleanup.
 - Smoke tests assert missing credentials exit `77`, fake-provider success uses exactly three
   provider requests, stdout is exactly one JSON line, stderr is empty, and secrets/endpoints/
   commands/stdin/provider output do not appear.
-- Python/Node M6 parity asserts output buffers, decoder behavior, model result bounds, permission
-  profiles, and a sanitized scenario corpus.
+- Node tests assert output buffers, decoder behavior, model result bounds, and permission profiles;
+  the M8 audit checksum-verifies the sanitized M6 corpus.
 - TUI component tests cover short commands, commands over 72 characters on wide terminals,
   multiline commands, very long single-line commands, exact omission counts, expanded full detail,
   CJK/long-token width safety, and equal terminal columns for continuation `│` and result `└`
   gutters, including truncated running output. Completed-output tests assert both viewport-derived
   and persisted omission markers remain between retained head/tail rows and share the tail column.
+- Cross-layer description tests cover trimmed Shell input, in-memory session/lifecycle forwarding,
+  schema-valid gateway events, active-background bootstrap, reducer preservation, command-first
+  collapsed and expanded rendering, and omission from durable shell snapshots.
 - TUI component tests assert assistant, generic-tool, collapsed-group, file-change, and Shell
   top-level markers begin in the same component-relative column.
 - Run `npm run contracts:check`, `npm run typecheck`, `npm run lint`, `npm run test:m5`,
@@ -2378,6 +2516,9 @@ return segments.length > shown.length
 - `Esc` and `q` close. Arrows and `j`/`k` move one line; PageUp/PageDown move one viewport; Home/End
   and `g`/`G` jump to the start/end. Resize reflows at the new cell width without resuming tail
   following after a user has scrolled away. Live appends remain visible only while following tail.
+- Reaching the current top with Up/PageUp/Home/`g` requests the next older transcript page only when
+  `next_before` is present. The viewer renders bounded loading/failure state, suppresses concurrent
+  requests, prepends successful pages, and keeps the previously visible rows stationary.
 - Shell manager output-event bounds split one retained output read into multiple consecutive
   lifecycle events. They must not discard characters merely because one 50 ms batch exceeds the
   shared per-event/persistence chunk bound. Only output evicted from the manager's bounded buffer
@@ -2570,7 +2711,7 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
 - Controller tests use real SQLite task storage to assert dynamic session/turn ownership across
   start, progress, terminal state, output, messaging, interruption, and close.
 - Backend integration runs a real parent/child/parent provider sequence, asserts the child sees only
-  its frozen tools, checks durable parent ownership, and proves no Python process starts.
+  its frozen tools, checks durable parent ownership, and proves execution stays in the worker pool.
 - Gateway/contract tests assert bounded `subagent.updated`, stale-session filtering, undeclared-field
   rejection, resource/command projection, and no raw child report/provider payload.
 - TUI tests assert one existing task row updates in place and actions route by child session id.
@@ -2641,6 +2782,8 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, inp
 - The gateway and TUI preserve the child `session_id` and broker `generation` on the pending
   request. Responses route by that pair and resume the same resident child runtime and suspended
   turn, not a root runtime or a newly constructed child.
+- Child mutation approvals preserve the same bounded `content_*` or `diff*` proposal fields as root
+  approvals. The broker projects those fields to snake case without persisting another copy.
 - A response may begin continuation before the initial suspended `submit()` returns
   `status=in_progress`. The broker treats that result as valid while continuation is active and
   waits for the continuation result.
@@ -2745,7 +2888,7 @@ gatewayPresentationQueue.publishNext();
 - Trigger: changes to Node `extension.manifest`, resource/command RPCs, integration composition,
   `subagent.updated`, extension shutdown, or the M7/M8 rollout boundary.
 - M7 exposes Node-native integrations through the existing gateway; it does not introduce a second
-  runtime loop or permit silent Python fallback after a Node turn is accepted.
+  runtime loop or permit silent fallback after a Node turn is accepted.
 
 ### 2. Signatures
 
@@ -2774,9 +2917,8 @@ gatewayPresentationQueue.publishNext();
   fail-closed points; post-operation points contain errors without rewriting persisted tool results.
 - `subagent.updated` filters events whose internal `parent_session_id` is not the active resumed
   session, removes that internal owner field, and bounds the closed public payload before emission.
-- M8 removes the npm `python-sidecar` backend and runtime selector while retaining the Python
-  implementation as an independently launched reference. Node-owned turns never fall back across
-  runtimes; rollback means installing an earlier npm release or explicitly launching `uv run mycli`
+- M8 removed the runtime selector, and the current repository has only the Node implementation.
+  Accepted turns never fall back across runtimes; rollback means installing an earlier npm release
   between turns.
 
 ### 4. Validation & Error Matrix
@@ -2800,7 +2942,7 @@ gatewayPresentationQueue.publishNext();
 - Bad: hand-maintain a second list of M7 RPC/event names outside the generated catalog.
 - Bad: publish internal parent ids, prompts, reports, commands, headers, endpoint data, or tool output
   in gateway extension payloads.
-- Bad: catch a failed Node extension turn and transparently retry it through Python.
+- Bad: catch a failed Node extension turn and transparently retry it through another implementation.
 
 ### 6. Tests Required
 
@@ -2810,8 +2952,8 @@ gatewayPresentationQueue.publishNext();
   failure, package DAG direction, and built-in manifest immutability.
 - Hook manager/runtime tests assert built-in/configured/plugin order, chained modifications,
   fail-closed pre-hook behavior, and contained post-hook errors.
-- M7 no-Python integration drives Skill -> MCP -> plugin -> foreground Task -> final text, verifies
-  durable context/tool/task records, and proves MCP/plugin cleanup plus an absent Python marker.
+- M7 integration drives Skill -> MCP -> plugin -> foreground Task -> final text, verifies durable
+  context/tool/task records, and proves MCP/plugin cleanup.
 - Packed smoke resolves M7 assets/dependencies and runs compiled management commands. CI config runs
   the M7 lifecycle gate on macOS/Linux/Windows with Node 22.19 and 24.
 
@@ -2823,43 +2965,40 @@ gatewayPresentationQueue.publishNext();
 try {
 	return await nodeRuntime.run(turn);
 } catch {
-	return pythonSidecar.run(turn);
+	return fallbackRuntime.run(turn);
 }
 ```
 
 #### Correct
 
 ```typescript
-const backend = selectBackendBeforeTurn(config);
-return backend.run(turn); // Ownership is fixed for the accepted turn.
+return nodeRuntime.run(turn);
 ```
 
-## Scenario: Cross-Runtime Slash Command Behavioral Parity
+## Scenario: Node Slash Command Behavioral Contract
 
 ### 1. Scope / Trigger
 
 - Trigger: adding or changing a retained slash command, its backing service, gateway RPC, TUI
-  action, persistence path, or Python-to-Node migration claim.
-- Registry names and dispatch metadata are discovery contracts, not proof of behavioral parity.
+  action, or persistence path.
+- Registry names and dispatch metadata are discovery contracts, not proof of end-to-end behavior.
 
 ### 2. Signatures
 
 - Node registry: `node-slash-command-registry.ts`.
 - Node execution: `command.run`, command-specific RPCs, and TUI client actions.
-- Python reference: `slash_command_registry.py` plus `slash_command_dispatch.py` and the service
-  called by the command.
 - Model catalog: `~/.mycli/models.json` -> `model.list` -> TUI model selector -> `model.select` ->
   `~/.mycli/config.toml`.
 
 ### 3. Contracts
 
-- A retained command is behaviorally compatible only when its data source, argument semantics,
-  validation, side effects, persistence, restart behavior, error behavior, and user-visible result
-  agree across the retained Python and Node runtimes.
+- A retained command is complete only when its data source, argument semantics, validation, side
+  effects, persistence, restart behavior, error behavior, and user-visible result agree across the
+  Node service, gateway, and TUI paths.
 - Metadata hashes may freeze command names, aliases, surfaces, and presentation, but must not be
-  described as full parity evidence without behavioral tests.
-- Node `/model` reads the Python-compatible user-owned `~/.mycli/models.json`. It bootstraps the
-  same built-in catalog only when the file is missing and never replaces an existing registry.
+  described as full behavioral evidence without end-to-end tests.
+- Node `/model` reads the user-owned `~/.mycli/models.json`. It bootstraps the built-in catalog only
+  when the file is missing and never replaces an existing registry.
 - `model.list` returns every valid catalog entry with the exact current entry first. Public payloads
   include selection metadata but exclude `auth_ref`, API keys, and other credentials.
 - `session.bootstrap.models` is a top-level catalog payload, not a field inside `status`. The TUI
@@ -2899,8 +3038,8 @@ return backend.run(turn); // Ownership is fixed for the accepted turn.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: one shared fixture produces identical Python and Node public model-catalog payloads, then a
-  catalog selection survives restart and is used by the next Node turn.
+- Good: one shared fixture produces identical config, gateway, and TUI public model-catalog payloads,
+  then a catalog selection survives restart and is used by the next turn.
 - Base: an existing catalog with no exact current entry is returned intact with no row marked
   current.
 - Bad: synthesize one default model per provider and call it catalog parity.
@@ -2911,8 +3050,8 @@ return backend.run(turn); // Ownership is fixed for the accepted turn.
 
 - Config unit tests cover compatible loading, bootstrap, private permissions, exact current
   matching, duplicate and reasoning validation, and credential-free payloads.
-- A Python/Node parity test feeds the same `models.json` to both implementations and compares all
-  public fields and ordering.
+- A shared-fixture test feeds the same `models.json` through config, gateway, and TUI projections
+  and compares all public fields and ordering.
 - Gateway tests cover bare/inline ownership, catalog-backed inline selection, structured failures,
   current `/status` projection, and the next turn's model/reasoning overrides.
 - TUI adapter tests pass a catalog through the top-level bootstrap envelope, project every entry,
@@ -2937,6 +3076,104 @@ gateway.model = requestedModel;
 const catalog = await loadModelCatalog({ homeDir, currentConfig });
 const selected = validateCatalogSelection(catalog, request);
 await persistModelSelection(selected);
+```
+
+## Scenario: Transcript And Content-Blob Maintenance With Backend Restart
+
+### 1. Scope / Trigger
+
+- Trigger: changing `/session maintenance`, transcript/content-blob migration or GC routing,
+  backend resource shutdown, cutover result delivery, or command availability during a turn.
+- The command is a coordinator-owned storage operation and never enters provider input or a Worker.
+
+### 2. Signatures
+
+- Registry command: `/session maintenance
+  [--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]`.
+- Gateway action: `sessionCommands.maintenance("transcript_normalization", workspaceRoot)`.
+- Content actions: `sessionCommands.maintenance("content_blobs", workspaceRoot)` and
+  `sessionCommands.maintenance("content_blob_gc", workspaceRoot)`.
+- Backend composition: `prepareTranscriptNormalization`, shared idempotent resource shutdown, then
+  `cutoverTranscriptNormalization`.
+- Content composition: `prepareContentBlobMigration`, the same shutdown path, then
+  `cutoverContentBlobMigration`; v11 GC calls `collectSessionContentBlobOrphans` without shutdown.
+
+### 3. Contracts
+
+- The command is unavailable while any turn is running. The default form remains read-only and may
+  include bounded normalization readiness fields.
+- Each apply request either stages one bounded batch, reports an active-session block, reports an
+  already-normalized database, or performs a final cutover that was ready before the request.
+- The first staging response that reaches the tail reports `ready_for_cutover`; only a second
+  explicit request may start either v9-to-v10 or v10-to-v11 cutover.
+- Before cutover, the backend closes integrations, Agent Workers, Shell resources, artifact queues,
+  and the active v9/v10 store through one idempotent shutdown path. No stale old-version store may
+  survive marker 10 or 11.
+- The gateway keeps its response transport open long enough to return the bounded cutover result.
+  It schedules backend close only when its internally produced response corresponds to
+  `backend_restart_required=true`; no caller-provided JSON field can request shutdown.
+- A successful or failed post-shutdown cutover result requires backend restart. Results contain no
+  content, ids, paths, source identities, manifest hashes, provider payloads, or credentials.
+- Normalization never invokes vacuum or reports physical shrinkage. Operators restart and validate
+  the database before issuing the separate explicit vacuum command.
+- Content-blob GC is v11-only, deletes only blobs unreachable from transcript and model-input
+  references, reports logical raw/stored bytes plus freelist bytes, stays idempotent, and neither
+  closes the backend nor invokes vacuum.
+
+### 4. Validation & Error Matrix
+
+| Request/result | Required behavior |
+| --- | --- |
+| Maintenance during active turn | Reject with `unavailable_during_turn` before storage work |
+| Default maintenance | Return read-only list fields; keep backend running |
+| Staging or active-session block | Return notice with bounded progress; keep backend running |
+| First `ready_for_cutover` staging result | Return notice; require another explicit request |
+| Successful marker-10 or marker-11 cutover | Return notice, then close backend and require restart |
+| Cutover fails after resources close | Return bounded `persistence_error`, then close backend |
+| Content apply on v9 | Return `requires_transcript_normalization`; preserve marker 9 |
+| Content apply on v11 | Return `already_blob_backed`; do not stage or restart |
+| Blob GC on v9/v10 | Return `not_blob_backed`; do not delete rows |
+| Blob GC on v11 | Delete only proven orphans; return counts; keep backend running |
+| Public result contains a lookalike restart field | Do not close unless the response object was internally marked |
+
+### 5. Good/Base/Bad Cases
+
+- Good: v9 reaches marker 10, restarts, v10 reaches marker 11 through a second explicit workflow,
+  restarts, and later GC keeps every reachable blob and the backend process.
+- Base: a fresh v11 database reports `already_blob_backed` without staging or rewriting data.
+- Bad: cut over while a turn is active, close the gateway before writing the response, leave an old
+  store open after cutover, collect blobs automatically, or trust a serialized restart field.
+
+### 6. Tests Required
+
+- Registry/completion fixtures cover the full argument hint and `availableDuringTurn=false`.
+- Gateway tests cover action routing, bounded extra fields, active-turn rejection, internal
+  close-after-response marking, and rejection of public-field shutdown control.
+- Backend integration uses a temporary v9 database, proves staging-ready then second-request
+  cutover, waits for automatic backend completion, and reopens the result as v10.
+- Backend integration repeats the workflow from v10 to v11, then restarts and proves explicit GC
+  removes an orphan without deleting reachable content or closing the backend.
+- Maintenance service tests assert report reads preserve `mtimeMs`, result fields are bounded, active
+  recovery blocks, and normalization never claims physical shrinkage.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+if (result.backend_restart_required) await closeBackend(); // trusts public JSON for every action
+store.contentBlobs.collectOrphans(); // runs from a report or startup path
+```
+
+#### Correct
+
+```typescript
+if (action === "content_blobs" && internallyProducedResult.backend_restart_required === true) {
+	closeAfterResponses.add(response);
+}
+if (action === "content_blob_gc" && report.contentBlobs) {
+	return store.collectSessionContentBlobOrphans();
+}
 ```
 
 ## Scenario: Supervised Node Turn Interruption
@@ -2972,9 +3209,13 @@ await persistModelSelection(selected);
   structured-cloneable.
 - `turn.interrupt` first uses the existing cooperative `AbortSignal` path. The
   Gateway waits 100 ms and durably force-finalizes a responsive asynchronous
-  turn. The parent supervisor independently waits 250 ms; if the Worker event
-  loop is still unresponsive, it calls `Worker.terminate()` and starts a fresh
-  Worker for the same active session.
+  in-process turn. Worker-backed Agent turns use the coordinator-owned targeted
+  interruption path, whose complete supervisor cleanup envelope is 12 seconds.
+- The parent supervisor independently applies a 15 second coordinator watchdog.
+  This outer bound must remain greater than the complete inner targeted cleanup
+  envelope. Only when the backend coordinator fails to answer within that longer
+  bound may the parent call `Worker.terminate()` and start a fresh backend Worker
+  for the same active session.
 - The supervisor keeps the same parent-owned `GatewayTransport` streams across
   restart, queues new client input while restarting, and ignores output from a
   stale Worker generation. A restarted Worker must not require the TUI to
@@ -3004,8 +3245,8 @@ await persistModelSelection(selected);
 
 | Condition | Required behavior |
 | --- | --- |
-| Turn settles within the cooperative/force boundary | Keep the Worker; forward its terminal events and RPC response |
-| Worker event loop remains blocked past the watchdog | Terminate it, recover the exact turn, restart, then resolve the RPC |
+| Targeted Agent Worker interruption answers within 12 seconds | Keep the backend coordinator generation; forward its terminal events and RPC response |
+| Backend coordinator remains blocked past the 15 second watchdog | Terminate it, recover the exact turn, restart, then resolve the RPC |
 | Recovery descriptor session differs from startup session | Fail startup with `recovered_interrupt_session_mismatch` and publish no success |
 | Target turn is missing or no recovered terminal event is published | Return a bounded `internal_error`; never claim `accepted=true` |
 | Stale Worker emits after replacement | Drop the message by Worker identity/generation |
@@ -3018,8 +3259,9 @@ await persistModelSelection(selected);
 - Good: a synchronous infinite loop blocks the Worker, the parent watchdog
   terminates it, SQLite closes the pending call and appends one marker, and the
   TUI sees `turn.interrupted` before the interrupt RPC response.
-- Base: an abort-aware provider or tool settles normally within 100 ms and no
-  Worker restart occurs.
+- Base: a targeted Agent Worker interruption answers after the former 250 ms
+  boundary but within 12 seconds and the backend coordinator generation does
+  not change.
 - Good: a second recovery attempt finds an already interrupted turn and leaves
   exactly one `<turn_aborted>` item.
 - Bad: emit `turn.interrupted` from the parent immediately after
@@ -3039,8 +3281,12 @@ await persistModelSelection(selected);
 - A real Worker Thread regression must synchronously block the first Worker,
   assert the watchdog replaces it, assert two `runtime.ready` notifications,
   and assert `turn.interrupted` precedes the synthesized interrupt response.
+- A responsive Worker Thread regression must return the interrupt response after
+  250 ms but within the outer default, assert exactly one `runtime.ready`, and
+  assert the coordinator generation is unchanged across ready, terminal, and
+  response messages.
 - Source-mode and compiled-package smokes must both locate their corresponding
-  `.ts` or `.js` Worker entry and receive `runtime.ready` without Python.
+  `.ts` or `.js` Worker entry and receive `runtime.ready` from that worker.
 
 ### 7. Wrong vs Correct
 
@@ -3055,12 +3301,476 @@ setTimeout(() => emit("turn.interrupted"), 100);
 
 ```typescript
 controller.abort();
-const settled = await settlesWithin(turnTask, 100);
-if (!settled && workerIsUnresponsive) {
+const settled = await settlesWithin(turnTask, 15_000);
+if (!settled && coordinatorIsUnresponsive) {
   await worker.terminate();
   await restartWithRecovery({ sessionId, turnId, userInitiated: true });
 }
 // Resolve only after the fresh Gateway publishes the durable terminal record.
+```
+
+## Scenario: Targeted Agent Worker Interruption
+
+### 1. Scope / Trigger
+
+- Trigger: changing Worker-backed child execution, `interrupt_agent`, Agent Worker lease fencing,
+  coordinator-owned cleanup, child terminalization, or Worker replacement.
+- This is the inner Agent Worker path inside the backend coordinator. It is distinct from the
+  outer supervised-backend watchdog described above and must not restart the coordinator for an
+  ordinary child interruption.
+
+### 2. Signatures
+
+- Runtime handle:
+  `AgentThreadRuntimeHandle.interrupt(reason) -> Promise<void>`.
+- Durable cleanup confirmations:
+  `forceInterrupt?(reason, turnId) -> Promise<boolean>` and
+  `recoverInterrupt?(reason, turnId) -> Promise<boolean>`.
+- Effect recovery:
+  `AgentEffectLedgerStore.recoverInterruptedTools({ sessionId, turnId, completedAt })`
+  returns every terminal tool attempt for the target turn.
+- Lease controls: `AgentWorkerLease.fence(reason) -> Promise<void>` and
+  `AgentWorkerLease.terminate(reason) -> Promise<void>`.
+- Supervisor result: `AgentSupervisor.interrupt(childSessionId, reason?) -> Promise<boolean>`.
+- Defaults: 250 ms cooperative grace, 1 second coordinator cleanup bound, and a 12 second
+  Worker-mode supervisor cleanup envelope.
+
+### 3. Contracts
+
+- The runtime first requests cooperative cancellation. If the active run settles within the grace
+  period, it waits for lease release acknowledgement and keeps the Worker generation.
+- A still-active run is fenced before force cleanup. Fencing changes the Worker record out of the
+  leased state and clears message listeners, so provider frames, tool completions, and other late
+  messages have zero durable, external, or gateway effect.
+- The coordinator then calls `forceInterrupt()` for the exact turn. A `true` result confirms that
+  runtime/tool cleanup and interrupted-turn persistence are durable; timeout, rejection, `false`,
+  or a missing cleanup capability is unconfirmed.
+- After bounded cleanup, only the target lease is terminated. The pool waits for replacement
+  creation before the interrupt operation completes; root and sibling leases retain their Worker
+  identities and continue running.
+- When force cleanup is unconfirmed, replacement occurs first and `recoverInterrupt()` performs the
+  SQLite fallback. The interrupt succeeds only when one cleanup path returns `true` for the exact
+  turn. Missing or failed confirmation is fail-closed.
+- Every coordinator-brokered tool reserves an immutable effect attempt before execution. Turn
+  interruption closes all still-reserved tool attempts, appends canonical results for every pending
+  call, and changes the turn to `interrupted` inside one SQLite write transaction.
+- A started read-only/cancellable attempt becomes `interrupted`; a started mutating attempt whose
+  outcome cannot be proven becomes `effect_outcome_unknown`; a batch call with no effect attempt
+  becomes `tool_interrupted`. A previously completed attempt supplies its verified committed result
+  to canonical recovery instead of being downgraded.
+- Effect outcomes are append-only. Repeated recovery returns the same rows, and a tool completion
+  arriving after interruption cannot replace an interrupted or unknown terminal outcome.
+- `AgentSupervisor` persists child task/thread interruption and publishes parent/gateway terminal
+  state only after cleanup confirmation. On unconfirmed cleanup it returns `false`, leaves the
+  durable child running, does not close the runtime, and publishes no interrupted terminal.
+- Completion or failure may win the race with interruption. A real runtime terminal result remains
+  authoritative, is published once, and must not be overwritten by a synthetic interruption.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Cooperative run settles and durable recovery confirms interruption | Release normally; keep the Worker generation; persist and publish once |
+| Runtime completes or fails before interruption applies | Preserve that terminal result; return `false` for interruption; allow normal follow-up rules |
+| Run remains active after 250 ms | Fence first, bound coordinator cleanup, terminate only the target, and replace its generation |
+| `forceInterrupt()` returns `false`, rejects, or times out | Terminate/replace, then require `recoverInterrupt()` confirmation |
+| Both cleanup paths are unavailable or unconfirmed | Return `false`; do not terminalize, publish, close, or release supervisor ownership |
+| Fenced or stopping Worker emits a late frame | Drop it without invoking a listener or failing another lease |
+| Target replacement is created | Root and sibling lease identities and execution remain unchanged |
+| Duplicate interrupt targets an already terminal child | Keep the existing terminal row and publish no duplicate event |
+| Started read-only attempt has no committed result | Persist one `interrupted` effect and one canonical `tool_interrupted` result |
+| Started mutating attempt has no provable result | Persist one `effect_outcome_unknown` effect and matching canonical result |
+| Effect completed before canonical result persistence | Reuse the verified completed result during turn recovery |
+| Tool reports completion after recovery | Reject the conflicting terminal write and preserve the interruption outcome |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an abort-aware child settles, acknowledges release, persists one interrupted turn, and
+  reuses the same Worker.
+- Good: an abort-ignoring child is fenced, its coordinator-owned effects are closed, only its
+  Worker generation is replaced, and its parent continues to completion.
+- Base: a child completes while cancellation is being requested; completed state wins and a later
+  follow-up can use the idle durable thread.
+- Bad: mark the task interrupted before cleanup confirmation, or treat a timed-out cleanup promise
+  as proof that persistence succeeded.
+- Bad: terminate before fencing, accept a late provider/tool frame during cleanup, or restart the
+  whole backend coordinator for a routine child interruption.
+
+### 6. Tests Required
+
+- Runtime tests cover cooperative release without replacement, non-cooperative fencing and targeted
+  replacement, cleanup timeout/rejection fallback, and failure when no cleanup path confirms.
+- Pool tests inject late malformed frames after fencing and assert no listeners or unrelated leases
+  are affected; replacement must increment only the targeted Worker generation.
+- Supervisor tests assert cleanup precedes task/thread terminal writes, close, and publication;
+  unconfirmed cleanup preserves running state; a completed-result race remains completed and can
+  accept a follow-up.
+- Storage tests assert one interrupted turn, one terminal result per pending call, one
+  `turn_aborted` marker for user intent, mutation-aware effect outcomes, completed-result reuse,
+  append-only late-completion rejection, and idempotent repeated recovery.
+- A real backend integration must interrupt a Worker-backed child while the parent coordinator
+  continues, then assert one child task/thread terminal, one marker, and no coordinator restart.
+- The fault matrix must also inject provider delta/completion after interruption, tool completion
+  after durable recovery, approval response after cancellation, duplicate terminal frames, a
+  leased Worker crash, and reuse of the replacement generation. Each late or duplicate input must
+  have zero additional persistence, lifecycle, usage, publication, or external-effect impact.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+taskStore.interrupt(task);
+publishInterrupted(task);
+await lease.terminate(reason);
+```
+
+#### Correct
+
+```typescript
+await lease.fence(reason);
+const cleaned = await boundedForceInterrupt(turnId);
+await lease.terminate(reason);
+const confirmed = cleaned || await recoverInterrupt(reason, turnId);
+if (!confirmed) return false;
+terminalizeTaskAndThread();
+await publishTerminal();
+```
+
+## Scenario: Shared Root And Child Agent Worker Pool
+
+### 1. Scope / Trigger
+
+- Trigger: changing root `turn.submit`, root approval or clarification continuation, Agent Worker
+  adapter selection, shared pool scheduling, root provider dispatch, or coordinator ownership.
+- The Worker boundary covers provider-loop execution only. The backend coordinator continues to
+  own root session generations, reservations, queue state, SQLite, tools, approvals, artifacts,
+  gateway events, and TUI projection.
+
+### 2. Signatures
+
+- Adapter gates: `MYCLI_AGENT_EXECUTION_ADAPTER=in_process|worker` is the compatibility base;
+  `MYCLI_ROOT_AGENT_EXECUTION_ADAPTER=in_process|worker` and
+  `MYCLI_SUBAGENT_EXECUTION_ADAPTER=in_process|worker` independently override their lanes. The
+  effective default is `worker`; explicit `in_process` remains the rollback adapter.
+- The real-provider agent smoke may report only an allowlisted `failure_stage` boundary. It must not
+  include raw errors, prompts, responses, paths, credentials, or provider payloads.
+- Resolver:
+  `resolveAgentExecutionAdapters(env) -> {root: AgentExecutionAdapterKind,
+  subagent: AgentExecutionAdapterKind}`.
+- Root adapter:
+  `WorkerLeasedRootTurnRuntime({ pool, runtime, sessionId, recoverInterrupt? })`.
+- Continuation identity: `NodeTurnRuntime.continuationTurnId() -> string | undefined`.
+- Root lease request:
+  `AgentWorkerPool.acquire({ priority: "interactive", source: "root", sessionId, turnId, signal })`.
+- Resource metrics:
+  `AgentWorkerPool.metrics() -> Promise<AgentWorkerResourceMetrics>`.
+- Worker limits: `DEFAULT_AGENT_WORKER_RESOURCE_LIMITS` is 192 MiB old generation, 16 MiB young
+  generation, 64 MiB code range, and 4 MiB stack.
+- Transport/cache bounds: `AGENT_WORKER_TRANSPORT_MAX_BYTES=2 MiB`,
+  `AGENT_WORKER_SNAPSHOT_CACHE_MAX_ENTRIES=8`, and
+  `AGENT_WORKER_SNAPSHOT_CACHE_MAX_BYTES=512 KiB`.
+- Idle recycling options: `maxJobsPerWorker`, `maxWorkerAgeMs`, `largeContextBytes`, and
+  `maxHeapGrowthBytes`. Defaults are 100 jobs, 30 minutes, 1 MiB, and 32 MiB respectively.
+- Process pressure options: `rssSoftLimitBytes`, `rssHardLimitBytes`, `rssPollIntervalMs`, and the
+  injectable `readProcessRssBytes()`. Defaults are 1.5 GiB, 2 GiB, and 1 second.
+- Soft queue option: `softPressureQueueTimeoutMs`, default 30 seconds.
+- Pressure failure:
+  `AgentWorkerPoolMemoryPressureError { code="agent_worker_pool_memory_pressure",
+  pressure="soft"|"hard", outcome="soft_queue_timeout"|"hard_capacity", rssBytes, limitBytes }`.
+- Benchmark command:
+  `npm run benchmark:agent-workers -- --output <jsonl-path>`. It emits schema-versioned, redacted
+  per-scenario rows and runs each scenario in a separate process.
+
+### 3. Contracts
+
+- Selection precedence is lane override, then compatibility base, then `worker`. Missing or blank
+  lane overrides inherit the compatibility base. Unknown non-blank values fail backend startup and
+  do not echo their raw value in the error.
+- Adapter selection is resolved once during backend startup and captured by root runtime composition
+  and child runtime factory composition. A running backend does not reread these environment keys,
+  so an active turn cannot switch adapters.
+- If either effective lane is `worker`, create one shared coordinator-owned pool. Only enabled lanes
+  acquire from it: root requests use interactive priority and child requests use background priority.
+- Each root submit execution segment acquires one exclusive Worker lease using the already durable
+  reserved turn id, binds one `WorkerProviderStepExecutor`, and releases the lease after the segment
+  settles. Existing idempotent reservations do not acquire a new lease.
+- A root approval or clarification wait retains its durable suspended turn but no Worker. The
+  response execution segment reads the same durable continuation turn id, acquires a new lease
+  fenced to that id, and never reserves a second user turn.
+- Approval and clarification share the durable `suspended_turn` key. Continuation identity lookup
+  must probe clarification state before approval state because the approval coordinator treats a
+  clarification-only suspension as an incomplete approval and fails closed. A valid clarification
+  must therefore acquire its Worker lease without touching the approval probe.
+- Provider I/O runs in the leased Agent Worker only after the coordinator commits canonical model
+  input. SQLite, tool execution, approval policy, queue mutation, artifacts, gateway publication,
+  and TUI state remain in the coordinator.
+- Root, child, and sibling leases share capacity without sharing conversation state, provider
+  continuation state, tool state, or credentials beyond the active job.
+- Cooperative root interruption releases the lease without changing its generation. A root run
+  still active after the grace period is fenced, durably force-finalized by the coordinator, and
+  has only its leased Worker terminated and replaced.
+- Root and child hard interruption are symmetric isolation boundaries. Replacing a root Worker
+  leaves every child lease id and generation unchanged; replacing one child Worker leaves the root
+  and every sibling lease id and generation unchanged. Parent-child lifecycle policy may still
+  terminalize related logical work separately, but Worker termination itself is never propagated.
+- Session new/resume/fork, provider-free slash commands, root steering/follow-up, compaction,
+  Responses continuation replay, MCP refresh, permissions, and TUI transcript projection remain
+  coordinator-owned and must produce the same durable and gateway results when root provider steps
+  use Worker leases.
+- A provider stream final message is not the synchronization boundary for accepting another
+  independent root turn. Tests and clients that immediately submit another turn must wait for the
+  coordinator's terminal lifecycle and idle `status.changed(turn_running=false)` snapshot so the
+  prior generation's execution claim has been released.
+- Child spawn configuration persists only allowlisted environment values that are non-empty, do
+  not contain NUL, and contain at most 32,768 characters. Invalid optional ambient values are
+  omitted rather than making durable child reservation fail.
+- Every Worker uses validated V8 resource limits. Coordinator messages are stable-serialized and
+  byte-checked before structured clone; provider command/response parsers run on both send and
+  receive boundaries. Immutable instruction/tool cache entries remain content-addressed and LRU
+  bounded, while complete conversation state is cleared on release.
+- `metrics()` reads heap and event-loop numbers through coordinator-side Node Worker APIs. Its
+  projection contains only Worker id/generation, thread id, state, numeric limits, heap byte counts,
+  and event-loop numbers. It excludes lease/job/session/turn ids and all content, credentials,
+  paths, provider input, and tool output, and is not model-visible.
+- Job-count, age, largest-job-message, and retained-heap-growth thresholds are soft recycling
+  signals. The pool evaluates them only after the Worker acknowledges release, while its state is
+  `releasing` and its lease reference is cleared. A matching Worker is stopped before it can return
+  to `idle`; configured warm capacity is then restored with a new generation.
+- Threshold sampling never reclaims an `assigning`, `leased`, or `fenced` Worker. The heap check
+  repeats the idle-only state/lease guard after its asynchronous sample so a race cannot recycle a
+  reassigned Worker. Protocol validation failures remain hard correctness failures: they fence and
+  replace the affected Worker immediately instead of waiting for ordinary idle recycling.
+- At or above the RSS soft limit, the pool retires idle Workers, disables warm-capacity and crash
+  replacement spawning, and holds background requests in the existing bounded priority queue.
+  Interactive requests may reuse idle capacity or expand up to the configured maximum.
+- At or above the RSS hard limit, the pool disables all expansion. Interactive work may reuse an
+  existing idle Worker; an interactive request with no idle capacity, and every new or queued
+  background request, fails with `AgentWorkerPoolMemoryPressureError`. Existing active leases are
+  never reclaimed. The periodic RSS monitor resumes queued work and restores warm capacity only
+  after RSS falls below the soft limit.
+- A background request that remains queued throughout the soft-pressure timeout fails as
+  `soft_queue_timeout`. This prevents an interactive parent that is waiting on a child from hanging
+  indefinitely while process pressure remains elevated.
+- The periodic RSS monitor may be unreferenced while the lease queue is empty, but it must keep the
+  event loop referenced while any acquisition is queued. Every queued acquisition must therefore
+  settle through dispatch, abort, explicit pressure rejection, timeout, or pool close even when no
+  Worker or other referenced handle remains.
+- Memory pressure changes scheduling only. It never compacts, removes, slices, or silently truncates
+  committed provider context. The metrics pressure projection contains state, RSS/limit bytes,
+  warming state, and numeric retirement/rejection counters only; it remains non-model-visible.
+- Memory benchmarks compare RSS deltas from a same-process baseline and never enforce one platform's
+  observed byte values as another platform's pass/fail threshold. The output allowlist is platform,
+  architecture, Node version, scenario, duration, RSS/heap/external/Worker counts, and numeric
+  scenario dimensions; it excludes payload bodies, paths, identities, prompts, tools, and secrets.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| All adapter gates are absent | Root and child provider steps use the shared Worker pool |
+| Compatibility gate resolves to `in_process` | Root and child provider steps use the in-process adapter and create no Agent Worker pool |
+| Compatibility gate is `worker` with no lane overrides | Root and child provider steps use the shared Worker pool, preserving legacy behavior |
+| Root lane is `in_process` and subagent lane is `worker` | Root remains in-process; children acquire background Worker leases from the shared pool |
+| Root lane is `worker` and subagent lane is `in_process` | Root acquires interactive Worker leases; children remain in-process |
+| A lane override is blank | Inherit the compatibility gate; do not force `in_process` |
+| Any non-blank adapter value is unknown | Fail backend startup naming only the invalid environment key; create no pool or runtime |
+| Root submit reservation is new | Acquire one `interactive/root` lease with the exact session and durable turn id |
+| Reservation is an existing idempotent result | Return the durable result without acquiring or dispatching a Worker |
+| Root waits for approval or clarification | Release the current lease; retain coordinator-owned suspended state |
+| Root continuation resumes | Acquire a new lease using the original durable turn id and commit no duplicate user turn |
+| Root and children are runnable | Lease distinct Workers from the shared bounded pool according to priority and FIFO policy |
+| Root Worker is non-cooperative | Fence, clean up, terminate, and replace only the root lease; keep child leases active |
+| Child Worker is non-cooperative | Fence, clean up, terminate, and replace only the target child lease; keep root and sibling leases active |
+| Worker startup/capacity fails before dispatch | Return the typed Worker failure and produce no provider or tool side effect |
+| Root provider stream emits its final text | Keep the execution claim until coordinator terminalization and idle status publication complete |
+| Allowlisted child environment value is empty, contains NUL, or exceeds 32,768 characters | Omit that optional value from the frozen spawn snapshot; persist no malformed environment field |
+| Outbound or inbound Worker frame exceeds 2 MiB | Reject/fence before effect handling; do not structured-clone an oversized coordinator frame |
+| V8 resource override is missing | Use the measured 192/16/64/4 MiB defaults |
+| V8 resource override is invalid or transport limit exceeds 2 MiB | Reject pool construction before spawning a Worker |
+| Heap sampling races with Worker exit | Omit that Worker's heap block; retain bounded identity/state and event-loop numbers |
+| Worker reaches 100 jobs, 30 minutes, a 1 MiB job message, or 32 MiB heap growth while leased | Preserve the active lease and defer threshold evaluation |
+| Worker acknowledges release after crossing a soft threshold | Clear the lease, stop that idle generation, and restore warm capacity before reassignment |
+| Worker sends malformed or oversized protocol traffic | Fence any active lease and replace the Worker immediately with no effect handling |
+| RSS is below 1.5 GiB | Dispatch by priority/FIFO and maintain configured warm capacity |
+| RSS is at least 1.5 GiB but below 2 GiB | Retire idle Workers, disable speculative warming/replacement, queue background work, and permit interactive reuse or expansion |
+| Background work remains in soft pressure for 30 seconds | Reject it with `soft_queue_timeout` rather than leave a dependent parent waiting indefinitely |
+| RSS is at least 2 GiB with an idle Worker | Permit one interactive request to reuse it without expansion; reject background work explicitly |
+| RSS is at least 2 GiB with no idle Worker | Preserve active leases and reject new work with `hard_capacity` rather than wait indefinitely |
+| RSS returns below 1.5 GiB | Resume the bounded queue by normal priority/FIFO order and restore warm capacity |
+| Benchmark output path is provided | Write exactly one JSON object per scenario with no raw payload or local path |
+| One benchmark scenario fails | Return non-zero and emit no fabricated measurement for that scenario |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a root uses `spawn_agent`; root and child provider requests execute on distinct shared-pool
+  leases, while both manifests and the root tool call/result are committed in their own sessions.
+- Good: a root approval releases its Worker while waiting, then resumes on another lease with the
+  same turn id and the coordinator-owned pending decision.
+- Good: an MCP background refresh updates coordinator registrations and a later Worker provider
+  step receives the refreshed tool definition without moving MCP ownership into the Worker.
+- Base: `in_process` preserves the canonical manifests, transcript, usage, tool, and gateway
+  behavior without creating the pool.
+- Good: a metrics sample during a private leased job contains numeric heap/event-loop fields but no
+  session id, turn id, lease id, job id, prompt, credential, or tool output.
+- Good: a default Worker-completed turn restarts with the explicit `in_process` gate and reads the old
+  manifest chain, completes the next turn, and persists only one plan effect.
+- Good: a Worker crosses its configured age threshold during a long provider call, completes the
+  active lease normally, acknowledges release, and is replaced before it receives another job.
+- Good: soft pressure queues child work while an interactive root obtains capacity; after RSS
+  recovers, the child receives its unmodified committed context and executes normally.
+- Base: hard pressure reuses one already idle Worker for root work without creating another isolate.
+- Bad: terminate a leased Worker, trim provider-visible history, or leave an impossible expansion
+  request queued indefinitely merely to move RSS below a threshold.
+- Bad: move SQLite, tool adapters, queue state, approval continuations, or gateway publication into
+  the root Worker.
+- Bad: keep a Worker leased while waiting for user input, or reserve a new turn for a continuation.
+- Bad: persist empty ambient values such as `COLORTERM=""` in a child spawn snapshot and fail the
+  entire spawn at the storage validation boundary.
+
+### 6. Tests Required
+
+- Runtime tests assert `interactive/root` acquire input, exact session/turn fencing, executor bind
+  and unbind, lease release, continuation reuse, cooperative generation reuse, targeted hard
+  replacement, and completed-vs-interrupt race precedence.
+- Runtime and app integration tests restart a clarification-only suspension under the default Worker
+  adapter, resolve it on a new lease with the original turn id, and assert that approval probing does
+  not mask the valid clarification state.
+- App integration runs the same spawned-child scenario through `in_process` and `worker`, then
+  reconstructs independent root and child provider manifests and asserts the root canonical
+  conversation contains the coordinator-owned `assistant_tool_calls` and `tool_result`.
+- App integration runs the same spawned-child scenario under legacy all-in-process, legacy
+  all-Worker, in-process-root/Worker-child, and Worker-root/in-process-child topologies. Runtime unit
+  tests assert precedence, blank inheritance, and fail-fast validation for each environment key.
+- Shared-pool integration runs one root with multiple concurrent children and verifies isolated
+  context, tools, approvals, usage, terminal reports, and gateway ordering.
+- Bidirectional hard-interrupt tests hold two child leases while replacing root, then hold root and
+  sibling leases while replacing one child. Every non-target Worker id, generation, and lease id
+  must remain unchanged. App integration must also prove an interrupted child does not prevent a
+  sibling report or the root terminal result.
+- App integration with `MYCLI_AGENT_EXECUTION_ADAPTER=worker` must cover session new/resume/fork,
+  provider-free slash commands, steering and queued follow-up lifecycle, real compaction and
+  restart, canonical Responses tool continuation replay, permission-frozen tool exposure, live and
+  durable TUI transcript parity, and background MCP refresh reaching a later provider step.
+- M7 extension integration must set an allowlisted ambient value to the empty string and still
+  complete child spawn, proving invalid optional environment values are omitted before durable
+  spawn reservation.
+- Worker test synchronization must wait for explicit `leased` state or actual delegate start;
+  `activeLeaseCount` also includes `assigning` Workers and is not proof that a runtime handle has
+  installed its active run.
+- Run the identical two-step root tool scenario through both adapters and compare normalized
+  canonical conversation, provider bodies, manifest reference topology, lifecycle payloads, usage,
+  terminal report, transcript, and terminal gateway ordering.
+- Restart a Worker-written session with `MYCLI_AGENT_EXECUTION_ADAPTER=in_process`, complete the next
+  in-process turn, and assert old provider manifests remain reconstructable and tool effects are not
+  duplicated.
+- Pool tests assert actual Worker `resourceLimits`, positive heap values, event-loop utilization in
+  `[0,1]`, content-free metrics serialization, pre-clone oversized-message rejection, and continued
+  Worker reuse. Context tests assert the 8-entry/512-KiB cache defaults.
+- Pool tests lower each recycling threshold independently and assert job-count, age, largest job
+  message, and heap growth replace the Worker only after release acknowledgement. Age and heap
+  tests must hold the lease past the threshold and assert its generation remains unchanged while
+  active. Protocol-failure tests must continue asserting immediate affected-lease failure and
+  replacement.
+- RSS tests inject deterministic samples. Soft tests assert idle retirement, disabled warming,
+  background queueing, bounded `soft_queue_timeout`, interactive progress, and recovery. Hard tests
+  assert active generation preservation, interactive idle reuse without expansion, typed
+  `hard_capacity` when no idle capacity is safe, background rejection, numeric/redacted metrics,
+  and resumption below the soft threshold.
+- Benchmark verification asserts all nine scenario names, 0/1/4 Worker counts, active counts,
+  bounded 480 KiB tool projection beside the coordinator-owned 8 MiB output, two generations after
+  120 leases, and zero Workers after post-idle recovery. CI runs the same command on Linux, macOS,
+  and Windows and uploads the JSONL rather than comparing unstable absolute RSS values.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const worker = await pool.acquire({ source: "root", turnId: randomUUID() });
+await worker.runWholeBackend({ store, tools, gateway, approval });
+```
+
+#### Correct
+
+```typescript
+const lease = await pool.acquire({
+  priority: "interactive",
+  source: "root",
+  sessionId,
+  turnId: durableTurnId,
+  signal,
+});
+runtime.bindProviderStepExecutor(new WorkerProviderStepExecutor({ lease }));
+try {
+  return await runtime.submit(submission, emit, { signal, reservation });
+} finally {
+  runtime.bindProviderStepExecutor(undefined);
+  await lease.release();
+}
+```
+
+#### Wrong
+
+```typescript
+worker.postMessage(unvalidatedProviderCommand);
+return { sessionId, turnId, prompt, heap: await worker.getHeapStatistics() };
+```
+
+#### Correct
+
+```typescript
+lease.postMessage(parseAgentWorkerProviderCommand(command));
+return await pool.metrics(); // numeric, redacted, and non-model-visible
+```
+
+#### Wrong
+
+```typescript
+if (heapGrowthBytes >= maxHeapGrowthBytes) await lease.terminate("memory pressure");
+```
+
+#### Correct
+
+```typescript
+await lease.release(); // release ack and lease clearing happen before idle threshold recycling
+```
+
+#### Wrong
+
+```typescript
+request.items = request.items.slice(-100); // hidden truncation under process pressure
+```
+
+#### Correct
+
+```typescript
+throw new AgentWorkerPoolMemoryPressureError({
+  pressure: "hard",
+  outcome: "hard_capacity",
+  rssBytes,
+  limitBytes: hardLimitBytes,
+});
+```
+
+#### Wrong
+
+```typescript
+const environment = Object.fromEntries(keys.map((key) => [key, env[key]]));
+```
+
+#### Correct
+
+```typescript
+const environment = Object.fromEntries(keys.flatMap((key) => {
+  const value = env[key];
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 32_768
+    && !value.includes("\0")
+    ? [[key, value]]
+    : [];
+}));
 ```
 
 ## Scenario: Bounded Streaming Transcript Rendering
@@ -4281,6 +4991,174 @@ ui.onSuspend = () => process.kill(0, "SIGTSTP");
 ui.onResume = () => queueNativeTranscriptHistory(true);
 // TUI releases terminal ownership before suspension, then replaces inline history from source.
 ```
+
+## Scenario: Codex-Style Plan Mode Proposal Handoff
+
+### 1. Scope / Trigger
+
+- Trigger: changing collaboration-mode instructions, per-turn tool exposure, proposed-plan parsing,
+  `turn.submit`, `plan.proposed`, transcript resume projection, or the TUI implementation prompt.
+- This contract covers the Plan-mode proposal handoff. It is separate from the Default-mode
+  `update_plan` progress checklist contract below.
+
+### 2. Signatures
+
+- Runtime configuration:
+  `configureRuntimeContext({collaborationMode: "default" | "plan", turnId?: string}) -> void`.
+- Gateway request: `turn.submit {message, client_turn_id, client_user_message_id,
+  collaboration_mode?: "default" | "plan", local_images?}`.
+- Final assistant block: an exact standalone `<proposed_plan>` line, Markdown body, and exact
+  standalone `</proposed_plan>` line.
+- Gateway event: `plan.proposed {client_turn_id, text, source="assistant_message"}`.
+- TUI update: `setState(state, {eventType?: string})`; only `eventType="plan.proposed"` may open
+  the implementation selector.
+- TUI implementation callback:
+  `onPlanImplementation(action: "implement" | "clear_context", planMarkdown) -> Promise<void>`.
+- Context projection: `status.changed.context_window {used_tokens, max_tokens, usage_ratio,
+  source}` becomes TUI footer fields `contextPercent`, `contextWindow`, and `contextUsedTokens`.
+- Prompt label helper:
+  `planImplementationContextUsageLabel(contextPercent?, contextUsedTokens?) -> string | undefined`.
+
+### 3. Contracts
+
+- Each turn freezes its collaboration mode before the first provider request. A later global mode
+  change cannot change that turn's instructions or tool exposure.
+- Plan mode injects the Plan developer instruction but keeps the provider-visible built-in and direct
+  extension schema stable across modes. `Read`, `Shell` (when the active policy exposes process
+  tools), `Write`, `Edit`, and `Patch` therefore remain in the schema instead of being removed based
+  on a declared filesystem effect. The instruction tells the model to use only read-only
+  investigation and verification; mutation calls still follow the ordinary approval and sandbox
+  policy rather than receiving a Plan-mode permission bypass.
+- `update_plan` remains in the stable schema for cache compatibility, but a Plan-mode call is persisted
+  as a failed result with `errorKind=tool_not_allowed_in_plan_mode` without approval, hooks, previews,
+  or router execution. This is the only built-in Plan-mode tool rejection.
+- The gateway recognizes exactly one non-empty proposed-plan block with exact standalone tag
+  lines. It removes that block from ordinary assistant output and emits one dedicated
+  `plan.proposed` event. Inline, malformed, empty, or multiple blocks remain ordinary text.
+- Completion order is `message.complete`, then active-turn release and
+  `status.changed(turn_running=false)`, then `plan.proposed`. This prevents an implementation
+  submission from being classified as steering or queued follow-up input.
+- Live `plan.proposed` opens the selector only while the current UI mode is Plan and there is no
+  queued input, approval, clarification, transcript viewer, or other selector. Transcript load,
+  bootstrap, session resume, and older-history pagination restore a `proposed_plan` block without
+  synthesizing the live event and therefore never reopen the selector.
+- The selector labels match Codex: `Yes, implement this plan`,
+  `Yes, clear context and implement`, and `No, stay in Plan mode`. Direct implementation submits
+  `Implement the plan.` atomically with `collaboration_mode=default`. Clear-context implementation
+  creates a new session, submits the Codex carry-forward prefix plus the complete plan, and selects
+  Default in the same turn. Stay/Escape closes only the prompt and leaves Plan mode active.
+- The clear-context description uses `Fresh thread. Context: <usage>.` when context use is known and
+  non-zero. A known percentage takes precedence over token counts and follows Codex rounding: round
+  the remaining percentage first, then subtract it from 100. When no window percentage is known,
+  use non-zero `contextUsedTokens` with Codex `K/M/B/T` compact formatting. Unknown or effectively
+  fresh context keeps the neutral `Fresh thread with this plan.` description.
+- Context usage must come from the latest provider-step `status.changed.context_window`, not
+  cumulative session usage. This keeps the clear-context trade-off factual and avoids implying that
+  starting fresh will discard more active context than it actually will.
+- `update_plan` remains a Default-mode implementation progress tool. It neither enters nor exits
+  Plan mode; it stays listed for schema stability but is rejected with a failed result during Plan
+  turns.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Unsupported `turn.submit.collaboration_mode` | Reject with `invalid_params` before turn execution |
+| Global mode changes during a turn | Keep the frozen turn mode and exposure |
+| Provider calls `update_plan` in Plan mode | Persist a failed result; run no side-effect boundary |
+| Provider calls a visible mutation tool in Plan mode | Apply ordinary approval/sandbox policy |
+| One exact non-empty proposal block | Strip ordinary output and emit one live proposal after idle |
+| Inline, malformed, empty, or multiple blocks | Preserve as ordinary assistant text; emit no proposal |
+| Valid proposal restored by `transcript.load` | Project a plan block; emit no live event or selector |
+| Live proposal while another input surface is active | Keep the existing surface; do not replace it |
+| Direct implementation selected | Switch to Default and submit one implementation turn |
+| Clear-context implementation selected | Create a fresh session, then submit the full plan in Default |
+| Stay or Escape selected | Dismiss the selector and remain in Plan mode |
+| Implementation request fails | Keep the selector usable and show the bounded error |
+| Known context percentage rounds to zero used | Keep the neutral clear-context description |
+| Percentage unavailable and used tokens are positive | Show compact `<tokens> used` context text |
+| Context metrics are negative, non-finite, or exceed the window | Ignore non-finite values and clamp percentage to `0..100` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a Plan turn investigates with read-only tools, returns one complete proposal, becomes idle,
+  and then presents the three Codex implementation choices.
+- Good: process restart reconstructs the dedicated proposal from durable assistant text without
+  adding another transcript row or prompting again.
+- Good: a 73% active-context load renders `Fresh thread. Context: 73% used.` only on the
+  clear-context choice.
+- Base: a Plan answer without a complete proposal renders as ordinary assistant text and stays in
+  Plan mode.
+- Base: missing or zero context usage retains `Fresh thread with this plan.` without implying that
+  context cleanup is useful.
+- Bad: remove mutation schemas based on their filesystem effect and thereby change the Plan request
+  shape, or send a Plan-mode `update_plan` call through approval/hooks/router before rejecting it.
+- Bad: infer prompt eligibility from the presence of a historical plan item; this reopens the
+  selector on every resume.
+- Bad: run `/mode default` and `/new` as visible slash-command transcript entries for a selector
+  action.
+- Bad: use cumulative `usage.input_tokens` for the prompt label; it counts prior turns that are not
+  part of the current model context.
+
+### 6. Tests Required
+
+- Instruction tests assert decision-complete Plan guidance and standalone proposal tags.
+- Runtime tests assert frozen mode, stable built-in exposure, durable `update_plan` denial output,
+  zero approval/hook/router calls for that denial, and ordinary policy handling for visible mutation
+  calls.
+- Parser tests cover CRLF, arbitrary stream chunking, surrounding text, unterminated candidates,
+  malformed/inline/empty blocks, and multiple blocks.
+- Gateway tests assert atomic `turn.submit.collaboration_mode`, stripped final output, exactly one
+  proposal, `message.complete -> idle status -> plan.proposed`, and resume projection without a live
+  event.
+- TUI tests assert live-only prompting, resume without prompting, all three action routes, Escape,
+  conflicting input surfaces, and narrow-terminal width safety.
+- Reducer tests assert canonical `used_tokens/max_tokens/usage_ratio` projection, while formatter
+  tests cover percentage precedence, fresh context, token fallback, compact-unit boundaries, and
+  selector integration.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+if (state.transcript.some((item) => item.type === "proposed_plan")) {
+  showPlanImplementationSelector();
+}
+```
+
+This reopens an action prompt while loading durable history.
+
+#### Correct
+
+```typescript
+if (eventType === "plan.proposed" && state.footer.collaborationMode === "plan") {
+  showPlanImplementationSelector();
+}
+```
+
+Historical projection restores the plan block, while only the live terminal event can request a
+new implementation decision.
+
+#### Wrong
+
+```typescript
+const usageLabel = `${footer.totalInputTokens} used`;
+```
+
+This uses cumulative session traffic rather than the active context window.
+
+#### Correct
+
+```typescript
+const usageLabel = planImplementationContextUsageLabel(
+  footer.contextPercent,
+  footer.contextUsedTokens,
+);
+```
+
+The reducer derives both fields from `status.changed.context_window`; the prompt omits the label
+when those active-context metrics do not establish a meaningful cleanup trade-off.
 
 ## Scenario: Durable Append-Only Plan Updates
 

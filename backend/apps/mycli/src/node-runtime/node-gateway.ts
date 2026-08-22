@@ -12,6 +12,7 @@ import {
 	type QueueMutation,
 	type QueueSnapshot,
 	type CanonicalMessage,
+	type ProviderUsage,
 	type QueuedInput,
 	type RuntimeEvent,
 	type ReasoningEffort,
@@ -60,6 +61,15 @@ import {
 	statusCommandResult,
 } from "./node-slash-command-results.ts";
 import type { AgentInteractiveRequestGateway } from "./agent-interactive-requests.ts";
+import {
+	approvalPreviewDetails,
+	approvalPreviewPayload,
+	fileMutationChangesPayload,
+} from "./approval-preview.ts";
+import {
+	extractProposedPlan,
+	ProposedPlanStreamFilter,
+} from "./proposed-plan.ts";
 
 type JsonObject = Record<string, unknown>;
 type RpcId = string | number | null;
@@ -85,7 +95,10 @@ export interface NodeGatewayRuntime {
 		readonly trust: WorkspaceTrustState;
 		readonly permission: PermissionProfile;
 	}): void;
-	configureRuntimeContext?(input: { readonly collaborationMode: string }): void;
+	configureRuntimeContext?(input: {
+		readonly collaborationMode: string;
+		readonly turnId?: string;
+	}): void;
 	refreshExtensions?(): void;
 	reserve(submission: TurnSubmission): TurnReservation;
 	resolveApproval(
@@ -144,7 +157,11 @@ export interface NodeGatewaySessionCommands {
 		readonly role: string;
 		readonly snippet: string;
 	}[];
-	maintenance(action: "report" | "empty" | "orphans" | "vacuum", workspaceRoot: string): JsonObject;
+	maintenance(
+		action: "report" | "empty" | "payloads" | "orphans" | "vacuum"
+			| "transcript_normalization" | "content_blobs" | "content_blob_gc",
+		workspaceRoot: string,
+	): JsonObject | Promise<JsonObject>;
 }
 
 export interface NodeGatewayTraceCommands {
@@ -185,10 +202,18 @@ export interface CreateNodeGatewayOptions {
 	readonly provider: string;
 	readonly model: string;
 	readonly toolNames?: readonly string[];
-	readonly maxPromptTokens?: number;
+	readonly maxPromptTokens?: number | (() => number);
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
 	readonly loadTranscript?: (sessionId: string) => readonly TranscriptItem[];
+	readonly loadTranscriptPage?: (
+		sessionId: string,
+		input: { readonly before?: string; readonly limit?: number },
+	) => {
+		readonly hasCanonicalHistory: boolean;
+		readonly items: readonly TranscriptItem[];
+		readonly nextBefore: string | null;
+	};
 	readonly loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
 	readonly loadTurnRollouts?: (sessionId: string) => readonly JsonObject[];
 	readonly memoryCommands?: NodeGatewayMemoryCommands;
@@ -252,14 +277,22 @@ interface ActiveTurn {
 	readonly controller: AbortController;
 	readonly context: SessionGenerationContext;
 	readonly runtime: NodeGatewayRuntime;
+	readonly collaborationMode: "default" | "plan";
+	readonly planStreamFilter?: ProposedPlanStreamFilter;
 	turnId?: string;
 	terminalEmitted: boolean;
 	terminalState?: "completed" | "failed" | "interrupted";
 	visibleAgentOutput?: boolean;
+	pendingProposedPlan?: string;
 	inputRolledBack?: boolean;
 	interruptionFinalizedLogged?: boolean;
 	interruptPromise?: Promise<JsonObject>;
 	forceInterruptPromise?: Promise<RuntimeTurnRecord>;
+	contextWindow?: Readonly<{
+		readonly usedTokens: number;
+		readonly maxTokens: number;
+		readonly source: "provider_live" | "runtime_estimate";
+	}>;
 }
 
 interface RpcRequest {
@@ -296,12 +329,14 @@ class InProcessNodeGateway implements NodeGateway {
 	#unsubscribeExtensions: (() => void) | null = null;
 	#unsubscribeAgentInteractiveRequests: (() => void) | null = null;
 	readonly #interactiveRequests: QueuedInteractiveRequest[] = [];
+	readonly #closeAfterResponses = new WeakSet<JsonObject>();
 	#trustState: WorkspaceTrustState;
 	#permissionProfile: PermissionProfile = "workspace";
 	#provider: string;
 	#model: string;
 	#reasoningEffort: ReasoningEffort | undefined;
 	#collaborationMode: "default" | "plan" = "default";
+	readonly #collaborationModeByTurn = new Map<string, "default" | "plan">();
 
 	constructor(options: CreateNodeGatewayOptions) {
 		this.#options = options;
@@ -524,7 +559,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#completeRequest(request: RpcRequest, result: JsonObject): void {
 		this.#writeResult(request.id, result);
-		if (request.method === "shutdown") {
+		if (request.method === "shutdown" || this.#closeAfterResponses.has(result)) {
 			queueMicrotask(() => { void this.close(); });
 		}
 	}
@@ -587,18 +622,79 @@ class InProcessNodeGateway implements NodeGateway {
 
 	async #transcript(params: JsonObject): Promise<JsonObject> {
 		const sessionId = optionalString(params.session_id) ?? this.#sessionId();
+		const before = optionalString(params.before);
+		const limit = transcriptPageLimit(params.limit);
+		if (sessionId === this.#sessionId()
+			&& this.#options.loadTranscriptPage
+			&& (!before || before.startsWith("v1."))) {
+			try {
+				const page = this.#options.loadTranscriptPage(sessionId, {
+					...(before ? { before } : {}),
+					limit,
+				});
+				if (!before && !page.hasCanonicalHistory && this.#options.loadTranscript) {
+					return paginatedTranscript(
+						sessionId,
+						this.#options.loadTranscript(sessionId).flatMap(gatewayTranscriptItems),
+						params,
+					);
+				}
+				return {
+					session_id: sessionId,
+					items: page.items.flatMap(gatewayTranscriptItems),
+					next_before: page.nextBefore,
+					read_only: false,
+				};
+			} catch (error) {
+				if (error instanceof RangeError) {
+					throw new GatewayFailure("invalid_params", "Transcript cursor or limit is invalid.");
+				}
+				throw error;
+			}
+		}
 		if (sessionId === this.#sessionId() && this.#options.loadTranscript) {
 			return paginatedTranscript(
 				sessionId,
-				this.#options.loadTranscript(sessionId).map(gatewayTranscriptItem),
+				this.#options.loadTranscript(sessionId).flatMap(gatewayTranscriptItems),
 				params,
 			);
 		}
 		if (this.#options.sessionCoordinator) {
 			const prepared = await this.#options.sessionCoordinator.inspect(sessionId);
+			if (!prepared.readOnly
+				&& this.#options.loadTranscriptPage
+				&& (!before || before.startsWith("v1."))) {
+				try {
+					const page = this.#options.loadTranscriptPage(sessionId, {
+						...(before ? { before } : {}),
+						limit,
+					});
+					if (!before && !page.hasCanonicalHistory && this.#options.loadTranscript) {
+						return paginatedTranscript(
+							sessionId,
+							this.#options.loadTranscript(sessionId).flatMap(gatewayTranscriptItems),
+							params,
+							false,
+						);
+					}
+					return {
+						session_id: sessionId,
+						items: page.items.flatMap(gatewayTranscriptItems),
+						next_before: page.nextBefore,
+						read_only: false,
+					};
+				} catch (error) {
+					if (error instanceof RangeError) {
+						throw new GatewayFailure("invalid_params", "Transcript cursor or limit is invalid.");
+					}
+					throw error;
+				}
+			}
 			return paginatedTranscript(
 				sessionId,
-				prepared.transcript.map(gatewayTranscriptItem),
+				(prepared.readOnly || !this.#options.loadTranscript
+					? prepared.transcript
+					: this.#options.loadTranscript(sessionId)).flatMap(gatewayTranscriptItems),
 				params,
 				prepared.readOnly,
 			);
@@ -1190,20 +1286,32 @@ class InProcessNodeGateway implements NodeGateway {
 				return errorCommandResult(
 					invocation,
 					"Unsupported session maintenance action",
-					"/session maintenance [--apply-empty|--apply-orphans|--apply-vacuum]",
+					"/session maintenance [--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]",
 				);
 			}
 			const sessions = this.#options.sessionCommands;
 			if (!sessions) throw new GatewayFailure("method_not_found", "Session maintenance is unavailable.");
-			const result = sessions.maintenance(action, this.#workspaceRoot());
+			const result = await sessions.maintenance(action, this.#workspaceRoot());
 			if (action === "report") {
 				return listCommandResult(invocation, "Session maintenance", commandObjectRows(result));
 			}
-			return noticeCommandResult(
+			const response = noticeCommandResult(
 				invocation,
 				"Session maintenance",
 				commandObjectSummary(result),
+				{
+					severity: result.status === "failed" ? "error" : "success",
+					extra: action === "transcript_normalization"
+						|| action === "content_blobs" || action === "content_blob_gc"
+						? { ...result }
+						: undefined,
+				},
 			);
+			if ((action === "transcript_normalization" || action === "content_blobs")
+				&& result.backend_restart_required === true) {
+				this.#closeAfterResponses.add(response);
+			}
+			return response;
 		}
 		if (invocation.commandId === "trace") {
 			const trace = this.#options.traceCommands;
@@ -1611,6 +1719,8 @@ class InProcessNodeGateway implements NodeGateway {
 			"client_user_message_id",
 		);
 		const localImages = stringArray(params.local_images, "local_images");
+		const collaborationMode = collaborationModeParameter(params.collaboration_mode)
+			?? this.#collaborationMode;
 		const submission: TurnSubmission = {
 			clientTurnId,
 			clientUserMessageId,
@@ -1635,17 +1745,27 @@ class InProcessNodeGateway implements NodeGateway {
 			throw error;
 		}
 		const turnId = reservation.turn.turn_id;
+		const collaborationModeChanged = collaborationMode !== this.#collaborationMode;
+		if (collaborationModeChanged) {
+			this.#collaborationMode = collaborationMode;
+			runtime.configureRuntimeContext?.({ collaborationMode });
+		}
+		this.#collaborationModeByTurn.set(turnId, collaborationMode);
+		runtime.configureRuntimeContext?.({ collaborationMode, turnId });
 		const active: ActiveTurn = {
 			clientTurnId,
 			clientUserMessageId,
 			controller: new AbortController(),
 			context,
 			runtime,
+			collaborationMode,
+			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId,
 			terminalEmitted: false,
 		};
 		this.#emitUserMessageLifecycle(active, message, "submit");
 		this.#activeTurn = active;
+		if (collaborationModeChanged) this.#emitRuntime("status.changed", this.#status());
 		this.#activeTurnTask = new Promise<void>((resolve) => {
 			queueMicrotask(() => {
 				void this.#runTurn(active, submission, reservation).then(resolve);
@@ -1695,12 +1815,17 @@ class InProcessNodeGateway implements NodeGateway {
 		if (!coordinator.markExecuting(context, true)) {
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
+		const collaborationMode = this.#collaborationModeByTurn.get(pending.turnId)
+			?? this.#collaborationMode;
+		snapshot.binding.configureRuntimeContext?.({ collaborationMode, turnId: pending.turnId });
 		const active: ActiveTurn = {
 			clientTurnId: pending.clientTurnId,
 			clientUserMessageId: pending.clientTurnId,
 			controller: new AbortController(),
 			context,
 			runtime: snapshot.binding,
+			collaborationMode,
+			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId: pending.turnId,
 			terminalEmitted: false,
 		};
@@ -1766,12 +1891,17 @@ class InProcessNodeGateway implements NodeGateway {
 		if (!coordinator.markExecuting(context, true)) {
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
+		const collaborationMode = this.#collaborationModeByTurn.get(pending.turnId)
+			?? this.#collaborationMode;
+		snapshot.binding.configureRuntimeContext?.({ collaborationMode, turnId: pending.turnId });
 		const active: ActiveTurn = {
 			clientTurnId: pending.clientTurnId,
 			clientUserMessageId: pending.clientUserMessageId,
 			controller: new AbortController(),
 			context,
 			runtime: snapshot.binding,
+			collaborationMode,
+			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId: pending.turnId,
 			terminalEmitted: false,
 		};
@@ -1899,6 +2029,7 @@ class InProcessNodeGateway implements NodeGateway {
 			}
 			if (releasedActive && !this.#closed && this.#isCurrent(active)) {
 				this.#emitRuntime("status.changed", this.#status());
+				this.#emitPendingProposedPlan(active);
 			}
 			if (releasedActive && scheduleNext && !this.#closed && this.#isCurrent(active)) {
 				this.#scheduleNextQueuedTurn();
@@ -1961,6 +2092,7 @@ class InProcessNodeGateway implements NodeGateway {
 			}
 			if (releasedActive && !this.#closed && this.#isCurrent(active)) {
 				this.#emitRuntime("status.changed", this.#status());
+				this.#emitPendingProposedPlan(active);
 			}
 			if (releasedActive && scheduleNext && !this.#closed && this.#isCurrent(active)) {
 				this.#scheduleNextQueuedTurn();
@@ -2027,6 +2159,7 @@ class InProcessNodeGateway implements NodeGateway {
 			}
 			if (releasedActive && !this.#closed && this.#isCurrent(active)) {
 				this.#emitRuntime("status.changed", this.#status());
+				this.#emitPendingProposedPlan(active);
 			}
 			if (releasedActive && scheduleNext && !this.#closed && this.#isCurrent(active)) {
 				this.#scheduleNextQueuedTurn();
@@ -2070,12 +2203,20 @@ class InProcessNodeGateway implements NodeGateway {
 			...proposed,
 			turnId: reservation.turn.turn_id,
 		};
+		const collaborationMode = this.#collaborationMode;
+		this.#collaborationModeByTurn.set(reservation.turn.turn_id, collaborationMode);
+		runtime.configureRuntimeContext?.({
+			collaborationMode,
+			turnId: reservation.turn.turn_id,
+		});
 		const active: ActiveTurn = {
 			clientTurnId: submission.clientTurnId,
 			clientUserMessageId: submission.clientTurnId,
 			controller: new AbortController(),
 			context,
 			runtime,
+			collaborationMode,
+			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId: reservation.turn.turn_id,
 			terminalEmitted: false,
 		};
@@ -2093,7 +2234,32 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#interrupt(params: JsonObject): JsonObject | Promise<JsonObject> {
-		const active = this.#activeTurn;
+		let active = this.#activeTurn;
+		if (!active) {
+			const pendingClarification = this.#options.sessionCoordinator?.snapshot().pendingClarification;
+			if (pendingClarification) {
+				const context = this.#sessionContext();
+				const runtime = this.#runtime();
+				const collaborationMode = this.#collaborationModeByTurn.get(pendingClarification.turnId)
+					?? this.#collaborationMode;
+				runtime.configureRuntimeContext?.({
+					collaborationMode,
+					turnId: pendingClarification.turnId,
+				});
+				active = {
+					clientTurnId: pendingClarification.clientTurnId,
+					clientUserMessageId: pendingClarification.clientUserMessageId,
+					controller: new AbortController(),
+					context,
+					runtime,
+					collaborationMode,
+					turnId: pendingClarification.turnId,
+					terminalEmitted: false,
+					visibleAgentOutput: true,
+				};
+				this.#activeTurn = active;
+			}
+		}
 		if (!active) return { accepted: false, requested: false, ...this.#status() };
 		const expectedTurnId = requiredString(params.turn_id, "turn_id");
 		const actualTurnId = active.turnId ?? active.clientTurnId;
@@ -2124,6 +2290,10 @@ class InProcessNodeGateway implements NodeGateway {
 		if (!settledGracefully && this.#ownsActiveTurn(active) && !active.terminalEmitted) {
 			const record = await this.#forceInterruptActive(active);
 			this.#projectForcedInterrupt(active, record);
+			const pendingClarification = this.#options.sessionCoordinator?.snapshot().pendingClarification;
+			if (pendingClarification?.turnId === active.turnId) {
+				this.#options.sessionCoordinator?.updatePendingClarification(active.context, undefined);
+			}
 			this.#options.sessionCoordinator?.markExecuting(active.context, false);
 			if (this.#activeTurn === active) {
 				this.#activeTurn = null;
@@ -2173,6 +2343,7 @@ class InProcessNodeGateway implements NodeGateway {
 					turn_id: event.turnId,
 				});
 				this.#emitRuntime("status.update", statusPayload("running", active.clientTurnId));
+				this.#emitRuntime("status.changed", this.#status());
 				break;
 			case "user_message_started":
 			case "user_message_completed":
@@ -2192,14 +2363,25 @@ class InProcessNodeGateway implements NodeGateway {
 				);
 				break;
 			case "compaction_started":
+				active.contextWindow = Object.freeze({
+					usedTokens: event.beforeTokens,
+					maxTokens: event.maxTokens,
+					source: "runtime_estimate",
+				});
 				this.#emitRuntime("compaction.started", {
 					client_turn_id: event.clientTurnId,
 					source: event.source,
 					before_tokens: event.beforeTokens,
 					max_tokens: event.maxTokens,
 				});
+				this.#emitRuntime("status.changed", this.#status());
 				break;
 			case "compaction_completed":
+				active.contextWindow = Object.freeze({
+					usedTokens: event.afterTokens,
+					maxTokens: event.maxTokens,
+					source: "runtime_estimate",
+				});
 				this.#emitRuntime("compaction.completed", {
 					client_turn_id: event.clientTurnId,
 					source: event.source,
@@ -2209,14 +2391,14 @@ class InProcessNodeGateway implements NodeGateway {
 					max_tokens: event.maxTokens,
 					duration_s: event.durationSeconds,
 				});
+				this.#emitRuntime("status.changed", this.#status());
 				break;
 			case "text_delta":
 				if (event.text.length > 0) active.visibleAgentOutput = true;
-				this.#emitRuntime("message.delta", {
-					client_turn_id: active.clientTurnId,
-					text: event.text,
-				});
-				this.#emitTurnEvent(active, "assistant_delta", "text_delta", event.text);
+				this.#emitAssistantDelta(
+					active,
+					active.planStreamFilter?.push(event.text) ?? event.text,
+				);
 				break;
 			case "reasoning_delta": {
 				if (event.text.length > 0) active.visibleAgentOutput = true;
@@ -2226,6 +2408,14 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#emitTurnEvent(active, "reasoning", "reasoning", event.text);
 				break;
 			}
+			case "provider_usage":
+				active.contextWindow = contextWindowFromUsage(
+					event.usage,
+					this.#configuredMaxPromptTokens(),
+					"provider_live",
+				);
+				this.#emitRuntime("status.changed", this.#status());
+				break;
 			case "stream_retrying":
 				this.#emitRuntime("stream.retrying", {
 					client_turn_id: active.clientTurnId,
@@ -2239,6 +2429,7 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#emitRuntime("stream.recovered", { client_turn_id: active.clientTurnId });
 				break;
 			case "message_complete":
+				this.#emitAssistantDelta(active, active.planStreamFilter?.finishSegment() ?? "");
 				this.#emitRuntime("message.complete", { client_turn_id: active.clientTurnId });
 				this.#emitTurnEvent(active, "model_completed", "completed", "", {
 					...(event.responseId ? { response_id: event.responseId } : {}),
@@ -2246,6 +2437,25 @@ class InProcessNodeGateway implements NodeGateway {
 				break;
 			case "tool_call_accepted":
 				break;
+			case "file_mutation_started": {
+				active.visibleAgentOutput = true;
+				const callId = boundedString(event.callId, 256);
+				const toolName = boundedString(event.toolName, 128) || "Tool";
+				this.#emitRuntime("item.started", {
+					client_turn_id: event.clientTurnId,
+					turn_id: event.turnId,
+					item: {
+						id: toolLifecycleId(callId, toolName),
+						type: "file_change",
+						call_id: callId,
+						name: toolName,
+						preview: boundedString(event.preview, 512) || toolName,
+						...approvalPreviewPayload(event),
+						...fileMutationChangesPayload(event.fileChanges),
+					},
+				});
+				break;
+			}
 			case "approval_requested": {
 				active.visibleAgentOutput = true;
 				const approval: PendingSessionApproval = {
@@ -2258,6 +2468,7 @@ class InProcessNodeGateway implements NodeGateway {
 					preview: event.preview,
 					reason: event.reason,
 					options: event.options,
+					...approvalPreviewDetails(event),
 				};
 				if (this.#options.sessionCoordinator?.updatePendingApproval(active.context, approval) === false) {
 					break;
@@ -2377,6 +2588,15 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 	}
 
+	#emitAssistantDelta(active: ActiveTurn, text: string): void {
+		if (!text) return;
+		this.#emitRuntime("message.delta", {
+			client_turn_id: active.clientTurnId,
+			text,
+		});
+		this.#emitTurnEvent(active, "assistant_delta", "text_delta", text);
+	}
+
 	#emitToolFinished(
 		active: ActiveTurn,
 		event: Extract<RuntimeEvent, {
@@ -2450,10 +2670,15 @@ class InProcessNodeGateway implements NodeGateway {
 	#emitCompleted(active: ActiveTurn, assistantText: string, usage: Readonly<Record<string, number>>): void {
 		active.terminalState = "completed";
 		const turnId = active.turnId ?? active.clientTurnId;
+		this.#emitAssistantDelta(active, active.planStreamFilter?.finishSegment() ?? "");
+		const proposedPlan = active.collaborationMode === "plan"
+			? extractProposedPlan(assistantText)
+			: undefined;
+		const visibleAssistantText = proposedPlan?.assistantText ?? assistantText;
 		this.#emitRuntime("turn.completed", {
 			client_turn_id: active.clientTurnId,
 			turn_id: turnId,
-			assistant_message: assistantText,
+			assistant_message: visibleAssistantText,
 			activity_events: [],
 			progress_updates: [],
 			plan_steps: [],
@@ -2464,15 +2689,32 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#emitRuntime("turn.status", terminalStatus("completed", active, "Completed"));
 		this.#emitRuntime("message.complete", {
 			client_turn_id: active.clientTurnId,
-			text: assistantText,
+			text: visibleAssistantText,
 			final: true,
 			source: "turn_response",
 		});
+		if (proposedPlan) {
+			active.visibleAgentOutput = true;
+			active.pendingProposedPlan = proposedPlan.planText;
+		}
+		this.#collaborationModeByTurn.delete(turnId);
 		this.#emitRuntime("status.update", statusPayload("completed", active.clientTurnId));
+	}
+
+	#emitPendingProposedPlan(active: ActiveTurn): void {
+		const text = active.pendingProposedPlan;
+		if (!text) return;
+		delete active.pendingProposedPlan;
+		this.#emitRuntime("plan.proposed", {
+			client_turn_id: active.clientTurnId,
+			text,
+			source: "assistant_message",
+		});
 	}
 
 	#emitTurnFailure(active: ActiveTurn, code: RuntimeErrorCode, message: string): void {
 		active.terminalState = "failed";
+		this.#collaborationModeByTurn.delete(active.turnId ?? active.clientTurnId);
 		this.#emitRuntime("turn.failed", {
 			client_turn_id: active.clientTurnId,
 			turn_id: active.turnId ?? active.clientTurnId,
@@ -2485,6 +2727,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#emitInterrupted(active: ActiveTurn): void {
 		active.terminalState = "interrupted";
+		this.#collaborationModeByTurn.delete(active.turnId ?? active.clientTurnId);
 		this.#emitRuntime("turn.interrupted", {
 			client_turn_id: active.clientTurnId,
 			turn_id: active.turnId ?? active.clientTurnId,
@@ -2575,6 +2818,10 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#contextWindow(): JsonObject {
+		const live = this.#activeTurn?.contextWindow;
+		if (live) {
+			return contextWindowPayload(live.usedTokens, live.maxTokens, live.source);
+		}
 		const rollouts = this.#options.loadTurnRollouts?.(this.#sessionId()) ?? [];
 		let usage: JsonObject | undefined;
 		let source = "unknown";
@@ -2586,24 +2833,25 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!continuation) continue;
 			if (isObject(continuation.last_token_usage)) {
 				usage = continuation.last_token_usage;
-				source = "provider";
+				source = this.#activeTurn ? "provider_previous" : "provider";
 				break;
 			}
 			if (!isObject(continuation.usage)) continue;
 			usage = continuation.usage;
-			source = "provider_aggregate";
+			source = this.#activeTurn ? "provider_previous" : "provider_aggregate";
 			break;
 		}
 		const inputTokens = nonNegativeMetric(usage?.input_tokens);
 		const totalTokens = nonNegativeMetric(usage?.total_tokens);
 		const usedTokens = inputTokens > 0 ? inputTokens : totalTokens;
-		const maxTokens = this.#options.maxPromptTokens ?? 0;
-		return {
-			used_tokens: usedTokens,
-			max_tokens: maxTokens,
-			usage_ratio: maxTokens > 0 ? usedTokens / maxTokens : 0,
-			source,
-		};
+		return contextWindowPayload(usedTokens, this.#configuredMaxPromptTokens(), source);
+	}
+
+	#configuredMaxPromptTokens(): number {
+		const configured = typeof this.#options.maxPromptTokens === "function"
+			? this.#options.maxPromptTokens()
+			: this.#options.maxPromptTokens;
+		return nonNegativeMetric(configured);
 	}
 
 	#trustStatus(): JsonObject {
@@ -3007,6 +3255,7 @@ function shellSnapshotPayload(
 		generation: context.generation,
 		...(snapshot.callId ? { call_id: snapshot.callId } : {}),
 		...(metadata.command_preview ? { command_preview: metadata.command_preview } : {}),
+		...(snapshot.description ? { description: snapshot.description } : {}),
 		background: snapshot.background,
 		status: snapshot.status,
 		process_state: metadata.process_state ?? snapshot.processState,
@@ -3057,6 +3306,7 @@ function shellLifecyclePayload(
 		call_id: event.callId,
 		sequence: event.sequence,
 		command_preview: metadata.command_preview ?? "[redacted command]",
+		...(event.description ? { description: event.description } : {}),
 		background: event.background,
 		process_state: metadata.process_state ?? event.processState,
 		...(metadata.transport ? { transport: metadata.transport } : {}),
@@ -3189,6 +3439,28 @@ function gatewayTranscriptItem(item: TranscriptItem): JsonObject {
 	};
 }
 
+function gatewayTranscriptItems(item: TranscriptItem): readonly JsonObject[] {
+	const projected = gatewayTranscriptItem(item);
+	if (item.type !== "assistant_message") return [projected];
+	const proposedPlan = extractProposedPlan(item.text ?? "");
+	if (!proposedPlan) return [projected];
+
+	const plan: JsonObject = {
+		id: `${item.id}:proposed-plan`,
+		type: "proposed_plan",
+		text: proposedPlan.planText,
+		created_at: item.created_at ?? "",
+		folded: false,
+		metadata: {
+			status: "proposed",
+			source: "assistant_message",
+		},
+	};
+	return proposedPlan.assistantText
+		? [{ ...projected, text: proposedPlan.assistantText }, plan]
+		: [plan];
+}
+
 function paginatedTranscript(
 	sessionId: string,
 	projected: readonly JsonObject[],
@@ -3248,6 +3520,7 @@ function approvalRequest(
 		reason: approval.reason,
 		tool_name: approval.toolName,
 		action: approval.toolName,
+		...approvalPreviewPayload(approval),
 		options: approval.options.map((choice) => ({
 			choice,
 			label: approvalChoiceLabel(choice),
@@ -3419,6 +3692,14 @@ function positiveInteger(value: unknown): number | undefined {
 		&& value > 0
 		? value
 		: undefined;
+}
+
+function transcriptPageLimit(value: unknown): number {
+	if (value === undefined || value === null) return 500;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 500) {
+		throw new GatewayFailure("invalid_params", "limit must be an integer between 1 and 500.");
+	}
+	return value;
 }
 
 function optionalNonNegativeInteger(value: unknown, name: string): number {
@@ -3619,6 +3900,15 @@ function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function collaborationModeParameter(value: unknown): "default" | "plan" | undefined {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (value === "default" || value === "plan") return value;
+	throw new GatewayFailure(
+		"invalid_params",
+		"collaboration_mode must be default or plan.",
+	);
+}
+
 function isInteractiveRequestMethod(method: string): method is InteractiveRequestMethod {
 	return method === "approval.request" || method === "clarify.request";
 }
@@ -3661,6 +3951,8 @@ function reasoningEffort(value: unknown): ReasoningEffort | undefined {
 		|| value === "medium"
 		|| value === "high"
 		|| value === "xhigh"
+		|| value === "max"
+		|| value === "ultra"
 	) {
 		return value;
 	}
@@ -3723,6 +4015,29 @@ function aggregateUsage(rollouts: readonly JsonObject[]): Readonly<Record<string
 
 function nonNegativeMetric(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function contextWindowFromUsage(
+	usage: ProviderUsage,
+	maxTokens: number,
+	source: "provider_live",
+): NonNullable<ActiveTurn["contextWindow"]> {
+	const inputTokens = nonNegativeMetric(usage.input_tokens ?? usage.inputTokens);
+	const totalTokens = nonNegativeMetric(usage.total_tokens ?? usage.totalTokens);
+	return Object.freeze({
+		usedTokens: inputTokens > 0 ? inputTokens : totalTokens,
+		maxTokens,
+		source,
+	});
+}
+
+function contextWindowPayload(usedTokens: number, maxTokens: number, source: string): JsonObject {
+	return {
+		used_tokens: usedTokens,
+		max_tokens: maxTokens,
+		usage_ratio: maxTokens > 0 ? usedTokens / maxTokens : 0,
+		source,
+	};
 }
 
 function humanize(value: string): string {
@@ -3795,12 +4110,17 @@ function shellWords(value: string): readonly string[] {
 
 function sessionMaintenanceAction(
 	value: string,
-): "report" | "empty" | "orphans" | "vacuum" | undefined {
+): "report" | "empty" | "payloads" | "orphans" | "vacuum" | "transcript_normalization"
+	| "content_blobs" | "content_blob_gc" | undefined {
 	return {
 		"": "report" as const,
 		"--apply-empty": "empty" as const,
+		"--apply-payloads": "payloads" as const,
 		"--apply-orphans": "orphans" as const,
 		"--apply-vacuum": "vacuum" as const,
+		"--apply-transcript-normalization": "transcript_normalization" as const,
+		"--apply-content-blobs": "content_blobs" as const,
+		"--apply-content-blob-gc": "content_blob_gc" as const,
 	}[value];
 }
 
@@ -3863,7 +4183,7 @@ function parseModelSelection(args: string): {
 }
 
 function reasoningEffortValue(value: string): ReasoningEffort {
-	if (["none", "minimal", "low", "medium", "high", "xhigh"].includes(value)) {
+	if (["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value)) {
 		return value as ReasoningEffort;
 	}
 	throw new GatewayFailure("invalid_arguments", "Unsupported thinking effort.");

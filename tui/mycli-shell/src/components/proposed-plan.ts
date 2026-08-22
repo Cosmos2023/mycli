@@ -1,7 +1,9 @@
 import type { MycliShellPlan } from "../model.ts";
-import { Box } from "../tui-core/components/box.ts";
+import { Markdown } from "../tui-core/components/markdown.ts";
+import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
+import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
 
 export class ProposedPlanComponent extends Container {
@@ -12,11 +14,18 @@ export class ProposedPlanComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
-		const label = this.plan.status === "accepted" ? "Plan accepted" : this.plan.status === "stale" ? "Plan updated" : "Proposed plan";
+		const label = this.plan.status === "accepted" ? "Plan accepted" : this.plan.status === "stale" ? "Plan updated" : "Proposed Plan";
 		const body = this.plan.text.trim() || "No plan content.";
-		const box = new Box(1, 0);
-		box.addChild(new Text(theme.fg("accent", theme.bold(`✻ ${label}`)), 0, 0));
-		box.addChild(new Text(body, 0, 0));
-		this.addChild(box);
+		this.addChild(new Text(theme.fg("accent", theme.bold(`• ${label}`)), 1, 0));
+		this.addChild(new Spacer(1));
+		// Keep the proposal body source-backed so it can be reflowed and rendered as Markdown.
+		this.addChild(new Markdown(
+			body,
+			2,
+			0,
+			markdownTheme(),
+			{ bgColor: (content) => theme.bg("userMessageBg", content) },
+		));
+		this.addChild(new Spacer(1));
 	}
 }

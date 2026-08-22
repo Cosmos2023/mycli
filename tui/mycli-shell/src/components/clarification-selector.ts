@@ -204,8 +204,8 @@ export class ClarificationSelectorComponent extends Container {
 			this.listContainer.addChild(new Text(`${prefix}${active ? theme.fg("accent", label) : theme.fg("text", label)}${theme.fg("muted", description)}`, 1, 0));
 		}
 		const hints = this.clarification.multiSelect
-			? `${rawKeyHint("↑↓", "navigate")}  ${rawKeyHint("space", "toggle")}  ${keyHint("tui.select.confirm", "submit")}`
-			: `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}`;
+			? `${rawKeyHint("↑↓", "navigate")}  ${rawKeyHint("space", "toggle")}  ${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "interrupt")}`
+			: `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "interrupt")}`;
 		this.listContainer.addChild(new Text(hints, 1, 0));
 	}
 

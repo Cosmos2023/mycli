@@ -485,38 +485,146 @@
           "type": "string"
         },
         "item": {
-          "properties": {
-            "client_user_message_id": {
-              "type": "string"
-            },
-            "content": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string"
-            },
-            "source": {
-              "enum": [
-                "submit",
-                "steer"
+          "oneOf": [
+            {
+              "properties": {
+                "client_user_message_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "source": {
+                  "enum": [
+                    "submit",
+                    "steer"
+                  ],
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "user_message"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "client_user_message_id",
+                "content",
+                "source"
               ],
-              "type": "string"
+              "type": "object"
             },
-            "type": {
-              "enum": [
-                "user_message"
+            {
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "content_chars": {
+                  "type": "integer"
+                },
+                "content_line_count": {
+                  "type": "integer"
+                },
+                "content_preview": {
+                  "type": "string"
+                },
+                "content_truncated": {
+                  "type": "boolean"
+                },
+                "diff": {
+                  "type": "string"
+                },
+                "diff_chars": {
+                  "type": "integer"
+                },
+                "diff_truncated": {
+                  "type": "boolean"
+                },
+                "file_changes": {
+                  "items": {
+                    "properties": {
+                      "added_lines": {
+                        "type": "integer"
+                      },
+                      "diff": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "add",
+                          "update",
+                          "delete",
+                          "move"
+                        ],
+                        "type": "string"
+                      },
+                      "omitted_chars": {
+                        "type": "integer"
+                      },
+                      "path": {
+                        "type": "string"
+                      },
+                      "previous_path": {
+                        "type": "string"
+                      },
+                      "removed_lines": {
+                        "type": "integer"
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      },
+                      "version": {
+                        "const": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "version",
+                      "kind",
+                      "path",
+                      "diff",
+                      "added_lines",
+                      "removed_lines",
+                      "truncated",
+                      "omitted_chars"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 64,
+                  "type": "array"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "preview": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "file_change"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "call_id",
+                "name",
+                "preview"
               ],
-              "type": "string"
+              "type": "object"
             }
-          },
-          "required": [
-            "id",
-            "type",
-            "client_user_message_id",
-            "content",
-            "source"
-          ],
-          "type": "object"
+          ]
         },
         "turn_id": {
           "type": "string"
@@ -704,6 +812,11 @@
         },
         "command_preview": {
           "maxLength": 512,
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 512,
+          "minLength": 1,
           "type": "string"
         },
         "completed_at": {

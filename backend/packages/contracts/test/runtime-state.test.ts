@@ -181,6 +181,40 @@ test("parses a Python-compatible compact checkpoint", () => {
 	}));
 });
 
+test("parses an event-referenced compact checkpoint without replacement copies", () => {
+	assert.doesNotThrow(() => parseRuntimeState({
+		kind: "compact_checkpoint",
+		version: 1,
+		payload: {
+			version: 1,
+			turn_id: "turn-1",
+			reason: "context_limit",
+			phase: "pre_turn",
+			window_number: 500,
+			window_id: "window-500",
+			history_item_count: 1_000,
+			input_history_hash: "sha256:input",
+			replacement_history_hash: "sha256:replacement",
+			transcript_event_id: "compaction:window-500",
+		},
+	}));
+	assert.throws(() => parseRuntimeState({
+		kind: "compact_checkpoint",
+		version: 1,
+		payload: {
+			version: 1,
+			turn_id: "turn-1",
+			reason: "context_limit",
+			phase: "pre_turn",
+			window_number: 1,
+			window_id: "window-1",
+			history_item_count: 1,
+			input_history_hash: "sha256:input",
+			replacement_history_hash: "sha256:replacement",
+		},
+	}), /compact checkpoint has no transcript source/u);
+});
+
 test("parses Python and Node Responses continuation fields", () => {
 	assert.doesNotThrow(() => parseRuntimeState({
 		kind: "responses_continuation",

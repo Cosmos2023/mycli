@@ -277,6 +277,7 @@
           "maxItems": 4096,
           "items": {"$ref": "#/$defs/message"}
         },
+        "transcript_event_id": {"$ref": "#/$defs/identifier"},
         "suspend_reason": {
           "type": "string",
           "enum": [
@@ -439,8 +440,7 @@
         "window_id",
         "history_item_count",
         "input_history_hash",
-        "replacement_history_hash",
-        "replacement_messages"
+        "replacement_history_hash"
       ],
       "properties": {
         "version": {"const": 1},
@@ -460,6 +460,7 @@
         },
         "input_history_hash": {"$ref": "#/$defs/identifier"},
         "replacement_history_hash": {"$ref": "#/$defs/identifier"},
+        "transcript_event_id": {"$ref": "#/$defs/identifier"},
         "replacement_messages": {
           "type": "array",
           "maxItems": 4096,

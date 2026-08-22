@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { resolveConfig } from "@mycli/config";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import { NodeTurnRuntime } from "@mycli/runtime";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	builtinToolManifest,
 	planToolExposure,
@@ -78,7 +78,7 @@ async function main() {
 	let store;
 	try {
 		await writeFile(join(tempRoot, "README.md"), "alpha\nbeta\n", "utf8");
-		store = new SQLiteSessionStore({ dbPath });
+		store = openRuntimeSessionStore({ dbPath });
 		const exposure = planToolExposure(builtinToolManifest());
 		const readTool = new ReadTool({ workspaceRoot: tempRoot });
 		const toolRouter = new ToolRouter({ adapters: [readTool], exposure });

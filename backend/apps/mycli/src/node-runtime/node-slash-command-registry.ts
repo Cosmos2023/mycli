@@ -295,9 +295,10 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		visible: false,
 	}),
 	spec("session_maintenance", "/session maintenance", "Maintain session storage", {
-		argumentHint: "[--apply-empty|--apply-orphans|--apply-vacuum]",
+		argumentHint: "[--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]",
 		aliases: ["/session-maintenance"],
 		argumentPolicy: "optional",
+		availableDuringTurn: false,
 		visible: false,
 	}),
 ]);

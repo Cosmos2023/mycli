@@ -184,6 +184,7 @@ export interface SuspendedTurnPayload {
    * @maxItems 4096
    */
   conversation: Message[];
+  transcript_event_id?: Identifier;
   suspend_reason?:
     | "assistant_completed"
     | "sufficient_evidence"
@@ -302,10 +303,11 @@ export interface CompactCheckpointPayload {
   history_item_count: number;
   input_history_hash: Identifier;
   replacement_history_hash: Identifier;
+  transcript_event_id?: Identifier;
   /**
    * @maxItems 4096
    */
-  replacement_messages: Message[];
+  replacement_messages?: Message[];
   [k: string]: any;
 }
 export interface ResponsesContinuation {

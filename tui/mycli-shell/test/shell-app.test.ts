@@ -8,7 +8,7 @@ import { Editor } from "../src/tui-core/components/editor.ts";
 import { Text } from "../src/tui-core/components/text.ts";
 import { TUI, visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
-import { BashExecutionComponent, FileChangeComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
+import { BashExecutionComponent, FileChangeComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, planImplementationContextUsageLabel, PlanImplementationSelectorComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
@@ -922,9 +922,10 @@ test("mycli shell renders proposed plans as dedicated blocks", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 
-	assert.match(output, /Proposed plan/);
-	assert.match(output, /# Plan/);
+	assert.match(output, /Proposed Plan/);
+	assert.match(output, /\bPlan\b/);
 	assert.match(output, /Add parser/);
+	assert.doesNotMatch(output, /# Plan/);
 	assert.doesNotMatch(output, /proposed_plan/);
 });
 
@@ -990,6 +991,55 @@ test("mycli shell keeps consecutive Shell commands in Codex-style command cells"
 	assert.match(output, /• Running find src -name '\*\.py'/);
 	assert.match(output, /└ src\/mycli\/main\.py/);
 	assert.doesNotMatch(output, /running 2 commands|ran 2 commands/);
+});
+
+test("Shell descriptions never replace command titles", () => {
+	const collapsed = new BashExecutionComponent({
+		id: "shell-described",
+		toolName: "Shell",
+		command: "npm test -- --test-name-pattern shell",
+		description: "Run the focused Shell tests",
+		status: "success",
+		outputPreview: "12 tests passed",
+	}).render(80);
+	const collapsedOutput = collapsed
+		.map((line) => stripAnsi(line).trimEnd())
+		.join("\n");
+
+	assert.match(collapsedOutput, /^• Ran npm test -- --test-name-pattern shell$/m);
+	assert.doesNotMatch(collapsedOutput, /Run the focused Shell tests/);
+	assert.match(collapsedOutput, /^  └ 12 tests passed$/m);
+
+	const expandedOutput = new BashExecutionComponent({
+		id: "shell-described-expanded",
+		toolName: "Shell",
+		command: "printf 'one\\ntwo\\n'",
+		description: "Print two lines",
+		status: "success",
+		expanded: true,
+	}).render(80)
+		.map((line) => stripAnsi(line).trimEnd())
+		.join("\n");
+	assert.match(expandedOutput, /^• Ran printf 'one\\ntwo\\n'$/m);
+	assert.doesNotMatch(expandedOutput, /Print two lines/);
+	assert.match(expandedOutput, /^  └ Command:$/m);
+	assert.match(expandedOutput, /^    printf 'one\\ntwo\\n'$/m);
+});
+
+test("Shell description cells stay within narrow CJK terminal widths", () => {
+	const lines = new BashExecutionComponent({
+		id: "shell-described-cjk",
+		command: "npm run contracts:check -- --详细输出",
+		description: "检查数据库契约与终端展示",
+		status: "running",
+		background: true,
+	}).render(24);
+
+	for (const line of lines) {
+		assert.ok(visibleWidth(line) <= 24, `line too wide: ${stripAnsi(line)}`);
+	}
+	assert.match(stripAnsi(lines.join("\n")), /npm run/);
+	assert.doesNotMatch(stripAnsi(lines.join("\n")), /检查数据库契约/);
 });
 
 test("mycli shell applies context tool grouping to legacy tool arrays", () => {
@@ -1142,6 +1192,22 @@ test("footer renders two quiet idle rows", () => {
 	assert.match(output, /11\.3% ctx/);
 	assert.match(output, /deepseek-v4-flash/);
 	assert.doesNotMatch(output, /deepseek\/chat_completions|trust trusted|mode default|Idle|64k|R53k/);
+});
+
+test("footer distinguishes estimated and previous context usage", () => {
+	const estimated = stripAnsi(new FooterComponent({
+		cwd: "/repo",
+		contextPercent: 87,
+		contextSource: "runtime_estimate",
+	}, { turnRunning: true, hasQueuedInput: false }).render(80).join("\n"));
+	const previous = stripAnsi(new FooterComponent({
+		cwd: "/repo",
+		contextPercent: 26,
+		contextSource: "provider_previous",
+	}, { turnRunning: true, hasQueuedInput: false }).render(80).join("\n"));
+
+	assert.match(estimated, /~87% ctx/);
+	assert.match(previous, /26% ctx prev/);
 });
 
 test("footer exposes only actions and exceptional state that currently apply", () => {
@@ -1350,9 +1416,13 @@ test("footer renders collaboration mode when space allows", () => {
 		liveState: "Plan",
 	});
 
-	const output = stripAnsi(footer.render(48).join("\n"));
+	const output = stripAnsi(footer.render(120).join("\n"));
 
 	assert.match(output, /plan/);
+	assert.match(output, /shift\+tab switch mode/);
+	for (const line of footer.render(48)) {
+		assert.ok(visibleWidth(line) <= 48, `line too wide: ${stripAnsi(line)}`);
+	}
 });
 
 test("background terminal footer uses singular plural and hides zero", () => {
@@ -2628,7 +2698,7 @@ test("stream deltas do not synchronously rerender the full transcript", async ()
 	assert.ok(transcriptRenders > 0);
 });
 
-test("mycli shell runtime keeps Codex-style working status below the transcript for the active turn", async () => {
+test("mycli shell runtime keeps Codex-style working status at the transcript tail", async () => {
 	const terminal = new TestTerminal();
 	let now = 10_000;
 	const runtime = new MycliShellRuntime({
@@ -2638,19 +2708,22 @@ test("mycli shell runtime keeps Codex-style working status below the transcript 
 	});
 
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Running" } });
-	let output = stripAnsi(runtime.statusContainer.render(100).join("\n"));
+	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	assert.match(output, /Working \(0s • esc to interrupt\)/);
-	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(100).join("\n")), /Working/);
+	assert.doesNotMatch(stripAnsi(runtime.statusContainer.render(100).join("\n")), /Working/);
+	assert.doesNotMatch(stripAnsi(runtime.footerContainer.render(100).join("\n")), /Running/);
+	assert.match(stripAnsi(runtime.chatContainer.children.at(-1)?.render(100).join("\n") ?? ""), /Working/);
 
 	now = 12_400;
 	runtime.refreshTurnStatus();
-	output = stripAnsi(runtime.statusContainer.render(100).join("\n"));
+	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	assert.match(output, /Working \(2s • esc to interrupt\)/);
 
 	now = 13_100;
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Completed" } });
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	assert.match(output, /✻ Completed for 3 s/);
+	assert.doesNotMatch(output, /Working/);
 	assert.equal(stripAnsi(runtime.statusContainer.render(100).join("\n")), "");
 });
 
@@ -2665,7 +2738,7 @@ test("working status reuses stable animation frames and invalidates elapsed time
 		terminal,
 		now: () => now,
 	});
-	const activity = runtime.statusContainer.children[0];
+	const activity = runtime.chatContainer.children.at(-1);
 	assert.ok(activity);
 
 	const first = activity.render(100);
@@ -2714,8 +2787,8 @@ test("working elapsed continues while the active turn waits on a tool", () => {
 		},
 	});
 
-	let output = stripAnsi(runtime.statusContainer.render(100).join("\n"));
-	assert.match(output, /Working \(2s • esc to interrupt\)/);
+	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /Waiting for background terminal \(2s • esc to interrupt\)/);
 	assert.match(output, /Waiting for background terminal/);
 
 	now = 15_100;
@@ -2730,6 +2803,88 @@ test("working elapsed continues while the active turn waits on a tool", () => {
 	});
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	assert.match(output, /✻ Completed for 5 s/);
+});
+
+test("working status adopts Codex-style phase headers", () => {
+	let now = 10_000;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: {
+				...sampleState().footer,
+				liveState: "Running",
+				liveStateKind: "running",
+				turnRunning: true,
+			},
+		},
+		terminal: new TestTerminal(),
+		now: () => now,
+	});
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Thinking",
+			liveStateKind: "thinking",
+			turnRunning: true,
+		},
+	});
+	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /Thinking \(0s • esc to interrupt\)/);
+
+	now = 11_000;
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Compressing context",
+			liveStateKind: "compaction",
+			liveStateDetail: "Compaction in progress",
+			turnRunning: true,
+		},
+	});
+	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /Compressing context \(1s • esc to interrupt\)/);
+	assert.match(output, /Compaction in progress/);
+});
+
+test("working status follows the latest transcript output", () => {
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [{ id: "assistant-1", role: "assistant", text: "first output" }],
+			tools: [],
+			bash: [],
+			transcript: [{
+				id: "assistant-1",
+				kind: "message",
+				message: { id: "assistant-1", role: "assistant", text: "first output" },
+			}],
+			footer: { ...sampleState().footer, liveState: "Running", turnRunning: true },
+		},
+		terminal: new TestTerminal(),
+	});
+
+	const firstActivity = runtime.chatContainer.children.at(-1);
+	assert.ok(firstActivity);
+	assert.equal(stripAnsi(runtime.chatContainer.render(100).at(-1) ?? "").includes("Working"), true);
+
+	runtime.setState({
+		...runtime.getState(),
+		messages: [
+			{ id: "assistant-1", role: "assistant", text: "first output" },
+			{ id: "tool-1", role: "system", text: "tool output" },
+		],
+		transcript: [
+			...runtime.getState().transcript!,
+			{ id: "tool-1", kind: "message", message: { id: "tool-1", role: "system", text: "tool output" } },
+		],
+	}, { transcriptUpdate: "tail" });
+
+	assert.equal(runtime.chatContainer.children.at(-1), firstActivity);
+	const rendered = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.ok(rendered.indexOf("tool output") < rendered.indexOf("Working"));
 });
 
 test("mycli shell runtime keeps clear-on-shrink disabled like coding-agent default", async () => {
@@ -2953,6 +3108,136 @@ test("escape preserves an idle editor draft", async () => {
 	assert.equal(runtime.editor.getText(), "draft remains");
 });
 
+test("mycli shell opens plan implementation only for a live proposed-plan event", async () => {
+	const historicalState: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [{
+			id: "plan:historical",
+			kind: "plan",
+			plan: { id: "plan:historical", text: "# Plan\n- Historical", status: "proposed" },
+		}],
+		footer: { ...sampleState().footer, collaborationMode: "plan" },
+	};
+	const resumed = new MycliShellRuntime({
+		initialState: historicalState,
+		terminal: new TestTerminal(),
+	});
+	resumed.start();
+	await setTimeout(25);
+	assert.equal(resumed.editorContainer.children[0], resumed.editor);
+	assert.doesNotMatch(stripAnsi(resumed.ui.render(100).join("\n")), /Implement this plan\?/);
+
+	const terminal = new TestTerminal();
+	const live = new MycliShellRuntime({
+		initialState: { ...historicalState, transcript: [] },
+		terminal,
+	});
+	live.start();
+	live.setState(historicalState, { transcriptUpdate: "tail", eventType: "plan.proposed" });
+	await setTimeout(25);
+	const output = stripAnsi(live.ui.render(100).join("\n"));
+	assert.notEqual(live.editorContainer.children[0], live.editor);
+	assert.match(output, /Implement this plan\?/);
+	assert.match(output, /› 1\. Yes, implement this plan\s+Switch to Default and start coding\./);
+	assert.match(output, /2\. Yes, clear context and implement\s+Fresh thread\. Context: 42% used\./);
+	assert.match(output, /3\. No, stay in Plan mode\s+Continue planning with the model\./);
+	assert.match(output, /Press enter to confirm or esc to go back/);
+});
+
+test("plan implementation context usage matches Codex labels", () => {
+	assert.equal(planImplementationContextUsageLabel(42.5, undefined), "42% used");
+	assert.equal(planImplementationContextUsageLabel(0, 123_456), undefined);
+	assert.equal(planImplementationContextUsageLabel(undefined, 12_345), "12.3K used");
+	assert.equal(planImplementationContextUsageLabel(undefined, 100_000), "100K used");
+	assert.equal(planImplementationContextUsageLabel(undefined, 123_456), "123K used");
+	assert.equal(planImplementationContextUsageLabel(undefined, 0), undefined);
+});
+
+test("plan implementation selector stays width safe on narrow terminals", () => {
+	const selector = new PlanImplementationSelectorComponent({ onSelect: () => undefined });
+	for (const width of [32, 40, 80]) {
+		for (const line of selector.render(width)) {
+			assert.ok(visibleWidth(line) <= width, `line too wide at ${width}: ${stripAnsi(line)}`);
+		}
+	}
+});
+
+test("mycli shell plan implementation selector routes direct and fresh-context choices", async () => {
+	for (const [key, expected] of [
+		["1", "implement"],
+		["2", "clear_context"],
+	] as const) {
+		const terminal = new TestTerminal();
+		const selections: Array<{ action: string; plan: string }> = [];
+		const initial: MycliShellState = {
+			...sampleState(),
+			messages: [],
+			tools: [],
+			bash: [],
+			transcript: [],
+			footer: { ...sampleState().footer, collaborationMode: "plan" },
+		};
+		const next: MycliShellState = {
+			...initial,
+			transcript: [{
+				id: `plan:${key}`,
+				kind: "plan",
+				plan: { id: `plan:${key}`, text: "# Plan\n- Implement", status: "proposed" },
+			}],
+		};
+		const runtime = new MycliShellRuntime({
+			initialState: initial,
+			terminal,
+			onPlanImplementation: (action, plan) => {
+				selections.push({ action, plan });
+			},
+		});
+		runtime.start();
+		runtime.setState(next, { transcriptUpdate: "tail", eventType: "plan.proposed" });
+		terminal.input?.(key);
+		await setTimeout(25);
+
+		assert.deepEqual(selections, [{ action: expected, plan: "# Plan\n- Implement" }]);
+		assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	}
+});
+
+test("escape dismisses plan implementation and stays in Plan mode", async () => {
+	const terminal = new TestTerminal();
+	const selections: string[] = [];
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [],
+		footer: { ...sampleState().footer, collaborationMode: "plan" },
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: initial,
+		terminal,
+		onPlanImplementation: (action) => { selections.push(action); },
+	});
+	runtime.start();
+	runtime.setState({
+		...initial,
+		transcript: [{
+			id: "plan:stay",
+			kind: "plan",
+			plan: { id: "plan:stay", text: "# Plan\n- Refine", status: "proposed" },
+		}],
+	}, { transcriptUpdate: "tail", eventType: "plan.proposed" });
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+
+	assert.deepEqual(selections, []);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	assert.equal(runtime.getState().footer.collaborationMode, "plan");
+});
+
 test("mycli shell approval selector replaces editor and submits selected choice", async () => {
 	const terminal = new TestTerminal();
 	const approvals: Array<[string, string, string | undefined, number | undefined]> = [];
@@ -3008,6 +3293,65 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 	await setTimeout(25);
 	assert.deepEqual(approvals, [["decision-1", "reject", "demo:sub:turn_1:abcd1234", 7]]);
 });
+
+test("mycli shell shows a Codex-style Write diff above the compact approval selector", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [],
+			tools: [],
+				bash: [],
+				transcript: [{
+					id: "decision-write",
+					kind: "file_change",
+					fileChange: {
+						id: "decision-write",
+						callId: "decision-write",
+						status: "success",
+						summary: "Add notes.txt",
+						target: "notes.txt",
+						files: [{
+							version: 1,
+							kind: "add",
+							path: "notes.txt",
+							diff: "--- notes.txt:before\n+++ notes.txt:after\n@@ -0,0 +1,2 @@\n+first line\n+second line\n",
+							addedLines: 2,
+							removedLines: 0,
+							truncated: false,
+							omittedChars: 0,
+							language: "txt",
+						}],
+					},
+					message: { id: "decision-write", role: "system", text: "Add notes.txt" },
+				}],
+			pendingApproval: {
+				decisionId: "decision-write",
+				preview: "Write notes.txt",
+				toolName: "Write",
+				contentPreview: "first line\nsecond line\n",
+				contentLineCount: 2,
+				options: [
+					{ choice: "approve_once", label: "Allow once" },
+					{ choice: "reject", label: "Reject" },
+				],
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting approval" },
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+		const output = stripAnsi(runtime.ui.render(100).join("\n"));
+		assert.match(output, /Permission required · Write/);
+		assert.match(output, /[•*] Added notes\.txt \(\+2 -0\)/);
+		assert.match(output, /first line/);
+		assert.match(output, /second line/);
+		assert.equal(output.match(/first line/g)?.length, 1);
+		assert.ok(output.indexOf("first line") < output.indexOf("Permission required"));
+		assert.doesNotMatch(output, /(?:^|\n)• Write(?:\s|$)|details hidden|⎿ notes\.txt/);
+	});
 
 test("mycli shell approval selector supports numeric and mnemonic shortcuts", async () => {
 	const terminal = new TestTerminal();
@@ -3232,6 +3576,45 @@ test("mycli shell clarification selector submits a selected option", async () =>
 	await setTimeout(25);
 
 	assert.deepEqual(responses, [["question-1", "TUI"]]);
+});
+
+test("mycli shell clarification selector interrupts on escape", async () => {
+	const terminal = new TestTerminal();
+	const interrupts: Array<{ rollbackUserInput: boolean }> = [];
+	let runtime!: MycliShellRuntime;
+	const initialState = {
+		...sampleState(),
+		pendingClarification: {
+			requestId: "question-escape",
+			turnId: "turn-question-escape",
+			question: "Which implementation should we use?",
+			options: [{ label: "Runtime" }, { label: "TUI" }],
+			multiSelect: false,
+		},
+		footer: { ...sampleState().footer, liveState: "Waiting clarification" },
+	};
+	runtime = new MycliShellRuntime({
+		initialState,
+		terminal,
+		onInterrupt: async (options) => {
+			interrupts.push(options);
+			runtime.setState({
+				...initialState,
+				pendingClarification: undefined,
+				footer: { ...initialState.footer, liveState: "Idle" },
+			});
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+
+	assert.deepEqual(interrupts, [{ rollbackUserInput: false }]);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 });
 
 test("mycli shell clarification selector restores choices after a rejected response", async () => {
@@ -5200,11 +5583,40 @@ test("mycli shell forwards backend slash commands instead of chatting them", asy
 	assert.deepEqual(commands, ["/changes", "/tasks agents child-session", "/trace export"]);
 });
 
-test("mycli shell leaves shift tab available to the editor instead of changing mode", async () => {
+test("mycli shell cycles collaboration mode with shift tab while idle", async () => {
 	const commands: string[] = [];
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
+		terminal,
+		onCommandSubmit: (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x1b[Z");
+	await setTimeout(25);
+	assert.deepEqual(commands, ["/mode plan"]);
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, collaborationMode: "plan" },
+	});
+	terminal.input?.("\x1b[Z");
+	await setTimeout(25);
+	assert.deepEqual(commands, ["/mode plan", "/mode default"]);
+});
+
+test("mycli shell keeps shift tab available to the editor while a turn runs", async () => {
+	const commands: string[] = [];
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, collaborationMode: "plan", turnRunning: true, liveState: "Running" },
+		},
 		terminal,
 		onCommandSubmit: (command) => {
 			commands.push(command);

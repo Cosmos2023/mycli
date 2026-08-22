@@ -60,6 +60,7 @@ type RuntimeShellProcess = {
 	shellId: string;
 	callId?: string;
 	commandPreview: string;
+	description?: string;
 	background: boolean;
 	processState: string;
 	transport?: string;
@@ -110,6 +111,7 @@ export type RuntimeShellState = {
 	status: Record<string, unknown>;
 	models: MycliShellModel[] | null;
 	transcript: RuntimeTranscriptItem[];
+	transcriptNextBefore: string | null;
 	turnRunning: boolean;
 	activeTurnId: string | null;
 	activeAssistantItemId: string | null;
@@ -154,6 +156,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		status: {},
 		models: null,
 		transcript: [],
+		transcriptNextBefore: null,
 		turnRunning: false,
 		activeTurnId: null,
 		activeAssistantItemId: null,
@@ -569,7 +572,8 @@ function projectRuntimeShellState(
 				const bashItem: MycliShellBash = {
 					id: tool.id,
 					toolName: tool.name,
-					command: stringValue(metadata.command_preview) ?? tool.args ?? tool.outputPreview ?? tool.name,
+					command: stringValue(metadata.command_preview) ?? tool.args ?? tool.name,
+					description: stringValue(metadata.description)?.trim() || undefined,
 					status: tool.status,
 					shellId: stringValue(metadata.shell_id) ?? stringValue(displayMetrics.shell_id) ?? undefined,
 					callId: stringValue(metadata.call_id) ?? undefined,
@@ -625,6 +629,7 @@ function projectRuntimeShellState(
 		tools,
 		bash,
 		transcript,
+		transcriptNextBefore: state.transcriptNextBefore,
 		pendingInput:
 			pendingSteers.length > 0 || rejectedSteers.length > 0 || followUps.length > 0
 				? { pendingSteers, rejectedSteers, followUps }
@@ -808,6 +813,21 @@ export function runtimeStateAfterSessionResume(
 }
 
 export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
+	return runtimeStateFromTranscriptPage(state, payload, "merge");
+}
+
+export function runtimeStateFromOlderTranscriptPage(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+): RuntimeShellState {
+	return runtimeStateFromTranscriptPage(state, payload, "prepend");
+}
+
+function runtimeStateFromTranscriptPage(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+	mode: "merge" | "prepend",
+): RuntimeShellState {
 	const rawItems = Array.isArray(payload.items)
 		? payload.items
 				.filter(isTranscriptItem)
@@ -825,12 +845,18 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 			: item,
 	);
 	const transcript = coalesceResumedShellOutputItems(
-		coalesceLegacyToolItems(mergeTranscriptItemsById(state.transcript, resumedItems)),
+		coalesceLegacyToolItems(mergeTranscriptItemsById(
+			mode === "prepend" ? resumedItems : state.transcript,
+			mode === "prepend" ? state.transcript : resumedItems,
+		)),
 	);
 	const latestPlanUpdate = [...transcript].reverse().find((item) => item.type === "plan_update");
 	return {
 		...state,
 		transcript,
+		transcriptNextBefore: typeof payload.next_before === "string"
+			? payload.next_before
+			: null,
 		taskProgress: latestPlanUpdate ? taskProgressFromPlanUpdate(latestPlanUpdate) : state.taskProgress,
 	};
 }
@@ -963,7 +989,58 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "item.started") {
-		return state;
+		const item = recordValue(params.item);
+		if (stringValue(item.type) !== "file_change") return state;
+		const itemId = stringValue(item.id);
+		const callId = stringValue(item.call_id);
+		const toolName = stringValue(item.name);
+		const preview = stringValue(item.preview);
+		if (!itemId || !callId || !toolName || !preview) return state;
+		const target = fileMutationTargetPreview(preview, toolName);
+		const contentLineCount = numberValue(item.content_line_count);
+		const contentChars = numberValue(item.content_chars);
+		const contentTruncated = booleanValue(item.content_truncated);
+		const diffChars = numberValue(item.diff_chars);
+		const diffTruncated = booleanValue(item.diff_truncated);
+		const fileChanges = fileChangeEntriesFromUnknown(item.file_changes);
+		const transcript = sealActiveAssistantStream(
+			state.transcript,
+			state.activeAssistantItemId,
+		);
+		return {
+			...state,
+			activeAssistantItemId: null,
+			transcript: applyToolLifecycle(transcript, "file_mutation.started", {
+				client_turn_id: params.client_turn_id,
+				tool_id: itemId,
+				call_id: callId,
+				name: toolName,
+				path: target,
+				context: preview,
+				args_preview: target,
+				file_mutation_proposal: true,
+				...(typeof item.content_preview === "string"
+					? { content_preview: item.content_preview }
+					: {}),
+				...(contentLineCount === null
+					? {}
+					: { content_line_count: contentLineCount }),
+				...(contentChars === null
+					? {}
+					: { content_chars: contentChars }),
+				...(contentTruncated === null
+					? {}
+					: { content_truncated: contentTruncated }),
+				...(typeof item.diff === "string" ? { diff: item.diff } : {}),
+				...(diffChars === null
+					? {}
+					: { diff_chars: diffChars }),
+				...(diffTruncated === null
+					? {}
+					: { diff_truncated: diffTruncated }),
+				...(fileChanges.length > 0 ? { file_changes: fileChanges } : {}),
+			}),
+		};
 	}
 	if (method === "item.completed") {
 		const item = recordValue(params.item);
@@ -1178,7 +1255,7 @@ export function reduceRuntimeEvent(
 			liveStatus:
 				method === "compaction.started"
 					? { state: "running", kind: "compaction", text: "Compressing context" }
-					: state.liveStatus,
+					: { state: "running", kind: "running", text: "Running" },
 			transcript: applyCompactionLifecycle(state.transcript, method, params),
 		};
 	}
@@ -1273,6 +1350,16 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "turn.failed" || method === "gateway.error") {
+		// The response handler reconciles this race with status.inspect; avoid leaving
+		// a misleading error row behind while the selector is being replaced or cleared.
+		const staleInteractiveError = method === "gateway.error"
+			&& (
+				(params.code === "approval_not_pending"
+					&& (state.pendingApproval !== null || state.liveStatus?.state === "waiting_approval"))
+				|| (params.code === "clarification_not_pending"
+					&& (state.pendingClarification !== null || state.liveStatus?.state === "waiting_clarification"))
+			);
+		if (staleInteractiveError) return state;
 		const message = String(params.message ?? "Request failed");
 		const previousWaitingStatus =
 			method === "gateway.error" &&
@@ -1292,16 +1379,29 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "approval.request" || method === "approval.pending") {
+		const transcript = sealActiveAssistantStream(
+			state.transcript,
+			state.activeAssistantItemId,
+		);
+		const duplicateRequest = interactiveResponseMatches(
+			state.pendingApproval,
+			params,
+			"decision_id",
+			"decisionId",
+		);
+		const hasMutationProposal = hasMatchingFileMutationProposal(transcript, params);
 		return {
 			...state,
 			pendingApproval: params,
 			turnRunning: false,
 			activeAssistantItemId: null,
 			liveStatus: { state: "waiting_approval", kind: "approval", text: "Waiting approval" },
-			transcript: [
-				...state.transcript,
-				{ id: nextId("approval"), type: "approval", text: String(params.preview ?? "Approval required"), folded: false, metadata: params },
-			],
+			transcript: duplicateRequest || hasMutationProposal
+				? transcript
+				: [
+					...transcript,
+					{ id: nextId("approval"), type: "approval", text: String(params.preview ?? "Approval required"), folded: false, metadata: params },
+				],
 		};
 	}
 	if (method === "approval.respond") {
@@ -1311,9 +1411,13 @@ export function reduceRuntimeEvent(
 			"decision_id",
 			"decisionId",
 		)) return state;
+		const pending = state.pendingApproval;
 		return {
 			...state,
 			pendingApproval: null,
+			turnRunning: true,
+			activeTurnId: interactiveResponseTurnId(state, pending, params),
+			liveStatus: { state: "running", kind: "running", text: "Running" },
 			transcript: removeTransientApprovalItems(
 				state.transcript,
 				stringValue(params.decision_id) ?? stringValue(params.decisionId) ?? undefined,
@@ -1321,16 +1425,24 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "clarify.request") {
+		const duplicateRequest = interactiveResponseMatches(
+			state.pendingClarification,
+			params,
+			"request_id",
+			"requestId",
+		);
 		return {
 			...state,
 			pendingClarification: params,
 			turnRunning: false,
 			activeAssistantItemId: null,
 			liveStatus: { state: "waiting_clarification", kind: "clarification", text: "Waiting clarification" },
-			transcript: [
-				...state.transcript,
-				{ id: nextId("clarification"), type: "clarification", text: String(params.question ?? "Clarification required"), folded: false, metadata: params },
-			],
+			transcript: duplicateRequest
+				? state.transcript
+				: [
+					...state.transcript,
+					{ id: nextId("clarification"), type: "clarification", text: String(params.question ?? "Clarification required"), folded: false, metadata: params },
+				],
 		};
 	}
 	if (method === "clarify.respond") {
@@ -1341,9 +1453,13 @@ export function reduceRuntimeEvent(
 			"requestId",
 		)) return state;
 		const response = stringValue(params.response);
+		const pending = state.pendingClarification;
 		return {
 			...state,
 			pendingClarification: null,
+			turnRunning: true,
+			activeTurnId: interactiveResponseTurnId(state, pending, params),
+			liveStatus: { state: "running", kind: "running", text: "Running" },
 			transcript: [
 				...removeTransientClarificationItems(
 					state.transcript,
@@ -1358,6 +1474,21 @@ export function reduceRuntimeEvent(
 	if (method === "status.changed") {
 		const trust = trustFromPayload(params.trust, state.workspace);
 		const turnRunning = booleanValue(params.turn_running);
+		const statusSessionId = stringValue(params.session_id) ?? stringValue(params.sessionId) ?? undefined;
+		const clearApproval = params.pending_decision === false
+			&& pendingRequestBelongsToStatusSession(state.pendingApproval, statusSessionId, state.sessionId ?? undefined);
+		const clearClarification = params.suspended_turn === false
+			&& pendingRequestBelongsToStatusSession(state.pendingClarification, statusSessionId, state.sessionId ?? undefined);
+		const approvalDecisionId = clearApproval
+			? stringValue(state.pendingApproval?.decision_id)
+				?? stringValue(state.pendingApproval?.decisionId)
+				?? undefined
+			: undefined;
+		const clarificationRequestId = clearClarification
+			? stringValue(state.pendingClarification?.request_id)
+				?? stringValue(state.pendingClarification?.requestId)
+				?? undefined
+			: undefined;
 		const model = stringValue(params.model) ?? state.model;
 		const provider = stringValue(params.provider) ?? state.provider;
 		const nextState = applyQueuePayload({
@@ -1383,7 +1514,21 @@ export function reduceRuntimeEvent(
 			trust,
 			trustGateDismissed: trust.state === "trusted",
 		}, params, "status");
-		return applyShellBootstrap(nextState, params.background_shells);
+		let transcript = nextState.transcript;
+		if (clearApproval) transcript = removeTransientApprovalItems(transcript, approvalDecisionId);
+		if (clearClarification) transcript = removeTransientClarificationItems(transcript, clarificationRequestId);
+		return applyShellBootstrap({
+			...nextState,
+			pendingApproval: clearApproval ? null : nextState.pendingApproval,
+			pendingClarification: clearClarification ? null : nextState.pendingClarification,
+			liveStatus:
+				!nextState.turnRunning
+					&& ((clearApproval && nextState.liveStatus?.state === "waiting_approval")
+						|| (clearClarification && nextState.liveStatus?.state === "waiting_clarification"))
+					? null
+					: nextState.liveStatus,
+			transcript,
+		}, params.background_shells);
 	}
 	if (method === "workspace.trust.changed") {
 		const trust = trustFromPayload(params, state.workspace);
@@ -1397,8 +1542,16 @@ export function reduceRuntimeEvent(
 			...state,
 			sessionId: stringValue(params.session_id) ?? state.sessionId,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
+			pendingApproval: null,
+			pendingClarification: null,
 			turnRunning: false,
 			activeTurnId: null,
+			activeAssistantItemId: null,
+			liveStatus: null,
+			liveReasoning: null,
+			taskProgress: null,
+			transcriptNextBefore: null,
+			status: {},
 			queueRevision: 0,
 			queuedInputs: [],
 			queuedPendingSteers: [],
@@ -1414,6 +1567,9 @@ export function reduceRuntimeEvent(
 			backgroundShells: {},
 			backgroundShellCount: 0,
 			shellEventSequences: {},
+			transcript: removeTransientClarificationItems(
+				removeTransientApprovalItems(state.transcript),
+			),
 		};
 	}
 	return state;
@@ -1922,6 +2078,7 @@ export async function runtimeStateAfterCommandResult(
 		sessionId: destinationSessionId,
 		sessionTitle: destinationSessionId,
 		transcript: [],
+		transcriptNextBefore: null,
 		activeAssistantItemId: null,
 		liveStatus: null,
 		retryRestoreStatus: null,
@@ -2242,8 +2399,10 @@ function pendingClarificationFromRecord(
 		const description = stringValue(record.description);
 		options.push({ label, ...(description ? { description } : {}) });
 	}
+	const turnId = stringValue(value.turn_id) ?? stringValue(value.turnId);
 	return {
 		requestId,
+		...(turnId ? { turnId } : {}),
 		sessionId: stringValue(value.session_id) ?? stringValue(value.sessionId) ?? undefined,
 		generation: numberValue(value.generation) ?? undefined,
 		question,
@@ -2272,6 +2431,18 @@ function pendingRequestBelongsToDifferentTurn(
 	);
 }
 
+function pendingRequestBelongsToStatusSession(
+	pending: Record<string, unknown> | null,
+	statusSessionId: string | undefined,
+	activeSessionId: string | undefined,
+): boolean {
+	if (!pending) return false;
+	const pendingSessionId = pendingRequestSessionId(pending);
+	if (pendingSessionId && statusSessionId) return pendingSessionId === statusSessionId;
+	if (pendingSessionId && activeSessionId) return pendingSessionId === activeSessionId;
+	return true;
+}
+
 function pendingRequestSessionId(pending: Record<string, unknown> | null): string | undefined {
 	if (!pending) return undefined;
 	return stringValue(pending.session_id)
@@ -2294,6 +2465,22 @@ function interactiveResponseMatches(
 	const pendingSessionId = pendingRequestSessionId(pending);
 	const responseSessionId = stringValue(response.session_id) ?? stringValue(response.sessionId);
 	return !pendingSessionId || !responseSessionId || pendingSessionId === responseSessionId;
+}
+
+function interactiveResponseTurnId(
+	state: RuntimeShellState,
+	pending: Record<string, unknown> | null,
+	response: Record<string, unknown>,
+): string | null {
+	const pendingSessionId = pendingRequestSessionId(pending);
+	const responseSessionId = stringValue(response.session_id) ?? stringValue(response.sessionId);
+	const isRootSession = !pendingSessionId
+		|| !state.sessionId
+		|| pendingSessionId === state.sessionId
+		|| responseSessionId === state.sessionId;
+	return isRootSession
+		? stringValue(response.turn_id) ?? stringValue(response.turnId) ?? state.activeTurnId
+		: state.activeTurnId;
 }
 
 function approvalOptionsFromPayload(value: unknown): MycliShellPendingApproval["options"] {
@@ -2459,13 +2646,19 @@ function fileChangeFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellFi
 	const display = toolDisplayFromMetadata(metadata);
 	const name = stringValue(metadata.tool_name) ?? stringValue(metadata.name) ?? item.text.split(/\s+/, 1)[0] ?? "Tool";
 	const recognizedMutation = isFileMutationTool(name);
-	if (!recognizedMutation && (!display || display.fileChanges.length === 0)) return null;
+	const directFiles = fileChangeEntriesFromUnknown(metadata.file_changes);
+	if (!recognizedMutation && directFiles.length === 0 && (!display || display.fileChanges.length === 0)) {
+		return null;
+	}
 	const status = display?.status ?? toolStatus(metadata);
-	if (status === "running" || status === "cancelled") return null;
+	const proposal = metadata.file_mutation_proposal === true;
+	if ((status === "running" && !proposal) || status === "cancelled") return null;
 
 	const files = display?.fileChanges.length
 		? display.fileChanges
-		: legacyFileChangeEntries(name, metadata, display?.target);
+		: directFiles.length > 0
+			? directFiles
+			: legacyFileChangeEntries(name, metadata, display?.target);
 	const summary = display?.summary ?? stringValue(metadata.summary) ?? item.text;
 	const target =
 		display?.target ??
@@ -2474,9 +2667,6 @@ function fileChangeFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellFi
 		undefined;
 	const callId = stringValue(metadata.call_id) ?? undefined;
 
-	if (files.length > 0) {
-		return { id: item.id, callId, status: "success", summary, target, files };
-	}
 	if (status === "error" && recognizedMutation) {
 		return {
 			id: item.id,
@@ -2487,6 +2677,9 @@ function fileChangeFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellFi
 			files: [],
 			error: display?.error ?? textValue(metadata.error) ?? undefined,
 		};
+	}
+	if (files.length > 0) {
+		return { id: item.id, callId, status: "success", summary, target, files };
 	}
 	if (recognizedMutation && summary.trim().toLowerCase().startsWith("no changes")) {
 		return { id: item.id, callId, status: "unchanged", summary, target, files: [] };
@@ -2560,7 +2753,10 @@ function legacyFileChangeEntries(
 }
 
 function fileChangeKind(value: unknown): MycliShellFileChangeEntry["kind"] | null {
-	return value === "add" || value === "update" || value === "delete" || value === "rename" ? value : null;
+	if (value === "move") return "rename";
+	return value === "add" || value === "update" || value === "delete" || value === "rename"
+		? value
+		: null;
 }
 
 function countDiffLines(diff: string): { added: number; removed: number } {
@@ -3179,6 +3375,11 @@ function applyShellLifecycle(
 		stringValue(existingMetadata.command_preview) ??
 		stringValue(existingMetadata.command) ??
 		"command";
+	const description =
+		stringValue(params.description)?.trim() ??
+		existingProcess?.description ??
+		stringValue(existingMetadata.description)?.trim() ??
+		undefined;
 	const background = booleanValue(params.background) ?? existingProcess?.background ?? false;
 	const processState =
 		stringValue(params.process_state) ??
@@ -3203,6 +3404,7 @@ function applyShellLifecycle(
 		shellId,
 		...(callId ? { callId } : existingProcess?.callId ? { callId: existingProcess.callId } : {}),
 		commandPreview,
+		...(description ? { description } : {}),
 		background,
 		processState,
 		...(transport ? { transport } : {}),
@@ -3237,6 +3439,7 @@ function applyShellLifecycle(
 		shell_id: shellId,
 		command_preview: commandPreview,
 		command: stringValue(existingMetadata.command) ?? commandPreview,
+		description,
 		background,
 		process_state: processState,
 		transport: process.transport,
@@ -3625,6 +3828,30 @@ function findToolIndex(items: RuntimeTranscriptItem[], metadata: Record<string, 
 	return -1;
 }
 
+function hasMatchingFileMutationProposal(
+	items: RuntimeTranscriptItem[],
+	approval: Record<string, unknown>,
+): boolean {
+	const callId = stringValue(approval.call_id)
+		?? stringValue(approval.callId)
+		?? stringValue(approval.decision_id)
+		?? stringValue(approval.decisionId);
+	if (!callId) return false;
+	return items.some((item) => {
+		if (item.type !== "tool_summary") return false;
+		const metadata = recordValue(item.metadata);
+		return metadata.file_mutation_proposal === true
+			&& stringValue(metadata.call_id) === callId;
+	});
+}
+
+function fileMutationTargetPreview(preview: string, toolName: string): string {
+	const prefix = `${toolName} `;
+	return preview.toLowerCase().startsWith(prefix.toLowerCase())
+		? preview.slice(prefix.length).trim() || toolName
+		: preview;
+}
+
 function compactionId(params: Record<string, unknown>): string {
 	return [
 		"compaction",
@@ -3746,6 +3973,10 @@ function modelFromUnknown(value: unknown): MycliShellModel | null {
 	const record = recordValue(value);
 	const model = stringValue(record.model);
 	if (!model) return null;
+	const contextWindowTokens = numberValue(
+		record.context_window_tokens ?? record.contextWindowTokens,
+	);
+	const maxOutputTokens = numberValue(record.max_output_tokens ?? record.maxOutputTokens);
 	return {
 		model,
 		provider: stringValue(record.provider) ?? "",
@@ -3758,6 +3989,8 @@ function modelFromUnknown(value: unknown): MycliShellModel | null {
 		),
 		defaultReasoningEffort:
 			stringValue(record.default_reasoning_effort) ?? stringValue(record.defaultReasoningEffort) ?? undefined,
+		...(contextWindowTokens === null ? {} : { contextWindowTokens }),
+		...(maxOutputTokens === null ? {} : { maxOutputTokens }),
 		current: booleanValue(record.current) ?? undefined,
 		default: booleanValue(record.default) ?? undefined,
 	};
@@ -3815,11 +4048,36 @@ function reasoningLevelFromStatus(status: Record<string, unknown>): string | und
 }
 
 function usageFooterData(status: Record<string, unknown>): Partial<MycliShellState["footer"]> {
-	const context = recordValue(status.context) || status;
-	const usage = recordValue(status.usage) || status;
+	const nestedContext = recordValue(status.context);
+	const canonicalContext = recordValue(status.context_window);
+	const context = Object.keys(nestedContext).length > 0
+		? nestedContext
+		: Object.keys(canonicalContext).length > 0
+			? canonicalContext
+			: status;
+	const nestedUsage = recordValue(status.usage);
+	const usage = Object.keys(nestedUsage).length > 0 ? nestedUsage : status;
+	const rawUsedTokens = numberValue(context.used_tokens);
+	const rawMaxTokens = numberValue(context.max_tokens);
+	const usedTokens = rawUsedTokens === null ? null : Math.max(0, rawUsedTokens);
+	const maxTokens = rawMaxTokens === null ? null : Math.max(0, rawMaxTokens);
+	const rawContextWindow = numberValue(context.context_window);
+	const explicitPercent = numberValue(context.context_percent) ?? numberValue(context.percent);
+	const usageRatio = numberValue(context.usage_ratio);
+	const derivedPercent = explicitPercent
+		?? (usageRatio === null ? null : usageRatio * 100)
+		?? (usedTokens !== null && maxTokens !== null && maxTokens > 0
+			? usedTokens / maxTokens * 100
+			: null);
 	return {
-		contextPercent: numberValue(context.context_percent) ?? numberValue(context.percent) ?? undefined,
-		contextWindow: numberValue(context.context_window) ?? numberValue(context.max_tokens) ?? undefined,
+		contextPercent: derivedPercent === null
+			? undefined
+			: Math.min(100, Math.max(0, derivedPercent)),
+		contextWindow: rawContextWindow === null
+			? maxTokens ?? undefined
+			: Math.max(0, rawContextWindow),
+		contextUsedTokens: usedTokens ?? undefined,
+		contextSource: stringValue(context.source) ?? undefined,
 		totalInputTokens: numberValue(usage.input_tokens) ?? undefined,
 		totalOutputTokens: numberValue(usage.output_tokens) ?? undefined,
 		cacheReadTokens: numberValue(usage.cache_read_tokens) ?? undefined,

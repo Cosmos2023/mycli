@@ -7,6 +7,7 @@ import {
 	reduceRuntimeEvent,
 	RuntimeStateProjector,
 	runtimeStateFromBootstrap,
+	runtimeStateFromOlderTranscriptPage,
 	runtimeStateFromTranscript,
 	runtimeStateAfterSessionResume,
 	runtimeStateWithCommandResult,
@@ -382,6 +383,50 @@ test("runtime adapter does not append the same transcript page twice", () => {
 	);
 });
 
+test("runtime adapter stores the transcript cursor and prepends deduplicated older pages", () => {
+	let state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{ id: "middle", type: "user", text: "middle", metadata: {} },
+			{ id: "new", type: "assistant_final", text: "new", metadata: {} },
+		],
+		next_before: "v1.older",
+	});
+	assert.equal(state.transcriptNextBefore, "v1.older");
+
+	state = runtimeStateFromOlderTranscriptPage(state, {
+		items: [
+			{ id: "old", type: "user", text: "old", metadata: {} },
+			{ id: "middle", type: "user", text: "middle replacement", metadata: {} },
+		],
+		next_before: null,
+	});
+
+	assert.deepEqual(state.transcript.map((item) => item.id), ["old", "middle", "new"]);
+	assert.equal(state.transcript.find((item) => item.id === "middle")?.text, "middle");
+	assert.equal(state.transcriptNextBefore, null);
+});
+
+test("runtime adapter never uses resumed Shell output as its command", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: "shell-result",
+			type: "tool_summary",
+			text: "Shell",
+			metadata: {
+				tool_name: "Shell",
+				call_id: "call-shell",
+				status: "done",
+				success: true,
+				output_preview: "Chunk ID: internal-only\nFinal output:\ntests passed",
+			},
+		}],
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.bash[0]?.command, "Shell");
+	assert.match(shell.bash[0]?.outputPreview ?? "", /^Chunk ID:/);
+});
+
 test("runtime adapter projects a resumed Skill name as its tool argument", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateFromTranscript(state, {
@@ -509,6 +554,15 @@ test("runtime adapter projects equal live and resumed file changes", () => {
 				removed_lines: 1,
 				language: "py",
 			},
+			{
+				version: 1,
+				kind: "move",
+				path: "src/renamed.py",
+				previous_path: "src/old.py",
+				diff: "",
+				added_lines: 0,
+				removed_lines: 0,
+			},
 		],
 	};
 	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
@@ -537,6 +591,14 @@ test("runtime adapter projects equal live and resumed file changes", () => {
 	assert.deepEqual(
 		{ ...(liveBlock?.kind === "file_change" ? liveBlock.fileChange : {}), id: "stable" },
 		{ ...(resumedBlock?.kind === "file_change" ? resumedBlock.fileChange : {}), id: "stable" },
+	);
+	assert.equal(
+		liveBlock?.kind === "file_change" ? liveBlock.fileChange.files[1]?.kind : undefined,
+		"rename",
+	);
+	assert.equal(
+		liveBlock?.kind === "file_change" ? liveBlock.fileChange.files[1]?.previousPath : undefined,
+		"src/old.py",
 	);
 	assert.equal(liveState.tools.length, 0);
 });
@@ -1108,10 +1170,40 @@ test("runtime adapter renders compaction lifecycle as an in-turn block", () => {
 
 	shell = projectRuntimeState(state);
 	assert.equal(state.turnRunning, true);
+	assert.equal(state.liveStatus?.kind, "running");
 	assert.equal(shell.tools[0]?.name, "Compact");
 	assert.equal(shell.tools[0]?.status, "success");
 	assert.equal(shell.tools[0]?.durationMs, 2500);
 	assert.match(shell.tools[0]?.outputPreview ?? "", /120,000 -> 42,000/);
+});
+
+test("runtime adapter closes failed compaction lifecycle as an error", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateWithUserMessage(state, "large task");
+	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "c1" });
+	state = reduceRuntimeEvent(state, "compaction.started", {
+		client_turn_id: "c1",
+		source: "pre_turn",
+		before_tokens: 96_000,
+		max_tokens: 100_000,
+	});
+	state = reduceRuntimeEvent(state, "compaction.completed", {
+		client_turn_id: "c1",
+		source: "pre_turn",
+		status: "failed",
+		before_tokens: 96_000,
+		after_tokens: 96_000,
+		max_tokens: 100_000,
+		duration_s: 3,
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(state.turnRunning, true);
+	assert.equal(state.liveStatus?.kind, "running");
+	assert.equal(shell.tools[0]?.name, "Compact");
+	assert.equal(shell.tools[0]?.status, "error");
+	assert.equal(shell.tools[0]?.durationMs, 3000);
+	assert.match(shell.tools[0]?.outputPreview ?? "", /Context compression failed/);
 });
 
 test("runtime adapter projects approval requests into shell approval state", () => {
@@ -1208,6 +1300,173 @@ test("runtime adapter removes transient approval preview after a response", () =
 	assert.equal(shell.messages.some((message) => message.text === "echo duplicated command"), false);
 });
 
+test("runtime adapter clears a root approval from an authoritative idle status snapshot", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "decision-root",
+		session_id: "root-session",
+		preview: "npm test",
+		options: [{ choice: "approve_once", label: "Allow once" }],
+	});
+	state = { ...state, sessionId: "root-session" };
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "root-session",
+		pending_decision: false,
+		suspended_turn: false,
+		turn_running: false,
+	});
+
+	assert.equal(state.pendingApproval, null);
+	assert.equal(projectRuntimeState(state).pendingApproval, undefined);
+	assert.equal(projectRuntimeState(state).messages.some((message) => message.text === "npm test"), false);
+});
+
+test("runtime adapter suppresses a stale no-pending approval error while reconciling", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "decision-root",
+		session_id: "root-session",
+		preview: "npm test",
+		options: [{ choice: "approve_once", label: "Allow once" }],
+	});
+
+	state = reduceRuntimeEvent(state, "gateway.error", {
+		code: "approval_not_pending",
+		message: "No pending approval is available.",
+		method: "approval.respond",
+	});
+
+	assert.equal(state.transcript.some((item) => item.type === "error"), false);
+});
+
+test("runtime adapter does not clear a child approval from the root status snapshot", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "decision-child",
+		session_id: "child-session",
+		child_session_id: "child-session",
+		preview: "npm test",
+		options: [{ choice: "approve_once", label: "Allow once" }],
+	});
+	state = { ...state, sessionId: "root-session" };
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "root-session",
+		pending_decision: false,
+		suspended_turn: false,
+		turn_running: false,
+	});
+
+	assert.equal(projectRuntimeState(state).pendingApproval?.decisionId, "decision-child");
+});
+
+test("runtime adapter clears a clarification from an authoritative unsuspended status snapshot", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "clarify.request", {
+		request_id: "question-root",
+		session_id: "root-session",
+		question: "Which runtime?",
+		options: [],
+		multi_select: false,
+	});
+	state = { ...state, sessionId: "root-session" };
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "root-session",
+		pending_decision: false,
+		suspended_turn: false,
+		turn_running: false,
+	});
+
+	assert.equal(state.pendingClarification, null);
+	assert.equal(projectRuntimeState(state).pendingClarification, undefined);
+	assert.equal(projectRuntimeState(state).messages.some((message) => message.text === "Which runtime?"), false);
+});
+
+test("approval rejection keeps the failed tool between its preamble and final answer", () => {
+	let state = runtimeStateWithUserMessage(initialRuntimeState(), "write outside the workspace");
+	state = reduceRuntimeEvent(state, "turn.started", {
+		client_turn_id: "client-turn-1",
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "message.delta", {
+		client_turn_id: "client-turn-1",
+		text: "I will try the requested write.",
+	});
+	state = reduceRuntimeEvent(state, "item.started", {
+		client_turn_id: "client-turn-1",
+		turn_id: "turn-1",
+		item: {
+			id: "call-write",
+			type: "file_change",
+			call_id: "call-write",
+			name: "Write",
+			preview: "Write outside.txt",
+			content_preview: "proposed content\n",
+			content_line_count: 1,
+			content_truncated: false,
+			file_changes: [{
+				version: 1,
+				kind: "add",
+				path: "outside.txt",
+				diff: "--- outside.txt:before\n+++ outside.txt:after\n@@ -0,0 +1 @@\n+proposed content\n",
+				added_lines: 1,
+				removed_lines: 0,
+				truncated: false,
+				omitted_chars: 0,
+			}],
+		},
+	});
+	state = reduceRuntimeEvent(state, "approval.request", {
+		client_turn_id: "client-turn-1",
+		decision_id: "call-write",
+		call_id: "call-write",
+		tool_name: "Write",
+		preview: "Write outside.txt",
+		options: [
+			{ choice: "approve_once", label: "Allow once" },
+			{ choice: "reject", label: "Reject" },
+		],
+	});
+	assert.equal(state.transcript.filter((item) => item.type === "approval").length, 0);
+	const pendingBlock = projectRuntimeState(state).transcript?.find((block) => block.kind === "file_change");
+	assert.equal(pendingBlock?.kind, "file_change");
+	assert.equal(projectRuntimeState(state).tools.length, 0);
+	state = reduceRuntimeEvent(state, "approval.respond", {
+		client_turn_id: "client-turn-1",
+		decision_id: "call-write",
+		choice: "reject",
+	});
+	state = reduceRuntimeEvent(state, "tool.failed", {
+		client_turn_id: "client-turn-1",
+		tool_id: "call-write",
+		call_id: "call-write",
+		name: "Write",
+		summary: "Write rejected",
+		success: false,
+		error: "approval_rejected",
+		error_kind: "approval_rejected",
+	});
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		client_turn_id: "client-turn-1",
+		turn_id: "turn-1",
+		turn_state: "completed",
+	});
+	state = reduceRuntimeEvent(state, "message.complete", {
+		client_turn_id: "client-turn-1",
+		text: "The write was rejected.",
+		final: true,
+	});
+
+	const tail = projectRuntimeState(state).transcript?.slice(-3) ?? [];
+	assert.deepEqual(tail.map((block) => block.kind), ["message", "file_change", "message"]);
+	assert.equal(tail[0]?.kind === "message" ? tail[0].message.text : "", "I will try the requested write.");
+	assert.equal(tail[1]?.kind === "file_change" ? tail[1].fileChange.status : "", "error");
+	assert.equal(tail[2]?.kind === "message" ? tail[2].message.text : "", "The write was rejected.");
+	assert.equal(state.transcript.filter((item) => item.metadata?.call_id === "call-write").length, 1);
+});
+
 test("child approval survives unrelated root events and clears only for its routed response", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "approval.request", {
@@ -1238,6 +1497,67 @@ test("child approval survives unrelated root events and clears only for its rout
 		choice: "approve_once",
 	});
 	assert.equal(projectRuntimeState(state).pendingApproval, undefined);
+	assert.equal(state.turnRunning, true);
+	assert.equal(state.activeTurnId, null);
+	assert.equal(state.liveStatus?.state, "running");
+});
+
+test("runtime adapter keeps root turn identity when a child approval resumes", () => {
+	let state = reduceRuntimeEvent({ ...initialRuntimeState(), sessionId: "root-session" }, "turn.started", {
+		session_id: "root-session",
+		turn_id: "root-turn",
+	});
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "child-decision",
+		session_id: "child-session",
+		child_session_id: "child-session",
+		turn_id: "child-turn",
+		client_turn_id: "child-client-turn",
+		preview: "npm test",
+		options: [{ choice: "approve_once", label: "Allow once" }],
+	});
+	state = reduceRuntimeEvent(state, "approval.respond", {
+		decision_id: "child-decision",
+		session_id: "child-session",
+		turn_id: "child-turn",
+		choice: "approve_once",
+	});
+
+	assert.equal(state.turnRunning, true);
+	assert.equal(state.activeTurnId, "root-turn");
+	assert.equal(state.liveStatus?.state, "running");
+});
+
+test("runtime adapter does not duplicate a re-emitted interactive request", () => {
+	let state = initialRuntimeState();
+	const approval = {
+		decision_id: "decision-1",
+		session_id: "session-1",
+		preview: "npm test",
+		options: [{ choice: "approve_once", label: "Allow once" }],
+	};
+	state = reduceRuntimeEvent(state, "approval.request", approval);
+	state = reduceRuntimeEvent(state, "approval.request", { ...approval, generation: 2 });
+	assert.equal(state.transcript.filter((item) => item.type === "approval").length, 1);
+	assert.equal(state.pendingApproval?.generation, 2);
+
+	const clarification = {
+		request_id: "question-1",
+		session_id: "session-1",
+		question: "Which runtime?",
+		options: [],
+		multi_select: false,
+	};
+	state = reduceRuntimeEvent(state, "approval.respond", {
+		decision_id: "decision-1",
+		session_id: "session-1",
+		turn_id: "turn-1",
+		choice: "approve_once",
+	});
+	state = reduceRuntimeEvent(state, "clarify.request", clarification);
+	state = reduceRuntimeEvent(state, "clarify.request", { ...clarification, generation: 2 });
+	assert.equal(state.transcript.filter((item) => item.type === "clarification").length, 1);
+	assert.equal(state.pendingClarification?.generation, 2);
 });
 
 test("runtime adapter removes the transient clarification question after a response", () => {
@@ -1731,6 +2051,134 @@ test("runtime adapter projects live write content preview from lifecycle event",
 	assert.equal(tool?.contentLineCount, 2);
 });
 
+test("runtime adapter keeps one file proposal row through full-access execution", () => {
+	let state = initialRuntimeState();
+	state = { ...state, workspace: "/repo" };
+	state = reduceRuntimeEvent(state, "item.started", {
+		client_turn_id: "c1",
+		turn_id: "turn-1",
+		item: {
+			id: "call-write-1",
+			type: "file_change",
+			call_id: "call-write-1",
+			name: "Write",
+			preview: "Write docs/notes.md",
+			content_preview: "line 1\nline 2",
+			content_line_count: 2,
+			content_chars: 13,
+			content_truncated: false,
+			file_changes: [{
+				version: 1,
+				kind: "add",
+				path: "docs/notes.md",
+				diff: "--- docs/notes.md:before\n+++ docs/notes.md:after\n@@ -0,0 +1,2 @@\n+line 1\n+line 2\n",
+				added_lines: 2,
+				removed_lines: 0,
+				truncated: false,
+				omitted_chars: 0,
+			}],
+		},
+	});
+	let projected = projectRuntimeState(state);
+	assert.equal(projected.tools.length, 0);
+	assert.equal(projected.transcript?.[0]?.kind, "file_change");
+	if (projected.transcript?.[0]?.kind === "file_change") {
+		assert.equal(projected.transcript[0].fileChange.files[0]?.kind, "add");
+	}
+	state = reduceRuntimeEvent(state, "tool.start", {
+		client_turn_id: "c1",
+		tool_id: "call-write-1",
+		call_id: "call-write-1",
+		name: "Write",
+		context: "Executing Write",
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		client_turn_id: "c1",
+		tool_id: "call-write-1",
+		call_id: "call-write-1",
+		name: "Write",
+		summary: "Updated docs/notes.md",
+		success: true,
+		file_changes: [{
+			version: 1,
+			kind: "update",
+			path: "docs/notes.md",
+			diff: "--- docs/notes.md:before\n+++ docs/notes.md:after\n@@ -1,2 +1,2 @@\n-old 1\n-old 2\n+line 1\n+line 2\n",
+			added_lines: 2,
+			removed_lines: 2,
+			truncated: false,
+			omitted_chars: 0,
+		}],
+	});
+
+	const matchingRows = state.transcript.filter((item) => item.metadata?.call_id === "call-write-1");
+	assert.equal(matchingRows.length, 1);
+	projected = projectRuntimeState(state);
+	assert.equal(projected.tools.length, 0);
+	const completed = projected.transcript?.[0];
+	assert.equal(completed?.kind, "file_change");
+	if (completed?.kind === "file_change") {
+		assert.equal(completed.fileChange.files[0]?.kind, "update");
+		assert.match(completed.fileChange.files[0]?.diff ?? "", /-old 1/);
+	}
+});
+
+test("runtime adapter treats structured file changes as authoritative for extension tools", () => {
+	const state = reduceRuntimeEvent(initialRuntimeState(), "item.started", {
+		client_turn_id: "c1",
+		turn_id: "turn-1",
+		item: {
+			id: "call-extension-change",
+			type: "file_change",
+			call_id: "call-extension-change",
+			name: "ApplyMigration",
+			preview: "ApplyMigration schema.sql",
+			file_changes: [{
+				version: 1,
+				kind: "update",
+				path: "schema.sql",
+				diff: "--- schema.sql:before\n+++ schema.sql:after\n@@ -1 +1 @@\n-old\n+new\n",
+				added_lines: 1,
+				removed_lines: 1,
+				truncated: false,
+				omitted_chars: 0,
+			}],
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.tools.length, 0);
+	assert.equal(shell.transcript?.[0]?.kind, "file_change");
+});
+
+test("runtime adapter projects Edit and Patch proposal diffs before execution", () => {
+	for (const [index, name] of ["Edit", "Patch"].entries()) {
+		const state = reduceRuntimeEvent(initialRuntimeState(), "item.started", {
+			client_turn_id: "c1",
+			turn_id: "turn-1",
+			item: {
+				id: `call-mutation-${index}`,
+				type: "file_change",
+				call_id: `call-mutation-${index}`,
+				name,
+				preview: `${name} src/app.ts`,
+				diff: "-old line\n+new line",
+				diff_chars: 19,
+				diff_truncated: false,
+			},
+		});
+
+		const shell = projectRuntimeState(state);
+		assert.equal(shell.tools.length, 0);
+		const block = shell.transcript?.[0];
+		assert.equal(block?.kind, "file_change");
+		if (block?.kind === "file_change") {
+			assert.equal(block.fileChange.files[0]?.path, "src/app.ts");
+			assert.equal(block.fileChange.files[0]?.diff, "-old line\n+new line");
+		}
+	}
+});
+
 test("runtime adapter projects write_file content preview alias", () => {
 	let state = initialRuntimeState();
 	state = { ...state, workspace: "/repo" };
@@ -2212,6 +2660,29 @@ test("session changes reset queue revision and hide internal notifications", () 
 
 	assert.equal(state.queueRevision, 1);
 	assert.deepEqual(state.queuedPendingSteers.map((item) => item.message), ["visible"]);
+});
+
+test("session changes clear active transcript state and the older-history cursor", () => {
+	let state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{ id: "old", type: "assistant_final", text: "old answer", metadata: {} }],
+		next_before: "v1.old",
+	});
+	state = {
+		...state,
+		activeAssistantItemId: "assistant-live",
+		liveReasoning: { kind: "reasoning", text: "old reasoning" },
+		liveStatus: { state: "completed", kind: "completed", text: "Completed" },
+		taskProgress: { completed: 1, total: 1 },
+		status: { session_id: "session-1" },
+	};
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-2" });
+
+	assert.equal(state.activeAssistantItemId, null);
+	assert.equal(state.liveReasoning, null);
+	assert.equal(state.liveStatus, null);
+	assert.equal(state.taskProgress, null);
+	assert.equal(state.transcriptNextBefore, null);
+	assert.deepEqual(state.status, {});
 });
 
 test("runtime adapter tracks the active server turn until its matching terminal event", () => {
@@ -2935,6 +3406,43 @@ test("runtime adapter projects thinking effort into footer and current model", (
 	assert.equal(shell.models?.[0]?.thinkingLevel, "high");
 });
 
+test("runtime adapter projects canonical context-window usage into the footer", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "status.changed", {
+		context_window: {
+			used_tokens: 42_000,
+			max_tokens: 128_000,
+			usage_ratio: 0.328125,
+			source: "provider_live",
+		},
+		usage: {
+			input_tokens: 100_000,
+			output_tokens: 8_000,
+		},
+	});
+
+	const footer = projectRuntimeState(state).footer;
+
+	assert.equal(footer.contextPercent, 32.8125);
+	assert.equal(footer.contextWindow, 128_000);
+	assert.equal(footer.contextUsedTokens, 42_000);
+	assert.equal(footer.contextSource, "provider_live");
+	assert.equal(footer.totalInputTokens, 100_000);
+	assert.equal(footer.totalOutputTokens, 8_000);
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		context_window: {
+			used_tokens: -10,
+			max_tokens: -20,
+			usage_ratio: Number.POSITIVE_INFINITY,
+		},
+	});
+	const boundedFooter = projectRuntimeState(state).footer;
+	assert.equal(boundedFooter.contextPercent, undefined);
+	assert.equal(boundedFooter.contextWindow, 0);
+	assert.equal(boundedFooter.contextUsedTokens, 0);
+});
+
 test("runtime adapter projects backend model catalog capabilities", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "status.changed", {
@@ -2951,6 +3459,8 @@ test("runtime adapter projects backend model catalog capabilities", () => {
 				base_url: "https://api.openai.com/v1",
 				supported_reasoning_efforts: ["low", "medium", "high", "xhigh"],
 				default_reasoning_effort: "medium",
+				context_window_tokens: 1_050_000,
+				max_output_tokens: 128_000,
 				current: true,
 				default: false,
 			},
@@ -2968,6 +3478,8 @@ test("runtime adapter projects backend model catalog capabilities", () => {
 		baseUrl: "https://api.openai.com/v1",
 		supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
 		defaultReasoningEffort: "medium",
+		contextWindowTokens: 1_050_000,
+		maxOutputTokens: 128_000,
 		current: true,
 		default: false,
 	});
@@ -3311,6 +3823,7 @@ test("shell lifecycle keeps background Bash running until terminal event", () =>
 		call_id: "call-1",
 		sequence: 1,
 		command_preview: "uv run dev",
+		description: "Start the development server",
 		background: true,
 		process_state: "running_background",
 		shell_kind: "powershell",
@@ -3330,6 +3843,7 @@ test("shell lifecycle keeps background Bash running until terminal event", () =>
 
 	let shell = projectRuntimeState(state);
 	assert.equal(shell.bash[0]?.status, "running");
+	assert.equal(shell.bash[0]?.description, "Start the development server");
 	assert.equal(shell.bash[0]?.outputPreview, "ready\n");
 	assert.equal(shell.bash[0]?.toolName, "Shell");
 	assert.equal(shell.bash[0]?.shellKind, "powershell");
@@ -3347,6 +3861,7 @@ test("shell lifecycle keeps background Bash running until terminal event", () =>
 	});
 	shell = projectRuntimeState(state);
 	assert.equal(shell.bash[0]?.status, "success");
+	assert.equal(shell.bash[0]?.description, "Start the development server");
 	assert.equal(shell.bash[0]?.terminalState, "completed");
 	assert.equal(shell.footer.backgroundShellCount, 0);
 });
@@ -3616,6 +4131,7 @@ test("background shell bootstrap restores running state without reviving termina
 				shell_id: "shell-1",
 				call_id: "call-1",
 				command_preview: "uv run dev",
+				description: "Start the development server",
 				background: true,
 				status: "running",
 				process_state: "running_background",
@@ -3627,6 +4143,7 @@ test("background shell bootstrap restores running state without reviving termina
 	const shell = projectRuntimeState(state);
 	assert.equal(shell.bash[0]?.status, "running");
 	assert.equal(shell.bash[0]?.command, "uv run dev");
+	assert.equal(shell.bash[0]?.description, "Start the development server");
 	assert.equal(state.backgroundShells["shell-1"]?.outputPreview, "ready\n");
 	assert.equal(shell.footer.backgroundShellCount, 1);
 });

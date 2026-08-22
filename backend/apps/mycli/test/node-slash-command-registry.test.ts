@@ -17,6 +17,15 @@ test("Node slash registry matches the frozen final cross-backend command matrix"
 	const matrix = slashCommandParityMatrix();
 	assert.ok(Array.isArray(matrix.commands));
 	assert.ok(Array.isArray(matrix.prefixed_aliases));
+	const maintenance = matrix.commands.find((value) => (
+		typeof value === "object" && value !== null && "id" in value
+		&& value.id === "session_maintenance"
+	)) as Readonly<Record<string, unknown>> | undefined;
+	assert.equal(
+		maintenance?.argument_hint,
+		"[--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]",
+	);
+	assert.equal(maintenance?.available_during_turn, false);
 	assert.equal(fixture.schema_version, 1);
 	assert.equal(matrix.commands.length, fixture.command_count);
 	assert.equal(matrix.prefixed_aliases.length, fixture.prefixed_alias_count);

@@ -13,14 +13,14 @@ test("terminal line diff preserves a stable prefix", () => {
 
 test("terminal line diff preserves a stable suffix", () => {
 	const patch = diffTerminalLine(
-		"status: ◒ Working (24s · esc to interrupt)",
-		"status: ◐ Working (24s · esc to interrupt)",
+		"status: ◦ Working (24s · esc to interrupt)",
+		"status: • Working (24s · esc to interrupt)",
 		80,
 	);
 
 	assert.ok(patch);
 	assert.equal(patch.column, 8);
-	assert.match(patch.content, /◐/u);
+	assert.match(patch.content, /•/u);
 	assert.doesNotMatch(patch.content, /Working/u);
 	assert.doesNotMatch(patch.content, /\x1b\[K/u);
 });

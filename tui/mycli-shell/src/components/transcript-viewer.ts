@@ -22,19 +22,29 @@ export class TranscriptViewerComponent implements Component {
 	private followingTail = true;
 	private previousViewportRows = 0;
 	private loadingCount = 0;
+	private loadingHistory = false;
+	private hasOlderHistory: boolean;
+	private preserveScrollOffsetOnNextUpdate = false;
 	private error: string | undefined;
 
 	constructor(private readonly options: {
 		readonly blocks: readonly MycliShellTranscriptBlock[];
 		readonly rows: () => number;
 		readonly sessionLabel?: string;
+		readonly hasOlderHistory?: boolean;
+		readonly onLoadOlder?: () => void;
 		readonly onClose: () => void;
 	}) {
 		this.blocks = [...options.blocks];
+		this.hasOlderHistory = options.hasOlderHistory === true;
 	}
 
-	updateBlocks(blocks: readonly MycliShellTranscriptBlock[]): void {
+	updateBlocks(
+		blocks: readonly MycliShellTranscriptBlock[],
+		options: { readonly preserveScrollOffset?: boolean } = {},
+	): void {
 		this.blocks = [...blocks];
+		this.preserveScrollOffsetOnNextUpdate = options.preserveScrollOffset === true;
 		this.revision += 1;
 	}
 
@@ -45,6 +55,13 @@ export class TranscriptViewerComponent implements Component {
 
 	setLoadingCount(count: number): void {
 		this.loadingCount = Math.max(0, count);
+		this.revision += 1;
+	}
+
+	setOlderHistoryState(input: { readonly available: boolean; readonly loading: boolean }): void {
+		if (this.hasOlderHistory === input.available && this.loadingHistory === input.loading) return;
+		this.hasOlderHistory = input.available;
+		this.loadingHistory = input.loading;
 		this.revision += 1;
 	}
 
@@ -82,6 +99,7 @@ export class TranscriptViewerComponent implements Component {
 		} else if (matchesKey(data, "home") || data === "g") {
 			this.followingTail = false;
 			this.scrollOffset = Number.MAX_SAFE_INTEGER;
+			this.maybeLoadOlder();
 		} else if (matchesKey(data, "end") || data === "G") {
 			this.followingTail = true;
 			this.scrollOffset = 0;
@@ -102,8 +120,11 @@ export class TranscriptViewerComponent implements Component {
 			this.contentRevision = this.revision;
 			this.contentWidth = frameWidth;
 			if (!this.followingTail) {
-				this.scrollOffset = Math.max(0, this.contentLines.length - viewportRows - previousTop);
+				if (!this.preserveScrollOffsetOnNextUpdate) {
+					this.scrollOffset = Math.max(0, this.contentLines.length - viewportRows - previousTop);
+				}
 			}
+			this.preserveScrollOffsetOnNextUpdate = false;
 		}
 		const maxOffset = Math.max(0, this.contentLines.length - viewportRows);
 		this.scrollOffset = this.followingTail
@@ -124,6 +145,15 @@ export class TranscriptViewerComponent implements Component {
 	private scrollBy(delta: number): void {
 		this.scrollOffset = Math.max(0, this.scrollOffset + delta);
 		this.followingTail = this.scrollOffset === 0;
+		if (delta > 0) this.maybeLoadOlder();
+	}
+
+	private maybeLoadOlder(): void {
+		if (this.scrollOffset >= Math.max(0, this.contentLines.length - this.previousViewportRows)
+			&& this.hasOlderHistory
+			&& !this.loadingHistory) {
+			this.options.onLoadOlder?.();
+		}
 	}
 
 	private hydratedBlocks(): MycliShellTranscriptBlock[] {
@@ -168,6 +198,8 @@ export class TranscriptViewerComponent implements Component {
 	private footerLine(_start: number, _viewportRows: number): string {
 		const status = this.error
 			? theme.fg("error", this.error)
+			: this.loadingHistory
+				? theme.fg("muted", "Loading earlier history...")
 			: this.loadingCount > 0
 				? theme.fg("muted", `Loading ${this.loadingCount} Shell output${this.loadingCount === 1 ? "" : "s"}...`)
 				: "";

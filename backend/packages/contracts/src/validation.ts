@@ -104,5 +104,12 @@ export function parseRuntimeState(value: unknown): RuntimeStateRecord {
 			throw new ContractValidationError("Invalid runtime state: queue session mismatch.");
 		}
 	}
+	if (state.kind === "compact_checkpoint"
+		&& !Array.isArray(state.payload.replacement_messages)
+		&& typeof state.payload.transcript_event_id !== "string") {
+		throw new ContractValidationError(
+			"Invalid runtime state: compact checkpoint has no transcript source.",
+		);
+	}
 	return state;
 }

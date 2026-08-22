@@ -84,6 +84,7 @@ export type MycliShellBash = {
 	id: string;
 	toolName?: "Shell" | "Bash" | string;
 	command: string;
+	description?: string;
 	status: MycliShellToolStatus;
 	shellId?: string;
 	callId?: string;
@@ -256,6 +257,8 @@ export type MycliShellFooterData = {
 	reasoningLevel?: string;
 	contextPercent?: number;
 	contextWindow?: number;
+	contextUsedTokens?: number;
+	contextSource?: string;
 	totalInputTokens?: number;
 	totalOutputTokens?: number;
 	cacheReadTokens?: number;
@@ -305,6 +308,8 @@ export type MycliShellModel = {
 	baseUrl?: string;
 	supportedReasoningEfforts?: string[];
 	defaultReasoningEffort?: string;
+	contextWindowTokens?: number;
+	maxOutputTokens?: number;
 	current?: boolean;
 	default?: boolean;
 	thinkingLevel?: string;
@@ -418,6 +423,7 @@ type MycliShellClarificationOption = {
 
 export type MycliShellPendingClarification = {
 	requestId: string;
+	turnId?: string;
 	sessionId?: string;
 	generation?: number;
 	question: string;
@@ -450,6 +456,7 @@ export type MycliShellState = {
 	tools: MycliShellTool[];
 	bash: MycliShellBash[];
 	transcript?: MycliShellTranscriptBlock[];
+	transcriptNextBefore?: string | null;
 	footer: MycliShellFooterData;
 	pendingInput?: MycliShellPendingInput;
 	pendingNotice?: string;

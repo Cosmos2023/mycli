@@ -55,6 +55,7 @@ import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { PermissionSelectorComponent } from "./components/permission-selector.ts";
 import { PlanUpdateComponent } from "./components/plan-update.ts";
 import { PendingInputPreviewComponent } from "./components/pending-input-preview.ts";
+import { PlanImplementationSelectorComponent } from "./components/plan-implementation-selector.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { ResourceSelectorComponent } from "./components/resource-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
@@ -75,6 +76,11 @@ import {
 } from "./transcript-projection.ts";
 import { resolveTranscriptReplayMaxRows } from "./transcript-replay.ts";
 import type { TranscriptUpdateKind } from "./adapters/transcript-update.ts";
+import {
+	planImplementationContextUsageLabel,
+	planImplementationMessage,
+	type PlanImplementationAction,
+} from "./plan-implementation.ts";
 
 export type MycliShellRuntimeOptions = {
 	initialState: MycliShellState;
@@ -103,6 +109,7 @@ export type MycliShellRuntimeOptions = {
 	onTranscriptOutputLoad?: (
 		request: MycliShellTranscriptOutputRequest,
 	) => MycliShellTranscriptOutput | Promise<MycliShellTranscriptOutput>;
+	onTranscriptHistoryLoad?: (before: string) => void | Promise<void>;
 	onApprovalRespond?: (
 		decisionId: string,
 		choice: string,
@@ -113,6 +120,10 @@ export type MycliShellRuntimeOptions = {
 		response: string,
 		clarification: MycliShellPendingClarification,
 	) => void | Promise<void>;
+	onPlanImplementation?: (
+		action: PlanImplementationAction,
+		planMarkdown: string,
+	) => void | Promise<void>;
 	commands?: MycliShellCommandSpec[];
 	commandNames?: string[];
 	now?: () => number;
@@ -121,6 +132,7 @@ export type MycliShellRuntimeOptions = {
 
 export type MycliShellStateUpdateOptions = {
 	transcriptUpdate?: TranscriptUpdateKind;
+	eventType?: string;
 };
 
 export type MycliShellLocalImageAttachment = {
@@ -162,8 +174,13 @@ type ToolDetailProjectionCache = {
 
 type TurnActivityStatus = {
 	text: string;
+	kind?: string;
 	detail?: string;
 };
+
+function isGenericTurnActivityText(text: string): boolean {
+	return text.length === 0 || ["running", "streaming", "working"].includes(text.toLowerCase());
+}
 
 type ActiveTranscriptViewer = {
 	readonly component: TranscriptViewerComponent;
@@ -172,6 +189,7 @@ type ActiveTranscriptViewer = {
 	readonly enteredAlternateScreen: boolean;
 	readonly loading: Set<string>;
 	readonly loadedSignatures: Map<string, string>;
+	loadingHistory: boolean;
 	blocksSource: readonly MycliShellTranscriptBlock[];
 };
 
@@ -190,19 +208,21 @@ type ChatBlockComponent =
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
 class TurnActivityComponent implements Component {
-	private readonly frames = ["◐", "◓", "◑", "◒"];
+	private readonly frames = ["•", "◦"];
 	private frameIndex = 0;
 	private intervalId: NodeJS.Timeout | null = null;
 	private cachedWidth: number | null = null;
 	private cachedFrameIndex: number | null = null;
 	private cachedElapsedSeconds: number | null = null;
 	private cachedLines: string[] = [];
+	private renderRevision = 0;
 
 	constructor(
 		private readonly ui: TUI,
 		private readonly startedAtMs: number,
 		private readonly now: () => number,
-		private readonly status: TurnActivityStatus,
+		private status: TurnActivityStatus,
+		private readonly onContentChange?: () => void,
 	) {
 		this.start();
 	}
@@ -215,11 +235,29 @@ class TurnActivityComponent implements Component {
 		this.intervalId = null;
 	}
 
+	getRenderCacheKey(): number {
+		return this.renderRevision;
+	}
+
 	invalidate(): void {
+		this.renderRevision += 1;
 		this.cachedWidth = null;
 		this.cachedFrameIndex = null;
 		this.cachedElapsedSeconds = null;
 		this.cachedLines = [];
+	}
+
+	updateStatus(status: TurnActivityStatus): void {
+		if (
+			this.status.text === status.text
+			&& this.status.kind === status.kind
+			&& this.status.detail === status.detail
+		) {
+			return;
+		}
+		this.status = status;
+		this.invalidate();
+		this.onContentChange?.();
 	}
 
 	render(width: number): string[] {
@@ -233,7 +271,7 @@ class TurnActivityComponent implements Component {
 			return this.cachedLines;
 		}
 		const header = new Text(
-			`${theme.fg("accent", frame)} ${theme.fg("muted", `Working (${formatElapsedCompact(elapsedSeconds)} • esc to interrupt)`)}`,
+			`${theme.fg("accent", frame)} ${theme.fg("muted", `${this.headerText()} (${formatElapsedCompact(elapsedSeconds)} • esc to interrupt)`)}`,
 			1,
 			0,
 		).render(width);
@@ -249,14 +287,22 @@ class TurnActivityComponent implements Component {
 	}
 
 	private detailText(): string | null {
-		const generic = new Set(["", "running", "thinking", "streaming", "working"]);
 		const statusText = this.status.text.trim();
-		const parts = generic.has(statusText.toLowerCase()) ? [] : [statusText];
 		const detail = this.status.detail?.trim();
-		if (detail && detail !== statusText) {
-			parts.push(detail);
+		if (!detail || detail === statusText || detail === this.headerText()) return null;
+		return detail;
+	}
+
+	private headerText(): string {
+		const statusText = this.status.text.trim().replace(/\s+/g, " ");
+		const normalizedKind = this.status.kind?.trim().toLowerCase() ?? "";
+		if (normalizedKind === "thinking" && isGenericTurnActivityText(statusText)) {
+			return "Thinking";
 		}
-		return parts.length > 0 ? parts.join(" · ") : null;
+		if (isGenericTurnActivityText(statusText)) {
+			return "Working";
+		}
+		return statusText || "Working";
 	}
 
 	private start(): void {
@@ -265,8 +311,10 @@ class TurnActivityComponent implements Component {
 		}
 		this.intervalId = setInterval(() => {
 			this.frameIndex = (this.frameIndex + 1) % this.frames.length;
+			this.renderRevision += 1;
+			this.onContentChange?.();
 			this.ui.requestRender();
-		}, 250);
+		}, 600);
 		this.intervalId.unref?.();
 	}
 }
@@ -1231,6 +1279,7 @@ export class MycliShellRuntime {
 		if (this.mainMounted) {
 			this.rebuildChangedSections(previousState, effectiveState, options.transcriptUpdate);
 		}
+		this.maybeShowPlanImplementation(options.eventType);
 		this.maybeResetTranscriptScroll(previousState, effectiveState);
 		this.queueNativeTranscriptDelta(transcriptAppended);
 		this.ui.requestRender();
@@ -1311,6 +1360,7 @@ export class MycliShellRuntime {
 	}
 
 	refreshTurnStatus(): void {
+		this.rebuildChat();
 		this.rebuildStatus();
 		this.ui.requestRender();
 	}
@@ -1318,6 +1368,10 @@ export class MycliShellRuntime {
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
 		if (this.ui.hasOverlay() || this.selectorActive) {
 			return undefined;
+		}
+		if (matchesKey(data, "shift+tab") && !this.isTurnRunning()) {
+			this.cycleCollaborationMode();
+			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			this.runAsyncAction(() => this.handleCtrlC(), "Interrupt request failed");
@@ -1494,6 +1548,8 @@ export class MycliShellRuntime {
 			blocks: this.transcriptBlocksForState(this.state),
 			rows: () => terminal.rows,
 			...(this.state.footer.sessionName ? { sessionLabel: this.state.footer.sessionName } : {}),
+			hasOlderHistory: Boolean(this.state.transcriptNextBefore),
+			onLoadOlder: () => this.loadOlderTranscriptHistory(),
 			onClose: () => this.closeTranscriptViewer(),
 		});
 		const handle = this.ui.showOverlay(component, {
@@ -1508,6 +1564,7 @@ export class MycliShellRuntime {
 			enteredAlternateScreen,
 			loading: new Set(),
 			loadedSignatures: new Map(),
+			loadingHistory: false,
 			blocksSource: this.state.transcript ?? [],
 		};
 		this.ui.requestRender(true);
@@ -1860,8 +1917,10 @@ export class MycliShellRuntime {
 			this.isCompletedLiveState(previousState.footer.liveState) !==
 			this.isCompletedLiveState(nextState.footer.liveState);
 		const chatUpdate = this.resolveChatUpdate(previousState, nextState, transcriptUpdate);
+		let chatRebuilt = false;
 		if (completionChanged || chatUpdate !== "unchanged") {
 			this.rebuildChat(chatUpdate === "tail" && !completionChanged);
+			chatRebuilt = true;
 		}
 		if (
 			previousState.pendingNotice !== nextState.pendingNotice ||
@@ -1870,7 +1929,9 @@ export class MycliShellRuntime {
 		) {
 			this.rebuildPending();
 		}
-		if (this.liveStateSignature(previousState) !== this.liveStateSignature(nextState)) {
+		const liveStateChanged = this.liveStateSignature(previousState) !== this.liveStateSignature(nextState);
+		if (liveStateChanged) {
+			if (!chatRebuilt) this.rebuildChat();
 			this.rebuildStatus();
 		}
 		if (this.subagentTasksChanged(previousState, nextState, transcriptUpdate)) {
@@ -1977,6 +2038,59 @@ export class MycliShellRuntime {
 		}
 	}
 
+	private maybeShowPlanImplementation(eventType: string | undefined): void {
+		if (
+			eventType !== "plan.proposed"
+			|| !this.mainMounted
+			|| this.selectorActive
+			|| this.transcriptViewer !== null
+			|| this.state.footer.collaborationMode !== "plan"
+			|| this.state.pendingApproval !== undefined
+			|| this.state.pendingClarification !== undefined
+			|| this.hasQueuedInput()
+		) {
+			return;
+		}
+		const plan = [...(this.state.transcript ?? [])]
+			.reverse()
+			.find((block) => block.kind === "plan" && block.plan.status === "proposed");
+		if (!plan || plan.kind !== "plan" || !plan.plan.text.trim()) return;
+		const contextUsageLabel = planImplementationContextUsageLabel(
+			this.state.footer.contextPercent,
+			this.state.footer.contextUsedTokens,
+		);
+
+		this.showSelector((done) => {
+			const selector = new PlanImplementationSelectorComponent({
+				...(contextUsageLabel ? { contextUsageLabel } : {}),
+				onSelect: async (choice) => {
+					if (choice !== "stay") {
+						await this.startPlanImplementation(choice, plan.plan.text);
+					}
+					done();
+				},
+				onRender: () => this.ui.requestRender(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private async startPlanImplementation(
+		action: PlanImplementationAction,
+		planMarkdown: string,
+	): Promise<void> {
+		if (this.options.onPlanImplementation) {
+			await this.options.onPlanImplementation(action, planMarkdown);
+			return;
+		}
+		if (!this.options.onCommandSubmit || !this.options.onSubmit) {
+			throw new Error("Plan implementation is unavailable.");
+		}
+		if (action === "clear_context") await this.options.onCommandSubmit("/new");
+		await this.options.onCommandSubmit("/mode default");
+		await this.options.onSubmit(planImplementationMessage(action, planMarkdown));
+	}
+
 	private showApprovalSelector(approval: MycliShellPendingApproval): void {
 		const selector = new ApprovalSelectorComponent({
 			approval,
@@ -2007,7 +2121,7 @@ export class MycliShellRuntime {
 			clarification,
 			onRespond: (response) => this.respondClarification(clarification, response),
 			onCancel: () => {
-				this.addSystemNotice("Question still waiting for an answer.");
+				this.runAsyncAction(() => this.handleInterrupt(), "Interrupt request failed");
 			},
 		});
 		this.clarificationSurfaceRequestId = clarification.requestId;
@@ -2053,20 +2167,12 @@ export class MycliShellRuntime {
 	private rebuildChat(tailOnly = false): void {
 		this.transcriptRenderRevision += 1;
 		const transcript = this.state.transcript?.length ? this.state.transcript : this.legacyTranscriptBlocks();
-		if (transcript.length > 0) {
-			const stablePrefixLength = this.syncChatBlocks(transcript, tailOnly);
-			if (tailOnly) {
-				this.transcriptViewport.markSectionTailChanged(this.chatContainer, stablePrefixLength);
-			} else {
-				this.transcriptViewport.markContentChanged();
-			}
-			return;
+		const stablePrefixLength = this.syncChatBlocks(transcript, tailOnly);
+		if (tailOnly) {
+			this.transcriptViewport.markSectionTailChanged(this.chatContainer, stablePrefixLength);
+		} else {
+			this.transcriptViewport.markContentChanged();
 		}
-		this.transcriptViewport.markContentChanged();
-		this.chatBlocks.clear();
-		this.projectedChatBlocks = [];
-		this.transcriptProjection = null;
-		this.chatContainer.clear();
 	}
 
 	private legacyTranscriptBlocks(): MycliShellTranscriptBlock[] {
@@ -2094,10 +2200,38 @@ export class MycliShellRuntime {
 		const blocks = this.transcriptBlocksForState(state);
 		const source = state.transcript ?? blocks;
 		if (viewer.blocksSource !== source) {
+			const prepended = transcriptBlocksWerePrepended(viewer.blocksSource, source);
 			viewer.blocksSource = source;
-			viewer.component.updateBlocks(blocks);
+			viewer.component.updateBlocks(blocks, { preserveScrollOffset: prepended });
 		}
+		viewer.component.setOlderHistoryState({
+			available: Boolean(state.transcriptNextBefore),
+			loading: viewer.loadingHistory,
+		});
 		this.hydrateTranscriptShellOutputs(state);
+	}
+
+	private loadOlderTranscriptHistory(): void {
+		const viewer = this.transcriptViewer;
+		const before = this.state.transcriptNextBefore;
+		const load = this.options.onTranscriptHistoryLoad;
+		if (!viewer || !before || !load || viewer.loadingHistory) return;
+		viewer.loadingHistory = true;
+		viewer.component.setError(undefined);
+		viewer.component.setOlderHistoryState({ available: true, loading: true });
+		this.ui.requestRender();
+		void Promise.resolve(load(before)).catch(() => {
+			if (this.transcriptViewer !== viewer) return;
+			viewer.component.setError("Earlier transcript history could not be loaded.");
+		}).finally(() => {
+			if (this.transcriptViewer !== viewer) return;
+			viewer.loadingHistory = false;
+			viewer.component.setOlderHistoryState({
+				available: Boolean(this.state.transcriptNextBefore),
+				loading: false,
+			});
+			this.ui.requestRender();
+		});
 	}
 
 	private hydrateTranscriptShellOutputs(state: MycliShellState): void {
@@ -2174,7 +2308,10 @@ export class MycliShellRuntime {
 			this.chatBlocks.set(block.id, next);
 			suffixComponents.push(next.component);
 		}
-		if (this.isCompletedLiveState(this.state.footer.liveState)) {
+		const activity = this.syncTurnActivityComponent();
+		if (activity) {
+			suffixComponents.push(activity);
+		} else if (this.isCompletedLiveState(this.state.footer.liveState)) {
 			suffixComponents.push(new TurnCompletedComponent(this.completedDurationMs ?? 0));
 		}
 		const children = this.chatContainer.children;
@@ -2226,11 +2363,35 @@ export class MycliShellRuntime {
 	private createTurnActivityComponent(): TurnActivityComponent {
 		const startedAtMs = this.turnStartedAtMs ?? this.now();
 		this.turnStartedAtMs = startedAtMs;
-		this.turnActivity = new TurnActivityComponent(this.ui, startedAtMs, this.now, {
+		this.turnActivity = new TurnActivityComponent(
+			this.ui,
+			startedAtMs,
+			this.now,
+			{
+				text: this.state.footer.liveState ?? "Running",
+				kind: this.state.footer.liveStateKind,
+				detail: this.state.footer.liveStateDetail,
+			},
+			() => {
+				this.transcriptRenderRevision += 1;
+				this.transcriptViewport.markContentChanged();
+			},
+		);
+		return this.turnActivity;
+	}
+
+	private syncTurnActivityComponent(): TurnActivityComponent | null {
+		if (!this.isTurnActivityRunning(this.state)) {
+			this.stopTurnActivity();
+			return null;
+		}
+		const activity = this.turnActivity ?? this.createTurnActivityComponent();
+		activity.updateStatus({
 			text: this.state.footer.liveState ?? "Running",
+			kind: this.state.footer.liveStateKind,
 			detail: this.state.footer.liveStateDetail,
 		});
-		return this.turnActivity;
+		return activity;
 	}
 
 	private syncChatBlock(block: ProjectedTranscriptBlock, cached?: ChatBlockComponent): ChatBlockComponent {
@@ -2377,10 +2538,8 @@ export class MycliShellRuntime {
 	}
 
 	private rebuildStatus(): void {
-		this.stopTurnActivity();
 		this.statusContainer.clear();
 		if (this.isTurnActivityRunning(this.state)) {
-			this.statusContainer.addChild(this.createTurnActivityComponent());
 			return;
 		}
 		if (this.isCompletedLiveState(this.state.footer.liveState)) {
@@ -2497,7 +2656,10 @@ export class MycliShellRuntime {
 	private rebuildFooter(): void {
 		this.footerContainer.clear();
 		this.footerContainer.addChild(new Spacer(1));
-		this.footerContainer.addChild(new FooterComponent(this.state.footer, {
+		const footer = this.isTurnActivityRunning(this.state)
+			? { ...this.state.footer, liveState: undefined, liveStateDetail: undefined }
+			: this.state.footer;
+		this.footerContainer.addChild(new FooterComponent(footer, {
 			turnRunning: this.isTurnRunning(),
 			hasQueuedInput: this.hasQueuedInput(),
 		}));
@@ -2623,7 +2785,13 @@ export class MycliShellRuntime {
 
 	private async handleInterrupt(): Promise<void> {
 		if (this.selectorActive) {
-			if (this.approvalSurfaceDecisionId !== null || this.clarificationSurfaceRequestId !== null) {
+			if (this.clarificationSurfaceRequestId !== null) {
+				await this.options.onInterrupt?.({
+					rollbackUserInput: this.lastSubmittedInputEligible,
+				});
+				return;
+			}
+			if (this.approvalSurfaceDecisionId !== null) {
 				return;
 			}
 			this.restoreEditor();
@@ -2748,6 +2916,17 @@ export class MycliShellRuntime {
 			return;
 		}
 		await this.options.onSubmit?.(command);
+	}
+
+	private cycleCollaborationMode(): void {
+		const nextMode = this.state.footer.collaborationMode === "plan" ? "default" : "plan";
+		if (!this.options.onCommandSubmit) return;
+		this.runAsyncAction(
+			async () => {
+				await this.options.onCommandSubmit!(`/mode ${nextMode}`);
+			},
+			"Mode switch failed",
+		);
 	}
 
 	private toggleToolDetails(): void {
@@ -3113,6 +3292,15 @@ function defaultPermissionState(): MycliShellPermissionState {
 			},
 		],
 	};
+}
+
+function transcriptBlocksWerePrepended(
+	previous: readonly MycliShellTranscriptBlock[],
+	next: readonly MycliShellTranscriptBlock[],
+): boolean {
+	if (previous.length === 0 || next.length <= previous.length) return false;
+	const offset = next.length - previous.length;
+	return previous.every((block, index) => next[offset + index]?.id === block.id);
 }
 
 function permissionStateWithActive(

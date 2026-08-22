@@ -7,6 +7,7 @@ import {
 	RuntimeStateProjector,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
+	runtimeStateFromOlderTranscriptPage,
 	runtimeStateAfterSessionResume,
 	runtimeStateAfterCommandResult,
 	runtimeStateWithSettings,
@@ -67,6 +68,10 @@ import {
 	verifyGatewayManifest,
 } from "./adapters/gateway-handshake.ts";
 import { classifyRuntimeTranscriptUpdate } from "./adapters/transcript-update.ts";
+import {
+	planImplementationMessage,
+	type PlanImplementationAction,
+} from "./plan-implementation.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -106,6 +111,7 @@ let interruptRequested = false;
 let resubmitPendingSteersAfterInterrupt = false;
 let extensionRefreshScheduled = false;
 const runtimeStateProjector = new RuntimeStateProjector();
+const TRANSCRIPT_PAGE_LIMIT = 500;
 
 function currentShellState(transcriptUpdate: "unchanged" | "tail" | "replace" = "unchanged"): MycliShellState {
 	return runtimeStateProjector.project(runtimeState, sessions, transcriptUpdate);
@@ -129,6 +135,7 @@ function setRuntimeState(
 		} else {
 			runtime.setState(shellState, {
 				transcriptUpdate,
+				eventType: options.eventType,
 			});
 		}
 	}
@@ -273,6 +280,7 @@ async function bootstrap(): Promise<void> {
 	const transcriptPayload = await send("transcript.load", {
 		session_id: runtimeState.sessionId ?? undefined,
 		before: null,
+		limit: TRANSCRIPT_PAGE_LIMIT,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
 	const commandPayload = await send("command.list", { surface: commandSurface });
@@ -324,6 +332,7 @@ async function submitTurn(
 	message: string,
 	attachments: MycliShellSubmitAttachments = {},
 	clientUserMessageId = nextClientTurnId("user"),
+	options: { collaborationMode?: "default" | "plan" } = {},
 ): Promise<void> {
 	const text = message.trim();
 	if (!text) {
@@ -376,12 +385,13 @@ async function submitTurn(
 	try {
 		const result = await send(
 			"turn.submit",
-			{
-				message: text,
-				client_turn_id: clientTurnId,
-				client_user_message_id: clientUserMessageId,
-				...(attachments?.localImages?.length ? { local_images: attachments.localImages } : {}),
-			},
+				{
+					message: text,
+					client_turn_id: clientTurnId,
+					client_user_message_id: clientUserMessageId,
+					...(options.collaborationMode ? { collaboration_mode: options.collaborationMode } : {}),
+					...(attachments?.localImages?.length ? { local_images: attachments.localImages } : {}),
+				},
 			{ recordErrors: false },
 		);
 		const turnId = typeof result.turn_id === "string" ? result.turn_id : null;
@@ -415,6 +425,27 @@ async function submitTurn(
 		backendTurnBusy = false;
 		throw error;
 	}
+}
+
+async function startPlanImplementation(
+	action: PlanImplementationAction,
+	planMarkdown: string,
+): Promise<void> {
+	if (action === "clear_context") {
+		const created = await send("session.new", {}, { recordErrors: false });
+		const sessionId = stringField(created.session_id);
+		if (!sessionId) throw new Error("The fresh session did not return a session ID.");
+		setRuntimeState(
+			runtimeStateAfterSessionResume(runtimeState, sessionId, sessionId, created),
+			{ replaceSessionTranscript: true },
+		);
+	}
+	await submitTurn(
+		planImplementationMessage(action, planMarkdown),
+		{},
+		nextClientTurnId("user"),
+		{ collaborationMode: "default" },
+	);
 }
 
 function nextClientTurnId(prefix: string): string {
@@ -570,14 +601,21 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 }
 
 async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<boolean> {
-	if (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId) {
+	const pendingClarification = runtimeState.pendingClarification;
+	const pendingClarificationTurnId = pendingClarification
+		? stringField(pendingClarification.turn_id) ?? stringField(pendingClarification.turnId)
+		: null;
+	const clarificationPending = pendingClarification !== null && pendingClarificationTurnId !== null;
+	if (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId || clarificationPending) {
 		interruptRequested = true;
 		resubmitPendingSteersAfterInterrupt = runtimeState.localPendingSteers.length > 0;
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "turn.interrupted", {
 				requested: true,
 				message: "Interrupt requested",
-				...(runtimeState.activeTurnId ? { turn_id: runtimeState.activeTurnId } : {}),
+				...(runtimeState.activeTurnId
+					? { turn_id: runtimeState.activeTurnId }
+					: pendingClarificationTurnId ? { turn_id: pendingClarificationTurnId } : {}),
 			}),
 		);
 	}
@@ -594,15 +632,17 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 		}
 	};
 	try {
-		let expectedTurnId = runtimeState.activeTurnId;
+		let expectedTurnId = runtimeState.activeTurnId ?? pendingClarificationTurnId;
 		if (!expectedTurnId) {
 			const status = await send("status.inspect", {}, { recordErrors: false });
 			backendTurnBusy = status.turn_running === true;
 			setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", status));
-			expectedTurnId = stringField(status.turn_id) ?? null;
+			expectedTurnId = stringField(status.turn_id) ?? pendingClarificationTurnId;
 			if (!backendTurnBusy || !expectedTurnId) {
-				clearOptimisticInterrupt();
-				return false;
+				if (!clarificationPending || !expectedTurnId) {
+					clearOptimisticInterrupt();
+					return false;
+				}
 			}
 		}
 		for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -645,12 +685,20 @@ async function respondApproval(
 	choice: string,
 	approval?: MycliShellPendingApproval,
 ): Promise<void> {
-	await send("approval.respond", {
-		decision_id: decisionId,
-		choice,
-		...(approval?.sessionId ? { session_id: approval.sessionId } : {}),
-		...(approval?.generation ? { generation: approval.generation } : {}),
-	});
+	try {
+		await send("approval.respond", {
+			decision_id: decisionId,
+			choice,
+			...(approval?.sessionId ? { session_id: approval.sessionId } : {}),
+			...(approval?.generation ? { generation: approval.generation } : {}),
+		}, { recordErrors: false });
+	} catch (error) {
+		if (!(error instanceof GatewayRequestError) || error.code !== "approval_not_pending") {
+			throw error;
+		}
+		if (await reconcileInteractiveResponse("approval")) return;
+		throw error;
+	}
 }
 
 async function respondClarification(
@@ -658,12 +706,86 @@ async function respondClarification(
 	response: string,
 	clarification?: MycliShellPendingClarification,
 ): Promise<void> {
-	await send("clarify.respond", {
-		request_id: requestId,
-		response,
-		...(clarification?.sessionId ? { session_id: clarification.sessionId } : {}),
-		...(clarification?.generation ? { generation: clarification.generation } : {}),
+	try {
+		await send("clarify.respond", {
+			request_id: requestId,
+			response,
+			...(clarification?.sessionId ? { session_id: clarification.sessionId } : {}),
+			...(clarification?.generation ? { generation: clarification.generation } : {}),
+		}, { recordErrors: false });
+	} catch (error) {
+		if (!(error instanceof GatewayRequestError) || error.code !== "clarification_not_pending") {
+			throw error;
+		}
+		if (await reconcileInteractiveResponse("clarification")) return;
+		throw error;
+	}
+}
+
+async function reconcileInteractiveResponse(
+	kind: "approval" | "clarification",
+): Promise<boolean> {
+	const pending = kind === "approval"
+		? runtimeState.pendingApproval
+		: runtimeState.pendingClarification;
+	if (!pending) return true;
+
+	let status: Record<string, unknown>;
+	try {
+		status = await send("status.inspect", {}, { recordErrors: false });
+	} catch {
+		return false;
+	}
+	if (!interactiveRequestBelongsToStatus(pending, status)) return false;
+
+	setRuntimeState(reduceRuntimeEvent(runtimeState, "status.changed", status), {
+		eventType: "status.changed",
 	});
+	const hasPending = kind === "approval"
+		? status.pending_decision === true
+		: status.suspended_turn === true;
+	if (status.pending_decision !== false && status.suspended_turn !== false) {
+		if (!hasPending) return false;
+	} else if (!hasPending) {
+		return true;
+	}
+
+	const responseMethod = kind === "approval" ? "approval.respond" : "clarify.respond";
+	const responseParams = kind === "approval"
+		? {
+			decision_id: stringField(pending.decision_id) ?? stringField(pending.decisionId),
+		}
+		: {
+			request_id: stringField(pending.request_id) ?? stringField(pending.requestId),
+			response: "",
+		};
+	setRuntimeState(reduceRuntimeEvent(runtimeState, responseMethod, responseParams), {
+		eventType: responseMethod,
+	});
+	try {
+		await send("session.bootstrap", {
+			protocol_version: GATEWAY_PROTOCOL_VERSION,
+			client: { name: "mycli-shell-tui", version: "0.1.0" },
+		}, { recordErrors: false });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function interactiveRequestBelongsToStatus(
+	pending: Record<string, unknown>,
+	status: Record<string, unknown>,
+): boolean {
+	const pendingSessionId =
+		stringField(pending.session_id) ??
+		stringField(pending.sessionId) ??
+		stringField(pending.child_session_id) ??
+		stringField(pending.childSessionId);
+	const statusSessionId = stringField(status.session_id) ?? stringField(status.sessionId);
+	if (pendingSessionId && statusSessionId) return pendingSessionId === statusSessionId;
+	if (pendingSessionId && runtimeState.sessionId) return pendingSessionId === runtimeState.sessionId;
+	return true;
 }
 
 async function saveApiKey(providerId: string, apiKey: string): Promise<{ message?: string }> {
@@ -701,8 +823,12 @@ async function runCommand(command: string): Promise<void> {
 		runtimeState,
 		command,
 		result,
-		async (sessionId) =>
-			await send("transcript.load", { session_id: sessionId, before: null }),
+			async (sessionId) =>
+				await send("transcript.load", {
+					session_id: sessionId,
+					before: null,
+					limit: TRANSCRIPT_PAGE_LIMIT,
+				}),
 		sourceSessionId,
 	);
 	const replacedSession =
@@ -729,8 +855,23 @@ async function selectSession(sessionId: string): Promise<void> {
 	const transcriptPayload = await send("transcript.load", {
 		session_id: String(result.session_id ?? sessionId),
 		before: null,
+		limit: TRANSCRIPT_PAGE_LIMIT,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
+}
+
+async function loadOlderTranscriptHistory(before: string): Promise<void> {
+	const sessionId = runtimeState.sessionId;
+	if (!sessionId || runtimeState.transcriptNextBefore !== before) return;
+	const payload = await send("transcript.load", {
+		session_id: sessionId,
+		before,
+		limit: TRANSCRIPT_PAGE_LIMIT,
+	}, { recordErrors: false });
+	if (runtimeState.sessionId !== sessionId || runtimeState.transcriptNextBefore !== before) return;
+	setRuntimeState(runtimeStateFromOlderTranscriptPage(runtimeState, payload), {
+		eventType: "transcript.history.prepended",
+	});
 }
 
 async function loadSessionTree() {
@@ -861,6 +1002,7 @@ async function main(): Promise<void> {
 			: () => process.kill(0, "SIGTSTP"),
 		onApprovalRespond: respondApproval,
 		onClarificationRespond: respondClarification,
+		onPlanImplementation: startPlanImplementation,
 		onApiKeyLogin: saveApiKey,
 		onModelSelect: async (model) => {
 			if (!model.protocol || !model.baseUrl) {
@@ -883,6 +1025,7 @@ async function main(): Promise<void> {
 		onSettingsChange: saveSettings,
 		onResourceLoad: loadResources,
 		onTranscriptOutputLoad: (request) => loadFullShellOutput(send, request),
+		onTranscriptHistoryLoad: loadOlderTranscriptHistory,
 		commands: slashCommands,
 		commandNames: slashCommandNames,
 	});

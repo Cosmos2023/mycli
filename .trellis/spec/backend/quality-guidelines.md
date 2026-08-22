@@ -48,9 +48,8 @@ Questions to answer:
 
 #### 2. Signatures
 - CLI command: `mycli doctor`
-- Service API:
-  `DoctorService(workspace_root: Path, home_dir: Path, env: Mapping[str, str], ...).run() -> DoctorReport`
-- Rendering API: `render_doctor_report(report: DoctorReport) -> tuple[str, ...]`
+- Service API: `runDoctor(options, signal) -> Promise<DoctorReport>`.
+- Rendering API: `doctorResponseFromReport(report) -> DoctorManagementResponse`.
 - Result fields: `DoctorCheck.name`, `DoctorCheck.status`,
   `DoctorCheck.message`, optional `DoctorCheck.detail`; status values are
   `ok`, `warning`, and `failed`.
@@ -82,6 +81,11 @@ Questions to answer:
   invalid JSON, non-object JSON, or malformed nested approval/clarification
   objects -> `sessions_db=failed` with bounded `session_id:state_key`
   references. Doctor must not print raw `payload_json`.
+- Doctor recovery validators must follow the generated runtime-state nullability
+  contract. An optional nested recovery object declared as `T | null` treats
+  explicit `null` the same as an absent field; only a non-null, non-object value
+  is malformed. This keeps read-only diagnostics aligned with payloads accepted
+  and persisted by the runtime.
 - Sessions DB contains a `pending_decision` but no valid `suspended_turn`,
   waiting-approval `turn_record` with user message, or waiting-approval
   rollout plus matching user history item -> `sessions_db=failed` with bounded
@@ -241,7 +245,7 @@ Questions to answer:
   and `model-raw/` exist; `errors.log` is created on first warning/error.
 - FileHistory `index.json` exists but cannot parse -> failed.
 - MCP config load fails -> failed; do not start servers.
-- Node/npm or Python TUI unavailable -> warning unless a stricter command is
+- Node/npm or TUI unavailable -> warning unless a stricter command is
   explicitly introduced later.
 - Node TUI source exists but `tui/mycli-shell/node_modules/.bin/tsx` is missing ->
   `node_tui_dependencies=warning` with remediation text
@@ -251,19 +255,15 @@ Questions to answer:
   remediation `npm --prefix tui/mycli-shell ci`.
 - Node TUI source is missing -> report the existing `node_tui` warning and skip
   dependency-marker checks, because missing source is the actionable root cause.
-- Runtime gateway discovery contract mismatch between `extension.manifest` and
-  the advertised Python gateway RPC/event stream sets -> `runtime_contract=failed`
-  with bounded missing/extra names. Doctor must not run a turn, call a model, or
-  start Node to validate this contract.
+- Invalid canonical `gatewayContractCatalog` protocol version, duplicate method names, or missing
+  required RPC/event names -> `runtime_contract=failed`. Doctor must not run a turn or call a model
+  to validate this contract.
 - Runtime event payload schemas count as declared object schemas when they use either direct
   `type: object` or a non-empty top-level `allOf` composition. A missing/non-object payload schema,
   an empty `allOf`, or a missing schema `name` remains absent from the discovered set and must make
   a required event fail `runtime_contract` validation.
-- Node protocol contract mismatch between TypeScript
-  `GATEWAY_EVENT_PAYLOAD_CONTRACTS` and Python manifest
-  `event_streams[].payload_schema` required fields, property names, or enum
-  values -> Node protocol tests fail. Keep this as a test-time cross-language
-  check, not a hot-path validator.
+- Contract mismatch between canonical JSON Schema and generated TypeScript declarations ->
+  `contracts:check` or protocol tests fail; keep drift checking out of the runtime hot path.
 - Hook config diagnostics:
   - Missing repo/user hook config -> `hooks=ok` when built-in hooks are present.
   - Malformed repo/user `.mycli/hooks.json` -> `hooks=failed` with bounded
@@ -277,7 +277,7 @@ Questions to answer:
     command output, inherited environment values, or secrets.
 
 #### 5. Good/Base/Bad Cases
-- Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
+- Good: `npm run mycli -- doctor` reports local health, redacts API keys, and exits
   `0` with only warnings.
 - Good: A fresh machine without `~/.mycli/traces` or `~/.mycli/artifacts`
   reports `storage_layout=ok` without creating those directories.
@@ -294,6 +294,8 @@ Questions to answer:
 - Unit test malformed critical `session_state` recovery payloads, including
   invalid JSON, non-object JSON, and nested suspended-turn approval or
   clarification payloads that cannot be recovered.
+- Unit test nullable nested recovery fields with object, explicit `null`, and
+  invalid scalar cases; object and `null` must pass while the scalar fails.
 - Unit test failed MCP or storage parse/open behavior.
 - Unit test storage layout reserved directories missing, present, path-conflict,
   and non-writable cases.
@@ -362,27 +364,36 @@ Questions to answer:
 - Unit test explicit vacuum maintenance for before/after storage metrics,
   session preservation, cleanup-path separation, and CLI/gateway routing through
   `/session-maintenance --apply-vacuum`.
-- Node protocol test for event method plus required-field, property-name, and
-  enum-value parity with Python gateway contract/manifest.
+- Node protocol tests cover event methods plus required fields, property names, and enum values
+  against canonical schemas.
 - Unit test runtime-contract discovery against both direct object payload schemas and generated
   non-empty `allOf` payload schemas; malformed, unnamed, and empty-composition schemas stay absent.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
-- Full lint, type-check, and pytest must pass because doctor touches CLI
+- Full Node lint, type-check, tests, and contracts check must pass because doctor touches CLI
   startup paths.
 
 #### 7. Wrong vs Correct
 
 Wrong:
-```python
-service = build_turn_service(args, cwd=cwd, home=home, env=env)
-service.handle_user_turn("diagnose my setup")
+```typescript
+const runtime = await startNodeBackend(options);
+await runtime.submitTurn("diagnose my setup");
 ```
 
 Correct:
-```python
-report = DoctorService(workspace_root=cwd, home_dir=home, env=env).run()
-for line in render_doctor_report(report):
-    output_func(line)
+```typescript
+const report = await runDoctor(options, signal);
+const response = doctorResponseFromReport(report);
+```
+
+Nullable nested recovery validation:
+
+```typescript
+// Wrong: rejects a schema-valid explicit null.
+if (value !== undefined && !isRecord(value)) invalid += 1;
+
+// Correct: null and undefined both represent no pending nested recovery.
+if (value !== undefined && value !== null && !isRecord(value)) invalid += 1;
 ```
 
 ### Scenario: Cache-aware Runtime Diagnostics
@@ -501,13 +512,13 @@ for line in render_doctor_report(report):
 #### 7. Wrong vs Correct
 
 Wrong:
-```python
-contract.base_instructions += f"\nLatest diagnostics: {diagnostics}"
+```typescript
+contract.baseInstructions += `\nLatest diagnostics: ${diagnostics}`;
 ```
 
 Correct:
-```python
-raw_payload = {**result.raw_payload, "write_diagnostics": diagnostics}
+```typescript
+const rawPayload = { ...result.rawPayload, writeDiagnostics: diagnostics };
 ```
 
 Keep runtime diagnostics appended after execution and outside stable request-shape inputs.
@@ -559,16 +570,15 @@ Keep runtime diagnostics appended after execution and outside stable request-sha
 #### 7. Wrong vs Correct
 
 Wrong:
-```python
-path = home_dir / ".mycli" / "sessions" / f"{session_id}-trace.jsonl"
-handle.write(json.dumps(event.to_dict()))
+```typescript
+const path = join(homeDir, ".mycli", "sessions", `${sessionId}-trace.jsonl`);
+await appendFile(path, JSON.stringify(event));
 ```
 
 Correct:
-```python
-layout = MycliStorageLayout.from_home_dir(home_dir)
-path = layout.trace_path(session_id)
-handle.write(json.dumps(sanitized_trace_payload))
+```typescript
+const path = storageLayout.tracePath(sessionId);
+await appendFile(path, JSON.stringify(sanitizedTracePayload));
 ```
 
 Keep storage layout centralized and treat trace files as bounded diagnostics, not as a second full transcript store.

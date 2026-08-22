@@ -114,6 +114,16 @@ function gatewayHarness(options: {
 	control?: boolean;
 	maxPromptTokens?: number;
 	turnRollouts?: readonly Readonly<Record<string, unknown>>[];
+	transcript?: readonly TranscriptItem[];
+	loadTranscriptPage?: (
+		sessionId: string,
+		input: { readonly before?: string; readonly limit?: number },
+	) => {
+		readonly hasCanonicalHistory: boolean;
+		readonly items: readonly TranscriptItem[];
+		readonly nextBefore: string | null;
+	};
+	maintenance?: (action: string, workspaceRoot: string) => Record<string, unknown>;
 	agentInteractiveRequests?: AgentInteractiveRequestGateway;
 	cooperativeInterrupt?: boolean;
 	loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
@@ -159,7 +169,10 @@ function gatewayHarness(options: {
 		readonly trust: "trusted" | "untrusted" | "unknown";
 		readonly permission: "read-only" | "workspace" | "full-access";
 	}> = [];
-	const runtimeContexts: Array<{ readonly collaborationMode: string }> = [];
+	const runtimeContexts: Array<{
+		readonly collaborationMode: string;
+		readonly turnId?: string;
+	}> = [];
 	let commandAllowances: string[][] = [];
 	const taskInterruptions: string[] = [];
 	const traceAppends: Array<{ sessionId: string; event: Record<string, unknown> }> = [];
@@ -354,6 +367,8 @@ function gatewayHarness(options: {
 				agentInteractiveRequests: options.agentInteractiveRequests,
 			} : {}),
 			loadConversation: () => options.conversation ?? [],
+			...(options.transcript ? { loadTranscript: () => options.transcript! } : {}),
+			...(options.loadTranscriptPage ? { loadTranscriptPage: options.loadTranscriptPage } : {}),
 		...(options.loadShellOutput ? { loadShellOutput: options.loadShellOutput } : {}),
 		loadTurnRollouts: () => options.turnRollouts ?? [],
 		sessionCommands: {
@@ -376,6 +391,7 @@ function gatewayHarness(options: {
 			},
 			maintenance: (action: string, workspaceRoot: string) => {
 				sessionCommandCalls.push({ kind: "maintenance", action, workspaceRoot });
+				if (options.maintenance) return options.maintenance(action, workspaceRoot);
 				return action === "report"
 					? { dryRun: true, workspaceSessionCount: 2, emptySessionCount: 1 }
 					: { dryRun: false, action, affected: 1 };
@@ -562,6 +578,196 @@ test("node gateway boots the real TUI startup sequence", async () => {
 				tool_names: ["Read"],
 			});
 		}
+	}
+	await harness.gateway.close();
+});
+
+test("transcript pagination reaches complete filtered history beyond the snapshot bound", async () => {
+	const transcript = Array.from({ length: 800 }, (_value, index): TranscriptItem => ({
+		id: `message-${index}`,
+		type: "assistant_message",
+		text: `message ${index}`,
+	}));
+	const harness = gatewayHarness({ transcript });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const latest = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: null,
+		limit: 500,
+	});
+	assert.ok("result" in latest);
+	if (!("result" in latest)) return;
+	assert.equal(Array.isArray(latest.result.items) ? latest.result.items.length : 0, 500);
+	assert.equal((latest.result.items as readonly Record<string, unknown>[])[0]?.id, "message-300");
+	assert.equal(latest.result.next_before, "message-300");
+
+	const earlier = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: latest.result.next_before,
+		limit: 500,
+	});
+	assert.ok("result" in earlier);
+	if ("result" in earlier) {
+		assert.equal(Array.isArray(earlier.result.items) ? earlier.result.items.length : 0, 300);
+		assert.equal((earlier.result.items as readonly Record<string, unknown>[])[0]?.id, "message-0");
+		assert.equal(earlier.result.next_before, null);
+	}
+	await harness.gateway.close();
+});
+
+test("transcript load restores proposed plans without emitting a live proposal event", async () => {
+	const harness = gatewayHarness({
+		transcript: [{
+			id: "plan-answer",
+			type: "assistant_message",
+			text: [
+				"Before",
+				"<proposed_plan>",
+				"# Plan",
+				"- Inspect",
+				"</proposed_plan>",
+				"After",
+			].join("\n"),
+		}],
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: null,
+		limit: 500,
+	});
+
+	assert.ok("result" in response);
+	if ("result" in response) {
+		const items = response.result.items as readonly Record<string, unknown>[];
+		assert.deepEqual(items.map((item) => ({
+			id: item.id,
+			type: item.type,
+			text: item.text,
+		})), [{
+			id: "plan-answer",
+			type: "assistant_final",
+			text: "Before\nAfter",
+		}, {
+			id: "plan-answer:proposed-plan",
+			type: "proposed_plan",
+			text: "# Plan\n- Inspect",
+		}]);
+	}
+	assert.equal(notifications(harness.messages, "plan.proposed").length, 0);
+	await harness.gateway.close();
+});
+
+test("transcript pagination routes opaque storage cursors and rejects invalid pages", async () => {
+	const calls: Array<{ readonly sessionId: string; readonly before?: string; readonly limit?: number }> = [];
+	const harness = gatewayHarness({
+		loadTranscriptPage: (sessionId, input) => {
+			calls.push({ sessionId, ...input });
+			if (input.before === "v1.older") {
+				return {
+					hasCanonicalHistory: true,
+					items: [{ id: "old", type: "assistant_message", text: "old" }],
+					nextBefore: null,
+				};
+			}
+			if (input.before) throw new RangeError("invalid transcript cursor");
+			return {
+				hasCanonicalHistory: true,
+				items: [{ id: "new", type: "assistant_message", text: "new" }],
+				nextBefore: "v1.older",
+			};
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const latest = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: null,
+		limit: 123,
+	});
+	assert.ok("result" in latest);
+	if (!("result" in latest)) return;
+	assert.equal(latest.result.next_before, "v1.older");
+
+	const earlier = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: latest.result.next_before,
+		limit: 123,
+	});
+	assert.ok("result" in earlier);
+	assert.deepEqual(calls, [
+		{ sessionId: "session-node", limit: 123 },
+		{ sessionId: "session-node", before: "v1.older", limit: 123 },
+	]);
+
+	const invalid = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: "v1.invalid",
+		limit: 123,
+	});
+	assert.ok("error" in invalid);
+	if ("error" in invalid) assert.equal(invalid.error.code, "invalid_params");
+	await harness.gateway.close();
+});
+
+test("transcript first page falls back to legacy conversation without canonical history", async () => {
+	const harness = gatewayHarness({
+		conversation: [
+			{ role: "user", content: "legacy question" },
+			{ role: "assistant", content: "legacy answer" },
+		],
+		transcript: [
+			{ id: "legacy-user", type: "user_message", text: "legacy question" },
+			{ id: "legacy-assistant", type: "assistant_message", text: "legacy answer" },
+		],
+		loadTranscriptPage: () => ({
+			hasCanonicalHistory: false,
+			items: [],
+			nextBefore: null,
+		}),
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: null,
+		limit: 500,
+	});
+
+	assert.ok("result" in response);
+	if ("result" in response) {
+		assert.deepEqual(
+			(response.result.items as readonly Record<string, unknown>[]).map((item) => item.text),
+			["legacy question", "legacy answer"],
+		);
+		assert.equal(response.result.next_before, null);
+	}
+	await harness.gateway.close();
+});
+
+test("transcript load uses complete history for a writable inactive session", async () => {
+	const transcript = Array.from({ length: 800 }, (_value, index): TranscriptItem => ({
+		id: `message-${index}`,
+		type: "assistant_message",
+		text: `message ${index}`,
+	}));
+	const harness = gatewayHarness({ transcript, sessions: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("transcript.load", {
+		session_id: "target",
+		before: null,
+		limit: 500,
+	});
+
+	assert.ok("result" in response);
+	if ("result" in response) {
+		assert.equal(Array.isArray(response.result.items) ? response.result.items.length : 0, 500);
+		assert.equal((response.result.items as readonly Record<string, unknown>[])[0]?.id, "message-300");
+		assert.equal(response.result.next_before, "message-300");
+		assert.equal(response.result.read_only, false);
 	}
 	await harness.gateway.close();
 });
@@ -774,7 +980,10 @@ test("gateway owns permission selection and reconfigures runtime trust policy", 
 test("shell bootstrap and control RPCs stay scoped to the active owner", async () => {
 	const harness = gatewayHarness({ shell: true });
 	assert.ok(harness.shell);
-	harness.shell.snapshots.push(shellSnapshot({ ownerSessionId: "session-node" }));
+	harness.shell.snapshots.push(shellSnapshot({
+		ownerSessionId: "session-node",
+		description: "Run the test suite",
+	}));
 	harness.shell.snapshots.push(shellSnapshot({
 		ownerSessionId: "another-session",
 		shellId: "deadbeef",
@@ -783,11 +992,11 @@ test("shell bootstrap and control RPCs stay scoped to the active owner", async (
 	const initialized = await harness.send("initialize", { protocol_version: 1 });
 	assert.ok("result" in initialized);
 	assert.deepEqual("result" in initialized ? initialized.result.background_shells : [], [
-		assertedShellPayload("a1b2c3d4", 1),
+		{ ...assertedShellPayload("a1b2c3d4", 1), description: "Run the test suite" },
 	]);
 	const listed = await harness.send("shell.list");
 	assert.deepEqual("result" in listed ? listed.result.shells : [], [
-		assertedShellPayload("a1b2c3d4", 1),
+		{ ...assertedShellPayload("a1b2c3d4", 1), description: "Run the test suite" },
 	]);
 	const stopped = await harness.send("shell.stop", { shell_id: "a1b2c3d4" });
 	assert.equal("result" in stopped ? stopped.result.shell_id : null, "a1b2c3d4");
@@ -915,8 +1124,10 @@ test("commands marked unavailable during a turn fail before execution", async ()
 		client_user_message_id: "running-message",
 		local_images: [],
 	});
-	const response = await harness.send("command.run", { command: "/new", surface: "tui" });
-	assert.equal("error" in response ? response.error.code : null, "unavailable_during_turn");
+	for (const command of ["/new", "/session maintenance --apply-transcript-normalization"]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.equal("error" in response ? response.error.code : null, "unavailable_during_turn");
+	}
 	harness.releaseTurn();
 	await harness.gateway.close();
 });
@@ -993,6 +1204,78 @@ test("mode sandbox resume and quit slash commands mutate their owning runtime st
 	assert.equal("result" in status ? status.result.collaboration_mode : null, "plan");
 	const quit = await harness.send("command.run", { command: "/quit", surface: "cli" });
 	assert.equal("result" in quit ? quit.result.exit_requested : false, true);
+	await harness.gateway.close();
+});
+
+test("turn submission can atomically select Default mode for plan implementation", async () => {
+	const harness = gatewayHarness();
+	await harness.send("command.run", { command: "/mode plan", surface: "tui" });
+
+	const submitted = await harness.send("turn.submit", {
+		message: "Implement the plan.",
+		client_turn_id: "implement-turn",
+		client_user_message_id: "implement-message",
+		collaboration_mode: "default",
+		local_images: [],
+	});
+
+	assert.ok("result" in submitted, JSON.stringify(submitted));
+	assert.deepEqual(harness.runtimeContexts.slice(-2), [
+		{ collaborationMode: "default" },
+		{ collaborationMode: "default", turnId: "turn-node" },
+	]);
+	const status = await harness.send("status.get");
+	assert.equal("result" in status ? status.result.collaboration_mode : null, "default");
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("Plan-mode completion emits one stripped proposed plan after the final message", async () => {
+	const harness = gatewayHarness();
+	await harness.send("command.run", { command: "/mode plan", surface: "tui" });
+	await harness.send("turn.submit", {
+		message: "Plan the change",
+		client_turn_id: "plan-turn",
+		client_user_message_id: "plan-message",
+		local_images: [],
+	});
+	const assistantText = [
+		"Before",
+		"<proposed_plan>",
+		"# Plan",
+		"- Inspect",
+		"- Verify",
+		"</proposed_plan>",
+		"After",
+	].join("\n");
+	harness.emit({ type: "text_delta", text: "Before\n<pro" });
+	harness.emit({ type: "text_delta", text: "posed_plan>\n# Plan\n- Inspect\n" });
+	harness.emit({ type: "text_delta", text: "- Verify\n</proposed_" });
+	harness.emit({ type: "text_delta", text: "plan>\nAfter" });
+	harness.emit({ type: "message_complete", responseId: "plan-response" });
+	harness.emit({ type: "turn_completed", assistantText, usage: {} });
+	harness.releaseTurn();
+
+	const proposed = await waitFor(() => notification(harness.messages, "plan.proposed"));
+	const completed = notification(harness.messages, "turn.completed");
+	const finalMessage = notifications(harness.messages, "message.complete")
+		.find((message) => message.params.final === true);
+	assert.ok(completed);
+	assert.ok(finalMessage);
+	assert.equal(notifications(harness.messages, "plan.proposed").length, 1);
+	assert.equal(
+		notifications(harness.messages, "message.delta").map((message) => message.params.text).join(""),
+		"Before\nAfter",
+	);
+	assert.equal(completed.params.assistant_message, "Before\nAfter");
+	assert.equal(finalMessage.params.text, "Before\nAfter");
+	assert.equal(proposed.params.text, "# Plan\n- Inspect\n- Verify");
+	assert.ok(harness.messages.indexOf(finalMessage) < harness.messages.indexOf(proposed));
+	const releasedStatus = notifications(harness.messages, "status.changed")
+		.findLast((message) => message.params.turn_running === false);
+	assert.ok(releasedStatus);
+	assert.ok(harness.messages.indexOf(releasedStatus) < harness.messages.indexOf(proposed));
+
 	await harness.gateway.close();
 });
 
@@ -1087,6 +1370,52 @@ test("context stats prefer the last provider step over accumulated turn usage", 
 		: {};
 	assert.equal(contextWindow.used_tokens, 150);
 	assert.equal(contextWindow.source, "provider");
+	await harness.gateway.close();
+});
+
+test("active turns distinguish previous and live provider context usage", async () => {
+	const harness = gatewayHarness({
+		maxPromptTokens: 1_000,
+		turnRollouts: [{
+			continuation_state: {
+				last_token_usage: { input_tokens: 150, output_tokens: 10, total_tokens: 160 },
+			},
+		}],
+	});
+	await harness.send("turn.submit", {
+		message: "continue",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	await waitFor(() => harness.signal());
+
+	const previousStatus = await harness.send("status.get");
+	const previousContext = "result" in previousStatus
+		? previousStatus.result.context_window as Readonly<Record<string, unknown>>
+		: {};
+	assert.equal(previousContext.used_tokens, 150);
+	assert.equal(previousContext.source, "provider_previous");
+
+	harness.emit({
+		type: "provider_usage",
+		usage: { input_tokens: 620, output_tokens: 30, total_tokens: 650 },
+	});
+	await waitFor(() => notifications(harness.messages, "status.changed").find((message) => {
+		const context = message.params.context_window;
+		return typeof context === "object"
+			&& context !== null
+			&& !Array.isArray(context)
+			&& (context as Readonly<Record<string, unknown>>).source === "provider_live";
+	}));
+	const liveStatus = await harness.send("status.get");
+	const liveContext = "result" in liveStatus
+		? liveStatus.result.context_window as Readonly<Record<string, unknown>>
+		: {};
+	assert.equal(liveContext.used_tokens, 620);
+	assert.equal(liveContext.source, "provider_live");
+
+	harness.releaseTurn();
 	await harness.gateway.close();
 });
 
@@ -1223,16 +1552,58 @@ test("fork search and maintenance slash commands use Node session storage", asyn
 	for (const [command, action, kind] of [
 		["/session maintenance", "report", "list"],
 		["/session maintenance --apply-empty", "empty", "notice"],
+		["/session maintenance --apply-payloads", "payloads", "notice"],
 		["/session maintenance --apply-orphans", "orphans", "notice"],
 		["/session maintenance --apply-vacuum", "vacuum", "notice"],
+		["/session maintenance --apply-transcript-normalization", "transcript_normalization", "notice"],
+		["/session maintenance --apply-content-blobs", "content_blobs", "notice"],
+		["/session maintenance --apply-content-blob-gc", "content_blob_gc", "notice"],
 	] as const) {
 		const response = await harness.send("command.run", { command, surface: "tui" });
 		assert.equal("result" in response
 			? (response.result.display as { kind?: unknown }).kind
 			: null, kind);
 		assert.ok(harness.sessionCommandCalls.some((call) => call.action === action));
+		if ((action === "transcript_normalization" || action === "content_blobs"
+			|| action === "content_blob_gc") && "result" in response) {
+			assert.equal(response.result.action, action);
+		}
 	}
 	await harness.gateway.close();
+});
+
+test("transcript normalization closes only after its marked response is written", async () => {
+	const harness = gatewayHarness({
+		maintenance: (action) => action === "transcript_normalization"
+			? {
+				status: "normalized",
+				phase: "cutover",
+				backend_restart_required: true,
+			}
+			: {
+				status: "complete",
+				backend_restart_required: true,
+			},
+	});
+
+	const unrelated = await harness.send("command.run", {
+		command: "/session maintenance --apply-empty",
+		surface: "tui",
+	});
+	assert.ok("result" in unrelated);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(harness.closeCalls(), 0);
+
+	const cutover = await harness.send("command.run", {
+		command: "/session maintenance --apply-transcript-normalization",
+		surface: "tui",
+	});
+	assert.ok("result" in cutover);
+	if ("result" in cutover) {
+		assert.equal(cutover.result.backend_restart_required, true);
+	}
+	await harness.gateway.completion;
+	assert.equal(harness.closeCalls(), 1);
 });
 
 test("tools subactions and trace commands return filtered bounded displays", async () => {
@@ -1444,12 +1815,15 @@ test("shell lifecycle filters stale sessions and publishes the active generation
 	harness.shell.publish(shellLifecycle({
 		ownerSessionId: "session-node",
 		kind: "shell.output",
+		description: "Read the source output",
 		outputDelta: "source",
 		nextCursor: 6,
 	}));
 	const source = await waitFor(() => notification(harness.messages, "shell.output"));
 	assert.equal(source.params.session_id, "session-node");
 	assert.equal(source.params.generation, 1);
+	assert.equal(source.params.description, "Read the source output");
+	parseGatewayEvent(source);
 
 	harness.shell.snapshots.push(shellSnapshot({
 		ownerSessionId: "target",
@@ -2493,6 +2867,89 @@ test("turn submission responds immediately and emits validated direct events bef
 	await harness.gateway.close();
 });
 
+test("gateway projects live file approval previews to the canonical snake-case payload", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "write notes",
+		client_turn_id: "client-write",
+		client_user_message_id: "client-write-message",
+	});
+	harness.emit({
+		type: "file_mutation_started",
+		clientTurnId: "client-write",
+		turnId: "turn-node",
+		callId: "call-write",
+		toolName: "Write",
+		preview: "Write notes.txt",
+		contentPreview: "first\nsecond\n",
+		contentLineCount: 2,
+		contentChars: 13,
+		contentTruncated: false,
+		fileChanges: [{
+			version: 1,
+			kind: "add",
+			path: "notes.txt",
+			diff: "--- notes.txt:before\n+++ notes.txt:after\n@@ -0,0 +1,2 @@\n+first\n+second\n",
+			addedLines: 2,
+			removedLines: 0,
+			truncated: false,
+			omittedChars: 0,
+		}],
+	});
+	const proposal = await waitFor(() => notifications(harness.messages, "item.started")
+		.find((message) => message.params.item.type === "file_change"));
+	assert.deepEqual(proposal.params.item, {
+		id: "call-write",
+		type: "file_change",
+		call_id: "call-write",
+		name: "Write",
+		preview: "Write notes.txt",
+		content_preview: "first\nsecond\n",
+		content_line_count: 2,
+		content_chars: 13,
+		content_truncated: false,
+		file_changes: [{
+			version: 1,
+			kind: "add",
+			path: "notes.txt",
+			diff: "--- notes.txt:before\n+++ notes.txt:after\n@@ -0,0 +1,2 @@\n+first\n+second\n",
+			added_lines: 2,
+			removed_lines: 0,
+			truncated: false,
+			omitted_chars: 0,
+		}],
+	});
+	parseGatewayEvent(proposal);
+	harness.emit({
+		type: "approval_requested",
+		clientTurnId: "client-write",
+		turnId: "turn-node",
+		decisionId: "call-write",
+		callId: "call-write",
+		toolName: "Write",
+		preview: "Write notes.txt",
+		reason: "A workspace file will change.",
+		options: ["approve_once", "reject"],
+		contentPreview: "first\nsecond\n",
+		contentLineCount: 2,
+		contentChars: 13,
+		contentTruncated: false,
+	});
+
+	const request = await waitFor(() => notification(harness.messages, "approval.request"));
+	assert.equal(request.params.content_preview, "first\nsecond\n");
+	assert.equal(request.params.content_line_count, 2);
+	assert.equal(request.params.content_chars, 13);
+	assert.equal(request.params.content_truncated, false);
+	assert.equal("contentPreview" in request.params, false);
+	assert.ok(harness.messages.indexOf(proposal) < harness.messages.indexOf(request));
+	parseGatewayEvent(request);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
 test("projects bounded tool and mutation lifecycle events without sensitive fields", async () => {
 	const harness = gatewayHarness();
 	const fileContents = "private file contents";
@@ -2673,14 +3130,14 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	harness.emit({
 		type: "compaction_started",
 		clientTurnId: "client-turn",
-		source: "pre_turn",
+		source: "mid_turn",
 		beforeTokens: 95_000,
 		maxTokens: 100_000,
 	});
 	harness.emit({
 		type: "compaction_completed",
 		clientTurnId: "client-turn",
-		source: "pre_turn",
+		source: "mid_turn",
 		status: "compressed",
 		beforeTokens: 95_000,
 		afterTokens: 12_000,
@@ -2700,13 +3157,13 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	]);
 	assert.deepEqual("method" in direct[0]! ? direct[0].params : {}, {
 		client_turn_id: "client-turn",
-		source: "pre_turn",
+		source: "mid_turn",
 		before_tokens: 95_000,
 		max_tokens: 100_000,
 	});
 	assert.deepEqual("method" in direct[1]! ? direct[1].params : {}, {
 		client_turn_id: "client-turn",
-		source: "pre_turn",
+		source: "mid_turn",
 		status: "compressed",
 		before_tokens: 95_000,
 		after_tokens: 12_000,
@@ -2714,6 +3171,35 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 		duration_s: 0.25,
 	});
 	for (const message of direct) parseGatewayEvent(message);
+	const compactedStatus = await harness.send("status.get");
+	const compactedContext = "result" in compactedStatus
+		? compactedStatus.result.context_window as Readonly<Record<string, unknown>>
+		: {};
+	assert.equal(compactedContext.used_tokens, 12_000);
+	assert.equal(compactedContext.source, "runtime_estimate");
+
+	harness.emit({
+		type: "compaction_completed",
+		clientTurnId: "client-turn",
+		source: "context_overflow",
+		status: "failed",
+		beforeTokens: 96_000,
+		afterTokens: 96_000,
+		maxTokens: 100_000,
+		durationSeconds: 3,
+	});
+	const failed = await waitFor(() => notifications(harness.messages, "compaction.completed")
+		.find((message) => message.params.status === "failed"));
+	parseGatewayEvent(failed);
+	assert.deepEqual(failed.params, {
+		client_turn_id: "client-turn",
+		source: "context_overflow",
+		status: "failed",
+		before_tokens: 96_000,
+		after_tokens: 96_000,
+		max_tokens: 100_000,
+		duration_s: 3,
+	});
 	harness.releaseTurn();
 	await harness.gateway.close();
 });
@@ -2929,6 +3415,25 @@ test("turn interrupt rejection returns an authoritative idle status", async () =
 	assert.equal("result" in response && response.result.requested, false);
 	assert.equal("result" in response && response.result.turn_running, false);
 	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("turn interrupt cancels a pending clarification continuation", async () => {
+	const harness = gatewayHarness({
+		sessions: { initialPendingClarification: true },
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const interrupted = await harness.send("turn.interrupt", {
+		turn_id: "turn-session-node",
+	});
+
+	assert.equal("result" in interrupted && interrupted.result.accepted, true);
+	assert.equal("result" in interrupted && interrupted.result.requested, true);
+	assert.equal(harness.forcedInterrupts(), 1);
+	assert.equal(harness.sessionCoordinator?.snapshot().pendingClarification, undefined);
+	assert.equal(notification(harness.messages, "turn.interrupted")?.params.requested, false);
+	assert.equal(notification(harness.messages, "status.changed")?.params.pending_clarification, false);
 	await harness.gateway.close();
 });
 

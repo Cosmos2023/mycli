@@ -120,7 +120,7 @@ export class FooterComponent implements Component {
 	private actionStatusRow(width: number): string {
 		const actions = this.actionSegments();
 		const statuses = this.statusSegments();
-		const dropOrder = ["edit", "commands", "task", "reasoning", "model", "context", "follow-up"];
+		const dropOrder = ["mode-cycle", "edit", "commands", "task", "reasoning", "model", "context", "follow-up"];
 
 		for (const id of dropOrder) {
 			if (this.segmentsFit(actions, statuses, width)) break;
@@ -158,6 +158,9 @@ export class FooterComponent implements Component {
 		}
 		if (this.data.collaborationMode === "plan") {
 			segments.push({ id: "mode", text: theme.fg("accent", "plan"), optional: false });
+			if (!this.interaction.turnRunning && !this.interaction.hasQueuedInput) {
+				segments.push({ id: "mode-cycle", text: rawKeyHint("shift+tab", "switch mode"), optional: true });
+			}
 		}
 		if ((this.data.backgroundShellCount ?? 0) > 0) {
 			const count = this.data.backgroundShellCount ?? 0;
@@ -182,7 +185,9 @@ export class FooterComponent implements Component {
 			const percent = Number.isInteger(this.data.contextPercent)
 				? this.data.contextPercent.toFixed(0)
 				: this.data.contextPercent.toFixed(1);
-			const text = `${percent}% ctx`;
+			const prefix = this.data.contextSource === "runtime_estimate" ? "~" : "";
+			const suffix = this.data.contextSource === "provider_previous" ? " prev" : "";
+			const text = `${prefix}${percent}% ctx${suffix}`;
 			const color = this.data.contextPercent > 90 ? "error" : this.data.contextPercent > 70 ? "warning" : "dim";
 			segments.push({ id: "context", text: theme.fg(color, text), optional: true });
 		}

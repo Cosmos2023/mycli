@@ -40,7 +40,7 @@
   "slash_commands": {
     "command_count": 35,
 	"prefixed_alias_count": 13,
-	"sha256": "da9e436ce374579cf73bd8f22066af392494424d791cc1fda1a1d5a71112fed9"
+	"sha256": "7fca7755d759266fbbfedd4aece5f8459e82e55353d65f7df85ed83d024b15a3"
   },
   "tools": {
     "retained": [
@@ -79,8 +79,8 @@
     { "id": "m2_request_projection", "path": "tests/fixtures/node_runtime_m2/request_projection.json", "sha256": "1556cb8f491fda078a9b114df56503b0be7690cf1a6082d576fa0ef6b72b8075" },
     { "id": "m2_provider_events", "path": "tests/fixtures/node_runtime_m2/provider_events.json", "sha256": "f983704367bdde2683896040c8f8b93cca4604eab3ccf5a77dc1cf1c58fa38cf" },
     { "id": "m2_session_records", "path": "tests/fixtures/node_runtime_m2/session_records.json", "sha256": "51bab44e2b8345ce4b34c956c6927630a64767944456ea646d4257211f1bdb00" },
-    { "id": "m3_tool_contract", "path": "tests/fixtures/node_runtime_m3/tool_contract.json", "sha256": "f640363f860ea349104b560e8063bfa6f9877c74f6d93a770271bee2471217d8" },
-    { "id": "m4_mutation_contract", "path": "tests/fixtures/node_runtime_m4/mutation_contract.json", "sha256": "4759b2eb8461cd853bb348b0b4746ea84b5992d22bba04a86965df0e6a027e9a" },
+    { "id": "m3_tool_contract", "path": "tests/fixtures/node_runtime_m3/tool_contract.json", "sha256": "717c6a9b248ff058202a8e13f53facf996d0caaace51811bd46a9c79c7151343" },
+    { "id": "m4_mutation_contract", "path": "tests/fixtures/node_runtime_m4/mutation_contract.json", "sha256": "c38f83cd7ac2f909f587369c9503286fb51c1e5ff2bab19d6db46a0e99a26cf8" },
     { "id": "m5_state_recovery", "path": "tests/fixtures/node_runtime_m5/state_recovery_contract.json", "sha256": "1a92545b7bbebd17e030b80e7ce40bdb19c4c07832ed1059fe287d910042e7c5" },
     { "id": "m6_shell", "path": "tests/fixtures/node_runtime_m6/shell_contract.json", "sha256": "e9b49a94c16a578336801b36051dcae7704b753d4a051c484ffbd94e78835a1a" },
     { "id": "m7_extensions", "path": "tests/fixtures/node_runtime_m7/extension_contract.json", "sha256": "53ab571b78a75611ab99d3efda30714fa2ab45e49baf8ed5e4cdcbd73ad63478" },

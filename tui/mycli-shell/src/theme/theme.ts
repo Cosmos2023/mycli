@@ -380,7 +380,7 @@ class Theme {
 		return colorEnabled ? `\x1b[9m${text}\x1b[29m` : text;
 	}
 
-	getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): (str: string) => string {
+	getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"): (str: string) => string {
 		switch (level) {
 			case "off":
 				return (str) => this.fg("thinkingOff", str);
@@ -393,6 +393,10 @@ class Theme {
 			case "high":
 				return (str) => this.fg("thinkingHigh", str);
 			case "xhigh":
+				return (str) => this.fg("thinkingXhigh", str);
+			case "max":
+				return (str) => this.fg("thinkingXhigh", str);
+			case "ultra":
 				return (str) => this.fg("thinkingXhigh", str);
 		}
 	}

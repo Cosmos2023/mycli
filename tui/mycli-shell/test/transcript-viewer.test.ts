@@ -66,6 +66,49 @@ test("transcript viewer follows live tail until the user scrolls away", () => {
 	assert.match(output, /live-tail-two/u);
 });
 
+test("transcript viewer requests older history once at the top", () => {
+	let loadCount = 0;
+	const viewer = new TranscriptViewerComponent({
+		blocks: messageBlocks(12),
+		rows: () => 7,
+		hasOlderHistory: true,
+		onLoadOlder: () => { loadCount += 1; },
+		onClose: () => {},
+	});
+	viewer.render(50);
+
+	viewer.handleInput("g");
+	viewer.render(50);
+	assert.equal(loadCount, 1);
+
+	viewer.setOlderHistoryState({ available: true, loading: true });
+	viewer.handleInput("g");
+	viewer.handleInput("\x1b[A");
+	assert.equal(loadCount, 1);
+});
+
+test("transcript viewer preserves visible lines when older blocks are prepended", () => {
+	const original = messageBlocks(12);
+	const viewer = new TranscriptViewerComponent({
+		blocks: original,
+		rows: () => 7,
+		onClose: () => {},
+	});
+	viewer.render(50);
+	viewer.handleInput("\x1b[5~");
+	const before = stripAnsi(viewer.render(50).join("\n"));
+
+	viewer.updateBlocks([
+		messageBlock(-2, "older-two"),
+		messageBlock(-1, "older-one"),
+		...original,
+	], { preserveScrollOffset: true });
+	const after = stripAnsi(viewer.render(50).join("\n"));
+
+	assert.equal(contentRows(after), contentRows(before));
+	assert.doesNotMatch(after, /older-(?:one|two)/u);
+});
+
 test("transcript viewer marks legacy Shell output as unavailable", () => {
 	const bash = {
 		id: "legacy-shell",
@@ -124,4 +167,8 @@ function messageBlock(index: number, text: string): MycliShellTranscriptBlock {
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/gu, "");
+}
+
+function contentRows(frame: string): string {
+	return frame.split("\n").slice(1, -1).join("\n");
 }

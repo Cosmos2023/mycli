@@ -61,10 +61,10 @@ export class ApprovalSelectorComponent extends Container {
 				new Text(theme.fg("muted", `Always allow: ${this.approval.persistentRulePreview}`), 3, 0),
 			);
 		}
-		const changePreview = this.changePreviewText();
-		if (changePreview) {
+		const childChangePreview = this.approval.childSessionId ? this.changePreviewText() : "";
+		if (childChangePreview) {
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(changePreview, 3, 0));
+			this.addChild(new Text(childChangePreview, 3, 0));
 		}
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
@@ -242,4 +242,5 @@ export class ApprovalSelectorComponent extends Container {
 		}
 		return `${visible.join("\n")}\n... ${hidden} more lines`;
 	}
+
 }
