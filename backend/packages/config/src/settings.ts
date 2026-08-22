@@ -28,6 +28,9 @@ export interface NodeRuntimeConfig {
 	readonly sessionId: string;
 	readonly sessionsDbPath: string;
 	readonly maxPromptTokens: number;
+	readonly modelContextWindowTokens?: number;
+	readonly maxOutputTokens?: number;
+	readonly store?: boolean;
 	readonly requestMaxRetries: number;
 	readonly streamMaxRetries: number;
 	readonly reasoningEffort: ReasoningEffort;
@@ -106,6 +109,8 @@ export interface ResolveConfigOptions {
 		readonly session?: string;
 	};
 	readonly createSessionId?: () => string;
+	readonly defaultMaxPromptTokens?: number;
+	readonly maxPromptTokensCeiling?: number;
 }
 
 const SECTION_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
@@ -164,6 +169,8 @@ const REASONING_EFFORTS = new Set<string>([
 	"medium",
 	"high",
 	"xhigh",
+	"max",
+	"ultra",
 ]);
 
 export async function resolveConfig(options: ResolveConfigOptions): Promise<NodeRuntimeConfig> {
@@ -229,14 +236,24 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		"stream_max_retries",
 	) ?? transportRetryLimit;
 	const streamMaxRetries = integerSetting(streamValue, 5, "stream_max_retries");
-	const maxPromptTokens = positiveIntegerSetting(
+	const configuredMaxPromptTokens = positiveIntegerSetting(
 		firstTruthy(
 			options.env.MYCLI_MAX_PROMPT_TOKENS,
 			...sources.map((source) => source.max_prompt_tokens),
 		),
-		12000,
+		options.defaultMaxPromptTokens ?? 12000,
 		"max_prompt_tokens",
 	);
+	const maxPromptTokensCeiling = options.maxPromptTokensCeiling === undefined
+		? undefined
+		: positiveSafeIntegerSetting(
+			options.maxPromptTokensCeiling,
+			1,
+			"max_prompt_tokens_ceiling",
+		);
+	const maxPromptTokens = maxPromptTokensCeiling === undefined
+		? configuredMaxPromptTokens
+		: Math.min(configuredMaxPromptTokens, maxPromptTokensCeiling);
 	const legacyReasoning = firstTruthy(
 		options.env.MYCLI_REASONING_EFFORT,
 		...sources.map((source) => source.reasoning_effort),

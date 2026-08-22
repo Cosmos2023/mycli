@@ -13,6 +13,7 @@ export type {
 	NodeRuntimeConfig,
 	ResolveConfigOptions,
 } from "./settings.ts";
+export { resolveModelRuntimeConfig } from "./model-runtime-config.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";
 export { loadShellSettings, saveShellSettings } from "./shell-settings.ts";
@@ -22,6 +23,7 @@ export {
 	findModelCatalogEntry,
 	loadModelCatalog,
 	ModelCatalogError,
+	modelInputTokenLimit,
 	modelCatalogEntryPayload,
 } from "./model-catalog.ts";
 export type {

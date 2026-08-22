@@ -17,6 +17,9 @@ export interface ModelCatalogEntry {
 	readonly authRef: string;
 	readonly supportedReasoningEfforts: readonly ReasoningEffort[];
 	readonly defaultReasoningEffort?: ReasoningEffort;
+	readonly contextWindowTokens?: number;
+	readonly maxOutputTokens?: number;
+	readonly store?: boolean;
 	readonly isDefault: boolean;
 	readonly isCurrent: boolean;
 }
@@ -52,6 +55,8 @@ const REASONING_EFFORTS = new Set<string>([
 	"medium",
 	"high",
 	"xhigh",
+	"max",
+	"ultra",
 ]);
 
 const OPENAI_EFFORTS = Object.freeze<readonly ReasoningEffort[]>([
@@ -61,9 +66,19 @@ const OPENAI_EFFORTS = Object.freeze<readonly ReasoningEffort[]>([
 	"xhigh",
 ]);
 
+const OPENAI_MAX_EFFORTS = Object.freeze<readonly ReasoningEffort[]>([
+	...OPENAI_EFFORTS,
+	"max",
+]);
+
+const OPENAI_ULTRA_EFFORTS = Object.freeze<readonly ReasoningEffort[]>([
+	...OPENAI_MAX_EFFORTS,
+	"ultra",
+]);
+
 const DEEPSEEK_EFFORTS = Object.freeze<readonly ReasoningEffort[]>([
 	"high",
-	"xhigh",
+	"max",
 ]);
 
 function builtinEntry(
@@ -73,6 +88,8 @@ function builtinEntry(
 	options: {
 		readonly efforts?: readonly ReasoningEffort[];
 		readonly defaultEffort?: ReasoningEffort;
+		readonly contextWindowTokens?: number;
+		readonly maxOutputTokens?: number;
 	} = {},
 ): ModelCatalogEntry {
 	const profile = resolveProviderProfile(provider);
@@ -86,38 +103,101 @@ function builtinEntry(
 		authRef: provider,
 		supportedReasoningEfforts: Object.freeze([...(options.efforts ?? [])]),
 		...(options.defaultEffort ? { defaultReasoningEffort: options.defaultEffort } : {}),
+		...(options.contextWindowTokens === undefined
+			? {}
+			: { contextWindowTokens: options.contextWindowTokens }),
+		...(options.maxOutputTokens === undefined
+			? {}
+			: { maxOutputTokens: options.maxOutputTokens }),
+		...(provider === "openai" && profile.defaultProtocol === "responses"
+			? { store: false }
+			: {}),
 		isDefault: model === profile.defaultModel,
 		isCurrent: false,
 	});
 }
+
+const OPENAI_LARGE_CONTEXT = Object.freeze({
+	contextWindowTokens: 1_050_000,
+	maxOutputTokens: 128_000,
+});
+
+const OPENAI_STANDARD_CONTEXT = Object.freeze({
+	contextWindowTokens: 400_000,
+	maxOutputTokens: 128_000,
+});
 
 export const BUILTIN_MODEL_CATALOG: readonly ModelCatalogEntry[] = Object.freeze([
 	builtinEntry("openai", "gpt-5", "OpenAI general-purpose reasoning model", {
 		efforts: OPENAI_EFFORTS,
 		defaultEffort: "medium",
 	}),
+	builtinEntry("openai", "gpt-5.2", "OpenAI GPT-5.2 reasoning model", {
+		efforts: OPENAI_EFFORTS,
+		defaultEffort: "medium",
+		...OPENAI_STANDARD_CONTEXT,
+	}),
 	builtinEntry("openai", "gpt-5.4", "OpenAI frontier coding and reasoning model", {
 		efforts: OPENAI_EFFORTS,
 		defaultEffort: "medium",
+		...OPENAI_LARGE_CONTEXT,
+	}),
+	builtinEntry("openai", "gpt-5.5", "OpenAI frontier coding and reasoning model", {
+		efforts: OPENAI_EFFORTS,
+		defaultEffort: "medium",
+		...OPENAI_LARGE_CONTEXT,
+	}),
+	builtinEntry("openai", "gpt-5.6", "OpenAI GPT-5.6 Sol reasoning model", {
+		efforts: OPENAI_MAX_EFFORTS,
+		defaultEffort: "low",
+		...OPENAI_LARGE_CONTEXT,
+	}),
+	builtinEntry("openai", "gpt-5.6-luna", "OpenAI GPT-5.6 Luna reasoning model", {
+		efforts: OPENAI_MAX_EFFORTS,
+		defaultEffort: "medium",
+		...OPENAI_LARGE_CONTEXT,
+	}),
+	builtinEntry("openai", "gpt-5.6-terra", "OpenAI GPT-5.6 Terra reasoning model", {
+		efforts: OPENAI_ULTRA_EFFORTS,
+		defaultEffort: "medium",
+		...OPENAI_LARGE_CONTEXT,
+	}),
+	builtinEntry("openai", "gpt-5.6-sol", "OpenAI GPT-5.6 Sol reasoning model", {
+		efforts: OPENAI_ULTRA_EFFORTS,
+		defaultEffort: "low",
+		...OPENAI_LARGE_CONTEXT,
+	}),
+	builtinEntry("openai", "gpt-5.4-mini", "OpenAI small, fast, cost-efficient coding model", {
+		efforts: OPENAI_EFFORTS,
+		defaultEffort: "medium",
+		...OPENAI_STANDARD_CONTEXT,
 	}),
 	builtinEntry("openai", "gpt-5.3-codex", "OpenAI coding model", {
 		efforts: OPENAI_EFFORTS,
 		defaultEffort: "medium",
 	}),
-	builtinEntry("codex", "gpt-5", "Codex general-purpose reasoning model", {
+	builtinEntry("openai", "gpt-5.3-codex-spark", "OpenAI fast coding model", {
 		efforts: OPENAI_EFFORTS,
 		defaultEffort: "medium",
+		contextWindowTokens: 128_000,
+		maxOutputTokens: 32_000,
 	}),
-	builtinEntry("codex", "gpt-5.4", "Codex frontier coding and reasoning model", {
-		efforts: OPENAI_EFFORTS,
+	builtinEntry("openai", "codex-mini-latest", "OpenAI compact coding model", {
+		efforts: ["low", "medium", "high"],
 		defaultEffort: "medium",
+		contextWindowTokens: 200_000,
+		maxOutputTokens: 100_000,
 	}),
 	builtinEntry("deepseek", "deepseek-chat", "DeepSeek chat model"),
 	builtinEntry("deepseek", "deepseek-reasoner", "DeepSeek reasoning model", {
 		efforts: DEEPSEEK_EFFORTS,
 		defaultEffort: "high",
 	}),
-	builtinEntry("deepseek", "deepseek-v4-flash", "DeepSeek fast reasoning model", {
+	builtinEntry("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash fast reasoning model", {
+		efforts: DEEPSEEK_EFFORTS,
+		defaultEffort: "high",
+	}),
+	builtinEntry("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro reasoning model", {
 		efforts: DEEPSEEK_EFFORTS,
 		defaultEffort: "high",
 	}),
@@ -190,9 +270,16 @@ export function modelCatalogEntryPayload(entry: ModelCatalogEntry): Readonly<Rec
 		base_url: entry.baseUrl,
 		supported_reasoning_efforts: [...entry.supportedReasoningEfforts],
 		default_reasoning_effort: entry.defaultReasoningEffort ?? null,
+		context_window_tokens: entry.contextWindowTokens ?? null,
+		max_output_tokens: entry.maxOutputTokens ?? null,
 		default: entry.isDefault,
 		current: entry.isCurrent,
 	});
+}
+
+export function modelInputTokenLimit(entry: ModelCatalogEntry): number | undefined {
+	if (entry.contextWindowTokens === undefined) return undefined;
+	return entry.contextWindowTokens - (entry.maxOutputTokens ?? 0);
 }
 
 async function bootstrapModelCatalog(
@@ -227,9 +314,7 @@ async function bootstrapModelCatalog(
 			isCurrent: false,
 		});
 	}
-	const content = `${JSON.stringify({
-		models: entries.map(serializedEntry),
-	}, null, 2)}\n`;
+	const content = `${JSON.stringify(serializedCatalog(entries, currentConfig), null, 2)}\n`;
 	await atomicPrivateFileUpdate({
 		directory: join(homeDir, ".mycli"),
 		fileName: "models.json",
@@ -237,22 +322,60 @@ async function bootstrapModelCatalog(
 	});
 }
 
-function serializedEntry(entry: ModelCatalogEntry): Record<string, unknown> {
+function serializedModel(entry: ModelCatalogEntry): Record<string, unknown> {
 	return {
-		model: entry.model,
-		provider: entry.provider,
-		protocol: entry.protocol,
-		base_url: entry.baseUrl,
-		auth_ref: entry.authRef,
 		...(entry.displayName === entry.model ? {} : { name: entry.displayName }),
 		...(entry.description ? { description: entry.description } : {}),
-		...(entry.supportedReasoningEfforts.length > 0
-			? { reasoning_efforts: [...entry.supportedReasoningEfforts] }
+		...(entry.contextWindowTokens !== undefined || entry.maxOutputTokens !== undefined
+			? {
+				limits: {
+					...(entry.contextWindowTokens === undefined
+						? {}
+						: { context_window_tokens: entry.contextWindowTokens }),
+					...(entry.maxOutputTokens === undefined
+						? {}
+						: { max_output_tokens: entry.maxOutputTokens }),
+				},
+			}
 			: {}),
-		...(entry.defaultReasoningEffort
-			? { default_reasoning_effort: entry.defaultReasoningEffort }
-			: {}),
+		...(entry.supportedReasoningEfforts.length > 0 ? {
+			reasoning: {
+				efforts: [...entry.supportedReasoningEfforts],
+				...(entry.defaultReasoningEffort
+					? { default: entry.defaultReasoningEffort }
+					: {}),
+			},
+		} : {}),
 	};
+}
+
+function serializedCatalog(
+	entries: readonly ModelCatalogEntry[],
+	currentConfig: ModelCatalogCurrentConfig,
+): Record<string, unknown> {
+	const providers: Record<string, unknown> = {};
+	for (const provider of [...new Set(entries.map((entry) => entry.provider))]) {
+		const providerEntries = entries.filter((entry) => entry.provider === provider);
+		const first = providerEntries[0]!;
+		const currentProvider = provider === currentConfig.provider;
+		const protocol = currentProvider ? currentConfig.protocol : first.protocol;
+		const baseUrl = currentProvider
+			? normalizedBaseUrl(currentConfig.apiBaseUrl)
+			: first.baseUrl;
+		const authRef = currentProvider ? currentConfig.authRef : first.authRef;
+		const store = providerEntries.find((entry) => entry.store !== undefined)?.store;
+		providers[provider] = {
+			protocol,
+			base_url: baseUrl,
+			auth_ref: authRef,
+			...(store === undefined ? {} : { options: { store } }),
+			models: Object.fromEntries(providerEntries.map((entry) => [
+				entry.model,
+				serializedModel(entry),
+			])),
+		};
+	}
+	return { version: 2, providers };
 }
 
 function parseCatalog(raw: string, path: string): readonly ModelCatalogEntry[] {
@@ -262,13 +385,17 @@ function parseCatalog(raw: string, path: string): readonly ModelCatalogEntry[] {
 	} catch {
 		throw new ModelCatalogError(`Invalid JSON in ${path}.`);
 	}
-	if (!isRecord(payload) || !Array.isArray(payload.models)) {
-		throw new ModelCatalogError(`${path} must contain a 'models' array.`);
+	if (!isRecord(payload)) throw new ModelCatalogError(`${path} must contain an object.`);
+	if (payload.version === 2 || payload.providers !== undefined) {
+		return parseProviderCatalog(payload, path);
+	}
+	if (!Array.isArray(payload.models)) {
+		throw new ModelCatalogError(`${path} must contain a 'models' array or v2 'providers'.`);
 	}
 	const entries: ModelCatalogEntry[] = [];
 	const seen = new Set<string>();
 	for (let index = 0; index < payload.models.length; index += 1) {
-		const entry = parseEntry(payload.models[index], path, index);
+		const entry = parseLegacyEntry(payload.models[index], path, index);
 		const key = [entry.provider, entry.protocol, entry.model, normalizedBaseUrl(entry.baseUrl)].join("\0");
 		if (seen.has(key)) {
 			throw new ModelCatalogError(`Duplicate model entry ${index} in ${path}.`);
@@ -279,7 +406,81 @@ function parseCatalog(raw: string, path: string): readonly ModelCatalogEntry[] {
 	return Object.freeze(entries);
 }
 
-function parseEntry(value: unknown, path: string, index: number): ModelCatalogEntry {
+function parseProviderCatalog(
+	payload: Readonly<Record<string, unknown>>,
+	path: string,
+): readonly ModelCatalogEntry[] {
+	if (payload.version !== 2 || !isRecord(payload.providers)) {
+		throw new ModelCatalogError(`${path} v2 requires version 2 and a 'providers' object.`);
+	}
+	const entries: ModelCatalogEntry[] = [];
+	for (const [providerValue, providerValueRaw] of Object.entries(payload.providers)) {
+		if (!isRecord(providerValueRaw)) {
+			throw new ModelCatalogError(`Provider '${providerValue}' in ${path} must be an object.`);
+		}
+		let profile;
+		let protocol: ProtocolId;
+		const protocolValue = optionalString(providerValueRaw.protocol);
+		try {
+			profile = resolveProviderProfile(providerValue, protocolValue);
+			protocol = parseProtocol(protocolValue ?? profile.defaultProtocol);
+		} catch {
+			throw new ModelCatalogError(`Provider '${providerValue}' in ${path} is unsupported.`);
+		}
+		const baseUrl = parseBaseUrl(
+			optionalString(providerValueRaw.base_url) ?? profile.defaultBaseUrl,
+			`Provider '${providerValue}' in ${path}`,
+		);
+		const authRef = optionalString(providerValueRaw.auth_ref) ?? profile.provider;
+		const providerStore = parseStoreOption(
+			providerValueRaw.options,
+			`Provider '${providerValue}' in ${path}`,
+		);
+		if (providerStore !== undefined && protocol === "anthropic_messages") {
+			throw new ModelCatalogError(
+				`Provider '${providerValue}' in ${path} does not support the 'store' option.`,
+			);
+		}
+		if (!isRecord(providerValueRaw.models)) {
+			throw new ModelCatalogError(`Provider '${providerValue}' in ${path} requires a 'models' object.`);
+		}
+		for (const [model, modelValue] of Object.entries(providerValueRaw.models)) {
+			if (!model.trim() || !isRecord(modelValue)) {
+				throw new ModelCatalogError(
+					`Model '${model}' for provider '${providerValue}' in ${path} must be an object.`,
+				);
+			}
+			const location = `Model '${model}' for provider '${providerValue}' in ${path}`;
+			const reasoning = parseReasoning(modelValue.reasoning, location);
+			const limits = parseLimits(modelValue.limits, location);
+			const modelStore = parseStoreOption(modelValue.options, location);
+			const store = modelStore ?? providerStore;
+			if (store !== undefined && protocol === "anthropic_messages") {
+				throw new ModelCatalogError(`${location} does not support the 'store' option.`);
+			}
+			entries.push(Object.freeze({
+				provider: profile.provider,
+				protocol,
+				model: model.trim(),
+				displayName: optionalString(modelValue.name) ?? model.trim(),
+				description: optionalString(modelValue.description) ?? "",
+				baseUrl,
+				authRef,
+				supportedReasoningEfforts: reasoning.efforts,
+				...(reasoning.defaultEffort
+					? { defaultReasoningEffort: reasoning.defaultEffort }
+					: {}),
+				...limits,
+				...(store === undefined ? {} : { store }),
+				isDefault: model.trim() === profile.defaultModel,
+				isCurrent: false,
+			}));
+		}
+	}
+	return Object.freeze(entries);
+}
+
+function parseLegacyEntry(value: unknown, path: string, index: number): ModelCatalogEntry {
 	if (!isRecord(value)) {
 		throw new ModelCatalogError(`Entry ${index} in ${path} must be an object.`);
 	}
@@ -294,34 +495,16 @@ function parseEntry(value: unknown, path: string, index: number): ModelCatalogEn
 	} catch {
 		throw new ModelCatalogError(`Entry ${index} in ${path} has an unsupported provider/protocol.`);
 	}
-	const baseUrl = normalizedBaseUrl(requiredString(value, "base_url", path, index));
-	let url: URL;
-	try {
-		url = new URL(baseUrl);
-	} catch {
-		throw new ModelCatalogError(`Entry ${index} in ${path} has an invalid base_url.`);
-	}
-	if (!(["http:", "https:"] as string[]).includes(url.protocol) || !url.host) {
-		throw new ModelCatalogError(`Entry ${index} in ${path} has an invalid base_url.`);
-	}
-
-	const effortsValue = value.reasoning_efforts ?? [];
-	if (!Array.isArray(effortsValue) || effortsValue.some((effort) =>
-		typeof effort !== "string" || !REASONING_EFFORTS.has(effort.trim().toLowerCase()))) {
-		throw new ModelCatalogError(`Entry ${index} in ${path} has invalid reasoning_efforts.`);
-	}
-	const efforts = effortsValue.map((effort) =>
-		String(effort).trim().toLowerCase() as ReasoningEffort);
-	if (new Set(efforts).size !== efforts.length) {
-		throw new ModelCatalogError(`Entry ${index} in ${path} repeats a reasoning effort.`);
-	}
-	const defaultValue = optionalString(value.default_reasoning_effort)?.toLowerCase();
-	if (defaultValue && !REASONING_EFFORTS.has(defaultValue)) {
-		throw new ModelCatalogError(`Entry ${index} in ${path} has an invalid default reasoning effort.`);
-	}
-	const defaultEffort = defaultValue as ReasoningEffort | undefined;
-	if (defaultEffort && !efforts.includes(defaultEffort)) {
-		throw new ModelCatalogError(`Entry ${index} in ${path} has an unlisted default reasoning effort.`);
+	const location = `Entry ${index} in ${path}`;
+	const baseUrl = parseBaseUrl(requiredString(value, "base_url", path, index), location);
+	const reasoning = parseReasoning({
+		efforts: value.reasoning_efforts,
+		default: value.default_reasoning_effort,
+	}, location);
+	const limits = parseLimits(value.limits, location);
+	const store = parseStoreOption(value.options, location);
+	if (store !== undefined && protocol === "anthropic_messages") {
+		throw new ModelCatalogError(`${location} does not support the 'store' option.`);
 	}
 	return Object.freeze({
 		provider: profile.provider,
@@ -331,11 +514,111 @@ function parseEntry(value: unknown, path: string, index: number): ModelCatalogEn
 		description: optionalString(value.description) ?? "",
 		baseUrl,
 		authRef: optionalString(value.auth_ref) ?? profile.provider,
-		supportedReasoningEfforts: Object.freeze(efforts),
-		...(defaultEffort ? { defaultReasoningEffort: defaultEffort } : {}),
+		supportedReasoningEfforts: reasoning.efforts,
+		...(reasoning.defaultEffort ? { defaultReasoningEffort: reasoning.defaultEffort } : {}),
+		...limits,
+		...(store === undefined ? {} : { store }),
 		isDefault: model === profile.defaultModel,
 		isCurrent: false,
 	});
+}
+
+function parseReasoning(
+	value: unknown,
+	location: string,
+): {
+	readonly efforts: readonly ReasoningEffort[];
+	readonly defaultEffort?: ReasoningEffort;
+} {
+	if (value === undefined) return { efforts: Object.freeze([]) };
+	if (!isRecord(value)) {
+		throw new ModelCatalogError(`${location} has invalid reasoning settings.`);
+	}
+	const effortsValue = value.efforts ?? [];
+	if (!Array.isArray(effortsValue) || effortsValue.some((effort) =>
+		typeof effort !== "string" || !REASONING_EFFORTS.has(effort.trim().toLowerCase()))) {
+		throw new ModelCatalogError(`${location} has invalid reasoning efforts.`);
+	}
+	const efforts = effortsValue.map((effort) =>
+		String(effort).trim().toLowerCase() as ReasoningEffort);
+	if (new Set(efforts).size !== efforts.length) {
+		throw new ModelCatalogError(`${location} repeats a reasoning effort.`);
+	}
+	const defaultValue = optionalString(value.default)?.toLowerCase();
+	if (defaultValue && !REASONING_EFFORTS.has(defaultValue)) {
+		throw new ModelCatalogError(`${location} has an invalid default reasoning effort.`);
+	}
+	const defaultEffort = defaultValue as ReasoningEffort | undefined;
+	if (defaultEffort && !efforts.includes(defaultEffort)) {
+		throw new ModelCatalogError(`${location} has an unlisted default reasoning effort.`);
+	}
+	return {
+		efforts: Object.freeze(efforts),
+		...(defaultEffort ? { defaultEffort } : {}),
+	};
+}
+
+function parseLimits(
+	value: unknown,
+	location: string,
+): Pick<ModelCatalogEntry, "contextWindowTokens" | "maxOutputTokens"> {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new ModelCatalogError(`${location} has invalid limits.`);
+	const allowed = new Set(["context_window_tokens", "max_output_tokens"]);
+	if (Object.keys(value).some((key) => !allowed.has(key))) {
+		throw new ModelCatalogError(`${location} has unsupported limit settings.`);
+	}
+	const contextWindowTokens = optionalPositiveSafeInteger(
+		value.context_window_tokens,
+		`${location} context_window_tokens`,
+	);
+	const maxOutputTokens = optionalPositiveSafeInteger(
+		value.max_output_tokens,
+		`${location} max_output_tokens`,
+	);
+	if (contextWindowTokens !== undefined
+		&& maxOutputTokens !== undefined
+		&& maxOutputTokens >= contextWindowTokens) {
+		throw new ModelCatalogError(
+			`${location} max_output_tokens must be smaller than context_window_tokens.`,
+		);
+	}
+	return {
+		...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+		...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+	};
+}
+
+function parseStoreOption(value: unknown, location: string): boolean | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)
+		|| Object.keys(value).some((key) => key !== "store")
+		|| (value.store !== undefined && typeof value.store !== "boolean")) {
+		throw new ModelCatalogError(`${location} has invalid provider request options.`);
+	}
+	return value.store;
+}
+
+function optionalPositiveSafeInteger(value: unknown, label: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+		throw new ModelCatalogError(`${label} must be a positive safe integer.`);
+	}
+	return value;
+}
+
+function parseBaseUrl(value: string, location: string): string {
+	const baseUrl = normalizedBaseUrl(value);
+	let url: URL;
+	try {
+		url = new URL(baseUrl);
+	} catch {
+		throw new ModelCatalogError(`${location} has an invalid base_url.`);
+	}
+	if (!(["http:", "https:"] as string[]).includes(url.protocol) || !url.host) {
+		throw new ModelCatalogError(`${location} has an invalid base_url.`);
+	}
+	return baseUrl;
 }
 
 function requiredString(
