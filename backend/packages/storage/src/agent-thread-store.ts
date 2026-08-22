@@ -775,7 +775,7 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 			protocol: enumValue(provider.protocol, ["responses", "chat_completions", "anthropic_messages"], "protocol"),
 			model: boundedString(provider.model, "model", 256),
 			...(provider.reasoningEffort === undefined ? {} : {
-				reasoningEffort: enumValue(provider.reasoningEffort, ["none", "minimal", "low", "medium", "high", "xhigh"], "reasoningEffort"),
+				reasoningEffort: enumValue(provider.reasoningEffort, ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "reasoningEffort"),
 			}),
 		}),
 		instructions: Object.freeze({

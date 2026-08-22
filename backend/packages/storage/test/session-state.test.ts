@@ -26,6 +26,7 @@ interface M5Store {
 	}): unknown;
 	loadConversation(sessionId: string): readonly { readonly role: string; readonly content: string }[];
 	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
+	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
 	loadTurn(sessionId: string, clientTurnId: string): {
 		readonly status: string;
 		readonly result: Readonly<Record<string, unknown>> | null;
@@ -65,6 +66,7 @@ interface M5Store {
 		readonly summary: string;
 	}): void;
 	loadSessionSummaries(sessionId: string): readonly string[];
+	loadRecentSessionSummaries(sessionId: string, limit: number): readonly string[];
 	loadSessionLineage(sessionId: string): readonly { readonly sessionId: string }[];
 	importLegacyConversation(input: {
 		readonly sessionId: string;
@@ -341,6 +343,7 @@ test("loads summaries and lineage in stable order", async (t) => {
 	t.after(() => reopened.close());
 
 	assert.deepEqual(reopened.loadSessionSummaries("child"), ["  first  ", "second"]);
+	assert.deepEqual(reopened.loadRecentSessionSummaries("child", 1), ["second"]);
 	assert.deepEqual(
 		reopened.loadSessionLineage("child").map((item) => item.sessionId),
 		["root", "child"],
@@ -748,6 +751,49 @@ test("commits compact replacement, summary, checkpoint, and continuation togethe
 	assert.deepEqual(boundary.replacement_messages, [pythonMessage("user", "[compact-summary]\nsummary")]);
 });
 
+test("multiple compactions keep complete readable history and restore only the latest model window", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	t.after(() => store.close());
+
+	reserveAndCompleteTurn(store, fixture.root, "first", "first request", "first answer");
+	store.commitCompaction({
+		sessionId: "s1",
+		replacementMessages: [pythonMessage("user", "[compact-summary]\nfirst summary")],
+		summary: "first summary",
+		checkpoint: compactCheckpointFor(1, "window-1", "turn-first", "first summary"),
+	});
+	reserveAndCompleteTurn(store, fixture.root, "second", "between compacts", "second answer");
+	store.commitCompaction({
+		sessionId: "s1",
+		replacementMessages: [pythonMessage("user", "[compact-summary]\nlatest summary")],
+		summary: "latest summary",
+		checkpoint: compactCheckpointFor(2, "window-2", "turn-second", "latest summary"),
+	});
+	reserveAndCompleteTurn(store, fixture.root, "third", "after latest compact", "third answer");
+
+	assert.deepEqual(store.loadConversation("s1"), [
+		{ role: "user", content: "[compact-summary]\nlatest summary" },
+		{ role: "user", content: "after latest compact" },
+		{ role: "assistant", content: "third answer" },
+	]);
+	const history = store.loadHistoryItems("s1");
+	assert.equal(history.filter((item) => item.type === "compaction_boundary").length, 2);
+	assert.deepEqual(
+		storage.projectTranscript(history, [], { limit: Number.MAX_SAFE_INTEGER })
+			.filter((item) => item.type === "user_message" || item.type === "assistant_message")
+			.map((item) => item.text),
+		[
+			"first request",
+			"first answer",
+			"between compacts",
+			"second answer",
+			"after latest compact",
+			"third answer",
+		],
+	);
+});
+
 test("rolls back a compact replacement when checkpoint commit fails", async (t) => {
 	const fixture = await databaseFixture(t);
 	const store = createStore(fixture.dbPath, (name) => {
@@ -789,6 +835,28 @@ function submission(workspaceRoot: string, sessionId: string, startedAt: string)
 		userText: `message-${sessionId}`,
 		startedAt,
 	};
+}
+
+function reserveAndCompleteTurn(
+	store: M5Store,
+	workspaceRoot: string,
+	suffix: string,
+	userText: string,
+	assistantText: string,
+): void {
+	store.reserveTurn({
+		...submission(workspaceRoot, "s1", NOW),
+		clientTurnId: `client-${suffix}`,
+		turnId: `turn-${suffix}`,
+		userText,
+	});
+	store.completeTurn({
+		sessionId: "s1",
+		clientTurnId: `client-${suffix}`,
+		assistantText,
+		usage: {},
+		completedAt: NOW,
+	});
 }
 
 interface ApprovalSuspensionFixture {
@@ -1054,6 +1122,22 @@ function compactCheckpoint() {
 		input_history_hash: "sha256:input",
 		replacement_history_hash: "sha256:replacement",
 		replacement_messages: [pythonMessage("user", "[compact-summary]\nsummary")],
+	};
+}
+
+function compactCheckpointFor(
+	windowNumber: number,
+	windowId: string,
+	turnId: string,
+	summary: string,
+) {
+	return {
+		...compactCheckpoint(),
+		turn_id: turnId,
+		window_number: windowNumber,
+		window_id: windowId,
+		replacement_messages: [pythonMessage("user", `[compact-summary]\n${summary}`)],
+		status: "completed",
 	};
 }
 

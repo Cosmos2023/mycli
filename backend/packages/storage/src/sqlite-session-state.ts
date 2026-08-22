@@ -24,6 +24,7 @@ import type {
 	CommitCompactionInput,
 	CommitQueuedInputsInput,
 	FinalizeApprovalContinuationInput,
+	HistoryItemWindow,
 	ImportLegacyConversationInput,
 	InterruptAmbiguousApprovalInput,
 	RuntimeStateKey,
@@ -48,6 +49,17 @@ export interface SQLiteSessionStateRepositoryOptions {
 	readonly clock: () => string;
 	readonly write: <Result>(operation: () => Result) => Result;
 	readonly failpoint?: (name: string) => void;
+	readonly transcriptAdapter?: SQLiteSessionStateTranscriptAdapter;
+}
+
+export interface SQLiteSessionStateTranscriptAdapter {
+	loadCommittedQueueIds(sessionId: string): ReadonlySet<string>;
+	appendQueuedInput(input: Readonly<{
+		readonly sessionId: string;
+		readonly turnId: string;
+		readonly record: QueuedInput;
+		readonly images: readonly CanonicalImage[];
+	}>): void;
 }
 
 interface SessionOverviewRow {
@@ -88,17 +100,21 @@ const CONTINUATION_INVALIDATED = Object.freeze({
 	failure_reason: "compacted_history",
 });
 
+const MAX_RECENT_STATE_ROWS = 10_000;
+
 export class SQLiteSessionStateRepository implements SessionStateStore {
 	readonly #database: Database.Database;
 	readonly #clock: () => string;
 	readonly #writeTransaction: <Result>(operation: () => Result) => Result;
 	readonly #failpoint: (name: string) => void;
+	readonly #transcriptAdapter?: SQLiteSessionStateTranscriptAdapter;
 
 	constructor(options: SQLiteSessionStateRepositoryOptions) {
 		this.#database = options.database;
 		this.#clock = options.clock;
 		this.#writeTransaction = options.write;
 		this.#failpoint = options.failpoint ?? (() => undefined);
+		this.#transcriptAdapter = options.transcriptAdapter;
 	}
 
 	listSessions(query: SessionListQuery = {}): readonly SessionOverview[] {
@@ -260,12 +276,100 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		));
 	}
 
+	loadRecentSessionSummaries(sessionId: string, limit: number): readonly string[] {
+		const boundedLimit = boundedRecentStateRowLimit(limit);
+		return this.#read(() => Object.freeze(
+			[...(this.#database.prepare(`
+				SELECT summary_text
+				FROM session_summaries
+				WHERE session_id = ?
+				ORDER BY summary_index DESC
+				LIMIT ?
+			`).all(
+				nonEmpty(sessionId, "sessionId"),
+				boundedLimit,
+			) as readonly { summary_text: unknown }[])]
+				.reverse()
+				.map((row) => String(row.summary_text)),
+		));
+	}
+
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#loadObjectRows("history_items", "sequence_no", sessionId);
 	}
 
+	loadRecentHistoryItems(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[] {
+		return this.#loadRecentObjectRows("history_items", sessionId, limit);
+	}
+
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#loadObjectRows("turn_rollouts", "sequence_no", sessionId);
+	}
+
+	loadRecentTurnRollouts(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[] {
+		return this.#loadRecentObjectRows("turn_rollouts", sessionId, limit);
+	}
+
+	loadHistoryItemWindow(
+		sessionId: string,
+		beforeSequence: number | undefined,
+		limit: number,
+	): HistoryItemWindow {
+		const boundedLimit = boundedRecentStateRowLimit(limit);
+		const before = beforeSequence === undefined
+			? undefined
+			: positiveSequence(beforeSequence, "beforeSequence");
+		return this.#read(() => {
+			const rows = this.#database.prepare(`
+				SELECT sequence_no, payload_json
+				FROM history_items
+				WHERE session_id = ?
+					${before === undefined ? "" : "AND sequence_no < ?"}
+				ORDER BY sequence_no DESC
+				LIMIT ?
+			`).all(
+				nonEmpty(sessionId, "sessionId"),
+				...(before === undefined ? [] : [before]),
+				boundedLimit + 1,
+			) as readonly { readonly sequence_no: unknown; readonly payload_json: unknown }[];
+			const hasMore = rows.length > boundedLimit;
+			return Object.freeze({
+				items: Object.freeze(rows.slice(0, boundedLimit).map((row) => Object.freeze({
+					sequenceNo: positiveSequence(row.sequence_no, "sequence_no"),
+					payload: freezeJson(parseObjectJson(row.payload_json, "history_items")),
+				}))),
+				hasMore,
+			});
+		});
+	}
+
+	loadTurnRolloutsForTurns(
+		sessionId: string,
+		turnIds: readonly string[],
+	): readonly Readonly<Record<string, unknown>>[] {
+		const ids = [...new Set(turnIds.map((turnId) => nonEmpty(turnId, "turnId")))];
+		if (ids.length === 0) return Object.freeze([]);
+		if (ids.length > MAX_RECENT_STATE_ROWS) {
+			throw new RangeError(`turnIds must contain at most ${MAX_RECENT_STATE_ROWS} entries`);
+		}
+		return this.#read(() => Object.freeze(
+			(this.#database.prepare(`
+				SELECT payload_json
+				FROM turn_rollouts
+				WHERE session_id = ? AND turn_id IN (${ids.map(() => "?").join(", ")})
+				ORDER BY sequence_no
+			`).all(
+				nonEmpty(sessionId, "sessionId"),
+				...ids,
+			) as readonly { readonly payload_json: unknown }[])
+				.map((row) => freezeJson(parseObjectJson(row.payload_json, "turn_rollouts"))),
+		));
 	}
 
 	importLegacyConversation(input: ImportLegacyConversationInput): boolean {
@@ -293,6 +397,9 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 	}
 
 	loadCommittedQueueIds(sessionId: string): ReadonlySet<string> {
+		if (this.#transcriptAdapter) {
+			return this.#transcriptAdapter.loadCommittedQueueIds(nonEmpty(sessionId, "sessionId"));
+		}
 		const ids = new Set<string>();
 		for (const item of this.loadHistoryItems(sessionId)) {
 			const metadata = recordValue(item.metadata);
@@ -336,14 +443,18 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 					"queued user message",
 				);
 				assertImagePathCount(record.imagePaths, images);
-				this.#appendConversationMessage(
-					sessionId,
-					queuedUserMessage(record, turnId, images),
-				);
-				this.#appendHistoryItem(
-					sessionId,
-					queuedHistoryItem(record, turnId, this.#threadId(sessionId)),
-				);
+				if (this.#transcriptAdapter) {
+					this.#transcriptAdapter.appendQueuedInput({ sessionId, turnId, record, images });
+				} else {
+					this.#appendConversationMessage(
+						sessionId,
+						queuedUserMessage(record, turnId, images),
+					);
+					this.#appendHistoryItem(
+						sessionId,
+						queuedHistoryItem(record, turnId, this.#threadId(sessionId)),
+					);
+				}
 				committedIds.add(record.queueId);
 				removeIds.add(record.queueId);
 				appended = true;
@@ -665,7 +776,30 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		));
 	}
 
+	#loadRecentObjectRows(
+		table: "history_items" | "turn_rollouts",
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[] {
+		const boundedLimit = boundedRecentStateRowLimit(limit);
+		return this.#read(() => {
+			const rows = this.#database.prepare(`
+				SELECT payload_json FROM ${table}
+				WHERE session_id = ? ORDER BY sequence_no DESC LIMIT ?
+			`).all(
+				nonEmpty(sessionId, "sessionId"),
+				boundedLimit,
+			) as readonly { payload_json: unknown }[];
+			return Object.freeze([...rows]
+				.reverse()
+				.map((row) => freezeJson(parseObjectJson(row.payload_json, table))));
+		});
+	}
+
 	#committedQueueIdsInTransaction(sessionId: string): readonly string[] {
+		if (this.#transcriptAdapter) {
+			return [...this.#transcriptAdapter.loadCommittedQueueIds(sessionId)];
+		}
 		const ids: string[] = [];
 		const rows = this.#database.prepare(`
 			SELECT payload_json FROM history_items
@@ -1227,6 +1361,20 @@ function nonEmpty(value: string, name: string): string {
 		throw new TypeError(`${name} must be a non-empty string`);
 	}
 	return value.trim();
+}
+
+function boundedRecentStateRowLimit(value: number): number {
+	if (!Number.isSafeInteger(value) || value < 1 || value > MAX_RECENT_STATE_ROWS) {
+		throw new RangeError(`limit must be an integer between 1 and ${MAX_RECENT_STATE_ROWS}`);
+	}
+	return value;
+}
+
+function positiveSequence(value: unknown, name: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+		throw new RangeError(`${name} must be a positive safe integer`);
+	}
+	return value;
 }
 
 function requiredString(value: unknown, name: string): string {

@@ -68,6 +68,21 @@ Questions to answer:
 - Search responses must be bounded domain payloads (`SessionSearchResult`) with
   `session_id`, `message_index`, `role`, and a short `snippet`. Do not return raw
   SQLite rows or unbounded message JSON to CLI/TUI callers.
+- Resumable session state and regenerable `session.json`/subagent artifacts use dedicated recent-row
+  APIs: 2,000 raw history rows, 2,000 rollout rows, and at most 500 projected items. If the history
+  boundary splits the earliest turn, omit that incomplete turn from the snapshot projection.
+- `transcript.load` is a separate complete-history projection. Rebuild all filtered user-visible
+  items from canonical `history_items`/`turn_rollouts`, exclude `compaction_boundary` replacements
+  and other model-only rows, and use the opaque versioned `before` cursor plus an item `limit` of at
+  most 500 for bounded page delivery without making old turns unreachable. Read history by
+  descending `sequence_no`, load rollouts only for page turn ids, and keep every complete turn on
+  one page even when that makes an exceptional page exceed its requested projected-item target.
+  On the first page only, a session with no canonical `history_items` rows falls back to the existing
+  legacy `conversation_messages` projection; never mix that fallback into a canonical cursor chain.
+- Provider reconstruction is a third projection. After repeated compactions it loads only the
+  latest valid replacement plus canonical conversation rows after that boundary. Never reuse the
+  bounded artifact snapshot or the complete UI transcript as provider input; prompt-cache keys,
+  model-input manifests, and Responses continuation follow the effective provider window.
 
 ---
 
@@ -81,9 +96,16 @@ Questions to answer:
 - Additive schema changes should preserve existing session rows and be covered by
   a regression test that initializes a legacy DB shape, opens it through
   `SQLiteSessionStore`, and verifies existing messages still load.
-- FTS tables and triggers are schema objects too: opening a legacy DB must create
-  them and backfill existing `conversation_messages` rows without rewriting or
-  deleting the original messages.
+- The schema-v8 transcript projection indexes `idx_history_items_session_sequence`,
+  `idx_turn_rollouts_session_sequence`, `idx_turn_rollouts_session_turn_sequence`, and
+  `idx_session_summaries_session_sequence` support bounded tail, page-rollout, and recent-summary
+  projection. Opening a current database checks only these four named indexes and creates them
+  transactionally when missing without rewriting the current marker. This narrow compatibility
+  exception must not replay table DDL, FTS backfills, or the schema-version write.
+- Schema v9 uses an external-content `conversation_messages_fts` projection over
+  `conversation_messages.payload_json` and removes the unused `history_items_fts` projection.
+  Opening a supported legacy DB must rebuild the conversation index transactionally without
+  rewriting or deleting canonical messages. Current-version startup must not rebuild it.
 - Do not move or rewrite `~/.mycli/sessions.db` as part of storage layout work.
 
 ## Scenario: Version-Gated SQLite Initialization
@@ -102,7 +124,8 @@ Questions to answer:
 ### 3. Contracts
 
 - Read `schema_version` before acquiring a migration write lock. If it equals the current
-  `SCHEMA_VERSION`, return without replaying schema DDL, FTS backfills, or a version-row rewrite.
+  `SCHEMA_VERSION`, perform only the bounded transcript-index presence check, then return without
+  replaying table DDL, FTS backfills, or a version-row rewrite.
 - A missing version table or supported older version enters the additive migration inside the
   store's `BEGIN IMMEDIATE` transaction.
 - After acquiring the migration write lock, read and validate the version again. A concurrent mycli
@@ -119,25 +142,29 @@ Questions to answer:
 | Stored version | Required behavior |
 | --- | --- |
 | No version table or row | Initialize the complete current schema transactionally |
-| Supported v2-v6 | Run additive migration and preserve existing rows |
+| Supported v2-v8 | Run additive migration and preserve existing rows |
 | Current version | Open without schema write, DDL replay, or FTS backfill scan |
+| Current version missing a transcript projection index | Create only the four compatibility indexes without rewriting the version marker |
 | Unsupported numeric version | Fail with bounded expected/actual version diagnostics |
 | Invalid non-numeric version | Fail with a bounded null actual version |
 | Concurrent migration completes first | Recheck under lock and skip duplicate migration |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: reopening a large v7 database performs bounded version reads and immediately continues to
+- Good: reopening a large v9 database with all four transcript projection indexes performs bounded metadata reads
+  and immediately continues to
   runtime recovery.
-- Base: a new empty path creates v7 and writes its commit marker once.
-- Bad: execute every `CREATE ... IF NOT EXISTS`, scan both FTS tables, and delete/reinsert the v7
+- Base: a new empty path creates v9 and writes its commit marker once.
+- Bad: execute every `CREATE ... IF NOT EXISTS`, rebuild conversation FTS, and delete/reinsert the v8
   marker on every CLI startup.
 
 ### 6. Tests Required
 
 - Assert a current database reopens even when a test trigger rejects deletion of its version row.
 - Keep new-database schema-shape coverage for all required tables, indexes, and immutable triggers.
-- Keep explicit v2, v3, v4, v5, and v6 migration fixtures and verify preserved data plus v7 output.
+- Keep explicit v2 through v8 migration fixtures and verify preserved data plus current output.
+- Keep a current-v9 compatibility fixture that removes transcript projection indexes, rejects
+  version-row deletion, and verifies the indexes are restored without rebuilding FTS.
 - Keep unsupported and malformed version failures bounded and free of database payloads.
 - Profile a representative populated database when changing initialization so migration work cannot
   silently return to the routine startup path.
@@ -166,6 +193,76 @@ this.#write(() => {
   if (lockedVersion === SCHEMA_VERSION) return;
   this.#migrateToCurrentVersion();
 });
+```
+
+## Scenario: Append-Only Provider Timeline Prefix Reconstruction
+
+### 1. Scope / Trigger
+
+- Trigger: changing `SQLiteModelInputLedger.commitProviderStep()`,
+  `reconstructProviderStep()`, V2 provider manifests, timeline window append behavior, or
+  Worker-to-in-process rollback reads.
+
+### 2. Signatures
+
+- Commit: `ModelInputLedgerStore.commitProviderStep(input) -> CommittedProviderStep`.
+- Reconstruct: `ModelInputLedgerStore.reconstructProviderStep(requestId) -> CommittedProviderStep`.
+- V2 manifest fields: `timelineWindowId`, ordered `timelineEventIds`, `orderedItems`,
+  `commonPrefixItemCount`, and `previousManifestId`.
+
+### 3. Contracts
+
+- A V2 manifest is an immutable snapshot of the provider-visible timeline at one provider step.
+  Its `timelineEventIds` are the complete ordered window prefix visible at commit time.
+- Later provider steps may append durable events to the same `timelineWindowId`. Those later rows do
+  not mutate or invalidate an earlier manifest.
+- Reconstruction loads the current durable window, selects the first
+  `manifest.timelineEventIds.length` rows, and requires exact ordered identity equality with the
+  manifest. The model-visible rows in that same prefix must exactly equal the manifest's ordered
+  `provider_timeline_event` references.
+- Content hashes, snapshot references, logical request blobs, prepared lifecycle state, and every
+  manifest row remain immutable and are still independently validated.
+
+### 4. Validation & Error Matrix
+
+| Durable state | Required behavior |
+| --- | --- |
+| Window exactly equals manifest prefix | Reconstruct the committed request |
+| Same window has valid later appended rows | Reconstruct the old request from its prefix |
+| A row inside the manifest prefix is missing, reordered, or replaced | Fail with `persistence_error` |
+| Manifest references omit or reorder a model-visible prefix row | Fail with `persistence_error` |
+| Later rows belong to another window | Ignore them for this manifest; validate its named window only |
+
+### 5. Good/Base/Bad Cases
+
+- Good: Worker step 1 and step 2 append to one window; after restart, the in-process adapter can
+  reconstruct both requests and continue from step 2.
+- Base: a one-step window exactly matches its only manifest.
+- Bad: compare an old manifest with every row currently in the window and report corruption merely
+  because a later step appended canonical events.
+
+### 6. Tests Required
+
+- Commit two provider steps into the same window, close/reopen SQLite, reconstruct the second and
+  then the first request, and assert exact request equality for both.
+- App integration must complete a Worker tool turn, restart without the Worker gate, read the old
+  manifest chain, and complete another turn without duplicate tool effects.
+- Existing corruption tests must continue rejecting missing, reordered, hash-mismatched, and
+  incomplete-prefix references.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+assertDeepEqual(allCurrentWindowEventIds, oldManifest.timelineEventIds);
+```
+
+#### Correct
+
+```typescript
+const committedPrefix = allCurrentWindowEventIds.slice(0, oldManifest.timelineEventIds.length);
+assertDeepEqual(committedPrefix, oldManifest.timelineEventIds);
 ```
 
 ## Scenario: Readable Node Session Artifact Projection
@@ -253,7 +350,366 @@ const canonical = canonicalSnapshot(store, overview, false, false, false);
 await artifactQueue.run(() => transcriptSnapshots.write(canonical));
 ```
 
+## Scenario: Repeated Compaction Resume Projections
+
+### 1. Scope / Trigger
+
+- Trigger: changing `commitCompaction`, `loadConversationItems`, readable transcript projection,
+  `transcript.load`, session preparation, or transcript snapshot generation.
+
+### 2. Signatures
+
+- Provider window: `SQLiteSessionStore.loadConversationItems(sessionId)`.
+- Complete display history: `projectReadableSessionTranscript(store, sessionId)`.
+- Bounded prepared/artifact history: `projectRecentSessionTranscript(store, sessionId)`.
+- Gateway page: `transcript.load({session_id, before?, limit?}) -> {items, next_before}`.
+
+### 3. Contracts
+
+- Every successful compact appends one immutable `compaction_boundary`; raw `history_items`,
+  `turn_rollouts`, and `conversation_messages` remain append-only.
+- Provider reconstruction selects the newest valid boundary by `sequence_no DESC`, installs its
+  `replacement_messages`, and appends only conversation rows at or after its
+  `source_message_count`. Older boundary replacements must not be stacked into model input.
+- Complete display reconstruction reads all canonical history and rollouts, filters model-only
+  rows including `compaction_boundary`, and preserves visible turns on both sides of every compact.
+- Writable session preparation and regenerable artifacts retain only the recent 2,000 raw rows and
+  500 projected items. This bounded snapshot is not the complete transcript and is never provider
+  input.
+- `transcript.load` uses complete display reconstruction for current and inactive writable
+  sessions. `before` and `limit` bound response pages without making older visible items
+  unreachable. Only a SQLite-unavailable read-only session may fall back to its bounded snapshot.
+- Shell display activity may use its `call_id` as the durable `turn_id`. Readable pagination must
+  join an adjacent call-scoped lifecycle row to its originating tool call/result by `call_id` before
+  projecting the page. Otherwise resume can split one Shell execution into duplicate cards and
+  expose provider-only result framing such as chunk identifiers as user-visible command text.
+
+### 4. Validation & Error Matrix
+
+| Durable/request state | Required behavior |
+| --- | --- |
+| Multiple valid completed boundaries | Use only the newest replacement for provider input; retain every visible display turn |
+| Boundary source count exceeds canonical conversation length | Fail with bounded `persistence_error` |
+| Boundary replacement is malformed or exceeds 4,096 messages | Fail with bounded `persistence_error` |
+| `before` names a current projected item | Return items strictly before it and a further cursor when available |
+| `before` is missing or stale | Return the newest requested page; do not mutate history |
+| SQLite unavailable with valid schema-v2 artifact | Return bounded read-only display history and reject turn submission |
+
+### 5. Good/Base/Bad Cases
+
+- Good: after three compactions, `/resume` prepares 500 recent items, the provider receives the
+  third replacement plus its suffix, and transcript pages can still reach turn one.
+- Base: an uncompacted short session produces the same visible and provider ordering as before.
+- Bad: pass the bounded prepared transcript into the provider, or append every boundary replacement
+  to the next request.
+
+### 6. Tests Required
+
+- Storage test with at least two completed boundaries must assert exact latest-window provider
+  messages and complete filtered visible messages.
+- Projection test must assert boundary summaries/replacements are absent from display output.
+- Gateway tests must fetch more than 500 items across `next_before`, for both current and inactive
+  writable sessions.
+- Projection tests must place Shell display activity under its call id, keep the surrounding tool
+  call/result under the owning turn id, and prove paged output equals complete output without
+  provider-only Shell result framing.
+- Long-history benchmark must seed multiple boundaries and fail on a new compaction request,
+  pre-boundary provider content, missing oldest/latest transcript items, visible boundary markers,
+  or incorrect retained tool lifecycle counts.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const transcript = projectRecentSessionTranscript(store, sessionId).items;
+runtime.bootstrap(transcript);
+```
+
+#### Correct
+
+```typescript
+const providerWindow = store.loadConversationItems(sessionId);
+const transcriptPage = paginate(projectReadableSessionTranscript(store, sessionId).items, request);
+```
+
 ---
+
+## Scenario: Normalized Transcript Event Store
+
+### 1. Scope / Trigger
+
+- Trigger: changing schema-v10 transcript writes, provider/readable/search projections, or the
+  `transcript_events_fts` synchronization protocol.
+- Schema v9 remains the default runtime store until normalization cutover passes its migration and
+  parity gates; schema v10 initialization must remain explicit.
+
+### 2. Signatures
+
+- New database: `createV10SessionDatabase(options) -> void`.
+- Canonical repository: `SQLiteTranscriptEventRepository`.
+- Runtime composition: `openRuntimeSessionStore(options) -> SQLiteSessionStore |
+  SQLiteTranscriptEventRepository`.
+- Runtime writes: `reserveTurn`, `appendAssistantToolCalls`, `appendToolResult`,
+  `appendContextItem`, `appendDisplayActivity`, `completeTurn`, and `failTurn`.
+- Read projections: `loadConversationItems`, `loadReadableTranscript`,
+  `loadRecentReadableTranscript`, `loadReadableTranscriptPage`, and `searchMessages`.
+- Search compatibility maps `transcript_events.provider_index` to
+  `SessionSearchResult.messageIndex`.
+
+### 3. Contracts
+
+- One semantic user, assistant, tool batch, tool result, context, display, or lifecycle action
+  appends one typed event inside the same `BEGIN IMMEDIATE` transaction as mutable turn state.
+- Full tool output and tool arguments occur once in canonical event payloads. Provider, readable,
+  artifact, and search views are projections and do not become transcript authorities.
+- Display activity is always `model_visible = 0`; callers cannot override it. Provider-visible
+  events receive a session-local monotonic `provider_index`.
+- Search uses external-content FTS over `transcript_events.payload_json`, filters to model-visible
+  searchable event kinds, preserves workspace filtering, and returns snippets of at most 160
+  characters.
+- An FTS update uses one trigger whose body deletes old terms before inserting new terms. SQLite
+  does not define the relative execution order of separate triggers for the same event.
+- Backend composition, smoke runners, and integration tests that open a runtime-created database
+  use `openRuntimeSessionStore`. Direct `new SQLiteSessionStore(...)` construction is reserved for
+  explicit v2-v9 fixtures and tests that assert a v9-only reader rejects marker 10. This prevents a
+  direct-created v10 database from being reopened through the legacy version gate.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Runtime composition opens an empty database or marker 10 | Select `SQLiteTranscriptEventRepository` |
+| Runtime composition opens marker 2 through 9 | Select `SQLiteSessionStore` and preserve the legacy path |
+| v9 reader opens marker 10 | Reject with bounded expected/actual version diagnostics and no writes |
+| Missing/corrupt marker on non-empty DB | Refuse v10 initialization without creating transcript objects |
+| Duplicate event or provider identity | Roll back the enclosing semantic action |
+| Display activity requests model visibility | Impossible through the typed API; persisted value is always false |
+| Tool result is out of call order or exceeds the output bound | Reject and append no partial event |
+| FTS update changes searchable content or visibility | Delete old terms, then insert eligible new terms in one trigger |
+| Search query is blank | Return an empty frozen result without querying FTS |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a tool-heavy turn writes one user event, one multi-call batch, one event per result, one
+  assistant event, and one terminal lifecycle event while provider replay remains unchanged.
+- Base: a display-only reasoning or baseline event is readable according to its projection policy
+  and never enters provider input or search.
+- Base: a smoke test reopens a backend-created database through `openRuntimeSessionStore` and reads
+  its projections without assuming whether the backend initialized v9 or v10.
+- Bad: write the same assistant/tool payload to conversation, history, rollout, and event tables.
+- Bad: use `new SQLiteSessionStore(...)` to inspect a backend-created database; new databases are
+  v10, so the v9-only reader must reject them.
+- Bad: use two `AFTER UPDATE` triggers and assume the old-term trigger runs before the new-term
+  trigger; rank queries may fail with `SQLITE_CORRUPT_VTAB` even when a simple match count passes.
+
+### 6. Tests Required
+
+- Assert v10 has no legacy transcript tables and stores each semantic payload once.
+- Run the shared provider contract suite against v9 and v10 projections.
+- Cover complete/recent/paged readable history across hidden events and repeated compaction.
+- Compare v9/v10 search match sets for workspace filters, punctuation, snippets, and legacy indices.
+- Exercise FTS insert, update, delete, rank ordering, and model-invisible exclusion.
+- Run a real `NodeTurnRuntime` turn on the normalized store and assert provider request items, live
+  event ordering, and terminal event types.
+- Reopen backend-created v10 databases in app integration and smoke tests through
+  `openRuntimeSessionStore`; separately assert direct `SQLiteSessionStore` construction rejects the
+  same marker without mutating the database.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+CREATE TRIGGER transcript_events_fts_update_insert AFTER UPDATE ON transcript_events BEGIN
+  INSERT INTO transcript_events_fts(rowid, payload_json) VALUES (new.sequence_no, new.payload_json);
+END;
+CREATE TRIGGER transcript_events_fts_update_delete AFTER UPDATE ON transcript_events BEGIN
+  INSERT INTO transcript_events_fts(transcript_events_fts, rowid, payload_json)
+  VALUES ('delete', old.sequence_no, old.payload_json);
+END;
+```
+
+#### Correct
+
+```sql
+CREATE TRIGGER transcript_events_fts_update AFTER UPDATE ON transcript_events BEGIN
+  INSERT INTO transcript_events_fts(transcript_events_fts, rowid, payload_json)
+  SELECT 'delete', old.sequence_no, old.payload_json WHERE old.model_visible = 1;
+  INSERT INTO transcript_events_fts(rowid, payload_json)
+  SELECT new.sequence_no, new.payload_json WHERE new.model_visible = 1;
+END;
+```
+
+Runtime-created database checks follow the same version-dispatch boundary:
+
+```typescript
+// Wrong: the legacy reader must reject a backend-created marker-10 database.
+const store = new SQLiteSessionStore({ dbPath });
+
+// Correct: runtime composition dispatches marker 2-9 to the legacy store and marker 10 to the
+// canonical event repository.
+const store = openRuntimeSessionStore({ dbPath });
+```
+
+## Scenario: Read-Only V9/V10 Storage Doctor
+
+### 1. Scope / Trigger
+
+- Trigger: changing `collectStorageChecks`, schema-v9 normalization staging, schema-v10 event/FTS
+  objects, cutover manifests, or transcript-referenced recovery state.
+
+### 2. Signatures
+
+- Entry point: `collectStorageChecks(options) -> Promise<readonly DoctorCheck[]>`.
+- Session check: `sessions_db` with bounded `message` and optional bounded `detail` fields.
+- Supported markers: legacy `SCHEMA_VERSION = 9` and normalized `SCHEMA_V10_VERSION = 10`.
+- V9 staging is the all-or-none set of `transcript_normalization_events`, `..._batches`,
+  `..._source_map`, `..._merge_keys`, and `..._source_conflicts`.
+
+### 3. Contracts
+
+- Open every doctor SQLite connection with `{ readOnly: true }`, then enable
+  `PRAGMA query_only = ON`. Doctor never instantiates a write-path store, repairs schema, rebuilds
+  FTS, advances a marker, runs normalization, cleans rows, or vacuums.
+- Read the single version marker before selecting transcript objects. V9 requires legacy transcript
+  and external-content conversation FTS objects; staging is optional, but any staging table requires
+  all five tables with their exact ordered columns and valid version/hash/reference rows.
+- V10 requires the event table, external-content event FTS, synchronization and append-only
+  triggers, projection indexes, and event-boundary lineage index. Legacy transcript or staging
+  objects remaining after cutover are corruption diagnostics.
+- Validate v10 FTS eligibility against the read-only `transcript_events_fts_docsize` row set. Do not
+  invoke an FTS `integrity-check` control command because it enters the virtual table write path.
+- A direct-created v10 database may omit `transcript_normalization_manifest`. A migrated v10
+  database must have exactly one structurally valid manifest when the table exists.
+- Compaction, suspension, eligible Responses continuation, effect checkpoint, lineage, and active
+  turn references must resolve to the expected canonical event type and identity.
+- Output exposes only bounded counts and allowlisted issue codes. Never include session ids, event
+  ids, filesystem paths, source identities, raw opaque payloads, or transcript content.
+
+### 4. Validation & Error Matrix
+
+| Stored state | Required behavior |
+| --- | --- |
+| Marker 9 without staging | OK with `staging=none` |
+| Marker 9 with complete staging | Report bounded event/mapped/opaque counts |
+| Marker 9 with partial tables, wrong columns, conflicts, or invalid mappings | Fail with bounded staging issue counts |
+| Direct-created marker 10 without manifest | Validate final objects and report `manifest=none` |
+| Migrated marker 10 with one valid manifest | Validate final objects and report `manifest=valid` |
+| Missing or extra FTS document row | Fail with `invalid_event_fts=<count>` without rebuilding |
+| Legacy or staging object remains at marker 10 | Fail with bounded object count and at most 12 names |
+| Recovery reference is absent from canonical events | Fail with `invalid_recovery_references=<count>` |
+| Marker other than 9 or 10 | Fail with bounded expected/actual diagnostics |
+
+### 5. Good/Base/Bad Cases
+
+- Good: doctor reads a migrated v10 database, validates its manifest and recovery references, reports
+  opaque counts, and leaves the database modification time unchanged.
+- Base: doctor reads an unstaged v9 database and reports `staging=none`.
+- Bad: open `SQLiteSessionStore`, run the normalization cutover, rebuild FTS, print a corrupt event,
+  or treat logical normalization as physical vacuum savings from the doctor path.
+
+### 6. Tests Required
+
+- Cover healthy v9 with no staging and with complete staging, including bounded opaque/progress
+  counts; reject partial staging.
+- Cover direct-created v10, opaque searchable events, FTS row-set drift, post-cutover legacy/staging
+  residue, and valid/corrupt manifests produced by the real cutover API.
+- Cover missing compaction, suspension, continuation, effect, lineage, and active-turn event
+  references without exposing fixture identities or payload text.
+- Assert database `mtimeMs` is unchanged after healthy v9, healthy v10, and manifest inspection.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const store = new SQLiteSessionStore({ dbPath });
+database.prepare("INSERT INTO transcript_events_fts(transcript_events_fts) VALUES ('rebuild')").run();
+```
+
+#### Correct
+
+```typescript
+const database = new DatabaseSync(dbPath, { readOnly: true });
+database.exec("PRAGMA query_only = ON");
+const indexedRows = database.prepare(
+  "SELECT COUNT(*) FROM transcript_events_fts_docsize",
+).get();
+```
+
+## Scenario: Explicit Resumable Transcript Normalization
+
+### 1. Scope / Trigger
+
+- Trigger: changing the v9 normalization report, staging command, final cutover composition,
+  backup/rollback guidance, or post-cutover vacuum behavior.
+- Normalization is an explicit destructive maintenance workflow. Ordinary v9 startup and the
+  default maintenance report never start it.
+
+### 2. Signatures
+
+- Read-only report: `transcriptNormalizationReport(dbPath) -> JsonObject`.
+- Bounded apply preparation: `prepareTranscriptNormalization(dbPath) ->
+  TranscriptNormalizationPreparation`.
+- Final apply: `cutoverTranscriptNormalization(dbPath, preparation) -> JsonObject`.
+- CLI: `/session maintenance --apply-transcript-normalization`.
+
+### 3. Contracts
+
+- The report uses a read-only, `query_only` connection and exposes only bounded counts, bytes,
+  booleans, schema version, and allowlisted status values.
+- One explicit apply stages at most one bounded batch and leaves schema marker 9 plus legacy tables
+  authoritative. Interruption and retry must not duplicate or skip source rows.
+- A staging result that first reports `ready_for_cutover` does not cut over. A later explicit apply
+  rechecks readiness, closes every live v9 store/resource, then enters final cutover.
+- Final cutover reconciles the v9 tail under `BEGIN IMMEDIATE`, validates manifests and recovery
+  references, installs v10 objects, removes legacy/staging transcript objects, and writes marker 10
+  last. Any failure rolls back to a usable v9 state.
+- Active recovery sessions block cutover without deleting state. Another mycli process must not hold
+  a connection during the final apply.
+- Operators must stop all mycli processes and preserve `sessions.db`, `sessions.db-wal`, and
+  `sessions.db-shm` as one pre-cutover backup set. Restore that complete set with all processes
+  stopped to roll back; later turns are outside that backup.
+- The report's required free bytes include staging and WAL headroom. Logical savings and freelist
+  bytes do not satisfy that temporary-space requirement unless the filesystem actually has the
+  reported free space.
+- Normalization reports logical/freelist savings only. Physical shrinkage requires the separate
+  explicit vacuum action after restart, doctor, resume, transcript, search, and recovery checks.
+- During the compatibility window, Node tooling opens v9 and v10, while v9-only binaries reject
+  marker 10 without mutation.
+
+### 4. Validation & Error Matrix
+
+| State | Required behavior |
+| --- | --- |
+| Default report on v9 | Read-only readiness/progress result; database mtime unchanged |
+| Apply with remaining sources | Commit one bounded staging batch; marker remains 9 |
+| Batch reaches the tail | Return `ready_for_cutover` in staging phase; do not cut over |
+| Next explicit apply with no active recovery | Close v9 resources, cut over atomically, require backend restart |
+| Active recovery remains | Return `blocked_active_sessions`; preserve marker and recovery state |
+| Insufficient filesystem space | Refuse staging/cutover with bounded storage diagnostics |
+| Final validation or transaction failure | Roll back to marker 9 and permit clean retry |
+| Apply on marker 10 | Return `already_normalized`; do not rewrite schema or vacuum |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an operator backs up stopped storage, runs several bounded batches, explicitly confirms the
+  final pass, restarts, validates v10, and vacuums separately.
+- Base: an interrupted staging run is resumed while ordinary v9 sessions remain readable.
+- Bad: cut over on the same call that first completes staging, copy only `sessions.db` while WAL
+  writers are active, keep a stale v9 store open after marker 10, or claim logical savings reduced
+  physical file bytes.
+
+### 6. Tests Required
+
+- Assert default report and v10 already-normalized report preserve database `mtimeMs`.
+- Cover multi-batch progress, interruption, retry, tail writes, lock contention, low disk, conflicts,
+  active recovery exclusion, final failpoints, and v9 rollback.
+- Gateway/backend integration must prove the staging-ready response precedes a second explicit
+  cutover request, the cutover response is delivered, and the backend then exits.
+- Run doctor and v9/v10 provider/readable/search/recovery parity suites before permitting vacuum or
+  real-database cutover.
 
 ## Naming Conventions
 
@@ -340,15 +796,15 @@ await artifactQueue.run(() => transcriptSnapshots.write(canonical));
 
 #### Wrong
 
-```python
-messages.extend(store.search_messages(user_text))
+```typescript
+messages.push(...store.searchMessages(userText));
 ```
 
 #### Correct
 
-```python
-matches = store.search_messages(query, workspace_root=workspace_root, limit=10)
-return tuple(format_match(match) for match in matches)
+```typescript
+const matches = store.searchMessages({ query, workspaceRoot, limit: 10 });
+return matches.map(formatMatch);
 ```
 
 ## Scenario: Read-only Session Maintenance Report
@@ -356,19 +812,24 @@ return tuple(format_match(match) for match in matches)
 ### 1. Scope / Trigger
 
 - Trigger: adding session cleanup, prune, vacuum, or long-running storage maintenance diagnostics.
-- The first step for maintenance must be a read-only report; destructive cleanup requires a separate PRD and tests.
+- The default maintenance action must remain a read-only report; every mutation requires a separate
+  explicit action and focused recovery-safety tests.
 
 ### 2. Signatures
 
 - Store:
   `SessionStore.session_maintenance_report(workspace_root: Path | None = None, candidate_limit: int = 5) -> SessionMaintenanceReport`
 - Domain payload:
-  `SessionMaintenanceReport(workspace_session_count, empty_session_count, empty_session_candidates, empty_session_candidates_omitted, db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
+  `SessionMaintenanceReport(workspace_session_count, empty_session_count, empty_session_candidates,
+  empty_session_candidates_omitted, compactable_rollout_count, compactable_rollout_bytes,
+  removable_state_count, removable_state_bytes, estimated_payload_bytes_reclaimable,
+  db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
 - Candidate payload:
   `SessionMaintenanceCandidate(session_id, last_active_at, status)`
 - CLI slash command: `/session-maintenance`
 - Explicit cleanup commands:
   - `/session-maintenance --apply-empty`
+  - `/session-maintenance --apply-payloads`
   - `/session-maintenance --apply-orphans`
   - `/session-maintenance --apply-vacuum`
 
@@ -376,7 +837,11 @@ return tuple(format_match(match) for match in matches)
 
 - The report is read-only: no deletion, no `VACUUM`, no repair, and no automatic pruning.
 - Session counts are scoped by `workspace_root` when provided.
-- Empty sessions are sessions with no `conversation_messages` and no `session_summaries`.
+- Empty sessions have no conversation messages, summaries, history items, turn rollouts, or session
+  state. Runtime-only sessions are durable and are not empty candidates.
+- Legacy payload metrics count only recognized terminal rollout/state payloads from inactive
+  sessions. Sessions with an in-progress runtime turn, pending decision, or suspended turn are
+  excluded.
 - SQLite page counters come from `PRAGMA page_count`, `PRAGMA freelist_count`, and `PRAGMA page_size`.
 - Output lines are bounded `key=value` fields suitable for CLI/TUI display and smoke tests.
 
@@ -386,6 +851,8 @@ return tuple(format_match(match) for match in matches)
 - Sessions in other workspaces -> excluded from `workspace_session_count` and `empty_session_count`.
 - Session has messages -> not empty.
 - Session has only summaries -> not empty.
+- Session has only rollout or state recovery data -> not empty.
+- Malformed or unrecognized legacy payload -> excluded from payload cleanup metrics.
 - Empty candidates are ordered by oldest `last_active_at`, then `session_id`.
 - Empty candidate details are bounded by `candidate_limit`; omitted count is `empty_session_count - len(empty_session_candidates)`.
 
@@ -401,6 +868,7 @@ return tuple(format_match(match) for match in matches)
 
 - Store test for workspace-scoped total and empty-session counts.
 - Store test for bounded, workspace-scoped empty candidate details and omitted count.
+- Store test for rollout/state payload metrics, active-session exclusion, and malformed payloads.
 - Service/application test for formatted `key=value` lines.
 - CLI/TUI completion or command-routing tests for `/session-maintenance`.
 
@@ -408,17 +876,52 @@ return tuple(format_match(match) for match in matches)
 
 #### Wrong
 
-```python
-store.prune_empty_sessions(workspace_root=workspace_root)
-store.vacuum()
+```typescript
+store.pruneEmptySessions({ workspaceRoot });
+store.vacuum();
 ```
 
 #### Correct
 
-```python
-report = store.session_maintenance_report(workspace_root=workspace_root)
-return tuple(format_report_field(report))
+```typescript
+const report = store.sessionMaintenanceReport({ workspaceRoot });
+return formatReport(report);
 ```
+
+## Scenario: Explicit Legacy Session Payload Cleanup
+
+### 1. Scope / Trigger
+
+- Trigger: reclaiming obsolete legacy rollout events and terminal continuation snapshots after an
+  explicit user request.
+- This action removes historical runtime payloads but must preserve canonical transcript, provider
+  replay, compact boundaries, summaries, and active recovery.
+
+### 2. Signatures
+
+- Store: `SessionStore.cleanupLegacySessionPayloads(options) -> SessionPayloadCleanupResult`.
+- CLI slash command: `/session maintenance --apply-payloads`.
+
+### 3. Contracts
+
+- The default maintenance report never invokes cleanup.
+- Each cleanup call processes a bounded number of rollout and state rows in one write transaction.
+- Only terminal rollout statuses are eligible. Preserve every top-level rollout field and replace
+  `events` with either an empty array or one minimal `approval_resolution` marker needed for
+  readable-transcript deduplication.
+- Delete only inactive terminal `turn_record` and unused legacy `provider_timeline` rows.
+- Exclude every session with an in-progress runtime turn, pending decision, or suspended turn.
+- Never mutate conversation messages, history items, summaries, compact checkpoints/boundaries,
+  Responses continuation state, model-input ledger rows, or active approval/clarification state.
+- Repeated cleanup is idempotent. Removed payload bytes are logical savings; physical file shrinkage
+  remains the separate explicit vacuum action.
+
+### 4. Tests Required
+
+- Dry-run and apply tests cover candidate counts, bytes, conservative eligibility, and bounded work.
+- Readable transcript and provider input hashes remain identical before and after cleanup.
+- Approval-marker suppression, inactive state deletion, malformed JSON skipping, and idempotency are
+  covered explicitly.
 
 ## Scenario: Explicit Session Orphan Cleanup
 
@@ -530,14 +1033,111 @@ return tuple(format_report_field(report))
 
 #### Wrong
 
-```python
-store = SQLiteSessionStore(path)
-store.session_maintenance_report(workspace_root=workspace_root)
+```typescript
+const store = new SQLiteSessionStore({ dbPath: path });
+store.sessionMaintenanceReport({ workspaceRoot });
 ```
 
 #### Correct
 
-```python
-with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
-    check = _session_db_maintenance_check(connection, workspace_root=workspace_root)
+```typescript
+const database = openReadOnlyDatabase(path);
+const check = sessionDatabaseMaintenanceCheck(database, workspaceRoot);
+```
+
+## Scenario: Schema-V11 Content Blobs And Explicit Maintenance
+
+### 1. Scope / Trigger
+
+- Trigger: changing schema v11, transcript/model-input blob storage, v10 staging/cutover, storage
+  Doctor integrity, or content-blob reports/GC.
+
+### 2. Signatures
+
+- New-database marker: `SCHEMA_V11_VERSION = 11`; Node creates fresh databases with
+  `createV11SessionDatabase` through `openRuntimeSessionStore`.
+- Tables: `session_content_blobs`, `transcript_event_blob_refs`, and `model_input_blob_refs`.
+- Read-only report: `analyzeV10ContentBlobMigration({ dbPath })` and
+  `SessionStore.sessionMaintenanceReport().contentBlobs` on v11 only.
+- Explicit apply: `stageV10ContentBlobMigrationBatch`, then
+  `applyV10ContentBlobMigrationCutover` on a later confirmed invocation.
+- Explicit GC: `SQLiteTranscriptEventRepository.collectSessionContentBlobOrphans()`.
+- CLI: `/session maintenance --apply-content-blobs` and
+  `/session maintenance --apply-content-blob-gc`.
+
+### 3. Contracts
+
+- Fresh empty databases create v11 directly. Existing v10 remains inline and authoritative until
+  the explicit bounded staging workflow validates parity and writes marker 11 last.
+- Blob ids are `sha256:<lowercase hex>` over raw bytes. Codecs are `identity-v1` or deterministic
+  `deflate-raw-v1`; reads validate codec, declared raw/stored sizes, a 32 MiB raw bound, payload
+  length, decompressed size, UTF-8, and digest before returning content.
+- Transcript storage replaces eligible large string leaves with `null` plus unique RFC 6901
+  reference rows. Every read hydrates references before `parseTranscriptEventEnvelope`; marker-like
+  semantic JSON is never interpreted as storage metadata.
+- Model-input owner ids and ledger references remain unchanged. The v11 owner payload is the fixed
+  storage marker and exactly one relational row points to verified content.
+- V11 search is FTS5 `content=''` with `contentless_delete=1`. Canonical hydrated JSON supplies
+  terms during transactional insert/rebuild; result text comes from hydrated events.
+- Default maintenance and Doctor use read-only/query-only connections and expose counts/bytes plus
+  stable issue classes only. They never print content, paths, blob ids/hashes, session ids, or JSON
+  Pointer values and never stage, repair, collect, rebuild, or vacuum.
+- Explicit GC deletes only content unreachable from both reference tables in one write transaction.
+  Its raw/stored byte result is logical; `freelist_count * page_size` is reusable space. Only the
+  separate explicit vacuum action may report physical shrinkage.
+- Schema v11 is Node-owned; do not add a second compatibility reader or writer.
+
+### 4. Validation & Error Matrix
+
+| State | Required behavior |
+| --- | --- |
+| New or zero-byte database | Create complete v11 directly; do not run v10 migration |
+| V10 normal startup | Open inline event store; do not scan, stage, compress, or rewrite |
+| Partial/wrong v10 staging schema | Doctor/apply fail with bounded staging issue classes |
+| First batch reaches tail | Return `ready_for_cutover` in staging phase; marker remains 10 |
+| Later apply with active recovery | Return `blocked_active_sessions`; preserve v10 |
+| Later apply after resources close | Reconcile tail, validate parity, write marker 11 last |
+| Codec/size/hash/reference/typed-event/FTS corruption | Fail read/Doctor with bounded diagnostics |
+| GC on v9/v10 | Return not-blob-backed or bounded version failure; delete nothing |
+| Repeated GC on v11 | Return zero deletion after the first pass; preserve reachable blobs |
+
+### 5. Good/Base/Bad Cases
+
+- Good: stop all processes, back up DB/WAL/SHM, stage bounded v10 batches, explicitly confirm the
+  later cutover, restart on v11, run Doctor/resume/search/ledger checks, then GC and vacuum separately.
+- Base: a fresh v11 database reports zero blob/reference/orphan metrics without migration work.
+- Bad: compress on startup, store searchable plaintext beside blob content, use mutable reference
+  counters, hydrate above storage, auto-GC, vacuum during cutover, or add a second schema reader.
+
+### 6. Tests Required
+
+- Codec/externalizer tests cover deterministic bytes, thresholds, RFC 6901, corruption, and exact
+  stable-JSON round trips.
+- V10 staging/cutover tests cover batches, interruption, tail writes, source conflicts, low space,
+  active recovery, failpoints, cross-process locking, marker-last rollback, and semantic manifests.
+- Doctor tests cover healthy/partial staging plus v11 codec/count/hash/reference/typed-event/FTS and
+  orphan diagnostics, redaction, `mtimeMs`, and no automatic deletion.
+- Maintenance tests cover v9/v10 absence versus v11 metrics, raw/stored/logical/deduplicated and
+  freelist bytes, reachable preservation, repeated GC idempotency, and separate vacuum behavior.
+- Backend/gateway tests cover action routing, first-ready versus later-cutover responses, response
+  delivery before shutdown, v11 reopen, and GC without backend shutdown.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const store = openRuntimeSessionStore({ dbPath });
+store.contentBlobs.collectOrphans();
+database.exec("VACUUM");
+```
+
+#### Correct
+
+```typescript
+const report = store.sessionMaintenanceReport();
+if (explicitAction === "content_blob_gc" && report.contentBlobs
+	&& "collectSessionContentBlobOrphans" in store) {
+	return store.collectSessionContentBlobOrphans();
+}
 ```

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { QueueSnapshot } from "@mycli/core";
-import { SQLiteSessionStore, StorageFailure } from "../src/index.ts";
+import { projectTranscript, SQLiteSessionStore, StorageFailure } from "../src/index.ts";
 
 const NOW = "2026-08-06T00:00:00.000Z";
 
@@ -252,6 +252,158 @@ test("reports and applies bounded session maintenance operations", async (t) => 
 	assert.equal(vacuumed.dryRun, false);
 	assert.ok(vacuumed.afterPageCount >= 0);
 	assert.ok(vacuumed.pageSize > 0);
+});
+
+test("reports and compacts only inactive legacy payloads without changing transcript", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: () => NOW });
+	t.after(() => store.close());
+	const database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	for (const sessionId of ["cleanup", "active", "malformed"]) {
+		database.prepare(`
+			INSERT INTO sessions (
+				session_id, workspace_root, thread_id, created_at,
+				updated_at, last_active_at, status
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(sessionId, fixture.root, sessionId, NOW, NOW, NOW, "active");
+	}
+	database.prepare(`
+		INSERT INTO history_items (session_id, item_id, payload_json)
+		VALUES (?, ?, ?)
+	`).run("cleanup", "approval-user", JSON.stringify({
+		id: "approval-user",
+		turn_id: "approval-turn",
+		type: "user_message",
+		text: "legacy duplicate approval input",
+		metadata: {},
+	}));
+	const legacyRollout = {
+		thread_id: "cleanup",
+		turn_id: "approval-turn",
+		status: "completed",
+		started_at: NOW,
+		completed_at: NOW,
+		stop_reason: "assistant_completed",
+		events: [
+			"legacy text event",
+			{ kind: "provider_event", payload: { output: "x".repeat(16_384) } },
+			{ kind: "turn_item", payload: { type: "approval_resolution", detail: "private" } },
+		],
+		continuation_state: { usage: { total_tokens: 10 } },
+	};
+	database.prepare(`
+		INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+		VALUES (?, ?, ?)
+	`).run("cleanup", "approval-turn", JSON.stringify(legacyRollout));
+	database.prepare(`
+		INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+		VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)
+	`).run(
+		"cleanup", "turn_record", JSON.stringify({ status: "completed", events: "y".repeat(8_192) }), NOW,
+		"cleanup", "provider_timeline", JSON.stringify({ items: ["z".repeat(4_096)] }), NOW,
+		"cleanup", "responses_continuation_state", JSON.stringify({
+			response_id: null,
+			request_signature: "",
+			request_input: [],
+			response_output: [],
+			eligible: false,
+			failure_reason: "compacted_history",
+		}), NOW,
+	);
+	database.prepare(`
+		INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+		VALUES (?, ?, ?)
+	`).run("active", "active-turn", JSON.stringify({
+		turn_id: "active-turn",
+		status: "completed",
+		events: [{ kind: "provider_event", payload: { output: "active" } }],
+	}));
+	database.prepare(`
+		INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+		VALUES (?, 'pending_decision', '{}', ?), (?, 'turn_record', ?, ?)
+	`).run("active", NOW, "active", JSON.stringify({ status: "completed" }), NOW);
+	database.prepare(`
+		INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+		VALUES (?, ?, '{malformed')
+	`).run("malformed", "bad-turn");
+	database.prepare(`
+		INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+		VALUES (?, 'turn_record', '{malformed', ?)
+	`).run("malformed", NOW);
+
+	const beforePayload = String((database.prepare(`
+		SELECT payload_json FROM turn_rollouts
+		WHERE session_id = 'cleanup'
+	`).get() as { payload_json: unknown }).payload_json);
+	const beforeTranscript = projectTranscript(
+		store.loadHistoryItems("cleanup"),
+		store.loadTurnRollouts("cleanup"),
+		{ limit: Number.MAX_SAFE_INTEGER },
+	);
+	const report = store.sessionMaintenanceReport({ workspaceRoot: fixture.root });
+	assert.equal(report.dryRun, true);
+	assert.equal(report.compactableRolloutCount, 1);
+	assert.equal(report.removableStateCount, 2);
+	assert.ok(report.compactableRolloutBytes > 16_000);
+	assert.ok(report.removableStateBytes > 12_000);
+	assert.equal(
+		report.estimatedPayloadBytesReclaimable,
+		report.compactableRolloutBytes + report.removableStateBytes,
+	);
+	assert.equal(String((database.prepare(`
+		SELECT payload_json FROM turn_rollouts
+		WHERE session_id = 'cleanup'
+	`).get() as { payload_json: unknown }).payload_json), beforePayload);
+
+	const applied = store.cleanupLegacySessionPayloads({ workspaceRoot: fixture.root });
+	assert.equal(applied.compactedRolloutCount, 1);
+	assert.equal(applied.deletedStateCount, 2);
+	assert.equal(applied.removedPayloadBytes, report.estimatedPayloadBytesReclaimable);
+	assert.equal(applied.remainingCompactableRolloutCount, 0);
+	assert.equal(applied.remainingRemovableStateCount, 0);
+	const afterRollout = store.loadTurnRollouts("cleanup")[0]!;
+	assert.deepEqual({ ...afterRollout, events: undefined }, { ...legacyRollout, events: undefined });
+	assert.deepEqual(afterRollout.events, [{
+		kind: "turn_item",
+		payload: { type: "approval_resolution" },
+	}]);
+	assert.deepEqual(
+		projectTranscript(
+			store.loadHistoryItems("cleanup"),
+			store.loadTurnRollouts("cleanup"),
+			{ limit: Number.MAX_SAFE_INTEGER },
+		),
+		beforeTranscript,
+	);
+	assert.equal(store.loadState("cleanup", "turn_record"), undefined);
+	assert.equal(store.loadState("cleanup", "provider_timeline"), undefined);
+	assert.deepEqual(store.loadState("cleanup", "responses_continuation_state"), {
+		response_id: null,
+		request_signature: "",
+		request_input: [],
+		response_output: [],
+		eligible: false,
+		failure_reason: "compacted_history",
+	});
+	assert.equal(store.loadTurnRollouts("active")[0]?.events instanceof Array, true);
+	assert.deepEqual(store.loadState("active", "turn_record"), { status: "completed" });
+	assert.equal(String((database.prepare(`
+		SELECT payload_json FROM turn_rollouts WHERE session_id = 'malformed'
+	`).get() as { payload_json: unknown }).payload_json), "{malformed");
+
+	assert.deepEqual(store.cleanupLegacySessionPayloads({ workspaceRoot: fixture.root }), {
+		compactedRolloutCount: 0,
+		deletedStateCount: 0,
+		removedPayloadBytes: 0,
+		remainingCompactableRolloutCount: 0,
+		remainingRemovableStateCount: 0,
+		dbSizeBytes: applied.dbSizeBytes,
+		pageCount: applied.pageCount,
+		freelistCount: applied.freelistCount,
+		pageSize: applied.pageSize,
+		dryRun: false,
+	});
 });
 
 function seedCompletedTurn(store: SQLiteSessionStore, workspaceRoot: string): void {

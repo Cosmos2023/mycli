@@ -1,10 +1,12 @@
 import type Database from "better-sqlite3";
 import type {
+	CanonicalConversationItem,
 	InstructionSnapshot,
 	ModelContextEvent,
 	ProviderInputTimelineEvent,
 	ProviderRequest,
 	ProviderRequestManifest,
+	ProviderRequestManifestV3,
 	ToolSetSnapshot,
 } from "@mycli/core";
 import {
@@ -19,12 +21,23 @@ import {
 	normalizeToolSetSnapshot,
 	validateManifestLogicalDigest,
 } from "./model-input-validation.ts";
+import {
+	modelInputSha256,
+	projectProviderRequest,
+	providerTimelinePrefixSha256,
+} from "@mycli/core";
 import type {
 	ProviderStepLifecycleEvent,
 	ProviderStepLifecycleState,
 } from "./model-input-validation.ts";
 import { StorageFailure } from "./session-store.ts";
 import { stableJson } from "./stable-json.ts";
+import type { SessionContentBlobRepository } from "./session-content-blob-repository.ts";
+
+export const MODEL_INPUT_CONTENT_BLOB_MARKER_JSON = stableJson({
+	schemaVersion: 1,
+	storage: "session_content_blob",
+});
 
 export type ModelInputLedgerFailpoint =
 	| "after_instruction_snapshot"
@@ -91,6 +104,8 @@ export interface ModelInputLedgerStore {
 export interface SQLiteModelInputLedgerOptions {
 	readonly database: Database.Database;
 	readonly write: <Result>(operation: () => Result) => Result;
+	readonly contentBlobs?: SessionContentBlobRepository;
+	readonly requestStorage?: "blob" | "timeline";
 	readonly failpoint?: (name: ModelInputLedgerFailpoint) => void;
 }
 
@@ -98,6 +113,7 @@ interface BlobRow {
 	readonly blob_id: unknown;
 	readonly payload_json: unknown;
 	readonly created_at: unknown;
+	readonly content_blob_id?: unknown;
 }
 
 interface SnapshotRow {
@@ -139,7 +155,7 @@ interface ManifestRow {
 	readonly turn_id: unknown;
 	readonly provider_step: unknown;
 	readonly manifest_blob_id: unknown;
-	readonly logical_request_blob_id: unknown;
+	readonly logical_request_blob_id?: unknown;
 	readonly request_signature: unknown;
 	readonly logical_input_sha256: unknown;
 	readonly logical_request_sha256: unknown;
@@ -166,21 +182,34 @@ const TIMELINE_EVENT_COLUMNS = `
 sequence_no, event_id, session_id, window_id, turn_id, provider_step, kind,
 blob_id, model_context_event_id, created_at
 `;
-const MANIFEST_COLUMNS = `
+const LEGACY_MANIFEST_COLUMNS = `
 request_id, session_id, turn_id, provider_step, manifest_blob_id,
 logical_request_blob_id, request_signature, logical_input_sha256,
 logical_request_sha256, previous_request_id, boundary, created_at
+`;
+const TIMELINE_MANIFEST_COLUMNS = `
+request_id, session_id, turn_id, provider_step, manifest_blob_id,
+request_signature, logical_input_sha256, logical_request_sha256,
+previous_request_id, boundary, created_at
 `;
 const LIFECYCLE_COLUMNS = "event_id, request_id, session_id, state, payload_json, created_at";
 
 export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 	readonly #database: Database.Database;
 	readonly #write: <Result>(operation: () => Result) => Result;
+	readonly #contentBlobs: SessionContentBlobRepository | undefined;
+	readonly #requestStorage: "blob" | "timeline";
+	readonly #manifestColumns: string;
 	readonly #failpoint: (name: ModelInputLedgerFailpoint) => void;
 
 	constructor(options: SQLiteModelInputLedgerOptions) {
 		this.#database = options.database;
 		this.#write = options.write;
+		this.#contentBlobs = options.contentBlobs;
+		this.#requestStorage = options.requestStorage ?? "blob";
+		this.#manifestColumns = this.#requestStorage === "timeline"
+			? TIMELINE_MANIFEST_COLUMNS
+			: LEGACY_MANIFEST_COLUMNS;
 		this.#failpoint = options.failpoint ?? (() => undefined);
 	}
 
@@ -242,6 +271,7 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			this.#failpoint("after_context_events");
 			for (const event of timelineEvents) this.#insertTimelineEvent(event);
 			this.#failpoint("after_timeline_events");
+			this.#validateTimelineCommitPrefix(manifest, timelineEvents, manifestExisted);
 			this.#validateManifestReferences(manifest, instructions, toolSet);
 			this.#insertManifest(manifest, request);
 			this.#failpoint("after_request_manifest");
@@ -354,7 +384,7 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		return this.#read(() => {
 			this.#requireIdentifier(sessionId, "session");
 			const row = this.#database.prepare(`
-				SELECT ${MANIFEST_COLUMNS}
+				SELECT ${this.#manifestColumns}
 				FROM provider_request_manifests
 				WHERE session_id = ?
 				ORDER BY rowid DESC
@@ -414,6 +444,9 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		request: ProviderRequest,
 		preparedEvent: ProviderStepLifecycleEvent,
 	): void {
+		if (this.#requestStorage === "timeline" && manifest.schemaVersion !== 3) {
+			throw new StorageFailure("timeline-backed provider requests require a v3 manifest");
+		}
 		if (manifest.instructionSnapshotId !== instructions.snapshotId
 			|| manifest.toolSetSnapshotId !== toolSet.snapshotId) {
 			throw new StorageFailure("provider request manifest snapshot ids do not match");
@@ -607,6 +640,15 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			LIMIT 1
 		`).get(event.sessionId) as TimelineEventRow | undefined;
 		if (event.kind === "window_boundary") {
+			const existingWindow = this.#database.prepare(`
+				SELECT 1 AS present
+				FROM provider_input_timeline_events
+				WHERE session_id = ? AND window_id = ?
+				LIMIT 1
+			`).get(event.sessionId, event.windowId) as { readonly present: unknown } | undefined;
+			if (existingWindow) {
+				throw new StorageFailure("provider input timeline window id is already in use");
+			}
 			if (latest?.window_id === event.windowId) {
 				throw new StorageFailure("provider input timeline window boundary is duplicated");
 			}
@@ -650,6 +692,31 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		if (!manifestExisted || stableJson(rows.map((row) => this.#timelineEvent(row))) !== stableJson(events)) {
 			throw new StorageFailure("provider step timeline events conflict with durable state");
 		}
+		}
+
+	#validateTimelineCommitPrefix(
+		manifest: ProviderRequestManifest,
+		events: readonly ProviderInputTimelineEvent[],
+		manifestExisted: boolean,
+	): void {
+		if (manifest.schemaVersion !== 3) return;
+		const prefix = this.#validatedTimelinePrefix(manifest);
+		const committedEvents = prefix.filter((event) => (
+			event.turnId === manifest.turnId && event.providerStep === manifest.providerStep
+		));
+		if (stableJson(committedEvents) !== stableJson(events)) {
+			throw new StorageFailure("provider request timeline manifest does not include its appended events");
+		}
+		if (!manifestExisted) {
+			const row = this.#database.prepare(`
+				SELECT COUNT(*) AS count
+				FROM provider_input_timeline_events
+				WHERE session_id = ? AND window_id = ?
+			`).get(manifest.sessionId, manifest.timelineWindowId) as { readonly count: unknown };
+			if (Number(row.count) !== manifest.timelineEventCount) {
+				throw new StorageFailure("provider request timeline prefix does not include the active window");
+			}
+		}
 	}
 
 	#validateManifestReferences(
@@ -657,6 +724,10 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		instructions: InstructionSnapshot,
 		toolSet: ToolSetSnapshot,
 	): void {
+		if (manifest.schemaVersion === 3) {
+			this.#validatedTimelineItems(manifest, instructions, toolSet);
+			return;
+		}
 		const references = new Set<string>();
 		for (const reference of manifest.orderedItems) {
 			const identity = `${reference.kind}:${reference.id}`;
@@ -706,11 +777,13 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 				WHERE session_id = ? AND window_id = ?
 				ORDER BY sequence_no
 			`).all(manifest.sessionId, manifest.timelineWindowId) as readonly TimelineEventRow[];
-			const eventIds = rows.map((row) => String(row.event_id));
+			const eventIds = rows
+				.slice(0, manifest.timelineEventIds.length)
+				.map((row) => String(row.event_id));
 			if (stableJson(eventIds) !== stableJson(manifest.timelineEventIds)) {
-				throw new StorageFailure("provider request timeline event order does not match its window");
+				throw new StorageFailure("provider request timeline event order does not match its window prefix");
 			}
-			const modelVisibleIds = rows
+			const modelVisibleIds = rows.slice(0, manifest.timelineEventIds.length)
 				.filter((row) => row.kind !== "window_boundary")
 				.map((row) => String(row.event_id));
 			const referencedIds = manifest.orderedItems
@@ -724,27 +797,31 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 
 	#insertManifest(manifest: ProviderRequestManifest, request: ProviderRequest): void {
 		const manifestBlobId = this.#putBlob(manifest, manifest.createdAt);
-		const requestBlobId = this.#putBlob(request, manifest.createdAt);
+		const requestSha256 = modelInputSha256(request);
+		const requestBlobId = this.#requestStorage === "blob"
+			? this.#putBlob(request, manifest.createdAt)
+			: undefined;
 		const existing = this.#manifestRow(manifest.requestId);
 		if (existing) {
 			if (existing.session_id !== manifest.sessionId || existing.turn_id !== manifest.turnId
 				|| existing.provider_step !== manifest.providerStep
 				|| existing.manifest_blob_id !== manifestBlobId
-				|| existing.logical_request_blob_id !== requestBlobId
+				|| (this.#requestStorage === "blob"
+					&& existing.logical_request_blob_id !== requestBlobId)
 				|| existing.request_signature !== manifest.requestSignature
 				|| existing.logical_input_sha256 !== manifest.logicalInputSha256
-				|| existing.logical_request_sha256 !== requestBlobId
+				|| existing.logical_request_sha256 !== requestSha256
 				|| nullableText(existing.previous_request_id) !== manifest.previousManifestId
-				|| nullableText(existing.boundary) !== manifestBoundaryColumn(manifest.boundary)
+				|| nullableText(existing.boundary) !== this.#manifestBoundary(manifest.boundary)
 				|| existing.created_at !== manifest.createdAt) {
 				throw new StorageFailure("provider request id collides with different content");
 			}
 			this.#blob(manifestBlobId);
-			this.#blob(requestBlobId);
+			if (requestBlobId) this.#blob(requestBlobId);
 			return;
 		}
 		const latest = this.#database.prepare(`
-			SELECT ${MANIFEST_COLUMNS}
+			SELECT ${this.#manifestColumns}
 			FROM provider_request_manifests
 			WHERE session_id = ?
 			ORDER BY rowid DESC
@@ -762,6 +839,28 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 				throw new StorageFailure("provider request does not extend the latest durable manifest");
 			}
 		}
+		if (this.#requestStorage === "timeline") {
+			this.#database.prepare(`
+				INSERT INTO provider_request_manifests (
+					request_id, session_id, turn_id, provider_step, manifest_blob_id,
+					request_signature, logical_input_sha256, logical_request_sha256,
+					previous_request_id, boundary, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`).run(
+				manifest.requestId,
+				manifest.sessionId,
+				manifest.turnId,
+				manifest.providerStep,
+				manifestBlobId,
+				manifest.requestSignature,
+				manifest.logicalInputSha256,
+				requestSha256,
+				manifest.previousManifestId ?? null,
+				this.#manifestBoundary(manifest.boundary) ?? null,
+				manifest.createdAt,
+			);
+			return;
+		}
 		this.#database.prepare(`
 			INSERT INTO provider_request_manifests (
 				request_id, session_id, turn_id, provider_step, manifest_blob_id,
@@ -777,9 +876,9 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			requestBlobId,
 			manifest.requestSignature,
 			manifest.logicalInputSha256,
-			requestBlobId,
+			requestSha256,
 			manifest.previousManifestId ?? null,
-			manifestBoundaryColumn(manifest.boundary) ?? null,
+			this.#manifestBoundary(manifest.boundary) ?? null,
 			manifest.createdAt,
 		);
 	}
@@ -834,9 +933,24 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			WHERE blob_id = ?
 		`).get(blob.id) as BlobRow | undefined;
 		if (existing) {
-			if (existing.payload_json !== blob.json) {
+			let existingJson: string;
+			try {
+				existingJson = modelInputBlob(this.#blob(blob.id)).json;
+			} catch {
 				throw new StorageFailure("model-input blob hash collides with different content");
 			}
+			if (existingJson !== blob.json) {
+				throw new StorageFailure("model-input blob hash collides with different content");
+			}
+			return blob.id;
+		}
+		if (this.#contentBlobs) {
+			const content = this.#contentBlobs.put(blob.json);
+			this.#database.prepare(`
+				INSERT INTO model_input_blobs (blob_id, payload_json, created_at)
+				VALUES (?, ?, ?)
+			`).run(blob.id, MODEL_INPUT_CONTENT_BLOB_MARKER_JSON, createdAt);
+			this.#contentBlobs.linkModelInputBlob(blob.id, content.blobId);
 			return blob.id;
 		}
 		this.#database.prepare(`
@@ -927,8 +1041,8 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			|| row.request_signature !== manifest.requestSignature
 			|| row.logical_input_sha256 !== manifest.logicalInputSha256
 			|| nullableText(row.previous_request_id) !== manifest.previousManifestId
-				|| nullableText(row.boundary) !== manifestBoundaryColumn(manifest.boundary)
-				|| row.created_at !== manifest.createdAt) {
+			|| nullableText(row.boundary) !== this.#manifestBoundary(manifest.boundary)
+			|| row.created_at !== manifest.createdAt) {
 			throw new StorageFailure("provider request manifest row does not match its immutable blob");
 		}
 		return manifest;
@@ -939,14 +1053,6 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		const row = this.#manifestRow(requestId);
 		if (!row) throw new StorageFailure("provider request manifest does not exist");
 		const manifest = this.#manifest(row);
-		const request = normalizeProviderRequest(
-			this.#blob(String(row.logical_request_blob_id)) as ProviderRequest,
-		);
-		const requestBlob = modelInputBlob(request);
-		if (row.logical_request_sha256 !== requestBlob.id
-			|| row.logical_request_blob_id !== requestBlob.id) {
-			throw new StorageFailure("logical provider request row does not match its immutable blob");
-		}
 		const instructions = this.#loadSnapshot(
 			"instruction_snapshots",
 			manifest.sessionId,
@@ -963,8 +1069,25 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			throw new StorageFailure("provider request snapshots are unavailable");
 		}
 		validateManifestLogicalDigest(manifest, instructions, toolSet);
+		const request = manifest.schemaVersion === 3
+			? normalizeProviderRequest(projectProviderRequest({
+				config: manifest.providerConfig,
+				instructions: instructions.content,
+				history: this.#validatedTimelineItems(manifest, instructions, toolSet),
+				tools: toolSet.tools,
+			}))
+			: normalizeProviderRequest(
+				this.#blob(String(row.logical_request_blob_id)) as ProviderRequest,
+			);
+		const requestSha256 = modelInputSha256(request);
+		if (row.logical_request_sha256 !== requestSha256
+			|| (manifest.schemaVersion !== 3 && row.logical_request_blob_id !== requestSha256)) {
+			throw new StorageFailure("logical provider request row does not match its committed hash");
+		}
 		assertRequestMatchesSnapshots(request, manifest, instructions, toolSet);
-		this.#validateManifestReferences(manifest, instructions, toolSet);
+		if (manifest.schemaVersion !== 3) {
+			this.#validateManifestReferences(manifest, instructions, toolSet);
+		}
 		const events = this.loadProviderStepEvents(manifest.requestId);
 		if (events[0]?.state !== "prepared") {
 			throw new StorageFailure("provider request is not durably prepared");
@@ -993,22 +1116,41 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 	}
 
 	#blob(blobId: string): unknown {
-		const row = this.#database.prepare(`
-			SELECT blob_id, payload_json, created_at
-			FROM model_input_blobs
-			WHERE blob_id = ?
-		`).get(blobId) as BlobRow | undefined;
+		const row = (this.#contentBlobs
+			? this.#database.prepare(`
+				SELECT owner.blob_id, owner.payload_json, owner.created_at,
+				       reference.content_blob_id
+				FROM model_input_blobs AS owner
+				LEFT JOIN model_input_blob_refs AS reference ON reference.blob_id = owner.blob_id
+				WHERE owner.blob_id = ?
+			`).get(blobId)
+			: this.#database.prepare(`
+				SELECT blob_id, payload_json, created_at
+				FROM model_input_blobs WHERE blob_id = ?
+			`).get(blobId)) as BlobRow | undefined;
 		if (!row || typeof row.payload_json !== "string") {
 			throw new StorageFailure("model-input blob does not exist");
 		}
+		let payloadJson = row.payload_json;
+		if (this.#contentBlobs) {
+			if (payloadJson !== MODEL_INPUT_CONTENT_BLOB_MARKER_JSON
+				|| typeof row.content_blob_id !== "string") {
+				throw new StorageFailure("model-input blob content reference is invalid");
+			}
+			const hydrated = this.#contentBlobs.loadUtf8(row.content_blob_id);
+			if (hydrated === undefined) {
+				throw new StorageFailure("model-input blob content reference is missing");
+			}
+			payloadJson = hydrated;
+		}
 		let value: unknown;
 		try {
-			value = JSON.parse(row.payload_json) as unknown;
+			value = JSON.parse(payloadJson) as unknown;
 		} catch {
 			throw new StorageFailure("model-input blob contains invalid JSON");
 		}
 		const canonical = modelInputBlob(value);
-		if (row.blob_id !== canonical.id || row.payload_json !== canonical.json) {
+		if (row.blob_id !== canonical.id || payloadJson !== canonical.json) {
 			throw new StorageFailure("model-input blob content hash does not match");
 		}
 		return value;
@@ -1016,10 +1158,76 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 
 	#manifestRow(requestId: string): ManifestRow | undefined {
 		return this.#database.prepare(`
-			SELECT ${MANIFEST_COLUMNS}
+			SELECT ${this.#manifestColumns}
 			FROM provider_request_manifests
 			WHERE request_id = ?
 		`).get(requestId) as ManifestRow | undefined;
+	}
+
+	#validatedTimelinePrefix(
+		manifest: ProviderRequestManifestV3,
+	): readonly ProviderInputTimelineEvent[] {
+		const rows = this.#database.prepare(`
+			SELECT ${TIMELINE_EVENT_COLUMNS}
+			FROM provider_input_timeline_events
+			WHERE session_id = ? AND window_id = ?
+			ORDER BY sequence_no
+			LIMIT ?
+		`).all(
+			manifest.sessionId,
+			manifest.timelineWindowId,
+			manifest.timelineEventCount,
+		) as readonly TimelineEventRow[];
+		if (rows.length !== manifest.timelineEventCount) {
+			throw new StorageFailure("provider request timeline prefix is incomplete");
+		}
+		const events = Object.freeze(rows.map((row) => this.#timelineEvent(row)));
+		if (events[0]?.kind !== "window_boundary") {
+			throw new StorageFailure("provider request timeline prefix has no window boundary");
+		}
+		if (providerTimelinePrefixSha256(events) !== manifest.timelinePrefixSha256) {
+			throw new StorageFailure("provider request timeline prefix hash does not match");
+		}
+		return events;
+	}
+
+	#validatedTimelineItems(
+		manifest: ProviderRequestManifestV3,
+		instructions: InstructionSnapshot,
+		toolSet: ToolSetSnapshot,
+	): readonly CanonicalConversationItem[] {
+		const events = this.#validatedTimelinePrefix(manifest);
+		const items = Object.freeze(events.flatMap((event) => event.item ? [event.item] : []));
+		if (modelInputSha256(items) !== manifest.timelineSha256) {
+			throw new StorageFailure("provider request timeline hash does not match its prefix");
+		}
+		const configurationSha256 = modelInputSha256({
+			provider_config: manifest.providerConfig,
+			instruction_snapshot_sha256: instructions.contentSha256,
+			tool_set_snapshot_sha256: toolSet.contentSha256,
+		});
+		if (configurationSha256 !== manifest.requestConfigurationSha256) {
+			throw new StorageFailure("provider request configuration hash does not match");
+		}
+		const bootstrapPrefixSha256 = modelInputSha256({
+			instruction_snapshot_sha256: instructions.contentSha256,
+			tool_set_snapshot_sha256: toolSet.contentSha256,
+			items: staticBootstrapItems(events),
+		});
+		if (bootstrapPrefixSha256 !== manifest.bootstrapPrefixSha256
+			|| manifest.contextPrefixSha256 !== manifest.bootstrapPrefixSha256) {
+			throw new StorageFailure("provider request bootstrap prefix hash does not match");
+		}
+		if (manifest.commonPrefixItemCount > items.length) {
+			throw new StorageFailure("provider request common prefix count is invalid");
+		}
+		return items;
+	}
+
+	#manifestBoundary(
+		boundary: ProviderRequestManifest["boundary"],
+	): ProviderRequestManifest["boundary"] {
+		return this.#requestStorage === "timeline" ? boundary : manifestBoundaryColumn(boundary);
 	}
 
 	#contextEventRow(eventId: string): ContextEventRow | undefined {
@@ -1126,4 +1334,19 @@ function timelineItemRole(
 	if (item?.type === "user") return "user";
 	if (item?.type === "context") return item.metadata.role ?? "user";
 	return undefined;
+}
+
+function staticBootstrapItems(
+	events: readonly ProviderInputTimelineEvent[],
+): readonly CanonicalConversationItem[] {
+	const items: CanonicalConversationItem[] = [];
+	for (const event of events) {
+		if (event.kind === "window_boundary") continue;
+		if (event.kind !== "context_update" || event.item?.type !== "context"
+			|| event.item.metadata.cacheClass !== "static") {
+			break;
+		}
+		items.push(event.item);
+	}
+	return Object.freeze(items);
 }

@@ -1,5 +1,6 @@
 import {
 	manifestLogicalInputSha256,
+	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
 } from "@mycli/core";
 import type {
@@ -31,7 +32,7 @@ const LIFECYCLE_PAYLOAD_MAX_CHARS = 16_384;
 
 const PROVIDERS = new Set(["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]);
 const PROTOCOLS = new Set(["responses", "chat_completions", "anthropic_messages"]);
-const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const FRAGMENT_KINDS = new Set([
 	"collaboration_mode",
 	"permissions",
@@ -270,22 +271,30 @@ export function normalizeProviderRequestManifest(
 		"logicalInputSha256", "contextPrefixSha256", "previousManifestId", "boundary", "createdAt",
 		"timelineWindowId", "timelineEventIds", "requestConfigurationSha256",
 		"bootstrapPrefixSha256", "timelineSha256", "commonPrefixItemCount",
+		"timelineEventCount", "timelinePrefixSha256",
 	], [
 		"schemaVersion", "requestId", "sessionId", "turnId", "providerStep", "providerConfig",
-		"instructionSnapshotId", "toolSetSnapshotId", "orderedItems", "requestSignature",
+		"instructionSnapshotId", "toolSetSnapshotId", "requestSignature",
 		"logicalInputSha256", "contextPrefixSha256", "createdAt",
 	], "provider request manifest");
-	if (record.schemaVersion !== 1 && record.schemaVersion !== 2) {
+	if (record.schemaVersion !== 1 && record.schemaVersion !== 2 && record.schemaVersion !== 3) {
 		throw invalid("provider request manifest version is unsupported");
 	}
-	if (!Array.isArray(record.orderedItems)) throw invalid("provider request manifest order is invalid");
+	if ((record.schemaVersion === 1 || record.schemaVersion === 2)
+		&& !Array.isArray(record.orderedItems)) {
+		throw invalid("provider request manifest order is invalid");
+	}
+	if (record.schemaVersion === 3
+		&& (record.orderedItems !== undefined || record.timelineEventIds !== undefined)) {
+		throw invalid("provider request manifest v3 repeats timeline prefix arrays");
+	}
 	const boundary = record.boundary;
 	if (boundary !== undefined && boundary !== "bootstrap"
 		&& boundary !== "legacy_bootstrap" && boundary !== "continuation_reset"
 		&& boundary !== "compaction" && boundary !== "source_reset") {
 		throw invalid("provider request manifest boundary is invalid");
 	}
-	const timelineFields = [
+	const v2TimelineFields = [
 		record.timelineWindowId,
 		record.timelineEventIds,
 		record.requestConfigurationSha256,
@@ -293,14 +302,27 @@ export function normalizeProviderRequestManifest(
 		record.timelineSha256,
 		record.commonPrefixItemCount,
 	];
-	if (record.schemaVersion === 1 && timelineFields.some((field) => field !== undefined)) {
+	const v3TimelineFields = [
+		record.timelineWindowId,
+		record.timelineEventCount,
+		record.timelinePrefixSha256,
+		record.requestConfigurationSha256,
+		record.bootstrapPrefixSha256,
+		record.timelineSha256,
+		record.commonPrefixItemCount,
+	];
+	if (record.schemaVersion === 1
+		&& [...v2TimelineFields, ...v3TimelineFields].some((field) => field !== undefined)) {
 		throw invalid("provider request manifest v1 contains timeline fields");
 	}
-	if (record.schemaVersion === 2 && timelineFields.some((field) => field === undefined)) {
+	if (record.schemaVersion === 2 && v2TimelineFields.some((field) => field === undefined)) {
 		throw invalid("provider request manifest v2 is missing timeline fields");
 	}
 	if (record.schemaVersion === 2 && !Array.isArray(record.timelineEventIds)) {
 		throw invalid("provider request manifest timeline order is invalid");
+	}
+	if (record.schemaVersion === 3 && v3TimelineFields.some((field) => field === undefined)) {
+		throw invalid("provider request manifest v3 is missing compact timeline fields");
 	}
 	const normalized = {
 		schemaVersion: record.schemaVersion,
@@ -311,7 +333,10 @@ export function normalizeProviderRequestManifest(
 		providerConfig: normalizeProviderConfig(record.providerConfig),
 		instructionSnapshotId: identifier(record.instructionSnapshotId, "instruction snapshot"),
 		toolSetSnapshotId: identifier(record.toolSetSnapshotId, "tool-set snapshot"),
-		orderedItems: Object.freeze(record.orderedItems.map(normalizeModelInputReference)),
+		...(record.schemaVersion === 1 || record.schemaVersion === 2 ? {
+			orderedItems: Object.freeze((record.orderedItems as readonly unknown[])
+				.map(normalizeModelInputReference)),
+		} : {}),
 		requestSignature: boundedString(record.requestSignature, "provider request signature", TEXT_FIELD_MAX_CHARS, true),
 		logicalInputSha256: sha256(record.logicalInputSha256, "logical input"),
 		contextPrefixSha256: sha256(record.contextPrefixSha256, "context prefix"),
@@ -333,6 +358,24 @@ export function normalizeProviderRequestManifest(
 				"provider request common prefix item count",
 			),
 		} : {}),
+		...(record.schemaVersion === 3 ? {
+			timelineWindowId: identifier(record.timelineWindowId, "provider request timeline window"),
+			timelineEventCount: positiveInteger(
+				record.timelineEventCount,
+				"provider request timeline event count",
+			),
+			timelinePrefixSha256: sha256(record.timelinePrefixSha256, "provider timeline prefix"),
+			requestConfigurationSha256: sha256(
+				record.requestConfigurationSha256,
+				"provider request configuration",
+			),
+			bootstrapPrefixSha256: sha256(record.bootstrapPrefixSha256, "provider bootstrap prefix"),
+			timelineSha256: sha256(record.timelineSha256, "provider input timeline"),
+			commonPrefixItemCount: nonNegativeInteger(
+				record.commonPrefixItemCount,
+				"provider request common prefix item count",
+			),
+		} : {}),
 		createdAt: timestamp(record.createdAt, "provider request manifest"),
 	};
 	return Object.freeze(normalized) as ProviderRequestManifest;
@@ -343,11 +386,10 @@ export function validateManifestLogicalDigest(
 	instructions: InstructionSnapshot,
 	tools: ToolSetSnapshot,
 ): void {
-	if (manifest.logicalInputSha256 !== manifestLogicalInputSha256(
-		instructions,
-		tools,
-		manifest.orderedItems,
-	)) {
+	const expected = manifest.schemaVersion === 3
+		? manifestTimelineLogicalInputSha256(instructions, tools, manifest.timelineSha256)
+		: manifestLogicalInputSha256(instructions, tools, manifest.orderedItems);
+	if (manifest.logicalInputSha256 !== expected) {
 		throw invalid("provider request logical input hash does not match");
 	}
 }
@@ -355,7 +397,7 @@ export function validateManifestLogicalDigest(
 export function normalizeProviderRequest(value: ProviderRequest): ProviderRequest {
 	const record = normalizedRecord(value, "logical provider request", MODEL_INPUT_JSON_MAX_CHARS);
 	assertKeys(record, [
-		"provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "promptCacheKey",
+		"provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey",
 		"cacheControlEnabled", "instructions", "developerInstructions", "messages", "items", "tools",
 		"previousResponseId",
 	], ["provider", "protocol", "model", "instructions", "messages", "tools"], "logical provider request");
@@ -441,6 +483,13 @@ export function assertRequestMatchesSnapshots(
 	}
 	if (stableJson(providerConfigFromRequest(request)) !== stableJson(manifest.providerConfig)) {
 		throw invalid("provider request configuration does not match its manifest");
+	}
+	if (manifest.schemaVersion === 3) {
+		if (manifest.instructionSnapshotId !== instructions.snapshotId
+			|| manifest.toolSetSnapshotId !== toolSet.snapshotId) {
+			throw invalid("provider request snapshot identity does not match its manifest");
+		}
+		return;
 	}
 	const instructionReferences = manifest.orderedItems.filter((item) => (
 		item.kind === "instruction_snapshot"
@@ -545,7 +594,7 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	const record = normalizedRecord(value, "provider request configuration");
 	if (!allowRequestFields) {
 		for (const key of Object.keys(record)) {
-			if (!["provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "promptCacheKey", "cacheControlEnabled"].includes(key)) {
+			if (!["provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey", "cacheControlEnabled"].includes(key)) {
 				throw invalid("provider request configuration contains unknown fields");
 			}
 		}
@@ -559,6 +608,9 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	if (record.cacheControlEnabled !== undefined && typeof record.cacheControlEnabled !== "boolean") {
 		throw invalid("provider cache-control setting is invalid");
 	}
+	if (record.store !== undefined && typeof record.store !== "boolean") {
+		throw invalid("provider storage setting is invalid");
+	}
 	return Object.freeze({
 		provider: record.provider as ProviderRequestConfig["provider"],
 		protocol: record.protocol as ProviderRequestConfig["protocol"],
@@ -569,6 +621,7 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 		...(record.maxOutputTokens === undefined ? {} : {
 			maxOutputTokens: positiveInteger(record.maxOutputTokens, "provider max output tokens"),
 		}),
+		...(record.store === undefined ? {} : { store: record.store }),
 		...(record.promptCacheKey === undefined ? {} : {
 			promptCacheKey: boundedString(record.promptCacheKey, "provider prompt cache key", TEXT_FIELD_MAX_CHARS, true),
 		}),
@@ -585,6 +638,7 @@ function providerConfigFromRequest(request: ProviderRequest): ProviderRequestCon
 		model: request.model,
 		...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
 		...(request.maxOutputTokens === undefined ? {} : { maxOutputTokens: request.maxOutputTokens }),
+		...(request.store === undefined ? {} : { store: request.store }),
 		...(request.promptCacheKey === undefined ? {} : { promptCacheKey: request.promptCacheKey }),
 		...(request.cacheControlEnabled === undefined ? {} : {
 			cacheControlEnabled: request.cacheControlEnabled,
@@ -711,11 +765,19 @@ function normalizeCanonicalToolCall(value: unknown): {
 
 function normalizeProviderReplayState(value: unknown): ProviderReplayState {
 	const record = normalizedRecord(value, "provider replay state");
-	assertKeys(record, ["provider", "value"], ["provider", "value"], "provider replay state");
+	assertKeys(
+		record,
+		["provider", "value", "tokenEstimate"],
+		["provider", "value"],
+		"provider replay state",
+	);
 	if (!PROVIDERS.has(String(record.provider))) throw invalid("provider replay state route is invalid");
 	return Object.freeze({
 		provider: record.provider as ProviderReplayState["provider"],
 		value: Object.freeze(normalizedRecord(record.value, "provider replay value")),
+		...(record.tokenEstimate === undefined ? {} : {
+			tokenEstimate: nonNegativeInteger(record.tokenEstimate, "provider replay token estimate"),
+		}),
 	});
 }
 

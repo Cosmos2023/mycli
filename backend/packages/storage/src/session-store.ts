@@ -105,8 +105,9 @@ export interface StoredToolActivation {
 
 export interface ProjectedFileChange {
 	readonly version: 1;
-	readonly kind: "add" | "update";
+	readonly kind: "add" | "update" | "delete" | "move";
 	readonly path: string;
+	readonly previous_path?: string;
 	readonly diff: string;
 	readonly added_lines: number;
 	readonly removed_lines: number;
@@ -158,18 +159,23 @@ export interface SessionLineageNode {
 	readonly sessionId: string;
 	readonly parentId?: string;
 	readonly forkPoint?: number;
+	readonly forkEventSessionId?: string;
+	readonly forkEventId?: string;
 }
 
 export interface ForkSessionInput {
 	readonly sourceSessionId: string;
 	readonly targetSessionId: string;
 	readonly forkPoint?: number;
+	readonly forkEventId?: string;
 }
 
 export interface ForkSessionResult {
 	readonly sourceSessionId: string;
 	readonly targetSessionId: string;
 	readonly forkPoint: number;
+	readonly forkEventSessionId?: string;
+	readonly forkEventId?: string;
 	readonly messageCount: number;
 }
 
@@ -202,6 +208,7 @@ export interface SessionSearchResult {
 export interface SessionMaintenanceOptions {
 	readonly workspaceRoot?: string;
 	readonly candidateLimit?: number;
+	readonly payloadLimit?: number;
 }
 
 export interface SessionMaintenanceCandidate {
@@ -217,12 +224,51 @@ export interface SessionStorageMetrics {
 	readonly pageSize: number;
 }
 
+export interface SessionContentBlobMaintenanceMetrics {
+	readonly blobCount: number;
+	readonly referenceCount: number;
+	readonly transcriptReferenceCount: number;
+	readonly modelInputReferenceCount: number;
+	readonly reachableBlobCount: number;
+	readonly reachableRawBytes: number;
+	readonly reachableStoredBytes: number;
+	readonly logicalReferenceBytes: number;
+	readonly deduplicatedReferenceBytes: number;
+	readonly orphanBlobCount: number;
+	readonly orphanRawBytes: number;
+	readonly orphanStoredBytes: number;
+}
+
 export interface SessionMaintenanceReport extends SessionStorageMetrics {
 	readonly workspaceSessionCount: number;
 	readonly emptySessionCount: number;
 	readonly emptySessionCandidates: readonly SessionMaintenanceCandidate[];
 	readonly emptySessionCandidatesOmitted: number;
+	readonly compactableRolloutCount: number;
+	readonly compactableRolloutBytes: number;
+	readonly removableStateCount: number;
+	readonly removableStateBytes: number;
+	readonly estimatedPayloadBytesReclaimable: number;
+	readonly freelistBytes: number;
+	readonly contentBlobs?: SessionContentBlobMaintenanceMetrics;
 	readonly dryRun: true;
+}
+
+export interface SessionContentBlobOrphanCleanupResult extends SessionStorageMetrics {
+	readonly deletedBlobCount: number;
+	readonly deletedRawBytes: number;
+	readonly deletedStoredBytes: number;
+	readonly freelistBytes: number;
+	readonly dryRun: false;
+}
+
+export interface SessionPayloadCleanupResult extends SessionStorageMetrics {
+	readonly compactedRolloutCount: number;
+	readonly deletedStateCount: number;
+	readonly removedPayloadBytes: number;
+	readonly remainingCompactableRolloutCount: number;
+	readonly remainingRemovableStateCount: number;
+	readonly dryRun: false;
 }
 
 export interface SessionEmptyCleanupResult extends SessionStorageMetrics {
@@ -345,8 +391,19 @@ export interface InterruptAmbiguousApprovalInput {
 export interface CommitCompactionInput {
 	readonly sessionId: string;
 	readonly replacementMessages: readonly Readonly<Record<string, unknown>>[];
+	readonly replacementItems?: readonly CanonicalConversationItem[];
 	readonly summary: string;
 	readonly checkpoint: Readonly<Record<string, unknown>>;
+}
+
+export interface SequencedHistoryItem {
+	readonly sequenceNo: number;
+	readonly payload: Readonly<Record<string, unknown>>;
+}
+
+export interface HistoryItemWindow {
+	readonly items: readonly SequencedHistoryItem[];
+	readonly hasMore: boolean;
 }
 
 export interface ImportLegacyConversationInput {
@@ -367,7 +424,15 @@ export interface SessionStateStore {
 	appendSessionSummary(input: AppendSessionSummaryInput): void;
 	loadSessionSummaries(sessionId: string): readonly string[];
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	loadRecentHistoryItems(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[];
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	loadRecentTurnRollouts(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[];
 	importLegacyConversation(input: ImportLegacyConversationInput): boolean;
 	loadCommittedQueueIds(sessionId: string): ReadonlySet<string>;
 	commitQueuedInputs(input: CommitQueuedInputsInput): QueueSnapshot;
@@ -402,6 +467,10 @@ export function projectMutationMetadata(
 		...(status ? { status } : {}),
 		...(matches === undefined ? {} : { matches }),
 	};
+	if (success && value.fileChanges !== undefined) {
+		const fileChanges = projectedFileChanges(value.fileChanges);
+		return fileChanges.length > 0 ? { ...projected, file_changes: fileChanges } : projected;
+	}
 	if (!success || !path || !status || status === "unchanged") return projected;
 	const diff = boundedDiff(value.diff);
 	const addedLines = boundedCount(value.addedLines);
@@ -424,6 +493,43 @@ export function projectMutationMetadata(
 			...(truncated ? { truncated: true, omitted_chars: omittedChars } : {}),
 		}],
 	};
+}
+
+function projectedFileChanges(value: unknown): readonly ProjectedFileChange[] {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 64) return Object.freeze([]);
+	const projected: ProjectedFileChange[] = [];
+	let totalDiffChars = 0;
+	let totalDiffLines = 0;
+	for (const raw of value) {
+		if (!isRecord(raw) || raw.version !== 1) return Object.freeze([]);
+		const kind = mutationChangeKind(raw.kind);
+		const path = workspacePath(raw.path);
+		const previousPath = kind === "move" ? workspacePath(raw.previousPath) : undefined;
+		const diff = boundedDiff(raw.diff);
+		const addedLines = boundedCount(raw.addedLines);
+		const removedLines = boundedCount(raw.removedLines);
+		const truncated = raw.truncated === true;
+		const omittedChars = truncated ? boundedCount(raw.omittedChars) : undefined;
+		if (!kind || !path || kind === "move" && !previousPath
+			|| diff === undefined || addedLines === undefined || removedLines === undefined
+			|| truncated && omittedChars === undefined) return Object.freeze([]);
+		totalDiffChars += diff.length;
+		totalDiffLines += diff.split("\n").length;
+		if (totalDiffChars > MAX_MUTATION_DIFF_CHARS || totalDiffLines > MAX_MUTATION_DIFF_LINES) {
+			return Object.freeze([]);
+		}
+		projected.push(Object.freeze({
+			version: 1,
+			kind,
+			path,
+			...(previousPath ? { previous_path: previousPath } : {}),
+			diff,
+			added_lines: addedLines,
+			removed_lines: removedLines,
+			...(truncated ? { truncated: true, omitted_chars: omittedChars } : {}),
+		}));
+	}
+	return Object.freeze(projected);
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -450,6 +556,12 @@ function mutationStatus(value: unknown): ProjectedMutationMetadata["status"] | u
 	return typeof value === "string" && MUTATION_STATUSES.has(
 		value as ProjectedMutationMetadata["status"],
 	) ? value as ProjectedMutationMetadata["status"] : undefined;
+}
+
+function mutationChangeKind(value: unknown): ProjectedFileChange["kind"] | undefined {
+	return value === "add" || value === "update" || value === "delete" || value === "move"
+		? value
+		: undefined;
 }
 
 function boundedCount(value: unknown): number | undefined {

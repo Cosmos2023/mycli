@@ -16,6 +16,11 @@ import type {
 	RuntimeErrorCode,
 } from "@mycli/core";
 import * as storage from "../src/index.ts";
+import type {
+	AgentEffectLedgerStore,
+	ReserveAgentEffectAttemptInput,
+} from "../src/index.ts";
+import { restoreLegacySearchProjection } from "./support/v9-normalization-fixtures.ts";
 
 interface ReserveTurnInput {
 	readonly sessionId: string;
@@ -52,6 +57,7 @@ interface FailStoredTurnInput {
 }
 
 interface Store {
+	readonly agentEffectLedger: AgentEffectLedgerStore;
 	reserveTurn(input: ReserveTurnInput): {
 		readonly kind: "reserved" | "existing";
 		readonly turn: RuntimeTurnRecord;
@@ -60,6 +66,27 @@ interface Store {
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
 	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	loadRecentHistoryItems(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[];
+	loadRecentTurnRollouts(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[];
+	loadHistoryItemWindow(
+		sessionId: string,
+		beforeSequence: number | undefined,
+		limit: number,
+	): storage.HistoryItemWindow;
+	loadTurnRolloutsForTurns(
+		sessionId: string,
+		turnIds: readonly string[],
+	): readonly Readonly<Record<string, unknown>>[];
+	searchMessages(
+		query: string,
+		options?: storage.SessionSearchQuery,
+	): readonly storage.SessionSearchResult[];
 	appendAssistantToolCalls(input: {
 		readonly sessionId: string;
 		readonly clientTurnId: string;
@@ -113,7 +140,7 @@ type StoreConstructor = new (options: {
 	readonly busyTimeoutMs?: number;
 }) => Store;
 
-test("initializes the complete schema-v7 shape plus durable model-input state", async (t) => {
+test("initializes the complete schema-v9 shape plus transcript projection indexes", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const fixture = await databaseFixture(t);
 	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
@@ -135,7 +162,6 @@ test("initializes the complete schema-v7 shape plus durable model-input state", 
 		"conversation_messages_fts",
 		"conversation_trees",
 		"history_items",
-		"history_items_fts",
 		"turn_rollouts",
 		"session_state",
 		"session_summaries",
@@ -152,6 +178,8 @@ test("initializes the complete schema-v7 shape plus durable model-input state", 
 		"provider_request_manifests",
 		"provider_step_events",
 		"shell_output_chunks",
+		"agent_effect_attempts",
+		"agent_effect_attempt_outcomes",
 	]) {
 		assert.ok(tables.includes(table), `missing table ${table}`);
 	}
@@ -159,9 +187,6 @@ test("initializes the complete schema-v7 shape plus durable model-input state", 
 		"conversation_messages_fts_delete",
 		"conversation_messages_fts_insert",
 		"conversation_messages_fts_update",
-		"history_items_fts_delete",
-		"history_items_fts_insert",
-		"history_items_fts_update",
 		"model_input_blobs_no_update",
 		"model_input_blobs_no_delete",
 		"instruction_snapshots_no_update",
@@ -177,15 +202,34 @@ test("initializes the complete schema-v7 shape plus durable model-input state", 
 		"provider_step_events_no_update",
 		"provider_step_events_no_delete",
 		"shell_output_chunks_no_update",
+		"agent_effect_attempts_no_update",
+		"agent_effect_attempts_no_delete",
+		"agent_effect_attempt_outcomes_no_update",
+		"agent_effect_attempt_outcomes_no_delete",
 	]) {
 		assert.ok(triggers.includes(trigger), `missing trigger ${trigger}`);
 	}
-	assert.equal((database.prepare("SELECT version FROM schema_version").get() as { version: number }).version, 7);
+	const indexes = database.prepare(
+		"SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+	).all().map((row) => String((row as { name: unknown }).name));
+	assert.ok(indexes.includes("idx_history_items_session_sequence"));
+	assert.ok(indexes.includes("idx_turn_rollouts_session_sequence"));
+	assert.ok(indexes.includes("idx_turn_rollouts_session_turn_sequence"));
+	assert.ok(indexes.includes("idx_session_summaries_session_sequence"));
+	assert.equal(tables.includes("conversation_messages_fts_content"), false);
+	assert.equal(tables.some((table) => table.startsWith("history_items_fts")), false);
+	const searchSql = String((database.prepare(`
+		SELECT sql FROM sqlite_master
+		WHERE type = 'table' AND name = 'conversation_messages_fts'
+	`).get() as { sql: unknown }).sql);
+	assert.match(searchSql, /content='conversation_messages'/u);
+	assert.match(searchSql, /content_rowid='rowid'/u);
+	assert.equal((database.prepare("SELECT version FROM schema_version").get() as { version: number }).version, 9);
 	const runtimeTurnColumns = database.prepare("PRAGMA table_info(runtime_turns)").all()
 		.map((row) => String((row as { name: unknown }).name));
 	assert.ok(runtimeTurnColumns.includes("owner_id"));
 	assert.ok(runtimeTurnColumns.includes("owner_pid"));
-	assert.equal(storage.SCHEMA_VERSION, 7);
+	assert.equal(storage.SCHEMA_VERSION, 9);
 });
 
 test("reopens the current schema without rewriting its migration marker", async (t) => {
@@ -256,7 +300,7 @@ test("opens an existing schema-v2 database additively without changing existing 
 	assert.equal(count(migrated, "agent_threads"), 0);
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-			7,
+			9,
 	);
 });
 
@@ -275,7 +319,7 @@ test("opens an existing schema-v3 database and adds the mailbox table", async (t
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-			7,
+			9,
 	);
 	assert.equal(
 		Number((migrated.prepare(`
@@ -327,7 +371,7 @@ test("opens an existing schema-v4 database and adds model-input ledger tables", 
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-		7,
+		9,
 	);
 	for (const table of [
 		"model_input_blobs",
@@ -359,7 +403,7 @@ test("opens an existing schema-v5 database and adds provider timeline storage", 
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-			7,
+			9,
 	);
 	assert.equal(count(migrated, "provider_input_timeline_events"), 0);
 	const triggers = migrated.prepare(`
@@ -388,7 +432,7 @@ test("opens an existing schema-v6 database and adds append-only shell output sto
 	t.after(() => migrated.close());
 	assert.equal(
 		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
-		7,
+		9,
 	);
 	assert.equal(count(migrated, "shell_output_chunks"), 0);
 	const triggers = migrated.prepare(`
@@ -396,6 +440,251 @@ test("opens an existing schema-v6 database and adds append-only shell output sto
 		WHERE type = 'trigger' AND name = 'shell_output_chunks_no_update'
 	`).all() as readonly { name: string }[];
 	assert.deepEqual(triggers.map((row) => row.name), ["shell_output_chunks_no_update"]);
+});
+
+test("opens an existing schema-v7 database and adds durable agent effect attempts", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
+	const database = await openDatabase(fixture.dbPath);
+	for (const trigger of database.prepare(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'trigger' AND name LIKE 'agent_effect_attempt%'
+	`).all() as readonly { name: string }[]) {
+		database.exec(`DROP TRIGGER ${trigger.name}`);
+	}
+	database.exec("DROP TABLE agent_effect_attempt_outcomes");
+	database.exec("DROP TABLE agent_effect_attempts");
+	database.prepare("UPDATE schema_version SET version = 7").run();
+	database.prepare(`
+		INSERT INTO sessions (
+			session_id, workspace_root, thread_id, created_at, updated_at, last_active_at, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`).run("legacy-v7", fixture.root, "legacy-v7", NOW, NOW, NOW, "active");
+	database.prepare(`
+		INSERT INTO conversation_messages (session_id, message_index, payload_json)
+		VALUES (?, ?, ?)
+	`).run("legacy-v7", 0, JSON.stringify({ role: "user", content: "preserved" }));
+	database.close();
+
+	const reopened = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => reopened.close());
+	assert.deepEqual(reopened.loadConversation("legacy-v7"), [
+		{ role: "user", content: "preserved" },
+	]);
+	const migrated = await openDatabase(fixture.dbPath);
+	t.after(() => migrated.close());
+	assert.equal(
+		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
+		9,
+	);
+	assert.equal(count(migrated, "agent_effect_attempts"), 0);
+	assert.equal(count(migrated, "agent_effect_attempt_outcomes"), 0);
+});
+
+test("migrates schema v8 search to external content and keeps trigger synchronization", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
+	const database = await openDatabase(fixture.dbPath);
+	restoreLegacySearchProjection(database);
+	database.prepare("UPDATE schema_version SET version = 8").run();
+	database.prepare(`
+		INSERT INTO sessions (
+			session_id, workspace_root, thread_id, created_at, updated_at, last_active_at, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`).run("legacy-search", fixture.root, "legacy-search", NOW, NOW, NOW, "active");
+	database.prepare(`
+		INSERT INTO conversation_messages (session_id, message_index, payload_json)
+		VALUES (?, ?, ?)
+	`).run("legacy-search", 0, JSON.stringify({ role: "user", content: "migration marker" }));
+	database.prepare(`
+		INSERT INTO history_items (session_id, item_id, payload_json)
+		VALUES (?, ?, ?)
+	`).run("legacy-search", "history-1", JSON.stringify({
+		id: "history-1",
+		turn_id: "turn-1",
+		type: "user_message",
+		text: "history marker",
+	}));
+	database.close();
+
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	assert.deepEqual(store.searchMessages("migration").map((result) => result.messageIndex), [0]);
+
+	const migrated = await openDatabase(fixture.dbPath);
+	const tables = migrated.prepare(
+		"SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+	).all().map((row) => String((row as { name: unknown }).name));
+	assert.equal(tables.includes("conversation_messages_fts_content"), false);
+	assert.equal(tables.some((table) => table.startsWith("history_items_fts")), false);
+	assert.equal(
+		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
+		9,
+	);
+
+	migrated.prepare(`
+		INSERT INTO conversation_messages (session_id, message_index, payload_json)
+		VALUES (?, ?, ?)
+	`).run("legacy-search", 1, JSON.stringify({ role: "assistant", content: "insert marker" }));
+	assert.equal(store.searchMessages("insert").length, 1);
+	migrated.prepare(`
+		UPDATE conversation_messages SET payload_json = ?
+		WHERE session_id = ? AND message_index = ?
+	`).run(JSON.stringify({ role: "assistant", content: "updated marker" }), "legacy-search", 1);
+	assert.equal(store.searchMessages("insert").length, 0);
+	assert.equal(store.searchMessages("updated").length, 1);
+	migrated.prepare(`
+		DELETE FROM conversation_messages WHERE session_id = ? AND message_index = ?
+	`).run("legacy-search", 1);
+	assert.equal(store.searchMessages("updated").length, 0);
+	migrated.close();
+});
+
+test("rolls back a failed schema-v9 search migration and retries cleanly", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
+	let database = await openDatabase(fixture.dbPath);
+	restoreLegacySearchProjection(database);
+	database.prepare("UPDATE schema_version SET version = 8").run();
+	database.exec(`
+		CREATE TRIGGER reject_schema_v9_commit
+		BEFORE DELETE ON schema_version BEGIN
+			SELECT RAISE(ABORT, 'reject schema v9 commit');
+		END;
+	`);
+	database.close();
+
+	assert.throws(
+		() => new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }),
+		(error: unknown) => error instanceof storage.StorageFailure
+			&& error.message === "persistence_error: storage operation failed",
+	);
+	database = await openDatabase(fixture.dbPath);
+	assert.equal(
+		(database.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
+		8,
+	);
+	const legacyColumns = database.prepare("PRAGMA table_info(conversation_messages_fts)").all()
+		.map((row) => String((row as { name: unknown }).name));
+	assert.deepEqual(legacyColumns, ["session_id", "message_index", "content"]);
+	database.exec("DROP TRIGGER reject_schema_v9_commit");
+	database.close();
+
+	const retried = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	retried.close();
+	database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	assert.equal(
+		(database.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
+		9,
+	);
+});
+
+test("opens the current schema and adds compatibility transcript indexes", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock }).close();
+	const database = await openDatabase(fixture.dbPath);
+	database.exec("DROP INDEX idx_history_items_session_sequence");
+	database.exec("DROP INDEX idx_turn_rollouts_session_sequence");
+	database.exec("DROP INDEX idx_turn_rollouts_session_turn_sequence");
+	database.exec("DROP INDEX idx_session_summaries_session_sequence");
+	database.exec(`
+		CREATE TRIGGER reject_compatibility_index_version_rewrite
+		BEFORE DELETE ON schema_version BEGIN
+			SELECT RAISE(ABORT, 'compatibility indexes must not rewrite schema version');
+		END;
+	`);
+	database.prepare(`
+		INSERT INTO sessions (
+			session_id, workspace_root, thread_id, created_at, updated_at, last_active_at, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`).run("legacy-v8", fixture.root, "legacy-v8", NOW, NOW, NOW, "active");
+	for (let index = 1; index <= 4; index += 1) {
+		database.prepare(`
+			INSERT INTO history_items (session_id, item_id, payload_json)
+			VALUES (?, ?, ?)
+		`).run("legacy-v8", `item-${index}`, JSON.stringify({
+			id: `item-${index}`,
+			turn_id: `turn-${index}`,
+			type: "assistant_message",
+			text: `message-${index}`,
+		}));
+		database.prepare(`
+			INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+			VALUES (?, ?, ?)
+		`).run("legacy-v8", `turn-${index}`, JSON.stringify({
+			turn_id: `turn-${index}`,
+			events: [],
+		}));
+	}
+	database.close();
+
+	const reopened = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => reopened.close());
+	assert.deepEqual(
+		reopened.loadRecentHistoryItems("legacy-v8", 2).map((item) => item.id),
+		["item-3", "item-4"],
+	);
+	assert.deepEqual(
+		reopened.loadRecentTurnRollouts("legacy-v8", 2).map((item) => item.turn_id),
+		["turn-3", "turn-4"],
+	);
+	const latestWindow = reopened.loadHistoryItemWindow("legacy-v8", undefined, 2);
+	assert.deepEqual(latestWindow.items.map((item) => item.payload.id), ["item-4", "item-3"]);
+	assert.equal(latestWindow.hasMore, true);
+	const earlierWindow = reopened.loadHistoryItemWindow(
+		"legacy-v8",
+		latestWindow.items.at(-1)?.sequenceNo,
+		2,
+	);
+	assert.deepEqual(earlierWindow.items.map((item) => item.payload.id), ["item-2", "item-1"]);
+	assert.equal(earlierWindow.hasMore, false);
+	assert.deepEqual(
+		reopened.loadTurnRolloutsForTurns("legacy-v8", ["turn-4", "turn-2"])
+			.map((item) => item.turn_id),
+		["turn-2", "turn-4"],
+	);
+	assert.equal(reopened.loadHistoryItems("legacy-v8").length, 4);
+	assert.throws(() => reopened.loadRecentHistoryItems("legacy-v8", 0), /between 1 and 10000/u);
+	assert.throws(() => reopened.loadRecentTurnRollouts("legacy-v8", 10_001), /between 1 and 10000/u);
+
+	const migrated = await openDatabase(fixture.dbPath);
+	t.after(() => migrated.close());
+	const indexes = migrated.prepare(`
+		SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name IN (
+			'idx_history_items_session_sequence',
+			'idx_turn_rollouts_session_sequence',
+			'idx_turn_rollouts_session_turn_sequence',
+			'idx_session_summaries_session_sequence'
+		)
+		ORDER BY name
+	`).all() as readonly { name: string }[];
+	assert.deepEqual(indexes.map((row) => row.name), [
+		"idx_history_items_session_sequence",
+		"idx_session_summaries_session_sequence",
+		"idx_turn_rollouts_session_sequence",
+		"idx_turn_rollouts_session_turn_sequence",
+	]);
+	const historyQueryPlan = migrated.prepare(`
+		EXPLAIN QUERY PLAN
+		SELECT payload_json FROM history_items
+		WHERE session_id = ? ORDER BY sequence_no DESC LIMIT ?
+	`).all("legacy-v8", 2) as readonly { detail: unknown }[];
+	assert.equal(
+		historyQueryPlan.some((row) => String(row.detail).includes(
+			"idx_history_items_session_sequence",
+		)),
+		true,
+	);
+	assert.equal(
+		(migrated.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
+		9,
+	);
 });
 
 test("reserves a turn atomically and deduplicates the same fingerprint", async (t) => {
@@ -617,6 +906,7 @@ test("persists provider replay state and context with its tool result", async (t
 	const providerState: ProviderReplayState = {
 		provider: "openai",
 		value: { thinking: "checked", signature: "sig-test" },
+		tokenEstimate: 73,
 	};
 	const metadata: CanonicalContextMetadata = {
 		kind: "skill_instructions",
@@ -955,6 +1245,62 @@ test("excludes malformed or oversized mutation metadata", async (t) => {
 	assert.equal(JSON.stringify(payloads).includes("private"), false);
 });
 
+test("projects bounded structured Patch changes including move identity", () => {
+	const project = Reflect.get(storage, "projectMutationMetadata") as (
+		value: Readonly<Record<string, unknown>>,
+		success: boolean,
+	) => Readonly<Record<string, unknown>>;
+	const projected = project({
+		path: "src/old.ts",
+		status: "patched",
+		fileChanges: [
+			{
+				version: 1,
+				kind: "move",
+				path: "src/new.ts",
+				previousPath: "src/old.ts",
+				diff: "",
+				addedLines: 0,
+				removedLines: 0,
+				truncated: false,
+				omittedChars: 0,
+			},
+			{
+				version: 1,
+				kind: "delete",
+				path: "src/unused.ts",
+				diff: "-unused\n",
+				addedLines: 0,
+				removedLines: 1,
+				truncated: false,
+				omittedChars: 0,
+			},
+		],
+		operations: [{ content: "private" }],
+	}, true);
+
+	assert.deepEqual(projected.file_changes, [
+		{
+			version: 1,
+			kind: "move",
+			path: "src/new.ts",
+			previous_path: "src/old.ts",
+			diff: "",
+			added_lines: 0,
+			removed_lines: 0,
+		},
+		{
+			version: 1,
+			kind: "delete",
+			path: "src/unused.ts",
+			diff: "-unused\n",
+			added_lines: 0,
+			removed_lines: 1,
+		},
+	]);
+	assert.equal(JSON.stringify(projected).includes("private"), false);
+});
+
 test("persists a failed turn without adding partial assistant content", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const fixture = await databaseFixture(t);
@@ -1106,6 +1452,82 @@ test("targeted worker recovery persists pending results and one turn-aborted mar
 	assert.equal(conversation.filter(
 		(item) => item.type === "context" && item.metadata.kind === "turn_aborted",
 	).length, 1);
+});
+
+test("targeted recovery terminalizes started effects once with exact canonical outcomes", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	const reservation = store.reserveTurn(submission(fixture.root));
+	store.appendAssistantToolCalls({
+		sessionId: "session-1",
+		clientTurnId: "client-1",
+		assistantText: "",
+		calls: [
+			{ callId: "call-completed", name: "Read", argumentsJson: "{}" },
+			{ callId: "call-read", name: "Read", argumentsJson: "{}" },
+			{ callId: "call-write", name: "Write", argumentsJson: "{}" },
+			{ callId: "call-queued", name: "Read", argumentsJson: "{}" },
+		],
+	});
+	for (const attempt of [
+		effectAttempt("attempt-completed", "call-completed", "Read", false),
+		effectAttempt("attempt-read", "call-read", "Read", false),
+		effectAttempt("attempt-write", "call-write", "Write", true),
+	]) {
+		store.agentEffectLedger.reserve(attempt);
+	}
+	store.agentEffectLedger.complete({
+		attemptId: "attempt-completed",
+		state: "completed",
+		result: {
+			callId: "call-completed",
+			toolName: "Read",
+			success: true,
+			modelOutput: "committed contents",
+			summary: "Read completed",
+			metadata: {},
+		},
+		completedAt: LATER,
+	});
+
+	store.recoverInterruptedTurn("session-1", reservation.turn.turn_id, true);
+	store.recoverInterruptedTurn("session-1", reservation.turn.turn_id, true);
+
+	assert.equal(store.agentEffectLedger.load("attempt-completed")?.state, "completed");
+	assert.equal(store.agentEffectLedger.load("attempt-read")?.state, "interrupted");
+	assert.equal(store.agentEffectLedger.load("attempt-write")?.state, "effect_outcome_unknown");
+	assert.throws(() => store.agentEffectLedger.complete({
+		attemptId: "attempt-write",
+		state: "completed",
+		result: { callId: "call-write" },
+		completedAt: LATER,
+	}), /different terminal outcome/u);
+
+	const database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	const rows = database.prepare(`
+		SELECT payload_json FROM conversation_messages
+		WHERE session_id = ? AND json_extract(payload_json, '$.role') = 'tool'
+		ORDER BY message_index
+	`).all("session-1") as readonly { payload_json: string }[];
+	const results = rows.map((row) => JSON.parse(row.payload_json) as {
+		tool_call_id: string;
+		content: string;
+		metadata?: { error_kind?: string };
+	});
+	assert.deepEqual(results.map((result) => [
+		result.tool_call_id,
+		result.content,
+		result.metadata?.error_kind,
+	]), [
+		["call-completed", "committed contents", undefined],
+		["call-read", "Tool execution was interrupted before a result was persisted.", "tool_interrupted"],
+		["call-write", "Tool outcome is unknown because interruption occurred after the effect started.", "effect_outcome_unknown"],
+		["call-queued", "Tool call interrupted before it completed.", "tool_interrupted"],
+	]);
+	assert.equal(count(database, "agent_effect_attempt_outcomes"), 3);
 });
 
 test("targeted worker recovery leaves a completed turn unchanged", async (t) => {
@@ -1271,6 +1693,25 @@ function submission(workspaceRoot: string): ReserveTurnInput {
 		threadId: "session-1",
 		userText: "inspect the repository",
 		startedAt: NOW,
+	};
+}
+
+function effectAttempt(
+	attemptId: string,
+	externalId: string,
+	toolName: string,
+	mutating: boolean,
+): ReserveAgentEffectAttemptInput {
+	return {
+		attemptId,
+		kind: "tool",
+		sessionId: "session-1",
+		turnId: "turn-1",
+		jobId: "job-1",
+		externalId,
+		mutating,
+		request: { tool_name: toolName, arguments_sha256: "b".repeat(64), mutating },
+		createdAt: NOW,
 	};
 }
 

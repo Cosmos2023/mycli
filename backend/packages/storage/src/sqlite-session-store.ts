@@ -5,6 +5,7 @@ import { parseRuntimeTurnRecord } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
+	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
 	QueueConflictError,
 	selectAgentForkConversation,
 	turnAbortedContextItem,
@@ -21,12 +22,14 @@ import type {
 import { TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
 import Database from "better-sqlite3";
 import {
-	BACKFILL_SEARCH_SQL,
 	SCHEMA_V2_SQL,
 	SCHEMA_V5_SQL,
 	SCHEMA_V6_SQL,
 	SCHEMA_V7_SQL,
+	SCHEMA_V8_SQL,
+	SCHEMA_V9_SQL,
 	SCHEMA_VERSION,
+	TRANSCRIPT_PROJECTION_INDEX_SQL,
 } from "./schema.ts";
 import {
 	MessageIdConflictError,
@@ -58,6 +61,7 @@ import type {
 	ForkAgentConversationInput,
 	ForkAgentConversationResult,
 	ImportLegacyConversationInput,
+	HistoryItemWindow,
 	InterruptAmbiguousApprovalInput,
 	ReserveTurnInput,
 	RuntimeStateKey,
@@ -71,6 +75,7 @@ import type {
 	SessionMaintenanceCandidate,
 	SessionMaintenanceOptions,
 	SessionMaintenanceReport,
+	SessionPayloadCleanupResult,
 	SessionOrphanCleanupResult,
 	SessionOverview,
 	SessionSearchQuery,
@@ -88,6 +93,7 @@ import type {
 } from "./shell-transcript-store.ts";
 import { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
 import { stableJson } from "./stable-json.ts";
+import { ftsMatchQuery, searchSnippet } from "./session-search.ts";
 import { SQLiteSubagentTaskRepository } from "./subagent-task-store.ts";
 import type { SubagentTaskStore } from "./subagent-task-store.ts";
 import { SQLiteAgentThreadRepository } from "./agent-thread-store.ts";
@@ -103,12 +109,23 @@ import type {
 	ModelInputLedgerFailpoint,
 	ModelInputLedgerStore,
 } from "./model-input-ledger.ts";
+import { SQLiteAgentEffectLedger } from "./agent-effect-ledger.ts";
+import type {
+	AgentEffectAttempt,
+	AgentEffectLedgerStore,
+} from "./agent-effect-ledger.ts";
 import {
 	assertImagePathCount,
-	canonicalImageBlocks,
 	canonicalImages,
 	imageBlocks,
 } from "./canonical-images.ts";
+import {
+	canonicalConversationItem,
+	canonicalHistoryItem,
+	conversationSearchRole,
+	conversationSearchText,
+	repairTerminalToolProtocol,
+} from "./legacy-provider-projection.ts";
 
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 const TOOL_ACTIVATION_NAME = /^[A-Za-z0-9_]{1,128}$/u;
@@ -173,6 +190,7 @@ owner_pid
 `;
 
 export class SQLiteSessionStore implements SessionStore {
+	readonly agentEffectLedger: AgentEffectLedgerStore;
 	readonly agentMailbox: AgentMailboxStore;
 	readonly agentSpawns: AgentSpawnStore;
 	readonly agentThreads: AgentThreadStore;
@@ -237,6 +255,10 @@ export class SQLiteSessionStore implements SessionStore {
 				database: this.#database,
 				write: <Result>(operation: () => Result) => this.#write(operation),
 				...(options.modelInputFailpoint ? { failpoint: options.modelInputFailpoint } : {}),
+			});
+			this.agentEffectLedger = new SQLiteAgentEffectLedger({
+				database: this.#database,
+				write: <Result>(operation: () => Result) => this.#write(operation),
 			});
 			this.agentThreads.projectLegacyTasks();
 			this.agentThreads.reconcileStaleRuntimes("agent runtime owner unavailable after restart");
@@ -519,22 +541,31 @@ export class SQLiteSessionStore implements SessionStore {
 			const running = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
 			const status = input.code === "interrupted" ? "interrupted" : "failed";
 			const interrupted = input.code === "interrupted";
+			const interruptedAttempts = interrupted
+				? this.#recoverInterruptedToolAttempts(running, input.completedAt)
+				: new Map<string, AgentEffectAttempt>();
 			for (const call of this.#pendingToolCalls(input.sessionId, running.turn_id)) {
+				const recovered = interruptedToolResult(
+					call,
+					interruptedAttempts.get(call.callId),
+					"Tool execution was interrupted before a result was persisted.",
+				);
 				this.#appendToolResultRecords(running, {
 					sessionId: input.sessionId,
 					clientTurnId: input.clientTurnId,
-					result: {
+					result: interrupted ? recovered.result : {
 						callId: call.callId,
 						toolName: call.name,
-						output: interrupted
-							? "Tool execution was interrupted before a result was persisted."
-							: "Tool result unavailable because the turn failed before persistence completed.",
+						output: "Tool result unavailable because the turn failed before persistence completed.",
 						success: false,
 					},
 					summary: interrupted
-						? `${call.name.slice(0, 128) || "Tool"} interrupted`
+						? recovered.summary
 						: `${call.name.slice(0, 128) || "Tool"} result unavailable`,
-						errorKind: interrupted ? "tool_interrupted" : "tool_result_unavailable",
+					...(interrupted
+						? recovered.errorKind ? { errorKind: recovered.errorKind } : {}
+						: { errorKind: "tool_result_unavailable" }),
+					...(interrupted && recovered.metadata ? { metadata: recovered.metadata } : {}),
 					});
 				}
 				if (interrupted) this.#appendInterruptedTurnMarker(running);
@@ -843,18 +874,78 @@ export class SQLiteSessionStore implements SessionStore {
 				SELECT COUNT(*) AS count FROM sessions ${where}
 			`).get(...parameters) as { readonly count: number };
 			const candidates = this.#emptySessionCandidates(workspaceRoot);
+			const payloads = this.#legacyPayloadMetrics(workspaceRoot);
 			const metrics = this.#storageMetrics();
 			return Object.freeze({
 				workspaceSessionCount: Number(countRow.count),
 				emptySessionCount: candidates.length,
 				emptySessionCandidates: Object.freeze(candidates.slice(0, candidateLimit)),
 				emptySessionCandidatesOmitted: Math.max(0, candidates.length - candidateLimit),
+				...payloads,
 				...metrics,
+				freelistBytes: metrics.freelistCount * metrics.pageSize,
 				dryRun: true,
 			});
 		} catch (error) {
 			throw storageError(error);
 		}
+	}
+
+	cleanupLegacySessionPayloads(
+		options: SessionMaintenanceOptions = {},
+	): SessionPayloadCleanupResult {
+		const payloadLimit = boundedOperationLimit(
+			options.payloadLimit ?? 1_000,
+			10_000,
+			"maintenance payload limit",
+		);
+		const workspaceRoot = options.workspaceRoot?.trim();
+		const applied = this.#write(() => {
+			const rolloutCandidates = this.#legacyRolloutCandidateSql(workspaceRoot, true);
+			const rolloutIds = (this.#database.prepare(rolloutCandidates.sql).all(
+				...rolloutCandidates.parameters,
+				payloadLimit,
+			) as readonly { readonly candidate_rowid: unknown }[])
+				.map((row) => Number(row.candidate_rowid));
+			const rolloutBytes = this.#rolloutBytesReclaimable(rolloutIds);
+			const rolloutResult = rolloutIds.length === 0
+				? { changes: 0 }
+				: this.#database.prepare(`
+					UPDATE turn_rollouts
+					SET payload_json = ${compactLegacyRolloutSql("turn_rollouts")}
+					WHERE rowid IN (${rolloutIds.map(() => "?").join(", ")})
+				`).run(...rolloutIds);
+
+			const stateCandidates = this.#legacyStateCandidateSql(workspaceRoot, true);
+			const stateIds = (this.#database.prepare(stateCandidates.sql).all(
+				...stateCandidates.parameters,
+				payloadLimit,
+			) as readonly { readonly candidate_rowid: unknown }[])
+				.map((row) => Number(row.candidate_rowid));
+			const stateBytes = this.#statePayloadBytes(stateIds);
+			const stateResult = stateIds.length === 0
+				? { changes: 0 }
+				: this.#database.prepare(`
+					DELETE FROM session_state
+					WHERE rowid IN (${stateIds.map(() => "?").join(", ")})
+				`).run(...stateIds);
+
+			return Object.freeze({
+				compactedRolloutCount: rolloutResult.changes,
+				deletedStateCount: stateResult.changes,
+				removedPayloadBytes: rolloutBytes + stateBytes,
+			});
+		});
+		const remaining = this.#legacyPayloadMetrics(workspaceRoot);
+		return Object.freeze({
+			compactedRolloutCount: applied.compactedRolloutCount,
+			deletedStateCount: applied.deletedStateCount,
+			removedPayloadBytes: applied.removedPayloadBytes,
+			remainingCompactableRolloutCount: remaining.compactableRolloutCount,
+			remainingRemovableStateCount: remaining.removableStateCount,
+			...this.#storageMetrics(),
+			dryRun: false,
+		});
 	}
 
 	cleanupEmptySessions(options: SessionMaintenanceOptions = {}): SessionEmptyCleanupResult {
@@ -966,12 +1057,45 @@ export class SQLiteSessionStore implements SessionStore {
 		return this.#stateRepository.loadSessionSummaries(sessionId);
 	}
 
+	loadRecentSessionSummaries(sessionId: string, limit: number): readonly string[] {
+		return this.#stateRepository.loadRecentSessionSummaries(sessionId, limit);
+	}
+
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#stateRepository.loadHistoryItems(sessionId);
 	}
 
+	loadRecentHistoryItems(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[] {
+		return this.#stateRepository.loadRecentHistoryItems(sessionId, limit);
+	}
+
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[] {
 		return this.#stateRepository.loadTurnRollouts(sessionId);
+	}
+
+	loadRecentTurnRollouts(
+		sessionId: string,
+		limit: number,
+	): readonly Readonly<Record<string, unknown>>[] {
+		return this.#stateRepository.loadRecentTurnRollouts(sessionId, limit);
+	}
+
+	loadHistoryItemWindow(
+		sessionId: string,
+		beforeSequence: number | undefined,
+		limit: number,
+	): HistoryItemWindow {
+		return this.#stateRepository.loadHistoryItemWindow(sessionId, beforeSequence, limit);
+	}
+
+	loadTurnRolloutsForTurns(
+		sessionId: string,
+		turnIds: readonly string[],
+	): readonly Readonly<Record<string, unknown>>[] {
+		return this.#stateRepository.loadTurnRolloutsForTurns(sessionId, turnIds);
 	}
 
 	upsertShellSnapshot(input: UpsertShellSnapshotInput): void {
@@ -1199,6 +1323,143 @@ export class SQLiteSessionStore implements SessionStore {
 		this.#stateRepository.commitCompaction(input);
 	}
 
+	#legacyPayloadMetrics(workspaceRoot?: string): Readonly<{
+		readonly compactableRolloutCount: number;
+		readonly compactableRolloutBytes: number;
+		readonly removableStateCount: number;
+		readonly removableStateBytes: number;
+		readonly estimatedPayloadBytesReclaimable: number;
+	}> {
+		const rollouts = this.#legacyRolloutCandidateSql(workspaceRoot, false);
+		const rolloutRow = this.#database.prepare(`
+			SELECT COUNT(*) AS count,
+				COALESCE(SUM(
+					length(CAST(turn_rollouts.payload_json AS BLOB))
+					- length(CAST(${compactLegacyRolloutSql("turn_rollouts")} AS BLOB))
+				), 0) AS bytes
+			FROM turn_rollouts
+			WHERE rowid IN (${rollouts.sql})
+		`).get(...rollouts.parameters) as {
+			readonly count: unknown;
+			readonly bytes: unknown;
+		};
+		const states = this.#legacyStateCandidateSql(workspaceRoot, false);
+		const stateRow = this.#database.prepare(`
+			SELECT COUNT(*) AS count,
+				COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS bytes
+			FROM session_state
+			WHERE rowid IN (${states.sql})
+		`).get(...states.parameters) as {
+			readonly count: unknown;
+			readonly bytes: unknown;
+		};
+		const compactableRolloutBytes = Number(rolloutRow.bytes);
+		const removableStateBytes = Number(stateRow.bytes);
+		return Object.freeze({
+			compactableRolloutCount: Number(rolloutRow.count),
+			compactableRolloutBytes,
+			removableStateCount: Number(stateRow.count),
+			removableStateBytes,
+			estimatedPayloadBytesReclaimable: compactableRolloutBytes + removableStateBytes,
+		});
+	}
+
+	#legacyRolloutCandidateSql(
+		workspaceRoot: string | undefined,
+		bounded: boolean,
+	): Readonly<{ readonly sql: string; readonly parameters: readonly string[] }> {
+		return Object.freeze({
+			sql: `
+				SELECT turn_rollouts.rowid AS candidate_rowid
+				FROM turn_rollouts
+				JOIN sessions ON sessions.session_id = turn_rollouts.session_id
+				WHERE json_valid(turn_rollouts.payload_json)
+					AND json_type(turn_rollouts.payload_json, '$.events') = 'array'
+					AND json_array_length(turn_rollouts.payload_json, '$.events') > 0
+					AND json(json_extract(turn_rollouts.payload_json, '$.events')) !=
+						json('[{"kind":"turn_item","payload":{"type":"approval_resolution"}}]')
+					AND json_extract(turn_rollouts.payload_json, '$.status') IN (
+						'completed', 'failed', 'interrupted', 'rejected'
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM runtime_turns
+						WHERE runtime_turns.session_id = turn_rollouts.session_id
+							AND runtime_turns.status = 'in_progress'
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM session_state
+						WHERE session_state.session_id = turn_rollouts.session_id
+							AND session_state.state_key IN ('pending_decision', 'suspended_turn')
+					)
+					${workspaceRoot ? "AND sessions.workspace_root = ?" : ""}
+				ORDER BY turn_rollouts.rowid
+				${bounded ? "LIMIT ?" : ""}
+			`,
+			parameters: Object.freeze(workspaceRoot ? [workspaceRoot] : []),
+		});
+	}
+
+	#legacyStateCandidateSql(
+		workspaceRoot: string | undefined,
+		bounded: boolean,
+	): Readonly<{ readonly sql: string; readonly parameters: readonly string[] }> {
+		return Object.freeze({
+			sql: `
+				SELECT session_state.rowid AS candidate_rowid
+				FROM session_state
+				JOIN sessions ON sessions.session_id = session_state.session_id
+				WHERE json_valid(session_state.payload_json)
+					AND json_type(session_state.payload_json) IN ('object', 'array')
+					AND (
+						session_state.state_key = 'provider_timeline'
+						OR (
+							session_state.state_key = 'turn_record'
+							AND json_extract(session_state.payload_json, '$.status') IN (
+								'completed', 'failed', 'interrupted', 'rejected'
+							)
+						)
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM runtime_turns
+						WHERE runtime_turns.session_id = session_state.session_id
+							AND runtime_turns.status = 'in_progress'
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM session_state AS active_state
+						WHERE active_state.session_id = session_state.session_id
+							AND active_state.state_key IN ('pending_decision', 'suspended_turn')
+					)
+					${workspaceRoot ? "AND sessions.workspace_root = ?" : ""}
+				ORDER BY session_state.rowid
+				${bounded ? "LIMIT ?" : ""}
+			`,
+			parameters: Object.freeze(workspaceRoot ? [workspaceRoot] : []),
+		});
+	}
+
+	#rolloutBytesReclaimable(rowIds: readonly number[]): number {
+		if (rowIds.length === 0) return 0;
+		const row = this.#database.prepare(`
+			SELECT COALESCE(SUM(
+				length(CAST(payload_json AS BLOB))
+				- length(CAST(${compactLegacyRolloutSql("turn_rollouts")} AS BLOB))
+			), 0) AS bytes
+			FROM turn_rollouts
+			WHERE rowid IN (${rowIds.map(() => "?").join(", ")})
+		`).get(...rowIds) as { readonly bytes: unknown };
+		return Number(row.bytes);
+	}
+
+	#statePayloadBytes(rowIds: readonly number[]): number {
+		if (rowIds.length === 0) return 0;
+		const row = this.#database.prepare(`
+			SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS bytes
+			FROM session_state
+			WHERE rowid IN (${rowIds.map(() => "?").join(", ")})
+		`).get(...rowIds) as { readonly bytes: unknown };
+		return Number(row.bytes);
+	}
+
 	#emptySessionCandidates(workspaceRoot?: string): readonly SessionMaintenanceCandidate[] {
 		const where = workspaceRoot ? "AND sessions.workspace_root = ?" : "";
 		const parameters = workspaceRoot ? [workspaceRoot] : [];
@@ -1293,7 +1554,10 @@ export class SQLiteSessionStore implements SessionStore {
 	#initialize(): void {
 		const version = this.#schemaVersion();
 		this.#assertSupportedSchemaVersion(version);
-		if (version === SCHEMA_VERSION) return;
+		if (version === SCHEMA_VERSION) {
+			this.#ensureTranscriptProjectionIndexes();
+			return;
+		}
 
 		this.#write(() => {
 			const lockedVersion = this.#schemaVersion();
@@ -1304,7 +1568,9 @@ export class SQLiteSessionStore implements SessionStore {
 			this.#database.exec(SCHEMA_V5_SQL);
 			this.#database.exec(SCHEMA_V6_SQL);
 			this.#database.exec(SCHEMA_V7_SQL);
-			this.#database.exec(BACKFILL_SEARCH_SQL);
+			this.#database.exec(SCHEMA_V8_SQL);
+			this.#database.exec(SCHEMA_V9_SQL);
+			this.#database.exec(TRANSCRIPT_PROJECTION_INDEX_SQL);
 			this.#database.prepare("DELETE FROM schema_version").run();
 			this.#database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
 		});
@@ -1325,11 +1591,32 @@ export class SQLiteSessionStore implements SessionStore {
 	}
 
 	#assertSupportedSchemaVersion(version: number | undefined): void {
-		if (version === undefined || [2, 3, 4, 5, 6, SCHEMA_VERSION].includes(version)) return;
+		if (version === undefined || [2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION].includes(version)) return;
 		throw new StorageFailure("unsupported session schema version", {
 			expected_version: SCHEMA_VERSION,
 			actual_version: Number.isFinite(version) ? version : null,
 		});
+	}
+
+	#ensureTranscriptProjectionIndexes(): void {
+		if (this.#hasTranscriptProjectionIndexes()) return;
+		this.#write(() => {
+			if (this.#hasTranscriptProjectionIndexes()) return;
+			this.#database.exec(TRANSCRIPT_PROJECTION_INDEX_SQL);
+		});
+	}
+
+	#hasTranscriptProjectionIndexes(): boolean {
+		const row = this.#database.prepare(`
+			SELECT COUNT(*) AS count FROM sqlite_master
+			WHERE type = 'index' AND name IN (
+				'idx_history_items_session_sequence',
+				'idx_turn_rollouts_session_sequence',
+				'idx_turn_rollouts_session_turn_sequence',
+				'idx_session_summaries_session_sequence'
+			)
+		`).get() as { readonly count: unknown };
+		return Number(row.count) === 4;
 	}
 
 	#ensureRuntimeTurnOwnershipColumns(): void {
@@ -1559,6 +1846,7 @@ export class SQLiteSessionStore implements SessionStore {
 		completedAt: string,
 		userInitiated: boolean,
 	): void {
+		const interruptedAttempts = this.#recoverInterruptedToolAttempts(turn, completedAt);
 		let pendingCalls: readonly CanonicalToolCall[] = [];
 		try {
 			pendingCalls = this.#pendingToolCalls(turn.session_id, turn.turn_id);
@@ -1566,17 +1854,18 @@ export class SQLiteSessionStore implements SessionStore {
 			if (!(error instanceof StorageFailure)) throw error;
 		}
 		for (const call of pendingCalls) {
+			const recovered = interruptedToolResult(
+				call,
+				interruptedAttempts.get(call.callId),
+				"Tool call interrupted before it completed.",
+			);
 			this.#appendToolResultRecords(turn, {
 				sessionId: turn.session_id,
 				clientTurnId: turn.client_turn_id,
-				result: {
-					callId: call.callId,
-					toolName: call.name,
-					output: "Tool call interrupted before it completed.",
-					success: false,
-				},
-				summary: `${call.name} interrupted`,
-				errorKind: "tool_interrupted",
+				result: recovered.result,
+				summary: recovered.summary,
+				...(recovered.errorKind ? { errorKind: recovered.errorKind } : {}),
+				...(recovered.metadata ? { metadata: recovered.metadata } : {}),
 			});
 		}
 		if (userInitiated) this.#appendInterruptedTurnMarker(turn);
@@ -1598,6 +1887,17 @@ export class SQLiteSessionStore implements SessionStore {
 			turn.client_turn_id,
 		);
 		this.#touchExistingSession(turn.session_id, completedAt);
+	}
+
+	#recoverInterruptedToolAttempts(
+		turn: RuntimeTurnRecord,
+		completedAt: string,
+	): Map<string, AgentEffectAttempt> {
+		return new Map(this.agentEffectLedger.recoverInterruptedTools({
+			sessionId: turn.session_id,
+			turnId: turn.turn_id,
+			completedAt,
+		}).map((attempt) => [attempt.externalId, attempt]));
 	}
 
 	#appendConversationMessage(sessionId: string, payload: Readonly<Record<string, unknown>>): void {
@@ -1625,6 +1925,81 @@ export class SQLiteSessionStore implements SessionStore {
 			VALUES (?, ?, ?)
 		`).run(sessionId, String(payload.turn_id), stableJson(payload));
 	}
+}
+
+function interruptedToolResult(
+	call: CanonicalToolCall,
+	attempt: AgentEffectAttempt | undefined,
+	interruptedOutput: string,
+): Readonly<{
+	result: AppendToolResultInput["result"];
+	summary: string;
+	errorKind?: string;
+	metadata?: Readonly<Record<string, unknown>>;
+}> {
+	const completed = completedAttemptToolResult(call, attempt);
+	if (completed) return completed;
+	const toolName = call.name.slice(0, 128) || "Tool";
+	const errorKind = attempt?.state === "effect_outcome_unknown"
+		? "effect_outcome_unknown"
+		: attempt?.state === "failed" || attempt?.state === "unknown"
+			? attempt.state
+			: "tool_interrupted";
+	return Object.freeze({
+		result: Object.freeze({
+			callId: call.callId,
+			toolName: call.name,
+			output: errorKind === "effect_outcome_unknown"
+				? "Tool outcome is unknown because interruption occurred after the effect started."
+				: errorKind === "tool_interrupted"
+					? attempt
+						? "Tool execution was interrupted before a result was persisted."
+						: interruptedOutput
+					: "Tool result was not available after interruption.",
+			success: false,
+		}),
+		summary: errorKind === "effect_outcome_unknown"
+			? `${toolName} outcome unknown`
+			: errorKind === "tool_interrupted"
+				? `${toolName} interrupted`
+				: `${toolName} result unavailable`,
+		errorKind,
+		metadata: Object.freeze({ synthetic: true, append_only: true }),
+	});
+}
+
+function completedAttemptToolResult(
+	call: CanonicalToolCall,
+	attempt: AgentEffectAttempt | undefined,
+): Readonly<{
+	result: AppendToolResultInput["result"];
+	summary: string;
+	errorKind?: string;
+	metadata?: Readonly<Record<string, unknown>>;
+}> | undefined {
+	if (attempt?.state !== "completed" || !attempt.result) return undefined;
+	const result = attempt.result;
+	if (result.callId !== call.callId
+		|| result.toolName !== call.name
+		|| typeof result.success !== "boolean"
+		|| typeof result.modelOutput !== "string"
+		|| typeof result.summary !== "string"
+		|| typeof result.metadata !== "object"
+		|| result.metadata === null
+		|| Array.isArray(result.metadata)) {
+		return undefined;
+	}
+	return Object.freeze({
+		result: Object.freeze({
+			callId: call.callId,
+			toolName: call.name,
+			output: result.modelOutput,
+			success: result.success,
+		}),
+		summary: result.summary,
+		...(typeof result.errorKind === "string" ? { errorKind: result.errorKind } : {}),
+		metadata: Object.freeze({ ...result.metadata as Readonly<Record<string, unknown>> }),
+	});
 }
 
 function shellOutputChunkFromRow(row: ShellOutputChunkRow): ShellOutputChunk {
@@ -1916,7 +2291,7 @@ function toolResultMetadata(
 		success: input.result.success,
 		summary: input.summary.slice(0, 500),
 		...(input.errorKind ? { error_kind: input.errorKind } : {}),
-		...(input.errorKind === "tool_interrupted"
+		...(["tool_interrupted", "effect_outcome_unknown"].includes(input.errorKind ?? "")
 			? { synthetic: true, append_only: true }
 			: {}),
 		...(mutationMetadata.file_changes
@@ -2095,7 +2470,6 @@ const MAX_CONTEXT_ITEM_ID_CHARS = 512;
 const MAX_CONTEXT_TEXT_CHARS = 131_072;
 const MAX_CONTEXT_CONTENT_CHARS = 65_536;
 const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
-const MAX_PROVIDER_STATE_JSON_CHARS = 65_536;
 const PROVIDER_IDS = new Set(["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]);
 
 function validateContextItem(input: AppendContextItemInput): void {
@@ -2139,26 +2513,12 @@ function persistedContextMetadata(
 	};
 }
 
-function canonicalContextMetadata(value: unknown): CanonicalContextMetadata {
-	const metadata = recordValue(value);
-	const canonical: CanonicalContextMetadata = {
-		kind: metadata.kind as CanonicalContextMetadata["kind"],
-		...((metadata.role === "developer" || metadata.role === "user")
-			? { role: metadata.role }
-			: {}),
-		cacheClass: (metadata.cache_class ?? metadata.cacheClass) as CanonicalContextMetadata["cacheClass"],
-		durability: metadata.durability as CanonicalContextMetadata["durability"],
-		scope: metadata.scope as CanonicalContextMetadata["scope"],
-		sourceId: String(metadata.source_id ?? metadata.sourceId ?? ""),
-		contentSha256: String(metadata.content_sha256 ?? metadata.contentSha256 ?? ""),
-		contentLength: Number(metadata.content_length ?? metadata.contentLength),
-	};
-	validateContextItem({ sessionId: "validation", itemId: "validation", text: "", metadata: canonical });
-	return canonical;
-}
-
 function persistedProviderState(state: ProviderReplayState): Readonly<Record<string, unknown>> {
 	if (!PROVIDER_IDS.has(state.provider)) {
+		throw new StorageFailure("invalid provider replay state");
+	}
+	if (state.tokenEstimate !== undefined
+		&& (!Number.isSafeInteger(state.tokenEstimate) || state.tokenEstimate < 0)) {
 		throw new StorageFailure("invalid provider replay state");
 	}
 	let json: string;
@@ -2167,173 +2527,18 @@ function persistedProviderState(state: ProviderReplayState): Readonly<Record<str
 	} catch {
 		throw new StorageFailure("invalid provider replay state");
 	}
-	if (!json || json.length > MAX_PROVIDER_STATE_JSON_CHARS) {
+	if (!json || json.length > PROVIDER_REPLAY_STATE_MAX_JSON_CHARS) {
 		throw new StorageFailure("invalid provider replay state");
 	}
 	const value = JSON.parse(json) as unknown;
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new StorageFailure("invalid provider replay state");
 	}
-	return { provider: state.provider, value: value as Readonly<Record<string, unknown>> };
-}
-
-function canonicalProviderState(value: unknown): ProviderReplayState | undefined {
-	if (value === undefined || value === null) return undefined;
-	const state = recordValue(value);
-	const provider = stringValue(state.provider);
-	if (!provider || !PROVIDER_IDS.has(provider)) {
-		throw new StorageFailure("invalid provider replay state");
-	}
-	return persistedProviderState({
-		provider: provider as ProviderReplayState["provider"],
-		value: recordValue(state.value),
-	}) as unknown as ProviderReplayState;
-}
-
-function canonicalConversationItem(
-	payloadJson: unknown,
-	source: string,
-): CanonicalConversationItem {
-	const payload = parseObjectJson(payloadJson, source);
-	if (payload.role === "user" && typeof payload.content === "string") {
-		const images = canonicalImageBlocks(payload.blocks, source);
-		return {
-			type: "user",
-			text: payload.content,
-			...(images.length > 0 ? { images } : {}),
-		};
-	}
-	if (payload.role === "assistant" && typeof payload.content === "string") {
-		const metadata = recordValue(payload.metadata);
-		const providerState = canonicalProviderState(metadata.provider_state);
-		const calls = canonicalToolCalls(payload.tool_calls, source);
-		if (calls.length > 0) {
-			return {
-				type: "assistant_tool_calls",
-				text: payload.content,
-				calls,
-				...(typeof payload.response_id === "string"
-					? { responseId: payload.response_id }
-					: {}),
-				...(providerState ? { providerState } : {}),
-			};
-		}
-		return {
-			type: "assistant",
-			text: payload.content,
-			...(providerState ? { providerState } : {}),
-		};
-	}
-	if (payload.role === "context" && typeof payload.content === "string") {
-		return {
-			type: "context",
-			text: payload.content,
-			metadata: canonicalContextMetadata(recordValue(payload.metadata).context),
-		};
-	}
-	if (payload.role === "tool" && typeof payload.content === "string"
-		&& typeof payload.tool_call_id === "string" && payload.tool_call_id) {
-		const metadata = recordValue(payload.metadata);
-		const block = firstBlock(payload.blocks, "tool_result");
-		const blockMetadata = recordValue(block?.metadata);
-		const toolName = stringValue(metadata.tool_name)
-			?? stringValue(block?.tool_name)
-			?? "Tool";
-		const success = booleanValue(metadata.success)
-			?? booleanValue(blockMetadata.success)
-			?? true;
-		return {
-			type: "tool_result",
-			callId: payload.tool_call_id,
-			toolName,
-			output: payload.content,
-			success,
-		};
-	}
-	throw new StorageFailure(`invalid canonical message in ${source}`);
-}
-
-function canonicalToolCalls(value: unknown, source: string): readonly CanonicalToolCall[] {
-	if (value === undefined || value === null) {
-		return [];
-	}
-	if (!Array.isArray(value)) {
-		throw new StorageFailure(`invalid canonical message in ${source}`);
-	}
-	return value.map((raw) => {
-		const call = recordValue(raw);
-		const name = stringValue(call.name);
-		const callId = stringValue(call.call_id);
-		if (!name || !callId) {
-			throw new StorageFailure(`invalid canonical message in ${source}`);
-		}
-		return {
-			callId,
-			name,
-			argumentsJson: stableJson(recordValue(call.arguments)),
-		};
-	});
-}
-
-function canonicalHistoryItem(payloadJson: unknown): CanonicalConversationItem {
-	const payload = parseObjectJson(payloadJson, "history_items");
-	if (payload.type === "user_message" && typeof payload.text === "string") {
-		return { type: "user", text: payload.text };
-	}
-	if (payload.type === "assistant_message" && typeof payload.text === "string") {
-		const providerState = canonicalProviderState(recordValue(payload.metadata).provider_state);
-		return {
-			type: "assistant",
-			text: payload.text,
-			...(providerState ? { providerState } : {}),
-		};
-	}
-	const metadata = recordValue(payload.metadata);
-	if (payload.type === "skill_instructions" && typeof payload.text === "string") {
-		return {
-			type: "context",
-			text: payload.text,
-			metadata: canonicalContextMetadata(metadata),
-		};
-	}
-	if (payload.type === "tool_call") {
-		const name = stringValue(payload.tool_name);
-		const callId = stringValue(payload.call_id);
-		if (!name || !callId) {
-			throw new StorageFailure("invalid canonical message in history_items");
-		}
-		return {
-			type: "assistant_tool_calls",
-			text: stringValue(payload.text) ?? "",
-			calls: [{
-				callId,
-				name,
-				argumentsJson: stableJson(recordValue(metadata.arguments)),
-			}],
-			...(stringValue(metadata.response_id)
-				? { responseId: stringValue(metadata.response_id) }
-				: {}),
-			...(canonicalProviderState(metadata.provider_state)
-				? { providerState: canonicalProviderState(metadata.provider_state) }
-				: {}),
-		};
-	}
-	if (payload.type === "tool_result") {
-		const name = stringValue(payload.tool_name);
-		const callId = stringValue(payload.call_id);
-		const output = stringValue(metadata.transcript_content) ?? stringValue(payload.text);
-		if (!name || !callId || output === undefined) {
-			throw new StorageFailure("invalid canonical message in history_items");
-		}
-		return {
-			type: "tool_result",
-			callId,
-			toolName: name,
-			output,
-			success: booleanValue(metadata.success) ?? true,
-		};
-	}
-	throw new StorageFailure("invalid canonical message in history_items");
+	return {
+		provider: state.provider,
+		value: value as Readonly<Record<string, unknown>>,
+		...(state.tokenEstimate === undefined ? {} : { tokenEstimate: state.tokenEstimate }),
+	};
 }
 
 function toolArguments(value: string): Readonly<Record<string, unknown>> {
@@ -2411,13 +2616,6 @@ function agentForkMessage(item: CanonicalConversationItem): Readonly<Record<stri
 	};
 }
 
-function firstBlock(value: unknown, type: string): Readonly<Record<string, unknown>> | undefined {
-	if (!Array.isArray(value)) {
-		return undefined;
-	}
-	return value.map(recordValue).find((block) => block.type === type);
-}
-
 function recordValue(value: unknown): Readonly<Record<string, unknown>> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return {};
@@ -2427,10 +2625,6 @@ function recordValue(value: unknown): Readonly<Record<string, unknown>> {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
-}
-
-function booleanValue(value: unknown): boolean | undefined {
-	return typeof value === "boolean" ? value : undefined;
 }
 
 function runtimeTurnFromRow(row: RuntimeTurnRow): RuntimeTurnRecord {
@@ -2532,13 +2726,6 @@ function forkIncludesHistoryItem(
 	return false;
 }
 
-function ftsMatchQuery(value: string): string {
-	if (typeof value !== "string") return "";
-	return value.trim().split(/\s+/u).filter(Boolean)
-		.map((token) => `"${token.replaceAll('"', '""')}"`)
-		.join(" ");
-}
-
 function boundedOperationLimit(value: number, maximum: number, label: string): number {
 	if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
 		throw new RangeError(`${label} must be between 0 and ${maximum}`);
@@ -2546,67 +2733,20 @@ function boundedOperationLimit(value: number, maximum: number, label: string): n
 	return value;
 }
 
-function conversationSearchText(item: CanonicalConversationItem): string {
-	if (item.type === "tool_result") return item.output;
-	return item.text;
-}
-
-function conversationSearchRole(item: CanonicalConversationItem): string {
-	if (item.type === "assistant" || item.type === "assistant_tool_calls") return "assistant";
-	if (item.type === "tool_result") return "tool";
-	if (item.type === "context") return "context";
-	return "user";
-}
-
-function repairTerminalToolProtocol(
-	items: readonly CanonicalConversationItem[],
-	activeToolCallIds: ReadonlySet<string>,
-): readonly CanonicalConversationItem[] {
-	const callIds = new Set<string>();
-	const results = new Map<string, Extract<CanonicalConversationItem, { readonly type: "tool_result" }>>();
-	for (const item of items) {
-		if (item.type === "assistant_tool_calls") {
-			for (const call of item.calls) callIds.add(call.callId);
-		} else if (item.type === "tool_result") {
-			results.set(item.callId, item);
-		}
-	}
-	const projected: CanonicalConversationItem[] = [];
-	for (const item of items) {
-		if (item.type === "assistant_tool_calls") {
-			projected.push(item);
-			for (const call of item.calls) {
-				const result = results.get(call.callId);
-				if (result) {
-					projected.push(result);
-				} else if (!activeToolCallIds.has(call.callId)) {
-					projected.push(Object.freeze({
-						type: "tool_result" as const,
-						callId: call.callId,
-						toolName: call.name,
-						output: "Tool result unavailable because the previous turn ended before persistence completed.",
-						success: false,
-					}));
-				}
-			}
-			continue;
-		}
-		if (item.type === "tool_result" && callIds.has(item.callId)) continue;
-		projected.push(item);
-	}
-	return Object.freeze(projected);
-}
-
-function searchSnippet(content: string, query: string): string {
-	const maximum = 160;
-	const normalizedQuery = query.trim().toLocaleLowerCase();
-	const lower = content.toLocaleLowerCase();
-	const found = normalizedQuery ? lower.indexOf(normalizedQuery) : -1;
-	const start = found < 0 ? 0 : Math.max(0, found - Math.floor(maximum / 3));
-	const raw = content.slice(start, start + maximum).replace(/\s+/gu, " ").trim();
-	const prefix = start > 0 ? "..." : "";
-	const suffix = start + maximum < content.length ? "..." : "";
-	return `${prefix}${raw}${suffix}`.slice(0, maximum);
+function compactLegacyRolloutSql(table: "turn_rollouts"): string {
+	return `CASE WHEN json_valid(${table}.payload_json) THEN json_set(
+			${table}.payload_json,
+			'$.events',
+			CASE WHEN EXISTS (
+				SELECT 1 FROM json_each(${table}.payload_json, '$.events') AS rollout_event
+				WHERE CASE WHEN rollout_event.type = 'object' THEN
+					json_extract(rollout_event.value, '$.kind') = 'turn_item'
+					AND json_extract(rollout_event.value, '$.payload.type') = 'approval_resolution'
+				ELSE 0 END
+			) THEN json('[{"kind":"turn_item","payload":{"type":"approval_resolution"}}]')
+			ELSE json('[]') END
+		)
+		ELSE ${table}.payload_json END`;
 }
 
 function utcTimestamp(): string {

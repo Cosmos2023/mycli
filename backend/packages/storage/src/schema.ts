@@ -1,4 +1,7 @@
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
+export const SCHEMA_V10_VERSION = 10;
+export const SCHEMA_V11_VERSION = 11;
+export const SCHEMA_V12_VERSION = 12;
 
 export const SCHEMA_V2_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -490,4 +493,430 @@ CREATE TRIGGER IF NOT EXISTS shell_output_chunks_no_update
 BEFORE UPDATE ON shell_output_chunks BEGIN
     SELECT RAISE(ABORT, 'shell_output_chunks are append-only');
 END;
+`;
+
+export const SCHEMA_V8_SQL = `
+CREATE TABLE IF NOT EXISTS agent_effect_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('provider', 'tool')),
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    mutating INTEGER NOT NULL CHECK (mutating IN (0, 1)),
+    request_sha256 TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (kind, session_id, turn_id, external_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_effect_attempts_session_turn
+ON agent_effect_attempts(session_id, turn_id, created_at, attempt_id);
+
+CREATE TABLE IF NOT EXISTS agent_effect_attempt_outcomes (
+    attempt_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN (
+        'completed', 'failed', 'interrupted', 'unknown', 'effect_outcome_unknown'
+    )),
+    result_sha256 TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    FOREIGN KEY (attempt_id) REFERENCES agent_effect_attempts(attempt_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS agent_effect_attempts_no_update
+BEFORE UPDATE ON agent_effect_attempts BEGIN
+    SELECT RAISE(ABORT, 'agent_effect_attempts are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_effect_attempts_no_delete
+BEFORE DELETE ON agent_effect_attempts BEGIN
+    SELECT RAISE(ABORT, 'agent_effect_attempts are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_effect_attempt_outcomes_no_update
+BEFORE UPDATE ON agent_effect_attempt_outcomes BEGIN
+    SELECT RAISE(ABORT, 'agent_effect_attempt_outcomes are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_effect_attempt_outcomes_no_delete
+BEFORE DELETE ON agent_effect_attempt_outcomes BEGIN
+    SELECT RAISE(ABORT, 'agent_effect_attempt_outcomes are append-only');
+END;
+`;
+
+export const SCHEMA_V9_SQL = `
+DROP TRIGGER IF EXISTS conversation_messages_fts_insert;
+DROP TRIGGER IF EXISTS conversation_messages_fts_delete;
+DROP TRIGGER IF EXISTS conversation_messages_fts_update;
+DROP TRIGGER IF EXISTS history_items_fts_insert;
+DROP TRIGGER IF EXISTS history_items_fts_delete;
+DROP TRIGGER IF EXISTS history_items_fts_update;
+
+DROP TABLE IF EXISTS conversation_messages_fts;
+DROP TABLE IF EXISTS history_items_fts;
+
+CREATE VIRTUAL TABLE conversation_messages_fts USING fts5(
+    payload_json,
+    content='conversation_messages',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER conversation_messages_fts_insert
+AFTER INSERT ON conversation_messages BEGIN
+    INSERT INTO conversation_messages_fts(rowid, payload_json)
+    VALUES (new.rowid, new.payload_json);
+END;
+
+CREATE TRIGGER conversation_messages_fts_delete
+AFTER DELETE ON conversation_messages BEGIN
+    INSERT INTO conversation_messages_fts(
+        conversation_messages_fts,
+        rowid,
+        payload_json
+    ) VALUES ('delete', old.rowid, old.payload_json);
+END;
+
+CREATE TRIGGER conversation_messages_fts_update
+AFTER UPDATE ON conversation_messages BEGIN
+    INSERT INTO conversation_messages_fts(
+        conversation_messages_fts,
+        rowid,
+        payload_json
+    ) VALUES ('delete', old.rowid, old.payload_json);
+    INSERT INTO conversation_messages_fts(rowid, payload_json)
+    VALUES (new.rowid, new.payload_json);
+END;
+
+INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES ('rebuild');
+`;
+
+export const TRANSCRIPT_PROJECTION_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS idx_history_items_session_sequence
+ON history_items(session_id, sequence_no);
+
+CREATE INDEX IF NOT EXISTS idx_turn_rollouts_session_sequence
+ON turn_rollouts(session_id, sequence_no);
+
+CREATE INDEX IF NOT EXISTS idx_turn_rollouts_session_turn_sequence
+ON turn_rollouts(session_id, turn_id, sequence_no);
+
+CREATE INDEX IF NOT EXISTS idx_session_summaries_session_sequence
+ON session_summaries(session_id, summary_index);
+`;
+
+export const SCHEMA_V10_LEGACY_CLEANUP_SQL = `
+DROP TRIGGER IF EXISTS conversation_messages_fts_insert;
+DROP TRIGGER IF EXISTS conversation_messages_fts_delete;
+DROP TRIGGER IF EXISTS conversation_messages_fts_update;
+DROP TRIGGER IF EXISTS history_items_fts_insert;
+DROP TRIGGER IF EXISTS history_items_fts_delete;
+DROP TRIGGER IF EXISTS history_items_fts_update;
+
+DROP TABLE IF EXISTS conversation_messages_fts;
+DROP TABLE IF EXISTS history_items_fts;
+DROP TABLE IF EXISTS conversation_messages;
+DROP TABLE IF EXISTS history_items;
+DROP TABLE IF EXISTS turn_rollouts;
+DROP TABLE IF EXISTS session_summaries;
+`;
+
+export const SCHEMA_V10_LINEAGE_SQL = `
+ALTER TABLE conversation_trees ADD COLUMN fork_event_session_id TEXT;
+ALTER TABLE conversation_trees ADD COLUMN fork_event_id TEXT;
+
+CREATE INDEX idx_conversation_trees_parent_event
+ON conversation_trees(parent_id, fork_event_session_id, fork_event_id);
+`;
+
+const TRANSCRIPT_EVENTS_TABLE_SQL = `
+CREATE TABLE transcript_events (
+    sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    turn_id TEXT,
+    event_type TEXT NOT NULL CHECK (event_type IN (
+        'user_input',
+        'assistant_output',
+        'assistant_tool_call_batch',
+        'tool_result',
+        'context',
+        'display_activity',
+        'turn_lifecycle',
+        'rollback',
+        'compaction',
+        'opaque_legacy'
+    )),
+    provider_index INTEGER,
+    model_visible INTEGER NOT NULL CHECK (model_visible IN (0, 1)),
+    payload_json TEXT NOT NULL CHECK (
+        json_valid(payload_json)
+        AND COALESCE(json_extract(payload_json, '$.schemaVersion') = 1, 0)
+        AND COALESCE(json_type(payload_json, '$.payload') = 'object', 0)
+    ),
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, event_id),
+    CHECK (
+        (model_visible = 1 AND provider_index IS NOT NULL AND provider_index >= 0)
+        OR (model_visible = 0 AND provider_index IS NULL)
+    ),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_transcript_events_session_sequence
+ON transcript_events(session_id, sequence_no);
+
+CREATE INDEX idx_transcript_events_session_turn_sequence
+ON transcript_events(session_id, turn_id, sequence_no)
+WHERE turn_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_transcript_events_session_provider
+ON transcript_events(session_id, provider_index)
+WHERE provider_index IS NOT NULL;
+
+CREATE INDEX idx_transcript_events_session_type_sequence
+ON transcript_events(session_id, event_type, sequence_no DESC);
+`;
+
+const TRANSCRIPT_EVENTS_APPEND_ONLY_SQL = `
+CREATE TRIGGER transcript_events_no_update
+BEFORE UPDATE ON transcript_events BEGIN
+    SELECT RAISE(ABORT, 'transcript_events are append-only');
+END;
+
+CREATE TRIGGER transcript_events_no_delete
+BEFORE DELETE ON transcript_events BEGIN
+    SELECT RAISE(ABORT, 'transcript_events are append-only');
+END;
+`;
+
+export const SCHEMA_V10_TRANSCRIPT_SQL = `
+${TRANSCRIPT_EVENTS_TABLE_SQL}
+
+CREATE VIRTUAL TABLE transcript_events_fts USING fts5(
+    payload_json,
+    content='transcript_events',
+    content_rowid='sequence_no'
+);
+
+CREATE TRIGGER transcript_events_fts_insert
+AFTER INSERT ON transcript_events
+WHEN (
+    new.model_visible = 1 AND new.event_type IN (
+        'user_input', 'assistant_output', 'assistant_tool_call_batch', 'tool_result', 'context'
+    ) AND COALESCE(
+        json_extract(new.payload_json, '$.payload.readableProjection.searchVisible'), 1
+    ) != 0
+) OR (
+    new.model_visible = 1 AND new.event_type = 'opaque_legacy'
+    AND json_extract(new.payload_json, '$.payload.sourceKind') = 'conversation_messages'
+) BEGIN
+    INSERT INTO transcript_events_fts(rowid, payload_json)
+    VALUES (new.sequence_no, new.payload_json);
+END;
+
+CREATE TRIGGER transcript_events_fts_delete
+AFTER DELETE ON transcript_events
+WHEN (
+    old.model_visible = 1 AND old.event_type IN (
+        'user_input', 'assistant_output', 'assistant_tool_call_batch', 'tool_result', 'context'
+    ) AND COALESCE(
+        json_extract(old.payload_json, '$.payload.readableProjection.searchVisible'), 1
+    ) != 0
+) OR (
+    old.model_visible = 1 AND old.event_type = 'opaque_legacy'
+    AND json_extract(old.payload_json, '$.payload.sourceKind') = 'conversation_messages'
+) BEGIN
+    INSERT INTO transcript_events_fts(transcript_events_fts, rowid, payload_json)
+    VALUES ('delete', old.sequence_no, old.payload_json);
+END;
+
+CREATE TRIGGER transcript_events_fts_update
+AFTER UPDATE ON transcript_events BEGIN
+    INSERT INTO transcript_events_fts(transcript_events_fts, rowid, payload_json)
+    SELECT 'delete', old.sequence_no, old.payload_json
+    WHERE (
+        old.model_visible = 1 AND old.event_type IN (
+            'user_input', 'assistant_output', 'assistant_tool_call_batch', 'tool_result', 'context'
+        ) AND COALESCE(
+            json_extract(old.payload_json, '$.payload.readableProjection.searchVisible'), 1
+        ) != 0
+    ) OR (
+        old.model_visible = 1 AND old.event_type = 'opaque_legacy'
+        AND json_extract(old.payload_json, '$.payload.sourceKind') = 'conversation_messages'
+    );
+    INSERT INTO transcript_events_fts(rowid, payload_json)
+    SELECT new.sequence_no, new.payload_json
+    WHERE (
+        new.model_visible = 1 AND new.event_type IN (
+            'user_input', 'assistant_output', 'assistant_tool_call_batch', 'tool_result', 'context'
+        ) AND COALESCE(
+            json_extract(new.payload_json, '$.payload.readableProjection.searchVisible'), 1
+        ) != 0
+    ) OR (
+        new.model_visible = 1 AND new.event_type = 'opaque_legacy'
+        AND json_extract(new.payload_json, '$.payload.sourceKind') = 'conversation_messages'
+    );
+END;
+
+${TRANSCRIPT_EVENTS_APPEND_ONLY_SQL}
+`;
+
+export const SCHEMA_V10_SQL = `
+${SCHEMA_V10_LEGACY_CLEANUP_SQL}
+${SCHEMA_V10_LINEAGE_SQL}
+${SCHEMA_V10_TRANSCRIPT_SQL}
+`;
+
+export const SCHEMA_V11_CONTENT_BLOB_SQL = `
+CREATE TABLE session_content_blobs (
+    blob_id TEXT PRIMARY KEY CHECK (
+        length(blob_id) = 71
+        AND substr(blob_id, 1, 7) = 'sha256:'
+        AND substr(blob_id, 8) NOT GLOB '*[^0-9a-f]*'
+    ),
+    codec TEXT NOT NULL CHECK (codec IN ('identity-v1', 'deflate-raw-v1')),
+    raw_bytes INTEGER NOT NULL CHECK (raw_bytes >= 0 AND raw_bytes <= 33554432),
+    stored_bytes INTEGER NOT NULL CHECK (stored_bytes >= 0),
+    payload_blob BLOB NOT NULL CHECK (length(payload_blob) = stored_bytes),
+    created_at TEXT NOT NULL,
+    CHECK (codec != 'identity-v1' OR raw_bytes = stored_bytes)
+);
+
+CREATE INDEX idx_session_content_blobs_codec
+ON session_content_blobs(codec, raw_bytes);
+
+CREATE TRIGGER session_content_blobs_no_update
+BEFORE UPDATE ON session_content_blobs BEGIN
+    SELECT RAISE(ABORT, 'session_content_blobs are immutable');
+END;
+`;
+
+export const SCHEMA_V11_CONTENTLESS_FTS_SQL = `
+CREATE VIRTUAL TABLE transcript_events_fts USING fts5(
+    payload_json,
+    content='',
+    contentless_delete=1
+);
+`;
+
+export const SCHEMA_V11_TRANSCRIPT_SQL = `
+${TRANSCRIPT_EVENTS_TABLE_SQL}
+
+${SCHEMA_V11_CONTENTLESS_FTS_SQL}
+
+${TRANSCRIPT_EVENTS_APPEND_ONLY_SQL}
+`;
+
+export const SCHEMA_V11_CONTENT_REFERENCE_SQL = `
+CREATE TABLE transcript_event_blob_refs (
+    sequence_no INTEGER NOT NULL,
+    json_pointer TEXT NOT NULL CHECK (
+        length(json_pointer) BETWEEN 1 AND 16384
+        AND substr(json_pointer, 1, 1) = '/'
+    ),
+    blob_id TEXT NOT NULL,
+    PRIMARY KEY (sequence_no, json_pointer),
+    FOREIGN KEY (sequence_no) REFERENCES transcript_events(sequence_no) ON DELETE CASCADE,
+    FOREIGN KEY (blob_id) REFERENCES session_content_blobs(blob_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_transcript_event_blob_refs_blob
+ON transcript_event_blob_refs(blob_id, sequence_no);
+
+CREATE TABLE model_input_blob_refs (
+    blob_id TEXT PRIMARY KEY,
+    content_blob_id TEXT NOT NULL,
+    FOREIGN KEY (blob_id) REFERENCES model_input_blobs(blob_id) ON DELETE CASCADE,
+    FOREIGN KEY (content_blob_id) REFERENCES session_content_blobs(blob_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_model_input_blob_refs_content
+ON model_input_blob_refs(content_blob_id, blob_id);
+`;
+
+export const SCHEMA_V11_SQL = `
+${SCHEMA_V10_LEGACY_CLEANUP_SQL}
+${SCHEMA_V10_LINEAGE_SQL}
+${SCHEMA_V11_CONTENT_BLOB_SQL}
+${SCHEMA_V11_TRANSCRIPT_SQL}
+${SCHEMA_V11_CONTENT_REFERENCE_SQL}
+`;
+
+export const SCHEMA_V12_PROVIDER_LEDGER_SQL = `
+DROP TRIGGER IF EXISTS provider_step_events_no_delete;
+DROP TRIGGER IF EXISTS provider_step_events_no_update;
+DROP TRIGGER IF EXISTS provider_request_manifests_no_delete;
+DROP TRIGGER IF EXISTS provider_request_manifests_no_update;
+DROP TABLE provider_step_events;
+DROP TABLE provider_request_manifests;
+
+CREATE TABLE provider_request_manifests (
+    request_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    provider_step INTEGER NOT NULL,
+    manifest_blob_id TEXT NOT NULL,
+    request_signature TEXT NOT NULL,
+    logical_input_sha256 TEXT NOT NULL,
+    logical_request_sha256 TEXT NOT NULL,
+    previous_request_id TEXT,
+    boundary TEXT CHECK (boundary IN (
+        'bootstrap', 'legacy_bootstrap', 'continuation_reset', 'compaction', 'source_reset'
+    )),
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, turn_id, provider_step),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY (manifest_blob_id) REFERENCES model_input_blobs(blob_id),
+    FOREIGN KEY (previous_request_id) REFERENCES provider_request_manifests(request_id)
+);
+
+CREATE INDEX idx_provider_request_manifests_session_created
+ON provider_request_manifests(session_id, created_at, request_id);
+
+CREATE TABLE provider_step_events (
+    sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    request_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'prepared', 'dispatch_started', 'acknowledged', 'failed', 'unknown'
+    )),
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (request_id) REFERENCES provider_request_manifests(request_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE INDEX idx_provider_step_events_request_sequence
+ON provider_step_events(request_id, sequence_no);
+
+CREATE INDEX idx_provider_step_events_session_sequence
+ON provider_step_events(session_id, sequence_no);
+
+CREATE TRIGGER provider_request_manifests_no_update
+BEFORE UPDATE ON provider_request_manifests BEGIN
+    SELECT RAISE(ABORT, 'provider_request_manifests are immutable');
+END;
+
+CREATE TRIGGER provider_request_manifests_no_delete
+BEFORE DELETE ON provider_request_manifests BEGIN
+    SELECT RAISE(ABORT, 'provider_request_manifests are append-only');
+END;
+
+CREATE TRIGGER provider_step_events_no_update
+BEFORE UPDATE ON provider_step_events BEGIN
+    SELECT RAISE(ABORT, 'provider_step_events are immutable');
+END;
+
+CREATE TRIGGER provider_step_events_no_delete
+BEFORE DELETE ON provider_step_events BEGIN
+    SELECT RAISE(ABORT, 'provider_step_events are append-only');
+END;
+`;
+
+export const SCHEMA_V12_SQL = `
+${SCHEMA_V11_SQL}
+${SCHEMA_V12_PROVIDER_LEDGER_SQL}
 `;

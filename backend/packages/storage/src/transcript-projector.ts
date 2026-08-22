@@ -8,6 +8,7 @@ const HIDDEN_HISTORY_TYPES = new Set([
 	"command_result",
 	"context_baseline_update",
 	"contributed_tool",
+	"compaction_boundary",
 	"skill_instructions",
 	"tool_exposure",
 	"turn_rollback",
@@ -109,7 +110,7 @@ export function projectTranscript(
 	}
 
 	const before = boundedBefore(options.before, projected.length);
-	const limit = boundedLimit(options.limit);
+	const limit = boundedLimit(options.limit, projected.length);
 	return Object.freeze(projected.slice(Math.max(0, before - limit), before));
 }
 
@@ -532,7 +533,8 @@ function boundedBefore(value: number | undefined, length: number): number {
 		: Math.min(length, Math.max(0, value));
 }
 
-function boundedLimit(value: number | undefined): number {
+function boundedLimit(value: number | undefined, length: number): number {
+	if (value === Number.MAX_SAFE_INTEGER) return length;
 	if (value === undefined || !Number.isSafeInteger(value) || value <= 0) return DEFAULT_PAGE_LIMIT;
 	return Math.min(value, MAX_PAGE_LIMIT);
 }
