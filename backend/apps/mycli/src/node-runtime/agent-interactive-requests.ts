@@ -1,11 +1,15 @@
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import type { ApprovalChoice, RuntimeEvent } from "@mycli/core";
+import type {
+	ApprovalChoice,
+	RuntimeEvent,
+} from "@mycli/core";
 import type { ChildRuntimeEvent } from "@mycli/integrations";
 import type {
 	ResolveApprovalInput,
 	ResolveClarificationInput,
 	SubmitTurnOptions,
 } from "@mycli/runtime";
+import { approvalPreviewPayload } from "./approval-preview.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -370,6 +374,7 @@ function requestNotification(pending: PendingRequest): AgentInteractiveNotificat
 				reason: event.reason,
 				tool_name: event.toolName,
 				action: event.toolName,
+				...approvalPreviewPayload(event),
 				options: event.options.map((choice) => ({
 					choice,
 					label: approvalChoiceLabel(choice),

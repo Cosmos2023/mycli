@@ -60,6 +60,46 @@ test("child approval remains pending and resumes the same runtime to terminal co
 	]);
 });
 
+test("child approval preserves proposed file mutation details", () => {
+	const broker = new AgentInteractiveRequestBroker();
+	const notifications: Array<{ readonly method: string; readonly params: Record<string, unknown> }> = [];
+	broker.subscribe((notification) => { notifications.push(notification); });
+	const controller = new AbortController();
+	const interactive = broker.openTurn({
+		sessionId: "child-write",
+		agentPath: "/root/writer",
+		workerName: "writer",
+		runtime: {
+			resolveApproval: async () => turn("completed", "child-write"),
+			resolveClarification: async () => turn("completed", "child-write"),
+		},
+		signal: controller.signal,
+		emitLifecycle: () => undefined,
+		emitRuntime: () => undefined,
+	});
+	interactive.onRuntimeEvent({
+		type: "approval_requested",
+		clientTurnId: "child-write-turn",
+		turnId: "turn-child-write",
+		decisionId: "decision-write",
+		callId: "call-write",
+		toolName: "Edit",
+		preview: "Edit notes.txt",
+		reason: "A workspace file will change.",
+		options: ["approve_once", "reject"],
+		diff: "-old\n+new",
+		diffChars: 9,
+		diffTruncated: false,
+	});
+
+	assert.equal(notifications[0]?.method, "approval.request");
+	assert.equal(notifications[0]?.params.diff, "-old\n+new");
+	assert.equal(notifications[0]?.params.diff_chars, 9);
+	assert.equal(notifications[0]?.params.diff_truncated, false);
+	assert.equal("diffChars" in (notifications[0]?.params ?? {}), false);
+	controller.abort();
+});
+
 test("child approval may resolve before the initial suspended submit returns", async () => {
 	const broker = new AgentInteractiveRequestBroker();
 	const resume = deferred<RuntimeTurnRecord>();
@@ -253,6 +293,40 @@ test("aborting a waiting child publishes exact cancellation and clears ownership
 		turn_id: "turn-turn-abort",
 		decision_id: "decision-abort",
 	});
+});
+
+test("drops an approval response that arrives after cancellation wins", async () => {
+	const broker = new AgentInteractiveRequestBroker();
+	const controller = new AbortController();
+	let resolutions = 0;
+	const interactive = broker.openTurn({
+		sessionId: "child-cancel-race",
+		agentPath: "/root/cancel-race",
+		workerName: "cancel-race",
+		runtime: {
+			resolveApproval: async () => {
+				resolutions += 1;
+				return turn("completed", "child-cancel-race");
+			},
+			resolveClarification: async () => turn("completed", "child-cancel-race"),
+		},
+		signal: controller.signal,
+		emitLifecycle: () => undefined,
+		emitRuntime: () => undefined,
+	});
+	interactive.onRuntimeEvent(approvalRequest("decision-cancel-race", "turn-cancel-race"));
+	const terminal = interactive.waitForTerminal(turn("in_progress", "child-cancel-race"));
+	controller.abort();
+
+	assert.equal(broker.respondApproval({
+		session_id: "child-cancel-race",
+		generation: 1,
+		decision_id: "decision-cancel-race",
+		choice: "approve_once",
+	}), undefined);
+	await assert.rejects(terminal, { name: "AbortError", message: "interrupted" });
+	assert.equal(resolutions, 0);
+	assert.deepEqual(broker.pending(), []);
 });
 
 function turn(status: RuntimeTurnRecord["status"], sessionId: string): RuntimeTurnRecord {

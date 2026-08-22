@@ -4,6 +4,8 @@ import type {
 	ToolParameterManifest,
 } from "./types.ts";
 
+export const SHELL_DESCRIPTION_MAX_CHARS = 512;
+
 const SHELL_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 	{
 		name: "command",
@@ -12,48 +14,100 @@ const SHELL_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 		description: "Shell command to execute in the active user shell.",
 	},
 	{
+		name: "description",
+		type: "string",
+		required: false,
+		description: "Brief user-facing description of what the command does. It does not affect execution, safety classification, or permissions.",
+	},
+	{
 		name: "cwd",
 		type: "string",
 		required: false,
-		description: "Working directory for the command. Defaults to the workspace root.",
+		description: "Working directory for the command. Relative paths resolve from the workspace root; defaults to the workspace root.",
 	},
-	{ name: "tty", type: "boolean", required: false },
-	{ name: "yield_time_ms", type: "integer", required: false },
-	{ name: "max_output_tokens", type: "integer", required: false },
+	{
+		name: "tty",
+		type: "boolean",
+		required: false,
+		description: "True allocates a PTY for interactive programs; false or omitted uses plain pipes.",
+	},
+	{
+		name: "yield_time_ms",
+		type: "integer",
+		required: false,
+		description: "Wait before returning output. Defaults to 10000 ms; effective values are clamped to 250-30000 ms.",
+	},
+	{
+		name: "max_output_tokens",
+		type: "integer",
+		required: false,
+		description: "Maximum model-visible output budget. Defaults to the runtime limit, currently 500 tokens; larger values are capped.",
+	},
 	{
 		name: "prefix_rule",
 		type: "array",
 		required: false,
-		description: "Optional executable prefix proposed for persistent approval; it is never executed.",
+		description: "Optional executable-token prefix proposed for persistent approval. It is approval metadata and is not executed separately.",
 	},
 	{
 		name: "sandbox_permissions",
 		type: "string",
 		required: false,
-		description: "Use require_escalated only when the command must run outside the active sandbox.",
+		description: "Per-command sandbox override. Defaults to use_default; use require_escalated only when the command must run outside the active sandbox.",
 	},
 ]);
 
 export const SHELL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "builtin:Shell",
 	name: "Shell",
-	description: "Execute a command in the active user shell and return a resumable session if it keeps running.",
+	description: "Run a command in the active user shell and return output or a session ID for ongoing interaction.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			command: { type: "string", minLength: 1 },
-			cwd: { type: "string", minLength: 1 },
-			tty: { type: "boolean" },
-			yield_time_ms: { type: "integer", minimum: 1 },
-			max_output_tokens: { type: "integer", minimum: 1 },
+			command: {
+				type: "string",
+				minLength: 1,
+				description: parameterDescription(SHELL_PARAMETERS, "command"),
+			},
+			description: {
+				type: "string",
+				minLength: 1,
+				maxLength: SHELL_DESCRIPTION_MAX_CHARS,
+				description: parameterDescription(SHELL_PARAMETERS, "description"),
+			},
+			cwd: {
+				type: "string",
+				minLength: 1,
+				description: parameterDescription(SHELL_PARAMETERS, "cwd"),
+			},
+			tty: {
+				type: "boolean",
+				description: parameterDescription(SHELL_PARAMETERS, "tty"),
+			},
+			yield_time_ms: {
+				type: "integer",
+				minimum: 1,
+				description: parameterDescription(SHELL_PARAMETERS, "yield_time_ms"),
+			},
+			max_output_tokens: {
+				type: "integer",
+				minimum: 1,
+				description: parameterDescription(SHELL_PARAMETERS, "max_output_tokens"),
+			},
 			prefix_rule: {
 				type: "array",
-				items: { type: "string", minLength: 1 },
+				description: parameterDescription(SHELL_PARAMETERS, "prefix_rule"),
+				items: {
+					type: "string",
+					minLength: 1,
+					description: "One executable or argument token in the proposed prefix.",
+				},
 				minItems: 1,
 			},
 			sandbox_permissions: {
 				type: "string",
 				enum: ["use_default", "require_escalated"],
+				description: parameterDescription(SHELL_PARAMETERS, "sandbox_permissions"),
 			},
 		},
 		required: ["command"],
@@ -72,23 +126,48 @@ const WRITE_STDIN_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 		name: "chars",
 		type: "string",
 		required: false,
-		description: "Input to write. Defaults to empty, which only polls output.",
+		description: "Characters to write to the session. Empty or omitted input only polls recent output.",
 	},
-	{ name: "yield_time_ms", type: "integer", required: false },
-	{ name: "max_output_tokens", type: "integer", required: false },
+	{
+		name: "yield_time_ms",
+		type: "integer",
+		required: false,
+		description: "Wait after the interaction. Writes default to 250 ms and clamp to 250-30000 ms; polls default to 5000 ms and clamp to 5000-300000 ms.",
+	},
+	{
+		name: "max_output_tokens",
+		type: "integer",
+		required: false,
+		description: "Maximum model-visible output budget. Defaults to the runtime limit, currently 500 tokens; larger values are capped.",
+	},
 ]);
 
 export const WRITE_STDIN_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "builtin:WriteStdin",
 	name: "WriteStdin",
-	description: "Write characters to an existing Shell session or poll its recent output.",
+	description: "Write characters to an existing Shell session, or poll recent output when chars is empty or omitted.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			session_id: { type: "string", minLength: 1 },
-			chars: { type: "string" },
-			yield_time_ms: { type: "integer", minimum: 1 },
-			max_output_tokens: { type: "integer", minimum: 1 },
+			session_id: {
+				type: "string",
+				minLength: 1,
+				description: parameterDescription(WRITE_STDIN_PARAMETERS, "session_id"),
+			},
+			chars: {
+				type: "string",
+				description: parameterDescription(WRITE_STDIN_PARAMETERS, "chars"),
+			},
+			yield_time_ms: {
+				type: "integer",
+				minimum: 1,
+				description: parameterDescription(WRITE_STDIN_PARAMETERS, "yield_time_ms"),
+			},
+			max_output_tokens: {
+				type: "integer",
+				minimum: 1,
+				description: parameterDescription(WRITE_STDIN_PARAMETERS, "max_output_tokens"),
+			},
 		},
 		required: ["session_id"],
 		additionalProperties: false,
@@ -145,6 +224,7 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		definition: SHELL_TOOL_DEFINITION,
 		parameters: SHELL_PARAMETERS,
 		riskLevel: "high",
+		supportsParallelToolCalls: true,
 		approvalPolicy: "shell_command_analysis",
 		capabilityTags: ["shell", "process", "terminal", "approval"],
 		modelVisible: true,
@@ -153,6 +233,7 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		definition: WRITE_STDIN_TOOL_DEFINITION,
 		parameters: WRITE_STDIN_PARAMETERS,
 		riskLevel: "low",
+		supportsParallelToolCalls: false,
 		approvalPolicy: "auto_allow",
 		capabilityTags: ["shell", "process", "terminal", "continuation"],
 		modelVisible: true,
@@ -161,6 +242,7 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		definition: BASH_TOOL_DEFINITION,
 		parameters: BASH_PARAMETERS,
 		riskLevel: "high",
+		supportsParallelToolCalls: false,
 		approvalPolicy: "shell_command_analysis",
 		capabilityTags: ["shell", "process", "terminal", "approval", "compatibility"],
 		modelVisible: false,
@@ -169,6 +251,7 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		definition: SHELL_OUTPUT_TOOL_DEFINITION,
 		parameters: SHELL_OUTPUT_PARAMETERS,
 		riskLevel: "low",
+		supportsParallelToolCalls: false,
 		approvalPolicy: "auto_allow",
 		capabilityTags: ["shell", "process", "background", "compatibility"],
 		modelVisible: false,
@@ -177,6 +260,7 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		definition: BASH_OUTPUT_TOOL_DEFINITION,
 		parameters: SHELL_OUTPUT_PARAMETERS,
 		riskLevel: "low",
+		supportsParallelToolCalls: false,
 		approvalPolicy: "auto_allow",
 		capabilityTags: ["shell", "process", "background", "compatibility"],
 		modelVisible: false,
@@ -185,6 +269,7 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		definition: KILL_SHELL_TOOL_DEFINITION,
 		parameters: SHELL_OUTPUT_PARAMETERS,
 		riskLevel: "medium",
+		supportsParallelToolCalls: false,
 		approvalPolicy: "auto_allow_or_request",
 		capabilityTags: ["shell", "process", "control", "mutation", "compatibility"],
 		modelVisible: false,
@@ -195,6 +280,7 @@ interface TerminalEntryInput {
 	readonly definition: ToolDefinition;
 	readonly parameters: readonly ToolParameterManifest[];
 	readonly riskLevel: ToolManifestEntry["risk_level"];
+	readonly supportsParallelToolCalls: boolean;
 	readonly approvalPolicy: string;
 	readonly capabilityTags: readonly string[];
 	readonly modelVisible: boolean;
@@ -207,7 +293,7 @@ function terminalEntry(input: TerminalEntryInput): ToolManifestEntry {
 		toolset: "terminal",
 		parameters: input.parameters,
 		risk_level: input.riskLevel,
-		supports_parallel_tool_calls: false,
+		supports_parallel_tool_calls: input.supportsParallelToolCalls,
 		approval_policy: input.approvalPolicy,
 		capability_tags: input.capabilityTags,
 		effects: { filesystem: "write", network: false, process: true },
@@ -238,4 +324,13 @@ function deepFreeze<Value>(value: Value): Value {
 		deepFreeze(nested);
 	}
 	return Object.freeze(value);
+}
+
+function parameterDescription(
+	parameters: readonly ToolParameterManifest[],
+	name: string,
+): string {
+	const description = parameters.find((parameter) => parameter.name === name)?.description;
+	if (!description) throw new Error(`missing parameter description: ${name}`);
+	return description;
 }

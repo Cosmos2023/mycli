@@ -3,6 +3,11 @@ import { createTwoFilesPatch } from "diff";
 const MAX_DIFF_CHARS = 200_000;
 const MAX_DIFF_LINES = 5_000;
 
+export interface FileDiffLimits {
+	readonly maxChars?: number;
+	readonly maxLines?: number;
+}
+
 export interface BoundedFileDiff {
 	readonly diff: string;
 	readonly addedLines: number;
@@ -15,6 +20,7 @@ export function createBoundedUnifiedDiff(
 	path: string,
 	before: string,
 	after: string,
+	limits: FileDiffLimits = {},
 ): BoundedFileDiff {
 	const full = createTwoFilesPatch(
 		`${path}:before`,
@@ -26,7 +32,11 @@ export function createBoundedUnifiedDiff(
 		{ context: 3 },
 	);
 	const { addedLines, removedLines } = countChanges(full);
-	const bounded = boundDiff(full);
+	const bounded = boundDiff(
+		full,
+		positiveLimit(limits.maxChars, MAX_DIFF_CHARS),
+		positiveLimit(limits.maxLines, MAX_DIFF_LINES),
+	);
 	return {
 		diff: bounded.value,
 		addedLines,
@@ -53,18 +63,22 @@ function countChanges(diff: string): { readonly addedLines: number; readonly rem
 	return { addedLines, removedLines };
 }
 
-function boundDiff(diff: string): { readonly value: string; readonly omittedChars: number } {
+function boundDiff(
+	diff: string,
+	maxChars: number,
+	maxLines: number,
+): { readonly value: string; readonly omittedChars: number } {
 	const lines = splitLinesWithEndings(diff);
-	if (diff.length <= MAX_DIFF_CHARS && lines.length <= MAX_DIFF_LINES) {
+	if (diff.length <= maxChars && lines.length <= maxLines) {
 		return { value: diff, omittedChars: 0 };
 	}
 
-	const retainedLimit = Math.max(2, MAX_DIFF_LINES - 2);
+	const retainedLimit = Math.max(2, maxLines - 2);
 	let headCount = Math.min(lines.length, Math.floor(retainedLimit / 2));
 	let tailCount = Math.min(lines.length - headCount, retainedLimit - headCount);
 	while (headCount + tailCount > 2) {
 		const candidate = boundedLineCandidate(lines, headCount, tailCount);
-		if (candidate.value.length <= MAX_DIFF_CHARS) {
+		if (candidate.value.length <= maxChars) {
 			return candidate;
 		}
 		const headChars = lines.slice(0, headCount).join("").length;
@@ -77,7 +91,7 @@ function boundDiff(diff: string): { readonly value: string; readonly omittedChar
 			break;
 		}
 	}
-	return boundDiffByChars(diff);
+	return boundDiffByChars(diff, maxChars);
 }
 
 function boundedLineCandidate(
@@ -94,17 +108,26 @@ function boundedLineCandidate(
 	};
 }
 
-function boundDiffByChars(diff: string): { readonly value: string; readonly omittedChars: number } {
+function boundDiffByChars(
+	diff: string,
+	maxChars: number,
+): { readonly value: string; readonly omittedChars: number } {
 	const markerReserve = 80;
-	const retained = Math.max(0, MAX_DIFF_CHARS - markerReserve);
+	const retained = Math.max(0, maxChars - markerReserve);
 	const headCount = Math.floor(retained / 2);
 	const tailCount = retained - headCount;
 	const omittedChars = Math.max(0, diff.length - headCount - tailCount);
 	const marker = `\n... (diff truncated, ${omittedChars} characters omitted) ...\n`;
 	const value = `${diff.slice(0, headCount)}${marker}${diff.slice(diff.length - tailCount)}`;
-	return { value: value.slice(0, MAX_DIFF_CHARS), omittedChars };
+	return { value: value.slice(0, maxChars), omittedChars };
 }
 
 function splitLinesWithEndings(value: string): readonly string[] {
 	return value.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+}
+
+function positiveLimit(value: number | undefined, fallback: number): number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+		? value
+		: fallback;
 }

@@ -17,9 +17,9 @@ provider-visible tool schema.
 
 Apply this contract when changing:
 
-- `src/mycli/tools/registry.py`
-- `src/mycli/tools/base.py`
-- built-in tool specs under `src/mycli/tools/`
+- `backend/packages/tools/src/manifest.ts`
+- `backend/packages/tools/src/tool-router.ts`
+- built-in tool specs under `backend/packages/tools/src/`
 - approval/safety behavior for built-in tools
 - extension manifest discovery
 - doctor checks for local tools
@@ -70,6 +70,15 @@ Each tool entry must include:
 - `ToolRegistry.render_for_model()` remains the provider-facing schema surface;
   manifest additions must not change provider schema ordering or contents unless
   the tool spec itself intentionally changes.
+- The provider-visible `Patch` schema has one required `operations` array with
+  one to 64 ordered `add`, `update`, `delete`, or `move` objects. Each variant
+  rejects additional properties. The only other top-level Patch fields are the
+  optional shared `sandbox_permissions` and `justification` fields.
+- Patch operations express semantic intent only: add carries `file_path` and
+  complete `content`; update carries `file_path`, `old_string`, `new_string`,
+  and optional `replace_all`; delete carries `file_path`; move carries
+  independent `from_path` and `to_path`. Host baselines, prepared guards,
+  digests, mtimes, inode values, and authorization bits are never schema fields.
 - `ExtensionManifestService.manifest()` includes `tool_manifest` so gateway and
   extension clients can discover local tools without scraping human `/tools`
   output.
@@ -136,6 +145,9 @@ Required tests for manifest changes:
 - Safety policy remains aligned with manifest risk/approval metadata for core
   local tools.
 - Existing tool tests continue to pass.
+- Patch manifest tests assert top-level parameter order, the required operations
+  array and its bounds, all four closed operation variants, and the absence of
+  host-only conflict or authorization metadata.
 - Router tests assert that only a resolved adapter with an exact `true`
   capability reports parallel support; unknown and unclassified routes do not
   opt in.
@@ -162,9 +174,11 @@ Required tests for manifest changes:
 
 - The resolved executable adapter is the sole concurrency authority. Capability
   absence and every value other than exact `true` mean sequential execution.
-- Built-in `Read`, `web_fetch`, and `tool_search` opt in. Shell/process tools,
-  file mutations, planning, interaction, polling, and subagent coordination
-  remain sequential.
+- Built-in `Read`, `web_fetch`, `tool_search`, and the modern one-shot `Shell`
+  adapter opt in. `Shell` approval and sandbox authorization remain independent
+  per call. File mutations, planning, interaction, polling, subagent coordination,
+  and stateful terminal compatibility/control tools (`WriteStdin`, legacy `Bash`,
+  `ShellOutput`, `BashOutput`, and `KillShell`) remain sequential.
 - `defineIntegrationRegistration()` derives its immutable projection from the
   adapter. A caller-supplied registration field, provider definition, origin
   metadata, or combined-manifest row cannot independently opt in.
@@ -180,6 +194,8 @@ Required tests for manifest changes:
 | --- | --- |
 | Adapter capability missing or false | Router reports sequential |
 | Unknown route | Router reports sequential |
+| Modern `Shell` adapter and manifest both opt in | Router reports parallel-safe; runtime still evaluates each call's approval and sandbox authorization independently |
+| Stateful terminal compatibility/control tool | Remain sequential |
 | MCP `readOnlyHint=true` | Resolved adapter and manifest opt in |
 | MCP hint false, missing, or non-boolean | Remain sequential |
 | MCP server config opt-in | Every tool from that server opts in |
@@ -191,13 +207,19 @@ Required tests for manifest changes:
 
 - Good: an MCP read-only tool resolves to an opted-in adapter and a matching
   combined-manifest row.
+- Good: two allowed `Shell` calls overlap while each receives only its own
+  exact-call sandbox authorization.
 - Base: a plugin adapter without capability metadata remains sequential.
+- Base: `WriteStdin` and legacy terminal control routes remain sequential because
+  they may observe or mutate shared session state.
 - Bad: maintain a second tool-name set in the app composition root or trust an
   MCP/provider schema extension field without normalization.
 
 ### 6. Tests Required
 
 - Router tests cover adapter opt-in, default false, and unknown routes.
+- Shell adapter and manifest tests assert `Shell=true` while `WriteStdin` and
+  compatibility/control routes remain `false`.
 - Built-in startup tests cover manifest/adapter alignment.
 - Integration tests prove registration metadata is derived from the adapter.
 - MCP tests cover exact read-only hints, missing/malformed annotations, explicit
@@ -215,6 +237,10 @@ new ToolRouter({ adapters, exposure, parallelToolNames: new Set(["Read"]) });
 
 ```typescript
 class ReadTool implements ToolAdapter {
+  readonly supportsParallelToolCalls = true;
+}
+
+class ShellTool implements ToolAdapter {
   readonly supportsParallelToolCalls = true;
 }
 
@@ -268,7 +294,7 @@ const registration = defineIntegrationRegistration({ adapter, ...metadata });
 - Base: A continuation resends the bounded canonical tool transcript and preserves call ordering.
 - Bad: Sending `strict: true` with `required` missing `pages`, or unconditionally sending
   `previous_response_id` to a compatible endpoint.
-- Bad: Introducing a Node-only hard call ceiling that terminates a turn Python would continue.
+- Bad: Introducing a hidden hard call ceiling that terminates an otherwise valid turn.
 
 ### 6. Tests Required
 
@@ -278,7 +304,7 @@ const registration = defineIntegrationRegistration({ adapter, ...metadata });
 - A continuation test asserts no `previous_response_id` and ordered function call/output replay.
 - Runtime tests assert successful completion beyond eight provider steps and sixteen tool calls.
 - The Node M3 integration test asserts the same request shape, successful Read lifecycle, durable
-  transcript, and `python_started=false` in live smoke output.
+  transcript, and no alternate runtime process in live smoke output.
 
 ### 7. Wrong vs Correct
 
@@ -313,8 +339,8 @@ Correct:
 ### 3. Contracts
 
 - `update_plan` follows the Codex TODO/checklist protocol. It replaces the displayed plan with the
-  complete supplied list; it does not accept Python's historical add/start/complete/remove
-  operation payloads.
+  complete supplied list; it does not accept the retired add/start/complete/remove operation
+  payloads.
 - `explanation` is optional and bounded to 4,096 characters. `plan` is required, may be empty to
   clear the plan, and contains at most 128 items. Step text is non-empty and bounded to 4,096
   characters, unknown fields are rejected, and at most one item is `in_progress`.
@@ -326,6 +352,12 @@ Correct:
   capture, sandbox escalation, or the subagent mutating-tool checkpoint path.
 - The canonical system prompt names `update_plan`, requires the complete current plan on every
   call, and tells the model to keep at most one active step. Simple tasks still skip planning.
+- Collaboration mode does not derive a second provider schema: Plan and Default use the same stable
+  built-in/direct tool exposure (subject to the active trust, permission, and allowed-tool policy).
+  In particular, a Shell manifest entry with `effects.filesystem=write` is not removed merely because
+  the turn is in Plan mode.
+- Plan mode keeps `update_plan` in that stable schema for cache compatibility, then records a bounded
+  `tool_not_allowed_in_plan_mode` failed result without approval, hooks, preview, or adapter execution.
 
 ### 4. Validation & Error Matrix
 
@@ -350,8 +382,8 @@ Correct:
 - Adapter tests cover a structured full plan, empty clear, invalid item/status, bounds, and multiple
   active rows.
 - Runtime composition tests assert root and child provider schemas expose exactly `update_plan`.
-- Prompt parity tests assert Node and Python load the same versioned canonical template and that it
-  names the complete-plan behavior.
+- Prompt asset tests assert source and packaged builds load the same versioned canonical template
+  and that it names the complete-plan behavior.
 
 ### 7. Wrong vs Correct
 
@@ -403,6 +435,9 @@ skill synchronization remain out of scope.
   unsafe, fail closed.
 - Pin the socket lookup to a previously validated DNS answer. Handle redirects manually and repeat
   URL, DNS, and address validation for every hop.
+- Keep the per-call timeout timer referenced while the fetch is pending, and clear it after the call
+  settles. A hanging fetch must reach its bounded timeout even when no socket or other referenced
+  event-loop handle remains.
 - Reject oversized, compressed, or binary responses. Parse only HTML, JSON, and textual media,
   omit non-content HTML nodes, and fence successful output as untrusted external data with its final
   public URL.
@@ -463,8 +498,9 @@ skill synchronization remain out of scope.
 - Blank query or limit outside 1-16 -> bounded `invalid_arguments` result and no activation.
 - No match -> successful empty result with unchanged exposure.
 - Activation append fails -> terminal `persistence_error` and no later provider request.
-- Provider calls a deferred route not present in the request exposure -> `tool_protocol_error`
-  before adapter execution.
+- Provider calls a deferred route not present in the request exposure -> persist a failed
+  `unsupported_tool` result before adapter execution and continue the provider loop so the model can
+  recover on the next step.
 
 ### 5. Tests Required
 
@@ -512,8 +548,8 @@ skill synchronization remain out of scope.
   profile discovery and selection are disabled, and the spawn schema does not accept `profile`.
 - `spawn_agent` is the only provider-visible child-spawn entry point. `Task` is absent from runtime
   composition, package exports, child tool scope, and provider definitions.
-- Node subagents have no implicit provider-step, tool-call, or no-progress budget. Python's
-  historical implicit `maxTurns=8` and `noProgressTurnLimit=3` are an approved migration difference.
+- Node subagents have no implicit provider-step, tool-call, or no-progress budget. The retired
+  implicit `maxTurns=8` and `noProgressTurnLimit=3` defaults must not be reintroduced.
 - `SendMessage` and `SubagentOutput` are absent from runtime composition and provider definitions;
   queue delivery uses `send_message` and terminal results arrive through the durable mailbox.
 
@@ -537,7 +573,7 @@ skill synchronization remain out of scope.
   subagent control registrations selected by composition.
 - Bad: pass the Draft-07 root marker directly to AJV 2020 and crash during integration startup.
 - Bad: recursively delete `$schema` or other schema fields from the external descriptor.
-- Bad: add Python's implicit 8-step/3-no-progress defaults to a Node child with no budget.
+- Bad: add the retired implicit 8-step/3-no-progress defaults to a child with no budget.
 - Bad: discover `.mycli/agents` or `.mycli/subagents` and let a profile override child instructions,
   model, tools, or budgets.
 
@@ -551,9 +587,8 @@ skill synchronization remain out of scope.
 - Skill tests assert one stable provider route regardless of catalog size.
 - Subagent schema/controller/runtime tests assert `spawn_agent` is the only spawn route, profile
   properties are absent, parent tools are inherited, missing budgets remain empty, and turns can
-  exceed the historical Python defaults.
-- M7 parity fixtures record the approved Python/Node budget difference rather than normalizing it
-  away.
+  exceed the retired implicit defaults.
+- The frozen M7 fixture records the approved absence of implicit child budgets.
 
 ### 7. Wrong vs Correct
 
@@ -590,8 +625,8 @@ spawnAgent({ taskName, message, forkTurns });
 ### 3. Contracts
 
 - When no package-owned or user-owned binary exists, Node setup prepares ripgrep `15.1.0` under
-  `~/.mycli/vendor/ripgrep/<platform>-<architecture>/rg[.exe]` using the same target archives and
-  SHA-256 values as the retained Python runtime.
+  `~/.mycli/vendor/ripgrep/<platform>-<architecture>/rg[.exe]` using the canonical target archives
+  and SHA-256 values in `RIPGREP_TARGETS`.
 - Preparation uses a bounded download, exact SHA-256 verification, member-only archive extraction,
   an executable staged file, atomic placement, and cleanup of temporary files.
 - Provider configuration and credentials are saved before ripgrep preparation. Download,

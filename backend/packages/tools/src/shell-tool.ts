@@ -28,7 +28,10 @@ import type {
 	ShellSessionSnapshot,
 	ShellStartRequest,
 } from "./shell-session-manager.ts";
-import { SHELL_TOOL_DEFINITION } from "./shell-manifest.ts";
+import {
+	SHELL_DESCRIPTION_MAX_CHARS,
+	SHELL_TOOL_DEFINITION,
+} from "./shell-manifest.ts";
 import { parseShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
 import {
 	resolveShellProfile,
@@ -68,6 +71,7 @@ export interface ShellToolOptions {
 
 interface ShellInvocation {
 	readonly command: string;
+	readonly description?: string;
 	readonly cwd?: unknown;
 	readonly tty: boolean;
 	readonly yieldTimeMs: number;
@@ -78,6 +82,7 @@ interface ShellInvocation {
 
 export class ShellTool implements ToolAdapter {
 	readonly definition = SHELL_TOOL_DEFINITION;
+	readonly supportsParallelToolCalls = true;
 	readonly #workspaceRoot: string;
 	readonly #manager: ShellStartManager;
 	readonly #profile: ShellProfile;
@@ -121,6 +126,12 @@ export class ShellTool implements ToolAdapter {
 	): Promise<ToolAdapterResult> {
 		const command = stringValue(argumentsValue.command);
 		if (!command) return shellFailure("invalid_arguments", "Shell command is required.");
+		if (!validOptionalDescription(argumentsValue.description)) {
+			return shellFailure(
+				"invalid_arguments",
+				`Shell description must be a non-empty string of at most ${SHELL_DESCRIPTION_MAX_CHARS} characters.`,
+			);
+		}
 		const sandboxPermissions = parseShellSandboxPermissions(argumentsValue.sandbox_permissions);
 		if (!sandboxPermissions) {
 			return shellFailure(
@@ -156,6 +167,9 @@ export class ShellTool implements ToolAdapter {
 		}
 		return this.#invoke({
 			command,
+			...(typeof argumentsValue.description === "string"
+				? { description: argumentsValue.description.trim() }
+				: {}),
 			cwd: argumentsValue.cwd,
 			tty,
 			yieldTimeMs: clamp(yieldValue, MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
@@ -235,6 +249,7 @@ export class ShellTool implements ToolAdapter {
 			ownerSessionId: options.ownerSessionId,
 			callId: options.callId,
 			command: invocation.command,
+			...(invocation.description ? { description: invocation.description } : {}),
 			executable: launch.executable,
 			args: launch.args,
 			cwd,
@@ -382,6 +397,13 @@ function terminalErrorKind(snapshot: ShellSessionSnapshot): string {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function validOptionalDescription(value: unknown): boolean {
+	return value === undefined
+		|| (typeof value === "string"
+			&& Boolean(value.trim())
+			&& Array.from(value).length <= SHELL_DESCRIPTION_MAX_CHARS);
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

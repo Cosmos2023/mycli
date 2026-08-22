@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import {
 	chmod,
 	mkdtemp,
@@ -28,7 +27,6 @@ interface MutationRuntime {
 	write(input: {
 		readonly path: string;
 		readonly content: string;
-		readonly expectedSha256?: string;
 		readonly history?: { readonly turnId: string; readonly toolName: string };
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome>;
@@ -205,8 +203,7 @@ test("enforces content and replacement-target byte limits", async (t) => {
 		hasMutationKind("content_too_large"),
 	);
 	await writeFile(fixture.target, "x".repeat(1_000_001), "utf8");
-	const { runtime, snapshots } = createRuntimeAndSnapshots(fixture.root);
-	await recordSnapshot(snapshots, fixture.target, "a.txt");
+	const runtime = createRuntime(fixture.root);
 	await assert.rejects(
 		() => runtime.replace({
 			path: "a.txt",
@@ -219,42 +216,41 @@ test("enforces content and replacement-target byte limits", async (t) => {
 	);
 });
 
-test("rejects stale expected hashes and preserves current content", async (t) => {
+test("Write overwrites the content present when it executes", async (t) => {
 	const fixture = await mutationFixture(t, "current\n");
-	await assert.rejects(
-		() => createRuntime(fixture.root).write({
-			path: "a.txt",
-			content: "new\n",
-			expectedSha256: "0".repeat(64),
-			signal: signal(),
-		}),
-		hasMutationKind("stale_write_snapshot"),
-	);
-	assert.equal(await readFile(fixture.target, "utf8"), "current\n");
+	const result = await createRuntime(fixture.root).write({
+		path: "a.txt",
+		content: "new\n",
+		signal: signal(),
+	});
+
+	assert.equal(result.status, "overwritten");
+	assert.equal(await readFile(fixture.target, "utf8"), "new\n");
 });
 
-test("requires and validates a recent Read snapshot for exact replacement", async (t) => {
+test("exact replacement reads current content on every execution", async (t) => {
 	const fixture = await mutationFixture(t, "value = 1\n");
-	const { runtime, snapshots } = createRuntimeAndSnapshots(fixture.root);
-	await assert.rejects(
-		() => runtime.replace({ path: "a.txt", oldString: "1", newString: "2", replaceAll: false, signal: signal() }),
-		hasMutationKind("missing_read_snapshot"),
-	);
-	await recordSnapshot(snapshots, fixture.target, "a.txt");
-	const result = await runtime.replace({
+	const runtime = createRuntime(fixture.root);
+	const first = await runtime.replace({
 		path: "a.txt",
 		oldString: "1",
 		newString: "2",
 		replaceAll: false,
 		signal: signal(),
 	});
-	assert.equal(result.status, "edited");
-	assert.equal(result.matches, 1);
-	assert.equal(await readFile(fixture.target, "utf8"), "value = 2\n");
-	await assert.rejects(
-		() => runtime.replace({ path: "a.txt", oldString: "2", newString: "3", replaceAll: false, signal: signal() }),
-		hasMutationKind("stale_read_snapshot"),
-	);
+	const second = await runtime.replace({
+		path: "a.txt",
+		oldString: "2",
+		newString: "3",
+		replaceAll: false,
+		signal: signal(),
+	});
+
+	assert.equal(first.status, "edited");
+	assert.equal(first.matches, 1);
+	assert.equal(second.status, "edited");
+	assert.equal(second.matches, 1);
+	assert.equal(await readFile(fixture.target, "utf8"), "value = 3\n");
 });
 
 test("aborts before commit and leaves no temporary file", async (t) => {
@@ -284,18 +280,6 @@ function createRuntimeAndSnapshots(workspaceRoot: string): {
 	assert.equal(typeof Store, "function", "FileSnapshotStore must be exported");
 	const snapshots = new Store!();
 	return { runtime: new Runtime!({ workspaceRoot, snapshots }), snapshots };
-}
-
-async function recordSnapshot(store: SnapshotStore, target: string, path: string): Promise<void> {
-	const content = await readFile(target);
-	const targetStat = await stat(target, { bigint: true });
-	store.record({
-		path,
-		sha256: createHash("sha256").update(content).digest("hex"),
-		mtimeNs: targetStat.mtimeNs.toString(),
-		size: content.length,
-		capturedAt: new Date().toISOString(),
-	});
 }
 
 function hasMutationKind(kind: string): (error: unknown) => boolean {

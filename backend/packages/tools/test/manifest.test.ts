@@ -5,7 +5,12 @@ import * as tools from "../src/index.ts";
 interface ManifestTool {
 	readonly id: string;
 	readonly name: string;
-	readonly parameters: readonly { readonly name: string; readonly required: boolean }[];
+	readonly description: string;
+	readonly parameters: readonly {
+		readonly name: string;
+		readonly required: boolean;
+		readonly description?: string;
+	}[];
 	readonly inputSchema: Readonly<Record<string, unknown>>;
 	readonly risk_level: string;
 	readonly supports_parallel_tool_calls: boolean;
@@ -74,6 +79,23 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 	assert.equal(Object.isFrozen(manifest.tools), true);
 });
 
+test("model-visible built-ins describe every provider parameter without manifest drift", () => {
+	for (const tool of builtinManifest().tools.filter((candidate) => candidate.model_visible)) {
+		assert.match(tool.description, /\S/u, `${tool.name} must have a description`);
+		const properties = recordValue(tool.inputSchema.properties, `${tool.name}.properties`);
+		const parameters = new Map(tool.parameters.map((parameter) => [parameter.name, parameter]));
+		assert.deepEqual(Object.keys(properties).sort(), [...parameters.keys()].sort());
+
+		for (const [name, propertyValue] of Object.entries(properties)) {
+			const path = `${tool.name}.${name}`;
+			const property = recordValue(propertyValue, path);
+			const description = describedSchema(property, path);
+			assert.equal(parameters.get(name)?.description, description, `${path} manifest drift`);
+			assertNestedPropertyDescriptions(property, path);
+		}
+	}
+});
+
 test("mutation manifest entries preserve schemas safety and effects", () => {
 	const manifest = builtinManifest();
 	const [read, edit, patch, write] = manifest.tools;
@@ -94,16 +116,75 @@ test("mutation manifest entries preserve schemas safety and effects", () => {
 		["old_string", true],
 		["new_string", true],
 		["replace_all", false],
+		["sandbox_permissions", false],
+		["justification", false],
 	]);
-	assert.deepEqual(patch.parameters, edit.parameters);
+	assert.deepEqual(patch.parameters.map((parameter) => [parameter.name, parameter.required]), [
+		["operations", true],
+		["sandbox_permissions", false],
+		["justification", false],
+	]);
 	assert.deepEqual(write.parameters.map((parameter) => [parameter.name, parameter.required]), [
 		["file_path", true],
 		["content", true],
-		["expected_sha256", false],
+		["sandbox_permissions", false],
+		["justification", false],
 	]);
 	assert.deepEqual(requiredFields(edit.inputSchema), ["file_path", "old_string", "new_string"]);
-	assert.deepEqual(requiredFields(patch.inputSchema), ["file_path", "old_string", "new_string"]);
+	assert.deepEqual(requiredFields(patch.inputSchema), ["operations"]);
 	assert.deepEqual(requiredFields(write.inputSchema), ["file_path", "content"]);
+	for (const tool of [edit, patch, write]) {
+		const properties = recordValue(tool.inputSchema.properties, `${tool.name}.properties`);
+		assert.deepEqual(properties.sandbox_permissions, {
+			type: "string",
+			description: "Filesystem permission request for this operation. Omit it or use workspace-write to keep the active turn policy; use danger-full-access only to retry this exact operation after workspace confinement denied it.",
+			enum: ["workspace-write", "danger-full-access"],
+		});
+		assert.deepEqual(properties.justification, {
+			type: "string",
+			description: "User-facing approval question required with danger-full-access; omit otherwise.",
+			minLength: 1,
+			maxLength: 512,
+		});
+	}
+	assert.equal(
+		"expected_sha256" in recordValue(write.inputSchema.properties, "Write.properties"),
+		false,
+	);
+	const patchProperties = recordValue(patch.inputSchema.properties, "Patch.properties");
+	const operations = recordValue(patchProperties.operations, "Patch.operations");
+	assert.equal(operations.minItems, 1);
+	assert.equal(operations.maxItems, 64);
+	const operationItems = recordValue(operations.items, "Patch.operations.items");
+	const operationVariants = operationItems.oneOf;
+	assert.ok(Array.isArray(operationVariants));
+	const variants = operationVariants.map((value, index) => (
+		recordValue(value, `Patch.operations.oneOf[${index}]`)
+	));
+	assert.deepEqual(variants.map((variant) => {
+		const properties = recordValue(variant.properties, "Patch operation properties");
+		return recordValue(properties.type, "Patch operation type").const;
+	}), ["add", "update", "delete", "move"]);
+	assert.deepEqual(variants.map((variant) => variant.required), [
+		["type", "file_path", "content"],
+		["type", "file_path", "old_string", "new_string"],
+		["type", "file_path"],
+		["type", "from_path", "to_path"],
+	]);
+	assert.deepEqual(variants.map((variant) => variant.additionalProperties), [
+		false,
+		false,
+		false,
+		false,
+	]);
+	for (const hostOnlyField of [
+		"expected_sha256",
+		"prepared_mutation_guard",
+		"mtime",
+		"inode",
+	]) {
+		assert.equal(JSON.stringify(patch.inputSchema).includes(hostOnlyField), false, hostOnlyField);
+	}
 });
 
 test("planning manifest entry is low-risk non-mutating and sequential", () => {
@@ -160,11 +241,33 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	const shell = manifest.tools.find((tool) => tool.name === "Shell");
 	const writeStdin = manifest.tools.find((tool) => tool.name === "WriteStdin");
 	assert.ok(shell && writeStdin);
+	assert.equal(shell.supports_parallel_tool_calls, true);
+	assert.equal(writeStdin.supports_parallel_tool_calls, false);
 	assert.deepEqual(requiredFields(shell.inputSchema), ["command"]);
+	assert.deepEqual(shell.parameters.map((parameter) => [parameter.name, parameter.required]), [
+		["command", true],
+		["description", false],
+		["cwd", false],
+		["tty", false],
+		["yield_time_ms", false],
+		["max_output_tokens", false],
+		["prefix_rule", false],
+		["sandbox_permissions", false],
+	]);
 	const shellProperties = Reflect.get(shell.inputSchema, "properties") as Readonly<Record<string, unknown>>;
+	assert.deepEqual(shellProperties.description, {
+		type: "string",
+		minLength: 1,
+		maxLength: 512,
+		description: "Brief user-facing description of what the command does. It does not affect execution, safety classification, or permissions.",
+	});
 	assert.deepEqual(
 		shellProperties.sandbox_permissions,
-		{ type: "string", enum: ["use_default", "require_escalated"] },
+		{
+			type: "string",
+			enum: ["use_default", "require_escalated"],
+			description: "Per-command sandbox override. Defaults to use_default; use require_escalated only when the command must run outside the active sandbox.",
+		},
 	);
 	assert.deepEqual(requiredFields(writeStdin.inputSchema), ["session_id"]);
 	const fileExposure = planToolExposure(manifest, { shell: false }) as readonly {
@@ -191,6 +294,48 @@ function builtinManifest(): Manifest {
 
 function requiredFields(schema: Readonly<Record<string, unknown>>): unknown {
 	return schema.required;
+}
+
+function assertNestedPropertyDescriptions(
+	schema: Readonly<Record<string, unknown>>,
+	path: string,
+): void {
+	const properties = schema.properties;
+	if (properties !== undefined) {
+		for (const [name, value] of Object.entries(recordValue(properties, `${path}.properties`))) {
+			const nestedPath = `${path}.${name}`;
+			const property = recordValue(value, nestedPath);
+			describedSchema(property, nestedPath);
+			assertNestedPropertyDescriptions(property, nestedPath);
+		}
+	}
+	const items = schema.items;
+	if (items !== undefined) {
+		assertNestedPropertyDescriptions(recordValue(items, `${path}.items`), `${path}[]`);
+	}
+	const oneOf = schema.oneOf;
+	if (oneOf !== undefined) {
+		assert.ok(Array.isArray(oneOf), `${path}.oneOf must be an array`);
+		for (const [index, value] of oneOf.entries()) {
+			assertNestedPropertyDescriptions(
+				recordValue(value, `${path}.oneOf[${index}]`),
+				`${path}.oneOf[${index}]`,
+			);
+		}
+	}
+}
+
+function describedSchema(schema: Readonly<Record<string, unknown>>, path: string): string {
+	assert.equal(typeof schema.description, "string", `${path} must have a description`);
+	assert.match(schema.description as string, /\S/u, `${path} description must be non-empty`);
+	return schema.description as string;
+}
+
+function recordValue(value: unknown, path: string): Readonly<Record<string, unknown>> {
+	assert.equal(typeof value, "object", `${path} must be an object`);
+	assert.notEqual(value, null, `${path} must be an object`);
+	assert.equal(Array.isArray(value), false, `${path} must be an object`);
+	return value as Readonly<Record<string, unknown>>;
 }
 
 function requiredFunction(name: string): (...args: unknown[]) => unknown {

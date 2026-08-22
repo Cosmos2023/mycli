@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseJsonRpcMessage } from "@mycli/contracts";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
 
 type Protocol = "responses" | "chat_completions";
@@ -49,36 +49,31 @@ test("Responses reads then edits a file with durable mutation metadata", async (
 	]);
 });
 
-test("Responses recovers from Edit before Read in the same turn", async (t) => {
+test("Responses edits without a prior Read in the same turn", async (t) => {
 	const fixture = await scenarioFixture(t, "responses", [
-		responsesTool("call-edit-missing", "Edit", {
-			file_path: "README.md",
-			old_string: "beta",
-			new_string: "gamma",
-		}),
-		responsesTool("call-read", "Read", { file_path: "README.md", offset: 1, limit: 20 }),
 		responsesTool("call-edit", "Edit", {
 			file_path: "README.md",
 			old_string: "beta",
 			new_string: "gamma",
 		}),
-		responsesFinal("Recovered and completed."),
+		responsesFinal("Edit completed."),
 	]);
 	await writeFile(join(fixture.workspace, "README.md"), "alpha\nbeta\n", "utf8");
 
-	await submitAndWait(fixture, "Replace beta with gamma and recover from tool errors.");
+	await submitAndWait(fixture, "Replace beta with gamma without reading the file first.");
 	assert.equal(await readFile(join(fixture.workspace, "README.md"), "utf8"), "alpha\ngamma\n");
-	assert.equal(events(fixture.messages, "tool.start").length, 3);
-	assert.equal(events(fixture.messages, "tool.complete").length, 2);
-	assert.equal(events(fixture.messages, "tool.failed").length, 1);
-	assert.equal(JSON.stringify(fixture.requestBodies[1]?.input).includes("missing_read_snapshot"), true);
+	assert.equal(events(fixture.messages, "tool.start").length, 1);
+	assert.equal(events(fixture.messages, "tool.complete").length, 1);
+	assert.equal(events(fixture.messages, "tool.failed").length, 0);
+	assert.equal(
+		JSON.stringify(fixture.requestBodies[1]?.input).includes("Success. Updated the following files"),
+		true,
+	);
 	assert.equal(existsSync(fixture.pythonMarker), false);
 
 	await fixture.shutdown();
 	assert.deepEqual(conversationTypes(fixture.dbPath, fixture.sessionId), [
 		"user",
-		"assistant_tool_calls", "tool_result",
-		"assistant_tool_calls", "tool_result",
 		"assistant_tool_calls", "tool_result",
 		"assistant",
 	]);
@@ -111,6 +106,78 @@ test("Chat writes a file and replays the matching tool call id", async (t) => {
 	await fixture.shutdown();
 	assert.deepEqual(conversationTypes(fixture.dbPath, fixture.sessionId), [
 		"user", "assistant_tool_calls", "tool_result", "assistant",
+	]);
+});
+
+test("Responses approves one exact outside Write only after workspace denial", async (t) => {
+	const argumentsValue = {
+		file_path: "../outside.txt",
+		content: "approved outside write\n",
+	};
+	const fixture = await scenarioFixture(t, "responses", [
+		responsesTool("call-write-denied", "Write", argumentsValue),
+		responsesTool("call-write-escalated", "Write", {
+			...argumentsValue,
+			sandbox_permissions: "danger-full-access",
+			justification: "The requested output belongs beside the workspace.",
+		}),
+		responsesFinal("Outside write completed."),
+	]);
+	const outside = join(fixture.workspace, "..", "outside.txt");
+	writeRequest(fixture.backend, "turn", "turn.submit", {
+		message: "Write the requested file beside the workspace and recover from confinement.",
+		client_turn_id: `${fixture.sessionId}-turn`,
+		client_user_message_id: `${fixture.sessionId}-message`,
+	});
+
+	const approval = await waitFor(() => event(fixture.messages, "approval.request"));
+	const approvalParams = approval.params as JsonObject | undefined;
+	assert.equal(approvalParams?.decision_id, "call-write-escalated");
+	assert.equal(approvalParams?.tool_name, "Write");
+	assert.equal(approvalParams?.content_preview, "approved outside write\n");
+	assert.equal(approvalParams?.content_line_count, 1);
+	assert.equal(approvalParams?.content_chars, 23);
+	assert.equal(approvalParams?.content_truncated, false);
+	assert.equal(existsSync(outside), false);
+	assert.equal(JSON.stringify(fixture.requestBodies[1]?.input).includes("workspace_escape"), true);
+	await waitFor(() => fixture.messages.find((item, index) => {
+		if (index <= fixture.messages.indexOf(approval) || item.method !== "status.changed") {
+			return false;
+		}
+		const params = item.params as JsonObject | undefined;
+		return params?.turn_running === false;
+	}));
+
+	writeRequest(fixture.backend, "approve-write", "approval.respond", {
+		decision_id: "call-write-escalated",
+		choice: "approve_once",
+	});
+	const approvalResponse = await waitFor(() => fixture.messages.find(
+		(item) => item.id === "approve-write",
+	));
+	assert.equal("error" in approvalResponse, false, JSON.stringify(approvalResponse));
+	const completion = await waitFor(() => fixture.messages.find((item) => {
+		if (item.method !== "message.complete") return false;
+		const params = item.params as JsonObject | undefined;
+		return params?.final === true;
+	}) ?? fixture.messages.find((item, index) => (
+		index > fixture.messages.indexOf(approval)
+		&& (item.method === "gateway.error" || item.method === "approval.request")
+	)), 10_000);
+	assert.equal(completion.method, "message.complete", JSON.stringify(completion));
+
+	assert.equal(await readFile(outside, "utf8"), "approved outside write\n");
+	assert.equal(fixture.requestBodies.length, 3);
+	assert.equal(events(fixture.messages, "tool.failed").length, 1);
+	assert.equal(events(fixture.messages, "tool.complete").length, 1);
+	await fixture.shutdown();
+	assert.deepEqual(conversationTypes(fixture.dbPath, fixture.sessionId), [
+		"user",
+		"assistant_tool_calls",
+		"tool_result",
+		"assistant_tool_calls",
+		"tool_result",
+		"assistant",
 	]);
 });
 
@@ -272,7 +339,7 @@ function toolNames(value: unknown, protocol: Protocol): string[] {
 }
 
 function conversationTypes(dbPath: string, sessionId: string): string[] {
-	const store = new SQLiteSessionStore({ dbPath });
+	const store = openRuntimeSessionStore({ dbPath });
 	try {
 		return store.loadConversationItems(sessionId).map((item) => item.type);
 	} finally {

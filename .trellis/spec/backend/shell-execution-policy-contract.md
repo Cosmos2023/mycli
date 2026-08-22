@@ -21,6 +21,8 @@
   `ApprovalPolicy.evaluate(call, executionPolicy?) -> allow | request | deny`.
 - Provider argument:
   `sandbox_permissions?: "use_default" | "require_escalated"` on `Shell` only.
+- Display-only provider argument:
+  `description?: string` on `Shell`, bounded to 512 characters.
 - Host-only execution option:
   `ToolExecutionOptions.sandboxOverrideApproved?: boolean`.
 - Recovery derivation:
@@ -41,9 +43,18 @@
   `sandboxOverrideApproved=true` only for the exact evaluated call.
 - Pre-tool hooks cannot inherit escalation authority after changing a call. Runtime forwards the
   authorization bit only when `callId`, tool name, and canonical argument JSON are unchanged.
+- Consecutive allowed `Shell` calls may execute concurrently. Approval evaluation remains per call;
+  an approval request flushes earlier parallel work and suspends before the requested call starts.
+  Each running call receives only its own exact-call sandbox authorization.
 - The Shell adapter requires both the provider request and host authorization before replacing a
   restricted execution policy with `full-access`. Model arguments alone never select host
   execution.
+- `description` is optional user-facing metadata. It does not alter the command, working directory,
+  classification, approval decision, sandbox policy, or execution result, and it never substitutes
+  for an escalation justification.
+- A valid description is trimmed before it enters the in-memory Shell session and live lifecycle.
+  Approval previews and policy evaluation continue to use the canonical command rather than this
+  display label.
 - Durable approval continuation stores the canonical call as before. On approval, it fingerprints
   and executes that exact call, deriving the authorization bit from the persisted call rather than
   adding mutable approval state. A recovered `executing` effect is interrupted as unknown and is
@@ -58,6 +69,9 @@
 | Condition | Required behavior |
 | --- | --- |
 | Missing or `use_default` permission | Run under the frozen turn execution policy |
+| Missing description | Execute normally |
+| Empty, non-string, or over-512-character description | Reject as invalid arguments; start no process |
+| Valid description | Execute the exact same command under the same policy |
 | Unknown non-dangerous Shell command in workspace mode | Allow; keep restricted sandbox |
 | Dangerous or complex Shell command in workspace mode | Suspend for durable approval |
 | Invalid `sandbox_permissions` | Policy denies; direct adapter returns `invalid_sandbox_permissions` |
@@ -65,6 +79,8 @@
 | Restricted adapter call with model escalation but no host bit | Return `sandbox_override_not_approved`; start no process |
 | Exact allow/session rule plus escalation | Allow and forward the host authorization bit |
 | Pre-tool hook changes an authorized call | Withhold the host authorization bit |
+| Consecutive allowed Shell calls | Execute concurrently and persist results in provider order |
+| Shell call requests approval after allowed parallel calls | Finish and persist the earlier phase, then suspend |
 | Approved persisted escalation after coordinator recreation | Derive the bit and run once with full-access isolation |
 | Full Access valid Shell call | Run without approval |
 | Full Access call matching `ask` or `deny` | Deny without surfacing an approval prompt |
@@ -93,10 +109,12 @@
 - Shell adapter tests assert an unapproved model escalation starts no process and an approved
   escalation can use an outside cwd through full-access process isolation.
 - Runtime tests assert the normal allow path forwards the bit only for an unchanged canonical call.
+- Runtime tests assert allowed Shell calls overlap while preserving per-call sandbox authorization
+  and provider-order result persistence.
 - Approval continuation tests recreate the coordinator from persisted state and assert that an
   approved escalation derives and forwards the bit.
-- Provider and manifest tests assert the optional enum is projected while `command` remains the
-  only required Shell field.
+- Provider and manifest tests assert the optional enum and description are projected while
+  `command` remains the only required Shell field.
 - App integration drives a real Shell escalation through approval and resumes the original agent
   turn. Tools, runtime, provider, app, and TUI regression suites remain green.
 

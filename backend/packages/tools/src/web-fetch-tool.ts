@@ -95,7 +95,6 @@ export class WebFetchTool implements ToolAdapter {
 			timedOut = true;
 			controller.abort(new DOMException("web fetch timed out", "AbortError"));
 		}, this.#timeoutMs);
-		timer.unref();
 		try {
 			const fetched = await this.#followRedirects(url, controller.signal);
 			const content = projectContent(fetched.response, fetched.url);

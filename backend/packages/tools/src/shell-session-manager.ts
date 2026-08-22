@@ -28,6 +28,7 @@ export interface ShellStartRequest extends ShellTransportStartRequest {
 	readonly ownerSessionId: string;
 	readonly callId: string;
 	readonly command: string;
+	readonly description?: string;
 	readonly background?: boolean;
 	readonly yieldTimeMs: number;
 	readonly timeoutSeconds: number;
@@ -73,6 +74,7 @@ export interface ShellSessionSnapshot {
 	readonly yielded: boolean;
 	readonly decodeReplacementCount: number;
 	readonly commandPreview?: string;
+	readonly description?: string;
 	readonly startedAt?: string;
 	readonly completedAt?: string;
 	readonly wallTimeSeconds: number;
@@ -96,6 +98,7 @@ interface SessionRecord {
 	readonly ownerSessionId: string;
 	readonly callId: string;
 	readonly commandPreview: string;
+	readonly description?: string;
 	readonly transport: ShellTransport;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly output: ShellOutputBuffer;
@@ -625,6 +628,7 @@ export class ShellSessionManager {
 			callId: session.callId,
 			sequence: session.eventSequence,
 			commandPreview: session.commandPreview,
+			...(session.description === undefined ? {} : { description: session.description }),
 			background: session.background,
 			processState: processState(session),
 			transport: session.transport.kind,
@@ -724,6 +728,7 @@ export class ShellSessionManager {
 			yielded: session.yielded,
 			decodeReplacementCount: session.decodeReplacementCount,
 			commandPreview: session.commandPreview,
+			...(session.description === undefined ? {} : { description: session.description }),
 			startedAt: session.startedAt,
 			...(session.completedAt === undefined ? {} : { completedAt: session.completedAt }),
 			wallTimeSeconds: Math.max(0, Date.now() - session.startedTimeMs) / 1_000,
@@ -753,6 +758,7 @@ function createSession(
 		ownerSessionId: request.ownerSessionId,
 		callId: request.callId,
 		commandPreview: commandPreview(request.command),
+		...(request.description === undefined ? {} : { description: request.description }),
 		transport,
 		publishLifecycle: request.publishLifecycle,
 		output: new ShellOutputBuffer({ maxChars: outputMaxChars }),

@@ -167,6 +167,7 @@ export {
 	shellCallRequestsSandboxOverride,
 } from "./shell-sandbox-permissions.ts";
 export type { ShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
+export { toolCallRequestsSandboxOverride } from "./sandbox-override.ts";
 export { WriteStdinTool } from "./write-stdin-tool.ts";
 export type {
 	ShellInteractionManager,
@@ -190,7 +191,7 @@ export type {
 	FileHistoryUndoResult,
 } from "./file-history-store.ts";
 export { createBoundedUnifiedDiff } from "./file-diff.ts";
-export type { BoundedFileDiff } from "./file-diff.ts";
+export type { BoundedFileDiff, FileDiffLimits } from "./file-diff.ts";
 export {
 	FileMutationError,
 	FileMutationRuntime,
@@ -200,11 +201,18 @@ export type {
 	FileMutationRuntimeOptions,
 	MutationErrorKind,
 	MutationOutcome,
+	PatchOperation,
+	PreparedMutationPreview,
+	PreparedPatchPreview,
 } from "./file-mutation-runtime.ts";
 export {
 	displayMutationPath,
+	fallbackMutationPreviewChanges,
 	mutationFailure,
+	mutationPreviewChanges,
 	mutationSuccess,
+	patchMutationPreviewChanges,
+	patchMutationSuccess,
 } from "./mutation-result.ts";
 export { EditTool } from "./edit-tool.ts";
 export { PatchTool } from "./patch-tool.ts";
@@ -243,7 +251,10 @@ export type { ReadToolOptions } from "./read-tool.ts";
 export { WriteTool } from "./write-tool.ts";
 export type { WriteToolOptions } from "./write-tool.ts";
 export { ToolRouter } from "./router.ts";
-export { ApprovalPolicy } from "./approval-policy.ts";
+export {
+	ApprovalPolicy,
+	fileMutationApprovalPreview,
+} from "./approval-policy.ts";
 export type {
 	ApprovalPolicyAllow,
 	ApprovalPolicyDecision,
@@ -284,12 +295,16 @@ export type {
 	ExtensionToolSource,
 	ManifestToolRegistration,
 	PlanUpdateEffect,
+	PreparedMutationGuard,
+	PreparedMutationTargetGuard,
+	PreparedToolCall,
 	ToolActivationEffect,
 	ToolAdapter,
 	ToolAdapterResult,
 	ToolExecutionOptions,
 	ToolExecutionResult,
 	ToolManifestEntry,
+	ToolPreviewOptions,
 	ToolRouterContract,
 } from "./types.ts";
 export {

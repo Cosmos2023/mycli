@@ -13,7 +13,7 @@ import {
 	type ShellStartRequest,
 } from "../src/index.ts";
 
-test("Shell defaults cwd and forwards immutable execution context", async (t) => {
+test("Shell accepts a display-only description without changing execution context", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
 	const manager = new StartManager(completedSnapshot("x".repeat(50_000)));
@@ -26,8 +26,12 @@ test("Shell defaults cwd and forwards immutable execution context", async (t) =>
 		env: { PATH: "/usr/bin" },
 		createChunkId: () => "chunk-1",
 	});
+	assert.equal(tool.supportsParallelToolCalls, true);
 
-	const result = await tool.execute({ command: "printf ready" }, {
+	const result = await tool.execute({
+		command: "printf ready",
+		description: "  Print the readiness marker  ",
+	}, {
 		signal: new AbortController().signal,
 		ownerSessionId: "session-a",
 		callId: "call-shell-1",
@@ -41,6 +45,7 @@ test("Shell defaults cwd and forwards immutable execution context", async (t) =>
 	assert.equal(request.cwd, await realpath(root));
 	assert.equal(request.executable, "/bin/bash");
 	assert.deepEqual(request.args, ["-lc", "printf ready"]);
+	assert.equal(request.description, "Print the readiness marker");
 	assert.equal(request.yieldTimeMs, 10_000);
 	assert.deepEqual({
 		ownerSessionId: request.ownerSessionId,
@@ -56,6 +61,24 @@ test("Shell defaults cwd and forwards immutable execution context", async (t) =>
 	assert.match(result.modelOutput, /Process exited with code 0/u);
 	assert.equal(JSON.stringify(result.metadata).includes("printf ready"), false);
 	assert.equal(result.summary.includes("printf ready"), false);
+});
+
+test("Shell rejects invalid descriptions before manager start", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({
+		workspaceRoot: root,
+		manager,
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/sh" }),
+		platform: "linux",
+	});
+
+	for (const description of [42, "   ", "x".repeat(513)]) {
+		const result = await tool.execute({ command: "true", description }, executionOptions(root));
+		assert.equal(result.errorKind, "invalid_arguments");
+	}
+	assert.equal(manager.starts.length, 0);
 });
 
 test("Shell resolves an in-workspace cwd and clamps yield and output budget", async (t) => {

@@ -7,10 +7,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseJsonRpcMessage } from "@mycli/contracts";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
 
-test("completes and persists a Node-only Responses Read turn", async (t) => {
+test("Worker-backed root replays a Responses Read continuation and persists it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m3-read-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -65,6 +65,7 @@ test("completes and persists a Node-only Responses Read turn", async (t) => {
 			MYCLI_PYTHON: pythonMarker,
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
 		},
 	});
 	const messages: Array<Record<string, unknown>> = [];
@@ -104,7 +105,7 @@ test("completes and persists a Node-only Responses Read turn", async (t) => {
 	writeRequest(backend, "2", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	const dbPath = join(home, ".mycli", "sessions.db");
-	const store = new SQLiteSessionStore({ dbPath });
+	const store = openRuntimeSessionStore({ dbPath });
 	try {
 		assert.deepEqual(store.loadConversationItems("m3-integration").map((item) => item.type), [
 			"user",

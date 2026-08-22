@@ -28,6 +28,24 @@ test("unfinished foreground process yields without a second spawn", async () => 
 	assert.equal(manager.list("session-a").length, 1);
 });
 
+test("keeps the display description in active snapshots and lifecycle events", async () => {
+	const events: ShellLifecycleEvent[] = [];
+	const manager = new ShellSessionManager({
+		transportFactory: new FakeShellTransportFactory().create,
+		createShellId: () => "a1b2c3d4",
+	});
+
+	const result = await manager.start(shellStart({
+		background: true,
+		description: "Start the development server",
+		publishLifecycle: (event) => events.push(event),
+	}));
+
+	assert.equal(result.description, "Start the development server");
+	assert.equal(manager.list("session-a")[0]?.description, "Start the development server");
+	assert.equal(events[0]?.description, "Start the development server");
+});
+
 test("completion before the yield deadline returns final output", async () => {
 	const factory = new FakeShellTransportFactory();
 	const manager = new ShellSessionManager({

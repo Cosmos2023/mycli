@@ -6,7 +6,11 @@ import {
 	sep,
 	win32,
 } from "node:path";
-import type { ApprovalChoice, CanonicalToolCall } from "@mycli/core";
+import type {
+	ApprovalChoice,
+	ApprovalPreviewDetails,
+	CanonicalToolCall,
+} from "@mycli/core";
 import {
 	matchExecPolicyRule,
 	validateExecPolicyProposal,
@@ -23,10 +27,18 @@ import {
 	type ExecutionPolicy,
 	type PermissionProfile,
 } from "./execution-policy.ts";
+import {
+	mutationSandboxRetryFingerprint,
+	parseFileSandboxRequest,
+} from "./file-sandbox-permissions.ts";
 import { builtinToolManifest } from "./manifest.ts";
 import { parseShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
+import type { ToolExecutionResult } from "./types.ts";
 
 const MAX_PREVIEW_CHARS = 512;
+const MAX_APPROVAL_DETAIL_CHARS = 12_000;
+const MAX_APPROVAL_DIFF_SIDE_CHARS = 5_800;
+const MAX_APPROVAL_DIFF_SIDE_LINES = 5;
 const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/u;
 const APPROVAL_OPTIONS = Object.freeze(["approve_once", "reject"] as const);
 const SHELL_APPROVAL_OPTIONS = Object.freeze([
@@ -61,6 +73,7 @@ export interface ApprovalPolicyRequest extends ApprovalPolicyDecisionBase {
 
 export interface ApprovalPolicyDeny extends ApprovalPolicyDecisionBase {
 	readonly kind: "deny";
+	readonly errorKind?: string;
 }
 
 export interface ApprovalPolicyOptions {
@@ -78,6 +91,40 @@ export interface ExtensionToolApprovalPolicy {
 	readonly approvalPolicy: "auto_allow" | "request";
 }
 
+export function fileMutationApprovalPreview(
+	call: CanonicalToolCall,
+): ApprovalPreviewDetails {
+	const argumentsValue = parseArguments(call.argumentsJson);
+	if (!argumentsValue) return Object.freeze({});
+	const normalizedName = call.name.trim().toLowerCase().replaceAll("_", "").replaceAll("-", "");
+	if (normalizedName === "write" || normalizedName === "writefile") {
+		const content = argumentsValue.content ?? argumentsValue.new_content;
+		if (typeof content !== "string") return Object.freeze({});
+		const boundedContent = boundedApprovalDetail(content);
+		return Object.freeze({
+			contentPreview: boundedContent.value,
+			contentLineCount: approvalLineCount(content),
+			contentChars: content.length,
+			contentTruncated: boundedContent.truncated,
+		});
+	}
+	if (!["edit", "editfile", "patch", "patchfile"].includes(normalizedName)) {
+		return Object.freeze({});
+	}
+	const oldString = argumentsValue.old_string;
+	const newString = argumentsValue.new_string;
+	if (typeof oldString !== "string" || typeof newString !== "string") {
+		return Object.freeze({});
+	}
+	const proposed = proposedReplacementDiff(oldString, newString);
+	if (!proposed.value) return Object.freeze({});
+	return Object.freeze({
+		diff: proposed.value,
+		diffChars: proposed.chars,
+		diffTruncated: proposed.truncated,
+	});
+}
+
 export class ApprovalPolicy {
 	readonly #workspaceRoot: string;
 	readonly #autoApproveMedium: boolean;
@@ -85,6 +132,7 @@ export class ApprovalPolicy {
 	readonly #platform: NodeJS.Platform;
 	#extensionTools: ReadonlyMap<string, ExtensionToolApprovalPolicy>;
 	readonly #turnExtensionTools = new Map<string, ReadonlyMap<string, ExtensionToolApprovalPolicy>>();
+	readonly #mutationSandboxRetries = new Map<string, Set<string>>();
 	#permissionProfile: PermissionProfile;
 	#execPolicyRules: readonly ExecPolicyRule[];
 	#sessionRules: readonly ExecPolicyRule[] = Object.freeze([]);
@@ -110,10 +158,14 @@ export class ApprovalPolicy {
 		if (!this.#turnExtensionTools.has(turnId)) {
 			this.#turnExtensionTools.set(turnId, this.#extensionTools);
 		}
+		if (!this.#mutationSandboxRetries.has(turnId)) {
+			this.#mutationSandboxRetries.set(turnId, new Set());
+		}
 	}
 
 	finishTurn(turnId: string): void {
 		this.#turnExtensionTools.delete(turnId);
+		this.#mutationSandboxRetries.delete(turnId);
 	}
 
 	replaceExtensionTools(tools: readonly ExtensionToolApprovalPolicy[]): void {
@@ -180,13 +232,42 @@ export class ApprovalPolicy {
 			return deny(call, "Tool is not supported by the active approval policy.");
 		}
 
-		const path = mutationPath(argumentsValue);
-		const projected = path ? this.#projectWorkspacePath(path) : undefined;
-		const previewPath = projected ?? (fullAccess && path ? mutationPreviewPath(path) : undefined);
-		if (!previewPath) {
-			return deny(call, "Mutation target is outside the workspace.");
+		const sandbox = parseFileSandboxRequest(argumentsValue);
+		if (!sandbox.ok) {
+			return deny(call, sandbox.errorKind === "invalid_sandbox_permissions"
+				? "File sandbox permissions are not valid for the active policy."
+				: "File sandbox justification is not valid for the active policy.", sandbox.errorKind);
 		}
-		const preview = bounded(`${manifest.name} ${previewPath}`);
+		const paths = mutationPaths(argumentsValue);
+		const projected = paths.map((path) => this.#projectWorkspacePath(path));
+		const previewTarget = mutationPreviewTarget(manifest.name, paths, projected, fullAccess);
+		if (sandbox.permissions === "danger-full-access") {
+			const escalationTarget = mutationPreviewTarget(manifest.name, paths, projected, true);
+			if (!escalationTarget) {
+				return deny(call, "Mutation target is not valid for sandbox escalation.", "workspace_escape");
+			}
+			if (fullAccess) return allow(call, bounded(escalationTarget));
+			if (!this.#consumeMutationSandboxRetry(call, turnId)) {
+				return deny(
+					call,
+					"Full access is only valid as a one-time retry after workspace confinement denied the same operation.",
+					"sandbox_override_not_approved",
+				);
+			}
+			return Object.freeze({
+				kind: "request" as const,
+				callId: call.callId,
+				toolName: call.name,
+				preview: bounded(escalationTarget),
+				reason: bounded(sandbox.justification),
+				options: APPROVAL_OPTIONS,
+			});
+		}
+		if (!previewTarget) {
+			this.#rememberMutationSandboxDenial(call, turnId);
+			return deny(call, "Mutation target is outside the workspace.", "workspace_escape");
+		}
+		const preview = bounded(previewTarget);
 		if (fullAccess || this.#autoApproveMedium) {
 			return allow(call, preview);
 		}
@@ -198,6 +279,23 @@ export class ApprovalPolicy {
 			reason: "Workspace mutation requires one-time approval.",
 			options: APPROVAL_OPTIONS,
 		});
+	}
+
+	recordResult(
+		call: CanonicalToolCall,
+		result: ToolExecutionResult,
+		executionPolicy?: ExecutionPolicy,
+		turnId?: string,
+	): void {
+		if (result.errorKind !== "workspace_escape"
+			|| (executionPolicy === undefined
+				? this.#permissionProfile === "full-access"
+				: hasUnrestrictedFilesystem(executionPolicy))) return;
+		const argumentsValue = parseArguments(call.argumentsJson);
+		if (!argumentsValue) return;
+		const sandbox = parseFileSandboxRequest(argumentsValue);
+		if (!sandbox.ok || sandbox.permissions !== "workspace-write") return;
+		this.#rememberMutationSandboxDenial(call, turnId);
 	}
 
 	#evaluateExtension(
@@ -235,7 +333,11 @@ export class ApprovalPolicy {
 			? parseShellSandboxPermissions(argumentsValue.sandbox_permissions)
 			: "use_default";
 		if (!sandboxPermissions) {
-			return deny(call, "Shell sandbox permissions are not valid for the active policy.");
+			return deny(
+				call,
+				"Shell sandbox permissions are not valid for the active policy.",
+				"invalid_sandbox_permissions",
+			);
 		}
 		const requestsSandboxOverride = sandboxPermissions === "require_escalated";
 		const parsed = parseShellCommand(command, { shellKind: this.#shellKind });
@@ -344,6 +446,20 @@ export class ApprovalPolicy {
 		}
 		return projected.split(sep).join("/");
 	}
+
+	#rememberMutationSandboxDenial(call: CanonicalToolCall, turnId: string | undefined): void {
+		if (!turnId) return;
+		const retries = this.#mutationSandboxRetries.get(turnId);
+		const fingerprint = mutationSandboxRetryFingerprint(call);
+		if (retries && fingerprint) retries.add(fingerprint);
+	}
+
+	#consumeMutationSandboxRetry(call: CanonicalToolCall, turnId: string | undefined): boolean {
+		if (!turnId) return false;
+		const retries = this.#mutationSandboxRetries.get(turnId);
+		const fingerprint = mutationSandboxRetryFingerprint(call);
+		return retries !== undefined && fingerprint !== undefined && retries.delete(fingerprint);
+	}
 }
 
 function shellRequest(
@@ -423,15 +539,111 @@ function parseArguments(value: string): Readonly<Record<string, unknown>> | unde
 	}
 }
 
-function mutationPath(argumentsValue: Readonly<Record<string, unknown>>): string | undefined {
+function boundedApprovalDetail(value: string): { readonly value: string; readonly truncated: boolean } {
+	return {
+		value: value.slice(0, MAX_APPROVAL_DETAIL_CHARS),
+		truncated: value.length > MAX_APPROVAL_DETAIL_CHARS,
+	};
+}
+
+function approvalLineCount(value: string): number {
+	if (!value) return 0;
+	const normalized = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+	return normalized.split("\n").length - (normalized.endsWith("\n") ? 1 : 0);
+}
+
+function proposedReplacementDiff(
+	oldString: string,
+	newString: string,
+): { readonly value: string; readonly chars: number; readonly truncated: boolean } {
+	const removedLines = approvalPreviewLines(oldString);
+	const addedLines = approvalPreviewLines(newString);
+	const removed = proposedDiffSide(removedLines, "-", "removed");
+	const added = proposedDiffSide(addedLines, "+", "added");
+	const combined = [removed.value, added.value].filter(Boolean).join("\n");
+	const value = combined.slice(0, MAX_APPROVAL_DETAIL_CHARS);
+	const lineCount = removedLines.length + addedLines.length;
+	const chars = [...removedLines, ...addedLines]
+		.reduce((total, line) => total + line.length + 1, Math.max(0, lineCount - 1));
+	return {
+		value,
+		chars,
+		truncated: removed.truncated || added.truncated || combined.length > MAX_APPROVAL_DETAIL_CHARS,
+	};
+}
+
+function approvalPreviewLines(value: string): readonly string[] {
+	const normalized = value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+	if (!normalized) return [];
+	const lines = normalized.split("\n");
+	if (normalized.endsWith("\n")) lines.pop();
+	return lines;
+}
+
+function proposedDiffSide(
+	lines: readonly string[],
+	prefix: "-" | "+",
+	label: "removed" | "added",
+): { readonly value: string; readonly truncated: boolean } {
+	if (lines.length === 0) return { value: "", truncated: false };
+	const selected = lines.slice(0, MAX_APPROVAL_DIFF_SIDE_LINES);
+	const rendered = selected.map((line) => `${prefix}${line}`).join("\n");
+	const truncated = lines.length > selected.length || rendered.length > MAX_APPROVAL_DIFF_SIDE_CHARS;
+	if (!truncated) return { value: rendered, truncated: false };
+	const omittedLines = Math.max(0, lines.length - selected.length);
+	const marker = omittedLines > 0
+		? `... ${omittedLines} ${label} ${omittedLines === 1 ? "line" : "lines"} omitted ...`
+		: `... ${label} content truncated ...`;
+	const retainedChars = Math.max(0, MAX_APPROVAL_DIFF_SIDE_CHARS - marker.length - 1);
+	return {
+		value: `${rendered.slice(0, retainedChars)}\n${marker}`,
+		truncated: true,
+	};
+}
+
+function mutationPaths(argumentsValue: Readonly<Record<string, unknown>>): readonly string[] {
 	const value = argumentsValue.file_path ?? argumentsValue.path ?? argumentsValue.target;
-	return typeof value === "string" ? value : undefined;
+	if (typeof value === "string") return Object.freeze([value]);
+	if (!Array.isArray(argumentsValue.operations)) return Object.freeze([]);
+	const paths: string[] = [];
+	for (const operationValue of argumentsValue.operations) {
+		if (!isRecord(operationValue)) return Object.freeze([]);
+		if (operationValue.type === "move") {
+			if (typeof operationValue.from_path !== "string"
+				|| typeof operationValue.to_path !== "string") return Object.freeze([]);
+			paths.push(operationValue.from_path, operationValue.to_path);
+			continue;
+		}
+		if (typeof operationValue.file_path !== "string") return Object.freeze([]);
+		paths.push(operationValue.file_path);
+	}
+	return Object.freeze(paths);
+}
+
+function mutationPreviewTarget(
+	toolName: string,
+	paths: readonly string[],
+	projected: readonly (string | undefined)[],
+	allowBasename: boolean,
+): string | undefined {
+	if (paths.length === 0 || projected.length !== paths.length) return undefined;
+	const displayPaths = paths.map((path, index) => projected[index]
+		?? (allowBasename ? mutationPreviewPath(path) : undefined));
+	if (displayPaths.some((path) => !path)) return undefined;
+	const unique = new Set(displayPaths);
+	return unique.size === 1
+		? `${toolName} ${displayPaths[0]}`
+		: `${toolName} ${unique.size} files`;
 }
 
 function mutationPreviewPath(rawPath: string): string | undefined {
 	const normalized = rawPath.trim();
 	if (!normalized || normalized.includes("\0")) return undefined;
 	return posix.basename(normalized.replaceAll("\\", "/")) || "file";
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function allow(
@@ -449,13 +661,18 @@ function allow(
 	});
 }
 
-function deny(call: CanonicalToolCall, reason: string): ApprovalPolicyDeny {
+function deny(
+	call: CanonicalToolCall,
+	reason: string,
+	errorKind?: string,
+): ApprovalPolicyDeny {
 	return Object.freeze({
 		kind: "deny" as const,
 		callId: call.callId,
 		toolName: call.name.slice(0, 128) || "Tool",
 		preview: bounded(`${call.name.slice(0, 128) || "Tool"} denied`),
 		reason,
+		...(errorKind ? { errorKind } : {}),
 	});
 }
 

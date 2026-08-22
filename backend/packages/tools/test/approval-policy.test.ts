@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CanonicalToolCall } from "@mycli/core";
 import * as tools from "../src/index.ts";
-import type { ExecutionPolicy } from "../src/index.ts";
+import type {
+	ExecutionPolicy,
+	ToolExecutionResult,
+} from "../src/index.ts";
 
 const WORKSPACE_EXECUTION_POLICY: ExecutionPolicy = Object.freeze({
 	mode: "workspace-write",
@@ -28,6 +31,102 @@ test("strict-medium requests one-time approval without allowing workspace escape
 	assert.equal(policy.evaluate(writeCall("/private/outside.txt")).kind, "deny");
 });
 
+test("file escalation is a one-time exact retry after workspace denial", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	policy.beginTurn("turn-1");
+	const denied = writeCall("../outside.txt");
+	assert.equal(policy.evaluate(denied, WORKSPACE_EXECUTION_POLICY, "turn-1").kind, "deny");
+
+	const changedOperation = toolCall("Write", {
+		file_path: "../outside.txt",
+		content: "different",
+		sandbox_permissions: "danger-full-access",
+		justification: "The requested output must be written beside the workspace.",
+	});
+	assert.equal(
+		policy.evaluate(changedOperation, WORKSPACE_EXECUTION_POLICY, "turn-1").kind,
+		"deny",
+	);
+
+	const retry = toolCall("Write", {
+		content: "hello",
+		justification: "The requested output must be written beside the workspace.",
+		sandbox_permissions: "danger-full-access",
+		file_path: "../outside.txt",
+	});
+	const requested = policy.evaluate(retry, WORKSPACE_EXECUTION_POLICY, "turn-1");
+	assert.equal(requested.kind, "request");
+	assert.deepEqual(requested.options, ["approve_once", "reject"]);
+	assert.equal(
+		requested.reason,
+		"The requested output must be written beside the workspace.",
+	);
+	assert.equal(requested.preview.includes("/private/workspace"), false);
+	assert.equal(requested.preview.includes("justification"), false);
+
+	assert.equal(policy.evaluate(retry, WORKSPACE_EXECUTION_POLICY, "turn-1").kind, "deny");
+	policy.finishTurn("turn-1");
+});
+
+test("runtime workspace_escape results authorize a matching symlink retry", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	policy.beginTurn("turn-symlink");
+	const original = writeCall("link/outside.txt");
+	assert.equal(
+		policy.evaluate(original, WORKSPACE_EXECUTION_POLICY, "turn-symlink").kind,
+		"allow",
+	);
+	policy.recordResult(original, {
+		callId: original.callId,
+		toolName: original.name,
+		success: false,
+		modelOutput: "Write failed",
+		summary: "Write failed",
+		errorKind: "workspace_escape",
+		metadata: {},
+	}, WORKSPACE_EXECUTION_POLICY, "turn-symlink");
+
+	const retry = toolCall("Write", {
+		file_path: "link/outside.txt",
+		content: "hello",
+		sandbox_permissions: "danger-full-access",
+		justification: "The workspace link intentionally targets the requested file.",
+	});
+	assert.equal(
+		policy.evaluate(retry, WORKSPACE_EXECUTION_POLICY, "turn-symlink").kind,
+		"request",
+	);
+});
+
+test("file escalation validates permissions and justification before approval", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	policy.beginTurn("turn-invalid");
+	policy.evaluate(writeCall("../outside.txt"), WORKSPACE_EXECUTION_POLICY, "turn-invalid");
+
+	const missingJustification = policy.evaluate(toolCall("Write", {
+		file_path: "../outside.txt",
+		content: "hello",
+		sandbox_permissions: "danger-full-access",
+	}), WORKSPACE_EXECUTION_POLICY, "turn-invalid");
+	assert.equal(missingJustification.kind, "deny");
+	assert.equal(missingJustification.errorKind, "invalid_justification");
+
+	const invalidPermission = policy.evaluate(toolCall("Write", {
+		file_path: "../outside.txt",
+		content: "hello",
+		sandbox_permissions: "host",
+		justification: "Use host access.",
+	}), WORKSPACE_EXECUTION_POLICY, "turn-invalid");
+	assert.equal(invalidPermission.kind, "deny");
+	assert.equal(invalidPermission.errorKind, "invalid_sandbox_permissions");
+
+	assert.equal(policy.evaluate(toolCall("Write", {
+		file_path: "notes.txt",
+		content: "hello",
+		justification: "No escalation was requested.",
+	}), WORKSPACE_EXECUTION_POLICY, "turn-invalid").kind, "allow");
+});
+
 test("approval previews are bounded and exclude content hashes and real workspace paths", () => {
 	const secretBody = "token=private-value-that-must-not-appear";
 	const hash = "a".repeat(64);
@@ -44,6 +143,55 @@ test("approval previews are bounded and exclude content hashes and real workspac
 	assert.equal(decision.preview.includes(secretBody), false);
 	assert.equal(decision.preview.includes(hash), false);
 	assert.equal(decision.preview.includes("/private/workspace"), false);
+});
+
+test("file mutation approval previews expose bounded Write content", () => {
+	const content = "first\r\nsecond\n\n";
+	const preview = tools.fileMutationApprovalPreview(toolCall("Write", {
+		file_path: "notes.txt",
+		content,
+	}));
+
+	assert.deepEqual(preview, {
+		contentPreview: content,
+		contentLineCount: 3,
+		contentChars: content.length,
+		contentTruncated: false,
+	});
+
+	const largeContent = `${"x".repeat(12_000)}tail`;
+	const bounded = tools.fileMutationApprovalPreview(toolCall("write_file", {
+		file_path: "large.txt",
+		content: largeContent,
+	}));
+	assert.equal(bounded.contentPreview?.length, 12_000);
+	assert.equal(bounded.contentChars, largeContent.length);
+	assert.equal(bounded.contentTruncated, true);
+});
+
+test("file mutation approval previews preserve both sides of bounded Edit and Patch diffs", () => {
+	const edit = tools.fileMutationApprovalPreview(toolCall("Edit", {
+		file_path: "notes.txt",
+		old_string: "before\nold tail",
+		new_string: "after\nnew tail",
+	}));
+	assert.deepEqual(edit, {
+		diff: "-before\n-old tail\n+after\n+new tail",
+		diffChars: 34,
+		diffTruncated: false,
+	});
+
+	const patch = tools.fileMutationApprovalPreview(toolCall("Patch", {
+		file_path: "notes.txt",
+		old_string: Array.from({ length: 20 }, (_, index) => `old ${index}`).join("\n"),
+		new_string: Array.from({ length: 20 }, (_, index) => `new ${index}`).join("\n"),
+	}));
+	assert.match(patch.diff ?? "", /^-old 0/mu);
+	assert.match(patch.diff ?? "", /^\+new 0/mu);
+	assert.match(patch.diff ?? "", /removed lines omitted/u);
+	assert.match(patch.diff ?? "", /added lines omitted/u);
+	assert.equal(patch.diffTruncated, true);
+	assert.ok((patch.diffChars ?? 0) > (patch.diff?.length ?? 0));
 });
 
 test("malformed and unsupported tool calls fail closed", () => {
@@ -90,6 +238,12 @@ test("full access skips routine approval for valid tools", () => {
 	assert.equal(policy.evaluate(writeCall("notes.txt")).kind, "allow");
 	assert.equal(policy.evaluate(writeCall("../outside.txt")).kind, "allow");
 	assert.equal(policy.evaluate(writeCall("/private/outside.txt")).kind, "allow");
+	assert.equal(policy.evaluate(toolCall("Write", {
+		file_path: "notes.txt",
+		content: "hello",
+		sandbox_permissions: "workspace-write",
+		justification: "Redundant non-escalation reason.",
+	})).kind, "allow");
 	assert.equal(policy.evaluate(toolCall("McpSearch", { query: "docs" })).kind, "allow");
 	assert.equal(policy.evaluate(shell, WORKSPACE_EXECUTION_POLICY).kind, "allow");
 });
@@ -285,14 +439,24 @@ function approvalPolicy(options: {
 	}[];
 }): {
 	configurePermissionProfile(profile: "read-only" | "workspace" | "full-access"): void;
-	evaluate(call: CanonicalToolCall, executionPolicy?: ExecutionPolicy): {
+	beginTurn(turnId: string): void;
+	finishTurn(turnId: string): void;
+	evaluate(call: CanonicalToolCall, executionPolicy?: ExecutionPolicy, turnId?: string): {
 		readonly kind: string;
 		readonly preview: string;
+		readonly reason: string;
 		readonly options?: readonly string[];
 		readonly commandPattern?: readonly string[];
 		readonly proposedExecPolicyPattern?: readonly string[];
 		readonly sandboxOverrideApproved?: boolean;
+		readonly errorKind?: string;
 	};
+	recordResult(
+		call: CanonicalToolCall,
+		result: ToolExecutionResult,
+		executionPolicy?: ExecutionPolicy,
+		turnId?: string,
+	): void;
 	allowSession?(pattern: readonly string[]): void;
 	listSessionAllowances?(): readonly (readonly string[])[];
 	removeSessionAllowance?(pattern: readonly string[]): boolean;
@@ -308,14 +472,24 @@ function approvalPolicy(options: {
 			readonly extensionTools?: readonly Readonly<Record<string, unknown>>[];
 		}) => {
 			configurePermissionProfile(profile: "read-only" | "workspace" | "full-access"): void;
-			evaluate(call: CanonicalToolCall, executionPolicy?: ExecutionPolicy): {
+			beginTurn(turnId: string): void;
+			finishTurn(turnId: string): void;
+			evaluate(call: CanonicalToolCall, executionPolicy?: ExecutionPolicy, turnId?: string): {
 				readonly kind: string;
 				readonly preview: string;
+				readonly reason: string;
 				readonly options?: readonly string[];
 				readonly commandPattern?: readonly string[];
 				readonly proposedExecPolicyPattern?: readonly string[];
 				readonly sandboxOverrideApproved?: boolean;
+				readonly errorKind?: string;
 			};
+			recordResult(
+				call: CanonicalToolCall,
+				result: ToolExecutionResult,
+				executionPolicy?: ExecutionPolicy,
+				turnId?: string,
+			): void;
 			allowSession?(pattern: readonly string[]): void;
 			listSessionAllowances?(): readonly (readonly string[])[];
 			removeSessionAllowance?(pattern: readonly string[]): boolean;

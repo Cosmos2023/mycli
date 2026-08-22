@@ -1,5 +1,6 @@
 import type {
 	CanonicalToolCall,
+	FileMutationPreviewChange,
 	ToolDefinition,
 } from "@mycli/core";
 import { TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
@@ -8,6 +9,8 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type {
 	ToolAdapter,
 	ToolExecutionOptions,
+	PreparedToolCall,
+	ToolPreviewOptions,
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "./types.ts";
@@ -68,6 +71,35 @@ export class ToolRouter implements ToolRouterContract {
 		return this.#routesFor(turnId).get(call.name)?.adapter.supportsParallelToolCalls === true;
 	}
 
+	async prepare(
+		call: CanonicalToolCall,
+		options: ToolPreviewOptions,
+	): Promise<PreparedToolCall> {
+		const route = this.#routesFor(options.ownerTurnId).get(call.name);
+		if (!route) return EMPTY_PREPARATION;
+		const argumentsValue = parseArguments(call.argumentsJson);
+		if (!argumentsValue || !route.validate(argumentsValue)) return EMPTY_PREPARATION;
+		try {
+			if (route.adapter.prepare) return await route.adapter.prepare(argumentsValue, options);
+			if (route.adapter.preview) {
+				return Object.freeze({
+					fileChanges: await route.adapter.preview(argumentsValue, options),
+				});
+			}
+			return EMPTY_PREPARATION;
+		} catch (error) {
+			if (error instanceof Error && error.name === "AbortError") throw error;
+			return EMPTY_PREPARATION;
+		}
+	}
+
+	async preview(
+		call: CanonicalToolCall,
+		options: ToolPreviewOptions,
+	): Promise<readonly FileMutationPreviewChange[]> {
+		return (await this.prepare(call, options)).fileChanges;
+	}
+
 	async execute(
 		call: CanonicalToolCall,
 		options: ToolExecutionOptions,
@@ -121,6 +153,10 @@ export class ToolRouter implements ToolRouterContract {
 		return routes;
 	}
 }
+
+const EMPTY_PREPARATION: PreparedToolCall = Object.freeze({
+	fileChanges: Object.freeze([]),
+});
 
 function uniqueAdapters(routes: ReadonlyMap<string, Route>): readonly ToolAdapter[] {
 	return [...new Set([...routes.values()].map((route) => route.adapter))];

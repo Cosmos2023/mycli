@@ -1,5 +1,6 @@
 import type {
 	CanonicalToolCall,
+	FileMutationPreviewChange,
 	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
@@ -81,6 +82,40 @@ export interface ToolExecutionOptions {
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly executionPolicy?: ExecutionPolicy;
 	readonly sandboxOverrideApproved?: boolean;
+	readonly preparedMutationGuard?: PreparedMutationGuard;
+}
+
+export interface ToolPreviewOptions {
+	readonly signal: AbortSignal;
+	readonly ownerTurnId?: string;
+	readonly executionPolicy?: ExecutionPolicy;
+	readonly sandboxOverrideApproved?: boolean;
+}
+
+export interface PreparedMutationTargetGuard {
+	readonly pathSha256: string;
+	readonly existed: boolean;
+	readonly contentSha256?: string;
+	readonly size?: number;
+	readonly mtimeNs?: string;
+	readonly resultSha256?: string;
+}
+
+/**
+ * Bounded identity for a prepared mutation preview. It contains no file content
+ * or local path and is never part of a provider-visible tool definition. File
+ * execution reapplies the canonical request to current filesystem state.
+ */
+export interface PreparedMutationGuard {
+	readonly version: 1;
+	readonly mutationId: string;
+	readonly intentSha256: string;
+	readonly targets: readonly PreparedMutationTargetGuard[];
+}
+
+export interface PreparedToolCall {
+	readonly fileChanges: readonly FileMutationPreviewChange[];
+	readonly mutationGuard?: PreparedMutationGuard;
 }
 
 export interface ToolExecutionResult {
@@ -129,6 +164,14 @@ export interface ToolAdapter {
 	readonly supportsParallelToolCalls?: boolean;
 	beginTurn?(turnId: string): void;
 	finishTurn?(turnId: string): void;
+	prepare?(
+		argumentsValue: Readonly<Record<string, unknown>>,
+		options: ToolPreviewOptions,
+	): Promise<PreparedToolCall>;
+	preview?(
+		argumentsValue: Readonly<Record<string, unknown>>,
+		options: ToolPreviewOptions,
+	): Promise<readonly FileMutationPreviewChange[]>;
 	execute(
 		argumentsValue: Readonly<Record<string, unknown>>,
 		options: ToolExecutionOptions,
@@ -139,6 +182,14 @@ export interface ToolRouterContract {
 	beginTurn?(turnId: string): void;
 	finishTurn?(turnId: string): void;
 	supportsParallelToolCalls?(call: CanonicalToolCall, turnId?: string): boolean;
+	prepare?(
+		call: CanonicalToolCall,
+		options: ToolPreviewOptions,
+	): Promise<PreparedToolCall>;
+	preview?(
+		call: CanonicalToolCall,
+		options: ToolPreviewOptions,
+	): Promise<readonly FileMutationPreviewChange[]>;
 	execute(
 		call: CanonicalToolCall,
 		options: ToolExecutionOptions,
