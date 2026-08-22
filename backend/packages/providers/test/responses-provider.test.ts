@@ -51,13 +51,37 @@ test("maps a sanitized Responses stream into provider-neutral events", async () 
 		{ type: "text_delta", text: "hello" },
 		{
 			type: "usage",
-			usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15, cached_tokens: 4 },
+			usage: {
+				input_tokens: 12,
+				output_tokens: 3,
+				total_tokens: 15,
+				cached_tokens: 4,
+				reasoning_tokens: 2,
+			},
+		},
+		{
+			type: "provider_state",
+			state: {
+				provider: "openai",
+				value: {
+					responsesReasoningItems: [{
+						type: "reasoning",
+						id: "rs_1",
+						summary: [{ type: "summary_text", text: "checking" }],
+						encrypted_content: "encrypted-reasoning-1",
+					}],
+				},
+			},
 		},
 		{ type: "completed", responseId: "resp_1" },
 	]);
 	assert.equal(capturedSignal, controller.signal);
 	assert.equal(capturedRequest?.stream, true);
+	assert.equal(capturedRequest?.parallel_tool_calls, true);
 	assert.equal(capturedRequest?.model, "gpt-test");
+	assert.equal(capturedRequest?.max_output_tokens, 64);
+	assert.equal(capturedRequest?.store, false);
+	assert.deepEqual(capturedRequest?.include, ["reasoning.encrypted_content"]);
 	assert.equal("tools" in (capturedRequest ?? {}), false);
 	assert.deepEqual((capturedRequest?.input as readonly unknown[] | undefined)?.[0], {
 		role: "developer",
@@ -115,6 +139,7 @@ test("serializes optional file-tool parameters without strict mode", async () =>
 		description: tool.description,
 		parameters: tool.inputSchema,
 	})));
+	assert.equal(capturedRequest?.parallel_tool_calls, true);
 	assert.equal(JSON.stringify(capturedRequest?.tools).includes("strict"), false);
 	const responseTools = capturedRequest?.tools as readonly {
 		readonly name: string;
@@ -127,6 +152,12 @@ test("serializes optional file-tool parameters without strict mode", async () =>
 	assert.ok(shell);
 	assert.equal("strict" in shell, false);
 	assert.deepEqual(shell.parameters.required, ["command"]);
+	assert.deepEqual(shell.parameters.properties?.description, {
+		type: "string",
+		minLength: 1,
+		maxLength: 512,
+		description: "Brief user-facing description of what the command does. It does not affect execution, safety classification, or permissions.",
+	});
 	assert.deepEqual(shell.parameters.properties?.sandbox_permissions, {
 		type: "string",
 		enum: ["use_default", "require_escalated"],
@@ -188,6 +219,17 @@ test("replays the canonical tool transcript for a Responses continuation", async
 					argumentsJson: READ_ARGUMENTS,
 				}],
 				responseId: "resp-tools-1",
+				providerState: {
+					provider: "openai",
+					value: {
+						responsesReasoningItems: [{
+							type: "reasoning",
+							id: "rs-tools-1",
+							summary: [],
+							encrypted_content: "encrypted-tools-1",
+						}],
+					},
+				},
 			},
 			{
 				type: "tool_result",
@@ -206,6 +248,12 @@ test("replays the canonical tool transcript for a Responses continuation", async
 	assert.equal("previous_response_id" in (capturedRequest ?? {}), false);
 	assert.deepEqual(capturedRequest?.input, [
 		{ role: "user", content: "Read README.md" },
+		{
+			type: "reasoning",
+			id: "rs-tools-1",
+			summary: [],
+			encrypted_content: "encrypted-tools-1",
+		},
 		{ type: "function_call", call_id: "call-1", name: "Read", arguments: READ_ARGUMENTS },
 		{ type: "function_call_output", call_id: "call-1", output: READ_OUTPUT },
 	]);
@@ -245,6 +293,51 @@ test("preserves assistant text alongside historical Responses tool calls", async
 		{ type: "function_call", call_id: "call-1", name: "Read", arguments: READ_ARGUMENTS },
 		{ type: "function_call_output", call_id: "call-1", output: READ_OUTPUT },
 		{ role: "user", content: "What did it say?" },
+	]);
+});
+
+test("replays encrypted reasoning before a completed assistant turn", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	let capturedRequest: Record<string, unknown> | undefined;
+	const client: ResponsesClient = {
+		create: async (body) => {
+			capturedRequest = body;
+			return events([completedResponse("resp-follow-up")]);
+		},
+	};
+
+	await collect(new ResponsesProvider!({ client }).stream({
+		...request(),
+		items: [
+			{
+				type: "assistant",
+				text: "Initial answer.",
+				providerState: {
+					provider: "openai",
+					value: {
+						responsesReasoningItems: [{
+							type: "reasoning",
+							id: "rs-final-1",
+							summary: [{ type: "summary_text", text: "checked" }],
+							encrypted_content: "encrypted-final-1",
+						}],
+					},
+				},
+			},
+			{ type: "user", text: "Follow up." },
+		],
+	}, { signal: new AbortController().signal }));
+
+	assert.deepEqual(capturedRequest?.input, [
+		{
+			type: "reasoning",
+			id: "rs-final-1",
+			summary: [{ type: "summary_text", text: "checked" }],
+			encrypted_content: "encrypted-final-1",
+		},
+		{ role: "assistant", content: "Initial answer." },
+		{ role: "user", content: "Follow up." },
 	]);
 });
 
@@ -361,6 +454,7 @@ function request(): ProviderRequest {
 		tools: [],
 		reasoningEffort: "medium",
 		maxOutputTokens: 64,
+		store: false,
 		promptCacheKey: "cache-key",
 	};
 }
@@ -440,6 +534,12 @@ const SHELL_TOOL: ToolDefinition = {
 		type: "object",
 		properties: {
 			command: { type: "string" },
+			description: {
+				type: "string",
+				minLength: 1,
+				maxLength: 512,
+				description: "Brief user-facing description of what the command does. It does not affect execution, safety classification, or permissions.",
+			},
 			cwd: { type: "string" },
 			tty: { type: "boolean" },
 			yield_time_ms: { type: "integer" },

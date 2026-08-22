@@ -24,6 +24,11 @@ export interface ProviderRegistryOptions {
 	readonly anthropicClientFactory?: AnthropicClientFactory;
 }
 
+export type ProviderTransportConfig = Pick<
+	NodeRuntimeConfig,
+	"apiBaseUrl" | "apiKey" | "protocol" | "provider"
+>;
+
 export class ProviderRegistry {
 	readonly #openAI: OpenAIProviderRegistry;
 	readonly #anthropicClientFactory: AnthropicClientFactory;
@@ -35,7 +40,7 @@ export class ProviderRegistry {
 		this.#anthropicClientFactory = options.anthropicClientFactory ?? createOfficialClient;
 	}
 
-	create(config: NodeRuntimeConfig): ModelProvider {
+	create(config: ProviderTransportConfig): ModelProvider {
 		if (!config.apiKey) {
 			throw new ProviderFailure({
 				code: "auth_error",

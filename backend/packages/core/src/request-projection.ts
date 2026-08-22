@@ -1,11 +1,12 @@
-import type {
-	CanonicalConversationItem,
-	CanonicalContextMetadata,
-	CanonicalMessage,
-	ProviderRequest,
-	ProviderRequestConfig,
-	ProviderReplayState,
-	ToolDefinition,
+import {
+	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
+	type CanonicalConversationItem,
+	type CanonicalContextMetadata,
+	type CanonicalMessage,
+	type ProviderRequest,
+	type ProviderRequestConfig,
+	type ProviderReplayState,
+	type ToolDefinition,
 } from "./types.ts";
 
 export interface NoToolRequestProjectionInput {
@@ -173,7 +174,6 @@ function copyConversationItem(item: CanonicalConversationItem): CanonicalConvers
 const MAX_CONTEXT_TEXT_CHARS = 131_072;
 const MAX_CONTEXT_CONTENT_CHARS = 65_536;
 const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
-const MAX_PROVIDER_STATE_JSON_CHARS = 65_536;
 
 function validateContext(text: string, metadata: CanonicalContextMetadata): void {
 	const validSource = metadata.sourceId.length > 0
@@ -226,13 +226,17 @@ function validContextIdentity(value: string): boolean {
 }
 
 function copyProviderReplayState(state: ProviderReplayState): ProviderReplayState {
+	if (state.tokenEstimate !== undefined
+		&& (!Number.isSafeInteger(state.tokenEstimate) || state.tokenEstimate < 0)) {
+		throw new TypeError("invalid provider replay state");
+	}
 	let serialized: string;
 	try {
 		serialized = JSON.stringify(state.value);
 	} catch {
 		throw new TypeError("invalid provider replay state");
 	}
-	if (!serialized || serialized.length > MAX_PROVIDER_STATE_JSON_CHARS) {
+	if (!serialized || serialized.length > PROVIDER_REPLAY_STATE_MAX_JSON_CHARS) {
 		throw new TypeError("invalid provider replay state");
 	}
 	const value = JSON.parse(serialized) as unknown;
@@ -242,6 +246,7 @@ function copyProviderReplayState(state: ProviderReplayState): ProviderReplayStat
 	return Object.freeze({
 		provider: state.provider,
 		value: deepFreeze(value as Record<string, unknown>),
+		...(state.tokenEstimate === undefined ? {} : { tokenEstimate: state.tokenEstimate }),
 	});
 }
 

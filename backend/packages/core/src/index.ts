@@ -131,6 +131,7 @@ export {
 	failTurn,
 	startTurn,
 } from "./turn-state.ts";
+export { PROVIDER_REPLAY_STATE_MAX_JSON_CHARS } from "./types.ts";
 export type {
 	CompleteTurnInput,
 	FailTurnInput,
@@ -150,6 +151,8 @@ export type {
 	CanonicalContextKind,
 	CanonicalImage,
 	ApprovalChoice,
+	ApprovalPreviewDetails,
+	FileMutationPreviewChange,
 	CanonicalMessage,
 	CanonicalToolCall,
 	CanonicalToolResult,
@@ -176,8 +179,10 @@ export type {
 export {
 	effectiveModelContextEvents,
 	manifestLogicalInputSha256,
+	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
 	orderInstructionFragments,
+	providerTimelinePrefixSha256,
 	stableModelInputJson,
 } from "./model-input.ts";
 export type {
@@ -199,6 +204,7 @@ export type {
 	ProviderRequestManifest,
 	ProviderRequestManifestV1,
 	ProviderRequestManifestV2,
+	ProviderRequestManifestV3,
 	ToolSetSnapshot,
 	TurnContextSection,
 } from "./model-input.ts";

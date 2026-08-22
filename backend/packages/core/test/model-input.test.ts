@@ -3,12 +3,15 @@ import test from "node:test";
 import {
 	effectiveModelContextEvents,
 	manifestLogicalInputSha256,
+	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
 	orderInstructionFragments,
+	providerTimelinePrefixSha256,
 	stableModelInputJson,
 	type InstructionFragment,
 	type InstructionSnapshot,
 	type ModelContextEvent,
+	type ProviderInputTimelineEvent,
 	type ToolSetSnapshot,
 } from "../src/index.ts";
 
@@ -81,6 +84,36 @@ test("logical input digest covers full instruction, tool, and ordered reference 
 	assert.notEqual(first, second);
 });
 
+test("compact timeline commitments change on append, order, and projected content", () => {
+	const instructions = instructionSnapshot();
+	const tools: ToolSetSnapshot = {
+		snapshotId: "tools-1",
+		tools: [],
+		contentSha256: modelInputSha256([]),
+		createdAt: "2026-08-08T00:00:00.000Z",
+	};
+	const boundary = timelineEvent("timeline-1", "window_boundary");
+	const user = timelineEvent("timeline-2", "conversation_item", { type: "user", text: "one" });
+	const assistant = timelineEvent(
+		"timeline-3",
+		"conversation_item",
+		{ type: "assistant", text: "two" },
+	);
+	const firstPrefix = providerTimelinePrefixSha256([boundary, user]);
+	const appendedPrefix = providerTimelinePrefixSha256([boundary, user, assistant]);
+	const reorderedPrefix = providerTimelinePrefixSha256([boundary, assistant, user]);
+	assert.match(firstPrefix, /^[a-f0-9]{64}$/u);
+	assert.notEqual(firstPrefix, appendedPrefix);
+	assert.notEqual(appendedPrefix, reorderedPrefix);
+
+	const firstTimeline = modelInputSha256([user.item]);
+	const appendedTimeline = modelInputSha256([user.item, assistant.item]);
+	assert.notEqual(
+		manifestTimelineLogicalInputSha256(instructions, tools, firstTimeline),
+		manifestTimelineLogicalInputSha256(instructions, tools, appendedTimeline),
+	);
+});
+
 function fragment(
 	key: string,
 	kind: InstructionFragment["kind"],
@@ -117,6 +150,39 @@ function event(
 		sectionKey,
 		...(value ? { fragment: value } : {}),
 		tombstone: false,
+		createdAt: "2026-08-08T00:00:00.000Z",
+	});
+}
+
+function instructionSnapshot(): InstructionSnapshot {
+	const content = "You are mycli.";
+	return Object.freeze({
+		snapshotId: "instructions-1",
+		version: "v1",
+		source: "builtin",
+		content,
+		contentSha256: modelInputSha256(content),
+		createdAt: "2026-08-08T00:00:00.000Z",
+	});
+}
+
+function timelineEvent(
+	eventId: string,
+	kind: ProviderInputTimelineEvent["kind"],
+	item?: ProviderInputTimelineEvent["item"],
+): ProviderInputTimelineEvent {
+	const windowId = "window-1";
+	return Object.freeze({
+		eventId,
+		sessionId: "session-1",
+		windowId,
+		turnId: "turn-1",
+		providerStep: 1,
+		kind,
+		...(item ? { item } : { boundary: "bootstrap" as const }),
+		contentSha256: item
+			? modelInputSha256(item)
+			: modelInputSha256({ window_id: windowId, boundary: "bootstrap" }),
 		createdAt: "2026-08-08T00:00:00.000Z",
 	});
 }

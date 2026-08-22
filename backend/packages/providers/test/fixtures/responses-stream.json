@@ -14,6 +14,26 @@
     "delta": "checking"
   },
   {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "reasoning",
+      "id": "rs_1",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "checking"
+        }
+      ],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "private reasoning must not be persisted"
+        }
+      ],
+      "encrypted_content": "encrypted-reasoning-1"
+    }
+  },
+  {
     "type": "response.output_text.delta",
     "item_id": "msg_1",
     "output_index": 1,
@@ -31,6 +51,9 @@
         "total_tokens": 15,
         "input_tokens_details": {
           "cached_tokens": 4
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 2
         }
       }
     }

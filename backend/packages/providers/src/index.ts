@@ -27,5 +27,6 @@ export { ProviderRegistry } from "./provider-registry.ts";
 export type {
 	AnthropicClientFactory,
 	AnthropicClientOptions,
+	ProviderTransportConfig,
 	ProviderRegistryOptions,
 } from "./provider-registry.ts";

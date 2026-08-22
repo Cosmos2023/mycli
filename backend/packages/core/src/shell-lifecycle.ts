@@ -17,6 +17,7 @@ export interface ShellLifecycleEvent {
 	readonly callId: string | null;
 	readonly sequence: number;
 	readonly commandPreview: string;
+	readonly description?: string;
 	readonly background: boolean;
 	readonly processState: string;
 	readonly transport?: ShellTransportKind;

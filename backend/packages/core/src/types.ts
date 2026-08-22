@@ -9,8 +9,10 @@ export type TurnId = Brand<string, "TurnId">;
 
 export type ProviderId = "openai" | "codex" | "compatible" | "qwen" | "deepseek" | "anthropic";
 export type ProtocolId = "responses" | "chat_completions" | "anthropic_messages";
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
+
+export const PROVIDER_REPLAY_STATE_MAX_JSON_CHARS = 1_048_576;
 
 export interface CanonicalMessage {
 	readonly role: "user" | "assistant";
@@ -37,6 +39,28 @@ export interface CanonicalToolResult {
 	readonly success: boolean;
 }
 
+export interface ApprovalPreviewDetails {
+	readonly contentPreview?: string;
+	readonly contentLineCount?: number;
+	readonly contentChars?: number;
+	readonly contentTruncated?: boolean;
+	readonly diff?: string;
+	readonly diffChars?: number;
+	readonly diffTruncated?: boolean;
+}
+
+export interface FileMutationPreviewChange {
+	readonly version: 1;
+	readonly kind: "add" | "update" | "delete" | "move";
+	readonly path: string;
+	readonly previousPath?: string;
+	readonly diff: string;
+	readonly addedLines: number;
+	readonly removedLines: number;
+	readonly truncated: boolean;
+	readonly omittedChars: number;
+}
+
 export interface CanonicalImage {
 	readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 	readonly data: string;
@@ -45,6 +69,7 @@ export interface CanonicalImage {
 export interface ProviderReplayState {
 	readonly provider: ProviderId;
 	readonly value: Readonly<Record<string, unknown>>;
+	readonly tokenEstimate?: number;
 }
 
 export type CanonicalContextKind =
@@ -109,6 +134,7 @@ export interface ProviderRequestConfig {
 	readonly model: string;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly maxOutputTokens?: number;
+	readonly store?: boolean;
 	readonly promptCacheKey?: string;
 	readonly cacheControlEnabled?: boolean;
 }
@@ -152,15 +178,15 @@ export type RuntimeEvent =
 	| {
 		readonly type: "compaction_started";
 		readonly clientTurnId: string;
-		readonly source: "pre_turn" | "context_overflow" | "user_requested";
+		readonly source: "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
 		readonly beforeTokens: number;
 		readonly maxTokens: number;
 	}
 	| {
 		readonly type: "compaction_completed";
 		readonly clientTurnId: string;
-		readonly source: "pre_turn" | "context_overflow" | "user_requested";
-		readonly status: "compressed" | "skipped";
+		readonly source: "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
+		readonly status: "compressed" | "skipped" | "failed";
 		readonly beforeTokens: number;
 		readonly afterTokens: number;
 		readonly maxTokens: number;
@@ -168,11 +194,21 @@ export type RuntimeEvent =
 	}
 	| { readonly type: "reasoning_delta"; readonly text: string }
 	| { readonly type: "text_delta"; readonly text: string }
+	| { readonly type: "provider_usage"; readonly usage: ProviderUsage }
 	| { readonly type: "stream_retrying"; readonly attempt: number; readonly delayMs: number }
 	| { readonly type: "stream_recovered" }
 	| { readonly type: "message_complete"; readonly responseId?: string }
 	| { readonly type: "tool_call_accepted"; readonly callId: string; readonly toolName: string }
-	| {
+	| (ApprovalPreviewDetails & {
+			readonly type: "file_mutation_started";
+			readonly clientTurnId: string;
+			readonly turnId: string;
+			readonly callId: string;
+			readonly toolName: string;
+			readonly preview: string;
+			readonly fileChanges?: readonly FileMutationPreviewChange[];
+		})
+	| (ApprovalPreviewDetails & {
 		readonly type: "approval_requested";
 		readonly clientTurnId: string;
 		readonly turnId: string;
@@ -182,7 +218,7 @@ export type RuntimeEvent =
 		readonly preview: string;
 		readonly reason: string;
 		readonly options: readonly ApprovalChoice[];
-	}
+	})
 	| {
 		readonly type: "clarification_requested";
 		readonly clientTurnId: string;

@@ -139,6 +139,7 @@ function requestBody(
 		...(request.maxOutputTokens === undefined
 			? {}
 			: { max_completion_tokens: request.maxOutputTokens }),
+		...(request.store === undefined ? {} : { store: request.store }),
 		...(request.promptCacheKey ? { prompt_cache_key: request.promptCacheKey } : {}),
 		...(providerAdapter === "deepseek" ? deepSeekThinkingConfig(request) : {}),
 	};
@@ -231,7 +232,11 @@ function deepSeekThinkingConfig(request: ProviderRequest): Readonly<Record<strin
 	}
 	return {
 		thinking: { type: "enabled" },
-		reasoning_effort: request.reasoningEffort === "xhigh" ? "max" : "high",
+		reasoning_effort: request.reasoningEffort === "xhigh"
+			|| request.reasoningEffort === "max"
+			|| request.reasoningEffort === "ultra"
+			? "max"
+			: "high",
 	};
 }
 

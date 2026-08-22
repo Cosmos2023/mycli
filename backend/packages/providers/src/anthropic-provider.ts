@@ -238,6 +238,8 @@ function thinkingConfig(request: ProviderRequest): Readonly<Record<string, unkno
 		medium: 1_536,
 		high: 3_072,
 		xhigh: 6_144,
+		max: 6_144,
+		ultra: 6_144,
 	}[request.reasoningEffort];
 	if (!budget || (request.maxOutputTokens ?? DEFAULT_MAX_TOKENS) <= budget) return {};
 	return { thinking: { type: "enabled", budget_tokens: budget } };

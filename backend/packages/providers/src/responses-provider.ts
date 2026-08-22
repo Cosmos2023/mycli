@@ -1,10 +1,13 @@
-import type {
-	CanonicalConversationItem,
-	CanonicalImage,
-	ProviderEvent,
-	ProviderRequest,
-	ProviderUsage,
-	ToolDefinition,
+import {
+	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
+	type CanonicalConversationItem,
+	type CanonicalImage,
+	type ProviderEvent,
+	type ProviderId,
+	type ProviderReplayState,
+	type ProviderRequest,
+	type ProviderUsage,
+	type ToolDefinition,
 } from "@mycli/core";
 import {
 	classifyProviderError,
@@ -34,6 +37,7 @@ const IGNORED_EVENT_TYPES = new Set([
 	"response.reasoning_summary_part.done",
 	"response.reasoning_summary_text.done",
 ]);
+const RESPONSES_REASONING_ITEMS_KEY = "responsesReasoningItems";
 
 export class ResponsesProvider implements ModelProvider {
 	readonly #client: ResponsesClient;
@@ -48,8 +52,17 @@ export class ResponsesProvider implements ModelProvider {
 	): AsyncIterable<ProviderEvent> {
 		try {
 			const stream = await this.#client.create(requestBody(request), options);
+			const reasoningItems: Readonly<Record<string, unknown>>[] = [];
 			for await (const rawEvent of stream) {
+				const reasoningItem = completedReasoningItem(rawEvent);
+				if (reasoningItem) {
+					reasoningItems.push(reasoningItem);
+					continue;
+				}
 				for (const event of mapEvent(rawEvent)) {
+					if (event.type === "completed" && reasoningItems.length > 0) {
+						yield responsesProviderState(request.provider, reasoningItems);
+					}
 					yield event;
 				}
 			}
@@ -65,15 +78,20 @@ function requestBody(request: ProviderRequest): Readonly<Record<string, unknown>
 		instructions: request.instructions,
 		input: responsesInput(request),
 		stream: true,
+		parallel_tool_calls: true,
 		...(request.tools.length > 0
 			? { tools: request.tools.map(responsesTool) }
 			: {}),
 		...(request.reasoningEffort && request.reasoningEffort !== "none"
-			? { reasoning: { effort: request.reasoningEffort } }
+			? {
+				reasoning: { effort: request.reasoningEffort },
+				include: ["reasoning.encrypted_content"],
+			}
 			: {}),
 		...(request.maxOutputTokens === undefined
 			? {}
 			: { max_output_tokens: request.maxOutputTokens }),
+		...(request.store === undefined ? {} : { store: request.store }),
 		...(request.promptCacheKey ? { prompt_cache_key: request.promptCacheKey } : {}),
 	};
 }
@@ -92,19 +110,26 @@ function responsesInput(request: ProviderRequest): readonly Readonly<Record<stri
 			})),
 		];
 	}
-	return [...developer, ...request.items.flatMap(responsesItem)];
+	return [...developer, ...request.items.flatMap((item) => responsesItem(item, request.provider))];
 }
 
-function responsesItem(item: CanonicalConversationItem): readonly Readonly<Record<string, unknown>>[] {
+function responsesItem(
+	item: CanonicalConversationItem,
+	provider: ProviderId,
+): readonly Readonly<Record<string, unknown>>[] {
 	switch (item.type) {
 		case "user":
 			return [{ role: "user", content: responsesUserContent(item.text, item.images) }];
 		case "assistant":
-			return [{ role: "assistant", content: item.text }];
+			return [
+				...responsesReasoningItems(item.providerState, provider),
+				{ role: "assistant", content: item.text },
+			];
 		case "context":
 			return [{ role: item.metadata.role ?? "user", content: item.text }];
 		case "assistant_tool_calls":
 			return [
+				...responsesReasoningItems(item.providerState, provider),
 				...(item.text ? [{ role: "assistant", content: item.text }] : []),
 				...item.calls.map((call) => ({
 					type: "function_call",
@@ -120,6 +145,72 @@ function responsesItem(item: CanonicalConversationItem): readonly Readonly<Recor
 				output: item.output,
 			}];
 	}
+}
+
+function completedReasoningItem(rawEvent: unknown): Readonly<Record<string, unknown>> | undefined {
+	if (!isRecord(rawEvent) || rawEvent.type !== "response.output_item.done") return undefined;
+	return normalizedReasoningItem(rawEvent.item);
+}
+
+function normalizedReasoningItem(value: unknown): Readonly<Record<string, unknown>> | undefined {
+	if (!isRecord(value) || value.type !== "reasoning") return undefined;
+	if (typeof value.encrypted_content !== "string" || !value.encrypted_content) return undefined;
+	const summary = reasoningSummary(value.summary);
+	if (!summary) return undefined;
+	return Object.freeze({
+		type: "reasoning",
+		...(typeof value.id === "string" && value.id ? { id: value.id } : {}),
+		summary,
+		encrypted_content: value.encrypted_content,
+	});
+}
+
+function reasoningSummary(value: unknown): readonly Readonly<Record<string, string>>[] | undefined {
+	if (value === undefined) return Object.freeze([]);
+	if (!Array.isArray(value)) return undefined;
+	const summary: Readonly<Record<string, string>>[] = [];
+	for (const entry of value) {
+		if (!isRecord(entry) || entry.type !== "summary_text" || typeof entry.text !== "string") {
+			return undefined;
+		}
+		summary.push(Object.freeze({ type: "summary_text", text: entry.text }));
+	}
+	return Object.freeze(summary);
+}
+
+function responsesProviderState(
+	provider: ProviderId,
+	items: readonly Readonly<Record<string, unknown>>[],
+): ProviderEvent {
+	const value = Object.freeze({
+		[RESPONSES_REASONING_ITEMS_KEY]: Object.freeze([...items]),
+	});
+	if (JSON.stringify(value).length > PROVIDER_REPLAY_STATE_MAX_JSON_CHARS) {
+		throw new ProviderFailure({
+			code: "provider_error",
+			message: "Responses reasoning replay state exceeds the supported limit",
+		});
+	}
+	return {
+		type: "provider_state",
+		state: Object.freeze({ provider, value }),
+	};
+}
+
+function responsesReasoningItems(
+	state: ProviderReplayState | undefined,
+	provider: ProviderId,
+): readonly Readonly<Record<string, unknown>>[] {
+	if (!state || state.provider !== provider) return [];
+	const value = state.value[RESPONSES_REASONING_ITEMS_KEY];
+	if (!Array.isArray(value)) return [];
+	const items: Readonly<Record<string, unknown>>[] = [];
+	for (const candidate of value) {
+		const item = normalizedReasoningItem(candidate);
+		if (!item) return [];
+		items.push(item);
+	}
+	return Object.freeze(items);
 }
 
 function responsesUserContent(
@@ -239,6 +330,12 @@ function usageFrom(value: unknown): ProviderUsage {
 		const cached = value.input_tokens_details.cached_tokens;
 		if (typeof cached === "number" && Number.isFinite(cached)) {
 			usage.cached_tokens = cached;
+		}
+	}
+	if (isRecord(value.output_tokens_details)) {
+		const reasoning = value.output_tokens_details.reasoning_tokens;
+		if (typeof reasoning === "number" && Number.isFinite(reasoning)) {
+			usage.reasoning_tokens = reasoning;
 		}
 	}
 	return usage;

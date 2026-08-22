@@ -220,6 +220,7 @@ test("projects bounded context and provider replay state immutably", () => {
 		providerState: {
 			provider: "openai",
 			value: replayValue,
+			tokenEstimate: 37,
 		},
 	};
 	const request = core.projectProviderRequest({
@@ -236,6 +237,11 @@ test("projects bounded context and provider replay state immutably", () => {
 		(request.items?.[1] as Extract<CanonicalConversationItem, { type: "assistant_tool_calls" }>)
 			.providerState?.value.thinking,
 		"checked",
+	);
+	assert.equal(
+		(request.items?.[1] as Extract<CanonicalConversationItem, { type: "assistant_tool_calls" }>)
+			.providerState?.tokenEstimate,
+		37,
 	);
 });
 

@@ -139,7 +139,6 @@ interface ProviderRequestManifestBase {
 	readonly providerConfig: ProviderRequestConfig;
 	readonly instructionSnapshotId: string;
 	readonly toolSetSnapshotId: string;
-	readonly orderedItems: readonly ModelInputReference[];
 	readonly requestSignature: string;
 	readonly logicalInputSha256: string;
 	readonly contextPrefixSha256: string;
@@ -150,10 +149,12 @@ interface ProviderRequestManifestBase {
 
 export interface ProviderRequestManifestV1 extends ProviderRequestManifestBase {
 	readonly schemaVersion: 1;
+	readonly orderedItems: readonly ModelInputReference[];
 }
 
 export interface ProviderRequestManifestV2 extends ProviderRequestManifestBase {
 	readonly schemaVersion: 2;
+	readonly orderedItems: readonly ModelInputReference[];
 	readonly timelineWindowId: string;
 	readonly timelineEventIds: readonly string[];
 	readonly requestConfigurationSha256: string;
@@ -162,7 +163,21 @@ export interface ProviderRequestManifestV2 extends ProviderRequestManifestBase {
 	readonly commonPrefixItemCount: number;
 }
 
-export type ProviderRequestManifest = ProviderRequestManifestV1 | ProviderRequestManifestV2;
+export interface ProviderRequestManifestV3 extends ProviderRequestManifestBase {
+	readonly schemaVersion: 3;
+	readonly timelineWindowId: string;
+	readonly timelineEventCount: number;
+	readonly timelinePrefixSha256: string;
+	readonly requestConfigurationSha256: string;
+	readonly bootstrapPrefixSha256: string;
+	readonly timelineSha256: string;
+	readonly commonPrefixItemCount: number;
+}
+
+export type ProviderRequestManifest =
+	| ProviderRequestManifestV1
+	| ProviderRequestManifestV2
+	| ProviderRequestManifestV3;
 
 const CACHE_ORDER: Readonly<Record<ModelInputCacheClass, number>> = Object.freeze({
 	static: 0,
@@ -246,6 +261,29 @@ export function manifestLogicalInputSha256(
 		tool_set_snapshot: toolSetSnapshot.contentSha256,
 		ordered_items: orderedItems,
 	});
+}
+
+export function manifestTimelineLogicalInputSha256(
+	instructionSnapshot: InstructionSnapshot,
+	toolSetSnapshot: ToolSetSnapshot,
+	timelineSha256: string,
+): string {
+	return modelInputSha256({
+		instruction_snapshot: instructionSnapshot.contentSha256,
+		tool_set_snapshot: toolSetSnapshot.contentSha256,
+		timeline: timelineSha256,
+	});
+}
+
+export function providerTimelinePrefixSha256(
+	events: readonly ProviderInputTimelineEvent[],
+): string {
+	return modelInputSha256(events.map((event) => ({
+		event_id: event.eventId,
+		window_id: event.windowId,
+		kind: event.kind,
+		content_sha256: event.contentSha256,
+	})));
 }
 
 function sortJson(value: unknown): unknown {

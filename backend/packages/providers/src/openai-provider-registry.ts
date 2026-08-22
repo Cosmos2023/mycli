@@ -28,6 +28,11 @@ export interface OpenAIProviderRegistryOptions {
 	readonly clientFactory?: OpenAIClientFactory;
 }
 
+type OpenAIProviderTransportConfig = Pick<
+	NodeRuntimeConfig,
+	"apiBaseUrl" | "apiKey" | "protocol" | "provider"
+>;
+
 export class OpenAIProviderRegistry {
 	readonly #clientFactory: OpenAIClientFactory;
 
@@ -35,7 +40,7 @@ export class OpenAIProviderRegistry {
 		this.#clientFactory = options.clientFactory ?? createOfficialClient;
 	}
 
-	create(config: NodeRuntimeConfig): ModelProvider {
+	create(config: OpenAIProviderTransportConfig): ModelProvider {
 		if (!config.apiKey) {
 			throw new ProviderFailure({
 				code: "auth_error",

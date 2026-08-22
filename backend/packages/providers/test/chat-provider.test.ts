@@ -70,6 +70,7 @@ test("maps a sanitized Chat stream into provider-neutral events", async () => {
 	assert.equal(capturedRequest?.stream, true);
 	assert.deepEqual(capturedRequest?.stream_options, { include_usage: true });
 	assert.equal(capturedRequest?.model, "gpt-test");
+	assert.equal(capturedRequest?.store, false);
 	assert.equal("tools" in (capturedRequest ?? {}), false);
 	assert.deepEqual(capturedRequest?.messages, [
 		{ role: "system", content: "You are mycli." },
@@ -284,6 +285,14 @@ test("preserves DeepSeek reasoning content across a thinking tool continuation",
 		type: "provider_state",
 		state: { provider: "deepseek", value: { reasoningContent: "inspect first" } },
 	});
+
+	await collect(provider.stream({
+		...toolRequest(),
+		provider: "deepseek",
+		reasoningEffort: "max",
+		items: [{ type: "user", text: "Use maximum reasoning" }],
+	}, { signal: new AbortController().signal }));
+	assert.equal(capturedRequest?.reasoning_effort, "max");
 
 	await collect(provider.stream({
 		...toolRequest(),
@@ -512,6 +521,7 @@ function request(): ProviderRequest {
 		],
 		tools: [],
 		maxOutputTokens: 64,
+		store: false,
 	};
 }
 
