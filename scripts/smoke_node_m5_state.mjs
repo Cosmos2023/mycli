@@ -21,7 +21,7 @@ import {
 } from "@mycli/runtime";
 import {
 	projectTranscript,
-	SQLiteSessionStore,
+	openRuntimeSessionStore,
 	TranscriptSnapshotStore,
 } from "@mycli/storage";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
@@ -79,7 +79,7 @@ async function main() {
 	try {
 		await mkdir(homeDir);
 		await mkdir(workspaceRoot);
-		store = new SQLiteSessionStore({ dbPath });
+		store = openRuntimeSessionStore({ dbPath });
 		seedCompletedTurn(store, workspaceRoot, sessionId, "old-a");
 		seedCompletedTurn(store, workspaceRoot, sessionId, "old-b");
 
@@ -262,6 +262,7 @@ function seedCompletedTurn(store, workspaceRoot, sessionId, suffix) {
 	store.reserveTurn({
 		sessionId,
 		clientTurnId,
+		clientUserMessageId: clientTurnId,
 		turnId: `seed-turn-${suffix}`,
 		requestFingerprint: fingerprintSubmission({ message: userText, localImages: [] }),
 		workspaceRoot,

@@ -56,6 +56,8 @@ export interface CommitClarificationResponseInput {
 export interface ClarificationContinuationStore {
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined;
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
+	loadConversation?(sessionId: string): readonly CanonicalMessage[];
+	deleteState(sessionId: string, key: RuntimeStateKey): void;
 	saveClarificationSuspension(input: SaveClarificationSuspensionInput): void;
 	commitClarificationResponse(input: CommitClarificationResponseInput): void;
 }
@@ -122,7 +124,11 @@ export class ClarificationContinuationCoordinator {
 		const state = parseRuntimeState({ kind: "suspended_turn", version: 1, payload: raw });
 		if (state.kind !== "suspended_turn" || state.payload.pending_clarification === undefined
 			|| state.payload.pending_clarification === null) return undefined;
-		return pendingFromState(this.#sessionId, state);
+		const referencedConversation = state.payload.conversation.length === 0
+			&& typeof state.payload.transcript_event_id === "string"
+			? this.#store.loadConversation?.(this.#sessionId)
+			: undefined;
+		return pendingFromState(this.#sessionId, state, referencedConversation);
 	}
 
 	resolve(input: { readonly requestId: string; readonly response: string }): {
@@ -152,6 +158,15 @@ export class ClarificationContinuationCoordinator {
 			},
 		});
 		return Object.freeze({ continuation: pending, response });
+	}
+
+	cancel(input: { readonly requestId: string }): PendingClarificationContinuation {
+		const requestId = nonEmpty(input.requestId, "requestId");
+		const pending = this.pending();
+		if (!pending || pending.requestId !== requestId) throw new ClarificationNotPendingError();
+		this.#store.deleteState(this.#sessionId, "suspended_turn");
+		this.#store.deleteState(this.#sessionId, "turn_record");
+		return pending;
 	}
 }
 
@@ -193,6 +208,7 @@ function suspendedTurnState(
 function pendingFromState(
 	sessionId: string,
 	state: Extract<RuntimeStateRecord, { kind: "suspended_turn" }>,
+	referencedConversation?: readonly CanonicalMessage[],
 ): PendingClarificationContinuation {
 	const payload = state.payload;
 	const clarification = payload.pending_clarification;
@@ -211,10 +227,11 @@ function pendingFromState(
 		providerProtocol: protocol(payload.provider_protocol),
 		call: canonicalCall(clarification.tool_call),
 		remainingCalls: (payload.remaining_tool_calls ?? []).map((call) => canonicalStoredCall(record(call))),
-		conversation: payload.conversation.flatMap((message): CanonicalMessage[] =>
-			message.role === "user" || message.role === "assistant"
+		conversation: referencedConversation ?? payload.conversation.flatMap(
+			(message): CanonicalMessage[] => message.role === "user" || message.role === "assistant"
 				? [{ role: message.role, content: message.content }]
-				: []),
+				: [],
+		),
 		assistantText: stringValue(continuation.assistant_text),
 		...(optionalString(continuation.response_id) ? { responseId: optionalString(continuation.response_id) } : {}),
 		usage: numericRecord(continuation.usage),
@@ -286,7 +303,7 @@ function protocol(value: unknown): ProtocolId {
 
 function reasoningEffort(value: unknown): ReasoningEffort | undefined {
 	return value === "none" || value === "minimal" || value === "low" || value === "medium"
-		|| value === "high" || value === "xhigh" ? value : undefined;
+		|| value === "high" || value === "xhigh" || value === "max" || value === "ultra" ? value : undefined;
 }
 
 function boundedResponse(value: string): string {

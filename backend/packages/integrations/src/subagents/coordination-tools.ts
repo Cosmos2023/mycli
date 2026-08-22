@@ -14,16 +14,26 @@ export interface AgentCoordinationToolOptions {
 export const SPAWN_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "subagent:spawn_agent",
 	name: "spawn_agent",
-	description: "Spawn a durable child agent with an independent thread and canonical path.",
+	description: "Spawn a durable child agent in an independent thread and return its status and canonical path.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			task_name: {
 				type: "string",
 				pattern: "^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$",
+				description: "Stable task name used in the child agent path. Use 1-64 lowercase letters, digits, underscores, or hyphens, starting and ending with a letter or digit.",
 			},
-				message: { type: "string", minLength: 1, maxLength: 65_536 },
-				fork_turns: { type: "string", pattern: "^(?:none|all|[1-9][0-9]*)$" },
+			message: {
+				type: "string",
+				minLength: 1,
+				maxLength: 65_536,
+				description: "Task instructions for the child agent.",
+			},
+			fork_turns: {
+				type: "string",
+				pattern: "^(?:none|all|[1-9][0-9]*)$",
+				description: "Parent conversation context to include: none, all, or a positive integer string for the most recent turns. Defaults to none.",
+			},
 		},
 		required: ["task_name", "message"],
 		additionalProperties: false,
@@ -32,23 +42,33 @@ export const SPAWN_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 
 export const SEND_AGENT_MESSAGE_TOOL_DEFINITION: ToolDefinition = messageDefinition(
 	"send_message",
-	"Queue a durable message for an agent without starting a new turn.",
+	"Queue a durable message for an existing agent without starting a new turn.",
 );
 
 export const FOLLOWUP_TASK_TOOL_DEFINITION: ToolDefinition = messageDefinition(
 	"followup_task",
-	"Queue a durable message and trigger the target agent when it is eligible to run.",
+	"Queue a durable follow-up task and trigger the target agent when it is eligible to run.",
 );
 
 export const INTERRUPT_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "subagent:interrupt_agent",
 	name: "interrupt_agent",
-	description: "Interrupt a running agent in the caller's root tree.",
+	description: "Interrupt an agent's current turn in the caller's root tree and return whether an interruption was requested.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			target: { type: "string", minLength: 1, maxLength: 512 },
-			reason: { type: "string", minLength: 1, maxLength: 4_096 },
+			target: {
+				type: "string",
+				minLength: 1,
+				maxLength: 512,
+				description: "Relative task name or canonical agent path to interrupt, as returned by spawn_agent or list_agents.",
+			},
+			reason: {
+				type: "string",
+				minLength: 1,
+				maxLength: 4_096,
+				description: "Optional short reason for the interruption request.",
+			},
 		},
 		required: ["target"],
 		additionalProperties: false,
@@ -58,11 +78,15 @@ export const INTERRUPT_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 export const LIST_AGENTS_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "subagent:list_agents",
 	name: "list_agents",
-	description: "List durable loaded and unloaded agents in the caller's root tree.",
+	description: "List durable loaded and unloaded agents in the caller's root tree, including their paths and lifecycle status.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			path_prefix: { type: "string", pattern: "^/root(?:/[a-z0-9][a-z0-9_-]{0,63})*$" },
+			path_prefix: {
+				type: "string",
+				pattern: "^/root(?:/[a-z0-9][a-z0-9_-]{0,63})*$",
+				description: "Canonical /root task-path prefix without a trailing slash. Omit to list the complete root tree.",
+			},
 		},
 		required: [],
 		additionalProperties: false,
@@ -227,8 +251,20 @@ function messageDefinition(name: "send_message" | "followup_task", description: 
 		inputSchema: {
 			type: "object",
 			properties: {
-				target: { type: "string", minLength: 1, maxLength: 512 },
-				message: { type: "string", minLength: 1, maxLength: 65_536 },
+				target: {
+					type: "string",
+					minLength: 1,
+					maxLength: 512,
+					description: "Relative task name or canonical agent path, as returned by spawn_agent or list_agents.",
+				},
+				message: {
+					type: "string",
+					minLength: 1,
+					maxLength: 65_536,
+					description: name === "send_message"
+						? "Message text to queue without starting a new agent turn."
+						: "Follow-up task instructions to queue and run when the target becomes eligible.",
+				},
 			},
 			required: ["target", "message"],
 			additionalProperties: false,

@@ -455,6 +455,10 @@ test("reopens SQLite and extends the durable provider-input timeline", async (t)
 		reopened.modelInputLedger.reconstructProviderStep(second.manifest.requestId).request,
 		second.request,
 	);
+	assert.deepEqual(
+		reopened.modelInputLedger.reconstructProviderStep(first.manifest.requestId).request,
+		first.request,
+	);
 });
 
 test("adopts a durable v1 request through a legacy bootstrap window", async (t) => {
@@ -703,6 +707,7 @@ function createDurableRuntime(
 		threadId: "session-1",
 		instructions: "You are mycli.",
 		modelInputLedger: store.modelInputLedger,
+		agentEffectLedger: store.agentEffectLedger,
 		createModelInputId: (kind) => `${kind}-${++id}`,
 		store,
 		resolveConfig: () => options.config ?? runtimeConfig(),

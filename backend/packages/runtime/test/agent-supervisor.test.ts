@@ -383,6 +383,107 @@ test("close interrupts running residents and unloads idle residents", async (t) 
 	assert.equal(fixture.store.agentThreads.get("child-running")?.status, "interrupted");
 });
 
+test("publishes one interrupted terminal event only after runtime cleanup", async (t) => {
+	const fixture = await supervisorFixture(t);
+	const cleanup = deferred<void>();
+	const running = deferred<AgentThreadRuntimeResult>();
+	const trace: string[] = [];
+	const events: AgentCanonicalEvent[] = [];
+	const supervisor = fixture.supervisor(handle({
+		run: async () => await running.promise,
+		interrupt: async () => {
+			await cleanup.promise;
+			trace.push("cleanup");
+			running.resolve({ status: "interrupted", report: "", usage: {} });
+		},
+		close: async () => { trace.push("close"); },
+	}), {
+		onEvent: (event) => {
+			events.push(event);
+			if (event.type === "agent_lifecycle" && event.kind === "interrupted") {
+				trace.push("publish");
+			}
+		},
+	});
+	const started = await supervisor.spawn(spawnInput({ mode: "background" }));
+	assert.equal(started.status, "running");
+
+	const interrupted = supervisor.interrupt("child-1", "targeted cleanup");
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "running");
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "running");
+	assert.equal(events.filter((event) => event.kind === "interrupted").length, 0);
+
+	cleanup.resolve();
+	assert.equal(await interrupted, true);
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "interrupted");
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "interrupted");
+	assert.deepEqual(trace, ["cleanup", "close", "publish"]);
+	assert.equal(events.filter((event) => event.kind === "interrupted").length, 1);
+	assert.equal(await supervisor.interrupt("child-1", "duplicate"), true);
+	assert.equal(events.filter((event) => event.kind === "interrupted").length, 1);
+});
+
+test("does not terminalize or publish when runtime cleanup is unconfirmed", async (t) => {
+	const fixture = await supervisorFixture(t);
+	const events: AgentCanonicalEvent[] = [];
+	let closed = 0;
+	const supervisor = fixture.supervisor(handle({
+		run: async () => await new Promise(() => undefined),
+		interrupt: async () => { throw new Error("cleanup failed"); },
+		close: async () => { closed += 1; },
+	}), {
+		onEvent: (event) => { events.push(event); },
+	});
+	const started = await supervisor.spawn(spawnInput({ mode: "background" }));
+	assert.equal(started.status, "running");
+
+	assert.equal(await supervisor.interrupt("child-1", "unconfirmed cleanup"), false);
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "running");
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "running");
+	assert.equal(events.filter((event) => event.kind === "interrupted").length, 0);
+	assert.equal(closed, 0);
+});
+
+test("preserves a completed runtime result when interruption loses the terminal race", async (t) => {
+	const fixture = await supervisorFixture(t);
+	const result = deferred<AgentThreadRuntimeResult>();
+	const events: AgentCanonicalEvent[] = [];
+	let taskIndex = 0;
+	let interrupts = 0;
+	let mailboxRuns = 0;
+	const supervisor = fixture.supervisor(handle({
+		run: async () => await result.promise,
+		runMailbox: async () => {
+			mailboxRuns += 1;
+			return { status: "completed", report: "follow-up", usage: {} };
+		},
+		interrupt: async () => {
+			interrupts += 1;
+			result.resolve({ status: "completed", report: "won race", usage: {} });
+			throw new Error("interrupt was not applied");
+		},
+	}), {
+		createTaskId: () => `task-${++taskIndex}`,
+		onEvent: (event) => { events.push(event); },
+	});
+	const started = await supervisor.spawn(spawnInput({ mode: "background" }));
+	assert.equal(started.status, "running");
+
+	assert.equal(await supervisor.interrupt("child-1", "late interrupt"), false);
+	await supervisor.waitFor("child-1");
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "completed");
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "idle");
+	assert.equal(events.filter((event) => event.kind === "completed").length, 1);
+	assert.equal(events.filter((event) => event.kind === "interrupted").length, 0);
+	await waitFor(() => fixture.store.agentThreads.get("child-1")?.status === "idle");
+	assert.equal(await supervisor.followUp("child-1", "parent-follow-up", "continue"), true);
+	await waitFor(() => mailboxRuns === 1);
+	await supervisor.waitFor("child-1");
+	assert.equal(fixture.store.subagentTasks.getLatestByChildSession("child-1")?.status, "completed");
+	assert.equal(interrupts, 1);
+});
+
 test("concurrent spawns cannot oversubscribe the final resident slot", async (t) => {
 	const fixture = await supervisorFixture(t);
 	const events: AgentCanonicalEvent[] = [];
@@ -486,6 +587,8 @@ test("depth rejection creates no durable child or task", async (t) => {
 test("wall-clock budget aborts active work with a typed exhaustion result", async (t) => {
 	const fixture = await supervisorFixture(t);
 	let observedAbort = false;
+	const cleanup = deferred<void>();
+	const trace: string[] = [];
 	const supervisor = fixture.supervisor(handle({
 		run: async (_prompt, signal) => {
 			await new Promise<void>((resolve) => signal.addEventListener("abort", () => {
@@ -494,16 +597,26 @@ test("wall-clock budget aborts active work with a typed exhaustion result", asyn
 			}, { once: true }));
 			return { status: "interrupted", report: "", usage: {} };
 		},
+		interrupt: async () => {
+			await cleanup.promise;
+			trace.push("cleanup");
+		},
+		close: async () => { trace.push("close"); },
 	}));
-	const result = await supervisor.spawn(spawnInput({
+	const resultPromise = supervisor.spawn(spawnInput({
 		mode: "foreground",
 		config: { ...spawnConfig(), budget: { wallClockMs: 10 } },
 	}));
+	await waitFor(() => observedAbort);
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "running");
+	cleanup.resolve();
+	const result = await resultPromise;
 
 	assert.equal(result.status, "failed");
 	assert.equal(result.error, "agent_budget_exhausted: wall_clock");
 	assert.equal(observedAbort, true);
 	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "failed");
+	assert.deepEqual(trace, ["cleanup", "close"]);
 });
 
 async function supervisorFixture(t: test.TestContext) {

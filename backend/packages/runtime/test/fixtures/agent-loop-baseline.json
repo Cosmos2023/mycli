@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "name": "root-tool-approval-and-steering",
+      "source": "root",
+      "providerManifests": [
+        {"requestId": "root-request-1", "providerStep": 1, "timelineWindowId": "root-window", "timelineVersion": 1, "logicalInputSha256": "sha256:root-1"},
+        {"requestId": "root-request-2", "providerStep": 2, "timelineWindowId": "root-window", "timelineVersion": 4, "logicalInputSha256": "sha256:root-2"}
+      ],
+      "transcript": [
+        {"type": "user", "text": "Inspect README.md"},
+        {"type": "assistant_tool_calls", "callIds": ["call-read"]},
+        {"type": "tool_result", "callId": "call-read", "success": true},
+        {"type": "user", "text": "Also inspect package.json", "source": "steer"},
+        {"type": "assistant", "text": "Inspection complete"}
+      ],
+      "toolLifecycles": [
+        {"attemptId": "tool-attempt-read", "state": "started", "callId": "call-read"},
+        {"attemptId": "tool-attempt-read", "state": "completed", "callId": "call-read"}
+      ],
+      "approval": {"requestId": "approval-1", "state": "approved", "callId": "call-read"},
+      "clarification": null,
+      "steering": [{"queueId": "steer-1", "text": "Also inspect package.json", "committedVersion": 3}],
+      "mailboxDelivery": [],
+      "usage": {"input_tokens": 24, "output_tokens": 8, "total_tokens": 32},
+      "gatewayEvents": [
+        "turn.started",
+        "tool.started",
+        "approval.requested",
+        "tool.completed",
+        "turn.completed"
+      ],
+      "providerLifecycle": ["prepared", "dispatch_started", "acknowledged"]
+    },
+    {
+      "name": "child-mailbox-and-clarification",
+      "source": "subagent",
+      "providerManifests": [
+        {"requestId": "child-request-1", "providerStep": 1, "timelineWindowId": "child-window", "timelineVersion": 1, "logicalInputSha256": "sha256:child-1"},
+        {"requestId": "child-request-2", "providerStep": 2, "timelineWindowId": "child-window", "timelineVersion": 3, "logicalInputSha256": "sha256:child-2"}
+      ],
+      "transcript": [
+        {"type": "user", "text": "Review runtime"},
+        {"type": "assistant_tool_calls", "callIds": ["call-question"]},
+        {"type": "tool_result", "callId": "call-question", "success": true},
+        {"type": "assistant", "text": "Review complete"}
+      ],
+      "toolLifecycles": [
+        {"attemptId": "tool-attempt-question", "state": "started", "callId": "call-question"},
+        {"attemptId": "tool-attempt-question", "state": "completed", "callId": "call-question"}
+      ],
+      "approval": null,
+      "clarification": {"requestId": "clarification-1", "state": "answered", "response": "Focus on cancellation"},
+      "steering": [],
+      "mailboxDelivery": [
+        {"mailboxId": "mail-1", "senderPath": "/root", "receiverPath": "/root/reviewer", "triggerTurn": true, "state": "delivered"},
+        {"mailboxId": "mail-terminal-1", "senderPath": "/root/reviewer", "receiverPath": "/root", "triggerTurn": false, "state": "delivered"}
+      ],
+      "usage": {"input_tokens": 18, "output_tokens": 6, "total_tokens": 24},
+      "gatewayEvents": [
+        "subagent.started",
+        "clarification.requested",
+        "subagent.waiting",
+        "subagent.resumed",
+        "subagent.completed"
+      ],
+      "providerLifecycle": ["prepared", "dispatch_started", "acknowledged"]
+    }
+  ]
+}

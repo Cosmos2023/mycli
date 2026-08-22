@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parseJsonRpcMessage } from "@mycli/contracts";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -123,9 +123,12 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 	assert.equal(existsSync(pythonMarker), false);
 	await shutdown();
 
-	const store = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
-		const shellItems = store.loadHistoryItems(sessionId).filter((item) => item.type === "shell_session");
+		if (!("loadReadableTranscript" in store)) assert.fail("expected normalized session storage");
+		const shellItems = store.loadReadableTranscript(sessionId).filter((item) => (
+			item.tool_name === "Shell" && typeof item.metadata?.shell_id === "string"
+		));
 		assert.equal(shellItems.length, 1);
 		const metadata = isObject(shellItems[0]?.metadata) ? shellItems[0].metadata : {};
 		assert.equal(metadata.tty, true);
@@ -134,7 +137,7 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 			metadata.transport,
 			process.platform === "win32" ? "windows_conpty" : "unix_pty",
 		);
-		assert.match(String(metadata.output), /stdin:hello-m6/u);
+		assert.match(String(shellItems[0]?.output), /stdin:hello-m6/u);
 	} finally {
 		store.close();
 	}

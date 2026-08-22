@@ -9,22 +9,14 @@ import {
 	SYSTEM_PROMPT_VERSION,
 } from "../src/node-runtime/system-prompt.ts";
 
-test("Node system prompt exactly matches the canonical Python template", () => {
-	const pythonTemplate = readFileSync(new URL(
-		"../../../../src/mycli/prompts/templates/system.md",
+test("Node system prompt exactly matches its canonical source asset", () => {
+	const sourceTemplate = readFileSync(new URL(
+		"../src/assets/system.md",
 		import.meta.url,
 	), "utf8").trim();
-	const pythonModule = readFileSync(new URL(
-		"../../../../src/mycli/prompts/system.py",
-		import.meta.url,
-	), "utf8");
 	const content = loadSystemPromptTemplate();
 
-	assert.equal(content, pythonTemplate);
-	assert.match(
-		pythonModule,
-		new RegExp(`SYSTEM_PROMPT_VERSION = ["']${SYSTEM_PROMPT_VERSION}["']`, "u"),
-	);
+	assert.equal(content, sourceTemplate);
 	assert.deepEqual(packagedSystemPrompt(), {
 		version: SYSTEM_PROMPT_VERSION,
 		source: SYSTEM_PROMPT_SOURCE,
@@ -33,7 +25,7 @@ test("Node system prompt exactly matches the canonical Python template", () => {
 	});
 });
 
-test("complete Node system prompt contains the Python workflow contract", () => {
+test("complete Node system prompt contains the workflow contract", () => {
 	const prompt = loadSystemPromptTemplate();
 	for (const section of [
 		"# Identity",

@@ -27,12 +27,7 @@ export function packagedSystemPrompt(): PackagedSystemPrompt {
 }
 
 function systemPromptAssetUrl(): URL {
-	const packaged = new URL("../assets/system.md", import.meta.url);
-	if (existsSync(packaged)) return packaged;
-	const repositorySource = new URL(
-		"../../../../../src/mycli/prompts/templates/system.md",
-		import.meta.url,
-	);
-	if (existsSync(repositorySource)) return repositorySource;
+	const asset = new URL("../assets/system.md", import.meta.url);
+	if (existsSync(asset)) return asset;
 	throw new Error("system_prompt_asset_missing");
 }

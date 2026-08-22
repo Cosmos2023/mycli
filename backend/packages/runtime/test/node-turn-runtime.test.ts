@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
 	NODE_RUNTIME_CONTEXT_DEFAULTS,
@@ -9,6 +12,7 @@ import type {
 	CanonicalConversationItem,
 	CanonicalMessage,
 	CanonicalToolCall,
+	FileMutationPreviewChange,
 	HookRunnerContract,
 	ProviderEvent,
 	ProtocolId,
@@ -30,17 +34,22 @@ import type {
 	TurnStore,
 	TurnReservation,
 } from "@mycli/storage";
-import { StorageFailure } from "@mycli/storage";
+import { SQLiteTranscriptEventRepository, StorageFailure } from "@mycli/storage";
 import {
 	ASK_USER_QUESTION_TOOL_DEFINITION,
+	EDIT_TOOL_DEFINITION,
+	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
 	TOOL_SEARCH_TOOL_DEFINITION,
 	UPDATE_PLAN_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 	ToolRouter,
+	type PreparedMutationGuard,
+	type PreparedToolCall,
 	type ToolExecutionResult,
 	type ToolExecutionOptions,
+	type ToolPreviewOptions,
 	type ToolRouterContract,
 } from "@mycli/tools";
 import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
@@ -67,6 +76,68 @@ const ASK_ARGUMENTS = JSON.stringify({
 	],
 	header: "Runtime",
 	multi_select: false,
+});
+
+test("runs unchanged provider and live-event contracts on the normalized turn store", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-normalized-runtime-"));
+	t.after(async () => rm(root, { recursive: true, force: true }));
+	const store = new SQLiteTranscriptEventRepository({
+		dbPath: join(root, "sessions.db"),
+		clock: clockSequence(),
+	});
+	t.after(() => store.close());
+	const trace: string[] = [];
+	const requests: ProviderRequest[] = [];
+	const liveEvents: RuntimeEvent[] = [];
+	const runtime = createRuntime({
+		store,
+		provider: scriptedProvider(trace, requests, [[
+			{ type: "text_delta", text: "Repository inspected." },
+			{ type: "completed", responseId: "response-normalized" },
+		]]),
+		toolRouter: new SequencedRouter(trace),
+		planTools: () => [],
+	});
+
+	const result = await runtime.submit(submission(), (event) => liveEvents.push(event), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(requests[0]?.items, [{ type: "user", text: "Read README.md" }]);
+	assert.ok(liveEvents.findIndex((event) => event.type === "text_delta")
+		< liveEvents.findIndex((event) => event.type === "turn_completed"));
+	assert.deepEqual(
+		store.loadEventWindow("session-1", { limit: 20 }).events.map((event) => event.eventType),
+		["user_input", "assistant_output", "turn_lifecycle"],
+	);
+	assert.deepEqual(store.loadConversationItems("session-1"), [
+		{ type: "user", text: "Read README.md" },
+		{ type: "assistant", text: "Repository inspected." },
+	]);
+});
+
+test("projects model catalog output and storage options into provider requests", async () => {
+	const trace: string[] = [];
+	const requests: ProviderRequest[] = [];
+	const runtime = createRuntime({
+		store: new FakeStore(trace),
+		provider: scriptedProvider(trace, requests, [[
+			{ type: "text_delta", text: "Done." },
+			{ type: "completed", responseId: "response-options" },
+		]]),
+		toolRouter: new SequencedRouter(trace),
+		planTools: () => [],
+		runtimeConfig: config({ maxOutputTokens: 64, store: false }),
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(requests[0]?.maxOutputTokens, 64);
+	assert.equal(requests[0]?.store, false);
 });
 
 test("runs a mailbox-triggered turn without persisting a fabricated user message", async () => {
@@ -281,7 +352,7 @@ test("keeps a durably completed turn and skips memory when snapshot writing fail
 	assert.equal(trace.includes("memory:action"), false);
 });
 
-test("persists safe Responses continuation before tool execution and terminal completion", async () => {
+test("persists safe Responses continuation after canonical output and before reuse", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
 	const requests: ProviderRequest[] = [];
@@ -307,8 +378,9 @@ test("persists safe Responses continuation before tool execution and terminal co
 	assert.equal(result.status, "completed");
 	assert.equal(requests[0]?.previousResponseId, undefined);
 	assert.equal(requests[1]?.previousResponseId, "resp-tools");
+	assert.ok(trace.indexOf("persist:calls") < trace.indexOf("continuation:eligible:resp-tools"));
 	assert.ok(trace.indexOf("continuation:eligible:resp-tools") < trace.indexOf("tool:call-1"));
-	assert.ok(trace.indexOf("continuation:eligible:resp-final") < trace.indexOf("complete"));
+	assert.ok(trace.indexOf("complete") < trace.indexOf("continuation:eligible:resp-final"));
 	assert.equal(continuation.states.at(-1)?.eligible, true);
 });
 
@@ -532,11 +604,13 @@ test("persists and executes Read before continuing the same Responses turn", asy
 	assert.deepEqual(emitted.map((event) => event.type), [
 		"turn_started",
 		"message_complete",
+		"provider_usage",
 		"tool_call_accepted",
 		"tool_execution_started",
 		"tool_execution_completed",
 		"text_delta",
 		"message_complete",
+		"provider_usage",
 		"turn_completed",
 	]);
 	assert.equal(requests.length, 2);
@@ -773,6 +847,61 @@ test("persists provider replay state with tool calls before tool results", async
 	assert.equal(trace.indexOf("persist:calls") < trace.indexOf("persist:result:call-1"), true);
 });
 
+test("persists provider replay state with the final assistant output", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const events: RuntimeEvent[] = [];
+	const providerState = {
+		provider: "openai" as const,
+		value: {
+			responsesReasoningItems: [{
+				type: "reasoning",
+				summary: [],
+				encrypted_content: "encrypted-final",
+			}],
+		},
+	};
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "provider_state", state: providerState },
+		{
+			type: "usage",
+			usage: {
+				input_tokens: 1_250,
+				output_tokens: 80,
+				total_tokens: 1_330,
+				reasoning_tokens: 64,
+			},
+		},
+		{ type: "text_delta", text: "done" },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new FakeRouter(trace, successResult("unused")),
+	}).submit(
+		submission(),
+		events.push.bind(events),
+		{ signal: new AbortController().signal },
+	);
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(store.completions[0]?.providerState, {
+		...providerState,
+		tokenEstimate: 64,
+	});
+	assert.deepEqual(events.find((event) => event.type === "provider_usage"), {
+		type: "provider_usage",
+		usage: {
+			input_tokens: 1_250,
+			output_tokens: 80,
+			total_tokens: 1_330,
+			reasoning_tokens: 64,
+		},
+	});
+});
+
 test("runs Anthropic tool continuations through the shared runtime", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -907,11 +1036,11 @@ test("emits a terminal tool lifecycle event when tool execution is interrupted",
 	assert.ok(failureIndex < turnIndex);
 });
 
-test("force interrupt durably fences an abort-ignoring tool and emits one terminal lifecycle", async () => {
+test("force interrupt terminalizes an abort-ignoring mutation as outcome unknown once", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
 	const provider = scriptedProvider(trace, [], [[
-		{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+		{ type: "tool_call", callId: "call-1", name: "Write", argumentsJson: WRITE_ARGUMENTS },
 		{ type: "completed", responseId: "resp-tools" },
 	]]);
 	let executionStarted!: () => void;
@@ -924,17 +1053,22 @@ test("force interrupt durably fences an abort-ignoring tool and emits one termin
 			await released;
 			return {
 				callId: "call-1",
-				toolName: "Read",
+				toolName: "Write",
 				success: true,
 				modelOutput: "late output",
-				summary: "Read completed late",
+				summary: "Write completed late",
 				metadata: {},
 			};
 		},
 	};
 	const emitted: RuntimeEvent[] = [];
 	const controller = new AbortController();
-	const runtime = createRuntime({ store, provider, toolRouter });
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter,
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+	});
 	const pending = runtime.submit(
 		submission(),
 		emitted.push.bind(emitted),
@@ -954,6 +1088,10 @@ test("force interrupt durably fences an abort-ignoring tool and emits one termin
 		1,
 	);
 	assert.equal(
+		emitted.find((event) => event.type === "tool_execution_failed")?.errorKind,
+		"effect_outcome_unknown",
+	);
+	assert.equal(
 		emitted.filter((event) => event.type === "turn_interrupted").length,
 		1,
 	);
@@ -964,6 +1102,8 @@ test("force interrupt durably fences an abort-ignoring tool and emits one termin
 	releaseTool();
 	const lateResult = await pending;
 	assert.equal(lateResult.status, "interrupted");
+	assert.equal(store.toolResults.length, 0);
+	assert.equal(emitted.some((event) => event.type === "tool_execution_completed"), false);
 	assert.equal(emitted.some((event) => event.type === "turn_failed"), false);
 	assert.equal(
 		emitted.filter((event) => event.type === "tool_execution_failed").length,
@@ -1182,6 +1322,72 @@ test("executes safe tool phases concurrently and preserves provider result order
 		"call-read-2",
 		"call-write",
 		"call-read-3",
+	]);
+});
+
+test("executes allowed Shell calls concurrently with per-call sandbox authorization", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new ControlledToolRouter(trace, new Set(["Shell"]));
+	const provider = scriptedProvider(trace, [], [[
+		{
+			type: "tool_call",
+			callId: "call-shell-elevated",
+			name: "Shell",
+			argumentsJson: JSON.stringify({
+				command: "printf elevated",
+				sandbox_permissions: "require_escalated",
+			}),
+		},
+		{
+			type: "tool_call",
+			callId: "call-shell-default",
+			name: "Shell",
+			argumentsJson: JSON.stringify({ command: "printf default" }),
+		},
+		{ type: "completed", responseId: "resp-shell-tools" },
+	], [
+		{ type: "text_delta", text: "Both commands completed." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const running = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [SHELL_TOOL_DEFINITION],
+		approvalPolicy: {
+			evaluate: (call) => ({
+				kind: "allow",
+				callId: call.callId,
+				toolName: call.name,
+				preview: "Shell command allowed",
+				reason: "Allowed for test.",
+				...(call.callId === "call-shell-elevated"
+					? { sandboxOverrideApproved: true }
+					: {}),
+			}),
+		},
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	await router.waitForStarted(2);
+	assert.deepEqual(router.startedCallIds, ["call-shell-elevated", "call-shell-default"]);
+	assert.equal(
+		router.executionOptionsByCallId.get("call-shell-elevated")?.sandboxOverrideApproved,
+		true,
+	);
+	assert.equal(
+		router.executionOptionsByCallId.get("call-shell-default")?.sandboxOverrideApproved,
+		undefined,
+	);
+	router.release("call-shell-default");
+	assert.equal(store.toolResults.length, 0);
+	router.release("call-shell-elevated");
+
+	const result = await running;
+	assert.equal(result.status, "completed");
+	assert.deepEqual(store.toolResults.map((entry) => entry.result.callId), [
+		"call-shell-elevated",
+		"call-shell-default",
 	]);
 });
 
@@ -1710,7 +1916,12 @@ test("strict mutation policy durably suspends before requesting approval", async
 		{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
 		{ type: "completed", responseId: "resp-tools" },
 	]]);
-	const router = new SequencedRouter(trace);
+	const router = new SequencedRouter(
+		trace,
+		new Set(),
+		WRITE_PREVIEW_CHANGES,
+		WRITE_PREPARED_GUARD,
+	);
 	const approvals = approvalRuntimeFixture(trace, router, store);
 	const emitted: RuntimeEvent[] = [];
 
@@ -1728,10 +1939,113 @@ test("strict mutation policy durably suspends before requesting approval", async
 	assert.equal(result.status, "in_progress");
 	assert.equal(router.calls, 0);
 	assert.deepEqual(trace, ["reserve", "provider:1", "persist:calls", "approval:suspend"]);
+	const proposal = emitted.find((event) => event.type === "file_mutation_started");
 	const request = emitted.find((event) => event.type === "approval_requested");
+	assert.ok(proposal);
 	assert.ok(request);
+	assert.ok(emitted.indexOf(proposal) < emitted.indexOf(request));
+	assert.equal(proposal.preview, "Write notes.txt");
+	assert.equal(proposal.contentPreview, "hello");
+	assert.deepEqual(proposal.fileChanges, WRITE_PREVIEW_CHANGES);
+	assert.deepEqual(approvals.pending()?.preparedMutationGuard, WRITE_PREPARED_GUARD);
 	assert.equal("decisionId" in request ? request.decisionId : undefined, "call-write");
 	assert.equal("preview" in request ? request.preview : "", "Write notes.txt");
+	assert.equal("contentPreview" in request ? request.contentPreview : undefined, "hello");
+	assert.equal("contentLineCount" in request ? request.contentLineCount : undefined, 1);
+	assert.equal("contentChars" in request ? request.contentChars : undefined, 5);
+	assert.equal("contentTruncated" in request ? request.contentTruncated : undefined, false);
+});
+
+test("full access presents a file mutation before executing without approval", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const argumentsJson = JSON.stringify({
+		file_path: "notes.txt",
+		content: "hello",
+		sandbox_permissions: "workspace-write",
+		justification: "Redundant non-escalation reason from the model.",
+	});
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson },
+		{ type: "completed", responseId: "resp-tools" },
+	], [
+		{ type: "text_delta", text: "Write completed." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const router = new FakeRouter(trace, {
+		callId: "call-write",
+		toolName: "Write",
+		success: true,
+		modelOutput: "Write completed",
+		summary: "Write completed",
+		metadata: {},
+	}, WRITE_PREVIEW_CHANGES);
+	const emitted: RuntimeEvent[] = [];
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({
+			workspaceRoot: "/workspace",
+			autoApproveMedium: false,
+			permissionProfile: "full-access",
+		}),
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+	}).submit(submission(), emitted.push.bind(emitted), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(emitted.some((event) => event.type === "approval_requested"), false);
+	const proposalIndex = emitted.findIndex((event) => event.type === "file_mutation_started");
+	const executionIndex = emitted.findIndex((event) => event.type === "tool_execution_started");
+	assert.ok(proposalIndex >= 0 && proposalIndex < executionIndex);
+	const proposal = emitted[proposalIndex];
+	assert.equal(proposal?.type === "file_mutation_started" ? proposal.contentPreview : undefined, "hello");
+	assert.deepEqual(
+		proposal?.type === "file_mutation_started" ? proposal.fileChanges : undefined,
+		WRITE_PREVIEW_CHANGES,
+	);
+	assert.equal(router.previewOptions?.ownerTurnId, "turn-1");
+	assert.ok(trace.indexOf("tool:call-write") >= 0);
+});
+
+test("policy denials preserve file sandbox error kinds", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new SequencedRouter(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{
+			type: "tool_call",
+			callId: "call-write",
+			name: "Write",
+			argumentsJson: JSON.stringify({
+				file_path: "notes.txt",
+				content: "hello",
+				sandbox_permissions: "host",
+			}),
+		},
+		{ type: "completed", responseId: "resp-tools" },
+	], [
+		{ type: "text_delta", text: "The write arguments were invalid." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalPolicy: new ApprovalPolicy({ workspaceRoot: "/workspace" }),
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+	}).submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(router.calls, 0);
+	assert.equal(store.toolResults[0]?.errorKind, "invalid_sandbox_permissions");
+	assert.match(store.toolResults[0]?.result.output ?? "", /invalid_sandbox_permissions/u);
 });
 
 test("approval resolution continues the original turn without reserving or duplicating the user", async () => {
@@ -1964,11 +2278,18 @@ test("clarification response resumes the original provider loop without a new us
 		},
 	};
 	const clarifications = clarificationRuntimeFixture(trace, store);
+	const approvalCoordinator: ApprovalCoordinatorFixture = {
+		suspend: () => { throw new Error("approval suspend is not expected"); },
+		pending: () => undefined,
+		resolve: async () => { throw new Error("approval resolution is not expected"); },
+		finish: () => undefined,
+	};
 	const emitted: RuntimeEvent[] = [];
 	const instance = createRuntime({
 		store,
 		provider,
 		toolRouter: router,
+		approvalCoordinator,
 		clarificationCoordinator: clarifications.coordinator,
 		toolDefinitions: [ASK_USER_QUESTION_TOOL_DEFINITION, READ_TOOL_DEFINITION],
 	});
@@ -1977,6 +2298,7 @@ test("clarification response resumes the original provider loop without a new us
 		signal: new AbortController().signal,
 	});
 	assert.equal(waiting.status, "in_progress");
+	assert.equal(instance.continuationTurnId(), "turn-1");
 	assert.equal(trace.includes("persist:result:call-question"), false);
 	assert.equal(trace.includes("tool:call-read"), false);
 	const request = emitted.find((event) => event.type === "clarification_requested");
@@ -1993,6 +2315,67 @@ test("clarification response resumes the original provider loop without a new us
 	assert.equal(store.items.filter((item) => item.type === "user").length, 1);
 	assert.ok(trace.indexOf("clarification:resolve:call-question") < trace.indexOf("tool:call-read"));
 	assert.equal(trace.filter((item) => item.startsWith("provider:")).length, 2);
+});
+
+test("force interrupt clears a pending clarification before terminalizing the turn", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [[
+		{ type: "tool_call", callId: "call-question", name: "AskUserQuestion", argumentsJson: ASK_ARGUMENTS },
+		{ type: "completed", responseId: "resp-question" },
+	]]);
+	const router: ToolRouterContract = {
+		execute: async (call) => ({
+			callId: call.callId,
+			toolName: call.name,
+			success: true,
+			modelOutput: "Awaiting user response.",
+			summary: "Awaiting user response",
+			metadata: {
+				status: "awaiting_user_response",
+				question: "Which runtime?",
+				options: [{ label: "Node" }, { label: "Python" }],
+				header: "Runtime",
+				multi_select: false,
+			},
+		}),
+	};
+	const clarifications = clarificationRuntimeFixture(trace, store);
+	const approvalCoordinator: ApprovalCoordinatorFixture = {
+		suspend: () => { throw new Error("approval suspend is not expected"); },
+		pending: () => undefined,
+		resolve: async () => { throw new Error("approval resolution is not expected"); },
+		finish: () => undefined,
+	};
+	const emitted: RuntimeEvent[] = [];
+	const instance = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		approvalCoordinator,
+		clarificationCoordinator: clarifications.coordinator,
+		toolDefinitions: [ASK_USER_QUESTION_TOOL_DEFINITION],
+	});
+
+	const waiting = await instance.submit(submission(), emitted.push.bind(emitted), {
+		signal: new AbortController().signal,
+	});
+	assert.equal(waiting.status, "in_progress");
+	assert.ok(clarifications.coordinator.pending());
+
+	const interrupted = await instance.forceInterrupt(
+		{ clientTurnId: "client-1", turnId: "turn-1" },
+		emitted.push.bind(emitted),
+	);
+
+	assert.equal(interrupted.status, "interrupted");
+	assert.equal(store.loadTurn()?.status, "interrupted");
+	assert.equal(clarifications.coordinator.pending(), undefined);
+	assert.deepEqual(
+		trace.filter((item) => item.startsWith("clarification:")),
+		["clarification:suspend", "clarification:cancel:call-question"],
+	);
+	assert.equal(emitted.filter((event) => event.type === "turn_interrupted").length, 1);
 });
 
 test("interrupts after a durable tool result without requesting a continuation", async () => {
@@ -2091,6 +2474,41 @@ test("compacts before the first provider request and keeps the current user item
 	assert.deepEqual(requests[0]?.items, compacted);
 });
 
+test("compacts mid-turn after tool results and continues from the replacement history", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+		{ type: "completed", responseId: "resp-tools" },
+	], [
+		{ type: "text_delta", text: "Continued after compacting the tool phase." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const compacted: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "Read README.md" },
+		{ type: "user", text: "[compact-summary]\nREADME.md was read successfully." },
+	];
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("not_needed", []),
+		compactionResult("compressed", compacted),
+	]);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(coordinator.calls.map((call) => call.source), ["pre_turn", "mid_turn"]);
+	assert.ok(trace.indexOf("persist:result:call-1") < trace.indexOf("compact:mid_turn"));
+	assert.ok(trace.indexOf("compact:mid_turn") < trace.indexOf("provider:2"));
+	assert.deepEqual(requests[1]?.items, compacted);
+	assert.equal(requests[1]?.previousResponseId, undefined);
+});
+
 test("creates compaction from the config resolved for the active turn", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -2153,6 +2571,7 @@ test("reactively compacts once after a zero-event context rejection and clears c
 	];
 	const coordinator = new ScriptedCompactionCoordinator(trace, [
 		compactionResult("not_needed", []),
+		compactionResult("not_needed", []),
 		compactionResult("compressed", reactiveProjection),
 	]);
 
@@ -2167,6 +2586,7 @@ test("reactively compacts once after a zero-event context rejection and clears c
 	assert.equal(providerCalls, 3);
 	assert.deepEqual(coordinator.calls.map((call) => call.source), [
 		"pre_turn",
+		"mid_turn",
 		"context_overflow",
 	]);
 	assert.equal(requests[1]?.previousResponseId, "resp-tools");
@@ -2553,6 +2973,111 @@ test("freezes execution policy tools for the provider loop and releases terminal
 	assert.deepEqual(calls, ["begin:turn-1", "finish:turn-1"]);
 });
 
+test("Plan mode keeps stable tool exposure and rejects update_plan without side effects", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const hookPoints: string[] = [];
+	const liveEvents: RuntimeEvent[] = [];
+	let approvalEvaluations = 0;
+	let previewCalls = 0;
+	let executeCalls = 0;
+	let providerStep = 0;
+	const runtimeRef: { current?: NodeTurnRuntime } = {};
+	const provider: ModelProvider = {
+		stream: (request) => {
+			requests.push(request);
+			providerStep += 1;
+			if (providerStep === 1) {
+				runtimeRef.current?.configureRuntimeContext({ collaborationMode: "default" });
+				return providerEvents([
+					{
+						type: "tool_call",
+						callId: "call-update-plan",
+						name: "update_plan",
+						argumentsJson: JSON.stringify({
+							plan: [{ step: "Inspect runtime", status: "in_progress" }],
+						}),
+					},
+					{ type: "completed", responseId: "plan-update" },
+				]);
+			}
+			return providerEvents([
+				{ type: "text_delta", text: "I kept this turn in Plan mode." },
+				{ type: "completed", responseId: "plan-final" },
+			]);
+		},
+	};
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: {
+			preview: async () => {
+				previewCalls += 1;
+				return [];
+			},
+			execute: async (call) => {
+				executeCalls += 1;
+				return successResult(call.callId);
+			},
+		},
+		planTools: () => [
+			READ_TOOL_DEFINITION,
+			SHELL_TOOL_DEFINITION,
+			WRITE_TOOL_DEFINITION,
+			EDIT_TOOL_DEFINITION,
+			PATCH_TOOL_DEFINITION,
+			UPDATE_PLAN_TOOL_DEFINITION,
+		],
+		approvalPolicy: {
+			evaluate: (call) => {
+				approvalEvaluations += 1;
+				return {
+					kind: "allow",
+					callId: call.callId,
+					toolName: call.name,
+					preview: "allowed",
+					reason: "test",
+				};
+			},
+		},
+		hookRunner: {
+			run: async (input) => {
+				hookPoints.push(input.point);
+				return [];
+			},
+		},
+	});
+	runtimeRef.current = runtime;
+	runtime.configureRuntimeContext({ collaborationMode: "plan" });
+
+	const result = await runtime.submit(submission(), (event) => liveEvents.push(event), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(requests.length, 2);
+	assert.deepEqual(requests.map((request) => request.tools.map((tool) => tool.name)), [
+		["Read", "Shell", "Write", "Edit", "Patch", "update_plan"],
+		["Read", "Shell", "Write", "Edit", "Patch", "update_plan"],
+	]);
+	assert.match(JSON.stringify(requests[1]?.items), /update_plan.*not allowed in Plan mode/u);
+	assert.match(JSON.stringify(requests[1]), /# Plan Mode/u);
+	assert.equal(approvalEvaluations, 0);
+	assert.equal(previewCalls, 0);
+	assert.equal(executeCalls, 0);
+	assert.equal(hookPoints.includes("pre_tool_use"), false);
+	assert.equal(hookPoints.includes("post_tool_use"), false);
+	assert.equal(store.toolResults.length, 1);
+	assert.equal(store.toolResults[0]?.result.success, false);
+	assert.equal(store.toolResults[0]?.errorKind, "tool_not_allowed_in_plan_mode");
+	assert.equal(
+		liveEvents.some((event) => event.type === "tool_execution_failed"
+			&& event.errorKind === "tool_not_allowed_in_plan_mode"),
+		true,
+	);
+});
+
 test("evaluates approvals with the frozen turn execution policy", async () => {
 	const trace: string[] = [];
 	const profile = executionProfile();
@@ -2702,6 +3227,60 @@ test("runtime withholds Shell sandbox override authorization after a hook change
 	assert.equal(router.options?.sandboxOverrideApproved, undefined);
 });
 
+test("runtime reports executed workspace escapes back to the approval policy", async () => {
+	const trace: string[] = [];
+	const escaped: ToolExecutionResult = {
+		callId: "call-write",
+		toolName: "Write",
+		success: false,
+		modelOutput: "Write failed\nError kind: workspace_escape",
+		summary: "Write failed",
+		errorKind: "workspace_escape",
+		metadata: {},
+	};
+	const router = new FakeRouter(trace, escaped);
+	const provider = scriptedProvider(trace, [], [[
+		{
+			type: "tool_call",
+			callId: "call-write",
+			name: "Write",
+			argumentsJson: JSON.stringify({ file_path: "link/outside.txt", content: "hello" }),
+		},
+		{ type: "completed", responseId: "resp-write" },
+	], [
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	let recorded: {
+		readonly call: CanonicalToolCall;
+		readonly result: ToolExecutionResult;
+		readonly turnId?: string;
+	} | undefined;
+
+	const result = await createRuntime({
+		store: new FakeStore(trace),
+		provider,
+		toolRouter: router,
+		toolDefinitions: [WRITE_TOOL_DEFINITION],
+		approvalPolicy: {
+			evaluate: (call) => ({
+				kind: "allow",
+				callId: call.callId,
+				toolName: call.name,
+				preview: "Write allowed",
+				reason: "Allowed for test.",
+			}),
+			recordResult: (call, toolResult, _executionPolicy, turnId) => {
+				recorded = { call, result: toolResult, ...(turnId ? { turnId } : {}) };
+			},
+		},
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(recorded?.call.name, "Write");
+	assert.equal(recorded?.result.errorKind, "workspace_escape");
+	assert.equal(recorded?.turnId, "turn-1");
+});
+
 test("execution policy configuration updates routine approval profile", () => {
 	const approvalPolicy = new ApprovalPolicy({
 		workspaceRoot: "/workspace",
@@ -2725,18 +3304,22 @@ test("execution policy configuration updates routine approval profile", () => {
 	assert.equal(approvalPolicy.evaluate(shellCall).kind, "allow");
 });
 
-test("rejects provider calls for tools outside the frozen turn exposure", async () => {
+test("closes provider calls outside the frozen exposure and lets the model recover", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
 	const router = new SequencedRouter(trace);
-	const provider = scriptedProvider(trace, [], [[
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
 		{
 			type: "tool_call",
-			callId: "call-shell-untrusted",
-			name: "Shell",
-			argumentsJson: "{\"command\":\"printf unsafe\"}",
+			callId: "call-rg-files",
+			name: "rg --files",
+			argumentsJson: JSON.stringify({ path: "/workspace" }),
 		},
-		{ type: "completed", responseId: "resp-shell-untrusted" },
+		{ type: "completed", responseId: "resp-unsupported-tool" },
+	], [
+		{ type: "text_delta", text: "I will use Shell instead." },
+		{ type: "completed", responseId: "resp-recovered" },
 	]]);
 	const runtime = createRuntime({
 		store,
@@ -2749,10 +3332,16 @@ test("rejects provider calls for tools outside the frozen turn exposure", async 
 		signal: new AbortController().signal,
 	});
 
-	assert.equal(result.status, "failed");
-	assert.equal(result.error_code, "tool_protocol_error");
+	assert.equal(result.status, "completed");
 	assert.equal(router.calls, 0);
-	assert.equal(trace.includes("persist:calls"), false);
+	assert.equal(trace.includes("persist:calls"), true);
+	assert.equal(requests.length, 2);
+	assert.match(JSON.stringify(requests[1]?.items), /unsupported call: rg --files/u);
+	assert.equal(store.toolResults.length, 1);
+	assert.equal(store.toolResults[0]?.result.callId, "call-rg-files");
+	assert.equal(store.toolResults[0]?.result.toolName, "rg --files");
+	assert.equal(store.toolResults[0]?.result.success, false);
+	assert.equal(store.toolResults[0]?.errorKind, "unsupported_tool");
 });
 
 test("enforces explicit provider-step and tool-call budgets without implicit defaults", async () => {
@@ -2939,7 +3528,7 @@ function createRuntime(options: {
 			contextItemCoordinator: options.contextItemCoordinator,
 		} : {}),
 		...(options.agentCheckpoint ? { agentCheckpoint: options.agentCheckpoint } : {}),
-		...(options.isMutatingTool ? { isMutatingTool: options.isMutatingTool } : {}),
+		isMutatingTool: options.isMutatingTool ?? ((toolName) => toolName !== "Read"),
 	});
 }
 
@@ -3052,6 +3641,7 @@ interface ApprovalRequestFixture {
 	readonly usage: Readonly<Record<string, number>>;
 	readonly preview: string;
 	readonly reason: string;
+	readonly preparedMutationGuard?: PreparedMutationGuard;
 }
 
 interface ApprovalCoordinatorFixture {
@@ -3102,6 +3692,7 @@ interface ClarificationRequestFixture {
 interface ClarificationCoordinatorFixture {
 	suspend(input: Omit<ClarificationRequestFixture, "sessionId" | "requestId">): ClarificationRequestFixture;
 	pending(): ClarificationRequestFixture | undefined;
+	cancel(input: { readonly requestId: string }): ClarificationRequestFixture;
 	resolve(input: { readonly requestId: string; readonly response: string }): {
 		readonly continuation: ClarificationRequestFixture;
 		readonly response: string;
@@ -3121,6 +3712,14 @@ function clarificationRuntimeFixture(trace: string[], store: FakeStore) {
 			return current;
 		},
 		pending: () => current,
+		cancel: (input) => {
+			assert.ok(current);
+			assert.equal(input.requestId, current.requestId);
+			trace.push(`clarification:cancel:${input.requestId}`);
+			const cancelled = current;
+			current = undefined;
+			return cancelled;
+		},
 		resolve: (input) => {
 			assert.ok(current);
 			assert.equal(input.requestId, current.requestId);
@@ -3421,11 +4020,26 @@ class FakeStore implements TurnStore {
 class FakeRouter implements ToolRouterContract {
 	readonly #trace: string[];
 	readonly #result: ToolExecutionResult;
+	readonly #previewChanges: readonly FileMutationPreviewChange[];
 	options: ToolExecutionOptions | undefined;
+	previewOptions: ToolPreviewOptions | undefined;
 
-	constructor(trace: string[], result: ToolExecutionResult) {
+	constructor(
+		trace: string[],
+		result: ToolExecutionResult,
+		previewChanges: readonly FileMutationPreviewChange[] = [],
+	) {
 		this.#trace = trace;
 		this.#result = result;
+		this.#previewChanges = previewChanges;
+	}
+
+	async preview(
+		_call: CanonicalToolCall,
+		options: ToolPreviewOptions,
+	): Promise<readonly FileMutationPreviewChange[]> {
+		this.previewOptions = options;
+		return this.#previewChanges;
 	}
 
 	async execute(call: CanonicalToolCall, options: ToolExecutionOptions): Promise<ToolExecutionResult> {
@@ -3455,11 +4069,31 @@ function shellLifecycleEvent(): ShellLifecycleEvent {
 class SequencedRouter implements ToolRouterContract {
 	readonly #trace: string[];
 	readonly #parallelToolNames: ReadonlySet<string>;
+	readonly #previewChanges: readonly FileMutationPreviewChange[];
+	readonly #preparedGuard?: PreparedMutationGuard;
 	calls = 0;
 
-	constructor(trace: string[], parallelToolNames: ReadonlySet<string> = new Set()) {
+	constructor(
+		trace: string[],
+		parallelToolNames: ReadonlySet<string> = new Set(),
+		previewChanges: readonly FileMutationPreviewChange[] = [],
+		preparedGuard?: PreparedMutationGuard,
+	) {
 		this.#trace = trace;
 		this.#parallelToolNames = parallelToolNames;
+		this.#previewChanges = previewChanges;
+		this.#preparedGuard = preparedGuard;
+	}
+
+	async prepare(): Promise<PreparedToolCall> {
+		return Object.freeze({
+			fileChanges: this.#previewChanges,
+			...(this.#preparedGuard ? { mutationGuard: this.#preparedGuard } : {}),
+		});
+	}
+
+	async preview(): Promise<readonly FileMutationPreviewChange[]> {
+		return this.#previewChanges;
 	}
 
 	supportsParallelToolCalls(call: CanonicalToolCall): boolean {
@@ -3485,6 +4119,7 @@ class ControlledToolRouter implements ToolRouterContract {
 	}>();
 	readonly #startedWaiters: Array<{ readonly count: number; resolve(): void }> = [];
 	readonly startedCallIds: string[] = [];
+	readonly executionOptionsByCallId = new Map<string, ToolExecutionOptions>();
 
 	constructor(trace: string[], parallelToolNames: ReadonlySet<string>) {
 		this.#trace = trace;
@@ -3497,6 +4132,7 @@ class ControlledToolRouter implements ToolRouterContract {
 
 	async execute(call: CanonicalToolCall, options: ToolExecutionOptions): Promise<ToolExecutionResult> {
 		this.startedCallIds.push(call.callId);
+		this.executionOptionsByCallId.set(call.callId, options);
 		this.#trace.push(`tool:start:${call.callId}`);
 		this.#resolveStartedWaiters();
 		return await new Promise<ToolExecutionResult>((resolve, reject) => {
@@ -3675,6 +4311,26 @@ function clockSequence(): () => string {
 
 const READ_ARGUMENTS = "{\"file_path\":\"README.md\",\"offset\":1,\"limit\":20}";
 const WRITE_ARGUMENTS = "{\"file_path\":\"notes.txt\",\"content\":\"hello\"}";
+const WRITE_PREVIEW_CHANGES = Object.freeze([Object.freeze({
+	version: 1 as const,
+	kind: "add" as const,
+	path: "notes.txt",
+	diff: "--- notes.txt:before\n+++ notes.txt:after\n@@ -0,0 +1 @@\n+hello\n",
+	addedLines: 1,
+	removedLines: 0,
+	truncated: false,
+	omittedChars: 0,
+})]);
+const WRITE_PREPARED_GUARD: PreparedMutationGuard = Object.freeze({
+	version: 1,
+	mutationId: "a".repeat(64),
+	intentSha256: "b".repeat(64),
+	targets: Object.freeze([Object.freeze({
+		pathSha256: "c".repeat(64),
+		existed: false,
+		resultSha256: "d".repeat(64),
+	})]),
+});
 const READ_OUTPUT = "Read succeeded\nPath: README.md";
 const CALL: CanonicalToolCall = {
 	callId: "call-1",

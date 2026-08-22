@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { NodeRuntimeConfig } from "@mycli/config";
 import {
 	AgentBudgetExhaustedError,
@@ -32,24 +31,27 @@ import type {
 	ApprovalPolicyDecision,
 	ExecutionPolicy,
 	PermissionProfile,
+	PreparedMutationGuard,
+	PreparedToolCall,
 	ToolExecutionResult,
 	ToolRouterContract,
+} from "@mycli/tools";
+import {
+	fileMutationApprovalPreview,
+	toolCallRequestsSandboxOverride,
 } from "@mycli/tools";
 import {
 	StorageFailure,
 } from "@mycli/storage";
 import type {
 	AgentRuntimeCheckpoint,
+	AgentEffectLedgerStore,
 	AppendContextItemInput,
 	ModelInputLedgerStore,
 	TurnReservation,
 	TurnStore,
 } from "@mycli/storage";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import {
-	decideRetry,
-	sleepWithSignal,
-} from "./retry-policy.ts";
 import type { QueueCoordinator } from "./queue-coordinator.ts";
 import type {
 	ApprovalChoice,
@@ -85,8 +87,13 @@ import type {
 	RuntimeHookContext,
 	TurnContextSources,
 } from "./instruction-context.ts";
-import { commitRuntimeProviderStep } from "./model-input-pipeline.ts";
+import { collaborationModeDeveloperInstruction } from "./collaboration-mode.ts";
 import type { TokenCounter } from "./token-counter.ts";
+import { NodeTurnCoordinatorBroker } from "./node-turn-coordinator-broker.ts";
+import {
+	InProcessProviderStepExecutor,
+} from "./provider-step-executor.ts";
+import type { ProviderStepExecutor } from "./provider-step-executor.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -107,6 +114,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly developerInstructions?: readonly string[];
 	readonly resolveInstructionSnapshot?: () => InstructionSnapshot;
 	readonly modelInputLedger?: ModelInputLedgerStore;
+	readonly agentEffectLedger?: AgentEffectLedgerStore;
 	readonly modelInputTokenCounter?: TokenCounter;
 	readonly contextSources?: (input: RuntimeContextSourceInput) => TurnContextSources;
 	readonly createModelInputId?: (
@@ -118,6 +126,7 @@ export interface NodeTurnRuntimeOptions {
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
 	readonly createProvider: (config: NodeRuntimeConfig) => ModelProvider;
+	readonly providerStepExecutor?: ProviderStepExecutor;
 	readonly loadLocalImages: (paths: readonly string[]) => readonly CanonicalImage[];
 	readonly createTurnId: () => string;
 	readonly clock: () => string;
@@ -169,6 +178,12 @@ export interface ApprovalPolicyContract {
 		executionPolicy?: ExecutionPolicy,
 		turnId?: string,
 	): ApprovalPolicyDecision | Promise<ApprovalPolicyDecision>;
+	recordResult?(
+		call: CanonicalToolCall,
+		result: ToolExecutionResult,
+		executionPolicy?: ExecutionPolicy,
+		turnId?: string,
+	): void;
 	configurePermissionProfile?(profile: PermissionProfile): void;
 }
 
@@ -189,6 +204,7 @@ export interface ApprovalContinuationContract {
 export interface ClarificationContinuationContract {
 	suspend(input: ClarificationSuspensionInput): PendingClarificationContinuation;
 	pending(): PendingClarificationContinuation | undefined;
+	cancel(input: { readonly requestId: string }): PendingClarificationContinuation;
 	resolve(input: {
 		readonly requestId: string;
 		readonly response: string;
@@ -272,6 +288,7 @@ interface TurnExecutionContext {
 	readonly instructions: string;
 	readonly instructionSnapshot: InstructionSnapshot;
 	readonly tools: readonly ToolDefinition[];
+	readonly collaborationMode: string;
 	readonly executionPolicy?: ExecutionPolicy;
 	readonly requestConfig: ProviderRequestConfig;
 	readonly emit: (event: RuntimeEvent) => void;
@@ -291,6 +308,7 @@ interface PreparedParallelToolCall {
 	readonly index: number;
 	readonly call: CanonicalToolCall;
 	readonly executionCall: CanonicalToolCall;
+	readonly sandboxOverrideApproved: boolean;
 }
 
 interface ProviderLoopState {
@@ -339,7 +357,11 @@ export class NodeTurnRuntime {
 	readonly #options: NodeTurnRuntimeOptions;
 	readonly #fallbackInstructionSnapshot: InstructionSnapshot;
 	readonly #agentBudget: AgentBudgetState;
+	readonly #coordinatorBroker: NodeTurnCoordinatorBroker | undefined;
+	readonly #defaultProviderStepExecutor: ProviderStepExecutor;
+	#providerStepExecutor: ProviderStepExecutor;
 	#collaborationMode = "default";
+	readonly #collaborationModeByTurn = new Map<string, string>();
 	#executionPolicyConfiguration: ExecutionPolicyConfiguration | undefined;
 	readonly queueCoordinator: QueueCoordinator | undefined;
 	readonly #activeToolExecutions = new Map<string, Map<string, ActiveToolExecution>>();
@@ -369,7 +391,28 @@ export class NodeTurnRuntime {
 			tokens: 0,
 			noProgressTurns: 0,
 		};
+		this.#coordinatorBroker = options.modelInputLedger
+			? new NodeTurnCoordinatorBroker({
+				sessionId: options.sessionId,
+				ledger: options.modelInputLedger,
+				...(options.agentEffectLedger ? { effectLedger: options.agentEffectLedger } : {}),
+				clock: options.clock,
+				...(options.createModelInputId ? { createId: options.createModelInputId } : {}),
+			})
+			: undefined;
+		this.#defaultProviderStepExecutor = options.providerStepExecutor
+			?? new InProcessProviderStepExecutor();
+		this.#providerStepExecutor = this.#defaultProviderStepExecutor;
 		this.queueCoordinator = options.queueCoordinator;
+	}
+
+	bindProviderStepExecutor(executor: ProviderStepExecutor | undefined): void {
+		this.#providerStepExecutor = executor ?? this.#defaultProviderStepExecutor;
+	}
+
+	continuationTurnId(): string | undefined {
+		return this.#options.clarificationCoordinator?.pending()?.turnId
+			?? this.#options.approvalCoordinator?.pending()?.turnId;
 	}
 
 	agentBudgetExhaustion(): AgentBudgetExhaustionKind | undefined {
@@ -386,11 +429,21 @@ export class NodeTurnRuntime {
 		this.#options.toolRouter?.finishTurn?.(turnId);
 		this.#options.approvalPolicy?.finishTurn?.(turnId);
 		this.#options.executionPolicyCoordinator?.finishTurn(turnId);
+		this.#collaborationModeByTurn.delete(turnId);
 	}
 
-	configureRuntimeContext(input: { readonly collaborationMode: string }): void {
+	configureRuntimeContext(input: {
+		readonly collaborationMode: string;
+		readonly turnId?: string;
+	}): void {
 		const mode = input.collaborationMode.trim();
 		if (!mode || mode.length > 64) throw new TypeError("collaboration mode is invalid");
+		if (input.turnId !== undefined) {
+			const turnId = input.turnId.trim();
+			if (!turnId || turnId.length > 256) throw new TypeError("turn id is invalid");
+			this.#collaborationModeByTurn.set(turnId, mode);
+			return;
+		}
 		this.#collaborationMode = mode;
 	}
 
@@ -483,6 +536,12 @@ export class NodeTurnRuntime {
 			throw new StorageFailure("approval interruption returned a different turn");
 		}
 		if (!interrupted) {
+			const clarificationCoordinator = this.#options.clarificationCoordinator;
+			const pendingClarification = clarificationCoordinator?.pending();
+			if (pendingClarification?.clientTurnId === input.clientTurnId
+				&& pendingClarification.turnId === input.turnId) {
+				clarificationCoordinator?.cancel({ requestId: pendingClarification.requestId });
+			}
 			const pendingApproval = approvalCoordinator?.pending();
 			if (pendingApproval?.clientTurnId === input.clientTurnId
 				&& pendingApproval.turnId === input.turnId) {
@@ -683,6 +742,8 @@ export class NodeTurnRuntime {
 		expectedProtocol?: NodeRuntimeConfig["protocol"],
 	): Promise<TurnExecutionContext> {
 		assertNotAborted(signal);
+		const collaborationMode = this.#collaborationModeByTurn.get(turnId) ?? this.#collaborationMode;
+		this.#collaborationModeByTurn.set(turnId, collaborationMode);
 		const turnPolicy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
 		this.#options.toolRouter?.beginTurn?.(turnId);
 		this.#options.approvalPolicy?.beginTurn?.(turnId);
@@ -707,6 +768,7 @@ export class NodeTurnRuntime {
 			instructionSnapshot,
 			hookContexts: new HookContextAccumulator(),
 			tools,
+			collaborationMode,
 			...(turnPolicy ? { executionPolicy: turnPolicy.profile } : {}),
 			requestConfig: {
 				provider: config.provider,
@@ -718,9 +780,10 @@ export class NodeTurnRuntime {
 					? { promptCacheKey: this.#options.sessionId }
 					: {}),
 				...(config.cacheControlEnabled ? { cacheControlEnabled: true } : {}),
-				...(this.#options.maxOutputTokens === undefined
+				...((this.#options.maxOutputTokens ?? config.maxOutputTokens) === undefined
 					? {}
-					: { maxOutputTokens: this.#options.maxOutputTokens }),
+					: { maxOutputTokens: this.#options.maxOutputTokens ?? config.maxOutputTokens }),
+				...(config.store === undefined ? {} : { store: config.store }),
 			},
 			emit,
 			signal,
@@ -750,6 +813,7 @@ export class NodeTurnRuntime {
 			provider,
 			instructions,
 			tools: initialTools,
+			collaborationMode,
 			requestConfig,
 			emit,
 			signal,
@@ -763,9 +827,14 @@ export class NodeTurnRuntime {
 		const freshItemIds = new Set(initial.freshItemIds);
 		let preTurnCompactionChecked = initial.preTurnCompactionChecked ?? false;
 		let compactionEntered = initial.compactionEntered ?? false;
+		const developerInstructions = Object.freeze([
+			...(this.#options.developerInstructions ?? []),
+			collaborationModeDeveloperInstruction(collaborationMode),
+		]);
 		let memoryCollected = false;
 		let memoryItem: Extract<CanonicalConversationItem, { readonly type: "user" }> | undefined;
 		while (true) {
+			let completedToolBatch = false;
 			const wallClockExhausted = this.#wallClockExhausted();
 			if (wallClockExhausted) {
 				return this.#finalizeAgentBudget(context, wallClockExhausted);
@@ -780,10 +849,12 @@ export class NodeTurnRuntime {
 						context,
 						pendingBatch,
 						accumulatedUsage,
+						tools,
 					);
 					if (suspended) return suspended;
 					history = this.#options.store.loadConversationItems(this.#options.sessionId);
 					pendingBatch = undefined;
+					completedToolBatch = true;
 					assertNotAborted(signal);
 					const refreshedTools = this.#toolExposureForTurn(tools, turnId);
 					if (!sameToolExposure(tools, refreshedTools)) {
@@ -802,16 +873,16 @@ export class NodeTurnRuntime {
 			}
 			try {
 				assertNotAborted(signal);
-					const committed = this.queueCoordinator?.commitPending(turnId) ?? [];
-					if (committed.length > 0) {
-						if (!config.supportsImages
-							&& committed.some((record) => record.imagePaths.length > 0)) {
-							return await this.#finalizeFailure(
-								submission,
-								unsupportedImageFailure(),
-								emit,
-							);
-						}
+				const committed = this.queueCoordinator?.commitPending(turnId) ?? [];
+				if (committed.length > 0) {
+					if (!config.supportsImages
+						&& committed.some((record) => record.imagePaths.length > 0)) {
+						return await this.#finalizeFailure(
+							submission,
+							unsupportedImageFailure(),
+							emit,
+						);
+					}
 					for (const record of committed) {
 						freshItemIds.add(`${turnId}:queue:${record.queueId}`);
 						if (record.source !== "task_notification" && record.source !== "agent_mailbox") {
@@ -854,7 +925,6 @@ export class NodeTurnRuntime {
 						emit,
 					);
 				}
-				compactionEntered = compacted.status !== "not_needed";
 				if (compacted.status !== "not_needed") {
 					const invalidation = this.#invalidateProviderContinuation("compacted_history");
 					if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
@@ -869,6 +939,38 @@ export class NodeTurnRuntime {
 				if (compacted.status === "compressed") {
 					history = compacted.providerConversation;
 					previousResponseId = undefined;
+					freshItemIds.clear();
+				}
+			}
+			if (completedToolBatch && context.compactionCoordinator) {
+				let compacted: CompactionResult;
+				try {
+					compacted = await this.#compactContext(
+						context,
+						"mid_turn",
+						history,
+						freshItemIds,
+					);
+				} catch (error) {
+					return this.#finalizeFailure(
+						submission,
+						normalizeFailure(error, signal, "persistence_error"),
+						emit,
+					);
+				}
+				if (compacted.status === "interrupted") {
+					return this.#finalizeFailure(submission, {
+						code: "interrupted",
+						message: "turn interrupted",
+						retryable: false,
+					}, emit);
+				}
+				if (compacted.status === "compressed") {
+					const invalidation = this.#invalidateProviderContinuation("compacted_history");
+					if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
+					history = compacted.providerConversation;
+					previousResponseId = undefined;
+					freshItemIds.clear();
 				}
 			}
 			if (!memoryCollected) {
@@ -882,8 +984,9 @@ export class NodeTurnRuntime {
 			let requestSignature: string;
 			let durableRequestId: string | undefined;
 			let durableProviderStep: number | undefined;
+			let durableTimelineWindowId: string | undefined;
 			let logicalRequest: ProviderRequest;
-			if (this.#options.modelInputLedger) {
+			if (this.#coordinatorBroker) {
 				try {
 					const hookContexts = context.hookContexts.snapshot();
 					const collectedSources = this.#options.contextSources?.({
@@ -894,9 +997,8 @@ export class NodeTurnRuntime {
 						hooks: hookContexts,
 						...(memoryItem ? { memory: [memoryItem.text] } : {}),
 					}) ?? {};
-					const providerStep = this.#nextDurableProviderStep(turnId);
-					const committed = commitRuntimeProviderStep({
-						sessionId: this.#options.sessionId,
+					const providerStep = this.#coordinatorBroker.nextProviderStep(turnId);
+					const committed = this.#coordinatorBroker.commitProviderStep({
 						turnId,
 						providerStep,
 						requestConfig,
@@ -909,16 +1011,11 @@ export class NodeTurnRuntime {
 							hooks: hookContexts,
 							memory: memoryItem ? [memoryItem.text] : [],
 							developerInstructions: this.#options.developerInstructions ?? [],
-							collaborationMode: this.#collaborationMode,
+							collaborationMode,
 							executionPolicy: context.executionPolicy,
 							executionPolicyConfiguration: this.#executionPolicyConfiguration,
 						}),
-						ledger: this.#options.modelInputLedger,
 						maxPromptTokens: config.maxPromptTokens,
-						clock: this.#options.clock,
-						...(this.#options.createModelInputId
-							? { createId: this.#options.createModelInputId }
-							: {}),
 						...(this.#options.modelInputTokenCounter
 							? { tokenCounter: this.#options.modelInputTokenCounter }
 							: {}),
@@ -926,6 +1023,7 @@ export class NodeTurnRuntime {
 					requestSignature = committed.requestSignature;
 					durableRequestId = committed.manifest.requestId;
 					durableProviderStep = committed.manifest.providerStep;
+					durableTimelineWindowId = committed.manifest.timelineWindowId;
 					logicalRequest = committed.request;
 				} catch (error) {
 					return this.#finalizeFailure(
@@ -941,17 +1039,13 @@ export class NodeTurnRuntime {
 				requestSignature = buildProviderRequestSignature({
 					...requestConfig,
 					instructions,
-					...(this.#options.developerInstructions
-						? { developerInstructions: this.#options.developerInstructions }
-						: {}),
+					developerInstructions,
 					tools,
 				});
 				logicalRequest = projectProviderRequest({
 					config: requestConfig,
 					instructions,
-					...(this.#options.developerInstructions
-						? { developerInstructions: this.#options.developerInstructions }
-						: {}),
+					developerInstructions,
 					history: providerHistory,
 					tools,
 				});
@@ -974,7 +1068,7 @@ export class NodeTurnRuntime {
 					turnId,
 				});
 				if (durableRequestId) {
-					this.#appendProviderStepLifecycle(durableRequestId, "dispatch_started", {
+					this.#coordinatorBroker?.recordProviderStep(durableRequestId, "dispatch_started", {
 						provider_step: durableProviderStep ?? this.#agentBudget.providerSteps,
 						continuation: continuation !== undefined,
 					});
@@ -986,21 +1080,26 @@ export class NodeTurnRuntime {
 					emit,
 				);
 			}
-			const stepResult = await this.#streamWithRetry(
+			const rawStepResult = await this.#providerStepExecutor.execute({
+				config,
 				provider,
 				request,
-				config.streamMaxRetries,
+				timelineWindowId: durableTimelineWindowId ?? turnId,
+				timelineVersion: durableProviderStep ?? this.#agentBudget.providerSteps,
+				maxRetries: config.streamMaxRetries,
 				emit,
 				signal,
-				Boolean(this.#options.toolRouter),
-			);
-			if ("failure" in stepResult) {
+				toolCallsAllowed: Boolean(this.#options.toolRouter),
+				...(this.#options.sleep ? { sleep: this.#options.sleep } : {}),
+				...(this.#options.random ? { random: this.#options.random } : {}),
+			});
+			if ("failure" in rawStepResult) {
 				if (durableRequestId) {
 					try {
-						this.#appendProviderStepLifecycle(durableRequestId, "failed", {
-							code: stepResult.failure.code,
-							retryable: stepResult.failure.retryable,
-							events_observed: stepResult.eventsObserved,
+						this.#coordinatorBroker?.recordProviderStep(durableRequestId, "failed", {
+							code: rawStepResult.failure.code,
+							retryable: rawStepResult.failure.retryable,
+							events_observed: rawStepResult.eventsObserved,
 						});
 					} catch (error) {
 						return this.#finalizeFailure(
@@ -1013,8 +1112,8 @@ export class NodeTurnRuntime {
 				const invalidation = this.#invalidateProviderContinuation("provider_rejected");
 				if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
 				if (
-					stepResult.failure.code === "context_window_exceeded"
-					&& stepResult.eventsObserved === 0
+					rawStepResult.failure.code === "context_window_exceeded"
+					&& rawStepResult.eventsObserved === 0
 					&& !compactionEntered
 					&& context.compactionCoordinator
 				) {
@@ -1050,14 +1149,19 @@ export class NodeTurnRuntime {
 					if (compacted.status === "compressed") {
 						history = compacted.providerConversation;
 						previousResponseId = undefined;
+						freshItemIds.clear();
 						continue;
 					}
 				}
-				return this.#finalizeFailure(submission, stepResult.failure, emit);
+				return this.#finalizeFailure(submission, rawStepResult.failure, emit);
+			}
+			const stepResult = providerStepWithReplayTokenEstimate(rawStepResult);
+			if (Object.keys(stepResult.usage).length > 0) {
+				emit({ type: "provider_usage", usage: Object.freeze({ ...stepResult.usage }) });
 			}
 			if (durableRequestId) {
 				try {
-					this.#appendProviderStepLifecycle(durableRequestId, "acknowledged", {
+					this.#coordinatorBroker?.recordProviderStep(durableRequestId, "acknowledged", {
 						tool_call_count: stepResult.toolCalls.length,
 						response_id_present: stepResult.responseId !== undefined,
 					});
@@ -1068,16 +1172,6 @@ export class NodeTurnRuntime {
 						emit,
 					);
 				}
-			}
-			const continuationFailure = this.#recordSafeProviderCompletion({
-				requestConfig,
-				requestSignature,
-				historyBoundary: turnId,
-				requestInput: logicalRequest.items ?? history,
-				stepResult,
-			});
-			if (continuationFailure) {
-				return this.#finalizeFailure(submission, continuationFailure, emit);
 			}
 			accumulatedUsage = addUsage(accumulatedUsage, stepResult.usage);
 			this.#agentBudget.tokens = usageTokenTotal(accumulatedUsage);
@@ -1099,7 +1193,11 @@ export class NodeTurnRuntime {
 					continue;
 				}
 				this.#agentBudget.noProgressTurns = 0;
-				return this.#finalizePreparedTurn(context, stepResult, accumulatedUsage);
+				return this.#finalizePreparedTurn(context, stepResult, accumulatedUsage, {
+					requestConfig,
+					requestSignature,
+					requestInput: logicalRequest.items ?? history,
+				});
 			}
 			this.#agentBudget.noProgressTurns = 0;
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
@@ -1109,11 +1207,6 @@ export class NodeTurnRuntime {
 			if (config.protocol === "responses" && !stepResult.responseId) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
-			const exposedToolNames = new Set(tools.map((tool) => tool.name));
-			if (stepResult.toolCalls.some((call) => !exposedToolNames.has(call.name))) {
-				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
-			}
-
 			if (!this.#options.toolRouter) {
 				return this.#finalizeFailure(submission, unsupportedToolFailure(), emit);
 			}
@@ -1132,6 +1225,16 @@ export class NodeTurnRuntime {
 					...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
 						...(stepResult.providerState ? { providerState: stepResult.providerState } : {}),
 					});
+					const continuationFailure = this.#recordSafeProviderCompletion({
+						requestConfig,
+						requestSignature,
+						historyBoundary: turnId,
+						requestInput: logicalRequest.items ?? history,
+						stepResult,
+					});
+					if (continuationFailure) {
+						return this.#finalizeFailure(submission, continuationFailure, emit);
+					}
 					this.#options.agentCheckpoint?.({
 						kind: "provider_turn",
 						committed: true,
@@ -1174,42 +1277,20 @@ export class NodeTurnRuntime {
 		const additions = deferredTools.filter(
 			(tool) => activated.has(tool.name) && !existing.has(tool.name),
 		);
-		return additions.length === 0 ? baseTools : Object.freeze([...baseTools, ...additions]);
-	}
-
-	#appendProviderStepLifecycle(
-		requestId: string,
-		state: "dispatch_started" | "acknowledged" | "failed" | "unknown",
-		payload: Readonly<Record<string, string | number | boolean | null>>,
-	): void {
-		const ledger = this.#options.modelInputLedger;
-		if (!ledger) throw new StorageFailure("model-input ledger is not configured");
-		ledger.appendProviderStepEvent({
-			eventId: this.#options.createModelInputId?.("lifecycle")
-				?? `lifecycle-${randomUUID()}`,
-			requestId,
-			sessionId: this.#options.sessionId,
-			state,
-			payload,
-			createdAt: this.#options.clock(),
-		});
-	}
-
-	#nextDurableProviderStep(turnId: string): number {
-		const latest = this.#options.modelInputLedger?.loadLatestProviderRequestManifest(
-			this.#options.sessionId,
-		);
-		if (!latest || latest.turnId !== turnId) return 1;
-		if (!Number.isSafeInteger(latest.providerStep) || latest.providerStep >= Number.MAX_SAFE_INTEGER) {
-			throw new StorageFailure("provider step sequence is exhausted");
-		}
-		return latest.providerStep + 1;
+		return additions.length === 0
+			? baseTools
+			: Object.freeze([...baseTools, ...additions]);
 	}
 
 	async #finalizePreparedTurn(
 		context: TurnExecutionContext,
 		stepResult: ProviderStepResult,
 		accumulatedUsage: ProviderUsage,
+		continuation: Readonly<{
+			readonly requestConfig: ProviderRequestConfig;
+			readonly requestSignature: string;
+			readonly requestInput: readonly CanonicalConversationItem[];
+		}>,
 	): Promise<RuntimeTurnRecord> {
 		const { submission, turnId, config, emit, signal } = context;
 		try {
@@ -1236,6 +1317,7 @@ export class NodeTurnRuntime {
 			emit,
 			signal,
 			config.memoryEnabled,
+			continuation,
 		);
 	}
 
@@ -1301,7 +1383,7 @@ export class NodeTurnRuntime {
 
 	#compactContext(
 		context: TurnExecutionContext,
-		source: "pre_turn" | "context_overflow",
+		source: "pre_turn" | "mid_turn" | "context_overflow",
 		conversation: readonly CanonicalConversationItem[],
 		freshItemIds: ReadonlySet<string>,
 	): Promise<CompactionResult> {
@@ -1312,7 +1394,7 @@ export class NodeTurnRuntime {
 			turnId: context.turnId,
 			source,
 			conversation,
-			freshItemIds,
+			freshItemIds: new Set(freshItemIds),
 			emit: context.emit,
 			signal: context.signal,
 		});
@@ -1341,10 +1423,12 @@ export class NodeTurnRuntime {
 		context: TurnExecutionContext,
 		batch: PendingToolBatch,
 		accumulatedUsage: ProviderUsage,
+		exposedTools: readonly ToolDefinition[],
 	): Promise<RuntimeTurnRecord | undefined> {
 		const { submission, turnId, config, emit, signal } = context;
 		const deferredContextItems: Array<Omit<AppendContextItemInput, "sessionId">> = [];
 		const pendingParallelCalls: PreparedParallelToolCall[] = [];
+		const exposedToolNames = new Set(exposedTools.map((tool) => tool.name));
 		const flushParallelCalls = async (): Promise<RuntimeTurnRecord | undefined> => {
 			if (pendingParallelCalls.length === 0) return undefined;
 			const phase = pendingParallelCalls.splice(0);
@@ -1371,6 +1455,42 @@ export class NodeTurnRuntime {
 			const wallClockExhausted = this.#wallClockExhausted();
 			if (wallClockExhausted) throw new AgentBudgetExhaustedError(wallClockExhausted);
 			assertNotAborted(signal);
+			if (!exposedToolNames.has(call.name)) {
+				const earlierSuspension = await flushParallelCalls();
+				if (earlierSuspension) return earlierSuspension;
+				const suspended = await this.#applyToolExecutionResult({
+					context,
+					batch,
+					accumulatedUsage,
+					deferredContextItems,
+					index,
+					call,
+					executionCall: call,
+					result: unsupportedToolResult(call),
+					executed: false,
+					allowClarification: false,
+				});
+				if (suspended) return suspended;
+				continue;
+			}
+			if (context.collaborationMode === "plan" && call.name === "update_plan") {
+				const earlierSuspension = await flushParallelCalls();
+				if (earlierSuspension) return earlierSuspension;
+				const suspended = await this.#applyToolExecutionResult({
+					context,
+					batch,
+					accumulatedUsage,
+					deferredContextItems,
+					index,
+					call,
+					executionCall: call,
+					result: planModeUpdatePlanResult(call),
+					executed: false,
+					allowClarification: false,
+				});
+				if (suspended) return suspended;
+				continue;
+			}
 			if (!this.#supportsParallelToolCall(call, context.turnId)) {
 				const earlierSuspension = await flushParallelCalls();
 				if (earlierSuspension) return earlierSuspension;
@@ -1383,6 +1503,12 @@ export class NodeTurnRuntime {
 			if (policy?.kind === "request") {
 				const earlierSuspension = await flushParallelCalls();
 				if (earlierSuspension) return earlierSuspension;
+				const preparation = await this.#emitFileMutationStarted(
+					call,
+					policy.preview,
+					context,
+					toolCallRequestsSandboxOverride(call),
+				);
 				const coordinator = this.#options.approvalCoordinator;
 				if (!coordinator) {
 					throw new ProviderFailure({
@@ -1411,6 +1537,9 @@ export class NodeTurnRuntime {
 					...(policy.proposedExecPolicyPattern ? {
 						proposedExecPolicyPattern: policy.proposedExecPolicyPattern,
 					} : {}),
+					...(preparation?.mutationGuard ? {
+						preparedMutationGuard: preparation.mutationGuard,
+					} : {}),
 				});
 				emit({
 					type: "approval_requested",
@@ -1422,6 +1551,7 @@ export class NodeTurnRuntime {
 					preview: pending.preview,
 					reason: pending.reason,
 					options: pending.options,
+					...fileMutationApprovalPreview(pending.call),
 				});
 				const running = this.#runningTurn(pending.clientTurnId);
 				await this.#writeTerminalSnapshot(running);
@@ -1446,6 +1576,11 @@ export class NodeTurnRuntime {
 			if (policy?.kind === "deny" || blockedByHook) {
 				const earlierSuspension = await flushParallelCalls();
 				if (earlierSuspension) return earlierSuspension;
+				await this.#emitFileMutationStarted(
+					executionCall,
+					sameToolCall(call, executionCall) ? policy?.preview : undefined,
+					context,
+				);
 				const result = policy?.kind === "deny"
 					? policyDeniedResult(call, policy)
 					: blockedByHook!;
@@ -1465,19 +1600,38 @@ export class NodeTurnRuntime {
 				continue;
 			}
 
-				if (this.#supportsParallelToolCall(executionCall, context.turnId)) {
-				pendingParallelCalls.push({ index, call, executionCall });
+			const sandboxOverrideApproved = policy?.kind === "allow"
+				&& policy.sandboxOverrideApproved === true
+				&& sameToolCall(call, executionCall);
+			if (this.#supportsParallelToolCall(executionCall, context.turnId)) {
+				await this.#emitFileMutationStarted(
+					executionCall,
+					sameToolCall(call, executionCall) ? policy?.preview : undefined,
+					context,
+					sandboxOverrideApproved,
+				);
+				pendingParallelCalls.push({
+					index,
+					call,
+					executionCall,
+					sandboxOverrideApproved,
+				});
 				continue;
 			}
 
 			const earlierSuspension = await flushParallelCalls();
 			if (earlierSuspension) return earlierSuspension;
+			const preparation = await this.#emitFileMutationStarted(
+				executionCall,
+				sameToolCall(call, executionCall) ? policy?.preview : undefined,
+				context,
+				sandboxOverrideApproved,
+			);
 			const result = await this.#executeTool(
 				executionCall,
 				context,
-				policy?.kind === "allow"
-					&& policy.sandboxOverrideApproved === true
-					&& sameToolCall(call, executionCall),
+				sandboxOverrideApproved,
+				preparation?.mutationGuard,
 			);
 			const suspended = await this.#applyToolExecutionResult({
 				context,
@@ -1499,6 +1653,42 @@ export class NodeTurnRuntime {
 		return undefined;
 	}
 
+	async #emitFileMutationStarted(
+		call: CanonicalToolCall,
+		preview: string | undefined,
+		context: TurnExecutionContext,
+		sandboxOverrideApproved = false,
+	): Promise<PreparedToolCall | undefined> {
+		const details = fileMutationApprovalPreview(call);
+		const previewOptions = {
+			signal: context.signal,
+			ownerTurnId: context.turnId,
+			...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
+			...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+		};
+		const prepared: PreparedToolCall = this.#options.toolRouter?.prepare
+			? await this.#options.toolRouter.prepare(call, previewOptions)
+			: Object.freeze({
+				fileChanges: await this.#options.toolRouter?.preview?.(call, previewOptions)
+					?? Object.freeze([]),
+			});
+		const fileChanges = prepared.fileChanges;
+		if (details.contentPreview === undefined && details.diff === undefined && fileChanges.length === 0) {
+			return prepared.mutationGuard ? prepared : undefined;
+		}
+		context.emit({
+			type: "file_mutation_started",
+			clientTurnId: context.submission.clientTurnId,
+			turnId: context.turnId,
+			callId: boundedCallId(call.callId),
+			toolName: boundedToolName(call.name),
+			preview: (preview?.trim() || boundedToolName(call.name)).slice(0, 512),
+			...details,
+			...(fileChanges.length > 0 ? { fileChanges } : {}),
+		});
+		return prepared;
+	}
+
 	#supportsParallelToolCall(call: CanonicalToolCall, turnId: string): boolean {
 		try {
 			return this.#options.toolRouter?.supportsParallelToolCalls?.(call, turnId) === true;
@@ -1518,7 +1708,11 @@ export class NodeTurnRuntime {
 		});
 		try {
 			const outcomes = await Promise.all(phase.map(async (prepared) => (
-				await this.#runTool(prepared.executionCall, phaseContext)
+				await this.#runTool(
+					prepared.executionCall,
+					phaseContext,
+					prepared.sandboxOverrideApproved,
+				)
 			)));
 			if (outcomes.some((outcome) => clarificationRequest(outcome.result) !== undefined)) {
 				throw new ProviderFailure({
@@ -1614,6 +1808,14 @@ export class NodeTurnRuntime {
 
 		const contextItem = this.#persistToolResult(submission.clientTurnId, turnId, result);
 		if (contextItem) deferredContextItems.push(contextItem);
+		if (executed) {
+			this.#options.approvalPolicy?.recordResult?.(
+				executionCall,
+				result,
+				context.executionPolicy,
+				turnId,
+			);
+		}
 		if (result.success && result.planUpdate) {
 			emit({
 				type: "plan_updated",
@@ -1690,8 +1892,14 @@ export class NodeTurnRuntime {
 		call: CanonicalToolCall,
 		context: TurnExecutionContext,
 		sandboxOverrideApproved = false,
+		preparedMutationGuard?: PreparedMutationGuard,
 	): Promise<ToolExecutionResult> {
-		const outcome = await this.#runTool(call, context, sandboxOverrideApproved);
+		const outcome = await this.#runTool(
+			call,
+			context,
+			sandboxOverrideApproved,
+			preparedMutationGuard,
+		);
 		this.#completeToolExecution(outcome.active, outcome.result, context.emit);
 		return outcome.result;
 	}
@@ -1700,6 +1908,7 @@ export class NodeTurnRuntime {
 		call: CanonicalToolCall,
 		context: TurnExecutionContext,
 		sandboxOverrideApproved = false,
+		preparedMutationGuard?: PreparedMutationGuard,
 	): Promise<PendingToolExecutionResult> {
 		const { emit, signal } = context;
 		const router = this.#options.toolRouter;
@@ -1708,24 +1917,25 @@ export class NodeTurnRuntime {
 			message: "tool execution is not configured",
 		});
 		assertNotAborted(signal);
+		const mutating = this.#options.isMutatingTool?.(call.name) ?? true;
 		this.#options.agentCheckpoint?.({
 			kind: "tool_call",
 			committed: false,
 			turnId: context.turnId,
 			callId: call.callId,
-			mutating: this.#options.isMutatingTool?.(call.name) ?? true,
+			mutating,
 		});
 		const activeTool = this.#beginToolExecution(
 			context.turnId,
 			call.callId,
 			call.name,
-			"tool_interrupted",
+			mutating ? "effect_outcome_unknown" : "tool_interrupted",
 			emit,
 		);
 		const executionSignal = AbortSignal.any([signal, activeTool.abortController.signal]);
 		let result: ToolExecutionResult;
 		try {
-			result = await router.execute(call, {
+			const execute = async (): Promise<ToolExecutionResult> => await router.execute(call, {
 				signal: executionSignal,
 				ownerSessionId: this.#options.sessionId,
 				ownerTurnId: context.turnId,
@@ -1733,7 +1943,25 @@ export class NodeTurnRuntime {
 				publishLifecycle: this.#options.publishLifecycle,
 				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
 				...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+				...(preparedMutationGuard ? { preparedMutationGuard } : {}),
 			});
+			if (this.#coordinatorBroker && this.#options.agentEffectLedger) {
+				const attempt = await this.#coordinatorBroker.executeTool({
+					attemptId: `attempt-${modelInputSha256({
+						session_id: this.#options.sessionId,
+						turn_id: context.turnId,
+						call_id: call.callId,
+					})}`,
+					jobId: context.turnId,
+					turnId: context.turnId,
+					base: { windowId: context.turnId, version: this.#agentBudget.toolCalls },
+					call,
+					mutating,
+				}, execute);
+				result = attempt.result;
+			} else {
+				result = await execute();
+			}
 			assertNotAborted(executionSignal);
 		} catch (error) {
 			if (executionSignal.aborted || (error instanceof Error && error.name === "AbortError")) {
@@ -1881,137 +2109,6 @@ export class NodeTurnRuntime {
 		return turn;
 	}
 
-	async #streamWithRetry(
-		provider: ModelProvider,
-		request: ProviderRequest,
-		maxRetries: number,
-		emit: (event: RuntimeEvent) => void,
-		signal: AbortSignal,
-		toolCallsAllowed: boolean,
-	): Promise<ProviderStepResult | {
-		readonly failure: NormalizedFailure;
-		readonly eventsObserved: number;
-	}> {
-		let retriesUsed = 0;
-		while (true) {
-			let eventsObserved = 0;
-			let assistantText = "";
-			let usage: ProviderUsage = {};
-			let responseId: string | undefined;
-			let providerState: ProviderReplayState | undefined;
-			const toolCalls: CanonicalToolCall[] = [];
-			let completed = false;
-			try {
-				assertNotAborted(signal);
-				for await (const event of provider.stream(request, { signal })) {
-					assertNotAborted(signal);
-					eventsObserved += 1;
-					if (completed) {
-						throw providerProtocolFailure("provider emitted an event after completion");
-					}
-					switch (event.type) {
-						case "reasoning_delta":
-							emit(event);
-							break;
-						case "text_delta":
-							assistantText += event.text;
-							emit(event);
-							break;
-						case "provider_state":
-							if (providerState || event.state.provider !== request.provider) {
-								throw providerProtocolFailure("invalid provider replay state");
-							}
-							providerState = event.state;
-							break;
-						case "usage":
-							usage = { ...usage, ...event.usage };
-							break;
-						case "completed":
-							completed = true;
-							responseId = event.responseId;
-							emit({
-								type: "message_complete",
-								...(event.responseId ? { responseId: event.responseId } : {}),
-							});
-							break;
-						case "tool_call":
-							if (!toolCallsAllowed) {
-								throw unsupportedToolFailure();
-							}
-							if (!event.callId.trim()) {
-								throw new ProviderFailure({
-									code: "tool_protocol_error",
-									message: "provider tool call is missing a call ID",
-								});
-							}
-							toolCalls.push({
-								callId: event.callId,
-								name: event.name,
-								argumentsJson: event.argumentsJson,
-							});
-					}
-				}
-				if (!completed) {
-					throw providerProtocolFailure("provider stream ended without completion");
-				}
-				if (retriesUsed > 0) {
-					emit({ type: "stream_recovered" });
-				}
-				return {
-					assistantText,
-					usage,
-						toolCalls,
-						...(responseId ? { responseId } : {}),
-						...(providerState ? { providerState } : {}),
-				};
-			} catch (error) {
-				const failure = normalizeFailure(error, signal, "provider_error");
-				const decision = decideRetry({
-					retryable: failure.retryable,
-					eventsObserved,
-					retriesUsed,
-					maxRetries,
-					...(failure.retryAfterSeconds === undefined
-						? {}
-						: { retryAfterSeconds: failure.retryAfterSeconds }),
-					random: this.#options.random ?? Math.random,
-				});
-				if (!decision.shouldRetry) {
-					const retryLimit = Math.max(0, Math.min(100, Math.trunc(maxRetries)));
-					return {
-						failure: failure.retryable
-							&& eventsObserved === 0
-							&& retriesUsed >= retryLimit
-							? {
-								code: "retry_exhausted",
-								message: "provider retry budget exhausted",
-								retryable: false,
-								...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}),
-							}
-							: failure,
-						eventsObserved,
-					};
-				}
-				emit({
-					type: "stream_retrying",
-					attempt: decision.attempt,
-					delayMs: decision.delayMs,
-				});
-				try {
-					assertNotAborted(signal);
-					await (this.#options.sleep ?? sleepWithSignal)(decision.delayMs, signal);
-					assertNotAborted(signal);
-				} catch (sleepError) {
-					return {
-						failure: normalizeFailure(sleepError, signal, "interrupted"),
-						eventsObserved,
-					};
-				}
-				retriesUsed += 1;
-			}
-		}
-	}
-
 	#conversationForCurrentSubmission(userText: string): readonly CanonicalConversationItem[] {
 		const conversation = this.#options.store.loadConversationItems(this.#options.sessionId);
 		const current = conversation.at(-1);
@@ -2031,6 +2128,11 @@ export class NodeTurnRuntime {
 		emit: (event: RuntimeEvent) => void,
 		signal: AbortSignal,
 		memoryEnabled: boolean,
+		continuation: Readonly<{
+			readonly requestConfig: ProviderRequestConfig;
+			readonly requestSignature: string;
+			readonly requestInput: readonly CanonicalConversationItem[];
+		}>,
 	): Promise<RuntimeTurnRecord> {
 		try {
 			assertNotAborted(signal);
@@ -2044,6 +2146,26 @@ export class NodeTurnRuntime {
 				...(providerState ? { providerState } : {}),
 				completedAt: this.#options.clock(),
 			});
+			const continuationFailure = this.#recordSafeProviderCompletion({
+				requestConfig: continuation.requestConfig,
+				requestSignature: continuation.requestSignature,
+				historyBoundary: completed.turn_id,
+				requestInput: continuation.requestInput,
+				stepResult: {
+					assistantText,
+					toolCalls: Object.freeze([]),
+					usage: lastTokenUsage,
+					...(responseId ? { responseId } : {}),
+					...(providerState ? { providerState } : {}),
+				},
+			});
+			if (continuationFailure) {
+				try {
+					this.#options.providerContinuation?.invalidate("continuation_persistence_failed");
+				} catch {
+					// Canonical replay remains valid when optional provider continuation state fails.
+				}
+			}
 			const snapshotWritten = await this.#writeTerminalSnapshot(completed);
 			emit({ type: "turn_completed", assistantText, usage });
 			if (snapshotWritten
@@ -2383,10 +2505,6 @@ function configFailure(message: string): ProviderFailure {
 	return new ProviderFailure({ code: "config_error", message });
 }
 
-function providerProtocolFailure(message: string): ProviderFailure {
-	return new ProviderFailure({ code: "provider_error", message });
-}
-
 function unsupportedToolFailure(): NormalizedFailure {
 	return {
 		code: "unsupported_capability",
@@ -2416,9 +2534,9 @@ function policyDeniedResult(
 	decision: Extract<ApprovalPolicyDecision, { readonly kind: "deny" }>,
 ): ToolExecutionResult {
 	const toolName = boundedToolName(call.name) || "Tool";
-	const errorKind = decision.reason.includes("outside the workspace")
+	const errorKind = decision.errorKind ?? (decision.reason.includes("outside the workspace")
 		? "workspace_escape"
-		: "approval_rejected";
+		: "approval_rejected");
 	return Object.freeze({
 		callId: call.callId,
 		toolName: call.name,
@@ -2426,6 +2544,31 @@ function policyDeniedResult(
 		modelOutput: `${toolName} denied\nError kind: ${errorKind}`,
 		summary: `${toolName} denied`,
 		errorKind,
+		metadata: Object.freeze({}),
+	});
+}
+
+function unsupportedToolResult(call: CanonicalToolCall): ToolExecutionResult {
+	const toolName = boundedToolName(call.name);
+	return Object.freeze({
+		callId: call.callId,
+		toolName: call.name,
+		success: false,
+		modelOutput: `unsupported call: ${toolName}`,
+		summary: `${toolName} unsupported`,
+		errorKind: "unsupported_tool",
+		metadata: Object.freeze({}),
+	});
+}
+
+function planModeUpdatePlanResult(call: CanonicalToolCall): ToolExecutionResult {
+	return Object.freeze({
+		callId: call.callId,
+		toolName: call.name,
+		success: false,
+		modelOutput: "update_plan is a TODO/checklist tool and is not allowed in Plan mode",
+		summary: "update_plan blocked in Plan mode",
+		errorKind: "tool_not_allowed_in_plan_mode",
 		metadata: Object.freeze({}),
 	});
 }
@@ -2452,6 +2595,21 @@ function addUsage(left: ProviderUsage, right: ProviderUsage): ProviderUsage {
 		accumulated[key] = (accumulated[key] ?? 0) + value;
 	}
 	return accumulated;
+}
+
+function providerStepWithReplayTokenEstimate(step: ProviderStepResult): ProviderStepResult {
+	if (!step.providerState) return step;
+	const tokenEstimate = step.usage.reasoning_tokens ?? step.usage.reasoningTokens;
+	if (typeof tokenEstimate !== "number"
+		|| !Number.isSafeInteger(tokenEstimate)
+		|| tokenEstimate < 0) return step;
+	return Object.freeze({
+		...step,
+		providerState: Object.freeze({
+			...step.providerState,
+			tokenEstimate,
+		}),
+	});
 }
 
 function usageTokenTotal(usage: ProviderUsage): number {

@@ -34,6 +34,10 @@
   separate replay items until compaction; there is no process-wide cumulative output budget.
 - Calls and results are persisted in provider order. Each persisted call id has at most one result,
   and a result must match the pending call id and tool name.
+- A provider call whose name is outside the frozen request exposure is closed as a bounded failed
+  result with `errorKind=unsupported_tool` before approval, hooks, or adapter execution. It remains
+  ordinary tool-result data so the provider loop may continue and let the model recover; it is not a
+  fatal `tool_protocol_error`.
 - The compatibility `ProviderRequest.messages` view must equal the text-only projection of
   `ProviderRequest.items`. In particular, non-empty assistant text emitted alongside tool calls is
   represented once as an assistant message in both views.
@@ -65,6 +69,7 @@
 | Default Shell or WriteStdin model output exceeds 2,000 characters | Preserve bounded head/tail output and truncation metadata within 2,000 characters |
 | Oversized result reaches storage directly | Reject with bounded `persistence_error` |
 | Result call id or tool name differs from next pending call | Reject without changing call order |
+| Provider calls a name outside the frozen exposure | Persist `unsupported_tool` and continue without adapter execution |
 | Assistant tool calls include non-empty text | Preserve the text once in both `messages` and `items` |
 | Durable context appears between sibling tool results | Project all matching results first, then the context |
 | Turn fails with pending calls | Append one failed result per call, then terminalize atomically |
@@ -141,6 +146,7 @@ store.failTurn(failure);
 
 - Capability query:
   `ToolRouterContract.supportsParallelToolCalls?(call: CanonicalToolCall) -> boolean`.
+- Responses wire field: top-level `parallel_tool_calls: true`.
 - Execution boundary:
   `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
 - Scheduling boundary: `NodeTurnRuntime` partitions one provider tool-call batch into consecutive
@@ -148,16 +154,22 @@ store.failTurn(failure);
 
 ### 3. Contracts
 
+- Every OpenAI Responses request declares `parallel_tool_calls=true`, including
+  requests with an empty tool list. This is a provider wire hint only; it is not
+  persisted into canonical history, model-input manifests, or provider config.
 - The complete assistant tool-call batch is persisted before any call starts.
 - A call may join a parallel phase only when the active router resolves its executable adapter and
   explicitly returns `true` after approval evaluation and pre-tool hook modification. Missing
-  capability metadata, unknown tools, clarification tools, planning tools, Shell, mutations, and
-  unclassified extensions are sequential.
+  capability metadata, unknown tools, clarification tools, planning tools, file mutations, and
+  unclassified extensions are sequential. `Shell` opts into parallel phases; its approval and
+  sandbox decision is still evaluated independently for every call.
 - Pending safe calls flush before a sequential call, approval suspension, denied call, or hook
   barrier. The barrier runs alone before collection of the next safe phase.
 - Calls in one safe phase may execute concurrently, but lifecycle completion, result persistence,
   post-tool hooks, checkpoints, generated context, and provider replay are applied in the original
   provider order.
+- Every parallel call carries only its own exact-call `sandboxOverrideApproved` decision. A hook
+  rewrite clears that authority, and one Shell call must never inherit another call's escalation.
 - Every started tool call owns an `AbortController`; the adapter receives a signal composed from
   the turn, phase, and call signals. Force interruption aborts each active call without requiring
   the submit signal's owner to abort it.
@@ -173,7 +185,9 @@ store.failTurn(failure);
 
 | Condition | Required behavior |
 | --- | --- |
+| Responses request with or without tools | Send top-level `parallel_tool_calls=true` |
 | Consecutive manifest-approved calls | Start concurrently and apply results in provider order |
+| Consecutive allowed Shell calls | Start concurrently with independent execution options |
 | Sequential call after safe calls | Flush the safe phase, then run the barrier alone |
 | Approval request after safe calls | Flush and persist prior results before durable suspension |
 | Hook changes a safe call to a sequential route | Reclassify the modified call as a barrier |
@@ -186,17 +200,25 @@ store.failTurn(failure);
 
 ### 5. Good/Base/Bad Cases
 
+- Good: Responses receives `parallel_tool_calls=true`, emits multiple reads, and
+  runtime executes only the manifest-approved read phase concurrently.
+- Good: two allowed Shell calls overlap, while only the exact call approved for
+  `require_escalated` receives `sandboxOverrideApproved=true`.
 - Good: `Read`, `Read`, `Write`, `Read` runs as a two-call safe phase, one Write barrier, then one
   safe phase; results replay as `Read`, `Read`, `Write`, `Read`.
 - Good: two parallel reads return one ordinary failed result and one success; both replay in their
   original call order and the model receives the continuation.
-- Base: an unclassified router or a batch of mutation calls keeps the prior sequential behavior.
+- Base: an unclassified router or a batch of file mutation calls keeps the prior sequential behavior.
 - Bad: use unconditional `Promise.all`, persist whichever result finishes first, treat every failed
   result as a phase exception, or trust extension-supplied fields to opt external tools in.
 
 ### 6. Tests Required
 
+- Responses adapter tests assert top-level `parallel_tool_calls=true` for both
+  an empty tool list and a populated tool list.
 - A controlled fixture proves two safe calls both start before either is released.
+- A Shell fixture proves two allowed commands overlap, retain per-call sandbox authorization, and
+  persist results in provider order even when they finish in reverse order.
 - Reverse completion still persists and replays results in provider order.
 - A safe-safe-sequential-safe batch proves phase barriers and start ordering.
 - Approval suspension persists the earlier safe phase and retains untouched remaining calls.
@@ -212,6 +234,7 @@ store.failTurn(failure);
 #### Wrong
 
 ```typescript
+const body = { tools, parallel_tool_calls: true };
 const results = await Promise.all(calls.map((call) => router.execute(call, options)));
 for (const result of results) store.appendToolResult(result);
 ```
@@ -219,6 +242,7 @@ for (const result of results) store.appendToolResult(result);
 #### Correct
 
 ```typescript
+const body = { tools, parallel_tool_calls: true }; // Provider may return a batch.
 for (const phase of manifestGatedProviderOrderPhases(calls)) {
   const results = phase.parallel
     ? await Promise.all(phase.calls.map((call) => router.execute(call, options)))
@@ -241,7 +265,7 @@ for (const phase of manifestGatedProviderOrderPhases(calls)) {
   to a fenced `user` message at its chronological position and must not be moved back into that
   prefix or projected as another DeepSeek `system` message.
 - The OpenAI JS SDK sends unknown request fields literally. DeepSeek `thinking` must therefore be a
-  top-level request body field. Do not send Python SDK-style `extra_body.thinking`; the JS SDK does
+  top-level request body field. Do not send non-JS SDK-style `extra_body.thinking`; the JS SDK does
   not expand it.
 - Thinking-enabled requests send top-level `thinking.type=enabled` and bounded
   `reasoning_effort=high|max`; disabled requests send top-level `thinking.type=disabled`.
@@ -258,3 +282,35 @@ for (const phase of manifestGatedProviderOrderPhases(calls)) {
   continuation.
 - A wire-level test must use the official OpenAI JS SDK against a local HTTP server and assert that
   `thinking` is top-level and `extra_body` is absent.
+
+## Scenario: Responses Encrypted Reasoning Replay
+
+### 1. Scope / Trigger
+
+- Trigger: changing the Responses adapter, reasoning output handling, provider replay state,
+  compaction accounting, or assistant/tool-call persistence.
+
+### 2. Contracts
+
+- A reasoning-enabled Responses request includes `reasoning.encrypted_content` in the top-level
+  `include` array.
+- Completed reasoning output items retain only the replay fields `type`, optional `id`, `summary`,
+  and `encrypted_content`. Raw `reasoning_text` content is never persisted as provider state.
+- All reasoning items from one provider step are stored in one bounded `ProviderReplayState` and
+  attached to that step's assistant output or assistant tool-call batch.
+- Canonical replay expands the encrypted reasoning items before the matching assistant text and
+  function calls. State is replayed only when its provider matches the active provider.
+- Encrypted reasoning is opaque model input: clients do not decrypt, truncate, display, or index
+  it. Oversized state fails at the provider boundary instead of persisting an unusable ciphertext.
+- Provider replay state contributes to compaction token accounting but is not rendered as plaintext
+  in local summary or rehydration text.
+- Responses usage retains `output_tokens_details.reasoning_tokens` as `reasoning_tokens` when the
+  provider reports it.
+
+### 3. Tests Required
+
+- Adapter tests assert the `include` field, removal of raw reasoning content, provider-state
+  emission, tool continuation replay order, and completed-assistant replay order.
+- Runtime tests assert provider state persists with tool batches and final assistant output.
+- Compaction tests assert opaque provider state can trigger compaction and is removed when its old
+  turn is summarized.

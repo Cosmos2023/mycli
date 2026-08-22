@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { resolveConfig } from "@mycli/config";
 import { OpenAIProviderRegistry } from "@mycli/providers";
 import { NodeTurnRuntime } from "@mycli/runtime";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 
 const MAX_OUTPUT_TOKENS = 64;
 const TIMEOUT_MS = 45_000;
@@ -103,7 +103,7 @@ async function main() {
 	const dbPath = join(tempRoot, "sessions.db");
 	let store;
 	try {
-		store = new SQLiteSessionStore({ dbPath });
+		store = openRuntimeSessionStore({ dbPath });
 		const registry = new OpenAIProviderRegistry();
 		const runtimeConfig = {
 			...config,

@@ -17,12 +17,19 @@ export interface SkillToolOptions {
 export const SKILL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "skill:Skill",
 	name: "Skill",
-	description: "Load detailed instructions for one skill from the available skill catalog.",
+	description: "Load detailed instructions for one named skill from the available skill catalog into the current turn.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			name: { type: "string", minLength: 1 },
-			reason: { type: "string" },
+			name: {
+				type: "string",
+				minLength: 1,
+				description: "Exact skill name from the model-visible skill catalog.",
+			},
+			reason: {
+				type: "string",
+				description: "Optional compatibility context for why the skill is being loaded; it does not affect skill selection.",
+			},
 		},
 		required: ["name"],
 		additionalProperties: false,

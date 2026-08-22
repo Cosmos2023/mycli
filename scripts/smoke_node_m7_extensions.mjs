@@ -15,7 +15,7 @@ import {
 	discoverHookConfig,
 	HookAllowlistStore,
 } from "@mycli/integrations";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -140,6 +140,7 @@ async function runSmoke(sourceConfig, protocol) {
 			messages.push(parseJsonRpcMessage(JSON.parse(line)));
 		});
 		await waitFor(() => event(messages, "runtime.ready"), deadlineAt);
+		await waitFor(() => event(messages, "extension.updated"), deadlineAt);
 		await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" }, deadlineAt);
 		send(backend, "turn", "turn.submit", {
 			message: [
@@ -154,12 +155,17 @@ async function runSmoke(sourceConfig, protocol) {
 		});
 		const approved = new Set();
 		while (approvalCount < 2) {
-			const terminal = terminalMessage(messages, clientTurnId);
-			if (terminal) break;
-			const approval = await waitFor(() => events(messages, "approval.request").find((message) => {
-				const id = optionalParam(message, "decision_id");
-				return id && !approved.has(id);
-			}), deadlineAt);
+			const next = await waitFor(() => {
+				const terminal = terminalMessage(messages, clientTurnId);
+				if (terminal) return { kind: "terminal", message: terminal };
+				const approval = events(messages, "approval.request").find((message) => {
+					const id = optionalParam(message, "decision_id");
+					return id && !approved.has(id);
+				});
+				return approval ? { kind: "approval", message: approval } : undefined;
+			}, deadlineAt);
+			if (next.kind === "terminal") break;
+			const approval = next.message;
 			const decisionId = requiredParam(approval, "decision_id");
 			approved.add(decisionId);
 			const approvalIndex = messages.indexOf(approval);
@@ -291,7 +297,7 @@ async function writeExtensionFixtures(options) {
 }
 
 function persistedState(homeDir, sessionId, counts) {
-	const store = new SQLiteSessionStore({ dbPath: join(homeDir, ".mycli", "sessions.db") });
+	const store = openRuntimeSessionStore({ dbPath: join(homeDir, ".mycli", "sessions.db") });
 	try {
 		const history = store.loadHistoryItems(sessionId);
 		const tasks = store.subagentTasks.list(sessionId);

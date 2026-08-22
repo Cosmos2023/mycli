@@ -138,6 +138,10 @@ test("builds a stable request signature and changes it with provider-visible set
 	);
 	assert.notEqual(
 		buildProviderRequestSignature(base),
+		buildProviderRequestSignature({ ...base, store: false }),
+	);
+	assert.notEqual(
+		buildProviderRequestSignature(base),
 		buildProviderRequestSignature({
 			...base,
 			developerInstructions: ["Use the review role."],

@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const MAX_OUTPUT_TOKENS = 64;
@@ -224,21 +224,23 @@ async function runSmoke(sourceConfig) {
 }
 
 function persistedShellState(options) {
-	const store = new SQLiteSessionStore({
+	const store = openRuntimeSessionStore({
 		dbPath: join(options.homeDir, ".mycli", "sessions.db"),
 	});
 	try {
 		const turn = store.loadTurn(options.sessionId, options.clientTurnId);
-		const shellItems = store.loadHistoryItems(options.sessionId)
-			.filter((item) => item.type === "shell_session");
+		if (typeof store.loadReadableTranscript !== "function") return false;
+		const shellItems = store.loadReadableTranscript(options.sessionId).filter((item) => (
+			item.tool_name === "Shell" && typeof item.metadata?.shell_id === "string"
+		));
 		if (turn?.status !== "completed" || shellItems.length !== 1) return false;
 		const metadata = isObject(shellItems[0]?.metadata) ? shellItems[0].metadata : {};
 		return metadata.tty === true
 			&& metadata.yielded === true
 			&& metadata.terminal_state === "completed"
 			&& metadata.transport === options.transport
-			&& typeof metadata.output === "string"
-			&& metadata.output.includes("stdin-complete:hello-m6-smoke");
+			&& typeof shellItems[0]?.output === "string"
+			&& shellItems[0].output.includes("stdin-complete:hello-m6-smoke");
 	} finally {
 		store.close();
 	}

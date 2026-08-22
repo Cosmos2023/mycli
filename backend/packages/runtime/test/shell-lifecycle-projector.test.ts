@@ -112,6 +112,20 @@ test("redacts sensitive command previews before persistence and publication", as
 	assert.equal(published[0]?.commandPreview, "[redacted command]");
 });
 
+test("publishes the display description without copying it into durable shell snapshots", async () => {
+	const writes: UpsertShellSnapshotInput[] = [];
+	const published: ShellLifecycleEvent[] = [];
+	const projector = new ShellLifecycleProjector({
+		store: { upsertShellSnapshot: (input) => { writes.push(input); } },
+	});
+	projector.subscribe((event) => { published.push(event); });
+
+	await projector.accept(shellEvent({ description: "Run the focused test suite" }));
+
+	assert.equal(published[0]?.description, "Run the focused test suite");
+	assert.equal(Object.hasOwn(writes[0]?.payload ?? {}, "description"), false);
+});
+
 test("projects retained output only for a completed background shell", async () => {
 	const projected: unknown[] = [];
 	const projector = new ShellLifecycleProjector({

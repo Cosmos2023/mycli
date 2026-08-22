@@ -1,5 +1,4 @@
 import type { CanonicalConversationItem } from "@mycli/core";
-import type { SessionStateStore } from "@mycli/storage";
 import {
 	deterministicMemorySelection,
 	type MemorySelectionContract,
@@ -14,6 +13,7 @@ import type {
 import { TokenCounter } from "./token-counter.ts";
 
 const MAX_SELECTED_MEMORIES = 5;
+const MAX_RECENT_SESSION_SUMMARIES = 8;
 const DEFAULT_PER_RECORD_TOKEN_BUDGET = 2_000;
 const DEFAULT_AGGREGATE_TOKEN_BUDGET = 5_000;
 const NORMALIZE_PATTERN = /[a-z0-9_./-]+/gu;
@@ -67,7 +67,9 @@ export interface MemoryStoreContract {
 
 export interface MemoryContextServiceOptions {
 	readonly store: MemoryStoreContract;
-	readonly sessionStore: Pick<SessionStateStore, "loadSessionSummaries">;
+	readonly sessionStore: {
+		loadRecentSessionSummaries(sessionId: string, limit: number): readonly string[];
+	};
 	readonly selector?: MemorySelectionContract;
 	readonly tokenCounter?: TokenCounter;
 	readonly perRecordTokenBudget?: number;
@@ -86,7 +88,7 @@ export type ExplicitMemoryRequest =
 
 export class MemoryContextService implements MemoryContextServiceContract {
 	readonly #store: MemoryStoreContract;
-	readonly #sessionStore: Pick<SessionStateStore, "loadSessionSummaries">;
+	readonly #sessionStore: MemoryContextServiceOptions["sessionStore"];
 	readonly #selector: MemorySelectionContract | undefined;
 	readonly #tokenCounter: TokenCounter;
 	readonly #perRecordTokenBudget: number;
@@ -137,7 +139,10 @@ export class MemoryContextService implements MemoryContextServiceContract {
 				tags: Object.freeze(["file-memory", memory.filename]),
 			});
 		}
-		for (const summary of this.#sessionStore.loadSessionSummaries(input.sessionId)) {
+		for (const summary of this.#sessionStore.loadRecentSessionSummaries(
+			input.sessionId,
+			MAX_RECENT_SESSION_SUMMARIES,
+		)) {
 			candidates.push({
 				kind: "session_summary",
 				key: "recent",

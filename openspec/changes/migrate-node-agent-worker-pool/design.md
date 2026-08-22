@@ -109,6 +109,16 @@ The Worker must not dispatch when the commit fails, the lease is fenced, or hash
 
 At lease bootstrap the coordinator sends the complete effective context window required by the provider, together with instruction/tool snapshot identities and hashes. During the same lease, subsequent provider steps receive only committed deltas such as assistant tool calls, bounded tool results, steering items, approval responses, or compaction window replacements.
 
+Session restoration keeps this provider window separate from display history. With multiple durable
+compaction boundaries, provider reconstruction selects the newest valid replacement and replays only
+its suffix. The transcript RPC instead filters the complete append-only history so old visible turns
+remain pageable through opaque SQLite sequence cursors; internal boundary replacements never become
+duplicate UI messages. Pages target at most 500 projected items but keep a complete turn together,
+and the TUI fetches older pages only when the viewer reaches its current top. Prepared session and
+artifact snapshots retain only a bounded recent projection so `/resume` does not pin the complete
+tool-heavy transcript before the client asks for it. When memory is enabled, only the latest eight
+session summaries are read before the existing token budget is applied.
+
 The Worker tracks the acknowledged timeline high-water mark and rejects gaps, duplicates, or mismatched bases. It does not read SQLite directly. On a window replacement it discards the previous conversation working set and installs the new committed bootstrap.
 
 Immutable instruction and tool-set blobs may be cached by content hash across leases, but complete conversations may not. Cache entries and total bytes use small fixed LRU bounds. Full shell/tool output remains in coordinator-owned artifacts; the Worker receives only the bounded provider-visible projection plus an artifact reference.
@@ -149,6 +159,12 @@ The rollout sequence is:
 8. demote whole-backend restart to a coordinator watchdog and complete memory/crash hardening.
 
 The implementation may select in-process or Worker-backed execution only before a turn starts. It must not silently fall back after a Worker lease begins because that would change cancellation and duplicate-effect guarantees. Rollback keeps new additive metadata readable and selects the tested in-process adapter for subsequent turns.
+
+The compatibility environment gate applies to both lanes, while explicit root and subagent lane
+overrides permit child-first and root-later rollout. The coordinator resolves the effective pair once
+during backend startup, creates one shared pool when either lane is Worker-backed, and composes only
+the enabled lane through a Worker adapter. Missing or blank lane overrides inherit the compatibility
+gate; unknown non-blank values fail startup rather than selecting an implicit fallback.
 
 ## Risks / Trade-offs
 

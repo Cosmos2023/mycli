@@ -19,7 +19,7 @@ test("loads session summaries and deduplicates normalized kind-key-value triples
 	const summaries = ["Completed parser", " completed   parser ", "Completed tests"];
 	const service = new MemoryContextService({
 		store,
-		sessionStore: { loadSessionSummaries: () => summaries },
+		sessionStore: { loadRecentSessionSummaries: () => summaries },
 		selector: { select: async (_query, memories) => memories },
 	});
 
@@ -39,6 +39,28 @@ test("loads session summaries and deduplicates normalized kind-key-value triples
 	assert.match(context.item?.text ?? "", /<\/memory-reference>/u);
 });
 
+test("requests only the bounded recent session summary window", async () => {
+	let requestedLimit: number | undefined;
+	const service = new MemoryContextService({
+		store: new FakeMemoryStore([]),
+		sessionStore: {
+			loadRecentSessionSummaries: (_sessionId, limit) => {
+				requestedLimit = limit;
+				return ["recent summary"];
+			},
+		},
+	});
+
+	const context = await service.collect({
+		userMessage: "continue",
+		sessionId: "session-1",
+		enabled: true,
+	});
+
+	assert.equal(requestedLimit, 8);
+	assert.deepEqual(context.records.map((record) => record.value), ["recent summary"]);
+});
+
 test("bounds each record and the aggregate context with the Task 8 token counter", async () => {
 	const store = new FakeMemoryStore([
 		memory("one.md", "project", "1234567890"),
@@ -49,7 +71,7 @@ test("bounds each record and the aggregate context with the Task 8 token counter
 	});
 	const service = new MemoryContextService({
 		store,
-		sessionStore: { loadSessionSummaries: () => ["summary-too-long"] },
+		sessionStore: { loadRecentSessionSummaries: () => ["summary-too-long"] },
 		selector: { select: async (_query, memories) => memories },
 		tokenCounter,
 		perRecordTokenBudget: 8,
@@ -73,7 +95,7 @@ test("disabled memory bypasses storage, selection, summaries, injection, and exp
 	let selectorCalls = 0;
 	const service = new MemoryContextService({
 		store,
-		sessionStore: { loadSessionSummaries: () => { summaryCalls += 1; return ["summary"]; } },
+		sessionStore: { loadRecentSessionSummaries: () => { summaryCalls += 1; return ["summary"]; } },
 		selector: { select: async () => { selectorCalls += 1; return []; } },
 	});
 
@@ -100,7 +122,7 @@ test("does not call selection for an empty memory set", async () => {
 	let selectorCalls = 0;
 	const service = new MemoryContextService({
 		store,
-		sessionStore: { loadSessionSummaries: () => [] },
+		sessionStore: { loadRecentSessionSummaries: () => [] },
 		selector: { select: async () => { selectorCalls += 1; return []; } },
 	});
 
@@ -115,7 +137,7 @@ test("ignores file memory on explicit request while retaining session summaries"
 	let selectorCalls = 0;
 	const service = new MemoryContextService({
 		store,
-		sessionStore: { loadSessionSummaries: () => ["Completed parser"] },
+		sessionStore: { loadRecentSessionSummaries: () => ["Completed parser"] },
 		selector: { select: async () => { selectorCalls += 1; return store.memories; } },
 	});
 
@@ -164,7 +186,7 @@ test("executes only direct explicit remember or forget actions", async () => {
 	const store = new FakeMemoryStore([]);
 	const service = new MemoryContextService({
 		store,
-		sessionStore: { loadSessionSummaries: () => [] },
+		sessionStore: { loadRecentSessionSummaries: () => [] },
 	});
 
 	const saved = await service.applyExplicitActions({

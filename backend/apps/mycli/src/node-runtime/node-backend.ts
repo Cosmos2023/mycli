@@ -13,7 +13,7 @@ import {
 	modelCatalogEntryPayload,
 	parseProtocol,
 	readApiKey,
-	resolveConfig,
+	resolveModelRuntimeConfig,
 	resolveProviderProfile,
 	saveShellSettings,
 	writeApiKey,
@@ -56,6 +56,7 @@ import {
 	AgentActivityBus,
 	AgentMailbox,
 	AgentSupervisor,
+	AgentWorkerPool,
 	ClarificationContinuationCoordinator,
 	CompactionCoordinator,
 	ContextItemCoordinator,
@@ -63,6 +64,7 @@ import {
 	MemoryContextService,
 	MemoryStore,
 	NodeTurnRuntime,
+	resolveAgentExecutionAdapters,
 	loadWorkspaceInstructions,
 	ProviderContinuationCoordinator,
 	QueueCoordinator,
@@ -71,6 +73,8 @@ import {
 	ShellLifecycleProjector,
 	summarizeCompactionWithProvider,
 	TokenCounter,
+	WorkerLeasedAgentThreadRuntimeFactory,
+	WorkerLeasedRootTurnRuntime,
 } from "@mycli/runtime";
 import type {
 	ExecutionPolicySnapshot,
@@ -80,17 +84,17 @@ import type {
 	PreparedSession,
 } from "@mycli/runtime";
 import {
-	projectTranscript,
 	SessionArtifactStore,
 	sessionSubagentIndexEntry,
 	subagentRunId,
 	SnapshotStateError,
-	SQLiteSessionStore,
+	openRuntimeSessionStore,
 	TranscriptSnapshotStore,
 } from "@mycli/storage";
 import type {
 	AgentThreadRecord,
 	LegacySnapshotMessage,
+	RuntimeSessionStore,
 	SessionListQuery,
 	SessionOverview,
 	TranscriptItem,
@@ -152,6 +156,24 @@ import {
 	type StartupProfileSnapshot,
 } from "./startup-profile.ts";
 import { packagedSystemPrompt } from "./system-prompt.ts";
+import { resolveAgentWorkerSettings } from "./agent-worker-settings.ts";
+import {
+	projectReadableSessionTranscript,
+	projectReadableSessionTranscriptPage,
+	projectRecentSessionTranscript,
+} from "./readable-session-transcript.ts";
+import {
+	cutoverTranscriptNormalization,
+	prepareTranscriptNormalization,
+	transcriptNormalizationFailure,
+	transcriptNormalizationReport,
+} from "./transcript-normalization-maintenance.ts";
+import {
+	contentBlobMigrationFailure,
+	contentBlobMigrationReport,
+	cutoverContentBlobMigration,
+	prepareContentBlobMigration,
+} from "./content-blob-maintenance.ts";
 
 export interface NodeBackend {
 	readonly transport: NodeGateway["transport"];
@@ -177,8 +199,15 @@ export interface StartNodeBackendOptions {
 	readonly recoverInterruptedTurns?: readonly RecoverInterruptedTurnOptions[];
 }
 
+type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
+	NodeTurnRuntime,
+	"bindProviderStepExecutor"
+>;
+
 const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
+const DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS = 12_000;
+const MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
 	const startupProfiler = new StartupProfiler({
@@ -188,9 +217,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	});
 	startupProfiler.mark("runtime_entered");
 	const overrides = parseOverrides(options.args);
+	const agentExecutionAdapters = resolveAgentExecutionAdapters(options.env);
+	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
 	let activeModelOverride = overrides.model;
 	const homeDir = runtimeHome(options.env);
-	const config = await resolveConfig({
+	const config = await resolveModelRuntimeConfig({
 		homeDir,
 		workspaceRoot: options.cwd,
 		env: options.env,
@@ -202,7 +233,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			throw new Error("recovered_interrupt_session_mismatch");
 		}
 	}
-	const store = new SQLiteSessionStore({ dbPath: config.sessionsDbPath });
+	const store = openRuntimeSessionStore({ dbPath: config.sessionsDbPath });
 	let recoveredInterrupts: readonly {
 		readonly record: RuntimeTurnRecord;
 		readonly inputRolledBack: boolean;
@@ -229,6 +260,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const productSystemPrompt = packagedSystemPrompt();
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new ProviderRegistry();
+	const agentWorkerPool = Object.values(agentExecutionAdapters).includes("worker")
+		? new AgentWorkerPool(agentWorkerSettings)
+		: undefined;
 	let controlConfig = config;
 	const toolManifest = builtinToolManifest();
 	const shellManager = new ShellSessionManager({
@@ -252,13 +286,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const childRuntimeFactoryDelegate: {
 		create?: (input: ChildRuntimeCreateInput) => Promise<ChildRuntimeHandle>;
 	} = {};
-	const childRuntimeFactory: ChildRuntimeFactory = {
+	const inProcessChildRuntimeFactory: ChildRuntimeFactory = {
 		create: async (input) => {
 			const create = childRuntimeFactoryDelegate.create;
 			if (!create) throw new Error("child_runtime_unavailable");
 			return create(input);
 		},
 	};
+	const childRuntimeFactory: ChildRuntimeFactory = agentWorkerPool
+		&& agentExecutionAdapters.subagent === "worker"
+		? new WorkerLeasedAgentThreadRuntimeFactory({
+			pool: agentWorkerPool,
+			delegate: inProcessChildRuntimeFactory,
+		})
+		: inProcessChildRuntimeFactory;
 	const runtimeBySessionId = new Map<string, NodeGatewayRuntime>();
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
 	const agentActivityBus = new AgentActivityBus();
@@ -438,6 +479,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					maxDepth: DEFAULT_AGENT_MAX_DEPTH,
 					onEvent: consumeAgentEvent,
 					...supervisorOptions,
+					...(agentExecutionAdapters.subagent === "worker"
+						&& supervisorOptions.shutdownTimeoutMs === undefined
+						? { shutdownTimeoutMs: DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS }
+						: {}),
 				});
 				return agentSupervisor;
 			},
@@ -447,7 +492,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const parentThreadId = overview?.threadId ?? input.parentSessionId;
 				const parentAgent = store.agentThreads.get(parentThreadId);
 				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
-				const resolved = await resolveConfig({
+				const resolved = await resolveModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -495,15 +540,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		startupProfiler.mark("integrations_ready");
 	} catch (error) {
 		try {
-			await shellManager.close().catch(() => undefined);
+			await agentWorkerPool?.close().catch(() => undefined);
 		} finally {
 			try {
-				await shellLifecycle.drain();
+				await shellManager.close().catch(() => undefined);
 			} finally {
 				try {
-					await artifactQueue.drain();
+					await shellLifecycle.drain();
 				} finally {
-					store.close();
+					try {
+						await artifactQueue.drain();
+					} finally {
+						store.close();
+					}
 				}
 			}
 		}
@@ -558,14 +607,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly agentCheckpoint?: NodeTurnRuntimeOptions["agentCheckpoint"];
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
-		): NodeGatewayRuntime => {
+		): ComposedNodeRuntime => {
 			const runtimeEnvironment: Readonly<NodeJS.ProcessEnv> = runtimeOptions.environment
 				? Object.freeze({ ...runtimeOptions.environment })
 				: options.env;
 			const resolveRuntimeConfig = async (
 				modelOverride?: string,
 			): Promise<NodeRuntimeConfig> => {
-				const resolved = await resolveConfig({
+				const resolved = await resolveModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -776,7 +825,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				tokenCounter,
 			});
 			const createCompactionCoordinator = (
-				resolved: Awaited<ReturnType<typeof resolveConfig>>,
+				resolved: NodeRuntimeConfig,
 			): CompactionCoordinator => {
 				const compactionThreshold = compactionThresholdForModel(resolved);
 				return new CompactionCoordinator({
@@ -799,7 +848,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					tailTurns: resolved.compactionTailTurns,
 					tailMaxTokens: resolved.compactionTailMaxTokens,
 					minSavingsRatio: resolved.compactionMinSavingsRatio,
-					summaryMaxTokens: 600,
+					summaryMaxTokens: compactionSummaryOutputTokens(resolved),
 					summaryModel: resolved.compactionSummarizerModel ?? resolved.model,
 					rehydrationMaxFiles: resolved.compactionRehydrationMaxFiles,
 					rehydrationMaxItemTokens: resolved.compactionRehydrationFileMaxItemTokens,
@@ -828,7 +877,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				createdAt: new Date().toISOString(),
 				createEventId: () => `lifecycle-${randomUUID()}`,
 			});
-			const runtime = new NodeTurnRuntime({
+			const coordinatorRuntime = new NodeTurnRuntime({
 			sessionId,
 			workspaceRoot,
 			threadId,
@@ -840,6 +889,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				clock: () => new Date().toISOString(),
 			}),
 			modelInputLedger: store.modelInputLedger,
+			agentEffectLedger: store.agentEffectLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig }) => Object.freeze({
 				skillCatalog: integrationComposition.skillCatalog,
@@ -882,18 +932,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				...(runtimeOptions.agentCheckpoint ? {
 					agentCheckpoint: runtimeOptions.agentCheckpoint,
 				} : {}),
-				...(runtimeOptions.isMutatingTool ? {
-					isMutatingTool: runtimeOptions.isMutatingTool,
-				} : {}),
+				isMutatingTool: runtimeOptions.isMutatingTool
+					?? ((toolName) => mutatingAgentTools.has(toolName)),
 					approvalPolicy: {
 					beginTurn: (turnId) => { approvalPolicy.beginTurn(turnId); },
 					finishTurn: (turnId) => { approvalPolicy.finishTurn(turnId); },
 					configurePermissionProfile: (profile) => {
 					approvalPolicy.configurePermissionProfile(profile);
 				},
-					evaluate: async (call, executionPolicy, turnId) => {
-						await ensureExecPolicyLoaded();
-						return approvalPolicy.evaluate(call, executionPolicy, turnId);
+				evaluate: async (call, executionPolicy, turnId) => {
+					await ensureExecPolicyLoaded();
+					return approvalPolicy.evaluate(call, executionPolicy, turnId);
+				},
+				recordResult: (call, result, executionPolicy, turnId) => {
+					approvalPolicy.recordResult(call, result, executionPolicy, turnId);
 				},
 			},
 			approvalCoordinator,
@@ -923,6 +975,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 				createCompactionCoordinator,
 			});
+			const runtime = agentWorkerPool
+				&& agentExecutionAdapters.root === "worker"
+				&& !runtimeOptions.subagentContext
+				? new WorkerLeasedRootTurnRuntime({
+					pool: agentWorkerPool,
+					runtime: coordinatorRuntime,
+					sessionId,
+					recoverInterrupt: (input) => store.recoverInterruptedTurn(
+						sessionId,
+						input.turnId,
+						true,
+					),
+				})
+				: coordinatorRuntime;
 			if (runtimeOptions.executionPolicy) {
 				runtime.configureExecutionPolicy({
 					trust: runtimeOptions.executionPolicy.trusted ? "trusted" : "untrusted",
@@ -1020,6 +1086,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 		);
 			let activeTurnId: string | undefined;
+			let activeTurn: {
+				readonly clientTurnId: string;
+				readonly turnId: string;
+				readonly emit: Parameters<NodeTurnRuntime["forceInterrupt"]>[1];
+				forceInterrupt?: Promise<void>;
+			} | undefined;
 			let running = false;
 			let localAbort: AbortController | undefined;
 			const runChild = async (
@@ -1027,14 +1099,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				signal: AbortSignal,
 				emit: Parameters<ChildRuntimeHandle["run"]>[2],
 				source: "user" | "agent_mailbox",
+				turnId: string,
 			) => {
-				activeTurnId = randomUUID();
+				activeTurnId = turnId;
 				running = true;
 				localAbort = new AbortController();
 				const forwardAbort = (): void => { localAbort?.abort(); };
 				signal.addEventListener("abort", forwardAbort, { once: true });
 				if (signal.aborted) localAbort.abort();
 			try {
+					const clientTurnId = randomUUID();
 					const interactiveTurn = agentInteractiveRequests.openTurn({
 						sessionId: input.childSessionId,
 						agentPath: input.path,
@@ -1044,10 +1118,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						emitLifecycle: emit,
 						emitRuntime: (event) => emitChildRuntimeEvent(event, emit),
 					});
+					const emitRuntime = (event: Parameters<typeof interactiveTurn.onRuntimeEvent>[0]): void => {
+						interactiveTurn.onRuntimeEvent(event);
+					};
+					const currentTurn = {
+						clientTurnId,
+						turnId,
+						emit: emitRuntime,
+					};
+					activeTurn = currentTurn;
 					let result: Awaited<ReturnType<NodeGatewayRuntime["submit"]>>;
 					try {
 						const submitted = await runtime.submit({
-						clientTurnId: randomUUID(),
+							clientTurnId,
 						turnId: activeTurnId,
 						message: prompt,
 						...(source === "agent_mailbox" ? { source } : {}),
@@ -1074,13 +1157,52 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					});
 				} finally {
 					signal.removeEventListener("abort", forwardAbort);
+					activeTurn = undefined;
 					running = false;
 					localAbort = undefined;
 				}
 			};
 			return {
-				run: (prompt, signal, emit) => runChild(prompt, signal, emit, "user"),
-				runMailbox: (signal, emit) => runChild("", signal, emit, "agent_mailbox"),
+				run: (prompt, signal, emit, turnId) => runChild(
+					prompt,
+					signal,
+					emit,
+					"user",
+					turnId,
+				),
+				runMailbox: (signal, emit, turnId) => runChild(
+					"",
+					signal,
+					emit,
+					"agent_mailbox",
+					turnId,
+				),
+				bindProviderStepExecutor: (
+					executor: Parameters<NodeTurnRuntime["bindProviderStepExecutor"]>[0],
+				) => {
+					runtime.bindProviderStepExecutor(executor);
+				},
+				forceInterrupt: async (_reason: string, turnId: string) => {
+					localAbort?.abort();
+					const current = activeTurn;
+					if (!current || current.turnId !== turnId) return false;
+					current.forceInterrupt ??= runtime.forceInterrupt({
+						clientTurnId: current.clientTurnId,
+						turnId: current.turnId,
+					}, current.emit).then(() => undefined);
+					await current.forceInterrupt;
+					return store.recoverInterruptedTurn(input.childSessionId, turnId, true)
+						?.status === "interrupted";
+				},
+				recoverInterrupt: async (_reason: string, turnId: string) => {
+					localAbort?.abort();
+					const recovered = store.recoverInterruptedTurn(
+						input.childSessionId,
+						turnId,
+						true,
+					);
+					return recovered?.status === "interrupted";
+				},
 				markIdle: () => {
 					store.agentThreads.saveLease({
 						threadId: input.threadId,
@@ -1104,7 +1226,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					source: "parent",
 				});
 			},
-			interrupt: async () => { localAbort?.abort(); },
+			interrupt: async () => {
+				localAbort?.abort();
+			},
 				close: async () => {
 					localAbort?.abort();
 					store.agentThreads.clearLease(input.threadId, runtimeOwnerId);
@@ -1162,21 +1286,62 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			homeDir,
 			workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
 		});
-		const activeFileHistory = () => new FileHistoryStore({
-			homeDir,
-			workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
-		});
-		const gateway = createNodeGateway({
+			const activeFileHistory = () => new FileHistoryStore({
+				homeDir,
+				workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+			});
+			let closeRuntimeResourcesPromise: Promise<void> | undefined;
+			const closeRuntimeResources = (): Promise<void> => {
+				closeRuntimeResourcesPromise ??= (async () => {
+					unsubscribeRuntimeExtensions();
+					try {
+						await integrationComposition.close();
+					} finally {
+						try {
+							await agentWorkerPool?.close();
+						} finally {
+							try {
+								await shellManager.close();
+							} finally {
+								try {
+									await shellLifecycle.drain();
+								} finally {
+									try {
+										await artifactQueue.drain();
+									} finally {
+										store.close();
+									}
+								}
+							}
+						}
+					}
+				})();
+				return closeRuntimeResourcesPromise;
+			};
+			const gateway = createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
 			provider: config.provider,
 			model: config.model,
 			toolNames: allToolExposure.map((tool) => tool.name),
-			maxPromptTokens: config.maxPromptTokens,
+			maxPromptTokens: () => controlConfig.maxPromptTokens,
 			runtime: initial.binding,
 			agentInteractiveRequests,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
-			loadTranscript: (sessionId) => canonicalTranscript(store, sessionId),
+			loadTranscript: (sessionId) => {
+				const active = sessionCoordinator.snapshot();
+				if (!active.readOnly
+					&& sessionId === active.sessionId
+					&& !store.loadSession(sessionId)) {
+					return active.transcript;
+				}
+				return canonicalTranscript(store, sessionId);
+			},
+			loadTranscriptPage: (sessionId, input) => projectReadableSessionTranscriptPage(
+				store,
+				sessionId,
+				input,
+			),
 			loadShellOutput: (input) => store.loadShellOutputPage(input),
 			loadTurnRollouts: (sessionId) => store.loadTurnRollouts(sessionId),
 			memoryCommands: {
@@ -1214,16 +1379,62 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							workspaceRoot,
 							limit: 20,
 						}),
-						maintenance: (action, workspaceRoot) => {
-							if (action === "report") {
-								return { ...store.sessionMaintenanceReport({ workspaceRoot }) };
-							}
+							maintenance: (action, workspaceRoot) => {
+								if (action === "report") {
+									return {
+										...store.sessionMaintenanceReport({ workspaceRoot }),
+										...transcriptNormalizationReport(config.sessionsDbPath),
+										...contentBlobMigrationReport(config.sessionsDbPath),
+									};
+								}
 							if (action === "empty") {
 								return { ...store.cleanupEmptySessions({ workspaceRoot }) };
 							}
-							if (action === "orphans") return { ...store.cleanupOrphanedSessionRows() };
-							return { ...store.vacuumSessionStorage() };
-						},
+								if (action === "payloads") {
+									return { ...store.cleanupLegacySessionPayloads({ workspaceRoot }) };
+								}
+								if (action === "orphans") return { ...store.cleanupOrphanedSessionRows() };
+								if (action === "vacuum") return { ...store.vacuumSessionStorage() };
+								if (action === "content_blob_gc") {
+									const report = store.sessionMaintenanceReport({ workspaceRoot });
+									if (!report.contentBlobs
+										|| !("collectSessionContentBlobOrphans" in store)) {
+										return {
+											status: "not_blob_backed",
+											phase: "garbage_collection",
+											dryRun: false,
+										};
+									}
+									return {
+										status: "collected",
+										phase: "garbage_collection",
+										...store.collectSessionContentBlobOrphans(),
+									};
+								}
+								if (action === "content_blobs") {
+									const preparation = prepareContentBlobMigration(config.sessionsDbPath);
+									if (!preparation.cutoverReady) return preparation.result;
+									return closeRuntimeResources().then(() => {
+										try {
+											return cutoverContentBlobMigration(
+												config.sessionsDbPath,
+												preparation,
+											);
+										} catch {
+											return contentBlobMigrationFailure();
+										}
+									}).catch(() => contentBlobMigrationFailure());
+								}
+								const preparation = prepareTranscriptNormalization(config.sessionsDbPath);
+								if (!preparation.cutoverReady) return preparation.result;
+								return closeRuntimeResources().then(() => {
+									try {
+										return cutoverTranscriptNormalization(config.sessionsDbPath, preparation);
+									} catch {
+										return transcriptNormalizationFailure();
+									}
+								}).catch(() => transcriptNormalizationFailure());
+							},
 					},
 					traceCommands: {
 						inspect: (sessionId) => nodeTraceRows(store, homeDir, sessionId),
@@ -1310,20 +1521,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								reasoningEffort: nextReasoningEffort,
 							});
 							activeModelOverride = model;
-							controlConfig = {
-								...controlConfig,
-								provider: entry.provider,
-								protocol,
-								model,
-								apiBaseUrl: entry.baseUrl,
-								apiKey,
-								authRef: entry.authRef,
-								supportsImages: profile.supportsImages,
-								promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
-								cacheControlEnabled: profile.cacheControlEnabled,
-								reasoningEffort: nextReasoningEffort,
-								thinkingEnabled,
-							};
+							controlConfig = await resolveModelRuntimeConfig({
+								homeDir,
+								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+								env: options.env,
+								overrides: {
+									session: controlConfig.sessionId,
+									model,
+								},
+							});
 							const selectedCatalog = await loadModelCatalog({
 								homeDir,
 								currentConfig: controlConfig,
@@ -1358,26 +1564,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
 			},
 			integrations: gatewayIntegrations,
-			close: async () => {
-				unsubscribeRuntimeExtensions();
-				try {
-					await integrationComposition.close();
-				} finally {
-					try {
-						await shellManager.close();
-					} finally {
-						try {
-							await shellLifecycle.drain();
-						} finally {
-							try {
-								await artifactQueue.drain();
-							} finally {
-								store.close();
-							}
-						}
-					}
-				}
-			},
+				close: closeRuntimeResources,
 		});
 			for (const recovered of recoveredInterrupts) {
 			gateway.publishRecoveredInterrupt(recovered.record, {
@@ -1398,15 +1585,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			await integrationComposition.close().catch(() => undefined);
 		} finally {
 			try {
-				await shellManager.close().catch(() => undefined);
+				await agentWorkerPool?.close().catch(() => undefined);
 			} finally {
 				try {
-					await shellLifecycle.drain();
+					await shellManager.close().catch(() => undefined);
 				} finally {
 					try {
-						await artifactQueue.drain();
+						await shellLifecycle.drain();
 					} finally {
-						store.close();
+						try {
+							await artifactQueue.drain();
+						} finally {
+							store.close();
+						}
 					}
 				}
 			}
@@ -1454,6 +1645,8 @@ function controlReasoningEffort(value: unknown): ReasoningEffort | undefined {
 		|| value === "medium"
 		|| value === "high"
 		|| value === "xhigh"
+		|| value === "max"
+		|| value === "ultra"
 	) return value;
 	throw new Error("invalid_arguments: unsupported reasoning_effort");
 }
@@ -1576,7 +1769,7 @@ function integrationGateway(
 }
 
 function nodeTraceRows(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	homeDir: string,
 	sessionId: string,
 ): readonly Readonly<Record<string, unknown>>[] {
@@ -1789,7 +1982,7 @@ function numericUsage(
 	))));
 }
 
-function compactionThresholdForModel(config: Awaited<ReturnType<typeof resolveConfig>>): number {
+function compactionThresholdForModel(config: NodeRuntimeConfig): number {
 	const ratio = config.compactionTriggerRatiosByModel[config.model];
 	if (ratio === undefined) return config.compactionTokenLimit;
 	let buffer = config.compactionBufferTokens;
@@ -1802,6 +1995,16 @@ function compactionThresholdForModel(config: Awaited<ReturnType<typeof resolveCo
 	));
 }
 
+function compactionSummaryOutputTokens(config: NodeRuntimeConfig): number {
+	const desired = Math.max(
+		MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS,
+		config.compactionExpectedSummaryTokens,
+	);
+	return config.maxOutputTokens === undefined
+		? desired
+		: Math.min(desired, config.maxOutputTokens);
+}
+
 function totalCompactionBudget(threshold: number, reservedOutputTokens: number): number {
 	const total = threshold + reservedOutputTokens;
 	if (!Number.isSafeInteger(total) || total <= reservedOutputTokens) {
@@ -1812,7 +2015,7 @@ function totalCompactionBudget(threshold: number, reservedOutputTokens: number):
 
 interface PrepareStoredSessionOptions {
 	readonly sessionId: string;
-	readonly store: SQLiteSessionStore;
+	readonly store: RuntimeSessionStore;
 	readonly transcriptSnapshots: TranscriptSnapshotStore;
 	readonly sessionArtifacts: SessionArtifactStore;
 	readonly artifactQueue: SerializedSessionArtifactQueue;
@@ -1986,13 +2189,13 @@ function virtualSession(
 }
 
 function canonicalSnapshot(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	overview: SessionOverview,
 	pendingApproval: boolean,
 	pendingClarification: boolean,
 	suspendedTurn: boolean,
 ): TranscriptSnapshotV2 {
-	const transcript = canonicalTranscript(store, overview.sessionId);
+	const transcript = recentCanonicalTranscript(store, overview.sessionId);
 	return {
 		schema_version: 2,
 		session_id: overview.sessionId,
@@ -2012,20 +2215,27 @@ function canonicalSnapshot(
 }
 
 function canonicalTranscript(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	sessionId: string,
 ): readonly TranscriptItem[] {
-	const historyItems = store.loadHistoryItems(sessionId);
-	const projected = projectTranscript(
-		historyItems,
-		store.loadTurnRollouts(sessionId),
-		{ limit: 500 },
-	);
-	return historyItems.length > 0 ? projected : legacyConversationTranscript(store, sessionId);
+	const projected = projectReadableSessionTranscript(store, sessionId);
+	return projected.hasCanonicalHistory
+		? projected.items
+		: legacyConversationTranscript(store, sessionId);
+}
+
+function recentCanonicalTranscript(
+	store: RuntimeSessionStore,
+	sessionId: string,
+): readonly TranscriptItem[] {
+	const projected = projectRecentSessionTranscript(store, sessionId);
+	return projected.hasCanonicalHistory
+		? projected.items
+		: legacyConversationTranscript(store, sessionId);
 }
 
 function subagentIndex(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	parentSessionId: string,
 ): TranscriptSnapshotV2["subagents"] {
 	return Object.freeze(store.subagentTasks.list(parentSessionId, 1_000)
@@ -2085,10 +2295,14 @@ function subagentError(record: SubagentTaskRecord): string | undefined {
 }
 
 function terminalSubagentOutput(record: SubagentTaskRecord): string {
-	return record.payload.report
-		?? record.payload.error
-		?? record.payload.interruptionReason
-		?? `Subagent ${record.status}`;
+	for (const candidate of [
+		record.payload.report,
+		record.payload.error,
+		record.payload.interruptionReason,
+	]) {
+		if (candidate?.trim()) return candidate;
+	}
+	return `Subagent ${record.status}`;
 }
 
 interface SubagentArtifactProjectionResult {
@@ -2098,7 +2312,7 @@ interface SubagentArtifactProjectionResult {
 
 async function projectSubagentRecord(
 	record: SubagentTaskRecord,
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	artifacts: SessionArtifactStore,
 	thread = store.agentThreads.get(record.childSessionId),
 	lifecycleKind?: string,
@@ -2125,7 +2339,7 @@ async function projectSubagentRecord(
 	try {
 		await artifacts.writeSubagentSnapshot(subagentSnapshotInput(
 			record,
-			canonicalTranscript(store, record.childSessionId),
+			recentCanonicalTranscript(store, record.childSessionId),
 			thread,
 			lifecycleKind,
 		));
@@ -2138,7 +2352,7 @@ async function projectSubagentRecord(
 
 async function refreshParentArtifactSnapshot(
 	parentSessionId: string,
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	transcriptSnapshots: TranscriptSnapshotStore,
 ): Promise<void> {
 	const overview = store.loadSession(parentSessionId);
@@ -2155,7 +2369,7 @@ async function refreshParentArtifactSnapshot(
 
 async function repairSessionArtifacts(
 	parentSessionId: string,
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	transcriptSnapshots: TranscriptSnapshotStore,
 	artifacts: SessionArtifactStore,
 	queue: SerializedSessionArtifactQueue,
@@ -2174,7 +2388,7 @@ async function repairSessionArtifacts(
 
 interface CanonicalAgentEventProjectionInput {
 	readonly event: AgentCanonicalEvent;
-	readonly store: SQLiteSessionStore;
+	readonly store: RuntimeSessionStore;
 	readonly transcriptSnapshots: TranscriptSnapshotStore;
 	readonly artifacts: SessionArtifactStore;
 }
@@ -2225,7 +2439,7 @@ async function projectCanonicalAgentEvent(
 
 function publishCanonicalSubagentEvent(
 	event: AgentCanonicalEvent,
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	publish: (value: Readonly<Record<string, unknown>>) => void,
 ): void {
 	if (event.type === "agent_communication" || !shouldPublishSubagentEvent(event)
@@ -2357,7 +2571,7 @@ function repairSubagentNotifications(
 	queue: QueueCoordinator | undefined,
 	records: readonly SubagentTaskRecord[],
 	artifacts?: SessionArtifactStore,
-	store?: SQLiteSessionStore,
+	store?: RuntimeSessionStore,
 ): void {
 	if (!queue) return;
 	for (const record of [...records].reverse()) {
@@ -2404,7 +2618,7 @@ class SerializedSessionArtifactQueue {
 }
 
 function legacyConversationTranscript(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	sessionId: string,
 ): readonly TranscriptItem[] {
 	return Object.freeze(store.loadConversation(sessionId).map((message, index) => Object.freeze({
@@ -2415,7 +2629,7 @@ function legacyConversationTranscript(
 }
 
 function importLegacySnapshot(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	sessionId: string,
 	messages: readonly LegacySnapshotMessage[],
 	overview: SessionOverview | undefined,
@@ -2471,7 +2685,7 @@ function preparedFromReadOnlySnapshot(
 	};
 }
 
-function loadQueue(store: SQLiteSessionStore, sessionId: string): QueueSnapshot {
+function loadQueue(store: RuntimeSessionStore, sessionId: string): QueueSnapshot {
 	const payload = store.loadState(sessionId, "input_queue");
 	if (payload === undefined) return emptyQueue(sessionId);
 	const state = parseRuntimeState({ kind: "input_queue", version: 1, payload });
@@ -2526,7 +2740,7 @@ function emptyQueue(sessionId: string): QueueSnapshot {
 }
 
 function loadApprovalState(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	sessionId: string,
 ): {
 	readonly pendingApproval?: PendingSessionApproval;
@@ -2636,7 +2850,7 @@ function clarificationStateOption(value: unknown): {
 }
 
 function loadResponsesContinuation(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	sessionId: string,
 ): unknown | undefined {
 	const payload = store.loadState(sessionId, "responses_continuation_state");
@@ -2657,7 +2871,7 @@ function requiredStateString(value: unknown, label: string): string {
 }
 
 function listSessionsWithVirtualInitial(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	query: SessionListQuery,
 	initialSessionId: string,
 	initialWorkspaceRoot: string,
@@ -2723,11 +2937,17 @@ const AGENT_ENVIRONMENT_KEYS = Object.freeze([
 	"MYCLI_CI",
 	"MYCLI_RIPGREP_PATH_DIR",
 ]);
+const AGENT_ENVIRONMENT_VALUE_MAX_CHARS = 32_768;
 
 function agentEnvironmentSnapshot(env: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
 	return Object.freeze(Object.fromEntries(AGENT_ENVIRONMENT_KEYS.flatMap((key) => {
 		const value = env[key];
-		return typeof value === "string" ? [[key, value] as const] : [];
+		return typeof value === "string"
+			&& value.length > 0
+			&& value.length <= AGENT_ENVIRONMENT_VALUE_MAX_CHARS
+			&& !value.includes("\0")
+			? [[key, value] as const]
+			: [];
 	})));
 }
 

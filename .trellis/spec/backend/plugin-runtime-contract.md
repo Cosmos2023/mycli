@@ -2,21 +2,18 @@
 
 ## Overview
 
-The repository has two intentionally separate local plugin contracts. The
-independently launched Python reference runtime retains enabled repo/user
-`register(ctx)` plugins. The npm CLI starts only Node, which uses process-isolated
-Plugin API v2 for compiled ESM and never imports Python plugin source.
+The repository has one executable local plugin contract: process-isolated Plugin API v2 for
+compiled ESM. Legacy Python plugin directories are discovery-only migration candidates; Node never
+imports or spawns their source.
 
-Neither runtime implements marketplace install/update/remove, ACP, provider
-plugins, or an LLM facade.
+The runtime does not implement marketplace install/update/remove, ACP, provider plugins, or an LLM
+facade.
 
 ## Directory And Config Shape
 
 - Repo plugins live under `<workspace>/.mycli/plugins/<plugin_id>/`.
 - User plugins live under `<home>/.mycli/plugins/<plugin_id>/`.
-- A directory plugin contains:
-  - `plugin.yaml`
-  - `__init__.py` with callable `register(ctx)`
+- A v2 directory plugin contains `plugin.yaml` plus a relative compiled `.js` or `.mjs` entry.
 - Enablement is read from existing TOML config files:
   - repo `<workspace>/.mycli/config.toml`
   - user `<home>/.config/mycli/config.toml`
@@ -38,22 +35,17 @@ plugins, or an LLM facade.
 - `provides_commands`
 - `requires_env`
 
-Manifest parse errors, missing `__init__.py`, missing required env vars,
-duplicate ids/names, module load errors, and `register(ctx)` failures must be
-reported as bounded diagnostics, not process-fatal errors.
+Manifest parse errors, missing or unsafe entries, missing required env vars, duplicate ids/names,
+worker startup failures, and protocol failures must be reported as bounded diagnostics, not
+process-fatal errors.
 
 Duplicate plugin ids resolve deterministically: user source overrides repo
 source. The duplicate remains diagnostic-visible.
 
 ## Runtime Contract
 
-Enabled plugins are loaded into real runtime registries before turns execute:
-
-- `PluginContext.register_hook(...)` registers into `HookManager`.
-- `PluginContext.register_tool(...)` registers a local `SchemaTool` into
-  `ToolRegistry`.
-- `PluginContext.register_command(...)` registers a provider-free local command
-  into `PluginCommandRegistry`.
+Validated worker registrations are adapted into the real hook, tool, and command registries before
+turns execute.
 
 Plugin hook, tool, and command exceptions must be isolated:
 
@@ -90,14 +82,13 @@ and `error`.
 - Manifest parse success and malformed manifest diagnostics.
 - Repo/user discovery, explicit enable/disable, duplicate id/name reporting.
 - Load failure and missing env diagnostics.
-- `register(ctx)` hook and tool registration.
-- `register(ctx)` command registration and structured command execution.
+- v2 hook/tool/command registration and structured command execution.
 - Duplicate command id and handler exception diagnostics.
 - Plugin tool manifest source/id metadata.
 - Plugin command manifest source/id metadata.
 - `mycli plugins` human and JSON output.
 - Doctor plugin diagnostics.
-- Runtime initialization loads enabled plugin hooks/tools.
+- Runtime initialization loads enabled v2 plugin hooks/tools.
 - Provider-free smoke proving disabled-by-default, enabled load, hook execution,
   tool execution, command execution, and disabled override.
 
@@ -140,9 +131,8 @@ and `error`.
 - Valid tools, hooks, and commands are adapted through host-owned registries. Hook execution order
   is built-in, then configured command hooks, then Plugin API v2 hooks. `modify` results feed the
   next hook; deny/error stops fail-closed hook points before later sources run.
-- Python plugins belong only to the independently launched Python reference runtime. Node discovery
-  reports them as `migration_required` and does not import or spawn them. The npm CLI has no Python
-  sidecar, backend selector, automatic fallback, or source-compatible Python plugin execution path.
+- Legacy Python plugins are not executable. Node discovery reports them as `migration_required` and
+  does not import or spawn them; no source-compatible execution or fallback path exists.
 
 ### 4. Validation & Error Matrix
 

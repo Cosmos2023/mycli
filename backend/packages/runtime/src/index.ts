@@ -1,4 +1,132 @@
 export { NodeTurnRuntime } from "./node-turn-runtime.ts";
+export {
+	AGENT_EXECUTION_ADAPTER_ENV,
+	DEFAULT_AGENT_EXECUTION_ADAPTER,
+	parseAgentExecutionAdapter,
+	resolveAgentExecutionAdapters,
+	ROOT_AGENT_EXECUTION_ADAPTER_ENV,
+	SUBAGENT_EXECUTION_ADAPTER_ENV,
+} from "./agent-loop-contracts.ts";
+export type {
+	AgentContextBootstrap,
+	AgentContextDelta,
+	AgentExecutionAdapterKind,
+	AgentExecutionAdapterSelection,
+	AgentLoopPriority,
+	AgentTimelinePosition,
+	AgentToolAttempt,
+	AgentToolAttemptResult,
+} from "./agent-loop-contracts.ts";
+export { NodeTurnCoordinatorBroker } from "./node-turn-coordinator-broker.ts";
+export type {
+	CoordinatorProviderStepInput,
+	NodeTurnCoordinatorBrokerOptions,
+} from "./node-turn-coordinator-broker.ts";
+export { ProviderAgentLoop } from "./provider-agent-loop.ts";
+export type {
+	ProviderAgentLoopFailure,
+	ProviderAgentLoopInput,
+	ProviderAgentLoopResult,
+	ProviderAgentLoopStepResult,
+} from "./provider-agent-loop.ts";
+export {
+	InProcessProviderStepExecutor,
+} from "./provider-step-executor.ts";
+export type {
+	ProviderStepExecutionInput,
+	ProviderStepExecutor,
+} from "./provider-step-executor.ts";
+export {
+	AGENT_WORKER_PROVIDER_RPC_MAX_BYTES,
+	AgentWorkerProviderRpcError,
+	parseAgentWorkerProviderCommand,
+	parseAgentWorkerProviderResponse,
+} from "./agent-worker-provider-rpc.ts";
+export type {
+	AgentWorkerProviderCommand,
+	AgentWorkerProviderResponse,
+	AgentWorkerProviderTransportConfig,
+} from "./agent-worker-provider-rpc.ts";
+export { WorkerProviderStepExecutor } from "./worker-provider-step-executor.ts";
+export type {
+	WorkerProviderStepExecutorOptions,
+} from "./worker-provider-step-executor.ts";
+export {
+	AGENT_WORKER_MESSAGE_MAX_BYTES,
+	AGENT_WORKER_PAYLOAD_MAX_BYTES,
+	AGENT_WORKER_PROTOCOL_VERSION,
+	agentWorkerPayloadSha256,
+	AgentWorkerProtocolError,
+	parseAgentWorkerMessage,
+} from "./agent-worker-protocol.ts";
+export type {
+	AgentWorkerMessage,
+	AgentWorkerMessageKind,
+	AgentWorkerMessagePayload,
+} from "./agent-worker-protocol.ts";
+export {
+	AgentWorkerFence,
+	AgentWorkerFenceError,
+} from "./agent-worker-fence.ts";
+export type { ActiveAgentWorkerFence } from "./agent-worker-fence.ts";
+export {
+	AGENT_WORKER_TRANSPORT_MAX_BYTES,
+	DEFAULT_AGENT_WORKER_LARGE_CONTEXT_BYTES,
+	DEFAULT_AGENT_WORKER_MAX_AGE_MS,
+	DEFAULT_AGENT_WORKER_MAX_HEAP_GROWTH_BYTES,
+	DEFAULT_AGENT_WORKER_MAX_JOBS,
+	DEFAULT_AGENT_WORKER_RESOURCE_LIMITS,
+	DEFAULT_AGENT_WORKER_RSS_HARD_LIMIT_BYTES,
+	DEFAULT_AGENT_WORKER_RSS_POLL_INTERVAL_MS,
+	DEFAULT_AGENT_WORKER_RSS_SOFT_LIMIT_BYTES,
+	DEFAULT_AGENT_WORKER_SOFT_PRESSURE_QUEUE_TIMEOUT_MS,
+	AgentWorkerLease,
+	AgentWorkerMessageSizeError,
+	AgentWorkerPool,
+	AgentWorkerPoolCapacityError,
+	AgentWorkerPoolClosedError,
+	AgentWorkerPoolMemoryPressureError,
+	AgentWorkerStartupError,
+} from "./agent-worker-pool.ts";
+export type {
+	AcquireAgentWorkerLeaseInput,
+	AgentWorkerLeaseFailure,
+	AgentWorkerMemoryPressureState,
+	AgentWorkerPoolOptions,
+	AgentWorkerPoolSnapshot,
+	AgentWorkerResourceMetrics,
+} from "./agent-worker-pool.ts";
+export {
+	AGENT_WORKER_SNAPSHOT_CACHE_MAX_BYTES,
+	AGENT_WORKER_SNAPSHOT_CACHE_MAX_ENTRIES,
+	AgentWorkerContextError,
+	AgentWorkerContextState,
+	ImmutableAgentSnapshotCache,
+} from "./agent-worker-context.ts";
+export type {
+	AgentWorkerContextSnapshot,
+	AgentWorkerJobSecrets,
+	ImmutableAgentSnapshotCacheOptions,
+	ImmutableAgentSnapshotCacheStats,
+} from "./agent-worker-context.ts";
+export {
+	projectAgentWorkerToolResult,
+} from "./agent-worker-tool-output.ts";
+export type {
+	AgentWorkerToolArtifactStore,
+	ProjectAgentWorkerToolResultInput,
+} from "./agent-worker-tool-output.ts";
+export {
+	WorkerLeasedAgentThreadRuntimeFactory,
+	WorkerLeasedAgentThreadRuntimeHandle,
+} from "./worker-leased-agent-runtime.ts";
+export type {
+	WorkerLeasedAgentThreadRuntimeFactoryOptions,
+} from "./worker-leased-agent-runtime.ts";
+export { WorkerLeasedRootTurnRuntime } from "./worker-leased-root-runtime.ts";
+export type {
+	WorkerLeasedRootTurnRuntimeOptions,
+} from "./worker-leased-root-runtime.ts";
 export { AgentScheduler } from "./agent-scheduler.ts";
 export type {
 	AgentSchedulerCandidate,

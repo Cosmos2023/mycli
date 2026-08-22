@@ -16,6 +16,7 @@ import {
 	fenceWorkspaceInstructions,
 } from "./workspace-instructions.ts";
 import type { LoadedWorkspaceInstructions } from "./workspace-instructions.ts";
+import { collaborationModeDeveloperInstruction } from "./collaboration-mode.ts";
 
 export type RuntimeHookPoint = "user_prompt_submit" | "pre_tool_use" | "post_tool_use";
 
@@ -82,7 +83,7 @@ export function collectTurnContext(input: CollectTurnContextInput): TurnContext 
 			key: "collaboration-mode",
 			kind: "collaboration_mode",
 			title: "Collaboration mode",
-			content: tagged("collaboration_mode", input.sources.collaborationMode),
+			content: collaborationModeDeveloperInstruction(input.sources.collaborationMode),
 			role: "developer",
 			source: "runtime:collaboration-mode",
 			cacheClass: "dynamic",

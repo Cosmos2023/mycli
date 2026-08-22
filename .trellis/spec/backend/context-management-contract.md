@@ -13,21 +13,19 @@
 ### 2. Signatures
 
 - Loader:
-  `ContextFileLoader.load(workspace_root: Path, cwd: Path | None = None) -> LoadedContextFile`
+  `loadWorkspaceInstructions(input) -> LoadedWorkspaceInstructions`
 - Result:
-  `LoadedContextFile(content: str, diagnostics: ContextFileDiagnostics)`
+  `LoadedWorkspaceInstructions { content, diagnostics }`
 - Section:
   `TurnContextSection(..., cache_class: TurnContextCacheClass)`
-- Runtime context:
-  `ExecutionContext.context_file_content: str`
-  `ExecutionContext.context_file_diagnostics: dict[str, object]`
+- Runtime context fields: `workspaceInstructions` and `workspaceInstructionDiagnostics`.
 - Trace kinds:
   `context_diagnostics`
   `context_summary_persistence`
   `request_shape`
   `cache_shape_diagnostic`
 - Smoke:
-  `uv run python evaluation/context_smoke.py`
+  `npm run smoke:m8`
 
 ### 3. Contracts
 
@@ -142,6 +140,28 @@
   memory section to avoid repeated provider-visible context.
 - Repeated compaction summary persistence -> skip duplicates by content hash and
   report skipped count in `context_summary_persistence`.
+- Pre-turn compaction summary input must exclude both the fresh current-turn
+  suffix and every completed turn retained verbatim as the exact tail. Its
+  replacement is summary + exact tail + fresh suffix, with each source item
+  represented once.
+- Mid-turn and context-overflow compaction run only after completed tool results
+  are durable. Their summary input includes the active user/tool phase, while
+  replacement history retains recent real user messages plus the new summary
+  and removes completed tool-call, tool-result, and provider-reasoning replay.
+  The append-only readable transcript remains unchanged. Active-turn compaction
+  must not rehydrate file contents into the provider-only replacement.
+- Pre-turn and user-requested compaction may rehydrate bounded workspace files.
+  Their reported `afterTokens` and savings ratio must include that provider-only
+  rehydration instead of measuring only the persisted replacement history.
+- Provider replay state may persist a non-negative `tokenEstimate` derived from
+  the successful provider step's `reasoning_tokens`. Compaction uses that value
+  for opaque reasoning replay instead of tokenizing ciphertext. For legacy replay
+  state without an estimate, token accounting recursively excludes opaque
+  `encrypted_content` and signature fields while retaining readable summaries
+  and metadata.
+- Once `compaction_started` is emitted, summary-generation failure or interruption
+  must emit a terminal `compaction_completed(status=failed)` event with unchanged
+  before/after token counts. A failed summary must not replace canonical history.
 - Doctor with no traces -> context check still reports loader and session summary
   state without creating traces.
 - Doctor with context traces -> report counts and token maxima only.
@@ -177,10 +197,16 @@
 - Good: runtime environment renders `filesystem=workspace_write`,
   `network=enabled`, `shell=restricted`, and `execpolicy_rule_count=2` without
   raw rule patterns.
+- Good: active-turn compaction returns `rehydration=[]` and sends only retained
+  user intent plus the compact summary to the next provider step.
+- Good: pre-turn compaction reports `afterTokens` from its rehydrated
+  `providerConversation`, even though persisted replacement items omit file bodies.
 - Base: a fresh workspace without context files has no workspace context section
   and no failure.
 - Bad: injecting `Ignore previous instructions...` raw from a project file.
 - Bad: rendering session summaries as ordinary current user text.
+- Bad: measuring compaction savings from persisted replacement items before
+  provider-only file rehydration is injected.
 - Bad: doctor printing project context text, memory values, or trace payloads.
 
 ### 6. Tests Required
@@ -196,8 +222,31 @@
   boundaries, provider projection metadata, and compact policy metadata.
 - Runtime/trace tests for context diagnostics and summary persistence when
   compaction summaries are produced.
+- Runtime tests proving mid-turn compaction happens after tool-result
+  persistence and before the next provider request, including a context-overflow
+  fallback when the proactive threshold check does not compact.
+- Coordinator tests proving both active-turn sources omit rehydration, pre-turn
+  `afterTokens` equals the actual provider conversation estimate, and
+  `minSavingsRatio` uses that same estimate.
 - Runtime policy tests for sandbox enforcement denial ordering and bounded
   effect summaries.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const afterTokens = countItems(storedConversation);
+const providerConversation = injectRehydration(storedConversation, rehydration);
+```
+
+#### Correct
+
+```typescript
+const rehydration = isActiveTurnCompaction(source) ? [] : await rehydrate();
+const providerConversation = injectRehydration(storedConversation, rehydration);
+const afterTokens = countItems(providerConversation);
+```
 
 ---
 
@@ -305,28 +354,28 @@ startup.
 Expose one stable `Skill` tool, render a catalog of names/descriptions, and
 inject detailed skill instructions only after explicit activation.
 - Doctor tests for bounded context diagnostics and raw-content redaction.
-- Provider-free `evaluation/context_smoke.py`, including stable prefix hash
-  stability when only ephemeral/current intent changes.
+- Provider-free context/cache tests, including stable prefix hash stability when only
+  ephemeral/current intent changes.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
-```python
-workspace_instructions = (workspace / "AGENTS.md").read_text()
-section = TurnContextSection(..., content=workspace_instructions)
+```typescript
+const workspaceInstructions = readFileSync(join(workspace, "AGENTS.md"), "utf8");
+const section = { ...baseSection, content: workspaceInstructions };
 ```
 
 #### Correct
 
-```python
-loaded = ContextFileLoader().load(workspace_root=workspace, cwd=cwd)
-section = TurnContextSection(
-    ...,
-    content=fence_reference_context(loaded.content),
-    metadata={"context_file": loaded.diagnostics.to_dict()},
-    cache_class=TurnContextCacheClass.STATIC,
-)
+```typescript
+const loaded = loadWorkspaceInstructions({ workspaceRoot: workspace, cwd });
+const section = {
+  ...baseSection,
+  content: fenceWorkspaceInstructions(loaded.content),
+  metadata: { contextFile: loaded.diagnostics },
+  cacheClass: "static",
+};
 ```
 
 ## Scenario: Resume/Fork Runtime Continuity And Compact Boundary Guard
@@ -342,19 +391,16 @@ section = TurnContextSection(
 
 ### 2. Signatures
 
-- Resume:
-  `TurnService.resume_session(session_id: str | None = None) -> tuple[str, ...]`
-- Fork:
-  `TurnService.fork_session(source_session_id, new_session_id, fork_point) -> tuple[str, ...]`
+- Resume: `SessionCoordinator.resume(sessionId) -> Promise<ActiveSessionSnapshot>`.
+- Fork persistence: `SQLiteSessionStore.forkSession(input) -> ForkSessionResult`.
 - Session continuity trace:
   `RuntimeTraceEvent(kind="session_continuity", ...)`
 - Doctor check:
   `DoctorCheck.name == "session_continuity"`
 - Protected compact boundary modules:
-  `src/mycli/domain/runtime/compaction_rehydration.py`
-  `src/mycli/services/context/compaction.py`
-  `src/mycli/services/context/compaction/rehydration.py`
-  `src/mycli/services/context/compaction/pipeline.py`
+  `backend/packages/runtime/src/compaction-coordinator.ts`
+  `backend/packages/runtime/src/model-input-pipeline.ts`
+  `backend/packages/runtime/src/memory-context-service.ts`
 
 ### 3. Contracts
 
@@ -445,33 +491,33 @@ section = TurnContextSection(
 - Cache stability regression proving compaction rehydration stays dynamic and
   does not affect stable prefix hash or `prompt_cache_key`.
 - Compact boundary diff audit before completion:
-  `git diff -- src/mycli/domain/runtime/compaction_rehydration.py src/mycli/services/context/compaction.py src/mycli/services/context/compaction/rehydration.py src/mycli/services/context/compaction/pipeline.py`
+  `git diff -- backend/packages/runtime/src/compaction-coordinator.ts backend/packages/runtime/src/model-input-pipeline.ts backend/packages/runtime/src/memory-context-service.ts`
   must be empty for runtime-continuity-only work.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
-```python
-event.payload["user_message"] = suspended.user_message
-trace_summary = json.dumps(event.payload)
+```typescript
+event.payload.userMessage = suspended.userMessage;
+const traceSummary = JSON.stringify(event.payload);
 ```
 
 #### Correct
 
-```python
-RuntimeTraceEvent(
-    kind="session_continuity",
-    turn_id="session_resume",
-    payload={
-        "action": "resume",
-        "result": "resolved",
-        "lineage_switched": True,
-        "message_count": len(conversation.messages),
-        "pending_decision": pending_decision is not None,
-        "pending_clarification": pending_clarification is not None,
-    },
-)
+```typescript
+const event = {
+  kind: "session_continuity",
+  turnId: "session_resume",
+  payload: {
+    action: "resume",
+    result: "resolved",
+    lineageSwitched: true,
+    messageCount: conversation.messages.length,
+    pendingDecision: pendingDecision !== undefined,
+    pendingClarification: pendingClarification !== undefined,
+  },
+};
 ```
 
 ## Scenario: Canonical Timeline Persistence Contract
@@ -590,20 +636,18 @@ RuntimeTraceEvent(
 
 #### Wrong
 
-```python
-fragment.metadata["provider_state"] = {"codex_reasoning_items": encrypted}
-baseline.fragments.append(fragment)
+```typescript
+fragment.metadata.providerState = { codexReasoningItems: encrypted };
+baseline.fragments.push(fragment);
 ```
 
 #### Correct
 
-```python
-request_metadata["provider_state_keys"] = tuple(sorted(provider_state))
-baseline_metadata = {
-    key: value
-    for key, value in fragment.metadata.items()
-    if key not in {"provider_state", "prompt_cache_key", "cache_control"}
-}
+```typescript
+requestMetadata.providerStateKeys = Object.keys(providerState).sort();
+const baselineMetadata = Object.fromEntries(Object.entries(fragment.metadata).filter(
+  ([key]) => !["provider_state", "prompt_cache_key", "cache_control"].includes(key),
+));
 ```
 
 ## Scenario: Node Provider-Input Timeline Windows
@@ -758,8 +802,8 @@ prefix, and append the fenced permission context chronologically before the curr
 
 ### 3. Contracts
 
-- Error classification must be centralized in `recovery.py`; runtime tests
-  should not assert on scattered string matching in `TurnExecutor`.
+- Error classification must be centralized at the provider/runtime recovery boundary; runtime tests
+  should not assert on scattered string matching in individual executors.
 - `invalid_encrypted_content` recovery clears Responses continuation state from
   the session and active adapter, retries once, and records a bounded
   `recovery_diagnostic` trace row. It must not flatten encrypted reasoning or
@@ -840,26 +884,25 @@ prefix, and append the fenced permission context chronologically before the curr
 
 #### Wrong
 
-```python
-if "encrypted_content" in str(exc):
-    trace.append({"raw_message": str(exc), "encrypted_content": blob})
-    retry()
+```typescript
+if (String(error).includes("encrypted_content")) {
+  trace.push({ rawMessage: String(error), encryptedContent: blob });
+  retry();
+}
 ```
 
 #### Correct
 
-```python
-classification = ErrorClassifier().classify(exc)
-decision = RecoveryPolicy().decide(classification)
-trace.append(
-    RuntimeTraceEvent(
-        kind="recovery_diagnostic",
-        payload={
-            **classification.to_trace_payload(),
-            **decision.to_trace_payload(attempt=1),
-        },
-    )
-)
+```typescript
+const classification = errorClassifier.classify(error);
+const decision = recoveryPolicy.decide(classification);
+trace.push({
+  kind: "recovery_diagnostic",
+  payload: {
+    ...classification.toTracePayload(),
+    ...decision.toTracePayload({ attempt: 1 }),
+  },
+});
 ```
 
 ## Scenario: Provider Wire Cache Policy Projection
@@ -1068,30 +1111,28 @@ trace.append(
 - Unit test redacted dry-run runtime diagnostics contract.
 - Unit test provider cache usage telemetry normalization and doctor policy
   validation states.
-- Provider-free `evaluation/provider_cache_policy_smoke.py` covering all three
-  provider lanes plus P4 capability resolution, dry-run comparison, snapshot
-  counts, runtime diagnostics fields, and telemetry normalization fields.
+- Provider package tests cover all three provider lanes plus capability resolution, dry-run
+  comparison, snapshot counts, runtime diagnostics fields, and telemetry normalization fields.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
-```python
-block.metadata["cache_control"] = {"type": "ephemeral"}
-trace_payload["provider_request_policy"] = {"prompt_cache_key": full_key}
-quirk = infer_from_payload_body(raw_provider_payload)
+```typescript
+block.metadata.cacheControl = { type: "ephemeral" };
+tracePayload.providerRequestPolicy = { promptCacheKey: fullKey };
+const quirk = inferFromPayloadBody(rawProviderPayload);
 ```
 
 #### Correct
 
-```python
-wire_block = {"type": "text", "text": block.text}
-wire_block["cache_control"] = {"type": "ephemeral"}
-trace_payload["provider_request_policy"] = {
-    "prompt_cache_key_hash": stable_hash(full_key),
-    "prompt_cache_key_preview": full_key[:48] + "...",
-}
-quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config.protocol)
+```typescript
+const wireBlock = { type: "text", text: block.text, cache_control: { type: "ephemeral" } };
+tracePayload.providerRequestPolicy = {
+  promptCacheKeyHash: stableHash(fullKey),
+  promptCacheKeyPreview: `${fullKey.slice(0, 48)}...`,
+};
+const quirk = resolveProviderQuirkProfile(config.provider, config.protocol);
 ```
 
 ## Scenario: Provider Adapter Replay Hardening
@@ -1202,8 +1243,8 @@ quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config
 - Unit tests prove bootstrap developer-role downgrade remains explicit and dynamic developer context
   remains at its chronological position.
 - Registry test proves only resolved `provider=deepseek` enables the downgrade.
-- Real Node agent smoke proves a DeepSeek Chat child completes its first
-  provider turn and tool call without starting Python.
+- Real Node agent smoke proves a DeepSeek Chat child completes its first provider turn and tool call
+  through the worker runtime.
 - Unit test Anthropic wire-only cache control remains non-mutating.
 - Unit test Anthropic ignores Responses-private reasoning while preserving
   Anthropic thinking metadata.
@@ -1213,19 +1254,17 @@ quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config
 
 #### Wrong
 
-```python
-content.append({"type": "thinking", "thinking": block.text})
-chat_message["reasoning"] = {"encrypted_content": encrypted}
+```typescript
+content.push({ type: "thinking", thinking: block.text });
+chatMessage.reasoning = { encrypted_content: encrypted };
 ```
 
 #### Correct
 
-```python
-if block.metadata.get("anthropic", {}).get("type") == "thinking":
-    content.append(anthropic_thinking_block)
-
-responses_items.extend(responses_replay_items(item.metadata.get("provider_state")))
-chat_message = sanitize_provider_private(chat_message)
+```typescript
+if (block.metadata.anthropic?.type === "thinking") content.push(anthropicThinkingBlock);
+responsesItems.push(...responsesReplayItems(item.metadata.providerState));
+const chatMessage = sanitizeProviderPrivate(inputChatMessage);
 ```
 
 ## Scenario: Compact Cheap Pruning / Tail Protection
@@ -1327,10 +1366,10 @@ chat_message = sanitize_provider_private(chat_message)
 
 ### 3. Contracts
 
-- Memory is disabled by default in both Python and Node. It requires an
+- Memory is disabled by default. It requires an
   explicit `[memory].enabled = true` or `MYCLI_MEMORY_ENABLED=true` opt-in.
 - Memory is rooted at
-  `~/.mycli/projects/<python-compatible-real-workspace-key>/memory`.
+  `~/.mycli/projects/<canonical-real-workspace-key>/memory`.
 - `MEMORY.md` and topic reads use strict UTF-8 and realpath confinement. Model
   selected filenames are resolved only through the in-memory scan allowlist.
 - Topic and index writes use synced sibling temporary files and atomic rename.
@@ -1340,7 +1379,7 @@ chat_message = sanitize_provider_private(chat_message)
   ownership metadata and file identity. If ownership cannot be proved after a
   path swap, cleanup leaves the file in place rather than unlinking an unrelated
   path.
-- Default selection is deterministic and local, using Python-compatible token
+- Default selection is deterministic and local, using stable token
   weights, recency, and Unicode code-point filename ordering. It must not make
   a provider request. An explicitly composed provider selector has no tools, is
   capped at 512 output tokens, and receives the active turn abort signal.
@@ -1349,6 +1388,9 @@ chat_message = sanitize_provider_private(chat_message)
 - Provider-visible memory is token-bounded, fenced as reference content, placed
   after compaction rehydration and before fresh input, and never persisted into
   canonical history.
+- Session-summary discovery uses the indexed recent-summary read and considers only the latest eight
+  summaries before deduplication and token trimming. It must not materialize hundreds of historical
+  compact summaries merely to enforce the 5,000-token aggregate memory budget.
 - The runtime collects memory at most once per provider loop and reuses the
   resulting transient item for every tool-continuation request in that loop.
 - Explicit remember/forget runs only after durable successful turn completion.
@@ -1368,6 +1410,8 @@ chat_message = sanitize_provider_private(chat_message)
   fallback; an empty query or memory set makes no selector provider request.
 - Disabled memory -> no scan, summary load, selector request, injection, or
   explicit mutation.
+- Hundreds of session summaries -> request only the latest eight in chronological order, then apply
+  the normal per-record and aggregate token budgets.
 
 ### 5. Good/Base/Bad Cases
 
@@ -1389,8 +1433,8 @@ chat_message = sanitize_provider_private(chat_message)
   topics and complete index entries.
 - Lock tests for dead stale recovery, live-owner timeout, and old live-owner
   preservation.
-- Selector tests for JSON validation, allowlisting, five-file bounds, Python
-  ordering, deterministic fallback, and AbortSignal propagation.
+- Selector tests for JSON validation, allowlisting, five-file bounds, Unicode code-point ordering,
+  deterministic fallback, and AbortSignal propagation.
 - Runtime tests for placement after rehydration, absence from durable history,
   disabled/failed/interrupted behavior, post-success explicit actions, and
   single collection across a multi-step provider loop.

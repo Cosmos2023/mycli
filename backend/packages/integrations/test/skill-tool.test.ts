@@ -24,8 +24,15 @@ test("exposes one stable Skill definition regardless of discovered skill count",
 	assert.deepEqual(populatedRegistration.definition.inputSchema, {
 		type: "object",
 		properties: {
-			name: { type: "string", minLength: 1 },
-			reason: { type: "string" },
+			name: {
+				type: "string",
+				minLength: 1,
+				description: "Exact skill name from the model-visible skill catalog.",
+			},
+			reason: {
+				type: "string",
+				description: "Optional compatibility context for why the skill is being loaded; it does not affect skill selection.",
+			},
 		},
 		required: ["name"],
 		additionalProperties: false,

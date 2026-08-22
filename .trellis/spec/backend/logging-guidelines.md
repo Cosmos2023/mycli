@@ -298,31 +298,25 @@ the local log root and must never become provider transcript inputs.
 ### 7. Wrong vs Correct
 
 Wrong:
-```python
-WorkspaceLogService(
-    workspace_root=workspace_root,
-    logs_root=home_dir / ".mycli" / "logs" / session_id,
-)
+```typescript
+const logsRoot = join(homeDir, ".mycli", "logs", sessionId);
+const logger = createWorkspaceLogger({ workspaceRoot, logsRoot });
 ```
 
 Correct:
-```python
-layout = MycliStorageLayout.from_home_dir(home_dir)
-WorkspaceLogService(
-    workspace_root=workspace_root,
-    logs_root=layout.logs_dir,
-    session_id=config.session_id,
-)
+```typescript
+const logsRoot = join(homeDir, ".mycli", "logs");
+const logger = createWorkspaceLogger({ workspaceRoot, logsRoot, sessionId });
 ```
 
 Wrong:
-```python
-write_json(path, provider_payload)
+```typescript
+await writeJson(path, providerPayload);
 ```
 
 Correct:
-```python
-write_json(path, redact_payload(provider_payload))
+```typescript
+await writeJson(path, redactPayload(providerPayload));
 ```
 
 ## Log Levels

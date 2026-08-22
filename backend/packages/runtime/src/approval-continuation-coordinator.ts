@@ -27,10 +27,11 @@ import type {
 } from "@mycli/storage";
 import type {
 	ExecutionPolicy,
+	PreparedMutationGuard,
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
-import { shellCallRequestsSandboxOverride } from "@mycli/tools";
+import { toolCallRequestsSandboxOverride } from "@mycli/tools";
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
@@ -54,6 +55,7 @@ export interface ApprovalSuspensionInput {
 	readonly reason: string;
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
+	readonly preparedMutationGuard?: PreparedMutationGuard;
 }
 
 export interface PendingApprovalContinuation {
@@ -69,6 +71,7 @@ export interface PendingApprovalContinuation {
 	readonly options: readonly ApprovalChoice[];
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
+	readonly preparedMutationGuard?: PreparedMutationGuard;
 	readonly providerProtocol: ProtocolId;
 	readonly userMessage: string;
 	readonly call: CanonicalToolCall;
@@ -298,7 +301,7 @@ export class ApprovalContinuationCoordinator {
 			transition: { type: "approve_once" },
 		});
 		this.#failpoint("approval_after_resolution");
-		const fingerprint = effectFingerprint(pending.call);
+		const fingerprint = effectFingerprint(pending.call, pending.preparedMutationGuard);
 		const executing = this.#store.compareAndSetApproval({
 			sessionId: this.#sessionId,
 			expectedStatus: "approved",
@@ -318,8 +321,11 @@ export class ApprovalContinuationCoordinator {
 				callId: pending.call.callId,
 				publishLifecycle: this.#publishLifecycle,
 				...(input.executionPolicy ? { executionPolicy: input.executionPolicy } : {}),
-				...(shellCallRequestsSandboxOverride(pending.call)
+				...(toolCallRequestsSandboxOverride(pending.call)
 					? { sandboxOverrideApproved: true }
+					: {}),
+				...(pending.preparedMutationGuard
+					? { preparedMutationGuard: pending.preparedMutationGuard }
 					: {}),
 			});
 		} catch {
@@ -412,6 +418,9 @@ function pendingFromInput(
 		...(input.proposedExecPolicyPattern ? {
 			proposedExecPolicyPattern: requiredPattern(input.proposedExecPolicyPattern, "persistent approval"),
 		} : {}),
+		...(input.preparedMutationGuard ? {
+			preparedMutationGuard: freezePreparedMutationGuard(input.preparedMutationGuard),
+		} : {}),
 		providerProtocol: input.providerProtocol,
 		userMessage: input.userMessage,
 		call: freezeCall(input.call),
@@ -442,6 +451,9 @@ function pendingFromStates(
 	const metadata = record(pending.payload.metadata);
 	const commandPattern = optionalPattern(metadata.command_pattern_tokens);
 	const proposedExecPolicyPattern = optionalPattern(pending.payload.proposed_execpolicy_pattern);
+	const preparedMutationGuard = optionalPreparedMutationGuard(
+		metadata.prepared_mutation_guard,
+	);
 	const suspendedProposal = optionalPattern(
 		suspended.payload.pending_approval?.proposed_execpolicy_pattern,
 	);
@@ -464,6 +476,7 @@ function pendingFromStates(
 		options: restoredApprovalOptions(pending.payload.options, commandPattern, proposedExecPolicyPattern),
 		...(commandPattern ? { commandPattern } : {}),
 		...(proposedExecPolicyPattern ? { proposedExecPolicyPattern } : {}),
+		...(preparedMutationGuard ? { preparedMutationGuard } : {}),
 		providerProtocol: payload.provider_protocol ?? "responses",
 		userMessage: payload.user_message,
 		call,
@@ -502,6 +515,11 @@ function pendingDecisionState(
 				source: "node_runtime",
 				...(pending.commandPattern ? {
 					command_pattern_tokens: [...pending.commandPattern],
+				} : {}),
+				...(pending.preparedMutationGuard ? {
+					prepared_mutation_guard: storedPreparedMutationGuard(
+						pending.preparedMutationGuard,
+					),
 				} : {}),
 			},
 		},
@@ -596,11 +614,16 @@ function checkpointFromResolution(checkpoint: ApprovalCheckpoint): ApprovalCheck
 	return Object.freeze(checkpoint);
 }
 
-function effectFingerprint(call: CanonicalToolCall): string {
+function effectFingerprint(
+	call: CanonicalToolCall,
+	guard: PreparedMutationGuard | undefined,
+): string {
 	return `sha256:${createHash("sha256")
 		.update(call.name)
 		.update("\0")
 		.update(call.argumentsJson)
+		.update("\0")
+		.update(guard?.mutationId ?? "")
 		.digest("hex")}`;
 }
 
@@ -754,6 +777,88 @@ function optionalPattern(value: unknown): readonly string[] | undefined {
 	return Object.freeze([...(value as string[])]);
 }
 
+function storedPreparedMutationGuard(
+	guard: PreparedMutationGuard,
+): Readonly<Record<string, unknown>> {
+	const frozen = freezePreparedMutationGuard(guard);
+	return Object.freeze({
+		version: 1,
+		mutation_id: frozen.mutationId,
+		intent_sha256: frozen.intentSha256,
+		targets: Object.freeze(frozen.targets.map((target) => Object.freeze({
+			path_sha256: target.pathSha256,
+			existed: target.existed,
+			...(target.contentSha256 ? { content_sha256: target.contentSha256 } : {}),
+			...(target.size === undefined ? {} : { size: target.size }),
+			...(target.mtimeNs ? { mtime_ns: target.mtimeNs } : {}),
+			...(target.resultSha256 ? { result_sha256: target.resultSha256 } : {}),
+		}))),
+	});
+}
+
+function optionalPreparedMutationGuard(value: unknown): PreparedMutationGuard | undefined {
+	if (value === undefined) return undefined;
+	const source = record(value);
+	const targets = Array.isArray(source.targets) ? source.targets : [];
+	if (source.version !== 1
+		|| !isSha256(source.mutation_id)
+		|| !isSha256(source.intent_sha256)
+		|| targets.length < 1
+		|| targets.length > 128) {
+		throw new ApprovalNotPendingError();
+	}
+	const parsedTargets = targets.map((value): PreparedMutationGuard["targets"][number] => {
+		const target = record(value);
+		if (!isSha256(target.path_sha256)
+			|| typeof target.existed !== "boolean"
+			|| target.content_sha256 !== undefined && !isSha256(target.content_sha256)
+			|| target.result_sha256 !== undefined && !isSha256(target.result_sha256)
+			|| target.size !== undefined && (!Number.isSafeInteger(target.size) || Number(target.size) < 0)
+			|| target.mtime_ns !== undefined
+				&& (typeof target.mtime_ns !== "string" || !/^\d{1,32}$/u.test(target.mtime_ns))) {
+			throw new ApprovalNotPendingError();
+		}
+		return Object.freeze({
+			pathSha256: target.path_sha256,
+			existed: target.existed,
+			...(typeof target.content_sha256 === "string"
+				? { contentSha256: target.content_sha256 }
+				: {}),
+			...(typeof target.size === "number" ? { size: target.size } : {}),
+			...(typeof target.mtime_ns === "string" ? { mtimeNs: target.mtime_ns } : {}),
+			...(typeof target.result_sha256 === "string"
+				? { resultSha256: target.result_sha256 }
+				: {}),
+		});
+	});
+	return freezePreparedMutationGuard({
+		version: 1,
+		mutationId: source.mutation_id,
+		intentSha256: source.intent_sha256,
+		targets: parsedTargets,
+	});
+}
+
+function freezePreparedMutationGuard(guard: PreparedMutationGuard): PreparedMutationGuard {
+	if (guard.version !== 1
+		|| !isSha256(guard.mutationId)
+		|| !isSha256(guard.intentSha256)
+		|| guard.targets.length < 1
+		|| guard.targets.length > 128) {
+		throw new TypeError("prepared mutation guard is invalid");
+	}
+	return Object.freeze({
+		version: 1,
+		mutationId: guard.mutationId,
+		intentSha256: guard.intentSha256,
+		targets: Object.freeze(guard.targets.map((target) => Object.freeze({ ...target }))),
+	});
+}
+
+function isSha256(value: unknown): value is string {
+	return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
 function tuplePattern(value: readonly string[]): [string, ...string[]] {
 	return [...requiredPattern(value, "exec policy")] as [string, ...string[]];
 }
@@ -772,7 +877,7 @@ function isApprovingChoice(value: ApprovalChoice): boolean {
 
 function reasoningEffort(value: unknown): ReasoningEffort | undefined {
 	return typeof value === "string"
-		&& new Set<ReasoningEffort>(["none", "minimal", "low", "medium", "high", "xhigh"])
+		&& new Set<ReasoningEffort>(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
 			.has(value as ReasoningEffort)
 		? value as ReasoningEffort
 		: undefined;

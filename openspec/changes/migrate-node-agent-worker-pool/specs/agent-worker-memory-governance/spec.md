@@ -51,6 +51,37 @@ The pool SHALL create Workers on demand up to configured capacity, SHALL maintai
 - **WHEN** a burst expands the pool and Workers later remain idle beyond the configured timeout
 - **THEN** excess idle Workers terminate without changing logical session or mailbox state
 
+#### Scenario: Operator selects a low-memory profile
+- **WHEN** startup receives valid bounded Worker-capacity and idle-timeout overrides
+- **THEN** the shared root/child pool uses those values while preserving the default four-Worker capacity and 30-second idle timeout when overrides are absent
+
+#### Scenario: Worker lifecycle override is invalid
+- **WHEN** a nonblank capacity or idle-timeout override is malformed or outside its documented bounds
+- **THEN** startup fails before Worker creation with a bounded diagnostic that does not include the supplied value
+
+### Requirement: Readable transcript projection separates resume state from complete history
+Session resume and derived artifact snapshots SHALL use indexed bounded SQLite tail reads, while the transcript RPC SHALL rebuild all filtered user-visible history and support bounded page delivery. Neither projection SHALL replace canonical provider-history reconstruction.
+
+#### Scenario: Long session snapshot is rebuilt
+- **WHEN** a session has more rows than the readable raw-history window
+- **THEN** the resumable session/artifact snapshot loads only the bounded tail, omits an incomplete earliest turn at the boundary, and retains at most 500 readable transcript items
+
+#### Scenario: TUI requests history before the snapshot tail
+- **WHEN** the TUI requests the complete transcript or follows `next_before` across pages
+- **THEN** the RPC filters complete canonical history, excludes internal compaction replacements and other model-only rows, uses an opaque versioned sequence cursor, keeps each complete turn on one page, and can reach every surviving user-visible item
+
+#### Scenario: Transcript viewer reaches its current top
+- **WHEN** an older-page cursor exists and the user scrolls to the top of the loaded transcript
+- **THEN** the TUI requests at most one 500-item page, prepends deduplicated items without moving the previously visible rows, and does not load the complete transcript eagerly
+
+#### Scenario: Memory-enabled session has hundreds of summaries
+- **WHEN** memory context is collected for a session with hundreds of completed compactions
+- **THEN** storage returns only the latest eight summaries before the existing per-record and aggregate token budgets are applied
+
+#### Scenario: Provider continues after repeated compactions
+- **WHEN** a resumed session contains multiple completed compaction boundaries
+- **THEN** provider model input starts from the latest valid replacement plus its suffix, while transcript reconstruction retains visible turns from before and after every boundary and preserves prompt-cache behavior for the effective provider window
+
 ### Requirement: Worker resource limits and recycling
 Agent Workers SHALL use configured V8 resource limits and SHALL be recycled only while idle after configured job-count, age, large-context, heap-growth, or protocol-health thresholds.
 
@@ -61,6 +92,10 @@ Agent Workers SHALL use configured V8 resource limits and SHALL be recycled only
 #### Scenario: Worker reaches a hard V8 limit during a turn
 - **WHEN** the Worker terminates because its configured isolate resource limit is exceeded
 - **THEN** the coordinator treats it as a fenced Worker failure, applies durable tool/turn recovery, and does not corrupt unrelated leases
+
+#### Scenario: Provider transport is reused for a long-running soak
+- **WHEN** repeated leases execute provider steps through the production Worker entrypoint and provider RPC path with forced-GC checkpoints after warmup
+- **THEN** released leases retain no message listeners, configured job-count recycling continues, and coordinator heap, coordinator external memory, and Worker heap remain within documented steady-state growth bounds
 
 ### Requirement: Process-wide memory pressure scheduling
 The coordinator SHALL apply configured process RSS soft and hard pressure behavior without silently truncating committed provider context.
@@ -74,7 +109,7 @@ The coordinator SHALL apply configured process RSS soft and hard pressure behavi
 - **THEN** the pool refuses expansion or new background leases with an explicit capacity outcome instead of deleting model-visible context
 
 ### Requirement: Memory observability is redacted and non-model-visible
-The system SHALL expose bounded Worker count, lease state, heap, RSS, recycling, and pressure diagnostics for operations and tests, and SHALL exclude credentials, prompts, conversation content, tool output, paths, and session text from those diagnostics and provider context.
+The system SHALL expose bounded Worker count, lease state, message-listener count, heap, RSS, recycling, and pressure diagnostics for operations and tests, and SHALL exclude credentials, prompts, conversation content, tool output, paths, and session text from those diagnostics and provider context.
 
 #### Scenario: Memory diagnostics are recorded
 - **WHEN** profiling or diagnostics are explicitly enabled

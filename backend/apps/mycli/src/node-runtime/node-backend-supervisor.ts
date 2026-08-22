@@ -31,7 +31,7 @@ interface ActiveTurnIdentity {
 	readonly turnId: string;
 }
 
-const DEFAULT_HARD_INTERRUPT_TIMEOUT_MS = 250;
+const DEFAULT_COORDINATOR_INTERRUPT_WATCHDOG_MS = 15_000;
 const CLOSE_TIMEOUT_MS = 500;
 
 export async function startSupervisedNodeBackend(
@@ -83,7 +83,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 				import.meta.url,
 			);
 		this.#hardInterruptTimeoutMs = options.hardInterruptTimeoutMs
-			?? DEFAULT_HARD_INTERRUPT_TIMEOUT_MS;
+			?? DEFAULT_COORDINATOR_INTERRUPT_WATCHDOG_MS;
 		this.#sessionId = flagValue(options.args, "--session");
 		this.#model = flagValue(options.args, "--model");
 		let resolveCompletion!: (code: number) => void;

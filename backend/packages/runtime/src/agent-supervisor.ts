@@ -22,6 +22,7 @@ import type {
 	SubagentTaskStore,
 } from "@mycli/storage";
 import { AgentScheduler } from "./agent-scheduler.ts";
+import type { ProviderStepExecutor } from "./provider-step-executor.ts";
 import {
 	SUBAGENT_TASK_PROGRESS_MAX_CHARS,
 	SUBAGENT_TASK_REPORT_MAX_CHARS,
@@ -70,11 +71,16 @@ export interface AgentThreadRuntimeHandle {
 		prompt: string,
 		signal: AbortSignal,
 		emit: (event: AgentThreadRuntimeEvent) => void,
+		turnId: string,
 	): Promise<AgentThreadRuntimeResult>;
 	runMailbox?(
 		signal: AbortSignal,
 		emit: (event: AgentThreadRuntimeEvent) => void,
+		turnId: string,
 	): Promise<AgentThreadRuntimeResult>;
+	bindProviderStepExecutor?(executor: ProviderStepExecutor | undefined): void;
+	forceInterrupt?(reason: string, turnId: string): Promise<boolean>;
+	recoverInterrupt?(reason: string, turnId: string): Promise<boolean>;
 	markIdle?(): void | Promise<void>;
 	send(message: string): Promise<void>;
 	interrupt(reason: string): Promise<void>;
@@ -153,6 +159,7 @@ export interface AgentSupervisorOptions {
 	readonly createTaskId?: () => string;
 	readonly createThreadId?: () => string;
 	readonly createEventId?: () => string;
+	readonly createTurnId?: () => string;
 	readonly clock?: () => string;
 	readonly shutdownTimeoutMs?: number;
 	readonly maxResidents?: number;
@@ -172,8 +179,14 @@ interface ResidentAgent {
 	usage: Readonly<Record<string, number>>;
 	terminalPublished: boolean;
 	finalizing: boolean;
+	interruption?: ResidentInterruption;
 	pendingFollowUp?: PendingAgentFollowUp;
 	completion?: Promise<SupervisedAgentStartResult>;
+}
+
+interface ResidentInterruption {
+	readonly reason: string;
+	readonly settled: Promise<boolean>;
 }
 
 interface PendingAgentFollowUp {
@@ -212,10 +225,10 @@ const MAX_SHUTDOWN_TIMEOUT_MS = 60_000;
 export class AgentSupervisor {
 	readonly #options: Required<Pick<
 		AgentSupervisorOptions,
-		"createTaskId" | "createThreadId" | "createEventId" | "clock" | "shutdownTimeoutMs"
+		"createTaskId" | "createThreadId" | "createEventId" | "createTurnId" | "clock" | "shutdownTimeoutMs"
 	>> & Omit<
 		AgentSupervisorOptions,
-		"createTaskId" | "createThreadId" | "createEventId" | "clock" | "shutdownTimeoutMs"
+		"createTaskId" | "createThreadId" | "createEventId" | "createTurnId" | "clock" | "shutdownTimeoutMs"
 	>;
 	readonly #pool = new AgentRuntimePool();
 	readonly #scheduler: AgentScheduler;
@@ -227,6 +240,7 @@ export class AgentSupervisor {
 			createTaskId: options.createTaskId ?? randomUUID,
 			createThreadId: options.createThreadId ?? randomUUID,
 			createEventId: options.createEventId ?? randomUUID,
+			createTurnId: options.createTurnId ?? randomUUID,
 			clock: options.clock ?? (() => new Date().toISOString()),
 			shutdownTimeoutMs: positiveTimeout(options.shutdownTimeoutMs),
 		};
@@ -385,25 +399,21 @@ export class AgentSupervisor {
 		const resident = this.#pool.get(childSessionId);
 		const thread = this.#options.threadStore.get(childSessionId);
 		if (!thread) return false;
-		resident?.abortController.abort();
-		this.#interruptTask(resident, reason);
-		if (thread.status !== "completed" && thread.status !== "failed" && thread.status !== "interrupted") {
-			const interrupted = this.#options.threadStore.transition({
+		if (resident) {
+			const interruption = this.#beginResidentInterruption(resident, reason);
+			if (!await interruption.settled) return false;
+			this.#terminalizeResidentInterruption(resident, interruption.reason);
+			await this.#publishResidentTerminal(resident);
+			this.#pool.remove(childSessionId);
+			this.#scheduler.release(childSessionId);
+		} else if (thread.status !== "completed"
+			&& thread.status !== "failed"
+			&& thread.status !== "interrupted") {
+			this.#options.threadStore.transition({
 				threadId: childSessionId,
 				status: "interrupted",
 				terminalSummary: boundedSummary(reason),
 			});
-			if (resident) resident.thread = interrupted;
-		}
-		if (resident) {
-			await this.#publishResidentTerminal(resident);
-			await bounded(Promise.allSettled([
-				resident.handle.interrupt(reason),
-				resident.closeOnce(),
-				...(resident.completion ? [resident.completion] : []),
-			]).then(() => undefined), this.#options.shutdownTimeoutMs);
-			this.#pool.remove(childSessionId);
-			this.#scheduler.release(childSessionId);
 		}
 		return true;
 	}
@@ -495,26 +505,28 @@ export class AgentSupervisor {
 			childSessionId: resident.thread.threadId,
 		};
 		let wallClockExhausted = false;
+		let interruptionCleanupFailed = false;
 		let wallClockTimer: ReturnType<typeof setTimeout> | undefined;
 		const wallClockMs = resident.thread.spawnConfig?.budget?.wallClockMs;
 		if (wallClockMs !== undefined) {
 			wallClockTimer = setTimeout(() => {
 				wallClockExhausted = true;
-				resident.abortController.abort();
-				void resident.handle.interrupt("agent budget exhausted: wall_clock")
-					.catch(() => undefined);
+				this.#beginResidentInterruption(resident, "agent budget exhausted: wall_clock");
 			}, wallClockMs);
 		}
 		try {
+			const turnId = this.#options.createTurnId();
 			const runtimeResult = mailboxTriggered && resident.handle.runMailbox
 				? await resident.handle.runMailbox(
 					resident.abortController.signal,
 					(event) => this.#recordRuntimeEvent(resident, event),
+					turnId,
 				)
 				: await resident.handle.run(
 					prompt,
 					resident.abortController.signal,
 					(event) => this.#recordRuntimeEvent(resident, event),
+					turnId,
 				);
 			const result: AgentThreadRuntimeResult = wallClockExhausted
 				? Object.freeze({
@@ -524,8 +536,16 @@ export class AgentSupervisor {
 					budgetExhausted: "wall_clock",
 				})
 				: runtimeResult;
+			if (resident.interruption) {
+				interruptionCleanupFailed = !await resident.interruption.settled;
+				if (!interruptionCleanupFailed && !wallClockExhausted) {
+					this.#terminalizeResidentInterruption(resident, resident.interruption.reason);
+				}
+			}
 			const current = this.#options.taskStore.get(resident.taskId);
-			if (current?.status === "running") {
+			const runtimeTerminalConfirmed = result.status !== "interrupted";
+			if ((!interruptionCleanupFailed || runtimeTerminalConfirmed)
+				&& current?.status === "running") {
 				const report = result.report.slice(0, SUBAGENT_TASK_REPORT_MAX_CHARS);
 				const usage = normalizedUsage(result.usage, resident.usage);
 				if (result.status === "completed") {
@@ -573,8 +593,14 @@ export class AgentSupervisor {
 					}
 			}
 		} catch {
+			if (resident.interruption) {
+				interruptionCleanupFailed = !await resident.interruption.settled;
+				if (!interruptionCleanupFailed && !wallClockExhausted) {
+					this.#terminalizeResidentInterruption(resident, resident.interruption.reason);
+				}
+			}
 			const current = this.#options.taskStore.get(resident.taskId);
-			if (current?.status === "running") {
+			if (!interruptionCleanupFailed && current?.status === "running") {
 				if (wallClockExhausted) {
 					const error = "agent_budget_exhausted: wall_clock";
 					this.#options.taskStore.fail({
@@ -732,6 +758,7 @@ export class AgentSupervisor {
 			resident.usage = Object.freeze({});
 			resident.terminalPublished = false;
 			resident.finalizing = false;
+			resident.interruption = undefined;
 			await this.#emit("started", runningThread, "Subagent follow-up started", runningTask);
 			resident.completion = this.#runResident(resident, "", true);
 			return true;
@@ -831,6 +858,47 @@ export class AgentSupervisor {
 			childSessionId: resident.thread.threadId,
 			reason: boundedSummary(reason),
 		});
+	}
+
+	#beginResidentInterruption(resident: ResidentAgent, reason: string): ResidentInterruption {
+		if (resident.interruption) return resident.interruption;
+		const boundedReason = boundedSummary(reason);
+		let interruptOperation: Promise<void>;
+		try {
+			interruptOperation = resident.handle.interrupt(boundedReason);
+		} catch (error) {
+			interruptOperation = Promise.reject(error);
+		}
+		resident.abortController.abort();
+		const settled = (async () => {
+			const interrupted = await bounded(
+				interruptOperation,
+				this.#options.shutdownTimeoutMs,
+			);
+			if (!interrupted) return false;
+			const closed = await bounded(
+				Promise.resolve().then(resident.closeOnce),
+				this.#options.shutdownTimeoutMs,
+			);
+			return closed;
+		})();
+		const interruption = Object.freeze({ reason: boundedReason, settled });
+		resident.interruption = interruption;
+		return interruption;
+	}
+
+	#terminalizeResidentInterruption(resident: ResidentAgent, reason: string): void {
+		this.#interruptTask(resident, reason);
+		const thread = this.#options.threadStore.get(resident.thread.threadId);
+		if (thread && thread.status !== "completed"
+			&& thread.status !== "failed"
+			&& thread.status !== "interrupted") {
+			resident.thread = this.#options.threadStore.transition({
+				threadId: resident.thread.threadId,
+				status: "interrupted",
+				terminalSummary: reason,
+			});
+		}
 	}
 
 	async #publishResidentTerminal(resident: ResidentAgent): Promise<void> {
@@ -1071,13 +1139,16 @@ function onceAsync(operation: () => Promise<void>): () => Promise<void> {
 	return () => result ??= operation();
 }
 
-async function bounded(operation: Promise<void>, timeoutMs: number): Promise<void> {
+async function bounded(operation: Promise<void>, timeoutMs: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	await Promise.race([
-		operation.catch(() => undefined),
-		new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
-	]);
-	if (timer) clearTimeout(timer);
+	try {
+		return await Promise.race([
+			operation.then(() => true, () => false),
+			new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
 }
 
 function deepFreeze<Value>(value: Value): Value {

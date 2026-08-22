@@ -64,11 +64,15 @@ export interface ChildRuntimeHandle {
 		prompt: string,
 		signal: AbortSignal,
 		emit: (event: ChildRuntimeEvent) => void,
+		turnId: string,
 	): Promise<ChildRuntimeResult>;
 	runMailbox?(
 		signal: AbortSignal,
 		emit: (event: ChildRuntimeEvent) => void,
+		turnId: string,
 	): Promise<ChildRuntimeResult>;
+	forceInterrupt?(reason: string, turnId: string): Promise<boolean>;
+	recoverInterrupt?(reason: string, turnId: string): Promise<boolean>;
 	markIdle?(): void | Promise<void>;
 	send(message: string): Promise<void>;
 	interrupt(reason: string): Promise<void>;

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
 import { fingerprintSubmission } from "@mycli/core";
 import { MemoryStore } from "@mycli/runtime";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore, type RuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
 
 type Protocol = "responses" | "chat_completions";
@@ -19,9 +19,9 @@ type JsonObject = Record<string, unknown>;
 
 const ROOT = new URL("../../../../", import.meta.url);
 
-test("Responses compacts, injects memory, resumes, and completes without Python", async (t) => {
+test("Worker-backed Responses root compacts, injects memory, resumes, and completes", async (t) => {
 	const paths = await scenarioPaths(t, "responses");
-	const store = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const store = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		seedCompletedTurn(store, paths.workspace, paths.sessionId, "old-a", longText("alpha"));
 		seedCompletedTurn(store, paths.workspace, paths.sessionId, "old-b", longText("beta"));
@@ -53,6 +53,7 @@ test("Responses compacts, injects memory, resumes, and completes without Python"
 		MYCLI_COMPACTION_TAIL_MAX_TOKENS: "128",
 		MYCLI_COMPACTION_L4_BUFFER_TOKENS: "32",
 		MYCLI_COMPACTION_L4_MIN_SAVINGS_RATIO: "0",
+		MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
 	});
 	t.after(() => first.close());
 
@@ -68,6 +69,10 @@ test("Responses compacts, injects memory, resumes, and completes without Python"
 		stringValue(request.body.instructions).includes("select memory files")
 	)).length, 0);
 	assert.equal(provider.requests.length, 2);
+	const summaryRequest = provider.requests.find((request) => (
+		stringValue(request.body.instructions).includes("Summarize the supplied conversation")
+	));
+	assert.equal(summaryRequest?.body.max_output_tokens, 4_096);
 	const mainRequest = provider.requests.find((request) => (
 		stringValue(request.body.instructions).startsWith("# Identity\n")
 	));
@@ -77,7 +82,7 @@ test("Responses compacts, injects memory, resumes, and completes without Python"
 	assert.equal(existsSync(paths.pythonMarker), false);
 	await first.close();
 
-	const persisted = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		const checkpoint = persisted.loadState(paths.sessionId, "compact_checkpoint") as JsonObject;
 		assert.equal(checkpoint.status, "completed");
@@ -97,7 +102,10 @@ test("Responses compacts, injects memory, resumes, and completes without Python"
 	const restarted = await startBackend(
 		{ ...paths, sessionId: "m5-responses-restart" },
 		provider.baseUrl,
-		{ MYCLI_MEMORY_ENABLED: "false" },
+		{
+			MYCLI_MEMORY_ENABLED: "false",
+			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+		},
 	);
 	t.after(() => restarted.close());
 	send(restarted.backend, "resume", "session.resume", { session_id: paths.sessionId });
@@ -146,9 +154,9 @@ test("queue and rejected steering state survive a backend restart", async (t) =>
 	await restarted.close();
 });
 
-test("a strict Write approval is re-emitted after restart and executes once", async (t) => {
+test("a strict Write approval resumes compactly after restart and executes once", async (t) => {
 	const paths = await scenarioPaths(t, "approval");
-	const seed = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		seedWaitingApproval(seed, paths.workspace, paths.sessionId, "call-write");
 	} finally {
@@ -169,6 +177,18 @@ test("a strict Write approval is re-emitted after restart and executes once", as
 		paths.sessionId,
 	));
 	assert.equal(paramValue(approval, "decision_id"), "call-write");
+	assert.equal(paramValue(approval, "preview"), "Write notes.txt");
+	for (const detail of [
+		"content_preview",
+		"content_line_count",
+		"content_chars",
+		"content_truncated",
+		"diff",
+		"diff_chars",
+		"diff_truncated",
+	]) {
+		assert.equal(paramValue(approval, detail), undefined);
+	}
 	send(restarted.backend, "approve", "approval.respond", {
 		decision_id: "call-write",
 		choice: "approve_once",
@@ -182,7 +202,7 @@ test("a strict Write approval is re-emitted after restart and executes once", as
 	assert.equal(events(restarted.messages, "tool.complete").length, 1);
 	await restarted.close();
 
-	const persisted = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		assert.equal(persisted.loadState(paths.sessionId, "pending_decision"), undefined);
 		assert.equal(
@@ -197,7 +217,7 @@ test("a strict Write approval is re-emitted after restart and executes once", as
 
 test("an orphaned claimed effect becomes explicit unknown without tool replay", async (t) => {
 	const paths = await scenarioPaths(t, "claimed-effect");
-	const seed = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		seedWaitingApproval(seed, paths.workspace, paths.sessionId, "call-claimed");
 		seed.compareAndSetApproval({
@@ -220,7 +240,7 @@ test("an orphaned claimed effect becomes explicit unknown without tool replay", 
 	await restarted.close();
 	assert.equal(existsSync(join(paths.workspace, "notes.txt")), false);
 
-	const persisted = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		const turn = persisted.loadTurn(paths.sessionId, `approval-client-${paths.sessionId}`);
 		assert.equal(turn?.status, "interrupted");
@@ -233,7 +253,7 @@ test("an orphaned claimed effect becomes explicit unknown without tool replay", 
 
 test("corrupt target state fails closed and a later cross-session resume is atomic", async (t) => {
 	const paths = await scenarioPaths(t, "source");
-	const seed = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		seedCompletedTurn(seed, paths.workspace, paths.sessionId, "source", "source answer");
 		seedCompletedTurn(seed, paths.workspace, "target", "target question", "target answer");
@@ -288,7 +308,7 @@ test("corrupt target state fails closed and a later cross-session resume is atom
 	assert.doesNotMatch(providerInput, /seed question source/u);
 	await backend.close();
 
-	const persisted = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		assert.ok(persisted.loadTurn("target", "target-m5-turn"));
 		assert.equal(persisted.loadTurn(paths.sessionId, "target-m5-turn"), undefined);
@@ -299,7 +319,7 @@ test("corrupt target state fails closed and a later cross-session resume is atom
 
 test("Chat rebuilds canonical history and persists without Responses continuation", async (t) => {
 	const paths = await scenarioPaths(t, "chat", "chat_completions");
-	const seed = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		seedCompletedTurn(seed, paths.workspace, paths.sessionId, "prior question", "prior answer");
 	} finally {
@@ -327,7 +347,7 @@ test("Chat rebuilds canonical history and persists without Responses continuatio
 	assert.doesNotMatch(requestJson, /previous_response_id/u);
 	await backend.close();
 
-	const persisted = new SQLiteSessionStore({ dbPath: paths.dbPath });
+	const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
 	try {
 		assert.equal(persisted.loadTurn(paths.sessionId, "m5-chat-turn")?.status, "completed");
 		const continuation = persisted.loadState(paths.sessionId, "responses_continuation_state") as
@@ -403,7 +423,7 @@ test("M5 scripts are declared and the compiled package executable starts without
 	const rootScripts = rootPackage.scripts as JsonObject;
 	assert.equal(
 		rootScripts["test:m5"],
-		"npm run build && node --import tsx --test backend/apps/mycli/test/m5-state-recovery.integration.test.ts && uv run pytest tests/integration/test_node_runtime_m5_parity.py -q",
+		"npm run build && node --import tsx --test backend/apps/mycli/test/m5-state-recovery.integration.test.ts",
 	);
 	assert.equal(rootScripts["smoke:m5"], "node scripts/smoke_node_m5_state.mjs --protocol responses");
 	const appPackage = JSON.parse(readFileSync(new URL("backend/apps/mycli/package.json", ROOT), "utf8")) as JsonObject;
@@ -535,7 +555,7 @@ async function startBackend(
 }
 
 function seedCompletedTurn(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	workspaceRoot: string,
 	sessionId: string,
 	suffix: string,
@@ -564,7 +584,7 @@ function seedCompletedTurn(
 }
 
 function seedWaitingApproval(
-	store: SQLiteSessionStore,
+	store: RuntimeSessionStore,
 	workspaceRoot: string,
 	sessionId: string,
 	callId: string,

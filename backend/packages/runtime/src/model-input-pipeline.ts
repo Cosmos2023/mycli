@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
 	effectiveModelContextEvents,
-	manifestLogicalInputSha256,
+	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
 	orderProviderConversationItems,
 	projectProviderRequest,
+	providerTimelinePrefixSha256,
 	stableModelInputJson,
 } from "@mycli/core";
 import type {
@@ -12,10 +13,9 @@ import type {
 	InstructionFragment,
 	InstructionSnapshot,
 	ModelContextEvent,
-	ModelInputReference,
 	ProviderRequest,
 	ProviderRequestConfig,
-	ProviderRequestManifestV2,
+	ProviderRequestManifestV3,
 	ToolDefinition,
 	ToolSetSnapshot,
 } from "@mycli/core";
@@ -59,7 +59,7 @@ export interface CommitRuntimeProviderStepInput {
 }
 
 export interface CommittedRuntimeProviderStep extends CommittedProviderStep {
-	readonly manifest: ProviderRequestManifestV2;
+	readonly manifest: ProviderRequestManifestV3;
 	readonly requestSignature: string;
 	readonly contextPrefixSha256: string;
 	readonly budget: InstructionBudgetDiagnostic;
@@ -142,7 +142,7 @@ export function commitRuntimeProviderStep(
 	const previousRequest = previous
 		? input.ledger.reconstructProviderStep(previous.requestId).request
 		: undefined;
-	const commonPrefix = previous?.schemaVersion === 2
+	const commonPrefix = (previous?.schemaVersion === 2 || previous?.schemaVersion === 3)
 		&& previous.timelineWindowId === timeline.windowId
 		&& previousRequest
 		? commonPrefixItemCount(previousRequest.items ?? [], timeline.items)
@@ -158,30 +158,9 @@ export function commitRuntimeProviderStep(
 		?? (previous && previous.requestSignature !== requestSignature
 			? "continuation_reset" as const
 			: undefined);
-	const orderedItems: readonly ModelInputReference[] = Object.freeze([
-		Object.freeze({
-			kind: "instruction_snapshot",
-			id: input.instructionSnapshot.snapshotId,
-			role: "system",
-			contentSha256: input.instructionSnapshot.contentSha256,
-		}),
-		Object.freeze({
-			kind: "tool_set_snapshot",
-			id: toolSetSnapshot.snapshotId,
-			contentSha256: toolSetSnapshot.contentSha256,
-		}),
-		...timeline.timelineEvents.flatMap((event): ModelInputReference[] => (
-			event.item ? [Object.freeze({
-				kind: "provider_timeline_event" as const,
-				id: event.eventId,
-				...(timelineItemRole(event.item) ? { role: timelineItemRole(event.item) } : {}),
-				contentSha256: event.contentSha256,
-			})] : []
-		)),
-	]);
 	const requestId = createId("request");
-	const manifest: ProviderRequestManifestV2 = Object.freeze({
-		schemaVersion: 2,
+	const manifest: ProviderRequestManifestV3 = Object.freeze({
+		schemaVersion: 3,
 		requestId,
 		sessionId: input.sessionId,
 		turnId: input.turnId,
@@ -189,16 +168,16 @@ export function commitRuntimeProviderStep(
 		providerConfig: input.requestConfig,
 		instructionSnapshotId: input.instructionSnapshot.snapshotId,
 		toolSetSnapshotId: toolSetSnapshot.snapshotId,
-		orderedItems,
 		requestSignature,
-		logicalInputSha256: manifestLogicalInputSha256(
+		logicalInputSha256: manifestTimelineLogicalInputSha256(
 			input.instructionSnapshot,
 			toolSetSnapshot,
-			orderedItems,
+			timelineSha256,
 		),
 		contextPrefixSha256,
 		timelineWindowId: timeline.windowId,
-		timelineEventIds: timeline.timelineEventIds,
+		timelineEventCount: timeline.timelineEvents.length,
+		timelinePrefixSha256: providerTimelinePrefixSha256(timeline.timelineEvents),
 		requestConfigurationSha256,
 		bootstrapPrefixSha256,
 		timelineSha256,
@@ -340,14 +319,6 @@ function normalizedTools(tools: readonly ToolDefinition[]): readonly ToolDefinit
 			...tool,
 			inputSchema: deepFreeze(JSON.parse(stableModelInputJson(tool.inputSchema)) as Record<string, unknown>),
 		})));
-}
-
-function timelineItemRole(
-	item: CanonicalConversationItem,
-): "developer" | "user" | undefined {
-	if (item.type === "user") return "user";
-	if (item.type === "context") return item.metadata.role ?? "user";
-	return undefined;
 }
 
 function deepFreeze<Value>(value: Value): Value {

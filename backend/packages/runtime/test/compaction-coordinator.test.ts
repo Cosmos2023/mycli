@@ -119,9 +119,18 @@ test("keeps fresh input out of the summary and preserves raw history", async () 
 	});
 
 	assert.equal(result.status, "compressed");
+	assert.match(renderItems(summaryInput), /first request|first answer/u);
+	assert.doesNotMatch(renderItems(summaryInput), /second request|second answer/u);
 	assert.doesNotMatch(renderItems(summaryInput), /current request|fresh steer/);
 	assert.equal(store.historyItems.length, conversation.length);
 	assert.equal(store.commitInput?.checkpoint.status, "completed");
+	assert.deepEqual(store.commitInput?.replacementItems, [
+		{ type: "user", text: "[compact-summary]\nEarlier work and decisions." },
+		{ type: "user", text: "second request " + "context ".repeat(20) },
+		{ type: "assistant", text: "second answer " + "result ".repeat(20) },
+		{ type: "user", text: "current request" },
+		{ type: "user", text: "fresh steer" },
+	]);
 	assert.deepEqual(store.providerConversation.map((message) => message.content), [
 		"[compact-summary]\nEarlier work and decisions.",
 		"second request " + "context ".repeat(20),
@@ -138,6 +147,39 @@ test("keeps fresh input out of the summary and preserves raw history", async () 
 		assert.equal(events[1].status, "compressed");
 	}
 	assert.equal(recordValue(store.savedStates[0]?.payload).status, "in_progress");
+	assert.deepEqual(recordValue(store.savedStates[0]?.payload).replacement_messages, []);
+});
+
+test("compacts histories larger than the checkpoint replacement message limit", async () => {
+	const priorTurns = Array.from({ length: 2_100 }, (_value, index) => [
+		{ type: "user", text: `request ${index} ` + "history ".repeat(4) } as const,
+		{ type: "assistant", text: `answer ${index} ` + "detail ".repeat(4) } as const,
+	]).flat();
+	const conversation: readonly CanonicalConversationItem[] = Object.freeze([
+		...priorTurns,
+		{ type: "user", text: "current request" },
+	]);
+	const history = historyFixture(
+		conversation,
+		conversation.map((_item, index) => index === conversation.length - 1
+			? "current-user"
+			: `history-${index}`),
+	);
+	const store = new FakeCompactionStore(conversation, history);
+
+	const result = await createCoordinator({ store }).compact({
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "pre_turn",
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "compressed");
+	assert.deepEqual(recordValue(store.savedStates[0]?.payload).replacement_messages, []);
+	assert.ok((store.commitInput?.replacementMessages.length ?? 0) < 4_096);
 });
 
 test("does not publish completion when replacement persistence fails", async () => {
@@ -183,7 +225,14 @@ test("keeps the old projection when summary generation fails", async () => {
 	assert.deepEqual(result.providerConversation, conversation);
 	assert.equal(store.commitInput, undefined);
 	assert.equal(store.state, undefined);
-	assert.deepEqual(events.map((event) => event.type), ["compaction_started"]);
+	assert.deepEqual(events.map((event) => event.type), [
+		"compaction_started",
+		"compaction_completed",
+	]);
+	assert.equal(events[1]?.type, "compaction_completed");
+	if (events[1]?.type === "compaction_completed") {
+		assert.equal(events[1].status, "failed");
+	}
 });
 
 test("classifies an interrupted summary request as interrupted", async () => {
@@ -210,7 +259,15 @@ test("classifies an interrupted summary request as interrupted", async () => {
 	});
 
 	assert.equal(result.status, "interrupted");
-	assert.deepEqual(events.map((event) => event.type), ["compaction_started"]);
+	assert.deepEqual(events.map((event) => event.type), [
+		"compaction_started",
+		"compaction_completed",
+	]);
+	assert.equal(events[1]?.type, "compaction_completed");
+	if (events[1]?.type === "compaction_completed") {
+		assert.equal(events[1].status, "failed");
+		assert.equal(events[1].beforeTokens, events[1].afterTokens);
+	}
 });
 
 test("does not resend a summary request after an in-progress restart", async () => {
@@ -330,6 +387,117 @@ test("skips below threshold and rejects summaries that save too little", async (
 	}
 });
 
+test("does not tokenize opaque fields in legacy provider replay state", async () => {
+	const encryptedContent = "e".repeat(60_000);
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "old request" },
+		{
+			type: "assistant",
+			text: "old answer",
+			providerState: {
+				provider: "openai",
+				value: {
+					responsesReasoningItems: [{
+						type: "reasoning",
+						summary: [],
+						encrypted_content: encryptedContent,
+					}],
+				},
+			},
+		},
+		{ type: "user", text: "retained request" },
+		{ type: "assistant", text: "retained answer" },
+		{ type: "user", text: "current request" },
+	];
+	const store = new FakeCompactionStore(
+		conversation,
+		historyFixture(conversation, [
+			"old-user",
+			"old-assistant",
+			"retained-user",
+			"retained-assistant",
+			"current-user",
+		]),
+	);
+
+	const result = await createCoordinator({
+		store,
+		tokenLimit: 1_000,
+		reservedOutputTokens: 100,
+	}).compact({
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "pre_turn",
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "not_needed");
+	assert.ok(result.beforeTokens < 200);
+	assert.equal(JSON.stringify(conversation).includes(encryptedContent), true);
+});
+
+test("uses provider reasoning usage to estimate replay state tokens", async () => {
+	const encryptedContent = "encrypted";
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "old request" },
+		{
+			type: "assistant",
+			text: "old answer",
+			providerState: {
+				provider: "openai",
+				tokenEstimate: 950,
+				value: {
+					responsesReasoningItems: [{
+						type: "reasoning",
+						summary: [],
+						encrypted_content: encryptedContent,
+					}],
+				},
+			},
+		},
+		{ type: "user", text: "retained request" },
+		{ type: "assistant", text: "retained answer" },
+		{ type: "user", text: "current request" },
+	];
+	const store = new FakeCompactionStore(
+		conversation,
+		historyFixture(conversation, [
+			"old-user",
+			"old-assistant",
+			"retained-user",
+			"retained-assistant",
+			"current-user",
+		]),
+	);
+	let summaryItems: readonly CanonicalConversationItem[] = [];
+
+	const result = await createCoordinator({
+		store,
+		tokenLimit: 1_000,
+		reservedOutputTokens: 100,
+		summarize: async (input) => {
+			summaryItems = input.items;
+			return "old exchange";
+		},
+	}).compact({
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "pre_turn",
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "compressed");
+	assert.ok(result.beforeTokens >= 950);
+	assert.equal(JSON.stringify(summaryItems).includes(encryptedContent), true);
+	assert.equal(JSON.stringify(store.commitInput?.replacementItems).includes(encryptedContent), false);
+});
+
 test("user-requested compaction runs below the automatic threshold", async () => {
 	const conversation = conversationFixture();
 	const store = new FakeCompactionStore(
@@ -430,7 +598,7 @@ test("includes stable instructions and tool schemas in the trigger budget", asyn
 	assert.ok(result.beforeTokens > 90);
 });
 
-test("keeps the entire current tool turn out of a reactive summary", async () => {
+test("summarizes the active tool turn after a context rejection", async () => {
 	const currentCalls = [
 		{ callId: "call-1", name: "Read", argumentsJson: "{\"file_path\":\"a.ts\"}" },
 		{ callId: "call-2", name: "Read", argumentsJson: "{\"file_path\":\"b.ts\"}" },
@@ -472,8 +640,156 @@ test("keeps the entire current tool turn out of a reactive summary", async () =>
 	});
 
 	assert.equal(result.status, "compressed");
-	assert.doesNotMatch(renderItems(summaryItems), /current request|checking files|a contents|b contents/);
-	assert.deepEqual(result.providerConversation.slice(-4), conversation.slice(-4));
+	assert.match(renderItems(summaryItems), /current request must stay fresh/u);
+	assert.match(renderItems(summaryItems), /checking files/u);
+	assert.match(renderItems(summaryItems), /a contents/u);
+	assert.match(renderItems(summaryItems), /b contents/u);
+	assert.equal(
+		result.providerConversation.some((item) => item.type === "assistant_tool_calls"),
+		false,
+	);
+	assert.equal(result.providerConversation.some((item) => item.type === "tool_result"), false);
+	assert.equal(
+		result.providerConversation.some(
+			(item) => item.type === "user" && item.text === "current request must stay fresh",
+		),
+		true,
+	);
+	assert.deepEqual(result.providerConversation.at(-1), {
+		type: "user",
+		text: "[compact-summary]\nold work summary",
+	});
+});
+
+test("mid-turn compaction uses the normal summary path and drops completed tool artifacts", async () => {
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "inspect the repository" },
+		{
+			type: "assistant_tool_calls",
+			text: "reading files",
+			calls: [{
+				callId: "call-read",
+				name: "Read",
+				argumentsJson: "{\"file_path\":\"README.md\"}",
+			}],
+			responseId: "resp-read",
+		},
+		{
+			type: "tool_result",
+			callId: "call-read",
+			toolName: "Read",
+			output: "README contents ".repeat(40),
+			success: true,
+		},
+	];
+	const store = new FakeCompactionStore(
+		conversation,
+		[
+			{ id: "current-user", turn_id: "turn-current", type: "user_message", text: "inspect the repository", metadata: {} },
+			{ id: "call-read", turn_id: "turn-current", type: "tool_call", tool_name: "Read", call_id: "call-read", metadata: {} },
+			{ id: "result-read", turn_id: "turn-current", type: "tool_result", tool_name: "Read", call_id: "call-read", metadata: { success: true } },
+		],
+	);
+	let summaryItems: readonly CanonicalConversationItem[] = [];
+
+	const result = await createCoordinator({
+		store,
+		tokenLimit: 80,
+		reservedOutputTokens: 10,
+		summarize: async (input) => {
+			summaryItems = input.items;
+			return "The README was inspected.";
+		},
+	}).compact({
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "mid_turn",
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "compressed");
+	assert.deepEqual(summaryItems, conversation);
+	assert.deepEqual(store.commitInput?.replacementItems, [
+		{ type: "user", text: "inspect the repository" },
+		{ type: "user", text: "[compact-summary]\nThe README was inspected." },
+	]);
+	assert.deepEqual(result.providerConversation, store.commitInput?.replacementItems);
+});
+
+test("active-turn compaction does not rehydrate file contents", async (t) => {
+	const workspace = await workspaceFixture(t);
+	await mkdir(join(workspace, "src"), { recursive: true });
+	await writeFile(
+		join(workspace, "src", "edited.ts"),
+		"active turn file content must not be rehydrated\n",
+		"utf8",
+	);
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "update the implementation" },
+		{
+			type: "assistant_tool_calls",
+			text: "editing the file",
+			calls: [{
+				callId: "call-edit",
+				name: "Edit",
+				argumentsJson: "{\"file_path\":\"src/edited.ts\"}",
+			}],
+			responseId: "resp-edit",
+		},
+		{
+			type: "tool_result",
+			callId: "call-edit",
+			toolName: "Edit",
+			output: "Edit succeeded ".repeat(40),
+			success: true,
+		},
+	];
+	const history = [
+		{ id: "current-user", turn_id: "turn-current", type: "user_message", text: "update the implementation", metadata: {} },
+		toolCall("call-edit", "Edit", { file_path: "src/edited.ts" }),
+		toolResult("result-edit", "Edit", {
+			success: true,
+			file_changes: [{ path: "src/edited.ts", kind: "update" }],
+		}, "call-edit"),
+	];
+
+	for (const source of ["mid_turn", "context_overflow"] as const) {
+		const store = new FakeCompactionStore(conversation, history);
+		const result = await createCoordinator({
+			store,
+			workspaceRoot: workspace,
+			tokenLimit: 80,
+			reservedOutputTokens: 10,
+			summarize: async () => "The implementation was updated.",
+		}).compact({
+			clientTurnId: "client-current",
+			turnId: "turn-current",
+			source,
+			conversation,
+			freshItemIds: new Set(["current-user"]),
+			emit: () => {},
+			signal: new AbortController().signal,
+		});
+
+		assert.equal(result.status, "compressed", source);
+		assert.deepEqual(result.rehydration, [], source);
+		assert.doesNotMatch(
+			JSON.stringify(result.providerConversation),
+			/active turn file content must not be rehydrated/u,
+		);
+		assert.equal(
+			JSON.stringify(recordValue(store.commitInput?.checkpoint)).includes("rehydration_items"),
+			true,
+		);
+		assert.deepEqual(
+			recordValue(store.commitInput?.checkpoint).rehydration_items,
+			[],
+			source,
+		);
+	}
 });
 
 test("rehydrates edited files before reads within path, item, total, and count bounds", async (t) => {
@@ -536,6 +852,56 @@ test("rehydrates edited files before reads within path, item, total, and count b
 	assert.equal(JSON.stringify(result.providerConversation).includes("edited current content"), true);
 	assert.equal(JSON.stringify(result.providerConversation).includes("state must stay private"), false);
 	assert.equal(JSON.stringify(result.providerConversation).includes("outside content"), false);
+	const counter = new TokenCounter({
+		loadEncoder: () => { throw new Error("force deterministic fallback"); },
+	});
+	const storedTokens = countConversationTokens(counter, store.commitInput?.replacementItems ?? []);
+	const providerTokens = countConversationTokens(counter, result.providerConversation);
+	assert.equal(result.afterTokens, providerTokens);
+	assert.ok(result.afterTokens > storedTokens);
+});
+
+test("uses provider-only rehydration when enforcing the minimum savings ratio", async (t) => {
+	const workspace = await workspaceFixture(t);
+	await mkdir(join(workspace, "src"), { recursive: true });
+	await writeFile(
+		join(workspace, "src", "large.ts"),
+		"rehydration payload ".repeat(3_000),
+		"utf8",
+	);
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "old request " + "history ".repeat(1_500) },
+		{ type: "assistant", text: "old answer " + "detail ".repeat(1_500) },
+		{ type: "user", text: "retained request" },
+		{ type: "assistant", text: "retained answer" },
+		{ type: "user", text: "current request" },
+	];
+	const history = [
+		...historyFixture(conversation.slice(0, 4), ["u1", "a1", "u2", "a2"]),
+		toolResult("edit-result", "Edit", {
+			success: true,
+			file_changes: [{ path: "src/large.ts", kind: "update" }],
+		}),
+		{ id: "current-user", turn_id: "turn-current", type: "user_message", text: "current request", metadata: {} },
+	];
+	const store = new FakeCompactionStore(conversation, history);
+
+	const result = await createCoordinator({
+		store,
+		workspaceRoot: workspace,
+		minSavingsRatio: 0.5,
+	}).compact({
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "pre_turn",
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "skipped");
+	assert.equal(store.commitInput, undefined);
 });
 
 function createCoordinator(overrides: Partial<Omit<CompactionCoordinatorOptions, "store">> & {
@@ -660,6 +1026,29 @@ function renderItems(items: readonly CanonicalConversationItem[]): string {
 				return item.output;
 		}
 	}).join("\n");
+}
+
+function countConversationTokens(
+	counter: TokenCounter,
+	items: readonly CanonicalConversationItem[],
+): number {
+	return items.reduce((total, item) => total + counter.count(renderConversationItem(item)), 0);
+}
+
+function renderConversationItem(item: CanonicalConversationItem): string {
+	switch (item.type) {
+		case "user":
+		case "assistant":
+			return `${item.type}: ${item.text}`;
+		case "context":
+			return `context ${item.metadata.kind}: ${item.text}`;
+		case "assistant_tool_calls":
+			return `assistant_tool_calls: ${item.text}\n${item.calls.map((call) => (
+				`${call.name} ${call.callId} ${call.argumentsJson}`
+			)).join("\n")}`;
+		case "tool_result":
+			return `tool_result ${item.toolName} ${item.callId} ${String(item.success)}: ${item.output}`;
+	}
 }
 
 function recordValue(value: unknown): Readonly<Record<string, unknown>> {

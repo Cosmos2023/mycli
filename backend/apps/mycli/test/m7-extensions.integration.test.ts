@@ -14,7 +14,7 @@ import {
 	discoverHookConfig,
 	HookAllowlistStore,
 } from "@mycli/integrations";
-import { SQLiteSessionStore } from "@mycli/storage";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -156,6 +156,107 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 	);
 });
 
+test("Worker-backed root receives refreshed MCP tools on a later provider step", {
+	timeout: 10_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-worker-mcp-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const mycli = join(workspace, ".mycli");
+	const mcpPidFile = join(workspace, "mcp.pid");
+	await Promise.all([mkdir(home), mkdir(mycli, { recursive: true })]);
+	await writeFile(join(mycli, "mcp_servers.toml"), [
+		"[servers.local]",
+		'transport = "stdio"',
+		`command = ${JSON.stringify(process.execPath)}`,
+		`args = [${JSON.stringify(MCP_FIXTURE)}]`,
+		`env = { MCP_PID_FILE = ${JSON.stringify(mcpPidFile)} }`,
+		"timeout_seconds = 3",
+	].join("\n"), "utf8");
+	const requests: JsonObject[] = [];
+	const server = createServer((request, response) => {
+		let raw = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { raw += chunk; });
+		request.on("end", () => {
+			const payload = JSON.parse(raw) as JsonObject;
+			requests.push(payload);
+			writeSse(response, requests.length === 1
+				? responsesTool("search-mcp-worker", "tool_search", {
+					query: "local echo",
+					limit: 1,
+				})
+				: responsesFinal("Worker MCP refresh completed.", "worker-mcp-final"));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "worker-mcp-parent", "--model", "gpt-test"],
+		env: {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			MYCLI_API_KEY: "test-m7-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_REQUEST_MAX_RETRIES: "0",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_MEMORY_ENABLED: "false",
+			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+		},
+	});
+	let closed = false;
+	const shutdown = async (): Promise<void> => {
+		if (closed) return;
+		closed = true;
+		send(backend, "shutdown-worker-mcp", "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	};
+	t.after(async () => {
+		await shutdown();
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: JsonObject[] = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	await waitFor(() => event(messages, "extension.updated"), 8_000);
+	send(backend, "worker-mcp-turn", "turn.submit", {
+		message: "Find the refreshed MCP echo tool.",
+		client_turn_id: "worker-mcp-turn",
+		client_user_message_id: "worker-mcp-message",
+	});
+	const final = await waitFor(() => messages.find((message) => (
+		message.method === "message.complete"
+		&& isObject(message.params)
+		&& message.params.final === true
+	)), 8_000);
+	assert.equal(isObject(final.params) ? final.params.text : undefined, "Worker MCP refresh completed.");
+	assert.equal(requests.length, 2);
+	assert.equal(providerToolNames(requests[0]!).includes("mcp_local_echo"), false);
+	assert.equal(providerToolNames(requests[1]!).includes("mcp_local_echo"), true);
+	assert.deepEqual(
+		events(messages, "tool.complete").map((message) => (
+			isObject(message.params) ? message.params.name : undefined
+		)),
+		["tool_search"],
+	);
+
+	await shutdown();
+	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
+	await eventually(() => !processExists(mcpPid));
+});
+
 test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	timeout: 20_000,
 }, async (t) => {
@@ -248,6 +349,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			MYCLI_STREAM_MAX_RETRIES: "0",
 			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
 			MYCLI_MEMORY_ENABLED: "false",
+			COLORTERM: "",
 			PLUGIN_PID_FILE: pluginPidFile,
 		},
 	});
@@ -355,7 +457,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 
 	await shutdown();
 	await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
-	const store = new SQLiteSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		const history = store.loadHistoryItems("m7-parent");
 		assert.equal(history.some((item) => item.type === "skill_instructions"), true);

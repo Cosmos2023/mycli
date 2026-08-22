@@ -58,9 +58,21 @@ The pool SHALL detect Worker startup, protocol, runtime, and exit failures, SHAL
 ### Requirement: Adapter-parity staged migration
 The system SHALL retain an in-process execution adapter while Worker-backed execution is introduced and SHALL select one adapter before a turn begins without switching adapters inside the active turn.
 
+#### Scenario: Accepted Worker path is the default
+- **WHEN** no compatibility or lane-specific adapter gate is configured after rollout acceptance
+- **THEN** root and child turns use the shared Worker pool and explicit `in_process` remains available as the pre-turn rollback adapter
+
 #### Scenario: Subagent migration is enabled first
 - **WHEN** Worker-backed subagent execution is enabled while root migration remains disabled
 - **THEN** child turns use Worker leases, root turns use the in-process adapter, and both paths preserve the same durable and gateway contracts
+
+#### Scenario: Lane override inherits or replaces the compatibility gate
+- **WHEN** the compatibility gate selects one adapter and a root or subagent lane override is blank or explicitly selects another valid adapter
+- **THEN** a blank override inherits the compatibility gate, an explicit override affects only its lane, and the resolved lane choices are frozen at backend startup
+
+#### Scenario: Lane override is invalid
+- **WHEN** any non-blank compatibility or lane-specific gate is not `in_process` or `worker`
+- **THEN** backend startup fails before creating the Agent Worker pool or a turn runtime and does not silently fall back
 
 #### Scenario: Worker-backed start fails before reservation
 - **WHEN** a Worker-backed turn cannot obtain or initialize a lease before provider or tool dispatch

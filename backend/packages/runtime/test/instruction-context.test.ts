@@ -60,6 +60,22 @@ test("collects deterministic layered context with explicit authority and lifetim
 	);
 });
 
+test("renders decision-complete Plan mode instructions in a tagged developer section", () => {
+	const context = collectTurnContext({
+		sources: { collaborationMode: "plan" },
+		conversationItems: [],
+		currentUserRequest: "Plan this change",
+	});
+	const section = context.sections.find((candidate) => candidate.kind === "collaboration_mode");
+
+	assert.ok(section);
+	assert.match(section.content, /^<collaboration_mode>\n# Plan Mode/u);
+	assert.match(section.content, /Do not implement the plan or mutate repository-tracked state/u);
+	assert.match(section.content, /<proposed_plan>/u);
+	assert.match(section.content, /update_plan.*separate TODO\/checklist tool/u);
+	assert.match(section.content, /<\/collaboration_mode>$/u);
+});
+
 test("assembles developer and contextual-user fragments without promoting untrusted data", () => {
 	const turnContext = collectTurnContext(completeContextInput());
 	const contract = new InstructionContractAssembler().assemble({

@@ -4,6 +4,7 @@ import {
 	decideCompaction,
 	projectProviderRequest,
 	type CanonicalConversationItem,
+	type ProviderReplayState,
 	type ProviderRequestConfig,
 } from "@mycli/core";
 import type { ModelProvider } from "@mycli/providers";
@@ -107,14 +108,14 @@ export type CompactionRuntimeEvent =
 		readonly type: "compaction_completed";
 		readonly clientTurnId: string;
 		readonly source: CompactionSource;
-		readonly status: "compressed" | "skipped";
+		readonly status: "compressed" | "skipped" | "failed";
 		readonly beforeTokens: number;
 		readonly afterTokens: number;
 		readonly maxTokens: number;
 		readonly durationSeconds: number;
 	};
 
-export type CompactionSource = "pre_turn" | "context_overflow" | "user_requested";
+export type CompactionSource = "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
 
 export interface RehydratedFile {
 	readonly path: string;
@@ -176,6 +177,7 @@ interface CompactionSelection {
 	readonly summaryItems: readonly CanonicalConversationItem[];
 	readonly exactTail: readonly CanonicalConversationItem[];
 	readonly freshSuffix: readonly CanonicalConversationItem[];
+	readonly summaryPlacement: "before_retained" | "after_retained";
 }
 
 interface FileCandidate {
@@ -203,7 +205,7 @@ export class CompactionCoordinator {
 		if (checkpointState.interrupted) {
 			return result("interrupted", input.conversation, beforeTokens);
 		}
-		const selection = this.#select(input.conversation, input.freshItemIds);
+		const selection = this.#select(input.conversation, input.freshItemIds, input.source);
 		const freshSuffixTokens = countItems(this.#tokenCounter, selection.freshSuffix);
 		const decision = decideCompaction({
 			usedTokens: beforeTokens,
@@ -218,7 +220,7 @@ export class CompactionCoordinator {
 		if (!shouldCompact || selection.summaryItems.length === 0) {
 			return result("not_needed", input.conversation, beforeTokens);
 		}
-		if (selection.exactTail.length === 0) {
+		if (selection.exactTail.length === 0 && !isActiveTurnCompaction(input.source)) {
 			return result("skipped", input.conversation, beforeTokens);
 		}
 		const rawHistory = this.#options.store.loadHistoryItems(this.#options.sessionId);
@@ -255,7 +257,7 @@ export class CompactionCoordinator {
 				historyItemCount: rawHistory.length,
 				inputHash,
 				replacementHash: inputHash,
-				replacementMessages: input.conversation.map(toStoredMessage),
+				replacementMessages: Object.freeze([]),
 				status: "in_progress",
 				summaryFingerprint,
 				updatedAt: this.#options.clock(),
@@ -278,6 +280,13 @@ export class CompactionCoordinator {
 			}
 		} catch (error) {
 			this.#options.store.deleteState(this.#options.sessionId, "compact_checkpoint");
+			input.emit(this.#completedEvent(
+				input,
+				"failed",
+				beforeTokens,
+				beforeTokens,
+				startedAt,
+			));
 			return result(
 				input.signal.aborted || isAbortError(error) ? "interrupted" : "failed",
 				input.conversation,
@@ -286,12 +295,26 @@ export class CompactionCoordinator {
 		}
 		this.#failpoint("compaction_after_summary_request");
 
-		const storedConversation = Object.freeze([
-			{ type: "user", text: `[compact-summary]\n${summary}` } as const,
+		const summaryItem = { type: "user", text: `[compact-summary]\n${summary}` } as const;
+		const retainedConversation = Object.freeze([
 			...selection.exactTail,
 			...selection.freshSuffix,
 		]);
-		const afterTokens = baseTokens + countItems(this.#tokenCounter, storedConversation);
+		const storedConversation = Object.freeze(selection.summaryPlacement === "after_retained"
+			? [...retainedConversation, summaryItem]
+			: [summaryItem, ...retainedConversation]);
+		const rehydration = isActiveTurnCompaction(input.source)
+			? Object.freeze([])
+			: await this.#rehydrate(rawHistory, selection.exactTail, input.signal);
+		const rehydrationInsertionIndex = selection.summaryPlacement === "after_retained"
+			? 0
+			: storedConversation.length - selection.freshSuffix.length;
+		const providerConversation = injectRehydration(
+			storedConversation,
+			rehydration,
+			rehydrationInsertionIndex,
+		);
+		const afterTokens = baseTokens + countItems(this.#tokenCounter, providerConversation);
 		const savingsRatio = beforeTokens === 0 ? 0 : (beforeTokens - afterTokens) / beforeTokens;
 		if (savingsRatio < (this.#options.minSavingsRatio ?? 0)) {
 			this.#options.store.deleteState(this.#options.sessionId, "compact_checkpoint");
@@ -307,7 +330,6 @@ export class CompactionCoordinator {
 
 		const replacementMessages = storedConversation.map(toStoredMessage);
 		const replacementHash = hashItems(storedConversation);
-		const rehydration = await this.#rehydrate(rawHistory, selection.exactTail, input.signal);
 		const checkpoint = checkpointPayload({
 			turnId: input.turnId,
 			source: input.source,
@@ -327,15 +349,11 @@ export class CompactionCoordinator {
 		this.#options.store.commitCompaction({
 			sessionId: this.#options.sessionId,
 			replacementMessages,
+			replacementItems: storedConversation,
 			summary,
 			checkpoint,
 		});
 
-		const providerConversation = injectRehydration(
-			storedConversation,
-			rehydration,
-			selection.freshSuffix.length,
-		);
 		input.emit(this.#completedEvent(
 			input,
 			"compressed",
@@ -374,7 +392,21 @@ export class CompactionCoordinator {
 	#select(
 		conversation: readonly CanonicalConversationItem[],
 		freshItemIds: ReadonlySet<string>,
+		source: CompactionSource,
 	): CompactionSelection {
+		if (isActiveTurnCompaction(source)) {
+			// Completed tool phases can be summarized; keep real user intent exact for continuation.
+			return Object.freeze({
+				summaryItems: conversation,
+				exactTail: Object.freeze([]),
+				freshSuffix: retainRecentUserMessages(
+					conversation,
+					this.#tokenCounter,
+					this.#options.tailMaxTokens,
+				),
+				summaryPlacement: "after_retained",
+			});
+		}
 		const freshCount = this.#freshSuffixCount(freshItemIds);
 		if (freshCount > conversation.length) {
 			throw new RangeError("fresh suffix exceeds provider conversation");
@@ -395,6 +427,7 @@ export class CompactionCoordinator {
 				summaryItems: prior,
 				exactTail: Object.freeze([]),
 				freshSuffix,
+				summaryPlacement: "before_retained",
 			});
 		}
 		const firstTailIndex = retained[0]!.startIndex;
@@ -403,12 +436,14 @@ export class CompactionCoordinator {
 				summaryItems: Object.freeze([]),
 				exactTail: retained.flatMap((turn) => [turn.user, turn.assistant]),
 				freshSuffix,
+				summaryPlacement: "before_retained",
 			});
 		}
 		return Object.freeze({
-			summaryItems: prior,
+			summaryItems: prior.slice(0, firstTailIndex),
 			exactTail: Object.freeze(retained.flatMap((turn) => [turn.user, turn.assistant])),
 			freshSuffix,
+			summaryPlacement: "before_retained",
 		});
 	}
 
@@ -472,7 +507,7 @@ export class CompactionCoordinator {
 
 	#completedEvent(
 		input: CompactInput,
-		status: "compressed" | "skipped",
+		status: "compressed" | "skipped" | "failed",
 		beforeTokens: number,
 		afterTokens: number,
 		startedAt: number,
@@ -544,7 +579,66 @@ function countTurns(counter: TokenCounter, turns: readonly CompletedTurn[]): num
 }
 
 function countItems(counter: TokenCounter, items: readonly CanonicalConversationItem[]): number {
-	return items.reduce((total, item) => total + counter.count(renderItem(item)), 0);
+	return items.reduce((total, item) => {
+		const providerState = item.type === "assistant" || item.type === "assistant_tool_calls"
+			? item.providerState
+			: undefined;
+		return total + counter.count(renderItem(item))
+			+ (providerState ? countProviderReplayState(counter, providerState) : 0);
+	}, 0);
+}
+
+const OPAQUE_PROVIDER_STATE_KEYS = new Set([
+	"encrypted_content",
+	"encryptedContent",
+	"signature",
+]);
+
+function countProviderReplayState(counter: TokenCounter, state: ProviderReplayState): number {
+	if (state.tokenEstimate !== undefined
+		&& Number.isSafeInteger(state.tokenEstimate)
+		&& state.tokenEstimate >= 0) {
+		return state.tokenEstimate;
+	}
+	return counter.count(JSON.stringify(withoutOpaqueProviderState(state.value)));
+}
+
+function withoutOpaqueProviderState(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(withoutOpaqueProviderState);
+	if (typeof value !== "object" || value === null) return value;
+	return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => (
+		OPAQUE_PROVIDER_STATE_KEYS.has(key)
+			? []
+			: [[key, withoutOpaqueProviderState(entry)]]
+	)));
+}
+
+function isActiveTurnCompaction(source: CompactionSource): boolean {
+	return source === "mid_turn" || source === "context_overflow";
+}
+
+function retainRecentUserMessages(
+	items: readonly CanonicalConversationItem[],
+	counter: TokenCounter,
+	maxTokens: number,
+): readonly CanonicalConversationItem[] {
+	const userMessages = items.filter(
+		(item): item is Extract<CanonicalConversationItem, { readonly type: "user" }> =>
+			item.type === "user" && !item.text.startsWith("[compact-summary]\n"),
+	);
+	if (userMessages.length === 0) return Object.freeze([]);
+
+	let remaining = maxTokens;
+	const retained: CanonicalConversationItem[] = [];
+	for (const message of userMessages.toReversed()) {
+		const tokens = countItems(counter, [message]);
+		if (retained.length === 0 || tokens <= remaining) {
+			retained.push(message);
+			remaining = Math.max(0, remaining - tokens);
+		}
+		if (remaining === 0) break;
+	}
+	return Object.freeze(retained.reverse());
 }
 
 function renderItems(items: readonly CanonicalConversationItem[]): string {
@@ -755,10 +849,14 @@ function projectedHistoryItemCount(
 function injectRehydration(
 	conversation: readonly CanonicalConversationItem[],
 	files: readonly RehydratedFile[],
-	freshSuffixCount: number,
+	insertionIndex: number,
 ): readonly CanonicalConversationItem[] {
 	if (files.length === 0) return conversation;
-	const insertionIndex = conversation.length - freshSuffixCount;
+	if (!Number.isSafeInteger(insertionIndex)
+		|| insertionIndex < 0
+		|| insertionIndex > conversation.length) {
+		throw new RangeError("rehydration insertion index is invalid");
+	}
 	const text = [
 		"[Compaction file rehydration]",
 		...files.flatMap((file) => [

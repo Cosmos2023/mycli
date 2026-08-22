@@ -15,6 +15,7 @@ import type {
 	AppendToolResultInput,
 } from "@mycli/storage";
 import type {
+	PreparedMutationGuard,
 	ToolExecutionOptions,
 	ToolExecutionResult,
 	ToolRouterContract,
@@ -22,6 +23,16 @@ import type {
 import * as runtime from "../src/index.ts";
 
 const NOW = "2026-08-04T00:00:00.000Z";
+const PREPARED_GUARD: PreparedMutationGuard = Object.freeze({
+	version: 1,
+	mutationId: "a".repeat(64),
+	intentSha256: "b".repeat(64),
+	targets: Object.freeze([Object.freeze({
+		pathSha256: "c".repeat(64),
+		existed: false,
+		resultSha256: "d".repeat(64),
+	})]),
+});
 
 test("suspends only after all compatible approval state is durable", () => {
 	const fixture = approvalFixture();
@@ -32,6 +43,7 @@ test("suspends only after all compatible approval state is durable", () => {
 	assert.equal(fixture.state.get("pending_decision")?.kind, "pending_decision");
 	assert.equal(fixture.state.get("suspended_turn")?.kind, "suspended_turn");
 	assert.equal(fixture.effect.status, "waiting");
+	assert.equal((JSON.stringify([...fixture.state.values()]).match(/mutation_id/gu) ?? []).length, 1);
 });
 
 test("restores an unambiguous waiting approval after restart", () => {
@@ -43,6 +55,7 @@ test("restores an unambiguous waiting approval after restart", () => {
 	assert.equal(reopened.pending()?.callId, "call-1");
 	assert.equal(reopened.pending()?.decisionId, "call-1");
 	assert.deepEqual(reopened.pending()?.options, ["approve_once", "reject"]);
+	assert.deepEqual(reopened.pending()?.preparedMutationGuard, PREPARED_GUARD);
 });
 
 test("approve once claims executes and commits one effect in order", async () => {
@@ -88,6 +101,7 @@ test("approval execution uses the coordinator-owned lifecycle publisher", async 
 	assert.equal(fixture.executionOptions?.ownerSessionId, "session-1");
 	assert.equal(fixture.executionOptions?.ownerTurnId, "turn-1");
 	assert.equal(fixture.executionOptions?.callId, "call-1");
+	assert.deepEqual(fixture.executionOptions?.preparedMutationGuard, PREPARED_GUARD);
 	assert.deepEqual(events, [shellLifecycleEvent()]);
 });
 
@@ -114,6 +128,19 @@ test("approval execution forwards the frozen execution policy", async () => {
 test("approval recovery derives sandbox override authorization from the persisted Shell call", async () => {
 	const fixture = approvalFixture({ shellApproval: true });
 	fixture.coordinator.suspend(suspension(true, true));
+
+	await fixture.reopen().resolve({
+		decisionId: "call-1",
+		choice: "approve_once",
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(fixture.executionOptions?.sandboxOverrideApproved, true);
+});
+
+test("approval recovery derives sandbox override authorization from a persisted mutation call", async () => {
+	const fixture = approvalFixture();
+	fixture.coordinator.suspend(suspension(false, true));
 
 	await fixture.reopen().resolve({
 		decisionId: "call-1",
@@ -287,6 +314,7 @@ interface PendingContract {
 	readonly callId: string;
 	readonly options: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
+	readonly preparedMutationGuard?: PreparedMutationGuard;
 }
 
 function approvalFixture(options: {
@@ -470,7 +498,7 @@ function suspension(shell = false, escalated = false) {
 		turnId: "turn-1",
 		userMessage: shell ? "run the tests" : "write the notes",
 		providerProtocol: "responses" as const,
-		call: shell ? shellCall(escalated) : writeCall(),
+		call: shell ? shellCall(escalated) : writeCall(escalated),
 		remainingCalls: Object.freeze([] as CanonicalToolCall[]),
 		conversation: Object.freeze([{ role: "user" as const, content: "write the notes" }]),
 		assistantText: "",
@@ -481,7 +509,7 @@ function suspension(shell = false, escalated = false) {
 		...(shell ? {
 			commandPattern: ["python", "-m", "pytest"],
 			proposedExecPolicyPattern: ["python", "-m", "pytest"],
-		} : {}),
+		} : { preparedMutationGuard: PREPARED_GUARD }),
 	};
 }
 
@@ -497,11 +525,18 @@ function shellCall(escalated = false): CanonicalToolCall {
 	};
 }
 
-function writeCall(): CanonicalToolCall {
+function writeCall(escalated = false): CanonicalToolCall {
 	return {
 		callId: "call-1",
 		name: "Write",
-		argumentsJson: JSON.stringify({ file_path: "notes.txt", content: "hello" }),
+		argumentsJson: JSON.stringify({
+			file_path: "notes.txt",
+			content: "hello",
+			...(escalated ? {
+				sandbox_permissions: "danger-full-access",
+				justification: "The requested file is outside the workspace.",
+			} : {}),
+		}),
 	};
 }
 

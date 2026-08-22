@@ -57,6 +57,7 @@ export const WAIT_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 				type: "integer",
 				minimum: WAIT_AGENT_MIN_TIMEOUT_MS,
 				maximum: WAIT_AGENT_MAX_TIMEOUT_MS,
+				description: "Maximum time to wait for relevant agent activity or user steering. Defaults to 30000 ms; valid range is 100-60000 ms.",
 			},
 		},
 		required: [],

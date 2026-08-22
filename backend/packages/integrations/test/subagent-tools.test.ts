@@ -96,8 +96,11 @@ test("Codex-style coordination definitions use closed validated schemas", () => 
 		FOLLOWUP_TASK_TOOL_DEFINITION,
 		INTERRUPT_AGENT_TOOL_DEFINITION,
 		LIST_AGENTS_TOOL_DEFINITION,
+		WAIT_AGENT_TOOL_DEFINITION,
 	]) {
 		assert.equal(definition.inputSchema.additionalProperties, false);
+		assert.match(definition.description, /\S/u);
+		assertDescribedProperties(definition.inputSchema, definition.name);
 	}
 });
 
@@ -240,4 +243,21 @@ function execution(overrides: { readonly ownerTurnId?: string } = {}) {
 		publishLifecycle: () => undefined,
 		...overrides,
 	};
+}
+
+function assertDescribedProperties(
+	schema: Readonly<Record<string, unknown>>,
+	path: string,
+): void {
+	const properties = schema.properties;
+	assert.equal(typeof properties, "object", `${path}.properties must be an object`);
+	assert.notEqual(properties, null, `${path}.properties must be an object`);
+	assert.equal(Array.isArray(properties), false, `${path}.properties must be an object`);
+	for (const [name, value] of Object.entries(properties as Readonly<Record<string, unknown>>)) {
+		assert.equal(typeof value, "object", `${path}.${name} must be an object`);
+		assert.notEqual(value, null, `${path}.${name} must be an object`);
+		const property = value as Readonly<Record<string, unknown>>;
+		assert.equal(typeof property.description, "string", `${path}.${name} must have a description`);
+		assert.match(property.description as string, /\S/u);
+	}
 }

@@ -96,6 +96,7 @@ test("persists before provider IO and completes in normalized event order", asyn
 		"reasoning_delta",
 		"text_delta",
 		"message_complete",
+		"provider_usage",
 		"turn_completed",
 	]);
 	assert.deepEqual(request?.messages, [
@@ -312,12 +313,13 @@ test("rejects provider tool calls without executing or completing assistant cont
 	assert.equal(emitted.at(-1)?.type, "turn_failed");
 });
 
-test("interrupts before a late provider completion can persist success", async () => {
+test("drops late provider deltas and completion after interruption", async () => {
 	const store = new FakeStore([]);
 	const controller = new AbortController();
 	const provider: ModelProvider = {
 		stream: () => providerEvents([
 			{ type: "text_delta", text: "partial" },
+			{ type: "text_delta", text: "late" },
 			{ type: "completed", responseId: "late" },
 		]),
 	};
@@ -334,6 +336,11 @@ test("interrupts before a late provider completion can persist success", async (
 	assert.equal(result.status, "interrupted");
 	assert.equal(result.error_code, "interrupted");
 	assert.equal(store.completeCalls, 0);
+	assert.deepEqual(store.conversation, [{ role: "user", content: "current" }]);
+	assert.deepEqual(emitted.filter((event) => event.type === "text_delta").map(
+		(event) => event.text,
+	), ["partial"]);
+	assert.equal(emitted.some((event) => event.type === "message_complete"), false);
 	assert.equal(emitted.at(-1)?.type, "turn_interrupted");
 });
 
