@@ -51,7 +51,14 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential make g++
+      - name: Install Linux process prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential make g++
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:

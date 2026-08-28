@@ -280,6 +280,7 @@ test("release workflow keeps publication behind the release gates", async () => 
 	assert.match(workflow, /id-token: write/u);
 	assert.match(workflow, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/u);
 	assert.match(workflow, /release:verify -- --tag/u);
+	assert.match(workflow, /apparmor_restrict_unprivileged_userns=0/u);
 	assert.match(workflow, /smoke:package -- --all-platforms --require-windows-helper/u);
 	assert.match(workflow, /release:publish -- --confirm/u);
 	assert.ok(

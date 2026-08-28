@@ -170,6 +170,8 @@ test("cross-platform CI has no Python reference or wheel gate", () => {
 	}
 	assert.match(workflow, /^ {2}node-m8-gate:$/mu);
 	assert.match(workflow, /^ {2}windows-sandbox-helper:$/mu);
+	assert.match(workflow, /os: \[ubuntu-latest, macos-latest, windows-2022\]/u);
+	assert.match(workflow, /apparmor_restrict_unprivileged_userns=0/u);
 });
 
 test("compiled CLI does not load the backend implementation on the supervisor thread", () => {
