@@ -8,7 +8,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
 	discoverHookConfig,
@@ -22,6 +22,10 @@ type JsonObject = Record<string, unknown>;
 const ROOT = new URL("../../../../", import.meta.url);
 const MCP_FIXTURE = fileURLToPath(new URL(
 	"backend/packages/integrations/test/fixtures/mcp-stdio-server.mjs",
+	ROOT,
+));
+const PROCESS_ID_FIXTURE = fileURLToPath(new URL(
+	"backend/packages/integrations/test/fixtures/process-id.mjs",
 	ROOT,
 ));
 const HOOK_FIXTURE = fileURLToPath(new URL(
@@ -529,8 +533,9 @@ async function writeExtensionFixtures(options: {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
+		`import { observableProcessId } from ${JSON.stringify(pathToFileURL(PROCESS_ID_FIXTURE).href)};`,
 		"export async function register(context) {",
-		"  await writeFile(process.env.PLUGIN_PID_FILE, String(process.pid), 'utf8');",
+		"  await writeFile(process.env.PLUGIN_PID_FILE, String(await observableProcessId()), 'utf8');",
 		"  context.registerTool({",
 		"    name: 'echo',",
 		"    description: 'Echo M7 text.',",

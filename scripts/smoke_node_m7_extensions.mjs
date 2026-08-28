@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveConfig } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
@@ -27,6 +27,15 @@ const MCP_FIXTURE = join(
 	"test",
 	"fixtures",
 	"mcp-stdio-server.mjs",
+);
+const PROCESS_ID_FIXTURE = join(
+	ROOT,
+	"backend",
+	"packages",
+	"integrations",
+	"test",
+	"fixtures",
+	"process-id.mjs",
 );
 const HOOK_FIXTURE = join(
 	ROOT,
@@ -285,8 +294,9 @@ async function writeExtensionFixtures(options) {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
+		`import { observableProcessId } from ${JSON.stringify(pathToFileURL(PROCESS_ID_FIXTURE).href)};`,
 		"export async function register(context) {",
-		"  await writeFile(process.env.PLUGIN_PID_FILE, String(process.pid), 'utf8');",
+		"  await writeFile(process.env.PLUGIN_PID_FILE, String(await observableProcessId()), 'utf8');",
 		"  context.registerTool({",
 		"    name: 'echo', description: 'Echo M7 smoke text.',",
 		"    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },",
