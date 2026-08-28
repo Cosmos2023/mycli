@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -28,14 +28,14 @@ const MCP_FIXTURE = join(
 	"fixtures",
 	"mcp-stdio-server.mjs",
 );
-const PROCESS_ID_FIXTURE = join(
+const PROCESS_MARKER_FIXTURE = join(
 	ROOT,
 	"backend",
 	"packages",
 	"integrations",
 	"test",
 	"fixtures",
-	"process-id.mjs",
+	"process-marker.mjs",
 );
 const HOOK_FIXTURE = join(
 	ROOT,
@@ -204,14 +204,12 @@ async function runSmoke(sourceConfig, protocol) {
 			return { summary: emptySummary(protocol, "unavailable"), exitCode: SKIP_EXIT_CODE };
 		}
 
-		const mcpPid = await readPid(mcpPidFile);
-		const pluginPid = await readPid(pluginPidFile);
+		const extensionProcessesStarted = existsSync(mcpPidFile) && existsSync(pluginPidFile);
 		const exitCode = await shutdown(backend);
 		backend = undefined;
 		const cleanupCompleted = exitCode === 0
-			&& mcpPid !== undefined
-			&& pluginPid !== undefined
-			&& await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
+			&& extensionProcessesStarted
+			&& await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
 		const hookCompleted = existsSync(hookMarker);
 		const pythonStarted = existsSync(pythonMarker);
 		const persisted = persistedState(homeDir, sessionId, counts);
@@ -294,9 +292,9 @@ async function writeExtensionFixtures(options) {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
-		`import { observableProcessId } from ${JSON.stringify(pathToFileURL(PROCESS_ID_FIXTURE).href)};`,
+		`import { writeProcessMarker } from ${JSON.stringify(pathToFileURL(PROCESS_MARKER_FIXTURE).href)};`,
 		"export async function register(context) {",
-		"  await writeFile(process.env.PLUGIN_PID_FILE, String(await observableProcessId()), 'utf8');",
+		"  await writeProcessMarker(process.env.PLUGIN_PID_FILE);",
 		"  context.registerTool({",
 		"    name: 'echo', description: 'Echo M7 smoke text.',",
 		"    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },",
@@ -417,24 +415,6 @@ function requiredParam(message, name) {
 function optionalParam(message, name) {
 	const value = isObject(message.params) ? message.params[name] : undefined;
 	return typeof value === "string" && value ? value : undefined;
-}
-
-async function readPid(path) {
-	try {
-		const value = Number(await readFile(path, "utf8"));
-		return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function processExists(pid) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 async function eventually(predicate, timeoutMs = 5_000) {

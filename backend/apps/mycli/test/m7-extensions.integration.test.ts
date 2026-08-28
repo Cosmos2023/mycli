@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -24,8 +24,8 @@ const MCP_FIXTURE = fileURLToPath(new URL(
 	"backend/packages/integrations/test/fixtures/mcp-stdio-server.mjs",
 	ROOT,
 ));
-const PROCESS_ID_FIXTURE = fileURLToPath(new URL(
-	"backend/packages/integrations/test/fixtures/process-id.mjs",
+const PROCESS_MARKER_FIXTURE = fileURLToPath(new URL(
+	"backend/packages/integrations/test/fixtures/process-marker.mjs",
 	ROOT,
 ));
 const HOOK_FIXTURE = fileURLToPath(new URL(
@@ -258,9 +258,9 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		["tool_search"],
 	);
 
+	assert.equal(existsSync(mcpPidFile), true);
 	await shutdown();
-	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
-	await eventually(() => !processExists(mcpPid));
+	await eventually(() => !existsSync(mcpPidFile));
 });
 
 test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
@@ -456,13 +456,11 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	);
 	assert.equal(existsSync(hookMarker), true);
 	assert.equal(existsSync(pythonMarker), false);
-	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
-	const pluginPid = Number(await readFile(pluginPidFile, "utf8"));
-	assert.equal(processExists(mcpPid), true);
-	assert.equal(processExists(pluginPid), true);
+	assert.equal(existsSync(mcpPidFile), true);
+	assert.equal(existsSync(pluginPidFile), true);
 
 	await shutdown();
-	await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
+	await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
 	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		const history = store.loadHistoryItems("m7-parent");
@@ -533,9 +531,9 @@ async function writeExtensionFixtures(options: {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
-		`import { observableProcessId } from ${JSON.stringify(pathToFileURL(PROCESS_ID_FIXTURE).href)};`,
+		`import { writeProcessMarker } from ${JSON.stringify(pathToFileURL(PROCESS_MARKER_FIXTURE).href)};`,
 		"export async function register(context) {",
-		"  await writeFile(process.env.PLUGIN_PID_FILE, String(await observableProcessId()), 'utf8');",
+		"  await writeProcessMarker(process.env.PLUGIN_PID_FILE);",
 		"  context.registerTool({",
 		"    name: 'echo',",
 		"    description: 'Echo M7 text.',",
@@ -667,15 +665,6 @@ function providerToolNames(request: JsonObject): readonly string[] {
 			isObject(tool) && typeof tool.name === "string" ? [tool.name] : []
 		))
 		: [];
-}
-
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 function extensionDiagnostics(

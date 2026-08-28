@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-import { writeFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { observableProcessId } from "./process-id.mjs";
+import { writeProcessMarker } from "./process-marker.mjs";
 
 const server = new McpServer({ name: "mycli-test-stdio", version: "1.0.0" });
 
@@ -34,7 +33,7 @@ server.registerResource(
 );
 
 if (process.env.MCP_PID_FILE) {
-	await writeFile(process.env.MCP_PID_FILE, String(await observableProcessId()), "utf8");
+	await writeProcessMarker(process.env.MCP_PID_FILE);
 }
 
 const transport = new StdioServerTransport();
