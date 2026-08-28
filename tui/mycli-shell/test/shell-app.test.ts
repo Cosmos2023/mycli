@@ -6,10 +6,15 @@ import { readFileSync } from "node:fs";
 import type { Terminal } from "../src/tui-core/terminal.ts";
 import { Editor } from "../src/tui-core/components/editor.ts";
 import { Text } from "../src/tui-core/components/text.ts";
-import { TUI, visibleWidth } from "../src/tui-core/tui.ts";
+import { CURSOR_MARKER, TUI, visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
 import { BashExecutionComponent, FileChangeComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, planImplementationContextUsageLabel, PlanImplementationSelectorComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
+import { ApprovalSelectorComponent } from "../src/components/approval-selector.ts";
+import { ClarificationSelectorComponent } from "../src/components/clarification-selector.ts";
+import { theme } from "../src/theme/theme.ts";
+import { completionDurationText } from "../src/components/turn-completed.ts";
+import { turnActivityHeaderText } from "../src/components/turn-activity-label.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
 function stripAnsi(text: string): string {
@@ -450,6 +455,8 @@ test("mycli shell renders promoted shell surfaces", () => {
 	const output = stripAnsi(renderMycliShell(sampleState(), 100).join("\n"));
 
 	assert.match(output, /mycli/);
+	assert.match(output, /^mycli \? help/m);
+	assert.doesNotMatch(output, /ctrl\+p commands|ctrl\+t transcript|ctrl\+o tools|ctrl\+d exit/);
 	assert.match(output, /Read word\.txt/);
 	assert.match(output, /^› Read word\.txt and summarize it\./m);
 	assert.doesNotMatch(output, /Thinking\.\.\./);
@@ -465,6 +472,70 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Waiting for approval/);
 	assert.match(output, /^~\/Desktop\/mycli/m);
 	assert.match(output, /deepseek-v4-flash/);
+});
+
+test("mycli shell renders semantic error and warning notices", () => {
+	const state = sampleState();
+	const output = stripAnsi(renderMycliShell({
+		...state,
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [
+			{
+				id: "error-1",
+				kind: "message",
+					message: {
+					id: "error-1",
+						role: "error",
+						text: "Provider request failed.",
+						diagnostic: {
+							hint: "Retry or choose another provider.",
+							details: "Upstream closed the response stream before completion.",
+							code: "provider_error",
+							method: "turn.submit",
+						},
+				},
+			},
+			{
+				id: "warning-1",
+				kind: "message",
+				message: { id: "warning-1", role: "warning", text: "Conversation interrupted." },
+			},
+		],
+		pendingNotice: undefined,
+	}, 100).join("\n"));
+
+	assert.match(output, /^ [■x] Provider request failed\.\s*$/m);
+	assert.match(
+		output,
+		/^   └ Retry or choose another provider\. · Upstream closed the response stream before completion\.\s*$/m,
+	);
+	assert.doesNotMatch(output, /provider_error|turn\.submit/u);
+	assert.match(output, /^ [⚠!] Conversation interrupted\.\s*$/m);
+	for (const line of renderMycliShell({
+		...state,
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [{
+			id: "error-narrow",
+			kind: "message",
+			message: {
+				id: "error-narrow",
+				role: "error",
+				text: "Provider request failed.",
+				diagnostic: {
+					hint: "Retry or choose another provider.",
+					details: "A long upstream diagnostic that must wrap safely.",
+					code: "provider_error",
+				},
+			},
+		}],
+		pendingNotice: undefined,
+	}, 36)) {
+		assert.ok(visibleWidth(line) <= 36, `line too wide: ${stripAnsi(line)}`);
+	}
 });
 
 test("mycli shell renders complete assistant code blocks", () => {
@@ -784,7 +855,7 @@ test("mycli shell renders complete Plan updates in transcript order", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 72).join("\n"));
 	const planIndex = output.indexOf("• Updated Plan");
-	const footerIndex = output.indexOf("enter send");
+	const footerIndex = output.indexOf("~/Desktop/mycli");
 
 	assert.ok(planIndex >= 0, output);
 	assert.ok(footerIndex > planIndex, output);
@@ -950,6 +1021,37 @@ test("mycli shell collapses consecutive context tool calls like Claude Code", ()
 	assert.match(output, /ctrl\+o to expand/);
 	assert.doesNotMatch(output, /• Grep/);
 	assert.doesNotMatch(output, /• Glob/);
+});
+
+test("collapsed Read groups preview multiple file targets", () => {
+	const paths = [
+		"src/auth/session.ts",
+		"src/auth/token.ts",
+		"src/config/provider.ts",
+		"src/runtime/worker.ts",
+	];
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: paths.map((path, index) => ({
+			id: `read-${index + 1}`,
+			kind: "tool" as const,
+			tool: { id: `read-${index + 1}`, name: "Read", args: path, status: "success" as const },
+		})),
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+	assert.match(output, /^• Read 4 files\s*$/m);
+	assert.match(output, /^  ⎿ src\/auth\/session\.ts, src\/auth\/token\.ts, src\/config\/provider\.ts, … \+1\s*$/m);
+	assert.doesNotMatch(output, /src\/runtime\/worker\.ts/);
+	for (const width of [32, 40, 80, 100]) {
+		for (const line of renderMycliShell(state, width)) {
+			assert.ok(visibleWidth(line) <= width, `line too wide at ${width}: ${stripAnsi(line)}`);
+		}
+	}
 });
 
 test("mycli shell keeps consecutive Shell commands in Codex-style command cells", () => {
@@ -1167,7 +1269,7 @@ test("mycli shell rendered lines stay width safe", () => {
 	assert.doesNotMatch(stripAnsi(lines.join("\n")), /Message mycli/);
 });
 
-test("footer renders two quiet idle rows", () => {
+test("footer renders one quiet idle row with status aligned right", () => {
 	const lines = new FooterComponent({
 		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
 		gitBranch: "feature/tui",
@@ -1185,13 +1287,71 @@ test("footer renders two quiet idle rows", () => {
 	}, { turnRunning: false, hasQueuedInput: false }).render(120);
 	const output = stripAnsi(lines.join("\n"));
 
-	assert.equal(lines.length, 2);
-	assert.match(output, /enter send/);
-	assert.match(output, /ctrl\+p commands/);
+	assert.equal(lines.length, 1);
+	assert.doesNotMatch(output, /enter send|ctrl\+p commands/);
 	assert.doesNotMatch(output, /tab follow-up/);
 	assert.match(output, /11\.3% ctx/);
 	assert.match(output, /deepseek-v4-flash/);
+	assert.match(stripAnsi(lines[0] ?? ""), /^~\/Desktop\/mycli\/\.worktrees\/mycli-termcn-tui-polish/);
+	assert.match(stripAnsi(lines[0] ?? ""), /11\.3% ctx │ deepseek-v4-flash │ • medium$/);
+	assert.equal(visibleWidth(lines[0] ?? ""), 120);
 	assert.doesNotMatch(output, /deepseek\/chat_completions|trust trusted|mode default|Idle|64k|R53k/);
+});
+
+test("footer statusbar modes preserve hierarchy across terminal widths", () => {
+	const data = {
+		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-agent-worker-pool",
+		sessionName: "优化 TUI 显示",
+		model: "gpt-5.6-sol",
+		reasoningLevel: "high",
+		contextPercent: 78.4,
+		liveState: "Running",
+	};
+	const off = new FooterComponent(data, {
+		turnRunning: true,
+		hasQueuedInput: false,
+		statusbarMode: "off",
+	}).render(60);
+	const compact = new FooterComponent(data, {
+		turnRunning: true,
+		hasQueuedInput: false,
+		statusbarMode: "compact",
+	}).render(60);
+	const full = new FooterComponent(data, {
+		turnRunning: true,
+		hasQueuedInput: false,
+		statusbarMode: "full",
+	}).render(60);
+
+	assert.deepEqual(off, []);
+	assert.equal(compact.length, 1);
+	assert.equal(full.length, 1);
+	assert.doesNotMatch(stripAnsi(compact[0] ?? ""), /enter (?:send|steer)|tab follow-up|esc interrupt/);
+	assert.match(stripAnsi(compact[0] ?? ""), /Running/);
+	for (const width of [40, 60, 80, 100]) {
+		for (const line of new FooterComponent(data, {
+			turnRunning: false,
+			hasQueuedInput: false,
+			statusbarMode: "full",
+		}).render(width)) {
+			assert.ok(visibleWidth(line) <= width, `line too wide at ${width}: ${stripAnsi(line)}`);
+		}
+	}
+});
+
+test("static shell keeps permanent footer hints hidden while an agent runs", () => {
+	const state = sampleState();
+	const output = stripAnsi(renderMycliShell({
+		...state,
+		footer: {
+			...state.footer,
+			turnRunning: true,
+			liveState: "Running",
+		},
+	}, 100).join("\n"));
+
+	assert.doesNotMatch(output, /enter (?:send|steer)|tab follow-up|esc interrupt|ctrl\+p commands/);
+	assert.match(output, /Running/);
 });
 
 test("footer distinguishes estimated and previous context usage", () => {
@@ -1210,7 +1370,7 @@ test("footer distinguishes estimated and previous context usage", () => {
 	assert.match(previous, /26% ctx prev/);
 });
 
-test("footer exposes only actions and exceptional state that currently apply", () => {
+test("footer keeps exceptional state without restoring permanent action hints", () => {
 	const output = stripAnsi(new FooterComponent({
 		cwd: "/repo",
 		model: "gpt-5.4",
@@ -1220,10 +1380,7 @@ test("footer exposes only actions and exceptional state that currently apply", (
 		backgroundShellCount: 2,
 	}, { turnRunning: true, hasQueuedInput: true }).render(160).join("\n"));
 
-	assert.match(output, /enter steer/);
-	assert.match(output, /tab follow-up/);
-	assert.match(output, /esc interrupt/);
-	assert.match(output, /option\+up edit follow-up/);
+	assert.doesNotMatch(output, /enter (?:send|steer)|tab follow-up|esc interrupt|edit follow-up|ctrl\+p commands/);
 	assert.match(output, /trust\?/);
 	assert.match(output, /plan/);
 	assert.match(output, /Running/);
@@ -1239,20 +1396,20 @@ test("footer drops git branch before session title on narrow terminals", () => {
 		contextPercent: 11,
 	};
 	const narrow = new FooterComponent(data, { turnRunning: false, hasQueuedInput: false }).render(48);
-	const wide = stripAnsi(new FooterComponent(data, { turnRunning: false, hasQueuedInput: false }).render(140).join("\n"));
+	const wide = stripAnsi(new FooterComponent(data, { turnRunning: false, hasQueuedInput: false }).render(160).join("\n"));
 	const narrowOutput = stripAnsi(narrow.join("\n"));
 
 	assert.match(narrowOutput, /修复 TUI 底栏/);
 	assert.doesNotMatch(narrowOutput, /feature\/a-very-long-branch/);
 	assert.match(wide, /feature\/a-very-long-branch/);
-	assert.equal(narrow.length, 2);
+	assert.equal(narrow.length, 1);
 	for (const line of narrow) assert.ok(visibleWidth(line) <= 48, `line too wide: ${stripAnsi(line)}`);
 
 	const cjkLines = new FooterComponent({
 		cwd: "/很长的目录/另一个很长的目录/project",
 		sessionName: "这是一个很长的中文会话标题",
 	}, { turnRunning: false, hasQueuedInput: false }).render(24);
-	assert.equal(cjkLines.length, 2);
+	assert.equal(cjkLines.length, 1);
 	for (const line of cjkLines) assert.ok(visibleWidth(line) <= 24, `line too wide: ${stripAnsi(line)}`);
 });
 
@@ -1283,11 +1440,13 @@ test("footer keeps compact shape width safe", () => {
 	});
 
 	const lines = footer.render(64);
-	assert.ok(lines.length >= 3);
-	assert.match(stripAnsi(lines.join("\n")), /~\/\.\.\.\/mycli-termcn-tui-polish/);
-	assert.match(stripAnsi(lines.join("\n")), /91\.2% ctx/);
-	assert.match(stripAnsi(lines.join("\n")), /status with control chars/);
-	assert.doesNotMatch(stripAnsi(lines.join("\n")), /steer 1|follow-up 1|deepseek|CH88\.8|\$0\.123/);
+	const output = stripAnsi(lines.join("\n"));
+	assert.equal(lines.length, 2);
+	assert.match(output, /^~\/\.\.\.\//m);
+	assert.match(output, /a long session name/);
+	assert.match(output, /91\.2% ctx/);
+	assert.match(output, /status with control chars/);
+	assert.doesNotMatch(output, /steer 1|follow-up 1|deepseek|CH88\.8|\$0\.123/);
 	for (const line of lines) {
 		assert.ok(visibleWidth(line) <= 64, `line too wide: ${stripAnsi(line)}`);
 	}
@@ -1419,7 +1578,7 @@ test("footer renders collaboration mode when space allows", () => {
 	const output = stripAnsi(footer.render(120).join("\n"));
 
 	assert.match(output, /plan/);
-	assert.match(output, /shift\+tab switch mode/);
+	assert.doesNotMatch(output, /shift\+tab switch mode/);
 	for (const line of footer.render(48)) {
 		assert.ok(visibleWidth(line) <= 48, `line too wide: ${stripAnsi(line)}`);
 	}
@@ -1654,6 +1813,97 @@ test("tool rendering stays collapsed until expanded and marks failure", () => {
 	assert.match(output, /1\.3s/);
 });
 
+test("Read titles show their file target without repeating it in the result", () => {
+	const success = new ToolExecutionComponent({
+		id: "read-success",
+		name: "Read",
+		args: "src/auth/session.ts",
+		status: "success",
+		outputPreview: "186 lines",
+	});
+	const running = new ToolExecutionComponent({
+		id: "read-running",
+		name: "read_file",
+		args: "src/auth/session.ts",
+		status: "running",
+	});
+	const failed = new ToolExecutionComponent({
+		id: "read-failed",
+		name: "Read",
+		args: "src/auth/missing.ts",
+		status: "error",
+		errorPreview: "File not found",
+	});
+	const ordinarySummary = new ToolExecutionComponent({
+		id: "read-summary",
+		name: "Read",
+		args: "src/auth/session.ts",
+		status: "success",
+		summaryPreview: "Read src/auth/session.ts",
+	});
+	const duplicateSummary = new ToolExecutionComponent({
+		id: "read-duplicate",
+		name: "Read",
+		args: "src/auth/session.ts",
+		status: "success",
+		summaryPreview: "Read src/auth/session.ts (unchanged duplicate)",
+	});
+
+	const successOutput = stripAnsi(success.render(80).join("\n"));
+	assert.match(successOutput, /^• Read src\/auth\/session\.ts\s*$/m);
+	assert.match(successOutput, /^  ⎿ 186 lines\s*$/m);
+	assert.equal(successOutput.match(/src\/auth\/session\.ts/g)?.length, 1);
+
+	const runningOutput = stripAnsi(running.render(80).join("\n"));
+	assert.match(runningOutput, /^• Reading src\/auth\/session\.ts\s*$/m);
+	assert.match(runningOutput, /^  ⎿ Running\.\.\.\s*$/m);
+
+	const failedOutput = stripAnsi(failed.render(80).join("\n"));
+	assert.match(failedOutput, /^• Read src\/auth\/missing\.ts\s*$/m);
+	assert.match(failedOutput, /^  ⎿ File not found\s*$/m);
+	assert.equal(failedOutput.match(/src\/auth\/missing\.ts/g)?.length, 1);
+
+	const ordinaryOutput = stripAnsi(ordinarySummary.render(80).join("\n"));
+	assert.match(ordinaryOutput, /^  ⎿ done\s*$/m);
+	assert.equal(ordinaryOutput.match(/src\/auth\/session\.ts/g)?.length, 1);
+	const duplicateOutput = stripAnsi(duplicateSummary.render(80).join("\n"));
+	assert.match(duplicateOutput, /^  ⎿ unchanged duplicate\s*$/m);
+	assert.equal(duplicateOutput.match(/src\/auth\/session\.ts/g)?.length, 1);
+});
+
+test("Read titles retain the basename on narrow terminals", () => {
+	const read = new ToolExecutionComponent({
+		id: "read-long",
+		name: "Read",
+		args: "src/features/authentication/session-management/session-controller.ts",
+		status: "success",
+		outputPreview: "42 lines",
+	});
+
+	for (const width of [24, 32, 40]) {
+		const lines = read.render(width);
+		assert.match(stripAnsi(lines[1] ?? "").trimEnd(), /controller\.ts$/);
+		for (const line of lines) {
+			assert.ok(visibleWidth(line) <= width, `line too wide at ${width}: ${stripAnsi(line)}`);
+		}
+	}
+
+	const cjkRead = new ToolExecutionComponent({
+		id: "read-cjk",
+		name: "Read",
+		args: "src/功能/身份验证/会话控制器.ts",
+		status: "success",
+		outputPreview: "18 lines",
+	});
+	for (const width of [24, 32]) {
+		const lines = cjkRead.render(width);
+		assert.match(stripAnsi(lines[1] ?? "").trimEnd(), /控制器\.ts$/);
+		for (const line of lines) {
+			assert.ok(visibleWidth(line) <= width, `CJK line too wide at ${width}: ${stripAnsi(line)}`);
+		}
+	}
+});
+
 test("skill rendering shows the concrete skill name without repeating it", () => {
 	const rendered = new ToolExecutionComponent({
 		id: "skill",
@@ -1811,6 +2061,23 @@ test("wrapped Shell command stays width safe with CJK and long tokens", () => {
 	assert.ok(lines.length > 1);
 	assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	assert.match(stripAnsi(lines.join("\n")), /… \+/);
+});
+
+test("wrapped Shell output keeps the gutter on long package-manager lines", () => {
+	const output = "@openai/codex-darwin-arm64@https://registry.npmjs.org/@openai/codex/-/codex-0.150.1-darwin-arm64.tgz. Extracting by manifest.";
+	const rendered = new BashExecutionComponent({
+		id: "shell-long-output",
+		command: "npm install",
+		status: "success",
+		outputPreview: output,
+	});
+
+	const lines = rendered.render(80).map((line) => stripAnsi(line));
+	const outputLines = lines.filter((line) => line.includes("codex") || line.includes("Extracting"));
+
+	assert.equal(outputLines.length, 2);
+	assert.match(outputLines[0] ?? "", /^  └ /);
+	assert.match(outputLines[1] ?? "", /^    /);
 });
 
 test("Shell command continuations and result branches share one Codex gutter", () => {
@@ -2075,7 +2342,7 @@ test("mycli shell runtime assembles mounted containers", () => {
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /mycli/);
 	assert.match(output, /Read word\.txt/);
-	assert.match(output, /enter send/);
+	assert.doesNotMatch(output, /enter send/);
 	assert.doesNotMatch(output, /Message mycli/);
 	assert.doesNotMatch(output, /mycli-shell\/~/);
 	assert.match(output, /deepseek-v4-flash/);
@@ -2263,19 +2530,18 @@ test("mycli shell runtime retains transcript assembly across chrome-only frames"
 	assert.match(stripAnsi(updatedLines.join("\n")), /hello again/);
 });
 
-test("mycli shell runtime updates footer actions with turn and queue state", () => {
+test("mycli shell runtime keeps footer actions hidden across turn and queue state", () => {
 	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal: new TestTerminal() });
 	let output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
-	assert.match(output, /enter send/);
-	assert.doesNotMatch(output, /ctrl\+c interrupt|edit follow-up/);
+	assert.doesNotMatch(output, /enter send|ctrl\+p commands|ctrl\+c interrupt|edit follow-up/);
 
 	runtime.setState({
 		...runtime.getState(),
 		footer: { ...runtime.getState().footer, liveState: "Running" },
 	});
 	output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
-	assert.match(output, /enter steer/);
-	assert.match(output, /esc interrupt/);
+	assert.doesNotMatch(output, /enter (?:send|steer)|tab follow-up|esc interrupt|ctrl\+p commands/);
+	assert.match(stripAnsi(runtime.chatContainer.render(180).join("\n")), /esc to interrupt/);
 	assert.doesNotMatch(output, /edit follow-up/);
 
 	runtime.setState({
@@ -2283,7 +2549,7 @@ test("mycli shell runtime updates footer actions with turn and queue state", () 
 		footer: { ...runtime.getState().footer, hasPendingInput: true },
 	});
 	output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
-	assert.match(output, /option\+up edit follow-up/);
+	assert.doesNotMatch(output, /edit follow-up/);
 });
 
 test("mycli shell runtime updates transcript tool components in place", () => {
@@ -2313,8 +2579,10 @@ test("mycli shell runtime updates transcript tool components in place", () => {
 	});
 
 	assert.equal(runtime.chatContainer.children[0], component);
-	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /⎿ word\.txt · 3 lines/);
-	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /3 lines/);
+	const output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /^• Read word\.txt\s*$/m);
+	assert.match(output, /^  ⎿ 3 lines\s*$/m);
+	assert.equal(output.match(/word\.txt/g)?.length, 1);
 });
 
 test("running Write becomes one file change component and updates in place", () => {
@@ -2709,22 +2977,49 @@ test("mycli shell runtime keeps Codex-style working status at the transcript tai
 
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Running" } });
 	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /Working \(0s • esc to interrupt\)/);
-	assert.doesNotMatch(stripAnsi(runtime.statusContainer.render(100).join("\n")), /Working/);
+	const workingLabel = turnActivityHeaderText({ text: "Running", variantKey: "10000" });
+	assert.ok(output.split("\n").some((line) => line.startsWith(`⠋ ${workingLabel} `)));
+	assert.ok(output.includes(`${workingLabel} (0s • esc to interrupt)`));
+	assert.equal(stripAnsi(runtime.statusContainer.render(100).join("\n")), "");
 	assert.doesNotMatch(stripAnsi(runtime.footerContainer.render(100).join("\n")), /Running/);
-	assert.match(stripAnsi(runtime.chatContainer.children.at(-1)?.render(100).join("\n") ?? ""), /Working/);
+	assert.ok(stripAnsi(runtime.chatContainer.children.at(-1)?.render(100).join("\n") ?? "").includes(workingLabel));
+	for (const width of [40, 80, 100]) {
+		const lines = stripAnsi(runtime.chatContainer.render(width).join("\n")).split("\n");
+		const ranLine = lines.find((line) => line.includes("Ran pytest -q"));
+		const workingLine = lines.find((line) => line.includes(`${workingLabel} (`));
+		assert.ok(ranLine, `missing Ran title at width ${width}`);
+		assert.ok(workingLine, `missing activity title at width ${width}`);
+		assert.equal(workingLine.search(/\S/u), ranLine.search(/\S/u), `misaligned transcript titles at width ${width}`);
+	}
 
 	now = 12_400;
 	runtime.refreshTurnStatus();
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /Working \(2s • esc to interrupt\)/);
+	assert.ok(output.includes(`${workingLabel} (2s • esc to interrupt)`));
 
 	now = 13_100;
-	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Completed" } });
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Completed",
+			liveStateKind: "completed",
+			turnDurationMs: 992_000,
+		},
+	});
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /✻ Completed for 3 s/);
-	assert.doesNotMatch(output, /Working/);
+	const completedText = completionDurationText(992_000, "live:992000");
+	assert.ok(output.includes(completedText));
+	assert.ok(output.includes(`\n\n${completedText}`));
+	assert.doesNotMatch(output, /esc to interrupt/);
 	assert.equal(stripAnsi(runtime.statusContainer.render(100).join("\n")), "");
+	assert.doesNotMatch(stripAnsi(runtime.footerContainer.render(100).join("\n")), /Completed/);
+	for (const width of [8, 16, 40]) {
+		const completion = runtime.chatContainer.children.at(-1)?.render(width) ?? [];
+		assert.equal(completion.length, 2);
+		assert.equal(completion[0], "");
+		assert.ok(visibleWidth(stripAnsi(completion[1] ?? "")) <= width);
+	}
 });
 
 test("working status reuses stable animation frames and invalidates elapsed time and width", () => {
@@ -2747,12 +3042,100 @@ test("working status reuses stable animation frames and invalidates elapsed time
 	now = 11_000;
 	const elapsed = activity.render(100);
 	assert.notEqual(elapsed, first);
-	assert.match(stripAnsi(elapsed.join("\n")), /Working \(1s • esc to interrupt\)/);
+	const workingLabel = turnActivityHeaderText({ text: "Running", variantKey: "10000" });
+	assert.ok(stripAnsi(elapsed.join("\n")).includes(`${workingLabel} (1s • esc to interrupt)`));
 	assert.equal(activity.render(100), elapsed);
 
 	const resized = activity.render(80);
 	assert.notEqual(resized, elapsed);
 	assert.equal(activity.render(80), resized);
+});
+
+test("persisted worked duration renders once after resume with transcript spacing", () => {
+	const assistant = { id: "assistant-resumed", role: "assistant" as const, text: "收到 111。" };
+	const durationId = "turn-completed-duration:resumed";
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [assistant],
+			tools: [],
+			bash: [],
+			transcript: [
+				{ id: assistant.id, kind: "message", message: assistant },
+				{
+					id: durationId,
+					kind: "turn_completed",
+					turnCompleted: {
+						id: durationId,
+						durationMs: 4_000,
+					},
+				},
+			],
+			footer: { ...sampleState().footer, liveState: "Idle", liveStateKind: "idle" },
+		},
+		terminal: new TestTerminal(),
+	});
+
+	const output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	const compactOutput = output.split("\n").map((line) => line.trimEnd()).join("\n");
+	const completedText = completionDurationText(4_000, durationId);
+	assert.ok(compactOutput.includes(`收到 111。\n\n${completedText}`));
+	assert.equal(compactOutput.split(completedText).length - 1, 1);
+});
+
+test("completion duration phrasing varies by turn but stays deterministic", () => {
+	assert.equal(
+		completionDurationText(4_000, "turn-stable"),
+		completionDurationText(4_000, "turn-stable"),
+	);
+	const phrases = new Set(Array.from(
+		{ length: 32 },
+		(_, index) => completionDurationText(4_000, `turn-${index}`).replace(/ 4s$/u, ""),
+	));
+	assert.deepEqual([...phrases].sort(), [
+		"✻ Completed in",
+		"✻ Finished in",
+		"✻ Took",
+		"✻ Worked for",
+	]);
+});
+
+test("turn activity phrasing varies by turn without changing explicit phases", () => {
+	const stableOptions = { text: "Running", variantKey: "turn-stable" };
+	assert.equal(turnActivityHeaderText(stableOptions), turnActivityHeaderText(stableOptions));
+
+	const workingPhrases = new Set(Array.from(
+		{ length: 128 },
+		(_, index) => turnActivityHeaderText({ text: "Running", variantKey: `turn-${index}` }),
+	));
+	assert.deepEqual([...workingPhrases].sort(), [
+		"Digging in",
+		"Making progress",
+		"On it",
+		"Putting it together",
+		"Working",
+	]);
+
+	const thinkingPhrases = new Set(Array.from(
+		{ length: 128 },
+		(_, index) => turnActivityHeaderText({
+			text: "Thinking",
+			kind: "thinking",
+			variantKey: `turn-${index}`,
+		}),
+	));
+	assert.deepEqual([...thinkingPhrases].sort(), [
+		"Connecting the dots",
+		"Reasoning it through",
+		"Thinking",
+		"Thinking it over",
+		"Working it out",
+	]);
+	assert.equal(turnActivityHeaderText({
+		text: "Compressing   context",
+		kind: "compaction",
+		variantKey: "turn-stable",
+	}), "Compressing context");
 });
 
 test("working elapsed continues while the active turn waits on a tool", () => {
@@ -2802,7 +3185,54 @@ test("working elapsed continues while the active turn waits on a tool", () => {
 		},
 	});
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /✻ Completed for 5 s/);
+	assert.ok(output.includes(completionDurationText(5_100, "live:5100")));
+});
+
+test("active web search does not repeat its label under the working row", () => {
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [],
+			tools: [],
+			bash: [],
+			transcript: [
+				{
+					id: "web-search:ws-1",
+					kind: "web_search",
+					webSearch: {
+						id: "web-search:ws-1",
+						callId: "ws-1",
+						status: "completed",
+						action: "search",
+						detail: "US stock premarket movers",
+					},
+				},
+				{
+					id: "web-search:ws-2",
+					kind: "web_search",
+					webSearch: {
+						id: "web-search:ws-2",
+						callId: "ws-2",
+						status: "running",
+						action: "other",
+					},
+				},
+			],
+			footer: {
+				...sampleState().footer,
+				liveState: "Running",
+				liveStateKind: "running",
+				turnRunning: true,
+			},
+		},
+		terminal: new TestTerminal(),
+		now: () => 10_000,
+	});
+
+	const output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /Searched the web for US stock premarket movers/u);
+	assert.equal(output.match(/Searching the web/gu)?.length, 1);
+	assert.doesNotMatch(output, /└ Searching the web/u);
 });
 
 test("working status adopts Codex-style phase headers", () => {
@@ -2831,7 +3261,12 @@ test("working status adopts Codex-style phase headers", () => {
 		},
 	});
 	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /Thinking \(0s • esc to interrupt\)/);
+	const thinkingLabel = turnActivityHeaderText({
+		text: "Thinking",
+		kind: "thinking",
+		variantKey: "10000",
+	});
+	assert.ok(output.includes(`${thinkingLabel} (0s • esc to interrupt)`));
 
 	now = 11_000;
 	runtime.setState({
@@ -2868,7 +3303,7 @@ test("working status follows the latest transcript output", () => {
 
 	const firstActivity = runtime.chatContainer.children.at(-1);
 	assert.ok(firstActivity);
-	assert.equal(stripAnsi(runtime.chatContainer.render(100).at(-1) ?? "").includes("Working"), true);
+	assert.equal(stripAnsi(runtime.chatContainer.render(100).at(-1) ?? "").includes("esc to interrupt"), true);
 
 	runtime.setState({
 		...runtime.getState(),
@@ -2884,7 +3319,7 @@ test("working status follows the latest transcript output", () => {
 
 	assert.equal(runtime.chatContainer.children.at(-1), firstActivity);
 	const rendered = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.ok(rendered.indexOf("tool output") < rendered.indexOf("Working"));
+	assert.ok(rendered.indexOf("tool output") < rendered.indexOf("esc to interrupt"));
 });
 
 test("mycli shell runtime keeps clear-on-shrink disabled like coding-agent default", async () => {
@@ -2969,7 +3404,7 @@ test("mycli shell runtime enters main UI only after trust selection", async () =
 	terminal.input?.("\r");
 	await setTimeout(25);
 	const output = stripAnsi(terminal.output);
-	assert.match(output, /enter send/);
+	assert.doesNotMatch(output, /enter send/);
 	assert.match(output, /deepseek-v4-flash/);
 	assert.equal(runtime.getState().footer.trust, "trusted");
 	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
@@ -3052,6 +3487,20 @@ test("mycli shell command palette replaces editor like coding-agent selector", a
 	terminal.input?.("\x1b");
 	await setTimeout(25);
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+});
+
+test("command palette shows one non-redundant position count", () => {
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		commands: Array.from({ length: 14 }, (_, index) =>
+			slashCommand(`command-${index + 1}`, `/command-${index + 1}`, `Run command ${index + 1}`)),
+	});
+	runtime.showCommandPalette();
+	const output = stripAnsi(runtime.ui.render(60).join("\n"));
+
+	assert.match(output, /^1\/14$/m);
+	assert.doesNotMatch(output, /14\/14 commands|1\/14[\s\S]*14\/14 commands/);
 });
 
 test("command palette preserves draft, searches metadata, and blocks unavailable commands", async () => {
@@ -3159,7 +3608,59 @@ test("plan implementation context usage matches Codex labels", () => {
 test("plan implementation selector stays width safe on narrow terminals", () => {
 	const selector = new PlanImplementationSelectorComponent({ onSelect: () => undefined });
 	for (const width of [32, 40, 80]) {
-		for (const line of selector.render(width)) {
+		const lines = selector.render(width);
+		for (const line of lines) {
+			assert.ok(visibleWidth(line) <= width, `line too wide at ${width}: ${stripAnsi(line)}`);
+		}
+		if (width === 40) {
+			assert.match(stripAnsi(lines.join("\n")), /^     Switch to Default and start\s*$/m);
+			assert.match(stripAnsi(lines.join("\n")), /^     coding\.\s*$/m);
+		}
+	}
+});
+
+test("interactive selectors keep paths descriptions and hints structured on narrow terminals", () => {
+	const approval = new ApprovalSelectorComponent({
+		approval: {
+			decisionId: "approval-narrow",
+			preview: "Write /Users/cosmos/Desktop/mycli/.worktrees/mycli-agent-worker-pool/docs/a-very-long-file-name.md",
+			toolName: "Write",
+			permissionRequest: {
+				network: true,
+				readPaths: [],
+				writePaths: ["/Users/cosmos/Desktop/mycli/.worktrees/mycli-agent-worker-pool/docs"],
+			},
+			options: [
+				{ choice: "approve_once", label: "Allow once" },
+				{ choice: "reject", label: "Reject" },
+			],
+		},
+		onSelect: () => undefined,
+		onCancel: () => undefined,
+	});
+	const clarification = new ClarificationSelectorComponent({
+		clarification: {
+			requestId: "clarification-narrow",
+			header: "Scope",
+			question: "Which implementation should we use?",
+			options: [{ label: "Runtime", description: "Keep the runtime and terminal projection consistent across resume." }],
+			multiSelect: false,
+		},
+		onRespond: () => undefined,
+		onCancel: () => undefined,
+	});
+
+	for (const width of [40, 60, 80, 100]) {
+		const approvalLines = approval.render(width);
+		const clarificationLines = clarification.render(width);
+		assert.equal(approvalLines.filter((line) => stripAnsi(line).includes("⎿ Write")).length, 1);
+		assert.match(stripAnsi(approvalLines.join("\n")), /Network: enabled/u);
+		assert.match(stripAnsi(approvalLines.join("\n")), /Write: \/Users\/cosmos/u);
+		assert.doesNotMatch(stripAnsi(clarificationLines.join("\n")), /AskUserQuestion/);
+		if (width === 40) {
+			assert.match(stripAnsi(clarificationLines.join("\n")), /^     Keep the runtime/m);
+		}
+		for (const line of [...approvalLines, ...clarificationLines]) {
 			assert.ok(visibleWidth(line) <= width, `line too wide at ${width}: ${stripAnsi(line)}`);
 		}
 	}
@@ -3576,6 +4077,52 @@ test("mycli shell clarification selector submits a selected option", async () =>
 	await setTimeout(25);
 
 	assert.deepEqual(responses, [["question-1", "TUI"]]);
+});
+
+test("mycli shell renders answered clarifications as stable transcript blocks", () => {
+	const lines = renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [{
+			id: "clarification-response:question-1",
+			kind: "clarification",
+			clarification: {
+				id: "clarification-response:question-1",
+				requestId: "question-1",
+				header: "Scope",
+				question: "Which implementation should we use?",
+				response: "TUI",
+				multiSelect: false,
+			},
+		}],
+	}, 80);
+	const output = stripAnsi(lines.join("\n"));
+
+	assert.match(output, /• Scope/);
+	assert.match(output, /  Which implementation should we use\?/);
+	assert.match(output, /  → TUI/);
+	assert.doesNotMatch(output, /AskUserQuestion|Answered:/);
+	const narrow = renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [{
+			id: "clarification-response:question-cjk",
+			kind: "clarification",
+			clarification: {
+				id: "clarification-response:question-cjk",
+				requestId: "question-cjk",
+				header: "范围",
+				question: "哪些模块需要一起修改并保持恢复后一致？",
+				response: "运行时、持久化和终端界面",
+				multiSelect: true,
+			},
+		}],
+	}, 24);
+	assert.equal(narrow.every((line) => visibleWidth(stripAnsi(line)) <= 24), true);
 });
 
 test("mycli shell clarification selector interrupts on escape", async () => {
@@ -4022,6 +4569,36 @@ test("mycli shell slash autocomplete accepts selected command with tab", async (
 	assert.equal(runtime.editor.getText(), "/settings ");
 });
 
+test("slash autocomplete keeps the hardware cursor anchored to the editor for IME", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 80, rows: 24 });
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		commands: [slashCommand("settings", "/settings", "Open settings")],
+	});
+	t.after(async () => {
+		runtime.ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+
+	runtime.ui.setShowHardwareCursor(true);
+	runtime.start();
+	await setTimeout(25);
+	await terminal.flush();
+	terminal.sendInput("/");
+	await setTimeout(25);
+	await terminal.flush();
+
+	const rendered = runtime.ui.render(80).join("\n");
+	assert.ok(rendered.includes(`/${CURSOR_MARKER}`));
+	const visibleLines = terminal.visibleLines();
+	const inputRow = visibleLines.findIndex((line) => line.trim() === "/");
+	assert.notEqual(inputRow, -1, visibleLines.join("\n"));
+	const inputColumn = visibleLines[inputRow]!.indexOf("/") + 1;
+	assert.deepEqual(terminal.cursorPosition(), { row: inputRow, column: inputColumn });
+});
+
 test("mycli shell slash autocomplete wins over tab follow-up while running", async () => {
 	const followUps: string[] = [];
 	const terminal = new TestTerminal();
@@ -4334,6 +4911,70 @@ test("mycli shell settings selector persists visual settings through runtime cal
 	assert.equal(runtime.getState().settings?.statusbarMode, "compact");
 });
 
+test("mycli shell applies runtime-backed visual settings to active rendering", async () => {
+	const base = subagentPanelState();
+	const assistant = {
+		id: "assistant-thinking",
+		role: "assistant" as const,
+		text: "Visible answer",
+		thinking: "Visible reasoning",
+		thinkingHidden: true,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...base,
+			messages: [assistant],
+			transcript: [
+				{ id: assistant.id, kind: "message", message: assistant },
+				...(base.transcript ?? []),
+			],
+			footer: { ...base.footer, liveState: "Running", turnRunning: true },
+			settings: {
+				...base.settings,
+				statusbarMode: "off",
+				theme: "light",
+				hideThinking: false,
+				hardwareCursor: true,
+				clearOnShrink: false,
+				terminalProgress: false,
+				subagentDensity: "detailed",
+			},
+		},
+		terminal: new TestTerminal(),
+	});
+
+	assert.equal(theme.name(), "light");
+	assert.equal(runtime.ui.getShowHardwareCursor(), true);
+	assert.equal(runtime.ui.getClearOnShrink(), false);
+	assert.equal(runtime.footerContainer.render(80).length, 0);
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /Visible reasoning/);
+	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(80).join("\n")), /esc to interrupt/);
+	assert.match(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
+
+	runtime.setState({
+		...runtime.getState(),
+		settings: {
+			...runtime.getState().settings,
+			statusbarMode: "compact",
+			theme: "dark",
+			hideThinking: true,
+			hardwareCursor: false,
+			clearOnShrink: true,
+			terminalProgress: true,
+			subagentDensity: "compact",
+		},
+	});
+
+	assert.equal(theme.name(), "dark");
+	assert.equal(runtime.ui.getShowHardwareCursor(), false);
+	assert.equal(runtime.ui.getClearOnShrink(), true);
+	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(80).join("\n")), /Visible reasoning/);
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /esc to interrupt/);
+	assert.doesNotMatch(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
+	assert.equal(runtime.footerContainer.render(80).length, 3);
+	await runtime.shutdown();
+});
+
 test("mycli shell session selector handles empty state and selection", async () => {
 	const emptyTerminal = new TestTerminal();
 	const emptyRuntime = new MycliShellRuntime({
@@ -4410,13 +5051,13 @@ test("mycli shell session selection replaces native scrollback with loaded histo
 
 	const output = stripAnsi(terminal.output);
 	const oldestHistory = output.indexOf("resumed history 0");
-	const header = output.indexOf("mycli ctrl+p commands");
+	const header = output.indexOf("mycli ? help");
 	const visibleTail = output.indexOf("resumed history 29");
 	assert.ok(oldestHistory >= 0);
 	assert.ok(header >= 0);
 	assert.ok(oldestHistory > header);
 	assert.ok(visibleTail > oldestHistory);
-	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
+	assert.equal(output.match(/mycli \? help/g)?.length, 1);
 	for (let index = 0; index < 30; index += 1) {
 		assert.equal(
 			output.match(new RegExp(`resumed history ${index}(?!\\d)`, "g"))?.length,
@@ -5810,11 +6451,11 @@ test("mycli shell writes full initial history when terminal has native scrollbac
 
 	const output = stripAnsi(terminal.output);
 	const oldestHistory = output.indexOf("history message 0");
-	const header = output.indexOf("mycli ctrl+p commands");
+	const header = output.indexOf("mycli ? help");
 	assert.ok(oldestHistory >= 0);
 	assert.ok(header >= 0);
 	assert.ok(oldestHistory > header);
-	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
+	assert.equal(output.match(/mycli \? help/g)?.length, 1);
 	assert.match(output, /history message 17/);
 });
 
@@ -5981,11 +6622,11 @@ test("mycli shell keeps the session header before a long markdown table", async 
 	await setTimeout(25);
 
 	const output = stripAnsi(terminal.output);
-	const header = output.indexOf("mycli ctrl+p commands");
+	const header = output.indexOf("mycli ? help");
 	const tableHeader = output.indexOf("Stage");
 	assert.ok(header >= 0);
 	assert.ok(tableHeader > header);
-	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
+	assert.equal(output.match(/mycli \? help/g)?.length, 1);
 });
 
 test("mycli shell bounds native scrollback after initial history during assistant streaming", async () => {
@@ -6913,7 +7554,7 @@ test("mycli shell runtime scrolls only transcript and keeps chrome visible", asy
 	assert.match(output, /message 1[0-9]/);
 	const screen = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(screen, /mycli/);
-	assert.match(screen, /enter send/);
+	assert.doesNotMatch(screen, /enter send/);
 	assert.match(screen, /deepseek-v4-flash/);
 });
 

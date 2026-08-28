@@ -1,9 +1,10 @@
 import type { MycliShellPendingClarification } from "../model.ts";
 import { decodePrintableKey } from "../tui-core/keys.ts";
-import { Container, getKeybindings, matchesKey, Spacer, Text, truncateToWidth } from "../tui-core/index.ts";
+import { Container, getKeybindings, matchesKey, Spacer, Text } from "../tui-core/index.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
+import { ResponsiveDescriptionRow, SegmentedHintLine } from "./responsive-row.ts";
 
 export interface ClarificationSelectorOptions {
 	clarification: MycliShellPendingClarification;
@@ -200,13 +201,19 @@ export class ClarificationSelectorComponent extends Container {
 			const marker = this.clarification.multiSelect ? (checked ? "[x] " : "[ ] ") : "";
 			const prefix = active ? theme.fg("accent", "→ ") : "  ";
 			const label = `${index + 1}. ${marker}${option.label}`;
-			const description = option.description ? `  ${truncateToWidth(option.description, 80, "...")}` : "";
-			this.listContainer.addChild(new Text(`${prefix}${active ? theme.fg("accent", label) : theme.fg("text", label)}${theme.fg("muted", description)}`, 1, 0));
+			this.listContainer.addChild(new ResponsiveDescriptionRow(
+				prefix,
+				active ? theme.fg("accent", label) : theme.fg("text", label),
+				option.description ? theme.fg("muted", option.description) : "",
+			));
 		}
-		const hints = this.clarification.multiSelect
-			? `${rawKeyHint("↑↓", "navigate")}  ${rawKeyHint("space", "toggle")}  ${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "interrupt")}`
-			: `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "interrupt")}`;
-		this.listContainer.addChild(new Text(hints, 1, 0));
+		const hints = [
+			rawKeyHint("↑↓", "navigate"),
+			...(this.clarification.multiSelect ? [rawKeyHint("space", "toggle")] : []),
+			keyHint("tui.select.confirm", this.clarification.multiSelect ? "submit" : "select"),
+			keyHint("tui.select.cancel", "interrupt"),
+		];
+		this.listContainer.addChild(new SegmentedHintLine(hints, 1));
 	}
 
 	private updateResponse(): void {
@@ -224,7 +231,7 @@ export class ClarificationSelectorComponent extends Container {
 
 	private titleText(): string {
 		const title = this.clarification.header?.trim() || "Question";
-		return `${theme.fg("accent", theme.bold(title))}${theme.fg("muted", " · AskUserQuestion")}`;
+		return theme.fg("accent", theme.bold(title));
 	}
 
 	private isOtherLabel(label: string): boolean {

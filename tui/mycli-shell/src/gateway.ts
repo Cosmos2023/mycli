@@ -50,6 +50,7 @@ import type {
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
+import { TUI_VERSION } from "./version.ts";
 import {
 	clientActionFromResult,
 	slashCommandNamesFromResult,
@@ -72,6 +73,8 @@ import {
 	planImplementationMessage,
 	type PlanImplementationAction,
 } from "./plan-implementation.ts";
+import { appendFatalTuiDiagnostic } from "./fatal-error.ts";
+import { safeErrorMessage } from "./safe-ui-text.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -110,6 +113,7 @@ let localDispatchScheduled = false;
 let interruptRequested = false;
 let resubmitPendingSteersAfterInterrupt = false;
 let extensionRefreshScheduled = false;
+let fatalTuiHandling = false;
 const runtimeStateProjector = new RuntimeStateProjector();
 const TRANSCRIPT_PAGE_LIMIT = 500;
 
@@ -234,14 +238,20 @@ async function send(
 	try {
 		return await client.send(method, params);
 	} catch (error) {
-		const gatewayError =
+		const rawGatewayError =
 			error instanceof GatewayRequestError
 				? error
 				: new GatewayRequestError({
 						code: "request_failed",
-						message: error instanceof Error ? error.message : "Request failed.",
+						message: safeErrorMessage(error, "Request failed."),
 						method,
 					});
+		const gatewayError = new GatewayRequestError({
+			code: rawGatewayError.code,
+			message: safeErrorMessage(rawGatewayError, "Request failed."),
+			method: rawGatewayError.method || method,
+			data: rawGatewayError.data,
+		});
 		if (options.recordErrors !== false) {
 			setRuntimeState(
 				reduceRuntimeEvent(runtimeState, "gateway.error", {
@@ -273,7 +283,7 @@ async function bootstrap(): Promise<void> {
 	verifyGatewayManifest(manifest);
 	const bootstrapPayload = await send("session.bootstrap", {
 		protocol_version: GATEWAY_PROTOCOL_VERSION,
-		client: { name: "mycli-shell-tui", version: "0.1.0" },
+		client: { name: "mycli-shell-tui", version: TUI_VERSION },
 	});
 	setRuntimeState(runtimeStateFromBootstrap(runtimeState, bootstrapPayload));
 	await acknowledgeLegacyQueueMigration(bootstrapPayload);
@@ -418,7 +428,7 @@ async function submitTurn(
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "gateway.error", {
 				code: error instanceof GatewayRequestError ? error.code : "request_failed",
-				message: error instanceof Error ? error.message : "Request failed.",
+				message: safeErrorMessage(error, "Request failed."),
 				method: "turn.submit",
 			}),
 		);
@@ -765,7 +775,7 @@ async function reconcileInteractiveResponse(
 	try {
 		await send("session.bootstrap", {
 			protocol_version: GATEWAY_PROTOCOL_VERSION,
-			client: { name: "mycli-shell-tui", version: "0.1.0" },
+			client: { name: "mycli-shell-tui", version: TUI_VERSION },
 		}, { recordErrors: false });
 		return true;
 	} catch {
@@ -943,6 +953,17 @@ async function handleUnexpectedGatewayClose(_error: Error): Promise<void> {
 	process.exitCode = 1;
 }
 
+async function handleFatalTuiError(error: unknown): Promise<void> {
+	if (fatalTuiHandling) return;
+	fatalTuiHandling = true;
+	const logPath = appendFatalTuiDiagnostic(error);
+	await stopLocalRuntime();
+	process.stderr.write(logPath
+		? "[mycli-shell] Terminal UI crashed. Diagnostics were written to ~/.mycli/logs/tui-errors.log.\n"
+		: "[mycli-shell] Terminal UI crashed.\n");
+	process.exitCode = 1;
+}
+
 async function stopLocalRuntime(): Promise<void> {
 	if (runtime?.isStarted()) {
 		runtime.ui.stop();
@@ -1000,6 +1021,7 @@ async function main(): Promise<void> {
 		onSuspend: process.platform === "win32"
 			? undefined
 			: () => process.kill(0, "SIGTSTP"),
+		onFatalError: (error) => { void handleFatalTuiError(error); },
 		onApprovalRespond: respondApproval,
 		onClarificationRespond: respondClarification,
 		onPlanImplementation: startPlanImplementation,
@@ -1049,7 +1071,7 @@ if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
 		void shutdown(0).finally(() => process.exit(0));
 	});
 	void gatewayStartup.catch((error: unknown) => {
-		const message = error instanceof Error ? error.message : "Unable to start mycli shell TUI.";
+		const message = safeErrorMessage(error, "Unable to start mycli shell TUI.");
 		process.stderr.write(`[mycli-shell] ${message}\n`);
 		if (!bootstrapped) {
 			client.stop();

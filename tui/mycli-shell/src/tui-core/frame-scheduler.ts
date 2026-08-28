@@ -9,6 +9,7 @@ export interface FrameSchedulerClock {
 export interface FrameSchedulerOptions {
 	minIntervalMs: number;
 	isBlocked?: () => boolean;
+	onError?: (error: unknown) => void;
 	clock?: FrameSchedulerClock;
 }
 
@@ -91,7 +92,13 @@ export class FrameScheduler {
 
 		this.pending = false;
 		this.lastFrameAt = this.clock.now();
-		this.renderFrame();
+		try {
+			this.renderFrame();
+		} catch (error) {
+			this.stop();
+			this.options.onError?.(error);
+			return;
+		}
 		this.schedule(false);
 	}
 

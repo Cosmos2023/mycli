@@ -1,11 +1,12 @@
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
+import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellTool } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { keyHint } from "./keybinding-hints.ts";
-import { shortPreview } from "./tool-display.ts";
+import { compactPathPreview, isReadToolName, shortPreview } from "./tool-display.ts";
 import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "./tool-presentation.ts";
 import {
 	TRANSCRIPT_BRANCH_INDENT,
@@ -42,12 +43,22 @@ export class ToolExecutionComponent extends Container {
 	private rebuild(): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(this.headerText(), TRANSCRIPT_HEADER_INDENT, 0));
+		this.addChild(this.headerComponent());
 		this.addChild(new Text(this.resultText(), TRANSCRIPT_BRANCH_INDENT, 0));
 		const details = this.detailsComponent();
 		if (details) {
 			this.addChild(details);
 		}
+	}
+
+	private headerComponent(): Text | { render: (width: number) => string[]; invalidate: () => void } {
+		if (!isReadToolName(this.tool.name) || !this.tool.args) {
+			return new Text(this.headerText(), TRANSCRIPT_HEADER_INDENT, 0);
+		}
+		return {
+			render: (width: number) => [this.readHeaderText(Math.max(1, width - TRANSCRIPT_HEADER_INDENT * 2))],
+			invalidate: () => {},
+		};
 	}
 
 	private headerText(): string {
@@ -59,13 +70,29 @@ export class ToolExecutionComponent extends Container {
 		return `${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(`${presentation.label}${targetSuffix}`))}${suffix}`;
 	}
 
+	private readHeaderText(width: number): string {
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
+		const label = this.tool.status === "running" ? "Reading" : presentation.label;
+		const duration = formatDuration(this.tool.durationMs);
+		const plainPrefix = `${presentation.icon} ${label} `;
+		const plainSuffix = duration ? ` ${duration}` : "";
+		const targetWidth = Math.max(1, width - visibleWidth(plainPrefix) - visibleWidth(plainSuffix));
+		const target = compactPathPreview(this.tool.args, targetWidth) ?? "file";
+		const line = [
+			theme.fg(presentation.accent, theme.bold(`${presentation.icon} ${label} `)),
+			theme.fg(presentation.accent, theme.bold(target)),
+			duration ? theme.fg("dim", ` ${duration}`) : "",
+		].join("");
+		return truncateToWidth(line, width, theme.fg("dim", "…"), true);
+	}
+
 	private resultText(): string {
 		const color = this.tool.status === "error" ? "error" : "muted";
 		return theme.fg(color, `⎿ ${this.resultSummary()}`);
 	}
 
 	private resultSummary(): string {
-		return conciseToolResult(this.tool);
+		return conciseToolResult(this.tool, { includeTarget: !isReadToolName(this.tool.name) });
 	}
 
 	private detailsComponent(): Text | { render: (width: number) => string[]; invalidate: () => void } | undefined {

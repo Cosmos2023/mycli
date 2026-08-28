@@ -1,7 +1,12 @@
 export type MycliShellMessage =
 	| { id: string; role: "user"; text: string }
 	| { id: string; role: "assistant"; text: string; thinking?: string; thinkingHidden?: boolean }
-	| { id: string; role: "system" | "error" | "warning"; text: string };
+	| {
+		id: string;
+		role: "system" | "error" | "warning";
+		text: string;
+		diagnostic?: { hint?: string; source?: string; method?: string; code?: string; details?: string };
+	};
 
 export type MycliShellPlan = {
 	id: string;
@@ -236,8 +241,33 @@ export type MycliShellBackgroundTerminals = {
 	processes: MycliShellBackgroundProcess[];
 };
 
+export type MycliShellClarificationResponse = {
+	id: string;
+	requestId: string;
+	header?: string;
+	question: string;
+	response: string;
+	multiSelect: boolean;
+};
+
+export type MycliShellTurnCompleted = {
+	id: string;
+	durationMs: number;
+};
+
+export type MycliShellWebSearch = {
+	id: string;
+	callId: string;
+	status: "running" | "completed";
+	action: "search" | "open_page" | "find_in_page" | "other";
+	detail?: string;
+};
+
 export type MycliShellTranscriptBlock =
 	| { id: string; kind: "message"; message: MycliShellMessage }
+	| { id: string; kind: "turn_completed"; turnCompleted: MycliShellTurnCompleted }
+	| { id: string; kind: "web_search"; webSearch: MycliShellWebSearch }
+	| { id: string; kind: "clarification"; clarification: MycliShellClarificationResponse }
 	| { id: string; kind: "plan"; plan: MycliShellPlan }
 	| { id: string; kind: "plan_update"; planUpdate: MycliShellPlanUpdate }
 	| { id: string; kind: "tool"; tool: MycliShellTool }
@@ -277,6 +307,7 @@ export type MycliShellFooterData = {
 	liveState?: string;
 	liveStateKind?: string;
 	liveStateDetail?: string;
+	turnDurationMs?: number;
 	turnRunning?: boolean;
 	backgroundShellCount?: number;
 	taskProgress?: MycliShellTaskProgress;
@@ -396,6 +427,12 @@ type MycliShellApprovalOption = {
 	label: string;
 };
 
+export type MycliShellPermissionRequest = {
+	network: boolean;
+	readPaths: string[];
+	writePaths: string[];
+};
+
 export type MycliShellPendingApproval = {
 	decisionId: string;
 	sessionId?: string;
@@ -411,6 +448,7 @@ export type MycliShellPendingApproval = {
 	risk?: string;
 	riskReason?: string;
 	persistentRulePreview?: string;
+	permissionRequest?: MycliShellPermissionRequest;
 	contentPreview?: string;
 	contentLineCount?: number;
 	diffPreview?: string;

@@ -80,6 +80,24 @@ test("list and notice results stay borderless and compact", () => {
 	assert.equal(undoOutput.trim(), "/undo\n✓ Restored src/mycli/app.py");
 });
 
+test("notice results wrap complete text with a stable continuation indent", () => {
+	const compact = result({
+		kind: "notice",
+		command: "/compact",
+		title: "Nothing to compact",
+		severity: "info",
+		summary: "Nothing to compact. Only base context and retained recent turns remain.",
+	});
+
+	for (const width of [40, 60, 80, 100]) {
+		const lines = new CommandResultComponent(compact).render(width).map(stripAnsi);
+		const notice = lines.slice(2);
+		assert.equal(notice.join(" ").replace(/\s+/gu, " ").trim(), "• Nothing to compact. Only base context and retained recent turns remain.");
+		for (const continuation of notice.slice(1)) assert.match(continuation, /^  \S/u);
+		for (const line of lines) assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${line}`);
+	}
+});
+
 test("errors show reason usage and suggestions without a border", () => {
 	const error = result({
 		kind: "error",

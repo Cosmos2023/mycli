@@ -31,6 +31,7 @@ const TOOL_PRESENTATIONS: Record<string, Partial<ToolPresentation>> = {
 	patch: { label: "Patch", accent: "warning", previewLines: 14 },
 	patch_file: { label: "Patch", accent: "warning", previewLines: 14 },
 	read: { label: "Read", previewLines: 8 },
+	read_file: { label: "Read", previewLines: 8 },
 	grep: { label: "Grep", previewLines: 8 },
 	glob: { label: "Glob", previewLines: 8 },
 	ls: { label: "LS", previewLines: 8 },
@@ -61,7 +62,10 @@ export function presentationForBash(): ToolPresentation {
 	return presentationForTool("bash");
 }
 
-export function conciseToolResult(tool: MycliShellTool): string {
+export function conciseToolResult(
+	tool: MycliShellTool,
+	options: { includeTarget?: boolean } = {},
+): string {
 	if (tool.name.trim().toLowerCase() === "skill") {
 		if (tool.status === "running") return "Activating...";
 		if (tool.status === "cancelled") return "Cancelled";
@@ -70,7 +74,8 @@ export function conciseToolResult(tool: MycliShellTool): string {
 		}
 		return "Activated";
 	}
-	const target = shortPreview(tool.args);
+	const rawTarget = shortPreview(tool.args);
+	const target = options.includeTarget === false ? undefined : rawTarget;
 	if (tool.status === "running") {
 		return target ? `${target} · Running...` : "Running...";
 	}
@@ -90,6 +95,14 @@ export function conciseToolResult(tool: MycliShellTool): string {
 		return target ? `Updated ${target}` : "Updated file";
 	}
 	const summary = firstMeaningfulLine(tool.summaryPreview ?? tool.outputPreview) ?? statusLabel(tool);
+	if (options.includeTarget === false && rawTarget) {
+		if (summary === rawTarget || summary === `Read ${rawTarget}` || summary === `Reading ${rawTarget}`) {
+			return statusLabel(tool);
+		}
+		if (summary === `Read ${rawTarget} (unchanged duplicate)`) {
+			return "unchanged duplicate";
+		}
+	}
 	if (target && summary !== target) {
 		return `${target} · ${summary}`;
 	}

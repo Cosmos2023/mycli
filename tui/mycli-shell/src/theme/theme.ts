@@ -75,6 +75,7 @@ type ThemeBg =
 
 type ColorValue = string | number;
 type ColorMode = "truecolor" | "256color" | "16color";
+export type ThemeName = "dark" | "light";
 
 const DARK_VARS: Record<string, ColorValue> = {
 	cyan: "#00d7ff",
@@ -262,7 +263,7 @@ const LIGHT_COLORS: Record<ThemeColor | ThemeBg, ColorValue> = {
 };
 
 const colorEnabled = process.env.MYCLI_TUI_COLOR === "always" ? true : process.env.MYCLI_TUI_COLOR === "never" ? false : !process.env.NO_COLOR;
-const themeName = process.env.MYCLI_TUI_THEME === "light" ? "light" : "dark";
+const initialThemeName: ThemeName = process.env.MYCLI_TUI_THEME === "light" ? "light" : "dark";
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
 	const cleaned = hex.replace("#", "");
@@ -334,8 +335,9 @@ function resolve(value: ColorValue, vars: Record<string, ColorValue>): ColorValu
 }
 
 class Theme {
-	private readonly vars = themeName === "light" ? LIGHT_VARS : DARK_VARS;
-	private readonly colors = themeName === "light" ? LIGHT_COLORS : DARK_COLORS;
+	private themeName: ThemeName = initialThemeName;
+	private vars = this.themeName === "light" ? LIGHT_VARS : DARK_VARS;
+	private colors = this.themeName === "light" ? LIGHT_COLORS : DARK_COLORS;
 	private readonly mode: ColorMode = process.env.COLORTERM === "truecolor"
 		? "truecolor"
 		: process.env.TERM?.includes("256color")
@@ -372,8 +374,15 @@ class Theme {
 		return colorEnabled;
 	}
 
-	name(): "dark" | "light" {
-		return themeName;
+	name(): ThemeName {
+		return this.themeName;
+	}
+
+	setName(name: ThemeName): void {
+		if (this.themeName === name) return;
+		this.themeName = name;
+		this.vars = name === "light" ? LIGHT_VARS : DARK_VARS;
+		this.colors = name === "light" ? LIGHT_COLORS : DARK_COLORS;
 	}
 
 	strikethrough(text: string): string {

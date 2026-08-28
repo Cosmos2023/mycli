@@ -44,11 +44,51 @@ class MutableCursorLine implements Component {
 	invalidate(): void {}
 }
 
+class ThrowingComponent implements Component {
+	constructor(private readonly failure: Error) {}
+
+	render(): string[] {
+		throw this.failure;
+	}
+
+	invalidate(): void {}
+}
+
+class FatalTrackingTerminal extends HeadlessTerminal {
+	constructor(private readonly events: string[]) {
+		super({ columns: 40, rows: 6 });
+	}
+
+	override stop(): void {
+		this.events.push("terminal.stop");
+		super.stop();
+	}
+}
+
 async function renderFrame(ui: TUI, terminal: HeadlessTerminal): Promise<void> {
 	ui.requestRender();
 	await delay(25);
 	await terminal.flush();
 }
+
+test("fatal render failures restore the terminal before invoking the owner", async (t) => {
+	const events: string[] = [];
+	const failure = new Error("render failed");
+	const terminal = new FatalTrackingTerminal(events);
+	const ui = new TUI(terminal);
+	t.after(() => terminal.dispose());
+	ui.addChild(new ThrowingComponent(failure));
+	ui.onFatalError = (error) => {
+		assert.equal(error, failure);
+		events.push("fatal.callback");
+	};
+
+	ui.start();
+	await delay(25);
+	await terminal.flush();
+
+	assert.deepEqual(events, ["terminal.stop", "fatal.callback"]);
+});
 
 test("renderer removes the stale tail when a line becomes shorter", async (t) => {
 	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });

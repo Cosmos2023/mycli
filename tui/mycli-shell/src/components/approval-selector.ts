@@ -1,9 +1,10 @@
 import type { MycliShellPendingApproval } from "../model.ts";
-import { getKeybindings, Spacer, Text, Container, truncateToWidth } from "../tui-core/index.ts";
+import { getKeybindings, Spacer, Text, Container, TruncatedText } from "../tui-core/index.ts";
 import { theme } from "../theme/theme.ts";
 import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
+import { SegmentedHintLine } from "./responsive-row.ts";
 
 export interface ApprovalSelectorOptions {
 	approval: MycliShellPendingApproval;
@@ -46,12 +47,15 @@ export class ApprovalSelectorComponent extends Container {
 		this.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.titleText(), 1, 0));
-		this.addChild(new Text(this.commandPreview(), 3, 0));
+		this.addChild(new TruncatedText(this.commandPreview(), 3, 0));
 		if (this.approval.childSessionId) {
-			this.addChild(new Text(theme.fg("muted", `⎿ ${truncateToWidth(this.approval.childSessionId, 120, "...")}`), 3, 0));
+			this.addChild(new TruncatedText(theme.fg("muted", `⎿ ${this.approval.childSessionId}`), 3, 0));
 		}
 		if (this.approval.reason) {
 			this.addChild(new Text(theme.fg("muted", this.approval.reason), 3, 0));
+		}
+		for (const line of this.permissionRequestLines()) {
+			this.addChild(new TruncatedText(theme.fg("muted", line), 3, 0));
 		}
 		if (this.approval.risk || this.approval.riskReason) {
 			this.addChild(new Text(theme.fg("warning", this.riskText()), 3, 0));
@@ -69,7 +73,7 @@ export class ApprovalSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
 		this.addChild(this.responseContainer);
-		this.addChild(new Text(this.footerHints(), 1, 0));
+		this.addChild(new SegmentedHintLine(this.footerHints(), 1));
 		this.updateList();
 	}
 
@@ -165,7 +169,7 @@ export class ApprovalSelectorComponent extends Container {
 		}
 	}
 
-	private footerHints(): string {
+	private footerHints(): string[] {
 		const optionHints = this.approval.options
 			.map((option) => {
 				const shortcut = approvalShortcuts[option.choice];
@@ -178,7 +182,7 @@ export class ApprovalSelectorComponent extends Container {
 			rawKeyHint("↑↓", "navigate"),
 			keyHint("tui.select.confirm", "confirm"),
 			keyHint("tui.select.cancel", "reject"),
-		].join("  ");
+		];
 	}
 
 	private updateResponse(): void {
@@ -206,7 +210,7 @@ export class ApprovalSelectorComponent extends Container {
 	}
 
 	private commandPreview(): string {
-		const preview = truncateToWidth(this.approval.preview.replace(/\s+/g, " ").trim(), 140, "...");
+		const preview = this.approval.preview.replace(/\s+/g, " ").trim();
 		return theme.fg("text", `⎿ ${preview}`);
 	}
 
@@ -214,6 +218,22 @@ export class ApprovalSelectorComponent extends Container {
 		return [this.approval.risk ? `risk: ${this.approval.risk}` : "", this.approval.riskReason]
 			.filter(Boolean)
 			.join(" · ");
+	}
+
+	private permissionRequestLines(): string[] {
+		const request = this.approval.permissionRequest;
+		if (!request) return [];
+		return [
+			...(request.network ? ["Network: enabled"] : []),
+			...this.permissionPathLines("Read", request.readPaths),
+			...this.permissionPathLines("Write", request.writePaths),
+		];
+	}
+
+	private permissionPathLines(label: string, paths: string[]): string[] {
+		const visible = paths.slice(0, 3).map((path) => `${label}: ${path}`);
+		const omitted = paths.length - visible.length;
+		return omitted > 0 ? [...visible, `${label}: +${omitted} more`] : visible;
 	}
 
 	private changePreviewText(): string {

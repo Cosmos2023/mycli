@@ -1,4 +1,4 @@
-import type { MycliShellSubagent } from "../model.ts";
+import type { MycliShellSubagent, MycliShellVisualSettings } from "../model.ts";
 import { Container, getKeybindings, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
 import type { Component } from "../tui-core/tui.ts";
 import { theme } from "../theme/theme.ts";
@@ -9,6 +9,7 @@ import { shortPreview } from "./tool-display.ts";
 export type SubagentTaskPanelOptions = {
 	agents: MycliShellSubagent[];
 	onOpen?: () => void;
+	density?: NonNullable<MycliShellVisualSettings["subagentDensity"]>;
 };
 
 export type BackgroundSubagentDialogOptions = {
@@ -32,8 +33,20 @@ export class SubagentTaskPanelComponent implements Component {
 		if (this.options.agents.length === 0) {
 			return [];
 		}
-		const text = `${theme.fg("accent", "◇")} ${theme.fg("accent", pillLabel(this.options.agents))} ${theme.fg("muted", `· ${rawKeyHint("/tasks", "view")}`)}`;
-		return [truncateToWidth(` ${text}`, width, theme.fg("muted", "..."))];
+		const density = this.options.density ?? "normal";
+		const hint = density === "compact" ? "" : ` ${theme.fg("muted", `· ${rawKeyHint("/tasks", "view")}`)}`;
+		const text = `${theme.fg("accent", "◇")} ${theme.fg("accent", pillLabel(this.options.agents))}${hint}`;
+		const lines = [truncateToWidth(` ${text}`, width, theme.fg("muted", "..."))];
+		if (density !== "detailed") return lines;
+
+		const visible = sortedAgents(this.options.agents).slice(0, 3);
+		for (const [index, agent] of visible.entries()) {
+			lines.push(truncateToWidth(`   ${agentListLine(agent, false, index === visible.length - 1)}`, width, theme.fg("muted", "...")));
+		}
+		if (this.options.agents.length > visible.length) {
+			lines.push(truncateToWidth(theme.fg("muted", `   ... ${this.options.agents.length - visible.length} more`), width, "..."));
+		}
+		return lines;
 	}
 
 	handleInput(data: string): void {

@@ -1,6 +1,7 @@
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import { Container, type Component } from "../tui-core/tui.ts";
+import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellFileChange, MycliShellFileChangeEntry } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { renderUnifiedDiff } from "./diff-renderer.ts";
@@ -70,22 +71,29 @@ export class FileChangeComponent extends Container {
 		}
 		if (this.fileChange.files.length === 1) {
 			const file = this.fileChange.files[0]!;
-			this.addChild(new Text(this.singleFileHeader(file, glyphs), TRANSCRIPT_HEADER_INDENT, 0));
+			this.addChild(new FileChangeHeaderComponent(
+				`${theme.fg("accent", glyphs.bullet)} ${VERBS[file.kind]} `,
+				displayPath(file),
+				formatCounts(file.addedLines, file.removedLines),
+				TRANSCRIPT_HEADER_INDENT,
+			));
 			this.addChild(new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT));
 			return;
 		}
 
 		const counts = aggregateCounts(this.fileChange.files);
-		this.addChild(new Text(
-			`${theme.fg("accent", glyphs.bullet)} Edited ${this.fileChange.files.length} files ${formatCounts(counts.added, counts.removed)}`,
+		this.addChild(new FileChangeHeaderComponent(
+			`${theme.fg("accent", glyphs.bullet)} Edited `,
+			`${this.fileChange.files.length} files`,
+			formatCounts(counts.added, counts.removed),
 			TRANSCRIPT_HEADER_INDENT,
-			0,
 		));
 		this.fileChange.files.forEach((file, index) => {
-			this.addChild(new Text(
-				`${theme.fg("muted", glyphs.branch)} ${displayPath(file)} ${formatCounts(file.addedLines, file.removedLines)}`,
+			this.addChild(new FileChangeHeaderComponent(
+				`${theme.fg("muted", glyphs.branch)} `,
+				displayPath(file),
+				formatCounts(file.addedLines, file.removedLines),
 				TRANSCRIPT_BRANCH_INDENT,
-				0,
 			));
 			this.addChild(new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT));
 			if (index < this.fileChange.files.length - 1) {
@@ -94,8 +102,26 @@ export class FileChangeComponent extends Container {
 		});
 	}
 
-	private singleFileHeader(file: MycliShellFileChangeEntry, glyphs: FileChangeGlyphs): string {
-		return `${theme.fg("accent", glyphs.bullet)} ${VERBS[file.kind]} ${displayPath(file)} ${formatCounts(file.addedLines, file.removedLines)}`;
+}
+
+
+class FileChangeHeaderComponent implements Component {
+	constructor(
+		private readonly lead: string,
+		private readonly target: string,
+		private readonly counts: string,
+		private readonly indent: number,
+	) {}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const available = Math.max(1, width - this.indent * 2);
+		const fixedWidth = visibleWidth(this.lead) + visibleWidth(this.counts) + 1;
+		const targetWidth = Math.max(1, available - fixedWidth);
+		const target = truncateToWidth(this.target.replace(/[\r\n\t]/gu, " "), targetWidth, "...");
+		const content = `${this.lead}${target} ${this.counts}`;
+		return [`${" ".repeat(this.indent)}${truncateToWidth(content, available, "", true)}`];
 	}
 }
 

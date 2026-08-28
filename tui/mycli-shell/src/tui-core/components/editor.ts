@@ -557,9 +557,8 @@ export class Editor implements Component, Focusable {
 			result.push(horizontal.repeat(renderWidth));
 		}
 
-		// Render each visible layout line
-		// Emit hardware cursor marker only when focused and not showing autocomplete
-		const emitCursorMarker = this.focused && !this.autocompleteState;
+		// Autocomplete is owned by the editor, so IME composition remains anchored to its cursor.
+		const emitCursorMarker = this.focused;
 
 		for (const layoutLine of visibleLines) {
 			let displayText = layoutLine.text;

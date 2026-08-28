@@ -62,7 +62,7 @@ export class CommandPaletteComponent extends Container implements Focusable {
 			"",
 			...this.commandRows(safeWidth),
 			"",
-			theme.fg("muted", `${this.filteredCommands.length}/${this.commands.length} commands`),
+			theme.fg("muted", this.resultCount()),
 			border,
 		];
 		return lines.map((line) => truncateToWidth(line, safeWidth, theme.fg("dim", "...")));
@@ -122,10 +122,15 @@ export class CommandPaletteComponent extends Container implements Focusable {
 				? theme.fg("accent", `${prefix}${commandText}${status}`)
 				: `${prefix}${commandText}${theme.fg("muted", status)}`;
 		});
-		if (start > 0 || end < this.filteredCommands.length) {
-			rows.push(theme.fg("muted", `  ${this.selectedIndex + 1}/${this.filteredCommands.length}`));
-		}
 		return rows.map((row) => truncateToWidth(row, width, theme.fg("dim", "...")));
+	}
+
+	private resultCount(): string {
+		const position = this.filteredCommands.length === 0 ? 0 : this.selectedIndex + 1;
+		if (this.filteredCommands.length === this.commands.length) {
+			return `${position}/${this.commands.length}`;
+		}
+		return `${position}/${this.filteredCommands.length} · ${this.filteredCommands.length}/${this.commands.length} matches`;
 	}
 }
 

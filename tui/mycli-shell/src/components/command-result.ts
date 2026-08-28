@@ -1,6 +1,6 @@
 import type { Component } from "../tui-core/tui.ts";
 import { Container } from "../tui-core/tui.ts";
-import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
 import type {
 	MycliShellCommandField,
 	MycliShellCommandResult,
@@ -146,7 +146,11 @@ export class CommandResultComponent extends Container implements Component {
 				: display.severity === "warning"
 					? "warning"
 					: "accent";
-		return [this.fit(`${theme.fg(color, marker)} ${display.summary ?? display.title}`, width)];
+		const prefix = `${theme.fg(color, marker)} `;
+		const continuation = " ".repeat(visibleWidth(prefix));
+		const contentWidth = Math.max(1, width - visibleWidth(prefix));
+		return wrapTextWithAnsi(display.summary ?? display.title, contentWidth).map((line, index) =>
+			this.fit(`${index === 0 ? prefix : continuation}${line}`, width));
 	}
 
 	private renderError(width: number): string[] {

@@ -66,7 +66,14 @@ export class BashExecutionComponent extends Container {
 			return new Text("", SHELL_CELL_PADDING_X, 0);
 		}
 		if (this.bash.expanded) {
-			return new Text(theme.fg("muted", this.connectedOutput()), SHELL_CELL_PADDING_X, 0);
+			return {
+				render: (width: number) => new Text(
+					theme.fg("muted", this.connectedOutput(width)),
+					SHELL_CELL_PADDING_X,
+					0,
+				).render(width),
+				invalidate: () => {},
+			};
 		}
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
@@ -74,12 +81,12 @@ export class BashExecutionComponent extends Container {
 			render: (width: number) => {
 				if (cachedWidth !== width || !cachedLines) {
 					const maxLines = presentationForBash().terminalPreviewLines;
-					const output = theme.fg("muted", this.connectedOutput());
+					const output = theme.fg("muted", this.connectedOutput(width));
 					const result = this.bash.status === "running"
 						? truncateToVisualLines(output, maxLines, width, SHELL_CELL_PADDING_X)
 						: truncateVisualLinesBalanced(output, maxLines, width, SHELL_CELL_PADDING_X, (skippedCount) =>
 								theme.fg("muted", this.indentedHiddenLinesText(Math.max(this.bash.hiddenLineCount ?? 0, skippedCount))),
-							);
+						);
 					cachedLines = result.visualLines;
 					const outputPrefix = `${" ".repeat(SHELL_CELL_PADDING_X)}${COMMAND_OUTPUT_INITIAL_PREFIX}`;
 					const outputPrefixWidth = visibleWidth(outputPrefix);
@@ -156,10 +163,21 @@ export class BashExecutionComponent extends Container {
 		return details.join(" · ") || undefined;
 	}
 
-	private connectedOutput(): string {
+	private connectedOutput(width: number): string {
+		const contentWidth = Math.max(1, width - SHELL_CELL_PADDING_X * 2);
+		const continuationPrefixWidth = visibleWidth(COMMAND_OUTPUT_SUBSEQUENT_PREFIX);
+		const outputWidth = Math.max(1, contentWidth - continuationPrefixWidth);
 		return (this.bash.outputPreview ?? "")
 			.split(/\r?\n/)
-			.map((line, index) => `${index === 0 ? COMMAND_OUTPUT_INITIAL_PREFIX : COMMAND_OUTPUT_SUBSEQUENT_PREFIX}${line}`)
+			.flatMap((line, index) => {
+				const segments = wrapTextWithAnsi(line, outputWidth);
+				return segments.map((segment, segmentIndex) => {
+					const prefix = index === 0 && segmentIndex === 0
+						? COMMAND_OUTPUT_INITIAL_PREFIX
+						: COMMAND_OUTPUT_SUBSEQUENT_PREFIX;
+					return `${prefix}${segment}`;
+				});
+			})
 			.join("\n");
 	}
 

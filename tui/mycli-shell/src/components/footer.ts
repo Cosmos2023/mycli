@@ -3,11 +3,12 @@ import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellFooterData } from "../model.ts";
 import { theme } from "../theme/theme.ts";
-import { rawKeyHint } from "./keybinding-hints.ts";
 
 export type FooterInteractionState = {
 	turnRunning: boolean;
 	hasQueuedInput: boolean;
+	showInterruptHint?: boolean;
+	statusbarMode?: "off" | "compact" | "full";
 };
 
 type FooterSegment = {
@@ -19,6 +20,8 @@ type FooterSegment = {
 const idleInteraction: FooterInteractionState = {
 	turnRunning: false,
 	hasQueuedInput: false,
+	showInterruptHint: true,
+	statusbarMode: "full",
 };
 
 function sanitizeStatusText(text: string): string {
@@ -59,7 +62,10 @@ function compactPathToWidth(path: string, width: number): string {
 
 function alignedColumns(left: string, right: string, width: number): string {
 	if (!right) return truncateToWidth(left, width, "...");
-	if (!left) return truncateToWidth(right, width, "...");
+	if (!left) {
+		const fittedRight = truncateToWidth(right, width, "...");
+		return `${" ".repeat(Math.max(0, width - visibleWidth(fittedRight)))}${fittedRight}`;
+	}
 	const leftWidth = visibleWidth(left);
 	const rightWidth = visibleWidth(right);
 	if (leftWidth + 2 + rightWidth <= width) {
@@ -83,10 +89,9 @@ export class FooterComponent implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const lines = [
-			theme.fg("dim", this.contextRow(safeWidth)),
-			theme.fg("dim", this.actionStatusRow(safeWidth)),
-		];
+		if (this.interaction.statusbarMode === "off") return [];
+		const statuses = this.statusSegments();
+		const lines = [theme.fg("dim", this.contextStatusRow(statuses, safeWidth))];
 		for (const status of this.data.extensionStatuses ?? []) {
 			lines.push(truncateToWidth(theme.fg("dim", sanitizeStatusText(status)), safeWidth, theme.fg("dim", "...")));
 		}
@@ -94,11 +99,7 @@ export class FooterComponent implements Component {
 	}
 
 	private contextRow(width: number): string {
-		const path = sanitizeStatusText(formatCwdForFooter(this.data.cwd));
-		const session = this.data.sessionName ? `• ${sanitizeStatusText(this.data.sessionName)}` : "";
-		const branch = this.data.gitBranch ? `(${sanitizeStatusText(this.data.gitBranch)})` : "";
-		const separator = path && session ? "  " : "";
-		const fullLeft = `${path}${separator}${session}`;
+		const { path, session, branch, separator, fullLeft } = this.contextParts();
 
 		if (branch && visibleWidth(fullLeft) + 2 + visibleWidth(branch) <= width) {
 			return alignedColumns(fullLeft, branch, width);
@@ -117,35 +118,34 @@ export class FooterComponent implements Component {
 		return truncateToWidth(session, width, "...");
 	}
 
-	private actionStatusRow(width: number): string {
-		const actions = this.actionSegments();
-		const statuses = this.statusSegments();
-		const dropOrder = ["mode-cycle", "edit", "commands", "task", "reasoning", "model", "context", "follow-up"];
+	private contextStatusRow(statuses: FooterSegment[], width: number): string {
+		const dropOrder = ["task", "reasoning", "model", "context"];
+		const minimumContextWidth = Math.min(width, Math.max(16, Math.floor(width / 2)));
 
 		for (const id of dropOrder) {
-			if (this.segmentsFit(actions, statuses, width)) break;
-			this.removeOptionalSegment(actions, id);
+			const right = statuses.map((segment) => segment.text).join(" │ ");
+			if (minimumContextWidth + (right ? 2 : 0) + visibleWidth(right) <= width) break;
 			this.removeOptionalSegment(statuses, id);
 		}
 
-		const left = actions.map((segment) => segment.text).join(theme.fg("muted", " · "));
 		const right = statuses.map((segment) => segment.text).join(theme.fg("muted", " │ "));
-		return alignedColumns(left, right, width);
+		if (!right) return this.contextRow(width);
+		const leftWidth = Math.max(1, width - visibleWidth(right) - 2);
+		return alignedColumns(this.contextRow(leftWidth), right, width);
 	}
 
-	private actionSegments(): FooterSegment[] {
-		return [
-			{ id: "enter", text: rawKeyHint("enter", this.interaction.turnRunning ? "steer" : "send"), optional: false },
-			...(this.interaction.turnRunning
-				? [
-					{ id: "follow-up", text: rawKeyHint("tab", "follow-up"), optional: true },
-					{ id: "interrupt", text: rawKeyHint("esc", "interrupt"), optional: false },
-				]
-				: [{ id: "commands", text: rawKeyHint("ctrl+p", "commands"), optional: true }]),
-			...(this.interaction.hasQueuedInput
-				? [{ id: "edit", text: rawKeyHint("alt+up", "edit follow-up"), optional: true }]
-				: []),
-		];
+	private contextParts(): {
+		readonly path: string;
+		readonly session: string;
+		readonly branch: string;
+		readonly separator: string;
+		readonly fullLeft: string;
+	} {
+		const path = sanitizeStatusText(formatCwdForFooter(this.data.cwd));
+		const session = this.data.sessionName ? `• ${sanitizeStatusText(this.data.sessionName)}` : "";
+		const branch = this.data.gitBranch ? `(${sanitizeStatusText(this.data.gitBranch)})` : "";
+		const separator = path && session ? "  " : "";
+		return { path, session, branch, separator, fullLeft: `${path}${separator}${session}` };
 	}
 
 	private statusSegments(): FooterSegment[] {
@@ -158,9 +158,6 @@ export class FooterComponent implements Component {
 		}
 		if (this.data.collaborationMode === "plan") {
 			segments.push({ id: "mode", text: theme.fg("accent", "plan"), optional: false });
-			if (!this.interaction.turnRunning && !this.interaction.hasQueuedInput) {
-				segments.push({ id: "mode-cycle", text: rawKeyHint("shift+tab", "switch mode"), optional: true });
-			}
 		}
 		if ((this.data.backgroundShellCount ?? 0) > 0) {
 			const count = this.data.backgroundShellCount ?? 0;
@@ -198,12 +195,6 @@ export class FooterComponent implements Component {
 			segments.push({ id: "reasoning", text: `• ${sanitizeStatusText(this.data.reasoningLevel)}`, optional: true });
 		}
 		return segments;
-	}
-
-	private segmentsFit(actions: FooterSegment[], statuses: FooterSegment[], width: number): boolean {
-		const left = actions.map((segment) => segment.text).join(" · ");
-		const right = statuses.map((segment) => segment.text).join(" │ ");
-		return visibleWidth(left) + (left && right ? 2 : 0) + visibleWidth(right) <= width;
 	}
 
 	private removeOptionalSegment(segments: FooterSegment[], id: string): void {

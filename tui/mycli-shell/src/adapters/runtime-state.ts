@@ -1,3 +1,14 @@
+import {
+	isRuntimeErrorCode,
+	runtimeErrorNoticeSeverity,
+	runtimeErrorRecoveryHint,
+	sanitizeRuntimeErrorDetail,
+	TURN_INTERRUPTED_NOTICE,
+	turnCompletedDurationId,
+	turnFailedNoticeId,
+	turnFailureNotice,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
 import type {
 	MycliShellAuthProvider,
 	MycliShellBackgroundProcess,
@@ -5,6 +16,7 @@ import type {
 	MycliShellBash,
 	MycliShellCommandDiagnostic,
 	MycliShellCommandResult,
+	MycliShellClarificationResponse,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
 	MycliShellFileChange,
@@ -28,13 +40,14 @@ import type {
 	MycliShellTool,
 	MycliShellToolStatus,
 	MycliShellVisualSettings,
+	MycliShellWebSearch,
 } from "../model.ts";
 import {
 	commandResultFromGateway,
 	commandResultFromTranscriptItem,
 } from "./command-results.ts";
+import { boundedUiText } from "../safe-ui-text.ts";
 
-const TURN_INTERRUPTED_NOTICE = "Turn interrupted. The current turn was aborted; send a new message to continue.";
 const SEMANTIC_TOOL_ROW_NAMES = new Set([
 	"askuserquestion",
 	"followuptask",
@@ -54,6 +67,8 @@ type RuntimeTranscriptItem = {
 	text: string;
 	folded?: boolean;
 	metadata?: Record<string, unknown>;
+	call_id?: string;
+	status?: string;
 };
 
 type RuntimeShellProcess = {
@@ -97,6 +112,7 @@ type RuntimeLiveStatus = {
 	text: string;
 	kind?: string;
 	message?: string;
+	durationMs?: number;
 };
 
 export type RuntimeShellState = {
@@ -514,15 +530,51 @@ function projectRuntimeShellState(
 			};
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });
+		} else if (item.type === "turn_completed") {
+			const durationMs = turnDurationMsValue(recordValue(item.metadata).duration_ms);
+			if (durationMs !== undefined) {
+				transcript.push({
+					id: item.id,
+					kind: "turn_completed",
+					turnCompleted: { id: item.id, durationMs },
+				});
+			}
+		} else if (item.type === "web_search") {
+			const webSearch = webSearchFromTranscriptItem(item);
+			if (webSearch) {
+				transcript.push({ id: item.id, kind: "web_search", webSearch });
+			}
 		} else if (item.type === "warning") {
-			const message: MycliShellMessage = { id: item.id, role: "warning", text: item.text };
+			const message: MycliShellMessage = {
+				id: item.id,
+				role: "warning",
+				text: item.text,
+				...noticeDiagnostic(item.metadata),
+			};
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });
 		} else if (item.type === "error") {
-			const message: MycliShellMessage = { id: item.id, role: "error", text: item.text };
+			const code = stringValue(recordValue(item.metadata).code);
+			const message: MycliShellMessage = {
+				id: item.id,
+				role: code && isRuntimeErrorCode(code)
+					? runtimeErrorNoticeSeverity(code)
+					: "error",
+				text: item.text,
+				...noticeDiagnostic(item.metadata),
+			};
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });
-		} else if (item.type === "system_notice" || item.type === "command_output" || item.type === "clarification" || item.type === "approval") {
+		} else if (item.type === "clarification") {
+			const clarification = clarificationResponseFromTranscriptItem(item);
+			if (clarification) {
+				transcript.push({ id: item.id, kind: "clarification", clarification });
+			} else {
+				const message: MycliShellMessage = { id: item.id, role: "system", text: item.text };
+				messages.push(message);
+				transcript.push({ id: item.id, kind: "message", message });
+			}
+		} else if (item.type === "system_notice" || item.type === "command_output" || item.type === "approval") {
 			const message: MycliShellMessage = { id: item.id, role: "system", text: item.text };
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });
@@ -651,6 +703,7 @@ function projectRuntimeShellState(
 			liveState: footerLiveState(state),
 			liveStateKind: state.liveStatus?.kind ?? state.liveStatus?.state,
 			liveStateDetail: state.liveStatus?.message,
+			turnDurationMs: state.liveStatus?.durationMs,
 			turnRunning: state.turnRunning,
 			backgroundShellCount: state.backgroundShellCount,
 			taskProgress: state.taskProgress ?? undefined,
@@ -708,7 +761,10 @@ function footerLiveState(state: RuntimeShellState): string {
 	}
 	const liveStatusKind = state.liveStatus?.kind ?? state.liveStatus?.state;
 	if (liveStatusKind === "failed") {
-		return state.liveStatus?.text ?? liveStatusKind;
+		return "Idle";
+	}
+	if (liveStatusKind === "completed") {
+		return "Completed";
 	}
 	if (state.collaborationMode === "plan") {
 		return "Plan";
@@ -990,6 +1046,29 @@ export function reduceRuntimeEvent(
 	}
 	if (method === "item.started") {
 		const item = recordValue(params.item);
+		if (stringValue(item.type) === "web_search") {
+			const itemId = stringValue(item.id);
+			const callId = stringValue(item.call_id);
+			if (!itemId || !callId) return state;
+			const transcript = sealActiveAssistantStream(
+				state.transcript,
+				state.activeAssistantItemId,
+			);
+			return {
+				...state,
+				activeAssistantItemId: null,
+				liveStatus: { state: "running", kind: "running", text: "Running" },
+				transcript: upsertTranscriptItem(transcript, {
+					id: itemId,
+					type: "web_search",
+					text: "",
+					folded: false,
+					call_id: callId,
+					status: "running",
+					metadata: { call_id: callId, status: "running", transient: true },
+				}),
+			};
+		}
 		if (stringValue(item.type) !== "file_change") return state;
 		const itemId = stringValue(item.id);
 		const callId = stringValue(item.call_id);
@@ -1046,6 +1125,29 @@ export function reduceRuntimeEvent(
 		const item = recordValue(params.item);
 		const itemId = stringValue(item.id);
 		const itemType = stringValue(item.type);
+		if (itemType === "web_search") {
+			const callId = stringValue(item.call_id);
+			if (!itemId || !callId) return state;
+			const action = webSearchActionMetadata(item.action);
+			return {
+				...state,
+				liveStatus: { state: "running", kind: "running", text: "Running" },
+				transcript: upsertTranscriptItem(state.transcript, {
+					id: itemId,
+					type: "web_search",
+					text: textValue(item.detail) ?? webSearchDetail(action),
+					folded: false,
+					call_id: callId,
+					status: "completed",
+					metadata: {
+						call_id: callId,
+						status: "completed",
+						transient: true,
+						...action,
+					},
+				}),
+			};
+		}
 		const clientUserMessageId = stringValue(item.client_user_message_id);
 		const content = textValue(item.content);
 		if (
@@ -1093,7 +1195,8 @@ export function reduceRuntimeEvent(
 		return rollbackActiveAssistantAttempt(state);
 	}
 	if (method === "stream.retrying") {
-		const text = String(params.text ?? "Reconnecting...");
+		const text = boundedUiText(params.text, "Reconnecting...", 256);
+		const additionalDetails = sanitizeRuntimeErrorDetail(params.additional_details);
 		const retryRestoreStatus =
 			state.liveStatus?.kind === "reconnecting"
 				? state.retryRestoreStatus
@@ -1105,8 +1208,8 @@ export function reduceRuntimeEvent(
 				state: "running",
 				kind: "reconnecting",
 				text,
-				...(stringValue(params.additional_details)
-					? { message: stringValue(params.additional_details)! }
+				...(additionalDetails
+					? { message: additionalDetails }
 					: {}),
 			},
 			retryRestoreStatus,
@@ -1129,7 +1232,11 @@ export function reduceRuntimeEvent(
 			turnRunning: state.turnRunning,
 			activeAssistantItemId: params.final === true ? null : state.activeAssistantItemId,
 			liveReasoning: null,
-			transcript: params.final === true ? reconcileFinalAnswer(state.transcript, assistantId, text) : state.transcript,
+			transcript: commitCompletedWebSearchItems(
+				params.final === true
+					? reconcileFinalAnswer(state.transcript, assistantId, text)
+					: state.transcript,
+			),
 		};
 	}
 	if (method === "turn.event" && params.kind === "queued_message_committed") {
@@ -1261,21 +1368,34 @@ export function reduceRuntimeEvent(
 	}
 	if (method === "turn.completed") {
 		const turnState = stringValue(params.turn_state);
-		const assistantMessage = stringValue(params.assistant_message);
+		const durationMs = turnDurationMsValue(params.duration_ms);
 		const inputRolledBack = params.input_rolled_back === true;
+		const finalizedSearches = finalizeTransientWebSearchItems(state.transcript);
 		const terminalTranscript =
 			inputRolledBack
-				? rollbackOutputFreeUserTurn(state.transcript)
-				: turnState === "failed" && assistantMessage
-				? [...state.transcript, { id: nextId("error"), type: "error", text: assistantMessage, folded: false, metadata: params }]
+				? rollbackOutputFreeUserTurn(finalizedSearches)
 				: turnState === "interrupted"
-					? finalizeInterruptedTools(appendInterruptedNotice(state.transcript, params))
-					: state.transcript;
+					? finalizeInterruptedTools(appendInterruptedNotice(finalizedSearches, params))
+					: finalizedSearches;
 		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
 		const preserveClarification = pendingRequestBelongsToDifferentTurn(
 			state.pendingClarification,
 			params,
 		);
+		const completedTurnIdentity = stringValue(params.turn_id)
+			?? state.activeTurnId
+			?? stringValue(params.client_turn_id);
+		const transcriptWithDuration = (turnState === null || turnState === "completed")
+			&& durationMs !== undefined
+			&& completedTurnIdentity
+			? upsertTranscriptItem(terminalTranscript, {
+				id: turnCompletedDurationId(completedTurnIdentity),
+				type: "turn_completed",
+				text: "",
+				folded: false,
+				metadata: { duration_ms: durationMs },
+			})
+			: terminalTranscript;
 		return {
 			...state,
 			turnRunning: false,
@@ -1291,9 +1411,18 @@ export function reduceRuntimeEvent(
 						text: "Interrupted",
 						message: TURN_INTERRUPTED_NOTICE,
 					}
-					: turnState === "failed" && assistantMessage
-					? { state: "failed", kind: "failed", text: assistantMessage, message: assistantMessage }
-					: { state: "completed", kind: "completed", text: "Completed" },
+					: turnState === "failed"
+					? {
+						state: "failed",
+						kind: "failed",
+						text: "Failed",
+					}
+					: {
+						state: "completed",
+						kind: "completed",
+						text: "Completed",
+						...(durationMs === undefined ? {} : { durationMs }),
+					},
 			pendingApproval: preserveApproval
 				|| params.pending_decision === true
 				|| params.turn_state === "waiting_approval"
@@ -1303,10 +1432,28 @@ export function reduceRuntimeEvent(
 				|| params.turn_state === "waiting_clarification"
 				? state.pendingClarification
 				: null,
-			transcript: terminalTranscript,
+			transcript: transcriptWithDuration,
 		};
 	}
 	if (method === "turn.status" || method === "status.update") {
+		if (params.state === "failed") {
+			return {
+				...state,
+				turnRunning: false,
+				activeTurnId: activeTurnIdAfterTerminal(state, params),
+				activeAssistantItemId: null,
+				liveReasoning: null,
+				retryRestoreStatus: null,
+				liveStatus: {
+					state: "failed",
+					kind: stringValue(params.kind) ?? "failed",
+					text: stringValue(params.text) ?? "Failed",
+				},
+				transcript: finalizeTransientWebSearchItems(state.transcript),
+			};
+		}
+		const durationMs = turnDurationMsValue(params.duration_ms)
+			?? (params.state === "completed" ? state.liveStatus?.durationMs : undefined);
 		return {
 			...state,
 			turnRunning: params.state === "running" || params.state === "waiting_approval" || params.state === "waiting_clarification",
@@ -1315,6 +1462,7 @@ export function reduceRuntimeEvent(
 				kind: stringValue(params.kind) ?? "status",
 				text: stringValue(params.text) ?? stringValue(params.message) ?? "Running",
 				...(stringValue(params.message) ? { message: stringValue(params.message)! } : {}),
+				...(durationMs === undefined ? {} : { durationMs }),
 			},
 		};
 	}
@@ -1346,7 +1494,10 @@ export function reduceRuntimeEvent(
 				text: "Interrupted",
 				message: TURN_INTERRUPTED_NOTICE,
 			},
-			transcript: finalizeInterruptedTools(appendInterruptedNotice(state.transcript, params)),
+			transcript: finalizeInterruptedTools(appendInterruptedNotice(
+				finalizeTransientWebSearchItems(state.transcript),
+				params,
+			)),
 		};
 	}
 	if (method === "turn.failed" || method === "gateway.error") {
@@ -1360,22 +1511,33 @@ export function reduceRuntimeEvent(
 					&& (state.pendingClarification !== null || state.liveStatus?.state === "waiting_clarification"))
 			);
 		if (staleInteractiveError) return state;
-		const message = String(params.message ?? "Request failed");
+		const message = method === "turn.failed"
+			? turnFailureMessage(params)
+			: boundedUiText(params.message, "Request failed.");
 		const previousWaitingStatus =
 			method === "gateway.error" &&
 			(state.liveStatus?.state === "waiting_approval" || state.liveStatus?.state === "waiting_clarification")
 				? state.liveStatus
 				: null;
+		if (method === "gateway.error") {
+			return {
+				...state,
+				liveStatus: previousWaitingStatus ?? state.liveStatus,
+				transcript: appendErrorNotice(state.transcript, params, message),
+			};
+		}
 		return {
 			...state,
-			turnRunning: previousWaitingStatus ? state.turnRunning : false,
-			activeTurnId:
-				method === "turn.failed" ? activeTurnIdAfterTerminal(state, params) : state.activeTurnId,
+			turnRunning: false,
+			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
 			retryRestoreStatus: null,
-			liveStatus: previousWaitingStatus ?? { state: "failed", kind: "failed", text: message, message },
-			transcript: [...state.transcript, { id: nextId("error"), type: "error", text: message, folded: false, metadata: params }],
+			liveStatus: { state: "failed", kind: "failed", text: message, message },
+			transcript: finalizeFailedTools(appendTurnFailureNotice(
+				finalizeTransientWebSearchItems(state.transcript),
+				params,
+			), params),
 		};
 	}
 	if (method === "approval.request" || method === "approval.pending") {
@@ -1446,14 +1608,38 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "clarify.respond") {
-		if (!interactiveResponseMatches(
+		if (state.pendingClarification && !interactiveResponseMatches(
 			state.pendingClarification,
 			params,
 			"request_id",
 			"requestId",
 		)) return state;
+		const requestId = stringValue(params.request_id) ?? stringValue(params.requestId);
 		const response = stringValue(params.response);
 		const pending = state.pendingClarification;
+		const question = stringValue(params.question) ?? stringValue(pending?.question);
+		const header = stringValue(params.header) ?? stringValue(pending?.header);
+		const multiSelect = booleanValue(params.multi_select)
+			?? booleanValue(pending?.multi_select)
+			?? false;
+		const resolved = requestId && question && response
+			? {
+				id: clarificationResponseItemId(requestId),
+				type: "clarification",
+				text: response,
+				folded: false,
+				metadata: {
+					...recordValue(pending),
+					...params,
+					request_id: requestId,
+					...(header ? { header } : {}),
+					question,
+					response,
+					multi_select: multiSelect,
+					status: "answered",
+				},
+			} satisfies RuntimeTranscriptItem
+			: undefined;
 		return {
 			...state,
 			pendingClarification: null,
@@ -1463,11 +1649,9 @@ export function reduceRuntimeEvent(
 			transcript: [
 				...removeTransientClarificationItems(
 					state.transcript,
-					stringValue(params.request_id) ?? stringValue(params.requestId) ?? undefined,
+					requestId ?? undefined,
 				),
-				...(response
-					? [{ id: nextId("clarification-response"), type: "user", text: response, folded: false, metadata: params }]
-					: []),
+				...(resolved ? [resolved] : []),
 			],
 		};
 	}
@@ -1567,9 +1751,9 @@ export function reduceRuntimeEvent(
 			backgroundShells: {},
 			backgroundShellCount: 0,
 			shellEventSequences: {},
-			transcript: removeTransientClarificationItems(
+			transcript: finalizeTransientWebSearchItems(removeTransientClarificationItems(
 				removeTransientApprovalItems(state.transcript),
-			),
+			)),
 		};
 	}
 	return state;
@@ -1866,16 +2050,76 @@ function appendInterruptedNotice(
 	return [
 		...items,
 		{
-			id: turnId ? `turn-interrupted:${turnId}` : nextId("turn-interrupted"),
+			id: turnId ? turnInterruptedNoticeId(turnId) : nextId("turn-interrupted"),
 			type: "warning",
 			text: TURN_INTERRUPTED_NOTICE,
 			folded: false,
 			metadata: {
-				event_kind: "turn_aborted_marker",
+				event_kind: "turn_interrupted",
 				...(turnId ? { interrupted_turn_id: turnId } : {}),
+				status: "interrupted",
 			},
 		},
 	];
+}
+
+function appendTurnFailureNotice(
+	items: RuntimeTranscriptItem[],
+	params: Record<string, unknown>,
+): RuntimeTranscriptItem[] {
+	const code = stringValue(params.code) ?? stringValue(params.error_code) ?? "provider_error";
+	const message = turnFailureNotice(code, stringValue(params.message) ?? undefined);
+	const turnId = stringValue(params.turn_id) ?? stringValue(params.client_turn_id);
+	return appendErrorNotice(items, {
+		...params,
+		code,
+		event_kind: "turn_failed",
+		status: "failed",
+		source: "runtime",
+	}, message, turnId ? turnFailedNoticeId(turnId) : undefined);
+}
+
+function appendErrorNotice(
+	items: RuntimeTranscriptItem[],
+	params: Record<string, unknown>,
+	message: string,
+	id?: string,
+): RuntimeTranscriptItem[] {
+	if (id && items.some((item) => item.id === id)) return items;
+	return [
+		...items,
+		{
+			id: id ?? nextId("error"),
+			type: "error",
+			text: message,
+			folded: false,
+			metadata: errorNoticeMetadata(params),
+		},
+	];
+}
+
+function errorNoticeMetadata(params: Record<string, unknown>): Record<string, unknown> {
+	const metadata: Record<string, unknown> = {};
+	for (const key of ["source", "method", "code", "event_kind", "status"] as const) {
+		const value = stringValue(params[key]);
+		if (value) metadata[key] = value;
+	}
+	for (const key of ["turn_id", "client_turn_id"] as const) {
+		const value = stringValue(params[key]);
+		if (value) metadata[key] = value;
+	}
+	const additionalDetails = sanitizeRuntimeErrorDetail(params.additional_details);
+	if (additionalDetails) {
+		metadata.additional_details = additionalDetails;
+	}
+	return metadata;
+}
+
+function turnFailureMessage(params: Record<string, unknown>): string {
+	return turnFailureNotice(
+		stringValue(params.code) ?? stringValue(params.error_code) ?? "provider_error",
+		stringValue(params.message) ?? undefined,
+	);
 }
 
 function finalizeInterruptedTools(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
@@ -1900,6 +2144,56 @@ function finalizeInterruptedTools(items: RuntimeTranscriptItem[]): RuntimeTransc
 		};
 	});
 	return changed ? finalized : items;
+}
+
+function finalizeFailedTools(
+	items: RuntimeTranscriptItem[],
+	params: Record<string, unknown>,
+): RuntimeTranscriptItem[] {
+	const message = turnFailureMessage(params);
+	let changed = false;
+	const finalized = items.map((item) => {
+		if (item.type !== "tool_summary" && item.type !== "tool_detail") return item;
+		const metadata = recordValue(item.metadata);
+		if (stringValue(metadata.status) !== "running" || booleanValue(metadata.background) === true) {
+			return item;
+		}
+		changed = true;
+		return {
+			...item,
+			metadata: {
+				...metadata,
+				status: "failed",
+				success: false,
+				error_kind: "turn_failed",
+				error: message,
+				summary: stringValue(metadata.summary) ?? `${stringValue(metadata.tool_name) ?? "Tool"} failed`,
+			},
+		};
+	});
+	return changed ? finalized : items;
+}
+
+function noticeDiagnostic(
+	value: Record<string, unknown> | undefined,
+): { diagnostic?: { hint?: string; source?: string; method?: string; code?: string; details?: string } } {
+	const metadata = recordValue(value);
+	const source = stringValue(metadata.source);
+	const method = stringValue(metadata.method);
+	const code = stringValue(metadata.code);
+	const details = sanitizeRuntimeErrorDetail(metadata.additional_details);
+	const hint = code && isRuntimeErrorCode(code) ? runtimeErrorRecoveryHint(code) : undefined;
+	return hint || source || method || code || details
+		? {
+			diagnostic: {
+				...(hint ? { hint } : {}),
+				...(source ? { source } : {}),
+				...(method ? { method } : {}),
+				...(code ? { code } : {}),
+				...(details ? { details } : {}),
+			},
+		}
+		: {};
 }
 
 function rollbackOutputFreeUserTurn(
@@ -2373,10 +2667,26 @@ function pendingApprovalFromRecord(value: Record<string, unknown> | null): Mycli
 		riskReason: stringValue(value.risk_reason) ?? stringValue(value.riskReason) ?? undefined,
 		persistentRulePreview:
 			stringValue(value.persistent_rule_preview) ?? stringValue(value.persistentRulePreview) ?? undefined,
+		permissionRequest: permissionRequestFromPayload(
+			value.permission_request ?? value.permissionRequest,
+		),
 		contentPreview: stringValue(value.content_preview) ?? stringValue(value.contentPreview) ?? undefined,
 		contentLineCount: numberValue(value.content_line_count) ?? numberValue(value.contentLineCount) ?? undefined,
 		diffPreview: diffPreviewForTool(value),
 	};
+}
+
+function permissionRequestFromPayload(
+	value: unknown,
+): MycliShellPendingApproval["permissionRequest"] {
+	const request = recordValue(value);
+	if (Object.keys(request).length === 0) return undefined;
+	const network = recordValue(request.network).enabled === true;
+	const fileSystem = recordValue(request.file_system ?? request.fileSystem);
+	const readPaths = stringArrayValue(fileSystem.read);
+	const writePaths = stringArrayValue(fileSystem.write);
+	if (!network && readPaths.length === 0 && writePaths.length === 0) return undefined;
+	return { network, readPaths, writePaths };
 }
 
 function pendingClarificationFromRecord(
@@ -2413,6 +2723,100 @@ function pendingClarificationFromRecord(
 		options,
 		multiSelect: booleanValue(value.multi_select) ?? booleanValue(value.multiSelect) ?? false,
 	};
+}
+
+function clarificationResponseFromTranscriptItem(
+	item: RuntimeTranscriptItem,
+): MycliShellClarificationResponse | null {
+	const metadata = recordValue(item.metadata);
+	const requestId = stringValue(metadata.request_id) ?? stringValue(metadata.requestId);
+	const question = stringValue(metadata.question);
+	const response = stringValue(metadata.response);
+	if (!requestId || !question || !response) return null;
+	const header = stringValue(metadata.header);
+	return {
+		id: item.id,
+		requestId,
+		...(header ? { header } : {}),
+		question,
+		response,
+		multiSelect: booleanValue(metadata.multi_select) ?? booleanValue(metadata.multiSelect) ?? false,
+	};
+}
+
+function webSearchFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellWebSearch | null {
+	const metadata = recordValue(item.metadata);
+	const callId = stringValue(item.call_id) ?? stringValue(metadata.call_id);
+	if (!callId) return null;
+	const rawStatus = stringValue(item.status) ?? stringValue(metadata.status);
+	const rawAction = stringValue(metadata.action_type);
+	const action: MycliShellWebSearch["action"] = rawAction === "search"
+		|| rawAction === "open_page"
+		|| rawAction === "find_in_page"
+		? rawAction
+		: "other";
+	return {
+		id: item.id,
+		callId,
+		status: rawStatus === "running" ? "running" : "completed",
+		action,
+		...(item.text.trim() ? { detail: item.text.trim() } : {}),
+	};
+}
+
+function webSearchActionMetadata(value: unknown): Record<string, unknown> {
+	const action = recordValue(value);
+	const type = stringValue(action.type);
+	if (type === "search") {
+		const query = textValue(action.query);
+		const queries = Array.isArray(action.queries)
+			? action.queries
+				.filter((item): item is string => typeof item === "string" && item.length > 0)
+				.slice(0, 16)
+			: [];
+		return {
+			action_type: type,
+			...(query ? { query } : {}),
+			...(queries.length > 0 ? { queries } : {}),
+		};
+	}
+	if (type === "open_page") {
+		const url = textValue(action.url);
+		return { action_type: type, ...(url ? { url } : {}) };
+	}
+	if (type === "find_in_page") {
+		const url = textValue(action.url);
+		const pattern = textValue(action.pattern);
+		return {
+			action_type: type,
+			...(url ? { url } : {}),
+			...(pattern ? { pattern } : {}),
+		};
+	}
+	return { action_type: "other" };
+}
+
+function webSearchDetail(metadata: Readonly<Record<string, unknown>>): string {
+	const type = stringValue(metadata.action_type);
+	if (type === "search") {
+		const query = textValue(metadata.query);
+		if (query) return query;
+		const queries = Array.isArray(metadata.queries)
+			? metadata.queries.filter((item): item is string => typeof item === "string" && item.length > 0)
+			: [];
+		return queries.length > 1 ? `${queries[0]} ...` : queries[0] ?? "";
+	}
+	if (type === "open_page") return textValue(metadata.url) ?? "";
+	if (type === "find_in_page") {
+		const url = textValue(metadata.url);
+		const pattern = textValue(metadata.pattern);
+		return pattern && url ? `'${pattern}' in ${url}` : pattern ? `'${pattern}'` : url ?? "";
+	}
+	return "";
+}
+
+function clarificationResponseItemId(requestId: string): string {
+	return `clarification-response:${requestId}`;
 }
 
 function pendingRequestBelongsToDifferentTurn(
@@ -3186,15 +3590,47 @@ function rollbackActiveAssistantAttempt(state: RuntimeShellState): RuntimeShellS
 		while (start >= 0 && state.transcript[start]?.type === "reasoning") start -= 1;
 		start += 1;
 	}
-	const transcript = start >= 0 && end >= start
+	const transcript = (start >= 0 && end >= start
 		? [...state.transcript.slice(0, start), ...state.transcript.slice(end + 1)]
-		: state.transcript;
+		: state.transcript).filter((item) => !(
+		item.type === "web_search"
+		&& booleanValue(recordValue(item.metadata).transient) === true
+	));
 	return {
 		...state,
 		activeAssistantItemId: nextId("assistant"),
 		liveReasoning: null,
 		transcript,
 	};
+}
+
+function commitCompletedWebSearchItems(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
+	let changed = false;
+	const committed = items.map((item) => {
+		const metadata = recordValue(item.metadata);
+		if (item.type !== "web_search"
+			|| (stringValue(item.status) ?? stringValue(metadata.status)) !== "completed"
+			|| booleanValue(metadata.transient) !== true) return item;
+		changed = true;
+		return { ...item, metadata: { ...metadata, transient: false } };
+	});
+	return changed ? committed : items;
+}
+
+function finalizeTransientWebSearchItems(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
+	let changed = false;
+	const finalized: RuntimeTranscriptItem[] = [];
+	for (const item of items) {
+		const metadata = recordValue(item.metadata);
+		if (item.type !== "web_search" || booleanValue(metadata.transient) !== true) {
+			finalized.push(item);
+			continue;
+		}
+		changed = true;
+		if ((stringValue(item.status) ?? stringValue(metadata.status)) !== "completed") continue;
+		finalized.push({ ...item, metadata: { ...metadata, transient: false } });
+	}
+	return changed ? finalized : items;
 }
 
 function reconcileFinalAnswer(items: RuntimeTranscriptItem[], assistantId: string | null, answer: string): RuntimeTranscriptItem[] {
@@ -4178,6 +4614,12 @@ function collaborationModeValue(value: unknown): RuntimeShellState["collaboratio
 
 function numberValue(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function turnDurationMsValue(value: unknown): number | undefined {
+	const durationMs = numberValue(value);
+	if (durationMs === null || durationMs < 0) return undefined;
+	return Math.min(86_400_000, Math.round(durationMs));
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

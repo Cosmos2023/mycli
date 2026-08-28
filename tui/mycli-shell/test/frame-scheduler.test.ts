@@ -107,3 +107,22 @@ test("an immediate request replaces a pending rate-limited frame", () => {
 
 	assert.deepEqual(frameTimes, [0, 4]);
 });
+
+test("frame scheduler contains render failures and stops scheduling", () => {
+	const clock = new TestClock();
+	const failure = new Error("render failed");
+	const errors: unknown[] = [];
+	let frames = 0;
+	const scheduler = new FrameScheduler(() => {
+		frames += 1;
+		throw failure;
+	}, { minIntervalMs: 16, clock, onError: (error) => errors.push(error) });
+
+	scheduler.request();
+	clock.advanceBy(0);
+	scheduler.request();
+	clock.advanceBy(20);
+
+	assert.equal(frames, 1);
+	assert.deepEqual(errors, [failure]);
+});

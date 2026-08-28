@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+	TURN_INTERRUPTED_NOTICE,
+	turnCompletedDurationId,
+	turnFailedNoticeId,
+	turnFailureNotice,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
+import {
 	initialRuntimeState,
 	projectRuntimeState,
 	reduceRuntimeEvent,
@@ -450,6 +457,31 @@ test("runtime adapter projects a resumed Skill name as its tool argument", () =>
 
 	assert.equal(shell.tools[0]?.name, "Skill");
 	assert.equal(shell.tools[0]?.args, "repository-analysis");
+});
+
+test("runtime adapter carries the concrete Skill name from live lifecycle completion", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "skill-live",
+		call_id: "skill-call",
+		name: "Skill",
+		context: "Executing Skill",
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		tool_id: "skill-live",
+		call_id: "skill-call",
+		name: "Skill",
+		success: true,
+		skill_name: "repository-analysis",
+		summary: "Activated skill: repository-analysis",
+		duration_s: 0.002,
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.tools[0]?.name, "Skill");
+	assert.equal(shell.tools[0]?.args, "repository-analysis");
+	assert.equal(shell.tools[0]?.durationMs, 2);
 });
 
 test("runtime adapter reads a Skill target from structured legacy arguments", () => {
@@ -1221,6 +1253,10 @@ test("runtime adapter projects approval requests into shell approval state", () 
 		risk: "medium",
 		risk_reason: "External command execution",
 		persistent_rule_preview: '["python", "-m", "pytest"]',
+		permission_request: {
+			network: { enabled: true },
+			file_system: { read: ["/tmp/input"], write: ["/tmp/output"] },
+		},
 		content_preview: "line 1\nline 2",
 		content_line_count: 2,
 		content_truncated: false,
@@ -1245,6 +1281,11 @@ test("runtime adapter projects approval requests into shell approval state", () 
 	assert.equal(shell.pendingApproval?.childSessionId, "demo:sub:turn_1:abcd1234");
 	assert.equal(shell.pendingApproval?.riskReason, "External command execution");
 	assert.equal(shell.pendingApproval?.persistentRulePreview, '["python", "-m", "pytest"]');
+	assert.deepEqual(shell.pendingApproval?.permissionRequest, {
+		network: true,
+		readPaths: ["/tmp/input"],
+		writePaths: ["/tmp/output"],
+	});
 	assert.equal(shell.pendingApproval?.contentPreview, "line 1\nline 2");
 	assert.equal(shell.pendingApproval?.contentLineCount, 2);
 	assert.equal(shell.pendingApproval?.diffPreview, "@@ -1 +1 @@\n-old\n+new");
@@ -1560,15 +1601,12 @@ test("runtime adapter does not duplicate a re-emitted interactive request", () =
 	assert.equal(state.pendingClarification?.generation, 2);
 });
 
-test("runtime adapter removes the transient clarification question after a response", () => {
+test("runtime adapter replaces the transient clarification with a resolved question and answer", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "clarify.request", {
 		request_id: "request-1",
-		session_id: "child-session",
-		child_session_id: "child-session",
+		session_id: "session-1",
 		generation: 5,
-		worker_name: "tester",
-		agent_path: "/root/tester",
 		tool_id: "tool-1",
 		call_id: "call-1",
 		tool_name: "AskUserQuestion",
@@ -1578,16 +1616,66 @@ test("runtime adapter removes the transient clarification question after a respo
 	});
 
 	assert.equal(projectRuntimeState(state).messages.some((message) => message.text === "Which implementation should we use?"), true);
+	state = reduceRuntimeEvent(state, "turn.started", {
+		client_turn_id: "clarification-1",
+		turn_id: "turn-1",
+	});
+	assert.equal(state.pendingClarification, null);
 
 	state = reduceRuntimeEvent(state, "clarify.respond", {
 		request_id: "request-1",
+		header: "Scope",
+		question: "Which implementation should we use?",
 		response: "Use the first implementation.",
+		multi_select: false,
 	});
 
 	const shell = projectRuntimeState(state);
 	assert.equal(state.pendingClarification, null);
 	assert.equal(shell.messages.some((message) => message.text === "Which implementation should we use?"), false);
-	assert.equal(shell.messages.some((message) => message.role === "user" && message.text === "Use the first implementation."), true);
+	assert.equal(shell.messages.some((message) => message.role === "user" && message.text === "Use the first implementation."), false);
+	assert.deepEqual(shell.transcript?.find((block) => block.kind === "clarification"), {
+		id: "clarification-response:request-1",
+		kind: "clarification",
+		clarification: {
+			id: "clarification-response:request-1",
+			requestId: "request-1",
+			header: "Scope",
+			question: "Which implementation should we use?",
+			response: "Use the first implementation.",
+			multiSelect: false,
+		},
+	});
+});
+
+test("runtime adapter restores resolved clarification transcript items", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: "event:clarification-response",
+			type: "clarification",
+			text: "Runtime, TUI",
+			metadata: {
+				request_id: "request-2",
+				header: "Layers",
+				question: "Which layers should change?",
+				response: "Runtime, TUI",
+				multi_select: true,
+			},
+		}],
+	});
+
+	assert.deepEqual(projectRuntimeState(state).transcript, [{
+		id: "event:clarification-response",
+		kind: "clarification",
+		clarification: {
+			id: "event:clarification-response",
+			requestId: "request-2",
+			header: "Layers",
+			question: "Which layers should change?",
+			response: "Runtime, TUI",
+			multiSelect: true,
+		},
+	}]);
 });
 
 test("runtime adapter projects structured pending clarification", () => {
@@ -2582,6 +2670,118 @@ test("runtime adapter rolls back partial assistant output while reconnecting", (
 	assert.equal(shell.footer.liveStateDetail, undefined);
 });
 
+test("runtime adapter projects live, completed, retried, and resumed web searches", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		client_turn_id: "c1",
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "item.started", {
+		client_turn_id: "c1",
+		turn_id: "turn-1",
+		item: {
+			id: "web-search:ws-1",
+			type: "web_search",
+			call_id: "ws-1",
+		},
+	});
+	assert.deepEqual(projectRuntimeState(state).transcript?.at(-1), {
+		id: "web-search:ws-1",
+		kind: "web_search",
+		webSearch: {
+			id: "web-search:ws-1",
+			callId: "ws-1",
+			status: "running",
+			action: "other",
+		},
+	});
+	assert.equal(projectRuntimeState(state).footer.liveState, "Running");
+	assert.equal(projectRuntimeState(state).footer.liveStateDetail, undefined);
+
+	state = reduceRuntimeEvent(state, "item.completed", {
+		client_turn_id: "c1",
+		turn_id: "turn-1",
+		item: {
+			id: "web-search:ws-1",
+			type: "web_search",
+			call_id: "ws-1",
+			status: "completed",
+			action: { type: "search", queries: ["mycli docs", "mycli web search"] },
+		},
+	});
+	assert.deepEqual(projectRuntimeState(state).transcript?.at(-1), {
+		id: "web-search:ws-1",
+		kind: "web_search",
+		webSearch: {
+			id: "web-search:ws-1",
+			callId: "ws-1",
+			status: "completed",
+			action: "search",
+			detail: "mycli docs ...",
+		},
+	});
+	state = reduceRuntimeEvent(state, "message.complete", { client_turn_id: "c1" });
+	assert.equal(state.transcript.at(-1)?.metadata?.transient, false);
+
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: "event-search-1",
+			type: "web_search",
+			text: "mycli docs ...",
+			call_id: "ws-1",
+			metadata: {
+				status: "completed",
+				action_type: "search",
+				queries: ["mycli docs", "mycli web search"],
+			},
+		}],
+	});
+	assert.deepEqual(projectRuntimeState(resumed).transcript?.at(-1), {
+		id: "event-search-1",
+		kind: "web_search",
+		webSearch: {
+			id: "event-search-1",
+			callId: "ws-1",
+			status: "completed",
+			action: "search",
+			detail: "mycli docs ...",
+		},
+	});
+
+	let retrying = reduceRuntimeEvent(initialRuntimeState(), "item.started", {
+		item: { id: "web-search:ws-retry", type: "web_search", call_id: "ws-retry" },
+	});
+	retrying = reduceRuntimeEvent(retrying, "message.reset", { client_turn_id: "c1" });
+	assert.equal(retrying.transcript.some((item) => item.type === "web_search"), false);
+});
+
+test("runtime adapter removes unfinished web searches on terminal failure", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "item.started", {
+		item: { id: "web-search:ws-complete", type: "web_search", call_id: "ws-complete" },
+	});
+	state = reduceRuntimeEvent(state, "item.completed", {
+		item: {
+			id: "web-search:ws-complete",
+			type: "web_search",
+			call_id: "ws-complete",
+			status: "completed",
+			action: { type: "open_page", url: "https://example.com/docs" },
+		},
+	});
+	state = reduceRuntimeEvent(state, "item.started", {
+		item: { id: "web-search:ws-running", type: "web_search", call_id: "ws-running" },
+	});
+	state = reduceRuntimeEvent(state, "turn.failed", {
+		turn_id: "turn-1",
+		code: "provider_error",
+		message: "provider request failed",
+	});
+
+	const searches = state.transcript.filter((item) => item.type === "web_search");
+	assert.equal(searches.length, 1);
+	assert.equal(searches[0]?.call_id, "ws-complete");
+	assert.equal(searches[0]?.metadata?.transient, false);
+});
+
 test("runtime adapter syncs backend message queues", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "turn.queue.updated", {
@@ -2711,9 +2911,88 @@ test("runtime adapter keeps the turn running after final message until turn comp
 	state = reduceRuntimeEvent(state, "turn.completed", {
 		turn_id: "turn-1",
 		turn_state: "completed",
+		duration_ms: 992_000,
 	});
 	assert.equal(state.turnRunning, false);
+	assert.equal(state.liveStatus?.durationMs, 992_000);
+	assert.deepEqual(state.transcript.at(-1), {
+		id: turnCompletedDurationId("turn-1"),
+		type: "turn_completed",
+		text: "",
+		folded: false,
+		metadata: { duration_ms: 992_000 },
+	});
+	let shell = projectRuntimeState(state);
+	assert.equal(shell.footer.liveState, "Completed");
+	assert.equal(shell.footer.turnDurationMs, 992_000);
+	assert.deepEqual(shell.transcript?.at(-1), {
+		id: turnCompletedDurationId("turn-1"),
+		kind: "turn_completed",
+		turnCompleted: {
+			id: turnCompletedDurationId("turn-1"),
+			durationMs: 992_000,
+		},
+	});
+
+	state = reduceRuntimeEvent(state, "status.update", {
+		client_turn_id: "client-turn-1",
+		state: "completed",
+		kind: "completed",
+		text: "Completed",
+	});
+	shell = projectRuntimeState(state);
+	assert.equal(shell.footer.turnDurationMs, 992_000);
 	assert.equal(state.activeTurnId, null);
+
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		turn_id: "turn-1",
+		turn_state: "completed",
+		duration_ms: 992_000,
+	});
+	assert.equal(
+		state.transcript.filter((item) => item.id === turnCompletedDurationId("turn-1")).length,
+		1,
+	);
+});
+
+test("resumed transcripts do not synthesize a worked duration without a persisted item", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{ id: "user-1", type: "user", text: "hello", metadata: {} },
+			{ id: "assistant-1", type: "assistant_final", text: "done", metadata: {} },
+		],
+		next_before: null,
+	});
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.footer.liveState, "Idle");
+	assert.equal(shell.footer.turnDurationMs, undefined);
+});
+
+test("resumed transcripts restore persisted worked durations without changing live status", () => {
+	const durationId = turnCompletedDurationId("turn-1");
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{ id: "user-1", type: "user", text: "hello", metadata: {} },
+			{ id: "assistant-1", type: "assistant_final", text: "done", metadata: {} },
+			{
+				id: durationId,
+				type: "turn_completed",
+				text: "",
+				metadata: { duration_ms: 4_000 },
+			},
+		],
+		next_before: null,
+	});
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.footer.liveState, "Idle");
+	assert.equal(shell.footer.turnDurationMs, undefined);
+	assert.deepEqual(shell.transcript?.at(-1), {
+		id: durationId,
+		kind: "turn_completed",
+		turnCompleted: { id: durationId, durationMs: 4_000 },
+	});
 });
 
 test("runtime adapter clears the matching interrupted server turn", () => {
@@ -2753,6 +3032,275 @@ test("runtime adapter terminalizes foreground tools when a turn is interrupted",
 	assert.equal(tool?.errorPreview, "tool_interrupted");
 });
 
+test("runtime adapter lets turn.failed own the terminal error projection", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "tool.start", {
+		turn_id: "turn-1",
+		tool_id: "call-read",
+		call_id: "call-read",
+		name: "Read",
+		context: "Reading README.md",
+	});
+	state = reduceRuntimeEvent(state, "turn.failed", {
+		turn_id: "turn-1",
+		client_turn_id: "client-1",
+		code: "provider_error",
+		message: "provider request failed",
+		additional_details: "Invalid schema api_key=sk-private-upstream-value (status 400)",
+	});
+	state = reduceRuntimeEvent(state, "turn.status", {
+		turn_id: "turn-1",
+		client_turn_id: "client-1",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+		terminal: true,
+	});
+	state = reduceRuntimeEvent(state, "status.update", {
+		client_turn_id: "client-1",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.tools[0]?.status, "error");
+	const expectedMessage = turnFailureNotice(
+		"provider_error",
+		"provider request failed",
+	);
+	assert.equal(shell.tools[0]?.errorPreview, expectedMessage);
+	assert.deepEqual(shell.messages.filter((message) => message.role === "error"), [{
+		id: turnFailedNoticeId("turn-1"),
+		role: "error",
+		text: expectedMessage,
+		diagnostic: {
+			source: "runtime",
+			code: "provider_error",
+			details: "Invalid schema api_key=[REDACTED] (status 400)",
+		},
+	}]);
+	assert.equal(JSON.stringify(shell).includes("private-upstream-value"), false);
+	assert.match(JSON.stringify(shell), /Invalid schema api_key=\[REDACTED\]/u);
+});
+
+test("runtime adapter keeps one specific provider failure without a terminal status echo", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-auth",
+		client_turn_id: "client-auth",
+	});
+	state = reduceRuntimeEvent(state, "turn.failed", {
+		turn_id: "turn-auth",
+		client_turn_id: "client-auth",
+		code: "auth_error",
+		message: "provider authentication failed",
+		additional_details: "401 status code (no body) (status 401, request id: request-safe)",
+	});
+	state = reduceRuntimeEvent(state, "turn.status", {
+		turn_id: "turn-auth",
+		client_turn_id: "client-auth",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+		terminal: true,
+	});
+	state = reduceRuntimeEvent(state, "status.update", {
+		client_turn_id: "client-auth",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.deepEqual(shell.messages.filter((message) => message.role === "error"), [{
+		id: turnFailedNoticeId("turn-auth"),
+		role: "error",
+		text: "Provider authentication failed.",
+		diagnostic: {
+			hint: "Check the configured provider credentials.",
+			source: "runtime",
+			code: "auth_error",
+			details: "(status 401, request id: request-safe)",
+		},
+	}]);
+	assert.equal(shell.footer.liveState, "Idle");
+	assert.equal(shell.footer.liveStateKind, "failed");
+	assert.equal(JSON.stringify(shell).includes("Provider request failed."), false);
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: turnFailedNoticeId("turn-auth"),
+			type: "error",
+			text: "Provider authentication failed.",
+			folded: false,
+			metadata: {
+				event_kind: "turn_failed",
+				failed_turn_id: "turn-auth",
+				status: "failed",
+				source: "runtime",
+				code: "auth_error",
+				additional_details: "401 status code (no body) (status 401, request id: request-safe)",
+			},
+		}],
+	});
+	assert.deepEqual(
+		projectRuntimeState(resumed).messages.filter((message) => message.role === "error"),
+		shell.messages.filter((message) => message.role === "error"),
+	);
+});
+
+test("runtime adapter reapplies the shared error-detail sanitizer", () => {
+	const state = reduceRuntimeEvent(initialRuntimeState(), "turn.failed", {
+		turn_id: "turn-sensitive-detail",
+		client_turn_id: "client-sensitive-detail",
+		code: "auth_error",
+		message: "provider authentication failed",
+		additional_details: [
+			"https://provider.example/error?api_key=AIzaabcdefghijklmnopqrstuv",
+			"cookie=session-private",
+			"eyJabcdefgh.ijklmnop.qrstuvwx",
+		].join(" "),
+	});
+
+	const message = projectRuntimeState(state).messages.find((item) => item.role === "error");
+	assert.ok(message && message.role === "error");
+	assert.equal(message.diagnostic?.details, (
+		"https://provider.example/error?api_key=[REDACTED] "
+		+ "cookie=[REDACTED] [REDACTED]"
+	));
+	assert.doesNotMatch(JSON.stringify(message), /AIza|session-private|eyJabcdefgh/u);
+});
+
+test("runtime adapter keeps overload recovery transient and renders one terminal warning", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-overloaded",
+		client_turn_id: "client-overloaded",
+	});
+	state = reduceRuntimeEvent(state, "stream.retrying", {
+		client_turn_id: "client-overloaded",
+		text: "Retrying... 1/5",
+		failure_kind: "server_overloaded",
+		additional_details: "provider is overloaded (status 529)",
+	});
+	assert.equal(state.transcript.some((item) => item.type === "error"), false);
+	assert.equal(state.liveStatus?.kind, "reconnecting");
+	assert.equal(state.liveStatus?.message, "provider is overloaded (status 529)");
+
+	state = reduceRuntimeEvent(state, "turn.failed", {
+		turn_id: "turn-overloaded",
+		client_turn_id: "client-overloaded",
+		code: "server_overloaded",
+		message: "provider is overloaded",
+		additional_details: "model capacity reached (status 529)",
+	});
+	state = reduceRuntimeEvent(state, "turn.status", {
+		turn_id: "turn-overloaded",
+		client_turn_id: "client-overloaded",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+		terminal: true,
+	});
+
+	const liveNotice = projectRuntimeState(state).messages.find(
+		(message) => message.id === turnFailedNoticeId("turn-overloaded"),
+	);
+	assert.deepEqual(liveNotice, {
+		id: turnFailedNoticeId("turn-overloaded"),
+		role: "warning",
+		text: "Provider is overloaded.",
+		diagnostic: {
+			source: "runtime",
+			code: "server_overloaded",
+			details: "model capacity reached (status 529)",
+		},
+	});
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: turnFailedNoticeId("turn-overloaded"),
+			type: "error",
+			text: "Provider is overloaded.",
+			folded: false,
+			metadata: {
+				event_kind: "turn_failed",
+				failed_turn_id: "turn-overloaded",
+				status: "failed",
+				source: "runtime",
+				code: "server_overloaded",
+				additional_details: "model capacity reached (status 529)",
+			},
+		}],
+	});
+	assert.deepEqual(
+		projectRuntimeState(resumed).messages.find((message) => message.id === liveNotice?.id),
+		liveNotice,
+	);
+});
+
+test("runtime adapter treats failed status notifications as state only", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-status-only",
+		client_turn_id: "client-status-only",
+	});
+	state = reduceRuntimeEvent(state, "turn.status", {
+		turn_id: "turn-status-only",
+		client_turn_id: "client-status-only",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+		terminal: true,
+	});
+	state = reduceRuntimeEvent(state, "status.update", {
+		client_turn_id: "client-status-only",
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.deepEqual(shell.messages.filter((message) => message.role === "error"), []);
+	assert.equal(shell.footer.liveState, "Idle");
+	assert.equal(shell.footer.liveStateKind, "failed");
+});
+
+test("gateway errors remain request-scoped while a turn is running", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "gateway.error", {
+		code: "invalid_params",
+		method: "command.run",
+		message: "Request parameters are invalid.",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(state.turnRunning, true);
+	assert.equal(state.activeTurnId, "turn-1");
+	assert.equal(state.liveStatus?.state, "running");
+	assert.deepEqual(shell.messages.filter((message) => message.role === "error"), [{
+		id: shell.messages.find((message) => message.role === "error")?.id,
+		role: "error",
+		text: "Request parameters are invalid.",
+		diagnostic: { method: "command.run", code: "invalid_params" },
+	}]);
+});
+
+test("runtime adapter does not merge distinct gateway errors with matching text", () => {
+	let state = initialRuntimeState();
+	for (const method of ["command.one", "command.two"]) {
+		state = reduceRuntimeEvent(state, "gateway.error", {
+			code: "invalid_params",
+			method,
+			message: "Request parameters are invalid.",
+		});
+	}
+
+	assert.deepEqual(
+		projectRuntimeState(state).messages
+			.flatMap((message) => message.role === "error" ? [message.diagnostic?.method] : []),
+		["command.one", "command.two"],
+	);
+});
+
 test("runtime adapter keeps the canonical user row when composer restoration is confirmed", () => {
 	let state = runtimeStateWithUserMessage(initialRuntimeState(), "restore this draft");
 	state = reduceRuntimeEvent(state, "turn.started", { turn_id: "turn-1" });
@@ -2775,7 +3323,7 @@ test("runtime adapter appends one visible notice when a turn is interrupted", ()
 	state = reduceRuntimeEvent(state, "turn.completed", {
 		turn_id: "turn-1",
 		turn_state: "interrupted",
-		assistant_message: "Turn interrupted. The current turn was aborted; send a new message to continue.",
+		assistant_message: TURN_INTERRUPTED_NOTICE,
 	});
 	state = reduceRuntimeEvent(state, "turn.interrupted", {
 		turn_id: "turn-1",
@@ -2783,11 +3331,29 @@ test("runtime adapter appends one visible notice when a turn is interrupted", ()
 	});
 
 	const notices = projectRuntimeState(state).messages.filter(
-		(message) => message.text === "Turn interrupted. The current turn was aborted; send a new message to continue.",
+		(message) => message.text === TURN_INTERRUPTED_NOTICE,
 	);
 	assert.equal(notices.length, 1);
 	assert.equal(notices[0]?.role, "warning");
+	assert.equal(notices[0]?.id, turnInterruptedNoticeId("turn-1"));
 	assert.equal(state.liveStatus?.state, "interrupted");
+});
+
+test("runtime adapter restores the interrupted-turn notice from a resumed transcript", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [{
+			id: turnInterruptedNoticeId("turn-1"),
+			type: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			metadata: { status: "interrupted" },
+		}],
+	});
+
+	assert.deepEqual(projectRuntimeState(state).messages, [{
+		id: turnInterruptedNoticeId("turn-1"),
+		role: "warning",
+		text: TURN_INTERRUPTED_NOTICE,
+	}]);
 });
 
 test("runtime adapter removes an output-free rolled back user turn", () => {

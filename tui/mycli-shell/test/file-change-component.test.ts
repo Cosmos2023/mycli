@@ -298,6 +298,9 @@ test("file change component stays width safe and falls back to ASCII glyphs", ()
 		}],
 	});
 	const lines = renderFileChange(change, 40);
+	const header = stripAnsi(lines.find((line) => stripAnsi(line).includes("Edited")) ?? "");
+	assert.match(header, /^• Edited .+ \(\+1 -1\)$/u);
+	assert.equal(lines.some((line) => /^\s*\(\+1 -1\)\s*$/u.test(stripAnsi(line))), false);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 40, stripAnsi(line));
 
 	const plain = stripAnsi(renderFileChange(editedFileChange({

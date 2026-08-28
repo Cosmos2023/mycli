@@ -1,12 +1,13 @@
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
+import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellBash, MycliShellTool, MycliShellToolStatus } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
-import { shortPreview } from "./tool-display.ts";
+import { compactPathPreview, isReadToolName, sanitizeInline } from "./tool-display.ts";
 import { TRANSCRIPT_BRANCH_INDENT, TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
 
 export type CollapsedToolGroupItem =
@@ -49,9 +50,11 @@ export class CollapsedToolGroupComponent extends Container {
 		}
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.headerText(), TRANSCRIPT_HEADER_INDENT, 0));
-		const target = this.firstTarget();
-		if (target) {
-			this.addChild(new Text(theme.fg("muted", `⎿ ${target}`), TRANSCRIPT_BRANCH_INDENT, 0));
+		if (this.targets().length > 0) {
+			this.addChild({
+				render: (width) => this.targetLines(width),
+				invalidate: () => {},
+			});
 		}
 		this.addChild(new Text(
 			theme.fg("muted", `... ${keyHint("app.tools.expand", "to expand")}`),
@@ -72,14 +75,35 @@ export class CollapsedToolGroupComponent extends Container {
 		return `${theme.fg(color, theme.bold("•"))} ${theme.fg(color, theme.bold(`${action}${suffix}`))}`;
 	}
 
-	private firstTarget(): string | undefined {
-		for (const item of this.group.items) {
-			const target = item.kind === "tool" ? shortPreview(item.tool.args) : shortPreview(item.bash.command);
-			if (target) {
-				return target;
-			}
-		}
-		return undefined;
+	private targets(): Array<{ text: string; path: boolean }> {
+		return this.group.items.flatMap((item) => {
+			const text = item.kind === "tool" ? item.tool.args : item.bash.command;
+			const sanitized = text ? sanitizeInline(text) : "";
+			return sanitized
+				? [{ text: sanitized, path: item.kind === "tool" && isReadToolName(item.tool.name) }]
+				: [];
+		});
+	}
+
+	private targetLines(width: number): string[] {
+		const targets = this.targets();
+		const available = Math.max(1, width - TRANSCRIPT_BRANCH_INDENT * 2);
+		const prefix = "⎿ ";
+		const contentWidth = Math.max(1, available - visibleWidth(prefix));
+		const previewCount = contentWidth >= 48 ? 3 : contentWidth >= 24 ? 2 : 1;
+		const displayed = targets.slice(0, previewCount);
+		const omitted = targets.length - displayed.length;
+		const omittedSuffix = omitted > 0 ? `, … +${omitted}` : "";
+		const separatorWidth = Math.max(0, displayed.length - 1) * visibleWidth(", ");
+		const targetsWidth = Math.max(1, contentWidth - visibleWidth(omittedSuffix) - separatorWidth);
+		const targetWidth = Math.max(1, Math.floor(targetsWidth / Math.max(1, displayed.length)));
+		const preview = displayed
+			.map((target) => target.path
+				? compactPathPreview(target.text, targetWidth) ?? "file"
+				: truncateToWidth(target.text, targetWidth, "…"))
+			.join(", ");
+		const line = truncateToWidth(`${prefix}${preview}${omittedSuffix}`, available, theme.fg("dim", "…"));
+		return [`${" ".repeat(TRANSCRIPT_BRANCH_INDENT)}${theme.fg("muted", line)}`];
 	}
 }
 

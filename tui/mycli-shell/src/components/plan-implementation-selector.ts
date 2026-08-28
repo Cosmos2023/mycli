@@ -1,7 +1,9 @@
 import type { PlanImplementationChoice } from "../plan-implementation.ts";
-import { Container, getKeybindings, Spacer, Text, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
+import { safeErrorMessage } from "../safe-ui-text.ts";
+import { Container, getKeybindings, Spacer, Text } from "../tui-core/index.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
+import { ResponsiveDescriptionRow, SegmentedHintLine } from "./responsive-row.ts";
 
 export interface PlanImplementationSelectorOptions {
 	onSelect: (choice: PlanImplementationChoice) => void | Promise<void>;
@@ -46,7 +48,7 @@ export class PlanImplementationSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
 		this.addChild(this.statusContainer);
-		this.addChild(new Text(this.footerHints(), 1, 0));
+		this.addChild(new SegmentedHintLine(this.footerHints(), 1, " "));
 		this.updateSurface();
 	}
 
@@ -95,9 +97,7 @@ export class PlanImplementationSelectorComponent extends Container {
 		this.options.onRender?.();
 		void Promise.resolve().then(() => this.options.onSelect(choice)).catch((error: unknown) => {
 			this.submitting = false;
-			this.errorMessage = error instanceof Error
-				? error.message
-				: "Unable to start plan implementation.";
+			this.errorMessage = safeErrorMessage(error, "Unable to start plan implementation.");
 			this.updateSurface();
 			this.options.onRender?.();
 		});
@@ -107,22 +107,18 @@ export class PlanImplementationSelectorComponent extends Container {
 		this.listContainer.clear();
 		const contextUsageLabel = this.options.contextUsageLabel?.replace(/\s+/gu, " ").trim();
 		const labels = CHOICES.map((choice, index) => `${index + 1}. ${choice.label}`);
-		const labelColumnWidth = Math.max(...labels.map((label) => visibleWidth(label))) + 2;
 		for (let index = 0; index < CHOICES.length; index += 1) {
 			const choice = CHOICES[index]!;
 			const active = index === this.selectedIndex;
 			const prefix = active ? theme.fg("accent", "› ") : "  ";
 			const label = labels[index]!;
-			const paddedLabel = `${label}${" ".repeat(Math.max(0, labelColumnWidth - visibleWidth(label)))}`;
 			const descriptionText = choice.choice === "clear_context" && contextUsageLabel
 				? `Fresh thread. Context: ${contextUsageLabel}.`
 				: choice.description;
-			const description = truncateToWidth(descriptionText, 80, "...");
-			this.listContainer.addChild(new Text(
-				`${prefix}${active ? theme.fg("accent", paddedLabel) : theme.fg("text", paddedLabel)}`
-				+ theme.fg("muted", description),
-				1,
-				0,
+			this.listContainer.addChild(new ResponsiveDescriptionRow(
+				prefix,
+				active ? theme.fg("accent", label) : theme.fg("text", label),
+				theme.fg("muted", descriptionText),
 			));
 		}
 
@@ -134,7 +130,10 @@ export class PlanImplementationSelectorComponent extends Container {
 		}
 	}
 
-	private footerHints(): string {
-		return theme.fg("dim", "Press enter to confirm or esc to go back");
+	private footerHints(): string[] {
+		return [
+			theme.fg("dim", "Press enter to confirm or"),
+			theme.fg("dim", "esc to go back"),
+		];
 	}
 }
