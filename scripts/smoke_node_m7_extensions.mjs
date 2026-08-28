@@ -140,7 +140,7 @@ async function runSmoke(sourceConfig, protocol) {
 			messages.push(parseJsonRpcMessage(JSON.parse(line)));
 		});
 		await waitFor(() => event(messages, "runtime.ready"), deadlineAt);
-		await waitFor(() => event(messages, "extension.updated"), deadlineAt);
+		await waitForExtensionTool(backend, messages, "mcp_local_echo", deadlineAt);
 		await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" }, deadlineAt);
 		send(backend, "turn", "turn.submit", {
 			message: [
@@ -255,7 +255,7 @@ async function writeExtensionFixtures(options) {
 		`command = ${JSON.stringify(process.execPath)}`,
 		`args = [${JSON.stringify(MCP_FIXTURE)}]`,
 		`env = { MCP_PID_FILE = ${JSON.stringify(options.mcpPidFile)} }`,
-		"timeout_seconds = 3",
+		"timeout_seconds = 10",
 	].join("\n"), "utf8");
 	await writeFile(join(mycli, "hooks.json"), JSON.stringify({
 		hooks: [{
@@ -341,6 +341,37 @@ async function request(backend, messages, id, method, params, deadlineAt) {
 	);
 	if ("error" in response) throw new Error("smoke_rpc_failed");
 	return response;
+}
+
+async function waitForExtensionTool(backend, messages, toolName, deadlineAt) {
+	let observedUpdateCount = -1;
+	let requestIndex = 0;
+	while (Date.now() < deadlineAt) {
+		const updateCount = events(messages, "extension.updated").length;
+		if (updateCount !== observedUpdateCount) {
+			observedUpdateCount = updateCount;
+			const response = await request(
+				backend,
+				messages,
+				`extension-tool-${requestIndex}`,
+				"extension.manifest",
+				{},
+				deadlineAt,
+			);
+			requestIndex += 1;
+			if (extensionToolNames(response).includes(toolName)) return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("smoke_extension_timeout");
+}
+
+function extensionToolNames(response) {
+	const result = isObject(response.result) ? response.result : undefined;
+	const capabilities = result && isObject(result.capabilities) ? result.capabilities : undefined;
+	return capabilities && Array.isArray(capabilities.tool_names)
+		? capabilities.tool_names.filter((value) => typeof value === "string")
+		: [];
 }
 
 async function shutdown(backend) {

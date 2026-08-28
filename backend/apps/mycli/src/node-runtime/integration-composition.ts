@@ -589,8 +589,7 @@ function orderedRegistrations(
 	registrations: readonly IntegrationRegistration[],
 ): readonly IntegrationRegistration[] {
 	return Object.freeze([...registrations].sort((left, right) => {
-		const sourceOrder = SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source];
-		return sourceOrder || left.id.localeCompare(right.id, "en");
+		return SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source];
 	}));
 }
 

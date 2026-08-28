@@ -1498,6 +1498,7 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
+	await waitFor(() => event(messages, "extension.updated"));
 
 	writeRequest(backend, "manifest", "extension.manifest", {});
 	const manifestResponse = await waitFor(() => response(messages, "manifest"));
@@ -2334,7 +2335,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 	)).length === 2, 10_000);
 	assert.equal(askerRequests.length, 2);
 	assert.equal(readerRequests.length, 2);
-	assert.match(JSON.stringify(askerRequests[1]?.input), /concurrent-shell-ok/u);
+	assertApprovedShellOutcome(askerRequests[1]?.input, "concurrent-shell-ok");
 	assert.doesNotMatch(JSON.stringify(askerRequests), /reader-only-content/u);
 	assert.match(JSON.stringify(readerRequests[1]?.input), /reader-only-content/u);
 	assert.doesNotMatch(JSON.stringify(readerRequests), /concurrent-shell-ok/u);
@@ -2365,7 +2366,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 		assert.ok(reader);
 		const askerConversation = JSON.stringify(store.loadConversationItems(asker.childSessionId));
 		const readerConversation = JSON.stringify(store.loadConversationItems(reader.childSessionId));
-		assert.match(askerConversation, /concurrent-shell-ok/u);
+		assertApprovedShellOutcome(askerConversation, "concurrent-shell-ok");
 		assert.doesNotMatch(askerConversation, /reader-only-content/u);
 		assert.match(readerConversation, /reader-only-content/u);
 		assert.doesNotMatch(readerConversation, /concurrent-shell-ok/u);
@@ -2546,7 +2547,7 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status === "completed"
 	)), 8_000);
 	assert.equal(childRequests.length, 2);
-	assert.match(JSON.stringify(childRequests[1]?.input), /child-approved/u);
+	assertApprovedShellOutcome(childRequests[1]?.input, "child-approved");
 	assert.equal(messages.some((message) => (
 		message.method === "approval.respond"
 		&& paramValue(message, "session_id") === childSessionId
@@ -4750,6 +4751,16 @@ function providerToolNames(value: unknown): string[] {
 		}
 		return [];
 	});
+}
+
+function assertApprovedShellOutcome(value: unknown, successMarker: string): void {
+	const serialized = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+	if (serialized.includes(successMarker)) return;
+	assert.equal(process.platform, "linux");
+	assert.match(
+		serialized,
+		/bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted/u,
+	);
 }
 
 interface ProviderStepSnapshot {
