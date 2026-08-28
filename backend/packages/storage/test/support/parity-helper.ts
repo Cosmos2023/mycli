@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
-import type { RuntimeTurnRecord } from "@mycli/contracts";
+import {
+	TURN_INTERRUPTED_NOTICE,
+	turnInterruptedNoticeId,
+	type RuntimeTurnRecord,
+} from "@mycli/contracts";
 import { turnAbortedContextItem } from "@mycli/core";
 import { SQLiteSessionStore } from "../../src/index.ts";
 
@@ -186,6 +190,20 @@ export function expectedSharedRecords(fixture: SessionFixture): unknown[] {
 				tool_name: null,
 				call_id: null,
 				metadata,
+			});
+			historyItems.push({
+				id: turnInterruptedNoticeId(scenario.turn_id),
+				thread_id: scenario.thread_id,
+				turn_id: scenario.turn_id,
+				type: "warning",
+				text: TURN_INTERRUPTED_NOTICE,
+				tool_name: null,
+				call_id: null,
+				metadata: {
+					event_kind: "turn_interrupted",
+					interrupted_turn_id: scenario.turn_id,
+					status: "interrupted",
+				},
 			});
 		}
 		return {

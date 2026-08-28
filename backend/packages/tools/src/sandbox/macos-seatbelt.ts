@@ -1,4 +1,8 @@
-import type { SandboxProfile } from "../execution-policy.ts";
+import {
+	hasUnrestrictedFilesystem,
+	hasUnrestrictedNetwork,
+	type SandboxProfile,
+} from "../execution-policy.ts";
 import type { SandboxedProcessLaunch } from "../process-sandbox.ts";
 
 export const MACOS_SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
@@ -25,9 +29,11 @@ export function macosSeatbeltLaunch(
 		"(allow ipc-posix*)",
 		"(allow user-preference-read)",
 	];
+	if (hasUnrestrictedFilesystem(profile)) rules.push("(allow file-write*)");
 	for (const [index, root] of profile.writableRoots.entries()) {
 		const key = `WRITABLE_ROOT_${index}`;
 		definitions.push(`-D${key}=${root}`);
+		rules.push(`(allow file-write* (literal (param "${key}")))`);
 		rules.push(`(allow file-write* (subpath (param "${key}")))`);
 	}
 	for (const [key, path] of Object.entries(protectedRoots)) {
@@ -35,7 +41,7 @@ export function macosSeatbeltLaunch(
 		rules.push(`(deny file-write* (literal (param "${key}")))`);
 		rules.push(`(deny file-write* (subpath (param "${key}")))`);
 	}
-	if (profile.network === "enabled") {
+	if (hasUnrestrictedNetwork(profile)) {
 		rules.push("(allow network-outbound)", "(allow network-inbound)", "(allow system-socket)");
 	}
 	return Object.freeze({

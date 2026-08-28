@@ -253,7 +253,9 @@ function config(protocol: "responses" | "chat_completions"): NodeRuntimeConfig {
 		reasoningEffort: "medium",
 		thinkingEnabled: true,
 		supportsImages: true,
+		webSearchMode: "disabled",
 		promptCacheKeyEnabled: true,
+		requestPermissionsToolEnabled: false,
 	};
 }
 

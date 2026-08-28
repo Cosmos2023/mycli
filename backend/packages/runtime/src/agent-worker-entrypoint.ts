@@ -177,12 +177,17 @@ async function handleProviderCommand(value: unknown): Promise<void> {
 		const result = await providerLoop.runStep({
 			provider: providers.create(command.config),
 			request: command.request,
+			requestMaxRetries: command.requestMaxRetries,
 			maxRetries: command.maxRetries,
 			signal: request.controller.signal,
 			toolCallsAllowed: command.toolCallsAllowed,
 			emit: (event) => postProviderResponse(command, request, {
 				type: "provider_step_event",
 				event,
+			}),
+			recordDiagnostic: (diagnostic) => postProviderResponse(command, request, {
+				type: "provider_step_diagnostic",
+				diagnostic,
 			}),
 			normalizeFailure: (error) => normalizeProviderAgentLoopFailure(
 				error,

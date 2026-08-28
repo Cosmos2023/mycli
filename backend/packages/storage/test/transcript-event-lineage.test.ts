@@ -16,6 +16,23 @@ test("forks a normalized parent prefix by completed event boundary without copyi
 	const fixture = await repositoryFixture(t);
 	completeToolTurn(fixture.repository, "source", "turn-1", "client-1", "first request");
 	completeTextTurn(fixture.repository, "source", "turn-2", "client-2", "second request", "second answer");
+	const preferences = {
+		state_version: 1,
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-session",
+		api_base_url: "https://session.invalid/v1",
+		auth_ref: "session-account",
+		reasoning_effort: "high",
+		collaboration_mode: "plan",
+	};
+	fixture.repository.saveState({
+		sessionId: "source",
+		workspaceRoot: fixture.root,
+		threadId: "source",
+		key: "session_preferences",
+		payload: preferences,
+	});
 	const boundary = fixture.repository.loadTurnEventWindow("source", "turn-1", { limit: 100 })
 		.events.find((event) => event.eventType === "turn_lifecycle"
 			&& event.payload.phase === "completed");
@@ -64,6 +81,8 @@ test("forks a normalized parent prefix by completed event boundary without copyi
 			providerState: { provider: "openai", value: { private: "final" } },
 		},
 	]);
+	assert.deepEqual(fixture.repository.loadState("branch", "session_preferences"), preferences);
+	assert.equal(fixture.repository.loadState("branch", "input_queue"), undefined);
 
 	const database = new Database(fixture.dbPath, { readonly: true });
 	assert.equal(database.prepare(

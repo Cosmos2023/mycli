@@ -1,10 +1,18 @@
 import type {
 	CanonicalToolCall,
 	FileMutationPreviewChange,
+	PermissionRequestProfile,
+	PermissionGrantScope,
 	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
 import type { ExecutionPolicy } from "./execution-policy.ts";
+
+export interface ToolPermissionGrant {
+	readonly scope: PermissionGrantScope;
+	readonly permissions: PermissionRequestProfile;
+	readonly constrained: boolean;
+}
 
 export interface ToolEffectProfile {
 	readonly filesystem: "none" | "read" | "write";
@@ -82,6 +90,8 @@ export interface ToolExecutionOptions {
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly executionPolicy?: ExecutionPolicy;
 	readonly sandboxOverrideApproved?: boolean;
+	readonly sandboxOverridePolicy?: ExecutionPolicy;
+	readonly permissionGrant?: ToolPermissionGrant;
 	readonly preparedMutationGuard?: PreparedMutationGuard;
 }
 
@@ -90,6 +100,7 @@ export interface ToolPreviewOptions {
 	readonly ownerTurnId?: string;
 	readonly executionPolicy?: ExecutionPolicy;
 	readonly sandboxOverrideApproved?: boolean;
+	readonly sandboxOverridePolicy?: ExecutionPolicy;
 }
 
 export interface PreparedMutationTargetGuard {

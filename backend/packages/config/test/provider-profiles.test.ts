@@ -26,6 +26,7 @@ test("resolves the Anthropic Messages profile", () => {
 		supportsChatCompletions: false,
 		supportsAnthropicMessages: true,
 		supportsImages: true,
+		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.anthropic.com",
 		defaultModel: "claude-sonnet-4-6",
 		promptCacheKeyEnabled: false,

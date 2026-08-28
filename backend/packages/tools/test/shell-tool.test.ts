@@ -176,10 +176,23 @@ test("Shell requires runtime authorization before using an escalated process pro
 		...restricted,
 		sandboxOverrideApproved: true,
 	});
+	const constrained = await tool.execute({
+		command: "pwd",
+		cwd: outside,
+		sandbox_permissions: "require_escalated",
+	}, {
+		...restricted,
+		sandboxOverrideApproved: true,
+		sandboxOverridePolicy: {
+			...executionPolicy("full-access", root),
+			networkDomains: ["api.example.com"],
+		},
+	});
 
 	assert.equal(forged.errorKind, "sandbox_override_not_approved");
 	assert.equal(invalid.errorKind, "invalid_sandbox_permissions");
 	assert.equal(approved.success, true);
+	assert.equal(constrained.errorKind, "sandbox_unavailable");
 	assert.equal(manager.starts.length, 1);
 	assert.equal(manager.starts[0]?.executable, "/bin/sh");
 	assert.equal(manager.starts[0]?.cwd, await realpath(outside));

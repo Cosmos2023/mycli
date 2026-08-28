@@ -212,7 +212,7 @@ export class ShellTool implements ToolAdapter {
 			return shellFailure("sandbox_unavailable", "Shell execution policy is unavailable.");
 		}
 		const effectivePolicy = requireEscalated
-			? executionPolicy("full-access", this.#workspaceRoot)
+			? options.sandboxOverridePolicy ?? executionPolicy("full-access", this.#workspaceRoot)
 			: options.executionPolicy;
 		const cwd = await resolveShellCwd(
 			this.#workspaceRoot,

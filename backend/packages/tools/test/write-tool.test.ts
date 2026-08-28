@@ -3,6 +3,7 @@ import {
 	mkdtemp,
 	mkdir,
 	readFile,
+	realpath,
 	readdir,
 	rename,
 	rm,
@@ -283,6 +284,40 @@ test("danger-full-access requires justification and runtime-owned approval", asy
 	assert.equal(approved.success, true);
 	assert.equal(await readFile(join(fixture.root, "local.txt"), "utf8"), "local\n");
 	assert.equal(await readFile(outside, "utf8"), "approved\n");
+});
+
+test("Write keeps an approved escalation inside the runtime override roots", async (t) => {
+	const fixture = await workspaceFixture(t);
+	const allowedRoot = join(fixture.parent, "managed-output");
+	await mkdir(allowedRoot);
+	const canonicalAllowedRoot = await realpath(allowedRoot);
+	const denied = join(fixture.parent, "denied.txt");
+	const allowed = join(allowedRoot, "allowed.txt");
+	const write = createWriteTool(fixture.root);
+	const executionOptions = {
+		...options(),
+		executionPolicy: tools.executionPolicy("workspace", fixture.root),
+		sandboxOverrideApproved: true,
+		sandboxOverridePolicy: {
+			mode: "workspace-write" as const,
+			filesystem: "workspace_write" as const,
+			network: "disabled" as const,
+			writableRoots: [canonicalAllowedRoot],
+		},
+	};
+	const argumentsFor = (filePath: string) => ({
+		file_path: filePath,
+		content: "managed\n",
+		sandbox_permissions: "danger-full-access",
+		justification: "Write the requested managed output.",
+	});
+
+	const deniedResult = await write.execute(argumentsFor(denied), executionOptions);
+	const allowedResult = await write.execute(argumentsFor(allowed), executionOptions);
+
+	assert.equal(deniedResult.errorKind, "workspace_escape");
+	assert.equal(allowedResult.success, true, allowedResult.modelOutput);
+	assert.equal(await readFile(allowed, "utf8"), "managed\n");
 });
 
 function createWriteTool(workspaceRoot: string): WriteAdapter {

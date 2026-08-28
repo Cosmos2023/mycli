@@ -19,6 +19,10 @@
 - Terminal failure: `SQLiteSessionStore.failTurn(input) -> RuntimeTurnRecord`.
 - Replay boundary: `SQLiteSessionStore.loadConversationItems(sessionId) -> CanonicalConversationItem[]`.
 - Provider classification: `classifyProviderError(error) -> ProviderFailure`.
+- Public provider formatting: `providerFailurePublicMessage(failure) -> string`.
+- Terminal failure canonicalization:
+  `canonicalTurnFailureMessage(code, candidate?) -> string` and
+  `turnFailureNotice(code, candidate?) -> string`.
 
 ### 3. Contracts
 
@@ -57,9 +61,21 @@
 - Restart recovery closes pending calls only for turns whose owner is absent or known dead. It must
   not interrupt a turn owned by another live process or a valid suspended continuation.
 - Provider failures persist only bounded structured diagnostics: integer `status`, `request_id`
-  truncated to 128 characters, and provider error `code` / `type` tokens matching
-  `[A-Za-z0-9_.:-]{1,128}`. Raw upstream messages, response bodies, headers, prompts, tool output,
-  and secrets are never copied into diagnostics or terminal turn results.
+  truncated to 128 characters and restricted to the same safe token alphabet, provider error
+  `code` / `type` tokens matching `[A-Za-z0-9_.:-]{1,128}`, and recognized transport
+  error class/cause tokens in `transport_error_name` / `transport_error_code`.
+  A terminal result contains one concise canonical public failure message.
+  Structured upstream `error.message` context is stored separately as
+  `additional_details`: strip controls and stack frames, redact
+  credential-shaped values, and cap the detail at 1,000 characters. Raw response bodies, headers,
+  prompts, tool output, exception objects, and secrets are never copied into diagnostics or
+  terminal results. Exact SDK empty-response boilerplate such as
+  `401 status code (no body)` is removed while structured status/request-id
+  diagnostics remain available.
+- Retryable failures normalize a bounded delay from `retry-after-ms`, numeric
+  or HTTP-date `Retry-After`, or a structured `rate_limit_exceeded` message
+  containing `try again in <number><ms|s|seconds>`. The Provider exception and
+  runtime retry policy independently cap the delay to 3,600 seconds.
 
 ### 4. Validation & Error Matrix
 
@@ -77,7 +93,15 @@
 | Active turn contains a dangling call | Do not synthesize a result |
 | Restart finds an orphaned in-progress turn | Append interruption results and mark interrupted |
 | Restart finds a live-owned or suspended turn | Leave it active |
-| Provider error contains a raw message/body/header | Discard raw fields; retain only allowlisted diagnostics |
+| Provider error contains structured `error.message` | Persist its sanitized bounded public detail plus allowlisted diagnostics |
+| Provider message is only `<status> status code (no body)` | Drop the boilerplate and retain structured status/request id |
+| Provider error contains only a raw body/header or local exception | Discard it; retain only canonical public text and allowlisted diagnostics |
+| SDK error has a recognized connection class or cause code | Classify as retryable `connection_error` without exposing its local message |
+| Connection fails after Provider output starts | Reclassify as `response_stream_error`, discard the incomplete attempt, and use stream recovery |
+| HTTP 400/404/409/413/415/422 without a context signature | Classify as non-retryable `invalid_request` |
+| HTTP 429 carries an explicit quota token | Classify as non-retryable `quota_exceeded` before generic rate limiting |
+| HTTP 503/529 or explicit overload token | Classify as retryable `server_overloaded` |
+| Retryable response supplies a supported retry delay | Preserve the normalized delay, capped at 3,600 seconds |
 
 ### 5. Good/Base/Bad Cases
 
@@ -92,7 +116,7 @@
 - Bad: mark a turn failed first and leave its pending `function_call` without a
   `function_call_output`.
 - Bad: synthesize a result while the tool is still running, or persist a provider's raw error
-  message because it appears useful for debugging.
+  body, unfiltered exception message, stack, or secret because it appears useful for debugging.
 
 ### 6. Tests Required
 
@@ -104,8 +128,11 @@
 - Replay regression asserts terminal legacy calls receive exactly one synthetic result while active
   calls remain unchanged.
 - Restart test distinguishes a dead owner from a second live owner and a suspended continuation.
-- Provider error tests assert status/request id/error code/error type survive while upstream message,
-  response body, headers, and secret-like content do not.
+- Provider error tests assert status/request id/error code/error type survive; structured upstream
+  messages appear only after redaction, stack removal, and bounding; raw bodies, headers, local
+  exception text, SDK empty-response boilerplate, and secret-like content do not survive.
+- Provider/runtime retry tests cover millisecond, numeric-second, HTTP-date,
+  structured-message, invalid, and oversized retry delays.
 - Responses projection test asserts every replayed `function_call` has exactly one matching
   `function_call_output` before the request is sent.
 - Request projection test asserts non-empty assistant tool-call text produces the same assistant
@@ -132,6 +159,69 @@ store.appendToolResult(result);                    // Storage enforces the same 
 // On failure, failTurn closes every remaining call before the terminal transition.
 store.failTurn(failure);
 ```
+
+#### Wrong
+
+```typescript
+const failure = classifyProviderError(error);
+emit({ type: "turn_failed", code: failure.code, message: error.message });
+```
+
+#### Correct
+
+```typescript
+const failure = classifyProviderError(error);
+const runtimeFailure = providerFailureToRuntimeFailure(failure);
+emit({
+  type: "turn_failed",
+  code: runtimeFailure.code,
+  message: runtimeFailure.message,
+  additionalDetails: runtimeFailure.additionalDetails,
+});
+// Storage applies canonicalRuntimeFailureMessage again before persistence.
+```
+
+## Scenario: Layered Provider Request And Stream Recovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing provider retry configuration, `ProviderAgentLoop`, Agent Worker provider RPC,
+  incomplete stream handling, or runtime-to-TUI retry projection.
+- The provider step remains the atomic persistence boundary. No assistant output or tool call from
+  an incomplete attempt may enter canonical conversation history.
+
+### 2. Contracts
+
+- `request_max_retries` and `stream_max_retries` are independent budgets, both clamped to
+  `0..100`. The request budget defaults to `4`; the stream budget defaults to `5`.
+- Request retries apply only before the first provider event and only to retryable `connection_error`,
+  `server_overloaded`, explicitly retryable generic Provider failures, or HTTP `5xx`.
+  `response_stream_error` and rate limits bypass the request budget and use stream recovery so their
+  bounded `Retry-After` delay is preserved.
+- Stream recovery may run after provider output begins, but only before a completed provider step.
+  The retry reuses the exact frozen request assembled from canonical history. Provider SDK retries
+  remain disabled so retries are counted once by mycli.
+- A provider step does not persist or execute tool calls until its completed event has been
+  accepted. Retrying an incomplete step therefore cannot replay a local tool side effect.
+- When an incomplete attempt emitted visible text or reasoning, `stream_retrying.resetOutput=true`
+  crosses the Worker boundary. The gateway emits `message.reset` before `stream.retrying`, and Plan
+  stream filtering resets with the same attempt. TUI projection removes only the incomplete active
+  assistant/reasoning attempt.
+- Chat and Anthropic streams that end without their protocol completion marker are retryable.
+  Malformed events, invalid tool protocol, user interruption, context overflow, authentication,
+  and errors after provider completion are not replayed by this mechanism.
+- Request and stream delays use the shared abortable exponential-backoff policy. A successful
+  request after either kind of retry emits one `stream_recovered` event.
+
+### 3. Tests Required
+
+- Provider-loop tests distinguish request and stream budgets and assert recovery kind, attempt,
+  delay, and output-reset metadata.
+- A post-output disconnect test retries the same frozen request and discards the incomplete attempt.
+- A post-completion disconnect test proves no request is replayed.
+- Agent Worker RPC tests require and bound `requestMaxRetries`, `recoveryKind`, and `resetOutput`.
+- Gateway and TUI tests assert `message.reset` precedes `stream.retrying` and removes partial text
+  and reasoning without changing canonical resumed history.
 
 ## Scenario: Manifest-Gated Parallel Tool Phases
 
@@ -314,3 +404,49 @@ for (const phase of manifestGatedProviderOrderPhases(calls)) {
 - Runtime tests assert provider state persists with tool batches and final assistant output.
 - Compaction tests assert opaque provider state can trigger compaction and is removed when its old
   turn is summarized.
+
+## Scenario: Provider-Hosted Responses Web Search
+
+### 1. Scope / Trigger
+
+- Trigger: changing provider capability routing, the Responses hosted-tool request, provider-native
+  replay items, web-search lifecycle events, or live/resumed TUI search projection.
+- Hosted search is a provider capability. It is not a local `ToolAdapter` and does not pass through
+  local tool approval, sandbox, or `ToolRouter` execution.
+
+### 2. Contracts
+
+- `openai` and `codex` profiles default to live hosted search only with the Responses protocol.
+  Compatible, Qwen, DeepSeek, and Anthropic profiles default to disabled. Routing must use the
+  resolved provider/model capability, never a model-name prefix.
+- Provider-grouped `models.json` may set `capabilities.web_search` at the provider level and override
+  it per model. Enabling hosted search with a non-Responses protocol is a configuration error.
+- A live Responses request adds `{ type: "web_search", external_web_access: true }` to the same
+  stable tool array as local function tools. Disabled requests do not expose the hosted tool.
+- `response.output_item.added` starts a readable search lifecycle. The matching completed
+  `web_search_call` supplies its bounded id and action. Redundant web-search status frames and
+  output-text annotation frames must not terminate the stream or create duplicate rows.
+- The running search cell owns the user-visible `Searching the web` label. The generic turn activity
+  indicator remains generic and must not repeat that label as a header or nested detail. A later
+  search call uses its own call id and may appear after an earlier completed search.
+- Completed web-search calls are retained in the same bounded Responses native replay state as
+  encrypted reasoning and replayed before the matching assistant output. Legacy
+  `responsesReasoningItems` remains readable.
+- Persist only bounded call identity and the `search`, `open_page`, or `find_in_page` action needed
+  for replay and readable presentation. Do not persist source bodies, raw search results, or page
+  content in transcript display metadata.
+- Stream retry removes every transient search row from the incomplete attempt. Terminal failure or
+  interruption removes unfinished rows, retains completed rows, and marks those rows durable.
+- A completed search is persisted as `display_activity:web_search`; the readable projector must
+  preserve its call id, status, bounded action metadata, and text so live and resumed TUI rows match.
+
+### 3. Tests Required
+
+- Config tests cover OpenAI live defaults, non-OpenAI disabled defaults, provider inheritance,
+  model override, invalid capability types, and rejection on non-Responses protocols.
+- Responses tests cover enabled/disabled request serialization, legal auxiliary stream frames,
+  bounded action mapping, omission of source bodies, native replay, and call-id limits.
+- Worker/runtime tests cover request and event round trips, returned search calls, readable
+  persistence, and provider-state continuation replay.
+- Storage, gateway, and TUI tests cover live start/completion, retry reset, terminal cleanup,
+  non-duplicated turn activity, width-safe rendering, and equivalent resumed projection.

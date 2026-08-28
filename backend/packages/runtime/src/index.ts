@@ -37,6 +37,14 @@ export type {
 	ProviderStepExecutor,
 } from "./provider-step-executor.ts";
 export {
+	publishProviderStreamDiagnostics,
+	publishRuntimeDiagnostic,
+} from "./runtime-observability.ts";
+export type {
+	ProviderStreamDiagnostics,
+	RuntimeDiagnosticEvent,
+} from "./runtime-observability.ts";
+export {
 	AGENT_WORKER_PROVIDER_RPC_MAX_BYTES,
 	AgentWorkerProviderRpcError,
 	parseAgentWorkerProviderCommand,
@@ -192,8 +200,10 @@ export type {
 export { ExecutionPolicyCoordinator } from "./execution-policy-coordinator.ts";
 export type {
 	ExecutionPolicyConfiguration,
+	ExecutionPolicyConstraints,
 	ExecutionPolicyCoordinatorOptions,
 	ExecutionPolicySnapshot,
+	PermissionGrantInput,
 	TurnExecutionPolicy,
 } from "./execution-policy-coordinator.ts";
 export { ShellLifecycleProjector } from "./shell-lifecycle-projector.ts";

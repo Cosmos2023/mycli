@@ -93,6 +93,12 @@ interface M5Store {
 	commitClarificationResponse(input: {
 		readonly sessionId: string;
 		readonly requestId: string;
+		readonly display: {
+			readonly header?: string;
+			readonly question: string;
+			readonly response: string;
+			readonly multiSelect: boolean;
+		};
 		readonly toolResult: ReturnType<typeof successfulClarificationResult>;
 	}): void;
 	commitApprovalResult(input: {
@@ -592,6 +598,12 @@ test("persists clarification suspension across recovery and commits its response
 	store.commitClarificationResponse({
 		sessionId: "s1",
 		requestId: "call-question",
+		display: {
+			header: "Runtime",
+			question: "Which runtime?",
+			response: "Node",
+			multiSelect: false,
+		},
 		toolResult: successfulClarificationResult(),
 	});
 	assert.equal(store.loadState("s1", "suspended_turn"), undefined);

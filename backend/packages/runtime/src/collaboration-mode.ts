@@ -2,7 +2,8 @@ const DEFAULT_MODE_INSTRUCTIONS = `# Default Mode
 
 You are in Default mode. You may inspect, implement, and verify changes within the active
 permission and approval policy. Use \`update_plan\` only as a progress checklist for substantial
-multi-step work; it does not enter or leave Plan mode.`;
+multi-step work; it does not enter or leave Plan mode. Ask necessary questions in normal assistant
+text; the structured \`AskUserQuestion\` tool is available only in Plan mode.`;
 
 const PLAN_MODE_INSTRUCTIONS = `# Plan Mode
 
@@ -14,9 +15,9 @@ such a request as a request to plan the implementation.
 
 Plan mode is a collaboration mode for investigation, clarification, and producing a decision-complete
 proposal. The \`update_plan\` tool is a separate TODO/checklist tool for tracking implementation
-progress. It remains listed in the provider-visible schema because that schema stays stable across
-collaboration modes and a mode switch should not needlessly invalidate prompt/tool caches. Do not
-call it in Plan mode because the runtime rejects it without side effects.
+progress. It remains listed in both collaboration modes; \`AskUserQuestion\` is the intentional
+mode-specific tool difference. Do not call \`update_plan\` in Plan mode because the runtime rejects
+it without side effects.
 
 ## Allowed work
 

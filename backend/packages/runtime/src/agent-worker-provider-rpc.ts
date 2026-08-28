@@ -1,3 +1,10 @@
+import {
+	canonicalRuntimeFailureMessage,
+	RUNTIME_ERROR_CODES,
+	RUNTIME_RETRY_AFTER_MAX_SECONDS,
+	runtimeErrorPublicMessage,
+	sanitizeRuntimeErrorDetail,
+} from "@mycli/contracts";
 import { stableModelInputJson } from "@mycli/core";
 import type {
 	CanonicalContextMetadata,
@@ -10,14 +17,16 @@ import type {
 	ProviderRequest,
 	ProviderUsage,
 	ProtocolId,
-	RuntimeErrorCode,
 	RuntimeEvent,
 	ToolDefinition,
+	WebSearchAction,
+	WebSearchCall,
 } from "@mycli/core";
 import type {
 	ProviderAgentLoopFailure,
 	ProviderAgentLoopResult,
 } from "./provider-agent-loop.ts";
+import type { ProviderStreamDiagnostics } from "./runtime-observability.ts";
 import { AGENT_WORKER_PROTOCOL_VERSION } from "./agent-worker-protocol.ts";
 
 export const AGENT_WORKER_PROVIDER_RPC_MAX_BYTES = 2 * 1024 * 1024;
@@ -43,20 +52,6 @@ const PROVIDERS = [
 const PROTOCOLS = [
 	"responses", "chat_completions", "anthropic_messages",
 ] as const;
-const RUNTIME_ERROR_CODES = [
-	"config_error",
-	"auth_error",
-	"provider_error",
-	"rate_limited",
-	"context_window_exceeded",
-	"retry_exhausted",
-	"persistence_error",
-	"interrupted",
-	"unsupported_capability",
-	"tool_budget_exceeded",
-	"tool_protocol_error",
-] as const satisfies readonly RuntimeErrorCode[];
-
 export interface AgentWorkerProviderTransportConfig {
 	readonly provider: ProviderId;
 	readonly protocol: ProtocolId;
@@ -84,6 +79,7 @@ export type AgentWorkerProviderCommand =
 		readonly type: "provider_step_execute";
 		readonly config: AgentWorkerProviderTransportConfig;
 		readonly request: ProviderRequest;
+		readonly requestMaxRetries: number;
 		readonly maxRetries: number;
 		readonly toolCallsAllowed: boolean;
 	})
@@ -93,6 +89,10 @@ export type AgentWorkerProviderCommand =
 
 export type AgentWorkerProviderResponse = AgentWorkerProviderRpcIdentity & (
 	| { readonly type: "provider_step_event"; readonly event: RuntimeEvent }
+	| {
+		readonly type: "provider_step_diagnostic";
+		readonly diagnostic: ProviderStreamDiagnostics;
+	}
 	| { readonly type: "provider_step_result"; readonly result: ProviderAgentLoopResult }
 );
 
@@ -120,8 +120,8 @@ export function parseAgentWorkerProviderCommand(value: unknown): AgentWorkerProv
 	assertExactKeys(record, [
 		"type", "protocolVersion", "coordinatorEpoch", "workerId", "workerGeneration",
 		"leaseId", "jobId", "sessionId", "turnId", "timelineWindowId",
-		"timelineVersion", "requestId", "sequence", "config", "request", "maxRetries",
-		"toolCallsAllowed",
+		"timelineVersion", "requestId", "sequence", "config", "request",
+		"requestMaxRetries", "maxRetries", "toolCallsAllowed",
 	], "provider execution");
 	const config = parseTransportConfig(record.config);
 	const request = parseProviderRequest(record.request);
@@ -133,6 +133,12 @@ export function parseAgentWorkerProviderCommand(value: unknown): AgentWorkerProv
 		...identity,
 		config,
 		request,
+		requestMaxRetries: boundedInteger(
+			record.requestMaxRetries,
+			"provider request retries",
+			0,
+			100,
+		),
 		maxRetries: boundedInteger(record.maxRetries, "provider retries", 0, 100),
 		toolCallsAllowed: booleanValue(record.toolCallsAllowed, "tool-call flag"),
 	});
@@ -153,6 +159,18 @@ export function parseAgentWorkerProviderResponse(value: unknown): AgentWorkerPro
 			event: parseRuntimeEvent(record.event),
 		});
 	}
+	if (record.type === "provider_step_diagnostic") {
+		assertExactKeys(record, [
+			"type", "protocolVersion", "coordinatorEpoch", "workerId", "workerGeneration",
+			"leaseId", "jobId", "sessionId", "turnId", "timelineWindowId",
+			"timelineVersion", "requestId", "sequence", "diagnostic",
+		], "provider diagnostic");
+		return Object.freeze({
+			type: record.type,
+			...identity,
+			diagnostic: parseProviderStreamDiagnostics(record.diagnostic),
+		});
+	}
 	if (record.type !== "provider_step_result") throw invalid("provider response type is invalid");
 	assertExactKeys(record, [
 		"type", "protocolVersion", "coordinatorEpoch", "workerId", "workerGeneration",
@@ -164,6 +182,94 @@ export function parseAgentWorkerProviderResponse(value: unknown): AgentWorkerPro
 		...identity,
 		result: parseProviderResult(record.result),
 	});
+}
+
+function parseProviderStreamDiagnostics(value: unknown): ProviderStreamDiagnostics {
+	const diagnostic = boundedRecord(value, "provider stream diagnostic");
+	assertObjectShape(diagnostic, [
+		"attempt",
+		"elapsedMs",
+		"textDeltaIntervalCount",
+		"providerEventCount",
+		"reasoningEventCount",
+		"textEventCount",
+		"providerStateEventCount",
+		"toolCallEventCount",
+		"usageEventCount",
+		"completedEventCount",
+		"reasoningBytes",
+		"textBytes",
+		"success",
+	], ["ttfbMs", "ttftMs", "tbtMs", "maxTbtMs", "failureKind"], "provider stream diagnostic");
+	return Object.freeze({
+		attempt: boundedInteger(diagnostic.attempt, "provider diagnostic attempt", 1, 10_201),
+		elapsedMs: diagnosticDuration(diagnostic.elapsedMs, "provider diagnostic elapsed time"),
+		...(hasOwn(diagnostic, "ttfbMs") ? {
+			ttfbMs: diagnosticDuration(diagnostic.ttfbMs, "provider diagnostic TTFB"),
+		} : {}),
+		...(hasOwn(diagnostic, "ttftMs") ? {
+			ttftMs: diagnosticDuration(diagnostic.ttftMs, "provider diagnostic TTFT"),
+		} : {}),
+		...(hasOwn(diagnostic, "tbtMs") ? {
+			tbtMs: diagnosticDuration(diagnostic.tbtMs, "provider diagnostic TBT"),
+		} : {}),
+		...(hasOwn(diagnostic, "maxTbtMs") ? {
+			maxTbtMs: diagnosticDuration(diagnostic.maxTbtMs, "provider diagnostic maximum TBT"),
+		} : {}),
+		textDeltaIntervalCount: diagnosticCount(
+			diagnostic.textDeltaIntervalCount,
+			"provider diagnostic text interval count",
+		),
+		providerEventCount: diagnosticCount(
+			diagnostic.providerEventCount,
+			"provider diagnostic event count",
+		),
+		reasoningEventCount: diagnosticCount(
+			diagnostic.reasoningEventCount,
+			"provider diagnostic reasoning event count",
+		),
+		textEventCount: diagnosticCount(
+			diagnostic.textEventCount,
+			"provider diagnostic text event count",
+		),
+		providerStateEventCount: diagnosticCount(
+			diagnostic.providerStateEventCount,
+			"provider diagnostic state event count",
+		),
+		toolCallEventCount: diagnosticCount(
+			diagnostic.toolCallEventCount,
+			"provider diagnostic tool-call event count",
+		),
+		usageEventCount: diagnosticCount(
+			diagnostic.usageEventCount,
+			"provider diagnostic usage event count",
+		),
+		completedEventCount: diagnosticCount(
+			diagnostic.completedEventCount,
+			"provider diagnostic completion event count",
+		),
+		reasoningBytes: diagnosticCount(
+			diagnostic.reasoningBytes,
+			"provider diagnostic reasoning bytes",
+		),
+		textBytes: diagnosticCount(diagnostic.textBytes, "provider diagnostic text bytes"),
+		success: booleanValue(diagnostic.success, "provider diagnostic success flag"),
+		...(hasOwn(diagnostic, "failureKind") ? {
+			failureKind: oneOf(
+				diagnostic.failureKind,
+				RUNTIME_ERROR_CODES,
+				"provider diagnostic failure kind",
+			),
+		} : {}),
+	});
+}
+
+function diagnosticDuration(value: unknown, label: string): number {
+	return boundedFiniteNumber(value, label, 0, 24 * 60 * 60 * 1_000);
+}
+
+function diagnosticCount(value: unknown, label: string): number {
+	return boundedInteger(value, label, 0, 1_099_511_627_776);
 }
 
 function parseIdentity(record: Readonly<Record<string, unknown>>): AgentWorkerProviderRpcIdentity {
@@ -217,7 +323,7 @@ function parseProviderRequest(value: unknown): ProviderRequest {
 		["provider", "protocol", "model", "instructions", "messages", "tools"],
 		[
 			"reasoningEffort", "maxOutputTokens", "store", "promptCacheKey", "cacheControlEnabled",
-			"developerInstructions", "items", "previousResponseId",
+			"webSearchMode", "developerInstructions", "items", "previousResponseId",
 		],
 		"provider request");
 	return Object.freeze({
@@ -243,6 +349,13 @@ function parseProviderRequest(value: unknown): ProviderRequest {
 		} : {}),
 		...(hasOwn(request, "cacheControlEnabled") ? {
 			cacheControlEnabled: booleanValue(request.cacheControlEnabled, "cache-control flag"),
+		} : {}),
+		...(hasOwn(request, "webSearchMode") ? {
+			webSearchMode: oneOf(
+				request.webSearchMode,
+				["live", "disabled"] as const,
+				"web-search mode",
+			),
 		} : {}),
 		...(hasOwn(request, "developerInstructions") ? {
 			developerInstructions: boundedArray(
@@ -453,13 +566,47 @@ function parseRuntimeEvent(value: unknown): RuntimeEvent {
 				type: event.type,
 				text: boundedString(event.text, "provider event text", AGENT_WORKER_PROVIDER_RPC_MAX_BYTES),
 			});
-		case "stream_retrying":
-			assertExactKeys(event, ["type", "attempt", "delayMs"], "provider retry event");
+		case "stream_retrying": {
+			assertExactKeys(event, [
+				"type",
+				"attempt",
+				"maxRetries",
+				"delayMs",
+				"recoveryKind",
+				"resetOutput",
+				"failureKind",
+				"additionalDetails",
+			], "provider retry event");
+			const failureKind = oneOf(
+				event.failureKind,
+				RUNTIME_ERROR_CODES,
+				"provider retry failure kind",
+			);
+			const additionalDetails = sanitizeRuntimeErrorDetail(boundedText(
+				event.additionalDetails,
+				"provider retry details",
+				DIAGNOSTIC_VALUE_MAX_CHARS,
+			)) ?? runtimeErrorPublicMessage(failureKind);
 			return Object.freeze({
 				type: event.type,
 				attempt: boundedInteger(event.attempt, "provider retry attempt", 1, 100),
-				delayMs: boundedInteger(event.delayMs, "provider retry delay", 0, 3_600_000),
+				maxRetries: boundedInteger(event.maxRetries, "provider retry limit", 0, 100),
+				delayMs: boundedInteger(
+					event.delayMs,
+					"provider retry delay",
+					0,
+					RUNTIME_RETRY_AFTER_MAX_SECONDS * 1_000,
+				),
+				recoveryKind: oneOf(
+					event.recoveryKind,
+					["request", "stream"] as const,
+					"provider recovery kind",
+				),
+				resetOutput: booleanValue(event.resetOutput, "provider retry output reset flag"),
+				failureKind,
+				additionalDetails,
 			});
+		}
 		case "stream_recovered":
 			assertExactKeys(event, ["type"], "provider recovery event");
 			return Object.freeze({ type: event.type });
@@ -472,6 +619,18 @@ function parseRuntimeEvent(value: unknown): RuntimeEvent {
 				...(event.responseId === undefined
 					? {}
 					: { responseId: boundedString(event.responseId, "provider response", IDENTITY_MAX_CHARS) }),
+			});
+		case "web_search_started":
+			assertExactKeys(event, ["type", "callId"], "web-search start event");
+			return Object.freeze({
+				type: event.type,
+				callId: boundedString(event.callId, "web-search call", IDENTITY_MAX_CHARS),
+			});
+		case "web_search_completed":
+			assertExactKeys(event, ["type", "call"], "web-search completion event");
+			return Object.freeze({
+				type: event.type,
+				call: parseWebSearchCall(event.call),
 			});
 		default:
 			throw invalid("provider runtime event type is invalid");
@@ -488,13 +647,18 @@ function parseProviderResult(value: unknown): ProviderAgentLoopResult {
 		});
 	}
 	assertObjectShape(result,
-		["assistantText", "usage", "toolCalls"],
+		["assistantText", "usage", "toolCalls", "webSearchCalls"],
 		["responseId", "providerState"],
 		"provider success result");
 	return Object.freeze({
 		assistantText: boundedText(result.assistantText, "provider assistant text", TEXT_MAX_CHARS),
 		usage: parseUsage(result.usage),
 		toolCalls: boundedArray(result.toolCalls, "provider result tool calls", parseCanonicalToolCall),
+		webSearchCalls: boundedArray(
+			result.webSearchCalls,
+			"provider result web-search calls",
+			parseWebSearchCall,
+		),
 		...(hasOwn(result, "responseId") ? {
 			responseId: boundedString(result.responseId, "provider result response", IDENTITY_MAX_CHARS),
 		} : {}),
@@ -504,22 +668,92 @@ function parseProviderResult(value: unknown): ProviderAgentLoopResult {
 	});
 }
 
+function parseWebSearchCall(value: unknown): WebSearchCall {
+	const call = boundedRecord(value, "web-search call");
+	assertExactKeys(call, ["callId", "action"], "web-search call");
+	return Object.freeze({
+		callId: boundedString(call.callId, "web-search call id", IDENTITY_MAX_CHARS),
+		action: parseWebSearchAction(call.action),
+	});
+}
+
+function parseWebSearchAction(value: unknown): WebSearchAction {
+	const action = boundedRecord(value, "web-search action");
+	switch (action.type) {
+		case "search":
+			assertObjectShape(action, ["type"], ["query", "queries"], "web-search action");
+			return Object.freeze({
+				type: action.type,
+				...(hasOwn(action, "query") ? {
+					query: boundedText(action.query, "web-search query", DIAGNOSTIC_VALUE_MAX_CHARS),
+				} : {}),
+				...(hasOwn(action, "queries") ? {
+					queries: boundedArray(
+						action.queries,
+						"web-search queries",
+						(item) => boundedText(item, "web-search query", DIAGNOSTIC_VALUE_MAX_CHARS),
+					),
+				} : {}),
+			});
+		case "open_page":
+			assertObjectShape(action, ["type"], ["url"], "web-search action");
+			return Object.freeze({
+				type: action.type,
+				...(hasOwn(action, "url") ? {
+					url: boundedText(action.url, "web-search URL", URL_MAX_CHARS),
+				} : {}),
+			});
+		case "find_in_page":
+			assertObjectShape(action, ["type"], ["url", "pattern"], "web-search action");
+			return Object.freeze({
+				type: action.type,
+				...(hasOwn(action, "url") ? {
+					url: boundedText(action.url, "web-search URL", URL_MAX_CHARS),
+				} : {}),
+				...(hasOwn(action, "pattern") ? {
+					pattern: boundedText(
+						action.pattern,
+						"web-search pattern",
+						DIAGNOSTIC_VALUE_MAX_CHARS,
+					),
+				} : {}),
+			});
+		case "other":
+			assertExactKeys(action, ["type"], "web-search action");
+			return Object.freeze({ type: action.type });
+		default:
+			throw invalid("web-search action type is invalid");
+	}
+}
+
 function parseProviderFailure(value: unknown): ProviderAgentLoopFailure {
 	const failure = boundedRecord(value, "provider failure");
 	assertObjectShape(failure,
 		["code", "message", "retryable"],
-		["retryAfterSeconds", "diagnostics"],
+		["additionalDetails", "retryAfterSeconds", "diagnostics"],
 		"provider failure");
+	const additionalDetails = hasOwn(failure, "additionalDetails")
+		? sanitizeRuntimeErrorDetail(boundedText(
+			failure.additionalDetails,
+			"provider failure additional details",
+			DIAGNOSTIC_VALUE_MAX_CHARS,
+		))
+		: undefined;
+	const code = oneOf(failure.code, RUNTIME_ERROR_CODES, "provider failure code");
 	return Object.freeze({
-		code: oneOf(failure.code, RUNTIME_ERROR_CODES, "provider failure code"),
-		message: boundedText(failure.message, "provider failure message", TEXT_MAX_CHARS),
+		code,
+		message: canonicalRuntimeFailureMessage(
+			code,
+			boundedText(failure.message, "provider failure message", DIAGNOSTIC_VALUE_MAX_CHARS),
+		),
+		...(additionalDetails ? { additionalDetails } : {}),
 		retryable: booleanValue(failure.retryable, "provider failure retryable flag"),
 		...(hasOwn(failure, "retryAfterSeconds") ? {
 			retryAfterSeconds: boundedFiniteNumber(
 				failure.retryAfterSeconds,
 				"provider retry delay",
 				0,
-				3_600,
+				RUNTIME_RETRY_AFTER_MAX_SECONDS,
 			),
 		} : {}),
 		...(hasOwn(failure, "diagnostics") ? {

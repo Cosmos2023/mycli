@@ -8,6 +8,8 @@ import {
 	type ProviderRequest,
 	type ProviderUsage,
 	type ToolDefinition,
+	type WebSearchAction,
+	type WebSearchCall,
 } from "@mycli/core";
 import {
 	classifyProviderError,
@@ -27,17 +29,24 @@ export interface ResponsesProviderOptions {
 const IGNORED_EVENT_TYPES = new Set([
 	"response.created",
 	"response.in_progress",
-	"response.output_item.added",
 	"response.content_part.added",
 	"response.content_part.done",
 	"response.function_call_arguments.delta",
 	"response.function_call_arguments.done",
+	"response.output_text.annotation.added",
 	"response.output_text.done",
 	"response.reasoning_summary_part.added",
 	"response.reasoning_summary_part.done",
 	"response.reasoning_summary_text.done",
+	"response.web_search_call.in_progress",
+	"response.web_search_call.searching",
+	"response.web_search_call.completed",
 ]);
 const RESPONSES_REASONING_ITEMS_KEY = "responsesReasoningItems";
+const RESPONSES_NATIVE_ITEMS_KEY = "responsesNativeItems";
+const WEB_SEARCH_CALL_ID_MAX_CHARS = 256;
+const WEB_SEARCH_TEXT_MAX_CHARS = 2_048;
+const WEB_SEARCH_QUERIES_MAX_ITEMS = 16;
 
 export class ResponsesProvider implements ModelProvider {
 	readonly #client: ResponsesClient;
@@ -52,16 +61,13 @@ export class ResponsesProvider implements ModelProvider {
 	): AsyncIterable<ProviderEvent> {
 		try {
 			const stream = await this.#client.create(requestBody(request), options);
-			const reasoningItems: Readonly<Record<string, unknown>>[] = [];
+			const replayItems: Readonly<Record<string, unknown>>[] = [];
 			for await (const rawEvent of stream) {
-				const reasoningItem = completedReasoningItem(rawEvent);
-				if (reasoningItem) {
-					reasoningItems.push(reasoningItem);
-					continue;
-				}
+				const replayItem = completedReplayItem(rawEvent);
+				if (replayItem) replayItems.push(replayItem);
 				for (const event of mapEvent(rawEvent)) {
-					if (event.type === "completed" && reasoningItems.length > 0) {
-						yield responsesProviderState(request.provider, reasoningItems);
+					if (event.type === "completed" && replayItems.length > 0) {
+						yield responsesProviderState(request.provider, replayItems);
 					}
 					yield event;
 				}
@@ -73,14 +79,18 @@ export class ResponsesProvider implements ModelProvider {
 }
 
 function requestBody(request: ProviderRequest): Readonly<Record<string, unknown>> {
+	const tools = [
+		...request.tools.map(responsesTool),
+		...(request.webSearchMode === "live" ? [responsesWebSearchTool()] : []),
+	];
 	return {
 		model: request.model,
 		instructions: request.instructions,
 		input: responsesInput(request),
 		stream: true,
 		parallel_tool_calls: true,
-		...(request.tools.length > 0
-			? { tools: request.tools.map(responsesTool) }
+		...(tools.length > 0
+			? { tools }
 			: {}),
 		...(request.reasoningEffort && request.reasoningEffort !== "none"
 			? {
@@ -122,14 +132,14 @@ function responsesItem(
 			return [{ role: "user", content: responsesUserContent(item.text, item.images) }];
 		case "assistant":
 			return [
-				...responsesReasoningItems(item.providerState, provider),
+				...responsesReplayItems(item.providerState, provider),
 				{ role: "assistant", content: item.text },
 			];
 		case "context":
 			return [{ role: item.metadata.role ?? "user", content: item.text }];
 		case "assistant_tool_calls":
 			return [
-				...responsesReasoningItems(item.providerState, provider),
+				...responsesReplayItems(item.providerState, provider),
 				...(item.text ? [{ role: "assistant", content: item.text }] : []),
 				...item.calls.map((call) => ({
 					type: "function_call",
@@ -147,9 +157,13 @@ function responsesItem(
 	}
 }
 
-function completedReasoningItem(rawEvent: unknown): Readonly<Record<string, unknown>> | undefined {
+function completedReplayItem(rawEvent: unknown): Readonly<Record<string, unknown>> | undefined {
 	if (!isRecord(rawEvent) || rawEvent.type !== "response.output_item.done") return undefined;
-	return normalizedReasoningItem(rawEvent.item);
+	return normalizedReplayItem(rawEvent.item);
+}
+
+function normalizedReplayItem(value: unknown): Readonly<Record<string, unknown>> | undefined {
+	return normalizedReasoningItem(value) ?? normalizedWebSearchItem(value);
 }
 
 function normalizedReasoningItem(value: unknown): Readonly<Record<string, unknown>> | undefined {
@@ -183,12 +197,12 @@ function responsesProviderState(
 	items: readonly Readonly<Record<string, unknown>>[],
 ): ProviderEvent {
 	const value = Object.freeze({
-		[RESPONSES_REASONING_ITEMS_KEY]: Object.freeze([...items]),
+		[RESPONSES_NATIVE_ITEMS_KEY]: Object.freeze([...items]),
 	});
 	if (JSON.stringify(value).length > PROVIDER_REPLAY_STATE_MAX_JSON_CHARS) {
 		throw new ProviderFailure({
 			code: "provider_error",
-			message: "Responses reasoning replay state exceeds the supported limit",
+			message: "Responses native replay state exceeds the supported limit",
 		});
 	}
 	return {
@@ -197,16 +211,17 @@ function responsesProviderState(
 	};
 }
 
-function responsesReasoningItems(
+function responsesReplayItems(
 	state: ProviderReplayState | undefined,
 	provider: ProviderId,
 ): readonly Readonly<Record<string, unknown>>[] {
 	if (!state || state.provider !== provider) return [];
-	const value = state.value[RESPONSES_REASONING_ITEMS_KEY];
+	const value = state.value[RESPONSES_NATIVE_ITEMS_KEY]
+		?? state.value[RESPONSES_REASONING_ITEMS_KEY];
 	if (!Array.isArray(value)) return [];
 	const items: Readonly<Record<string, unknown>>[] = [];
 	for (const candidate of value) {
-		const item = normalizedReasoningItem(candidate);
+		const item = normalizedReplayItem(candidate);
 		if (!item) return [];
 		items.push(item);
 	}
@@ -236,6 +251,13 @@ function responsesTool(tool: ToolDefinition): Readonly<Record<string, unknown>> 
 	};
 }
 
+function responsesWebSearchTool(): Readonly<Record<string, unknown>> {
+	return Object.freeze({
+		type: "web_search",
+		external_web_access: true,
+	});
+}
+
 function mapEvent(rawEvent: unknown): readonly ProviderEvent[] {
 	if (!isRecord(rawEvent) || typeof rawEvent.type !== "string") {
 		throw new ProviderFailure({
@@ -253,8 +275,11 @@ function mapEvent(rawEvent: unknown): readonly ProviderEvent[] {
 			? [{ type: "text_delta", text: rawEvent.delta }]
 			: [];
 	}
+	if (rawEvent.type === "response.output_item.added") {
+		return webSearchStartedEvent(rawEvent.item);
+	}
 	if (rawEvent.type === "response.output_item.done") {
-		return toolCallEvent(rawEvent.item);
+		return outputItemDoneEvents(rawEvent.item);
 	}
 	if (rawEvent.type === "response.completed") {
 		return completionEvents(rawEvent.response);
@@ -275,8 +300,19 @@ function mapEvent(rawEvent: unknown): readonly ProviderEvent[] {
 	});
 }
 
-function toolCallEvent(item: unknown): readonly ProviderEvent[] {
-	if (!isRecord(item) || item.type !== "function_call") {
+function webSearchStartedEvent(item: unknown): readonly ProviderEvent[] {
+	if (!isRecord(item) || item.type !== "web_search_call") return [];
+	const callId = webSearchCallId(item.id);
+	return [{ type: "web_search_started", callId }];
+}
+
+function outputItemDoneEvents(item: unknown): readonly ProviderEvent[] {
+	if (!isRecord(item)) return [];
+	if (item.type === "web_search_call") {
+		const call = webSearchCall(item);
+		return [{ type: "web_search_completed", call }];
+	}
+	if (item.type !== "function_call") {
 		return [];
 	}
 	if (typeof item.name !== "string" || typeof item.arguments !== "string") {
@@ -297,6 +333,77 @@ function toolCallEvent(item: unknown): readonly ProviderEvent[] {
 		name: item.name,
 		argumentsJson: item.arguments,
 	}];
+}
+
+function normalizedWebSearchItem(value: unknown): Readonly<Record<string, unknown>> | undefined {
+	if (!isRecord(value) || value.type !== "web_search_call") return undefined;
+	const call = webSearchCall(value);
+	return Object.freeze({
+		type: "web_search_call",
+		id: call.callId,
+		status: "completed",
+		action: call.action,
+	});
+}
+
+function webSearchCall(value: Readonly<Record<string, unknown>>): WebSearchCall {
+	return Object.freeze({
+		callId: webSearchCallId(value.id),
+		action: webSearchAction(value.action),
+	});
+}
+
+function webSearchCallId(value: unknown): string {
+	if (typeof value !== "string" || !value.trim()) {
+		throw new ProviderFailure({
+			code: "provider_error",
+			message: "Responses web search call is missing an id",
+		});
+	}
+	return value.slice(0, WEB_SEARCH_CALL_ID_MAX_CHARS);
+}
+
+function webSearchAction(value: unknown): WebSearchAction {
+	if (!isRecord(value) || typeof value.type !== "string") {
+		return Object.freeze({ type: "other" });
+	}
+	switch (value.type) {
+		case "search": {
+			const query = webSearchText(value.query);
+			const queries = Array.isArray(value.queries)
+				? Object.freeze(value.queries
+					.slice(0, WEB_SEARCH_QUERIES_MAX_ITEMS)
+					.map(webSearchText)
+					.filter((item): item is string => item !== undefined))
+				: undefined;
+			return Object.freeze({
+				type: "search",
+				...(query ? { query } : {}),
+				...(queries && queries.length > 0 ? { queries } : {}),
+			});
+		}
+		case "open_page": {
+			const url = webSearchText(value.url);
+			return Object.freeze({ type: "open_page", ...(url ? { url } : {}) });
+		}
+		case "find_in_page": {
+			const url = webSearchText(value.url);
+			const pattern = webSearchText(value.pattern);
+			return Object.freeze({
+				type: "find_in_page",
+				...(url ? { url } : {}),
+				...(pattern ? { pattern } : {}),
+			});
+		}
+		default:
+			return Object.freeze({ type: "other" });
+	}
+}
+
+function webSearchText(value: unknown): string | undefined {
+	return typeof value === "string" && value
+		? value.slice(0, WEB_SEARCH_TEXT_MAX_CHARS)
+		: undefined;
 }
 
 function completionEvents(response: unknown): readonly ProviderEvent[] {

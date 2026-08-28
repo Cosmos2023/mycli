@@ -93,6 +93,12 @@ test("retains clarification state on restart and reconstructs it from the event 
 	repository.commitClarificationResponse({
 		sessionId: "session-1",
 		requestId: "call-question",
+		display: {
+			header: "Runtime",
+			question: "Which runtime?",
+			response: "Node",
+			multiSelect: false,
+		},
 		toolResult: {
 			sessionId: "session-1",
 			clientTurnId: "client-1",
@@ -107,6 +113,16 @@ test("retains clarification state on restart and reconstructs it from the event 
 	});
 	assert.equal(repository.loadState("session-1", "suspended_turn"), undefined);
 	assert.equal(repository.loadConversationItems("session-1").at(-1)?.type, "tool_result");
+	const clarification = repository.loadReadableTranscript("session-1")
+		.find((item) => item.type === "clarification");
+	assert.equal(clarification?.text, "Node");
+	assert.deepEqual(clarification?.metadata, {
+		request_id: "call-question",
+		header: "Runtime",
+		question: "Which runtime?",
+		response: "Node",
+		multi_select: false,
+	});
 });
 
 test("commits queued input into one canonical event and validates continuation response ids", async (t) => {

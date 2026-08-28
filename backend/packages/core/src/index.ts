@@ -155,6 +155,8 @@ export type {
 	FileMutationPreviewChange,
 	CanonicalMessage,
 	CanonicalToolCall,
+	PermissionGrantScope,
+	PermissionRequestProfile,
 	CanonicalToolResult,
 	ClientTurnId,
 	ExecPolicyDecision,
@@ -175,6 +177,9 @@ export type {
 	TurnSnapshot,
 	TurnStatus,
 	ToolDefinition,
+	WebSearchAction,
+	WebSearchCall,
+	WebSearchMode,
 } from "./types.ts";
 export {
 	effectiveModelContextEvents,
@@ -185,6 +190,10 @@ export {
 	providerTimelinePrefixSha256,
 	stableModelInputJson,
 } from "./model-input.ts";
+export {
+	networkDomainAllowed,
+	normalizeNetworkDomains,
+} from "./network-domain-policy.ts";
 export type {
 	InstructionContract,
 	InstructionFragment,

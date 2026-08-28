@@ -66,6 +66,7 @@ import {
 	type NodeTurnRuntimeOptions,
 	type PersistedProviderContinuation,
 	type QueueCoordinatorStore,
+	type RuntimeDiagnosticEvent,
 } from "../src/index.ts";
 
 const ASK_ARGUMENTS = JSON.stringify({
@@ -107,14 +108,98 @@ test("runs unchanged provider and live-event contracts on the normalized turn st
 	assert.deepEqual(requests[0]?.items, [{ type: "user", text: "Read README.md" }]);
 	assert.ok(liveEvents.findIndex((event) => event.type === "text_delta")
 		< liveEvents.findIndex((event) => event.type === "turn_completed"));
+	const completedEvent = liveEvents.find((event) => event.type === "turn_completed");
+	assert.equal(
+		completedEvent?.durationMs,
+		Date.parse(result.completed_at!) - Date.parse(result.started_at),
+	);
 	assert.deepEqual(
 		store.loadEventWindow("session-1", { limit: 20 }).events.map((event) => event.eventType),
-		["user_input", "assistant_output", "turn_lifecycle"],
+		["user_input", "assistant_output", "display_activity", "turn_lifecycle"],
 	);
 	assert.deepEqual(store.loadConversationItems("session-1"), [
 		{ type: "user", text: "Read README.md" },
 		{ type: "assistant", text: "Repository inspected." },
 	]);
+});
+
+test("persists hosted web search for resume while retaining provider-native replay", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-web-search-runtime-"));
+	t.after(async () => rm(root, { recursive: true, force: true }));
+	const store = new SQLiteTranscriptEventRepository({
+		dbPath: join(root, "sessions.db"),
+		clock: clockSequence(),
+	});
+	t.after(() => store.close());
+	const liveEvents: RuntimeEvent[] = [];
+	const runtime = createRuntime({
+		store,
+		provider: scriptedProvider([], [], [[
+			{ type: "web_search_started", callId: "ws-1" },
+			{
+				type: "web_search_completed",
+				call: { callId: "ws-1", action: { type: "search", queries: ["mycli docs"] } },
+			},
+			{ type: "text_delta", text: "Found it." },
+			{
+				type: "provider_state",
+				state: {
+					provider: "openai",
+					value: {
+						responsesNativeItems: [{
+							type: "web_search_call",
+							id: "ws-1",
+							status: "completed",
+							action: { type: "search", queries: ["mycli docs"] },
+						}],
+					},
+				},
+			},
+			{ type: "completed", responseId: "response-search" },
+		]]),
+		toolRouter: new SequencedRouter([]),
+		planTools: () => [],
+	});
+
+	const result = await runtime.submit(submission(), (event) => liveEvents.push(event), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(liveEvents.filter((event) => event.type.startsWith("web_search")), [
+		{ type: "web_search_started", callId: "ws-1" },
+		{
+			type: "web_search_completed",
+			call: { callId: "ws-1", action: { type: "search", queries: ["mycli docs"] } },
+		},
+	]);
+	const display = store.loadEventWindow("session-1", { limit: 20 }).events.find(
+		(event) => event.eventType === "display_activity"
+			&& event.payload.activityType === "web_search",
+	);
+	assert.ok(display && display.eventType === "display_activity");
+	assert.equal(display.payload.callId, "ws-1");
+	assert.equal(display.payload.status, "completed");
+	assert.equal(display.payload.text, "mycli docs");
+	assert.deepEqual(display.payload.metadata, {
+		action_type: "search",
+		queries: ["mycli docs"],
+	});
+	assert.deepEqual(store.loadConversationItems("session-1").at(-1), {
+		type: "assistant",
+		text: "Found it.",
+		providerState: {
+			provider: "openai",
+			value: {
+				responsesNativeItems: [{
+					type: "web_search_call",
+					id: "ws-1",
+					status: "completed",
+					action: { type: "search", queries: ["mycli docs"] },
+				}],
+			},
+		},
+	});
 });
 
 test("projects model catalog output and storage options into provider requests", async () => {
@@ -138,6 +223,7 @@ test("projects model catalog output and storage options into provider requests",
 	assert.equal(result.status, "completed");
 	assert.equal(requests[0]?.maxOutputTokens, 64);
 	assert.equal(requests[0]?.store, false);
+	assert.equal(requests[0]?.webSearchMode, "live");
 });
 
 test("runs a mailbox-triggered turn without persisting a fabricated user message", async () => {
@@ -2293,6 +2379,7 @@ test("clarification response resumes the original provider loop without a new us
 		clarificationCoordinator: clarifications.coordinator,
 		toolDefinitions: [ASK_USER_QUESTION_TOOL_DEFINITION, READ_TOOL_DEFINITION],
 	});
+	instance.configureRuntimeContext({ collaborationMode: "plan" });
 
 	const waiting = await instance.submit(submission(), emitted.push.bind(emitted), {
 		signal: new AbortController().signal,
@@ -2356,6 +2443,7 @@ test("force interrupt clears a pending clarification before terminalizing the tu
 		clarificationCoordinator: clarifications.coordinator,
 		toolDefinitions: [ASK_USER_QUESTION_TOOL_DEFINITION],
 	});
+	instance.configureRuntimeContext({ collaborationMode: "plan" });
 
 	const waiting = await instance.submit(submission(), emitted.push.bind(emitted), {
 		signal: new AbortController().signal,
@@ -2458,12 +2546,15 @@ test("compacts before the first provider request and keeps the current user item
 	const coordinator = new ScriptedCompactionCoordinator(trace, [
 		compactionResult("compressed", compacted),
 	]);
+	const diagnostics: RuntimeDiagnosticEvent[] = [];
 
 	const result = await createRuntime({
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
 		compactionCoordinator: coordinator,
+		monotonicClock: numberSequence([10, 25]),
+		recordDiagnostic: (event) => diagnostics.push(event),
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
 
 	assert.equal(result.status, "completed");
@@ -2472,6 +2563,59 @@ test("compacts before the first provider request and keeps the current user item
 		"turn-1:user:client-1",
 	]);
 	assert.deepEqual(requests[0]?.items, compacted);
+	assert.deepEqual(diagnostics.find((event) => event.kind === "compaction"), {
+		kind: "compaction",
+		turnId: "turn-1",
+		source: "pre_turn",
+		status: "compressed",
+		beforeTokens: 100,
+		afterTokens: 40,
+		maxTokens: 12_000,
+		durationMs: 15,
+	});
+});
+
+test("publishes provider and tool diagnostics without exposing tool content", async () => {
+	const trace: string[] = [];
+	const diagnostics: RuntimeDiagnosticEvent[] = [];
+	const runtime = createRuntime({
+		store: new FakeStore(trace),
+		provider: scriptedProvider(trace, [], [[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools" },
+		], [
+			{ type: "text_delta", text: "Done." },
+			{ type: "completed", responseId: "resp-final" },
+		]]),
+		toolRouter: new SequencedRouter(trace),
+		monotonicClock: numberSequence([10, 25]),
+		recordDiagnostic: (event) => {
+			diagnostics.push(event);
+			throw new Error("diagnostic sink failed");
+		},
+	});
+
+	const result = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(
+		diagnostics.filter((event) => event.kind === "model_stream_diagnostics").length,
+		2,
+	);
+	const toolDiagnostic = diagnostics.find((event) => event.kind === "tool_execution");
+	assert.deepEqual(toolDiagnostic, {
+		kind: "tool_execution",
+		turnId: "turn-1",
+		callId: "call-1",
+		toolName: "Read",
+		durationMs: 15,
+		success: true,
+		outputChars: READ_OUTPUT.length,
+		outputTruncated: false,
+	});
+	assert.equal(JSON.stringify(toolDiagnostic).includes("README.md"), false);
 });
 
 test("compacts mid-turn after tool results and continues from the replacement history", async () => {
@@ -2959,9 +3103,11 @@ test("freezes execution policy tools for the provider loop and releases terminal
 		provider,
 		toolRouter: new SequencedRouter(trace),
 		executionPolicyCoordinator,
-		planTools: ({ shell }) => shell
-			? [READ_TOOL_DEFINITION, SHELL_TOOL_DEFINITION]
-			: [READ_TOOL_DEFINITION],
+		planTools: ({ shell, collaborationMode }) => [
+			READ_TOOL_DEFINITION,
+			...(collaborationMode === "plan" ? [ASK_USER_QUESTION_TOOL_DEFINITION] : []),
+			...(shell ? [SHELL_TOOL_DEFINITION] : []),
+		],
 	});
 
 	const result = await runtime.submit(submission(), () => undefined, {
@@ -3027,6 +3173,7 @@ test("Plan mode keeps stable tool exposure and rejects update_plan without side 
 			WRITE_TOOL_DEFINITION,
 			EDIT_TOOL_DEFINITION,
 			PATCH_TOOL_DEFINITION,
+			ASK_USER_QUESTION_TOOL_DEFINITION,
 			UPDATE_PLAN_TOOL_DEFINITION,
 		],
 		approvalPolicy: {
@@ -3058,8 +3205,8 @@ test("Plan mode keeps stable tool exposure and rejects update_plan without side 
 	assert.equal(result.status, "completed");
 	assert.equal(requests.length, 2);
 	assert.deepEqual(requests.map((request) => request.tools.map((tool) => tool.name)), [
-		["Read", "Shell", "Write", "Edit", "Patch", "update_plan"],
-		["Read", "Shell", "Write", "Edit", "Patch", "update_plan"],
+		["Read", "Shell", "Write", "Edit", "Patch", "AskUserQuestion", "update_plan"],
+		["Read", "Shell", "Write", "Edit", "Patch", "AskUserQuestion", "update_plan"],
 	]);
 	assert.match(JSON.stringify(requests[1]?.items), /update_plan.*not allowed in Plan mode/u);
 	assert.match(JSON.stringify(requests[1]), /# Plan Mode/u);
@@ -3474,7 +3621,8 @@ function createRuntime(options: {
 		readonly agentBudget?: NodeTurnRuntimeOptions["agentBudget"];
 		readonly agentCheckpoint?: NodeTurnRuntimeOptions["agentCheckpoint"];
 		readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
-		readonly loadLocalImages?: NodeTurnRuntimeOptions["loadLocalImages"];
+	readonly loadLocalImages?: NodeTurnRuntimeOptions["loadLocalImages"];
+	readonly recordDiagnostic?: NodeTurnRuntimeOptions["recordDiagnostic"];
 }): NodeTurnRuntime {
 	return new NodeTurnRuntime({
 		sessionId: "session-1",
@@ -3505,6 +3653,7 @@ function createRuntime(options: {
 		} : {}),
 		...(options.queueCoordinator ? { queueCoordinator: options.queueCoordinator } : {}),
 		...(options.monotonicClock ? { monotonicClock: options.monotonicClock } : {}),
+		...(options.recordDiagnostic ? { recordDiagnostic: options.recordDiagnostic } : {}),
 		...(options.compactionCoordinator ? {
 			compactionCoordinator: options.compactionCoordinator,
 		} : {}),
@@ -4281,6 +4430,8 @@ function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 		supportsImages: true,
 		promptCacheKeyEnabled: true,
 		...overrides,
+		webSearchMode: overrides.webSearchMode ?? "live",
+		requestPermissionsToolEnabled: overrides.requestPermissionsToolEnabled ?? false,
 	};
 }
 

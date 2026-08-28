@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ test("execution policy coordinator fails closed before configuration", async (t)
 			network: "disabled",
 			writableRoots: [],
 		},
+		resolution: { configurationSource: "default" },
 	});
 	assert.equal(coordinator.beginTurn("turn-1").toolsEnabled, false);
 	coordinator.finishTurn("turn-1");
@@ -58,6 +59,173 @@ test("execution policy coordinator keeps tools closed for non-trusted workspaces
 		assert.equal(turn.profile.mode, "workspace-write");
 		coordinator.finishTurn(`turn-${trust}`);
 	}
+});
+
+test("execution policy coordinator applies turn grants and releases them at turn end", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const outside = await temporaryWorkspace(t);
+	const canonicalWorkspace = await realpath(workspace);
+	const canonicalOutside = await realpath(outside);
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace });
+	coordinator.configure({ trust: "trusted", permission: "workspace", source: "user" });
+	coordinator.beginTurn("turn-grant");
+
+	const grant = coordinator.grant({
+		turnId: "turn-grant",
+		scope: "turn",
+		permissions: {
+			network: { enabled: true },
+			fileSystem: { read: [], write: [canonicalOutside] },
+		},
+	});
+
+	assert.equal(grant.constrained, false);
+	assert.deepEqual(coordinator.beginTurn("turn-grant").profile, {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "enabled",
+		writableRoots: [canonicalWorkspace, canonicalOutside],
+	});
+	assert.equal(coordinator.snapshot().resolution?.configurationSource, "user");
+	assert.deepEqual(
+		coordinator.snapshot().resolution?.turnGrant?.fileSystem?.write,
+		[canonicalOutside],
+	);
+	coordinator.finishTurn("turn-grant");
+	assert.deepEqual(coordinator.beginTurn("turn-next").profile, {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "disabled",
+		writableRoots: [canonicalWorkspace],
+	});
+	coordinator.finishTurn("turn-next");
+});
+
+test("managed constraints cap full access and permission grants", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const allowed = await temporaryWorkspace(t);
+	const denied = await temporaryWorkspace(t);
+	const canonicalAllowed = await realpath(allowed);
+	const canonicalDenied = await realpath(denied);
+	const coordinator = new ExecutionPolicyCoordinator({
+		workspaceRoot: workspace,
+		constraints: {
+			source: "managed",
+			network: "disabled",
+			readableRoots: [canonicalAllowed],
+			writableRoots: [canonicalAllowed],
+		},
+	});
+	coordinator.configure({ trust: "trusted", permission: "full-access" });
+	coordinator.beginTurn("turn-managed");
+
+	const grant = coordinator.grant({
+		turnId: "turn-managed",
+		scope: "session",
+		permissions: {
+			network: { enabled: true },
+			fileSystem: {
+				read: [canonicalAllowed, canonicalDenied],
+				write: [canonicalAllowed, canonicalDenied],
+			},
+		},
+	});
+
+	assert.equal(grant.constrained, true);
+	assert.deepEqual(grant.permissions.fileSystem?.read, [canonicalAllowed]);
+	assert.deepEqual(grant.permissions.fileSystem?.write, [canonicalAllowed]);
+	assert.equal(grant.permissions.network, undefined);
+	assert.deepEqual(coordinator.beginTurn("turn-managed").profile, {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "disabled",
+		readableRoots: [canonicalAllowed],
+		writableRoots: [canonicalAllowed],
+	});
+	assert.equal(coordinator.snapshot().resolution?.constraintsSource, "managed");
+	coordinator.finishTurn("turn-managed");
+});
+
+test("managed writable roots retain the narrower side of a workspace intersection", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const nested = join(workspace, "managed-writes");
+	await mkdir(nested);
+	const canonicalNested = await realpath(nested);
+	const coordinator = new ExecutionPolicyCoordinator({
+		workspaceRoot: workspace,
+		constraints: {
+			source: "managed",
+			writableRoots: [nested],
+		},
+	});
+	coordinator.configure({ trust: "trusted", permission: "workspace" });
+
+	assert.deepEqual(coordinator.beginTurn("turn-nested").profile, {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "disabled",
+		writableRoots: [canonicalNested],
+	});
+	assert.deepEqual(coordinator.sandboxOverrideProfile(), {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "enabled",
+		writableRoots: [canonicalNested],
+	});
+	coordinator.finishTurn("turn-nested");
+});
+
+test("managed network domains constrain web access grants and sandbox overrides", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const coordinator = new ExecutionPolicyCoordinator({
+		workspaceRoot: workspace,
+		constraints: {
+			source: "managed",
+			network: "enabled",
+			networkDomains: ["API.Example.com.", "*.assets.example.com"],
+		},
+	});
+	coordinator.configure({ trust: "trusted", permission: "workspace" });
+	coordinator.beginTurn("turn-domains");
+
+	const grant = coordinator.grant({
+		turnId: "turn-domains",
+		scope: "turn",
+		permissions: { network: { enabled: true } },
+	});
+
+	assert.equal(grant.constrained, true);
+	assert.deepEqual(coordinator.beginTurn("turn-domains").profile.networkDomains, [
+		"api.example.com",
+		"*.assets.example.com",
+	]);
+	assert.deepEqual(coordinator.sandboxOverrideProfile().networkDomains, [
+		"api.example.com",
+		"*.assets.example.com",
+	]);
+	coordinator.finishTurn("turn-domains");
+});
+
+test("managed readable roots cannot be bypassed by the full-access profile", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const readable = await temporaryWorkspace(t);
+	const coordinator = new ExecutionPolicyCoordinator({
+		workspaceRoot: workspace,
+		constraints: {
+			source: "managed",
+			readableRoots: [readable],
+		},
+	});
+	coordinator.configure({ trust: "trusted", permission: "full-access" });
+
+	assert.deepEqual(coordinator.beginTurn("turn-readable").profile, {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "enabled",
+		readableRoots: [await realpath(readable)],
+		writableRoots: [await realpath(workspace)],
+	});
+	coordinator.finishTurn("turn-readable");
 });
 
 async function temporaryWorkspace(t: test.TestContext): Promise<string> {

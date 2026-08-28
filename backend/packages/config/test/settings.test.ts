@@ -36,6 +36,7 @@ test("resolves CLI, environment, user, project, and legacy precedence", async (t
 	assert.equal(resolved.model, "cli-model");
 	assert.equal(resolved.provider, "openai");
 	assert.equal(resolved.protocol, "responses");
+	assert.equal(resolved.webSearchMode, "live");
 	assert.equal(resolved.requestMaxRetries, 0);
 	assert.equal(resolved.streamMaxRetries, 100);
 	assert.equal(resolved.reasoningEffort, "high");
@@ -69,6 +70,60 @@ test("auth store outranks legacy inline config keys", async (t) => {
 	assert.equal(resolved.sessionId, "generated-session");
 });
 
+test("session overrides restore a complete provider identity above user and environment config", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const resolved = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: {
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_MODEL: "global-model",
+			MYCLI_BASE_URL: "https://global.invalid/v1",
+			MYCLI_AUTH_REF: "global-account",
+			MYCLI_THINKING_EFFORT: "low",
+		},
+		overrides: {
+			session: "restored-session",
+			provider: "anthropic",
+			protocol: "anthropic_messages",
+			model: "claude-restored",
+			apiBaseUrl: "https://session.invalid",
+			authRef: "session-account",
+			reasoningEffort: "high",
+			thinkingEnabled: true,
+		},
+	});
+
+	assert.equal(resolved.sessionId, "restored-session");
+	assert.equal(resolved.provider, "anthropic");
+	assert.equal(resolved.protocol, "anthropic_messages");
+	assert.equal(resolved.model, "claude-restored");
+	assert.equal(resolved.apiBaseUrl, "https://session.invalid");
+	assert.equal(resolved.authRef, "session-account");
+	assert.equal(resolved.reasoningEffort, "high");
+	assert.equal(resolved.thinkingEnabled, true);
+});
+
+test("session overrides restore disabled reasoning without conflicting with configured effort", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const resolved = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: {
+			MYCLI_THINKING_ENABLED: "true",
+			MYCLI_THINKING_EFFORT: "high",
+		},
+		overrides: {
+			reasoningEffort: "none",
+			thinkingEnabled: false,
+		},
+	});
+
+	assert.equal(resolved.reasoningEffort, "none");
+	assert.equal(resolved.thinkingEnabled, false);
+});
+
 test("legacy transport retry limit feeds the stream retry setting", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);
 	await writeToml(join(homeDir, ".mycli", "config.toml"), ["transport_retry_limit = 7"]);
@@ -93,6 +148,7 @@ test("resolves Anthropic defaults and cache-control policy", async (t) => {
 	assert.equal(resolved.promptCacheKeyEnabled, false);
 	assert.equal(resolved.cacheControlEnabled, true);
 	assert.equal(resolved.supportsImages, true);
+	assert.equal(resolved.webSearchMode, "disabled");
 });
 
 test("resolves provider image capability with an explicit override", async (t) => {
@@ -112,12 +168,52 @@ test("resolves provider image capability with an explicit override", async (t) =
 	assert.equal(overridden.supportsImages, true);
 });
 
+test("enables hosted web search only for built-in Responses providers", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const openai = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_PROVIDER: "openai" },
+	});
+	const compatible = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: {
+			MYCLI_PROVIDER: "compatible",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_MODEL: "gpt-proxy",
+		},
+	});
+	const qwen = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_PROVIDER: "qwen" },
+	});
+	const deepseek = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_PROVIDER: "deepseek" },
+	});
+	const anthropic = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_PROVIDER: "anthropic" },
+	});
+
+	assert.equal(openai.webSearchMode, "live");
+	assert.equal(compatible.webSearchMode, "disabled");
+	assert.equal(qwen.webSearchMode, "disabled");
+	assert.equal(deepseek.webSearchMode, "disabled");
+	assert.equal(anthropic.webSearchMode, "disabled");
+});
+
 test("loads compaction defaults with memory disabled", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);
 
 	const resolved = await resolveConfig({ homeDir, workspaceRoot, env: {} });
 
 	assert.equal(resolved.memoryEnabled, false);
+	assert.equal(resolved.requestPermissionsToolEnabled, false);
 	assert.equal(resolved.compressionThresholdTokens, 8_000);
 	assert.equal(resolved.compactionTokenLimit, 9_600);
 	assert.equal(resolved.compactionReservedOutputTokens, 13_000);
@@ -133,6 +229,24 @@ test("loads compaction defaults with memory disabled", async (t) => {
 	assert.equal(resolved.compactionRehydrationFileMaxTotalTokens, 50_000);
 	assert.equal(resolved.compactionRehydrationFileMaxItemTokens, 5_000);
 	assert.equal(resolved.compactionRehydrationMaxFiles, 5);
+});
+
+test("loads the experimental request_permissions feature only when explicitly enabled", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), [
+		"[features]",
+		"request_permissions_tool = true",
+	]);
+
+	const enabled = await resolveConfig({ homeDir, workspaceRoot, env: {} });
+	const disabledByEnvironment = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_REQUEST_PERMISSIONS_TOOL: "false" },
+	});
+
+	assert.equal(enabled.requestPermissionsToolEnabled, true);
+	assert.equal(disabledByEnvironment.requestPermissionsToolEnabled, false);
 });
 
 test("loads the sectioned memory opt-in", async (t) => {

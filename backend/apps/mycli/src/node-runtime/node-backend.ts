@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -9,6 +17,7 @@ import {
 	findModelCatalogEntry,
 	listProviderProfiles,
 	loadModelCatalog,
+	loadManagedExecutionPolicy,
 	loadShellSettings,
 	modelCatalogEntryPayload,
 	parseProtocol,
@@ -20,7 +29,7 @@ import {
 	writeUserProviderConfig,
 	WorkspaceTrustStore,
 } from "@mycli/config";
-import type { NodeRuntimeConfig } from "@mycli/config";
+import type { NodeRuntimeConfig, ResolveConfigOptions } from "@mycli/config";
 import type {
 	AgentBudget,
 	AgentBudgetExhaustionKind,
@@ -77,11 +86,13 @@ import {
 	WorkerLeasedRootTurnRuntime,
 } from "@mycli/runtime";
 import type {
+	ExecutionPolicyConstraints,
 	ExecutionPolicySnapshot,
 	NodeTurnRuntimeOptions,
 	PendingSessionApproval,
 	PendingSessionClarification,
 	PreparedSession,
+	RuntimeDiagnosticEvent,
 } from "@mycli/runtime";
 import {
 	SessionArtifactStore,
@@ -115,7 +126,9 @@ import {
 	PatchTool,
 	planToolExposure,
 	parseShellCommand,
+	permissionRequestFromJson,
 	ReadTool,
+	RequestPermissionsTool,
 	resolveShellProfile,
 	ShellOutputTool,
 	ShellSessionManager,
@@ -174,6 +187,13 @@ import {
 	cutoverContentBlobMigration,
 	prepareContentBlobMigration,
 } from "./content-blob-maintenance.ts";
+import {
+	loadSessionPreferences,
+	sameSessionPreferences,
+	saveSessionPreferences,
+	sessionPreferencesFromConfig,
+	type SessionPreferences,
+} from "./session-preferences.ts";
 
 export interface NodeBackend {
 	readonly transport: NodeGateway["transport"];
@@ -195,6 +215,7 @@ export interface StartNodeBackendOptions {
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly args: readonly string[];
+	readonly sessionOwnerId?: string;
 	readonly maxOutputTokens?: number;
 	readonly recoverInterruptedTurns?: readonly RecoverInterruptedTurnOptions[];
 }
@@ -219,26 +240,31 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const overrides = parseOverrides(options.args);
 	const agentExecutionAdapters = resolveAgentExecutionAdapters(options.env);
 	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
-	let activeModelOverride = overrides.model;
 	const homeDir = runtimeHome(options.env);
+	const managedExecutionPolicy = await loadManagedExecutionPolicy({ homeDir });
 	const config = await resolveModelRuntimeConfig({
 		homeDir,
 		workspaceRoot: options.cwd,
 		env: options.env,
 		overrides,
 	});
+	let defaultPreferences = sessionPreferencesFromConfig(config, "default");
 	startupProfiler.mark("config_ready");
 	for (const recovery of options.recoverInterruptedTurns ?? []) {
 		if (recovery.sessionId !== config.sessionId) {
 			throw new Error("recovered_interrupt_session_mismatch");
 		}
 	}
-	const store = openRuntimeSessionStore({ dbPath: config.sessionsDbPath });
+	const store = openRuntimeSessionStore({
+		dbPath: config.sessionsDbPath,
+		...(options.sessionOwnerId ? { ownerId: options.sessionOwnerId } : {}),
+	});
 	let recoveredInterrupts: readonly {
 		readonly record: RuntimeTurnRecord;
 		readonly inputRolledBack: boolean;
 	}[];
 	try {
+		store.acquireSessionLease(config.sessionId);
 		recoveredInterrupts = (options.recoverInterruptedTurns ?? []).flatMap((recovery) => {
 			const record = store.recoverInterruptedTurn(
 				recovery.sessionId,
@@ -265,6 +291,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		: undefined;
 	let controlConfig = config;
 	const toolManifest = builtinToolManifest();
+	const requestPermissionsToolEnabled = config.requestPermissionsToolEnabled;
 	const shellManager = new ShellSessionManager({
 		transportFactory: (request) => request.tty
 			? startNodePtyTransport(request)
@@ -310,6 +337,22 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		thread: AgentThreadRecord,
 	) => Promise<void> = async () => undefined;
 	const consumeAgentEvent = (event: AgentCanonicalEvent): Promise<void> => {
+		if (event.type === "agent_lifecycle"
+			&& event.task
+			&& ["started", "completed", "failed", "interrupted"].includes(event.kind)) {
+			const thread = store.agentThreads.get(event.threadId);
+			tryAppendNodeTrace(homeDir, event.task.parentSessionId, {
+				kind: "subagent_lifecycle",
+				turn_id: event.task.parentTurnId,
+				payload: {
+					thread_id: event.threadId,
+					status: event.kind,
+					...(thread ? {
+						duration_ms: elapsedIsoMs(thread.createdAt, event.occurredAt),
+					} : {}),
+				},
+			});
+		}
 		if (event.type === "agent_lifecycle"
 			&& !["completed", "failed", "interrupted"].includes(event.kind)) {
 			agentActivityBus.publish({
@@ -492,16 +535,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const parentThreadId = overview?.threadId ?? input.parentSessionId;
 				const parentAgent = store.agentThreads.get(parentThreadId);
 				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
+				const parentPreferences = runtimeBySessionId.get(input.parentSessionId)
+					?.sessionPreferences?.();
 				const resolved = await resolveModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
-					overrides: {
-						session: input.childSessionId,
-						...(activeModelOverride
-							? { model: activeModelOverride }
-							: {}),
-					},
+					overrides: sessionPreferenceOverrides(
+						input.childSessionId,
+						parentPreferences ?? defaultPreferences,
+					),
 				});
 				const executionPolicy = narrowAgentExecutionPolicy(agentExecutionPolicySnapshot(
 					runtimeBySessionId.get(input.parentSessionId)?.executionPolicySnapshot?.(),
@@ -572,6 +615,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		toolManifest,
 		directExtensionDefinitions,
 		currentDeferredRegistrations(),
+		requestPermissionsToolEnabled,
 	);
 	const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
 	const refreshRuntimeExtensions = (): void => {
@@ -579,6 +623,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			toolManifest,
 			directExtensionDefinitions,
 			currentDeferredRegistrations(),
+			requestPermissionsToolEnabled,
 		);
 		for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
 		for (const runtime of runtimeBySessionId.values()) runtime.refreshExtensions?.();
@@ -608,21 +653,36 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
 		): ComposedNodeRuntime => {
+			let sessionPreferences = runtimeOptions.subagentContext
+				? undefined
+				: loadSessionPreferences(store, sessionId);
 			const runtimeEnvironment: Readonly<NodeJS.ProcessEnv> = runtimeOptions.environment
 				? Object.freeze({ ...runtimeOptions.environment })
 				: options.env;
 			const resolveRuntimeConfig = async (
 				modelOverride?: string,
 			): Promise<NodeRuntimeConfig> => {
+				const preferences = runtimeOptions.provider
+					? undefined
+					: sessionPreferences ?? defaultPreferences;
 				const resolved = await resolveModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
 					overrides: {
 						session: sessionId,
+						...(preferences ? {
+							provider: preferences.provider,
+							protocol: preferences.protocol,
+							apiBaseUrl: preferences.apiBaseUrl,
+							authRef: preferences.authRef,
+							reasoningEffort: preferences.reasoningEffort,
+							thinkingEnabled: preferences.reasoningEffort !== "none",
+						} : {}),
 						model: runtimeOptions.provider?.model
 							?? modelOverride
-							?? activeModelOverride,
+							?? preferences?.model
+							?? defaultPreferences.model,
 					},
 				});
 				if (!runtimeOptions.provider) return resolved;
@@ -637,7 +697,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			const fileSnapshots = new FileSnapshotStore();
 			const fileHistory = new FileHistoryStore({ homeDir, workspaceRoot });
-			const executionPolicyCoordinator = new ExecutionPolicyCoordinator({ workspaceRoot });
+			const executionPolicyConstraints = runtimeOptions.executionPolicy
+				? inheritedAgentExecutionPolicyConstraints(runtimeOptions.executionPolicy)
+				: managedExecutionPolicy;
+			const executionPolicyCoordinator = new ExecutionPolicyCoordinator({
+				workspaceRoot,
+				...(executionPolicyConstraints ? { constraints: executionPolicyConstraints } : {}),
+			});
 			const mutationRuntime = new FileMutationRuntime({
 				workspaceRoot,
 				snapshots: fileSnapshots,
@@ -689,6 +755,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
 			new AskUserQuestionTool(),
+			new RequestPermissionsTool({ workspaceRoot }),
 			new UpdatePlanTool(),
 			new WebFetchTool(),
 				toolSearch,
@@ -711,18 +778,24 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				throw new Error("tool_parallel_capability_mismatch");
 			}
 		}
-		const plannedTools = (
-			capabilities: { readonly shell: boolean },
-		) => filterToolDefinitions(
+			const plannedTools = (
+				capabilities: {
+					readonly shell: boolean;
+					readonly collaborationMode: string;
+				},
+			) => filterToolDefinitions(
 			Object.freeze([
-				...planToolExposure(toolManifest, capabilities),
+				...planToolExposure(toolManifest, {
+					...capabilities,
+					requestPermissionsTool: requestPermissionsToolEnabled,
+				}),
 				...directExtensionDefinitions,
 			]),
 			runtimeOptions.allowedTools,
 		);
-			const toolRouter = new ToolRouter({
-				adapters: staticAdapters,
-				exposure: plannedTools({ shell: true }),
+				const toolRouter = new ToolRouter({
+					adapters: staticAdapters,
+					exposure: plannedTools({ shell: true, collaborationMode: "plan" }),
 			});
 			const refreshExtensions = (): void => {
 				const deferred = allowedDeferredRegistrations();
@@ -754,6 +827,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				loadExecPolicy = Promise.resolve();
 			},
 			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
+			grantPermissions: (input) => executionPolicyCoordinator.grant(input),
 		});
 		approvalCoordinator.recover();
 			const clarificationCoordinator = new ClarificationContinuationCoordinator({
@@ -802,7 +876,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			...(runtimeOptions.developerInstructions ?? []),
 			...(runtimeOptions.subagentContext ? [subagentDeveloperContext(
 				runtimeOptions.subagentContext,
-				plannedTools({ shell: runtimeOptions.executionPolicy?.trusted === true })
+					plannedTools({
+						shell: runtimeOptions.executionPolicy?.trusted === true,
+						collaborationMode: "default",
+					})
 					.map((tool) => tool.name),
 			)] : []),
 		]);
@@ -912,13 +989,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			...(options.maxOutputTokens === undefined
 				? {}
 				: { maxOutputTokens: options.maxOutputTokens }),
-			store,
-			resolveConfig: (submission) => resolveRuntimeConfig(submission.modelOverride),
+				store,
+				resolveConfig: (submission) => resolveRuntimeConfig(submission.modelOverride),
 				createProvider: (resolved) => registry.create(resolved),
 				loadLocalImages: loadRuntimeImages,
-			createTurnId: randomUUID,
-			clock: () => new Date().toISOString(),
-			publishLifecycle,
+				createTurnId: randomUUID,
+				clock: () => new Date().toISOString(),
+				recordDiagnostic: (event) => tryAppendNodeTrace(
+					homeDir,
+					sessionId,
+					runtimeDiagnosticTraceEvent(event),
+				),
+				publishLifecycle,
 			executionPolicyCoordinator,
 			planTools: plannedTools,
 				deferredTools: (turnId) => Object.freeze([
@@ -994,6 +1076,26 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					trust: runtimeOptions.executionPolicy.trusted ? "trusted" : "untrusted",
 					permission: runtimeOptions.executionPolicy.permission,
 				});
+				if (runtimeOptions.executionPolicy.trusted
+					&& (runtimeOptions.executionPolicy.network === "enabled"
+						|| (runtimeOptions.executionPolicy.readableRoots?.length ?? 0) > 0
+						|| runtimeOptions.executionPolicy.writableRoots.length > 0)) {
+					executionPolicyCoordinator.grant({
+						turnId: sessionId,
+						scope: "session",
+						permissions: {
+							...(runtimeOptions.executionPolicy.network === "enabled"
+								? { network: { enabled: true } }
+								: {}),
+							fileSystem: {
+								read: runtimeOptions.executionPolicy.readableRoots ?? [],
+								write: runtimeOptions.executionPolicy.filesystem === "workspace_write"
+									? runtimeOptions.executionPolicy.writableRoots
+									: [],
+							},
+						},
+					});
+				}
 			}
 			const allowancePattern = (value: string): readonly string[] => {
 				const parsed = parseShellCommand(value, { shellKind: shellProfile.kind });
@@ -1003,6 +1105,40 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return parsed.segments[0]!.words;
 			};
 			const binding = Object.assign(runtime, {
+				sessionPreferences: () => sessionPreferences,
+				setSessionPreferences: (preferences: SessionPreferences) => {
+					sessionPreferences = preferences;
+				},
+				ensureSessionPreferences: (input: {
+					readonly provider: string;
+					readonly model: string;
+					readonly reasoningEffort?: ReasoningEffort;
+					readonly collaborationMode: "default" | "plan";
+				}): SessionPreferences => {
+					const base = sessionPreferences
+						?? sessionPreferencesFromConfig(controlConfig, input.collaborationMode);
+					if (base.provider !== input.provider || base.model !== input.model) {
+						throw new SessionTransitionError(
+							"session_state_invalid",
+							"active model does not match the session preference base",
+						);
+					}
+					const next = Object.freeze({
+						...base,
+						reasoningEffort: input.reasoningEffort ?? base.reasoningEffort,
+						collaborationMode: input.collaborationMode,
+					});
+					if (!sameSessionPreferences(sessionPreferences, next)) {
+						saveSessionPreferences(store, {
+							sessionId,
+							workspaceRoot,
+							threadId,
+							preferences: next,
+						});
+						sessionPreferences = next;
+					}
+					return next;
+				},
 				refreshExtensions,
 				listCommandAllowances: () => approvalPolicy.listSessionAllowances(),
 				addCommandAllowance: (value: string) => {
@@ -1017,6 +1153,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				compact: async (input: { readonly modelOverride?: string; readonly signal: AbortSignal }) => {
 					const resolved = await resolveRuntimeConfig(input.modelOverride);
 					const commandId = `command_compact_${randomUUID().replaceAll("-", "")}`;
+					const startedAt = performance.now();
 					const result = await createCompactionCoordinator(resolved).compact({
 						clientTurnId: commandId,
 						turnId: commandId,
@@ -1026,6 +1163,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						emit: () => undefined,
 						signal: input.signal,
 					});
+					tryAppendNodeTrace(homeDir, sessionId, runtimeDiagnosticTraceEvent({
+						kind: "compaction",
+						turnId: commandId,
+						source: "user_requested",
+						status: result.status,
+						beforeTokens: result.beforeTokens,
+						afterTokens: result.afterTokens,
+						maxTokens: resolved.maxPromptTokens,
+						durationMs: elapsedMonotonicMs(startedAt, performance.now()),
+					}));
 					return {
 						status: result.status,
 						beforeTokens: result.beforeTokens,
@@ -1261,6 +1408,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const sessionCoordinator = new SessionCoordinator<NodeGatewayRuntime>({
 			initial,
 			prepare,
+			acquireSession: (sessionId) => store.acquireSessionLease(sessionId),
+			releaseSession: (sessionId) => store.releaseSessionLease(sessionId),
+			retainSourceSession: true,
 			create: (current) => virtualSession(randomUUID(), current.workspaceRoot, createRuntime),
 			listSessions: (query) => listSessionsWithVirtualInitial(
 				store,
@@ -1276,6 +1426,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			},
 			});
 			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
+			const initialPreferences = initial.binding.sessionPreferences?.();
+			if (initialPreferences) {
+				controlConfig = await resolveModelRuntimeConfig({
+					homeDir,
+					workspaceRoot: initial.workspaceRoot,
+					env: options.env,
+					overrides: sessionPreferenceOverrides(initial.sessionId, initialPreferences),
+				});
+			}
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
 		const gatewayIntegrations = integrationGateway(
@@ -1321,8 +1480,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const gateway = createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
-			provider: config.provider,
-			model: config.model,
+			provider: controlConfig.provider,
+			model: controlConfig.model,
+			reasoningEffort: controlConfig.thinkingEnabled
+				? controlConfig.reasoningEffort
+				: "none",
 			toolNames: allToolExposure.map((tool) => tool.name),
 			maxPromptTokens: () => controlConfig.maxPromptTokens,
 			runtime: initial.binding,
@@ -1474,6 +1636,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							const protocol = parseProtocol(protocolValue);
 							const model = controlString(input.model, "model");
 							const apiBaseUrl = controlString(input.base_url, "base_url").replace(/\/+$/u, "");
+							const collaborationMode = controlCollaborationMode(input.collaboration_mode);
 							const requestedEffort = controlReasoningEffort(input.reasoning_effort);
 							const catalog = await loadModelCatalog({ homeDir, currentConfig: controlConfig });
 							const entry = findModelCatalogEntry(catalog, {
@@ -1520,16 +1683,34 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								thinkingEnabled,
 								reasoningEffort: nextReasoningEffort,
 							});
-							activeModelOverride = model;
 							controlConfig = await resolveModelRuntimeConfig({
 								homeDir,
 								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
 								env: options.env,
 								overrides: {
-									session: controlConfig.sessionId,
+									session: sessionCoordinator.snapshot().sessionId,
+									provider: entry.provider,
+									protocol,
 									model,
+									apiBaseUrl: entry.baseUrl,
+									authRef: entry.authRef,
+									reasoningEffort: thinkingEnabled ? nextReasoningEffort : "none",
+									thinkingEnabled,
 								},
 							});
+							defaultPreferences = sessionPreferencesFromConfig(controlConfig, "default");
+							const active = sessionCoordinator.snapshot();
+							const preferences = Object.freeze({
+								...defaultPreferences,
+								collaborationMode,
+							});
+							saveSessionPreferences(store, {
+								sessionId: active.sessionId,
+								workspaceRoot: active.workspaceRoot,
+								threadId: active.threadId,
+								preferences,
+							});
+							active.binding.setSessionPreferences?.(preferences);
 							const selectedCatalog = await loadModelCatalog({
 								homeDir,
 								currentConfig: controlConfig,
@@ -1545,6 +1726,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								reasoning_effort: reasoningEffort ?? null,
 								thinking_enabled: thinkingEnabled,
 							};
+						},
+						activateSessionPreferences: async (preferences) => {
+							const active = sessionCoordinator.snapshot();
+							controlConfig = await resolveModelRuntimeConfig({
+								homeDir,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								overrides: preferences
+									? sessionPreferenceOverrides(active.sessionId, preferences)
+									: sessionPreferenceOverrides(active.sessionId, defaultPreferences),
+							});
+							return preferences
+								?? sessionPreferencesFromConfig(controlConfig, "default");
 						},
 						loadSettings: async () => ({ ...await loadShellSettings({ homeDir }) }),
 						saveSettings: async (settings) => ({
@@ -1625,11 +1819,32 @@ function providerDisplayName(provider: string): string {
 	}[provider] ?? provider;
 }
 
+function sessionPreferenceOverrides(
+	sessionId: string,
+	preferences: SessionPreferences,
+): NonNullable<ResolveConfigOptions["overrides"]> {
+	return {
+		session: sessionId,
+		provider: preferences.provider,
+		protocol: preferences.protocol,
+		model: preferences.model,
+		apiBaseUrl: preferences.apiBaseUrl,
+		authRef: preferences.authRef,
+		reasoningEffort: preferences.reasoningEffort,
+		thinkingEnabled: preferences.reasoningEffort !== "none",
+	};
+}
+
 function controlString(value: unknown, name: string): string {
 	if (typeof value !== "string" || !value.trim()) {
 		throw new Error(`invalid_arguments: ${name} is required`);
 	}
 	return value.trim();
+}
+
+function controlCollaborationMode(value: unknown): "default" | "plan" {
+	if (value === "default" || value === "plan") return value;
+	throw new Error("invalid_arguments: unsupported collaboration_mode");
 }
 
 function controlRequestError(message: string): Error & { readonly code: "invalid_params" } {
@@ -1716,9 +1931,14 @@ function runtimeToolExposure(
 	builtinManifest: BuiltInToolManifest,
 	direct: readonly ToolDefinition[],
 	deferred: readonly IntegrationRegistration[],
+	requestPermissionsToolEnabled: boolean,
 ): readonly ToolDefinition[] {
 	return Object.freeze([
-		...planToolExposure(builtinManifest, { shell: true }),
+		...planToolExposure(builtinManifest, {
+			shell: true,
+			requestPermissionsTool: requestPermissionsToolEnabled,
+			collaborationMode: "plan",
+		}),
 		...direct,
 		...deferred.filter((registration) => registration.modelVisible !== false)
 			.map((registration) => registration.definition),
@@ -1806,17 +2026,20 @@ function appendNodeTrace(
 	event: Readonly<Record<string, unknown>>,
 ): void {
 	const identity = traceSessionId(sessionId);
-	const kind = interruptTraceKind(event.kind);
+	const kind = nodeTraceKind(event.kind);
 	const turnId = boundedTraceString(event.turn_id, 256);
 	if (!kind || !turnId) return;
-	const payload = interruptTracePayload(objectValue(event.payload));
+	const payload = nodeTracePayload(kind, objectValue(event.payload));
 	const tracesRoot = join(homeDir, ".mycli", "traces");
 	const logsRoot = join(homeDir, ".mycli", "logs");
 	mkdirSync(tracesRoot, { recursive: true, mode: 0o700 });
 	mkdirSync(logsRoot, { recursive: true, mode: 0o700 });
+	const tracePath = join(tracesRoot, `${identity}-trace.jsonl`);
+	const traceLine = `${JSON.stringify({ kind, turn_id: turnId, payload })}\n`;
+	rotateNodeTraceIfNeeded(tracePath, Buffer.byteLength(traceLine, "utf8"));
 	appendFileSync(
-		join(tracesRoot, `${identity}-trace.jsonl`),
-		`${JSON.stringify({ kind, turn_id: turnId, payload })}\n`,
+		tracePath,
+		traceLine,
 		{ encoding: "utf8", mode: 0o600 },
 	);
 	appendFileSync(
@@ -1824,6 +2047,15 @@ function appendNodeTrace(
 		`event=${kind} session_id=${identity} turn_id=${turnId}\n`,
 		{ encoding: "utf8", mode: 0o600 },
 	);
+}
+
+const NODE_TRACE_MAX_BYTES = 5 * 1024 * 1024;
+
+function rotateNodeTraceIfNeeded(path: string, incomingBytes: number): void {
+	if (!existsSync(path) || statSync(path).size + incomingBytes <= NODE_TRACE_MAX_BYTES) return;
+	const backup = `${path}.1`;
+	rmSync(backup, { force: true });
+	renameSync(path, backup);
 }
 
 function loadNodeTrace(
@@ -1840,13 +2072,13 @@ function loadNodeTrace(
 			const parsed = JSON.parse(line) as unknown;
 			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
 			const event = parsed as Readonly<Record<string, unknown>>;
-			const kind = interruptTraceKind(event.kind);
+			const kind = nodeTraceKind(event.kind);
 			const turnId = boundedTraceString(event.turn_id, 256);
 			if (!kind || !turnId) continue;
 			rows.push(Object.freeze({
 				kind,
 				turn_id: turnId,
-				payload: interruptTracePayload(objectValue(event.payload)),
+				payload: nodeTracePayload(kind, objectValue(event.payload)),
 			}));
 		} catch {
 			// Corrupt diagnostics are skipped without affecting the runtime.
@@ -1863,17 +2095,35 @@ function traceSessionId(value: string): string {
 	return value.slice(0, 256);
 }
 
-function interruptTraceKind(
-	value: unknown,
-): "turn_interrupt_requested" | "turn_interrupted" | undefined {
-	return value === "turn_interrupt_requested" || value === "turn_interrupted"
-		? value
+type NodeTraceKind =
+	| "turn_interrupt_requested"
+	| "turn_interrupted"
+	| "model_stream_diagnostics"
+	| "tool_execution"
+	| "compaction"
+	| "subagent_lifecycle";
+
+function nodeTraceKind(value: unknown): NodeTraceKind | undefined {
+	return [
+		"turn_interrupt_requested",
+		"turn_interrupted",
+		"model_stream_diagnostics",
+		"tool_execution",
+		"compaction",
+		"subagent_lifecycle",
+	].includes(value as NodeTraceKind)
+		? value as NodeTraceKind
 		: undefined;
 }
 
-function interruptTracePayload(
+function nodeTracePayload(
+	kind: NodeTraceKind,
 	value: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
+	if (kind === "model_stream_diagnostics") return modelStreamTracePayload(value);
+	if (kind === "tool_execution") return toolExecutionTracePayload(value);
+	if (kind === "compaction") return compactionTracePayload(value);
+	if (kind === "subagent_lifecycle") return subagentLifecycleTracePayload(value);
 	const clientTurnId = boundedTraceString(value.client_turn_id, 256);
 	return Object.freeze({
 		...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
@@ -1883,6 +2133,194 @@ function interruptTracePayload(
 			: {}),
 		...(value.status === "interrupted" ? { status: "interrupted" } : {}),
 	});
+}
+
+function modelStreamTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		provider: traceEnum(value.provider, ["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]),
+		protocol: traceEnum(value.protocol, ["responses", "chat_completions", "anthropic_messages"]),
+		model: boundedTraceToken(value.model, 256),
+		attempt: boundedTraceCount(value.attempt),
+		elapsed_ms: boundedTraceNumber(value.elapsed_ms),
+		ttfb_ms: boundedTraceNumber(value.ttfb_ms),
+		ttft_ms: boundedTraceNumber(value.ttft_ms),
+		tbt_ms: boundedTraceNumber(value.tbt_ms),
+		max_tbt_ms: boundedTraceNumber(value.max_tbt_ms),
+		text_delta_interval_count: boundedTraceCount(value.text_delta_interval_count),
+		provider_event_count: boundedTraceCount(value.provider_event_count),
+		reasoning_event_count: boundedTraceCount(value.reasoning_event_count),
+		text_event_count: boundedTraceCount(value.text_event_count),
+		provider_state_event_count: boundedTraceCount(value.provider_state_event_count),
+		tool_call_event_count: boundedTraceCount(value.tool_call_event_count),
+		usage_event_count: boundedTraceCount(value.usage_event_count),
+		completed_event_count: boundedTraceCount(value.completed_event_count),
+		reasoning_bytes: boundedTraceCount(value.reasoning_bytes),
+		text_bytes: boundedTraceCount(value.text_bytes),
+		success: typeof value.success === "boolean" ? value.success : undefined,
+		failure_kind: boundedTraceToken(value.failure_kind, 64),
+	});
+}
+
+function toolExecutionTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		call_id: boundedTraceToken(value.call_id, 256),
+		tool_name: boundedTraceToken(value.tool_name, 128),
+		duration_ms: boundedTraceNumber(value.duration_ms),
+		success: typeof value.success === "boolean" ? value.success : undefined,
+		output_chars: boundedTraceCount(value.output_chars),
+		output_truncated: typeof value.output_truncated === "boolean"
+			? value.output_truncated
+			: undefined,
+		failure_kind: boundedTraceToken(value.failure_kind, 128),
+	});
+}
+
+function compactionTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		source: traceEnum(value.source, ["pre_turn", "mid_turn", "context_overflow", "user_requested"]),
+		status: traceEnum(value.status, ["not_needed", "compressed", "skipped", "failed", "interrupted"]),
+		before_tokens: boundedTraceCount(value.before_tokens),
+		after_tokens: boundedTraceCount(value.after_tokens),
+		max_tokens: boundedTraceCount(value.max_tokens),
+		duration_ms: boundedTraceNumber(value.duration_ms),
+	});
+}
+
+function subagentLifecycleTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		thread_id: boundedTraceToken(value.thread_id, 256),
+		status: traceEnum(value.status, ["started", "completed", "failed", "interrupted"]),
+		duration_ms: boundedTraceNumber(value.duration_ms),
+	});
+}
+
+function runtimeDiagnosticTraceEvent(
+	event: RuntimeDiagnosticEvent,
+): Readonly<Record<string, unknown>> {
+	if (event.kind === "model_stream_diagnostics") {
+		return Object.freeze({
+			kind: event.kind,
+			turn_id: event.turnId,
+			payload: {
+				provider: event.provider,
+				protocol: event.protocol,
+				model: event.model,
+				attempt: event.attempt,
+				elapsed_ms: event.elapsedMs,
+				...(event.ttfbMs === undefined ? {} : { ttfb_ms: event.ttfbMs }),
+				...(event.ttftMs === undefined ? {} : { ttft_ms: event.ttftMs }),
+				...(event.tbtMs === undefined ? {} : { tbt_ms: event.tbtMs }),
+				...(event.maxTbtMs === undefined ? {} : { max_tbt_ms: event.maxTbtMs }),
+				text_delta_interval_count: event.textDeltaIntervalCount,
+				provider_event_count: event.providerEventCount,
+				reasoning_event_count: event.reasoningEventCount,
+				text_event_count: event.textEventCount,
+				provider_state_event_count: event.providerStateEventCount,
+				tool_call_event_count: event.toolCallEventCount,
+				usage_event_count: event.usageEventCount,
+				completed_event_count: event.completedEventCount,
+				reasoning_bytes: event.reasoningBytes,
+				text_bytes: event.textBytes,
+				success: event.success,
+				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
+			},
+		});
+	}
+	if (event.kind === "tool_execution") {
+		return Object.freeze({
+			kind: event.kind,
+			turn_id: event.turnId,
+			payload: {
+				call_id: event.callId,
+				tool_name: event.toolName,
+				duration_ms: event.durationMs,
+				success: event.success,
+				output_chars: event.outputChars,
+				output_truncated: event.outputTruncated,
+				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
+			},
+		});
+	}
+	return Object.freeze({
+		kind: event.kind,
+		turn_id: event.turnId,
+		payload: {
+			source: event.source,
+			status: event.status,
+			before_tokens: event.beforeTokens,
+			after_tokens: event.afterTokens,
+			max_tokens: event.maxTokens,
+			duration_ms: event.durationMs,
+		},
+	});
+}
+
+function tryAppendNodeTrace(
+	homeDir: string,
+	sessionId: string,
+	event: Readonly<Record<string, unknown>>,
+): void {
+	try {
+		appendNodeTrace(homeDir, sessionId, event);
+	} catch {
+		// Observability is best-effort and never participates in turn success.
+	}
+}
+
+function elapsedIsoMs(startedAt: string, finishedAt: string): number {
+	const elapsed = Date.parse(finishedAt) - Date.parse(startedAt);
+	return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+}
+
+function elapsedMonotonicMs(startedAt: number, finishedAt: number): number {
+	const elapsed = finishedAt - startedAt;
+	return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+}
+
+function boundedTraceNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+		&& value <= 24 * 60 * 60 * 1_000
+		? value
+		: undefined;
+}
+
+function boundedTraceCount(value: unknown): number | undefined {
+	return Number.isSafeInteger(value) && (value as number) >= 0
+		&& (value as number) <= 1_099_511_627_776
+		? value as number
+		: undefined;
+}
+
+function boundedTraceToken(value: unknown, limit: number): string | undefined {
+	return typeof value === "string" && value.length > 0 && value.length <= limit
+		&& /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u.test(value)
+		? value
+		: undefined;
+}
+
+function traceEnum<const Value extends string>(
+	value: unknown,
+	allowed: readonly Value[],
+): Value | undefined {
+	return typeof value === "string" && allowed.includes(value as Value)
+		? value as Value
+		: undefined;
+}
+
+function compactTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return Object.freeze(Object.fromEntries(
+		Object.entries(value).filter((entry) => entry[1] !== undefined),
+	));
 }
 
 function nodeLogRows(homeDir: string): readonly string[] {
@@ -2782,6 +3220,9 @@ function loadApprovalState(
 	const clientTurnId = requiredStateString(suspended.payload.client_turn_id, "client turn id");
 	const turnId = requiredStateString(suspended.payload.turn_id, "turn id");
 	const call = pending.payload.tool_call;
+	const permissionRequest = permissionRequestFromJson(
+		objectValue(pending.payload.metadata).permission_request,
+	);
 	if (suspended.payload.pending_approval?.tool_call.call_id !== undefined
 		&& suspended.payload.pending_approval.tool_call.call_id !== call.call_id) {
 		throw new SessionTransitionError("session_state_invalid", "pending approval call does not match");
@@ -2797,6 +3238,7 @@ function loadApprovalState(
 			preview: pending.payload.preview,
 			reason: pending.payload.reason,
 			options: Object.freeze([...pending.payload.options]),
+			...(permissionRequest ? { permissionRequest } : {}),
 		},
 		suspendedTurn: true,
 	};
@@ -2918,7 +3360,31 @@ function agentExecutionPolicySnapshot(
 		sandboxMode: profile?.mode ?? "read-only",
 		filesystem,
 		network: profile?.network ?? "disabled",
+		...(profile?.networkDomains === undefined ? {} : {
+			networkDomains: Object.freeze([...profile.networkDomains]),
+		}),
+		...(profile?.readableRoots === undefined ? {} : {
+			readableRoots: Object.freeze([...profile.readableRoots]),
+		}),
 		writableRoots: Object.freeze([...(profile?.writableRoots ?? [])]),
+	});
+}
+
+function inheritedAgentExecutionPolicyConstraints(
+	policy: AgentExecutionPolicySnapshot,
+): ExecutionPolicyConstraints {
+	return Object.freeze({
+		source: "runtime" as const,
+		network: policy.network,
+		...(policy.networkDomains === undefined ? {} : {
+			networkDomains: Object.freeze([...policy.networkDomains]),
+		}),
+		...(policy.readableRoots === undefined ? {} : {
+			readableRoots: Object.freeze([...policy.readableRoots]),
+		}),
+		...(policy.filesystem === "unrestricted" ? {} : {
+			writableRoots: Object.freeze([...policy.writableRoots]),
+		}),
 	});
 }
 

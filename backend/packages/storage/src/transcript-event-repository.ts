@@ -1,7 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
-import { parseRuntimeState, parseRuntimeTurnRecord } from "@mycli/contracts";
+import {
+	parseRuntimeState,
+	parseRuntimeTurnRecord,
+	TURN_INTERRUPTED_NOTICE,
+	turnCompletedDurationId,
+	turnFailedNoticeId,
+	turnFailureNotice,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	selectAgentForkConversation,
@@ -15,6 +23,7 @@ import type {
 	CanonicalToolCall,
 	QueueSnapshot,
 	QueuedInput,
+	RuntimeErrorCode,
 } from "@mycli/core";
 import {
 	SCHEMA_V2_SQL,
@@ -28,10 +37,14 @@ import {
 	SCHEMA_V11_VERSION,
 	SCHEMA_V12_SQL,
 	SCHEMA_V12_VERSION,
+	SESSION_RUNTIME_LEASE_SQL,
 } from "./schema.ts";
+import { runtimeErrorStopReason } from "./runtime-error-stop-reason.ts";
 import {
 	MessageIdConflictError,
+	normalizeStoredTurnFailure,
 	projectMutationMetadata,
+	SessionInUseError,
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
@@ -72,6 +85,7 @@ import type {
 	SessionStorageMetrics,
 	SessionVacuumResult,
 	SessionLineageNode,
+	SessionLeaseStore,
 	SessionListQuery,
 	SessionOverview,
 	TurnReservation,
@@ -82,6 +96,7 @@ import { assertImagePathCount, canonicalImages } from "./canonical-images.ts";
 import {
 	parseTranscriptEventAppendInput,
 	parseTranscriptEventEnvelope,
+	type AppendTranscriptDisplayActivityInput,
 	type TranscriptEventAppendInput,
 	type TranscriptDisplayActivityType,
 	type TranscriptEventEnvelope,
@@ -194,20 +209,7 @@ export interface TranscriptReadablePage {
 	readonly nextBeforeSequence: number | null;
 }
 
-export interface AppendTranscriptDisplayActivityInput {
-	readonly sessionId: string;
-	readonly eventId: string;
-	readonly turnId?: string;
-	readonly activityType: TranscriptDisplayActivityType;
-	readonly text?: string;
-	readonly callId?: string;
-	readonly toolName?: string;
-	readonly status?: string;
-	readonly metadata?: Readonly<Record<string, TranscriptJsonValue>>;
-	readonly createdAt: string;
-}
-
-export interface TranscriptEventRepository {
+export interface TranscriptEventRepository extends SessionLeaseStore {
 	appendEvent(input: TranscriptEventAppendInput): TranscriptEventEnvelope;
 	reserveTurn(input: ReserveTurnInput): TurnReservation;
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
@@ -448,6 +450,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			} else {
 				throw new StorageFailure("session schema version marker is invalid");
 			}
+			this.#database.exec(SESSION_RUNTIME_LEASE_SQL);
+			this.#reconcileStaleSessionRuntimeLeases();
 			this.#contentBlobs = new SQLiteSessionContentBlobRepository({
 				database: this.#database,
 				clock: this.#clock,
@@ -520,6 +524,29 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			this.recoverInterruptedTurns();
 		} catch (error) {
 			this.#database.close();
+			throw storageError(error);
+		}
+	}
+
+	acquireSessionLease(sessionId: string): boolean {
+		try {
+			const normalizedSessionId = identity(sessionId, "sessionId");
+			return this.#write(() => this.#acquireSessionLeaseRecord(normalizedSessionId));
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	releaseSessionLease(sessionId: string): void {
+		try {
+			const normalizedSessionId = identity(sessionId, "sessionId");
+			this.#write(() => {
+				this.#database.prepare(`
+					DELETE FROM session_runtime_leases
+					WHERE session_id = ? AND owner_id = ?
+				`).run(normalizedSessionId, this.#ownerId);
+			});
+		} catch (error) {
 			throw storageError(error);
 		}
 	}
@@ -708,6 +735,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				}
 				const source = this.#sessionIdentity(sourceSessionId);
 				const boundary = this.#forkBoundary(sourceSessionId, input);
+				this.#acquireSessionLeaseRecord(targetSessionId);
 				const now = this.#clock();
 				this.#database.prepare(`
 					INSERT INTO sessions (
@@ -735,6 +763,12 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					boundary.event?.eventId ?? null,
 					now,
 				);
+				this.#database.prepare(`
+					INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+					SELECT ?, state_key, payload_json, ?
+					FROM session_state
+					WHERE session_id = ? AND state_key = 'session_preferences'
+				`).run(targetSessionId, now, sourceSessionId);
 				return Object.freeze({
 					sourceSessionId,
 					targetSessionId,
@@ -758,10 +792,11 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			if (sourceSessionId === targetSessionId) {
 				throw new StorageFailure("target agent session must differ from source session");
 			}
-			if (input.forkTurns === "none") {
-				return Object.freeze({ sourceSessionId, targetSessionId, messageCount: 0 });
-			}
 			return this.#write(() => {
+				this.#acquireSessionLeaseRecord(targetSessionId);
+				if (input.forkTurns === "none") {
+					return Object.freeze({ sourceSessionId, targetSessionId, messageCount: 0 });
+				}
 				if (!this.#sessionExists(sourceSessionId)) {
 					throw new StorageFailure("source session does not exist");
 				}
@@ -924,6 +959,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		try {
 			return this.#write(() => {
 				const turn = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
+				const durationMs = completedTurnDurationMs(turn, input.completedAt);
 				this.#insertEvent(parseTranscriptEventAppendInput({
 					schemaVersion: 1,
 					sessionId: input.sessionId,
@@ -938,6 +974,17 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 						...(input.providerState ? { providerState: input.providerState } : {}),
 					},
 				}));
+				if (durationMs !== undefined) {
+					this.#appendDisplayActivityEvent({
+						sessionId: input.sessionId,
+						eventId: turnCompletedDurationId(turn.turn_id),
+						turnId: turn.turn_id,
+						activityType: "turn_completed",
+						status: "completed",
+						metadata: { duration_ms: durationMs },
+						createdAt: input.completedAt,
+					});
+				}
 				this.#appendLifecycleEvent(turn, "completed", input.completedAt, {
 					usage: input.usage,
 					...(input.lastTokenUsage ? {
@@ -967,14 +1014,29 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			return this.#write(() => {
 				const turn = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
 				const status = input.code === "interrupted" ? "interrupted" : "failed";
+				const failureInput = normalizeStoredTurnFailure(input);
 				for (const call of this.loadPendingToolCalls(input.sessionId, turn.turn_id)) {
 					this.#appendSyntheticToolResult(turn, call, status, input.completedAt);
 				}
-				if (status === "interrupted") this.#appendTurnAbortedEvent(turn, input.completedAt);
+				if (status === "interrupted") {
+					this.#appendTurnAbortedEvent(turn, input.completedAt);
+					this.#appendInterruptedTurnDisplay(turn, input.completedAt);
+				} else {
+					this.#appendFailedTurnDisplay(
+						turn,
+						input.code,
+						input.completedAt,
+						failureInput.message,
+						failureInput.additionalDetails,
+					);
+				}
 				this.#appendLifecycleEvent(turn, status, input.completedAt, {
 					errorCode: input.code,
-					message: input.message,
-					...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+						message: failureInput.message,
+						...(failureInput.additionalDetails
+							? { additionalDetails: failureInput.additionalDetails }
+							: {}),
+						...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
 				});
 				this.#database.prepare(`
 					UPDATE runtime_turns
@@ -984,9 +1046,12 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				`).run(
 					status,
 					input.code,
-					stableJson({
-						message: input.message,
-						...(input.diagnostics && Object.keys(input.diagnostics).length > 0
+						stableJson({
+							message: failureInput.message,
+							...(failureInput.additionalDetails
+								? { additional_details: failureInput.additionalDetails }
+								: {}),
+							...(input.diagnostics && Object.keys(input.diagnostics).length > 0
 							? { diagnostics: input.diagnostics }
 							: {}),
 					}),
@@ -1020,6 +1085,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					for (const call of this.loadPendingToolCalls(turn.session_id, turn.turn_id)) {
 						this.#appendSyntheticToolResult(turn, call, "interrupted", completedAt);
 					}
+					this.#appendInterruptedTurnDisplay(turn, completedAt);
 					this.#appendLifecycleEvent(turn, "interrupted", completedAt, {
 						errorCode: "interrupted",
 						message: "turn interrupted during process restart",
@@ -1047,9 +1113,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 	recoverInterruptedTurn(
 		sessionId: string,
 		turnId: string,
-		_userInitiated = false,
+		userInitiated = false,
 	): RuntimeTurnRecord | undefined {
-		void _userInitiated;
 		try {
 			return this.#write(() => {
 				const normalizedSessionId = identity(sessionId, "sessionId");
@@ -1061,12 +1126,18 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				`).get(normalizedSessionId, normalizedTurnId) as RuntimeTurnRow | undefined;
 				if (!row) return undefined;
 				const turn = runtimeTurnFromRow(row);
-				if (turn.status !== "in_progress") return turn;
+				if (turn.status !== "in_progress") {
+					if (turn.status === "interrupted" && userInitiated) {
+						this.#appendInterruptedTurnDisplay(turn, turn.completed_at ?? this.#clock());
+					}
+					return turn;
+				}
 				const completedAt = this.#clock();
 				for (const call of this.loadPendingToolCalls(normalizedSessionId, normalizedTurnId)) {
 					this.#appendSyntheticToolResult(turn, call, "interrupted", completedAt);
 				}
 				this.#appendTurnAbortedEvent(turn, completedAt);
+				this.#appendInterruptedTurnDisplay(turn, completedAt);
 				this.#appendLifecycleEvent(turn, "interrupted", completedAt, {
 					errorCode: "interrupted",
 					message: "turn interrupted by runtime owner",
@@ -1385,7 +1456,26 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			if (input.toolResult.result.callId !== input.requestId) {
 				throw new StorageFailure("clarification response does not match pending call");
 			}
+			const turn = this.#requireRunningTurn(input.sessionId, input.toolResult.clientTurnId);
 			this.appendToolResult(input.toolResult);
+			this.#appendDisplayActivityEvent({
+				sessionId: input.sessionId,
+				eventId: clarificationResponseEventId(input.requestId),
+				turnId: turn.turn_id,
+				activityType: "clarification_response",
+				text: input.display.response,
+				callId: input.requestId,
+				toolName: input.toolResult.result.toolName,
+				status: "answered",
+				metadata: {
+					request_id: input.requestId,
+					...(input.display.header ? { header: input.display.header } : {}),
+					question: input.display.question,
+					response: input.display.response,
+					multi_select: input.display.multiSelect,
+				},
+				createdAt: this.#clock(),
+			});
 		});
 	}
 
@@ -1425,6 +1515,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				errorKind: input.errorKind,
 			}, completedAt);
 			this.#appendTurnAbortedEvent(turn, completedAt);
+			this.#appendInterruptedTurnDisplay(turn, completedAt);
 			this.#appendLifecycleEvent(turn, "interrupted", completedAt, {
 				errorCode: "interrupted",
 				message: "tool effect outcome is unknown",
@@ -2275,6 +2366,13 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 	cleanupOrphanedSessionRows(): SessionOrphanCleanupResult {
 		try {
 			return this.#write(() => {
+				const liveSessionIds = this.#liveRuntimeSessionIds();
+				const liveSessionParameters = liveSessionIds.length > 0
+					? [JSON.stringify(liveSessionIds)]
+					: [];
+				const liveSessionClause = liveSessionIds.length > 0
+					? "AND session_id NOT IN (SELECT value FROM json_each(?))"
+					: "";
 				const tables = [
 					"conversation_trees",
 					"session_state",
@@ -2285,13 +2383,18 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				for (const table of tables) {
 					const result = this.#database.prepare(`
 						DELETE FROM ${table} WHERE session_id NOT IN (SELECT session_id FROM sessions)
-					`).run();
+						${liveSessionClause}
+					`).run(...liveSessionParameters);
 					if (result.changes > 0) deletedRowsByTable.push({ table, count: result.changes });
 				}
+				const liveParentClause = liveSessionIds.length > 0
+					? "AND parent_session_id NOT IN (SELECT value FROM json_each(?))"
+					: "";
 				const taskResult = this.#database.prepare(`
 					DELETE FROM subagent_tasks
 					WHERE parent_session_id NOT IN (SELECT session_id FROM sessions)
-				`).run();
+					${liveParentClause}
+				`).run(...liveSessionParameters);
 				if (taskResult.changes > 0) {
 					deletedRowsByTable.push({ table: "subagent_tasks", count: taskResult.changes });
 				}
@@ -2339,6 +2442,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					SET owner_id = NULL, owner_pid = NULL
 					WHERE status = 'in_progress' AND owner_id = ?
 				`).run(this.#ownerId);
+				this.#database.prepare(`
+					DELETE FROM session_runtime_leases
+					WHERE owner_id = ?
+				`).run(this.#ownerId);
 			});
 		} finally {
 			this.#database.close();
@@ -2358,6 +2465,57 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			if (this.#database.inTransaction) this.#database.exec("ROLLBACK");
 			throw error;
 		}
+	}
+
+	#acquireSessionLeaseRecord(sessionId: string): boolean {
+		const agentOwner = this.#database.prepare(`
+			SELECT owner_pid
+			FROM agent_runtime_leases
+			WHERE thread_id = ?
+		`).get(sessionId) as { readonly owner_pid: unknown } | undefined;
+		if (typeof agentOwner?.owner_pid === "number"
+			&& Number.isSafeInteger(agentOwner.owner_pid)
+			&& agentOwner.owner_pid > 0
+			&& this.#isProcessAlive(agentOwner.owner_pid)) {
+			throw new SessionInUseError();
+		}
+		const current = this.#database.prepare(`
+			SELECT owner_id, owner_pid
+			FROM session_runtime_leases
+			WHERE session_id = ?
+		`).get(sessionId) as {
+			readonly owner_id: unknown;
+			readonly owner_pid: unknown;
+		} | undefined;
+		const now = this.#clock();
+		if (!current) {
+			this.#database.prepare(`
+				INSERT INTO session_runtime_leases (
+					session_id, owner_id, owner_pid, acquired_at, updated_at
+				) VALUES (?, ?, ?, ?, ?)
+			`).run(sessionId, this.#ownerId, this.#processId, now, now);
+			return true;
+		}
+		if (current.owner_id === this.#ownerId) {
+			this.#database.prepare(`
+				UPDATE session_runtime_leases
+				SET owner_pid = ?, updated_at = ?
+				WHERE session_id = ? AND owner_id = ?
+			`).run(this.#processId, now, sessionId, this.#ownerId);
+			return false;
+		}
+		if (typeof current.owner_pid === "number"
+			&& Number.isSafeInteger(current.owner_pid)
+			&& current.owner_pid > 0
+			&& this.#isProcessAlive(current.owner_pid)) {
+			throw new SessionInUseError();
+		}
+		this.#database.prepare(`
+			UPDATE session_runtime_leases
+			SET owner_id = ?, owner_pid = ?, acquired_at = ?, updated_at = ?
+			WHERE session_id = ?
+		`).run(this.#ownerId, this.#processId, now, now, sessionId);
+		return true;
 	}
 
 	#insertEvent(input: TranscriptEventAppendInput): TranscriptEventEnvelope {
@@ -2761,6 +2919,61 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		}, createdAt);
 	}
 
+	#appendInterruptedTurnDisplay(turn: RuntimeTurnRecord, createdAt: string): void {
+		const eventId = turnInterruptedNoticeId(turn.turn_id);
+		const existing = this.#database.prepare(`
+			SELECT 1 FROM transcript_events
+			WHERE session_id = ? AND event_id = ? LIMIT 1
+		`).get(turn.session_id, eventId);
+		if (existing) return;
+		this.#appendDisplayActivityEvent({
+			sessionId: turn.session_id,
+			eventId,
+			turnId: turn.turn_id,
+			activityType: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			status: "interrupted",
+			metadata: {
+				event_kind: "turn_interrupted",
+				interrupted_turn_id: turn.turn_id,
+				status: "interrupted",
+			},
+			createdAt,
+		});
+	}
+
+	#appendFailedTurnDisplay(
+		turn: RuntimeTurnRecord,
+		code: RuntimeErrorCode,
+		createdAt: string,
+		message?: string,
+		additionalDetails?: string,
+	): void {
+		const eventId = turnFailedNoticeId(turn.turn_id);
+		const existing = this.#database.prepare(`
+			SELECT 1 FROM transcript_events
+			WHERE session_id = ? AND event_id = ? LIMIT 1
+		`).get(turn.session_id, eventId);
+		if (existing) return;
+		this.#appendDisplayActivityEvent({
+			sessionId: turn.session_id,
+			eventId,
+			turnId: turn.turn_id,
+			activityType: "error",
+			text: turnFailureNotice(code, message),
+			status: "failed",
+			metadata: {
+				event_kind: "turn_failed",
+				failed_turn_id: turn.turn_id,
+				status: "failed",
+					code,
+					source: "runtime",
+					...(additionalDetails ? { additional_details: additionalDetails } : {}),
+				},
+			createdAt,
+		});
+	}
+
 	#appendLifecycleEvent(
 		turn: RuntimeTurnRecord,
 		phase: "completed" | "failed" | "interrupted",
@@ -2781,7 +2994,14 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 
 	#emptySessionCandidates(workspaceRoot?: string): readonly SessionMaintenanceCandidate[] {
 		const where = workspaceRoot ? "AND sessions.workspace_root = ?" : "";
-		const parameters = workspaceRoot ? [workspaceRoot] : [];
+		const liveSessionIds = this.#liveRuntimeSessionIds();
+		const liveSessionClause = liveSessionIds.length > 0
+			? "AND sessions.session_id NOT IN (SELECT value FROM json_each(?))"
+			: "";
+		const parameters = [
+			...(workspaceRoot ? [workspaceRoot] : []),
+			...(liveSessionIds.length > 0 ? [JSON.stringify(liveSessionIds)] : []),
+		];
 		const rows = this.#database.prepare(`
 			SELECT sessions.session_id, sessions.last_active_at, sessions.status
 			FROM sessions
@@ -2803,6 +3023,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				WHERE conversation_trees.parent_id = sessions.session_id
 			)
 			${where}
+			${liveSessionClause}
 			ORDER BY sessions.last_active_at ASC, sessions.session_id ASC
 		`).all(...parameters) as readonly {
 			readonly session_id: unknown;
@@ -2814,6 +3035,51 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			lastActiveAt: String(row.last_active_at),
 			status: String(row.status),
 		})));
+	}
+
+	#liveRuntimeSessionIds(): readonly string[] {
+		const rows = this.#database.prepare(`
+			SELECT session_id, owner_pid FROM session_runtime_leases
+			UNION ALL
+			SELECT thread_id AS session_id, owner_pid FROM agent_runtime_leases
+		`).all() as readonly {
+			readonly session_id: unknown;
+			readonly owner_pid: unknown;
+		}[];
+		const sessionIds = new Set<string>();
+		for (const row of rows) {
+			if (typeof row.session_id !== "string" || row.session_id.length === 0
+				|| typeof row.owner_pid !== "number" || !Number.isSafeInteger(row.owner_pid)
+				|| row.owner_pid <= 0 || !this.#isProcessAlive(row.owner_pid)) {
+				continue;
+			}
+			sessionIds.add(row.session_id);
+		}
+		return Object.freeze([...sessionIds]);
+	}
+
+	#reconcileStaleSessionRuntimeLeases(): void {
+		this.#write(() => {
+			const rows = this.#database.prepare(`
+				SELECT rowid, owner_pid FROM session_runtime_leases
+			`).all() as readonly {
+				readonly rowid: unknown;
+				readonly owner_pid: unknown;
+			}[];
+			const staleRowIds = rows.flatMap((row): number[] => {
+				if (typeof row.rowid !== "number" || !Number.isSafeInteger(row.rowid)) return [];
+				if (typeof row.owner_pid !== "number" || !Number.isSafeInteger(row.owner_pid)
+					|| row.owner_pid <= 0 || !this.#isProcessAlive(row.owner_pid)) {
+					return [row.rowid];
+				}
+				return [];
+			});
+			if (staleRowIds.length === 0) return;
+			this.#database.prepare(`
+				DELETE FROM session_runtime_leases
+				WHERE rowid IN (SELECT value FROM json_each(?))
+			`).run(JSON.stringify(staleRowIds));
+		});
 	}
 
 	#storageMetrics(): SessionStorageMetrics {
@@ -3577,6 +3843,22 @@ function semanticEventId(...parts: readonly string[]): string {
 	return `event:${digest}`;
 }
 
+function completedTurnDurationMs(
+	turn: RuntimeTurnRecord,
+	completedAt: string,
+): number | undefined {
+	const startedAtMs = Date.parse(turn.started_at);
+	const completedAtMs = Date.parse(completedAt);
+	if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) {
+		return undefined;
+	}
+	return Math.min(86_400_000, completedAtMs - startedAtMs);
+}
+
+function clarificationResponseEventId(requestId: string): string {
+	return semanticEventId("clarification-response", requestId);
+}
+
 function queuedInputSource(record: QueuedInput): UserInputTranscriptPayload["source"] {
 	if (record.source === "agent_mailbox") return "agent_mailbox";
 	if (record.source === "task_notification") return "task_notification";
@@ -3793,15 +4075,7 @@ function normalizedStopReason(
 	errorCode: RuntimeTurnRecord["error_code"],
 ): string {
 	if (status === "completed") return "assistant_completed";
-	switch (errorCode) {
-		case "auth_error": return "auth_failed";
-		case "rate_limited": return "rate_limited";
-		case "context_window_exceeded": return "context_window_exceeded";
-		case "retry_exhausted": return "retry_exhausted";
-		case "interrupted": return "interrupted";
-		case "provider_error": return "model_error";
-		default: return "runtime_error";
-	}
+	return runtimeErrorStopReason(errorCode);
 }
 
 function maintenanceLimit(value: number, maximum: number, label: string): number {
@@ -4243,6 +4517,7 @@ function eventSequence(value: unknown): number {
 
 function storageError(error: unknown): Error {
 	if (error instanceof StorageFailure
+		|| error instanceof SessionInUseError
 		|| error instanceof SessionStateError
 		|| error instanceof RangeError) return error;
 	const code = sqliteCode(error);
@@ -4318,9 +4593,19 @@ function completeEventGroups(
 function sameEventGroup(group: EventGroup, event: TranscriptEventEnvelope): boolean {
 	if (event.turnId && group.turnIds.has(event.turnId)) return true;
 	if (readableEventCallIds(event).some((callId) => group.callIds.has(callId))) return true;
+	if (isTurnAbortedContext(event) && group.turnIds.size === 1) return true;
+	if (
+		event.turnId
+		&& group.turnIds.size === 0
+		&& group.events.some(isTurnAbortedContext)
+	) return true;
 	return group.turnIds.size === 0
 		&& event.turnId === undefined
 		&& group.oldestSequence === event.sequenceNo + 1;
+}
+
+function isTurnAbortedContext(event: TranscriptEventEnvelope): boolean {
+	return event.eventType === "context" && event.payload.metadata.kind === "turn_aborted";
 }
 
 function addEventGroupIdentity(group: EventGroup, event: TranscriptEventEnvelope): void {

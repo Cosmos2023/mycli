@@ -18,7 +18,7 @@ const REQUIRED_PACKAGES = Object.freeze([
 	"backend/packages/tools",
 	"tui/mycli-shell",
 ]);
-const REQUIRED_APP_DEPENDENCIES = Object.freeze([
+const REQUIRED_VENDORED_PACKAGES = Object.freeze([
 	"@mycli/config",
 	"@mycli/contracts",
 	"@mycli/core",
@@ -86,11 +86,18 @@ async function checkInstalledPackageLayout(appRoot: string): Promise<DoctorCheck
 	if (!manifest || manifest.name !== "@mycli/app") {
 		return check("package_layout", "failed", "application package manifest missing");
 	}
-	const dependencies = isRecord(manifest.dependencies) ? manifest.dependencies : {};
-	const missing = REQUIRED_APP_DEPENDENCIES.filter((name) => typeof dependencies[name] !== "string");
+	const missing: string[] = [];
+	for (const name of REQUIRED_VENDORED_PACKAGES) {
+		try {
+			const packageRoot = join(appRoot, "dist", "node_modules", ...name.split("/"));
+			if (!(await stat(packageRoot)).isDirectory()) missing.push(name);
+		} catch {
+			missing.push(name);
+		}
+	}
 	return missing.length > 0
-		? check("package_layout", "failed", `missing_dependencies=${missing.length}`)
-		: check("package_layout", "ok", `dependencies=${REQUIRED_APP_DEPENDENCIES.length}`);
+		? check("package_layout", "failed", `missing_vendored_packages=${missing.length}`)
+		: check("package_layout", "ok", `vendored_packages=${REQUIRED_VENDORED_PACKAGES.length}`);
 }
 
 async function packageManifest(root: string): Promise<Readonly<Record<string, unknown>> | undefined> {

@@ -15,6 +15,7 @@ import type {
 	CanonicalMessage,
 	CanonicalToolCall,
 	ExecPolicyRule,
+	PermissionRequestProfile,
 	ProtocolId,
 	ProviderUsage,
 	ReasoningEffort,
@@ -27,11 +28,17 @@ import type {
 } from "@mycli/storage";
 import type {
 	ExecutionPolicy,
+	PermissionGrant,
 	PreparedMutationGuard,
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
-import { toolCallRequestsSandboxOverride } from "@mycli/tools";
+import {
+	freezePermissionRequest,
+	permissionRequestFromJson,
+	permissionRequestJson,
+	toolCallRequestsSandboxOverride,
+} from "@mycli/tools";
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
 
@@ -53,9 +60,11 @@ export interface ApprovalSuspensionInput {
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly preview: string;
 	readonly reason: string;
+	readonly options?: readonly ApprovalChoice[];
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly preparedMutationGuard?: PreparedMutationGuard;
+	readonly permissionRequest?: PermissionRequestProfile;
 }
 
 export interface PendingApprovalContinuation {
@@ -72,6 +81,7 @@ export interface PendingApprovalContinuation {
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly preparedMutationGuard?: PreparedMutationGuard;
+	readonly permissionRequest?: PermissionRequestProfile;
 	readonly providerProtocol: ProtocolId;
 	readonly userMessage: string;
 	readonly call: CanonicalToolCall;
@@ -89,6 +99,7 @@ export type ApprovalContinuationResult =
 		readonly checkpoint: ApprovalCheckpoint;
 		readonly continuation?: PendingApprovalContinuation;
 		readonly toolResult?: ToolExecutionResult;
+		readonly permissionGrant?: PermissionGrant;
 	}
 	| {
 		readonly status: "interrupted";
@@ -154,6 +165,11 @@ export interface ApprovalContinuationCoordinatorOptions {
 	};
 	readonly publishExecPolicyRules?: (rules: readonly ExecPolicyRule[]) => void;
 	readonly allowSession?: (pattern: readonly string[]) => void;
+	readonly grantPermissions?: (input: {
+		readonly turnId: string;
+		readonly scope: "turn" | "session";
+		readonly permissions: PermissionRequestProfile;
+	}) => PermissionGrant | Promise<PermissionGrant>;
 	readonly failpoint?: RuntimeFailpointHook;
 }
 
@@ -177,6 +193,7 @@ export class ApprovalContinuationCoordinator {
 	readonly #ruleStore: ApprovalContinuationCoordinatorOptions["ruleStore"];
 	readonly #publishExecPolicyRules: ApprovalContinuationCoordinatorOptions["publishExecPolicyRules"];
 	readonly #allowSession: ApprovalContinuationCoordinatorOptions["allowSession"];
+	readonly #grantPermissions: ApprovalContinuationCoordinatorOptions["grantPermissions"];
 	readonly #failpoint: RuntimeFailpointHook;
 
 	constructor(options: ApprovalContinuationCoordinatorOptions) {
@@ -190,6 +207,7 @@ export class ApprovalContinuationCoordinator {
 		this.#ruleStore = options.ruleStore;
 		this.#publishExecPolicyRules = options.publishExecPolicyRules;
 		this.#allowSession = options.allowSession;
+		this.#grantPermissions = options.grantPermissions;
 		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
 
@@ -241,6 +259,7 @@ export class ApprovalContinuationCoordinator {
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
 		readonly executionPolicy?: ExecutionPolicy;
+		readonly sandboxOverridePolicy?: ExecutionPolicy;
 	}): Promise<ApprovalContinuationResult> {
 		const checkpoint = this.#checkpoint();
 		if (!checkpoint || checkpoint.decisionId !== input.decisionId.trim()) {
@@ -287,7 +306,7 @@ export class ApprovalContinuationCoordinator {
 			const rules = await this.#ruleStore.load();
 			this.#publishExecPolicyRules(rules);
 		}
-		if (input.choice === "allow_session") {
+		if (input.choice === "allow_session" && !pending.permissionRequest) {
 			const pattern = requiredPattern(pending.commandPattern, "session approval");
 			if (!this.#allowSession) {
 				throw new ApprovalPersistenceError("Session Shell approval is not configured.");
@@ -312,8 +331,19 @@ export class ApprovalContinuationCoordinator {
 			throw new ApprovalConflictError(executing.status, "claim_effect");
 		}
 		let result: ToolExecutionResult;
+		let permissionGrant: PermissionGrant | undefined;
 		try {
 			input.onExecutionStart?.();
+			if (pending.permissionRequest) {
+				if (!this.#grantPermissions) {
+					throw new ApprovalPersistenceError("Permission grants are not configured.");
+				}
+				permissionGrant = await this.#grantPermissions({
+					turnId: pending.turnId,
+					scope: input.choice === "allow_session" ? "session" : "turn",
+					permissions: pending.permissionRequest,
+				});
+			}
 			result = await this.#toolRouter.execute(pending.call, {
 				signal: input.signal,
 				ownerSessionId: this.#sessionId,
@@ -324,9 +354,13 @@ export class ApprovalContinuationCoordinator {
 				...(toolCallRequestsSandboxOverride(pending.call)
 					? { sandboxOverrideApproved: true }
 					: {}),
+				...(input.sandboxOverridePolicy
+					? { sandboxOverridePolicy: input.sandboxOverridePolicy }
+					: {}),
 				...(pending.preparedMutationGuard
 					? { preparedMutationGuard: pending.preparedMutationGuard }
 					: {}),
+				...(permissionGrant ? { permissionGrant } : {}),
 			});
 		} catch {
 			return this.#interruptUnknown(executing);
@@ -337,7 +371,13 @@ export class ApprovalContinuationCoordinator {
 			transition: { type: "complete_effect", resultCallId: result.callId },
 			toolResult: storedToolResult(this.#sessionId, pending.clientTurnId, result),
 		});
-		return { status: "completed", checkpoint: completed, continuation: pending, toolResult: result };
+		return {
+			status: "completed",
+			checkpoint: completed,
+			continuation: pending,
+			toolResult: result,
+			...(permissionGrant ? { permissionGrant } : {}),
+		};
 	}
 
 	finish(decisionId: string): void {
@@ -413,13 +453,25 @@ function pendingFromInput(
 		toolName: nonEmpty(input.call.name, "toolName"),
 		preview: bounded(input.preview, 512),
 		reason: bounded(input.reason, 512),
-		options: approvalOptions(input.commandPattern, input.proposedExecPolicyPattern),
+		options: normalizedApprovalOptions(
+			input.options ?? approvalOptions(
+				input.commandPattern,
+				input.proposedExecPolicyPattern,
+				input.permissionRequest !== undefined,
+			),
+			input.commandPattern,
+			input.proposedExecPolicyPattern,
+			input.permissionRequest !== undefined,
+		),
 		...(input.commandPattern ? { commandPattern: requiredPattern(input.commandPattern, "command") } : {}),
 		...(input.proposedExecPolicyPattern ? {
 			proposedExecPolicyPattern: requiredPattern(input.proposedExecPolicyPattern, "persistent approval"),
 		} : {}),
 		...(input.preparedMutationGuard ? {
 			preparedMutationGuard: freezePreparedMutationGuard(input.preparedMutationGuard),
+		} : {}),
+		...(input.permissionRequest ? {
+			permissionRequest: freezePermissionRequest(input.permissionRequest),
 		} : {}),
 		providerProtocol: input.providerProtocol,
 		userMessage: input.userMessage,
@@ -454,6 +506,7 @@ function pendingFromStates(
 	const preparedMutationGuard = optionalPreparedMutationGuard(
 		metadata.prepared_mutation_guard,
 	);
+	const permissionRequest = permissionRequestFromJson(metadata.permission_request);
 	const suspendedProposal = optionalPattern(
 		suspended.payload.pending_approval?.proposed_execpolicy_pattern,
 	);
@@ -473,10 +526,16 @@ function pendingFromStates(
 		toolName: call.name,
 		preview: bounded(pending.payload.preview, 512),
 		reason: bounded(pending.payload.reason, 512),
-		options: restoredApprovalOptions(pending.payload.options, commandPattern, proposedExecPolicyPattern),
+		options: restoredApprovalOptions(
+			pending.payload.options,
+			commandPattern,
+			proposedExecPolicyPattern,
+			permissionRequest !== undefined,
+		),
 		...(commandPattern ? { commandPattern } : {}),
 		...(proposedExecPolicyPattern ? { proposedExecPolicyPattern } : {}),
 		...(preparedMutationGuard ? { preparedMutationGuard } : {}),
+		...(permissionRequest ? { permissionRequest } : {}),
 		providerProtocol: payload.provider_protocol ?? "responses",
 		userMessage: payload.user_message,
 		call,
@@ -520,6 +579,9 @@ function pendingDecisionState(
 					prepared_mutation_guard: storedPreparedMutationGuard(
 						pending.preparedMutationGuard,
 					),
+				} : {}),
+				...(pending.permissionRequest ? {
+					permission_request: permissionRequestJson(pending.permissionRequest),
 				} : {}),
 			},
 		},
@@ -738,11 +800,12 @@ type PersistedApprovalOptions =
 function approvalOptions(
 	commandPattern: readonly string[] | undefined,
 	proposedExecPolicyPattern: readonly string[] | undefined,
+	permissionRequest = false,
 ): readonly ApprovalChoice[] {
 	return Object.freeze([
 		"approve_once" as const,
 		"reject" as const,
-		...(commandPattern ? ["allow_session" as const] : []),
+		...(commandPattern || permissionRequest ? ["allow_session" as const] : []),
 		...(proposedExecPolicyPattern ? ["always_allow" as const] : []),
 	]);
 }
@@ -751,12 +814,31 @@ function restoredApprovalOptions(
 	value: readonly ApprovalChoice[],
 	commandPattern: readonly string[] | undefined,
 	proposedExecPolicyPattern: readonly string[] | undefined,
+	permissionRequest = false,
 ): readonly ApprovalChoice[] {
-	const available = new Set(approvalOptions(commandPattern, proposedExecPolicyPattern));
+	const available = new Set(approvalOptions(
+		commandPattern,
+		proposedExecPolicyPattern,
+		permissionRequest,
+	));
 	const restored = value.filter((choice): choice is ApprovalChoice => available.has(choice));
 	return restored.includes("approve_once") && restored.includes("reject")
 		? Object.freeze(restored)
-		: approvalOptions(commandPattern, proposedExecPolicyPattern);
+		: approvalOptions(commandPattern, proposedExecPolicyPattern, permissionRequest);
+}
+
+function normalizedApprovalOptions(
+	value: readonly ApprovalChoice[],
+	commandPattern: readonly string[] | undefined,
+	proposedExecPolicyPattern: readonly string[] | undefined,
+	permissionRequest: boolean,
+): readonly ApprovalChoice[] {
+	return restoredApprovalOptions(
+		persistedOptions(value),
+		commandPattern,
+		proposedExecPolicyPattern,
+		permissionRequest,
+	);
 }
 
 function persistedOptions(options: readonly ApprovalChoice[]): PersistedApprovalOptions {

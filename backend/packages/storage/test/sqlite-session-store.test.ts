@@ -3,7 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { RuntimeTurnRecord } from "@mycli/contracts";
+import {
+	TURN_INTERRUPTED_NOTICE,
+	turnFailedNoticeId,
+	turnFailureNotice,
+	turnInterruptedNoticeId,
+	type RuntimeTurnRecord,
+} from "@mycli/contracts";
 import type {
 	CanonicalConversationItem,
 	CanonicalContextMetadata,
@@ -52,6 +58,7 @@ interface FailStoredTurnInput {
 	readonly clientTurnId: string;
 	readonly code: RuntimeErrorCode;
 	readonly message: string;
+	readonly additionalDetails?: string;
 	readonly diagnostics?: Readonly<Record<string, string | number | boolean | null>>;
 	readonly completedAt: string;
 }
@@ -1311,8 +1318,9 @@ test("persists a failed turn without adding partial assistant content", async (t
 	const failed = store.failTurn({
 		sessionId: "session-1",
 		clientTurnId: "client-1",
-		code: "provider_error",
-		message: "provider request failed",
+		code: "invalid_request",
+		message: "provider rejected the request",
+		additionalDetails: "Invalid schema api_key=private-value (status 400)\n at request (/Users/private/app.ts:1:2)",
 		diagnostics: {
 			status: 400,
 			provider_error_code: "invalid_function_parameters",
@@ -1321,9 +1329,10 @@ test("persists a failed turn without adding partial assistant content", async (t
 	});
 
 	assert.equal(failed.status, "failed");
-	assert.equal(failed.error_code, "provider_error");
+	assert.equal(failed.error_code, "invalid_request");
 	assert.deepEqual(failed.result, {
-		message: "provider request failed",
+		message: "provider rejected the request",
+		additional_details: "Invalid schema api_key=[REDACTED] (status 400)",
 		diagnostics: {
 			status: 400,
 			provider_error_code: "invalid_function_parameters",
@@ -1332,6 +1341,30 @@ test("persists a failed turn without adding partial assistant content", async (t
 	assert.deepEqual(store.loadConversation("session-1"), [
 		{ role: "user", content: "inspect the repository" },
 	]);
+	assert.deepEqual(
+		store.loadHistoryItems("session-1").filter((item) => item.id === turnFailedNoticeId(failed.turn_id)),
+		[{
+			id: turnFailedNoticeId(failed.turn_id),
+			thread_id: "session-1",
+			turn_id: failed.turn_id,
+			type: "error",
+			text: turnFailureNotice(
+				"invalid_request",
+				"provider rejected the request",
+			),
+			tool_name: null,
+			call_id: null,
+			metadata: {
+				event_kind: "turn_failed",
+				failed_turn_id: failed.turn_id,
+				status: "failed",
+				code: "invalid_request",
+				source: "runtime",
+				additional_details: "Invalid schema api_key=[REDACTED] (status 400)",
+			},
+		}],
+	);
+	assert.doesNotMatch(JSON.stringify(failed), /private-value/u);
 });
 
 test("failing a turn closes every pending tool call before later replay", async (t) => {
@@ -1413,6 +1446,12 @@ test("interrupting a turn closes every pending tool call as tool_interrupted", a
 	`).get("session-1") as { payload_json: string };
 	const payload = JSON.parse(row.payload_json) as { metadata?: { error_kind?: string } };
 	assert.equal(payload.metadata?.error_kind, "tool_interrupted");
+	const notices = store.loadHistoryItems("session-1")
+		.filter((item) => item.id === turnInterruptedNoticeId(interrupted.turn_id));
+	assert.deepEqual(notices.map((item) => [item.type, item.text]), [
+		["warning", TURN_INTERRUPTED_NOTICE],
+	]);
+	assert.equal(JSON.stringify(conversation).includes(TURN_INTERRUPTED_NOTICE), false);
 });
 
 test("targeted worker recovery persists pending results and one turn-aborted marker", async (t) => {
@@ -1452,6 +1491,12 @@ test("targeted worker recovery persists pending results and one turn-aborted mar
 	assert.equal(conversation.filter(
 		(item) => item.type === "context" && item.metadata.kind === "turn_aborted",
 	).length, 1);
+	assert.equal(
+		store.loadHistoryItems("session-1").filter(
+			(item) => item.id === turnInterruptedNoticeId(reservation.turn.turn_id),
+		).length,
+		1,
+	);
 });
 
 test("targeted recovery terminalizes started effects once with exact canonical outcomes", async (t) => {

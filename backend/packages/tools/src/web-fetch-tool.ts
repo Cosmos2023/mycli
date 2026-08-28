@@ -7,6 +7,7 @@ import type { LookupFunction } from "node:net";
 import { TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
 import { parse, type DefaultTreeAdapterMap } from "parse5";
 import { WEB_FETCH_TOOL_DEFINITION } from "./manifest.ts";
+import { networkDomainAllowed } from "./execution-policy.ts";
 import type {
 	ToolAdapter,
 	ToolAdapterResult,
@@ -86,6 +87,10 @@ export class WebFetchTool implements ToolAdapter {
 		} catch (error) {
 			return failureFrom(error, "invalid_url");
 		}
+		const networkDomains = options.executionPolicy.networkDomains;
+		if (!networkDomainAllowed(url.hostname, networkDomains)) {
+			return failure("network_domain_denied", "The target domain is not allowed by the active execution policy.");
+		}
 		const controller = new AbortController();
 		let timedOut = false;
 		const onAbort = (): void => { controller.abort(options.signal.reason); };
@@ -96,7 +101,7 @@ export class WebFetchTool implements ToolAdapter {
 			controller.abort(new DOMException("web fetch timed out", "AbortError"));
 		}, this.#timeoutMs);
 		try {
-			const fetched = await this.#followRedirects(url, controller.signal);
+			const fetched = await this.#followRedirects(url, controller.signal, networkDomains);
 			const content = projectContent(fetched.response, fetched.url);
 			return {
 				success: true,
@@ -123,6 +128,7 @@ export class WebFetchTool implements ToolAdapter {
 	async #followRedirects(
 		initialUrl: URL,
 		signal: AbortSignal,
+		networkDomains: readonly string[] | undefined,
 	): Promise<{ url: URL; response: WebFetchResponse; redirectCount: number }> {
 		let url = initialUrl;
 		for (let redirects = 0; ; redirects += 1) {
@@ -148,6 +154,12 @@ export class WebFetchTool implements ToolAdapter {
 					throw new WebFetchFailure("unsafe_redirect", "Redirect target is not public.");
 				}
 				throw new WebFetchFailure("invalid_redirect", "Redirect target is invalid.");
+			}
+			if (!networkDomainAllowed(url.hostname, networkDomains)) {
+				throw new WebFetchFailure(
+					"network_domain_denied",
+					"Redirect target is not allowed by the active execution policy.",
+				);
 			}
 		}
 	}

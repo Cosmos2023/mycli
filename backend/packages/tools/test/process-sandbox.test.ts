@@ -27,6 +27,43 @@ test("full access preserves the original process argv", async (t) => {
 	});
 });
 
+test("domain-constrained full access preserves filesystem access but keeps Shell offline", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const outside = await temporaryWorkspace(t);
+	const policy = {
+		...executionPolicy("full-access", workspace),
+		networkDomains: ["api.example.com"],
+	} as const;
+
+	const mac = prepareSandboxedProcess(["/usr/bin/true"], {
+		...policy,
+		workspaceRoot: workspace,
+		cwd: outside,
+	}, probes("darwin", ["/usr/bin/sandbox-exec"]));
+	const macProfile = mac.args[mac.args.indexOf("-p") + 1] ?? "";
+	assert.match(macProfile, /allow file-write\*/u);
+	assert.doesNotMatch(macProfile, /allow network-outbound/u);
+
+	const linux = prepareSandboxedProcess(["/usr/bin/true"], {
+		...policy,
+		workspaceRoot: workspace,
+		cwd: outside,
+	}, probes("linux", ["/usr/bin/bwrap"]));
+	assertArgumentWindow(linux.args, ["--bind", "/", "/"]);
+	assert.equal(linux.args.includes("--unshare-net"), true);
+
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const windows = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], {
+		...policy,
+		workspaceRoot: workspace,
+		cwd: outside,
+	}, {
+		...probes("win32", [helper]),
+		windowsHelperPath: helper,
+	});
+	assert.equal(JSON.parse(windows.args[1] ?? "").network, "disabled");
+});
+
 test("macOS uses the fixed seatbelt executable and protects repository metadata", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	await Promise.all([".git", ".agents", ".codex"].map((name) => mkdir(join(workspace, name))));

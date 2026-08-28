@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { Worker } from "node:worker_threads";
 import type { NodeBackend, StartNodeBackendOptions } from "./node-backend.ts";
@@ -73,6 +74,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 			cwd: options.cwd,
 			env: { ...options.env },
 			args: [...options.args],
+			sessionOwnerId: options.sessionOwnerId ?? randomUUID(),
 			...(options.maxOutputTokens === undefined
 				? {}
 				: { maxOutputTokens: options.maxOutputTokens }),

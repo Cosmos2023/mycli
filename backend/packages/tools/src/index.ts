@@ -4,11 +4,28 @@ export {
 	EDIT_TOOL_DEFINITION,
 	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
+	REQUEST_PERMISSIONS_TOOL_DEFINITION,
 	TOOL_SEARCH_TOOL_DEFINITION,
 	UPDATE_PLAN_TOOL_DEFINITION,
 	WEB_FETCH_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
 } from "./manifest.ts";
+export { RequestPermissionsTool } from "./request-permissions-tool.ts";
+export type { RequestPermissionsToolOptions } from "./request-permissions-tool.ts";
+export {
+	freezePermissionRequest,
+	parsePermissionRequest,
+	pathWithinRoot,
+	permissionRequestJson,
+	permissionRequestFromJson,
+	permissionRequestPreview,
+	permissionRequestSatisfied,
+	REQUEST_PERMISSIONS_TOOL_NAME,
+} from "./permission-grants.ts";
+export type {
+	PermissionGrant,
+	PermissionRequestParseResult,
+} from "./permission-grants.ts";
 export { AskUserQuestionTool } from "./ask-user-question-tool.ts";
 export { UpdatePlanTool } from "./update-plan-tool.ts";
 export { ToolSearchTool } from "./tool-search-tool.ts";
@@ -37,7 +54,13 @@ export type { LoadLocalImagesOptions } from "./local-image-loader.ts";
 export { combinedToolManifest } from "./combined-manifest.ts";
 export { planToolExposure } from "./exposure-planner.ts";
 export type { ToolExposureCapabilities } from "./exposure-planner.ts";
-export { executionPolicy } from "./execution-policy.ts";
+export {
+	executionPolicy,
+	hasUnrestrictedFilesystem,
+	hasUnrestrictedNetwork,
+	networkDomainAllowed,
+	normalizeNetworkDomains,
+} from "./execution-policy.ts";
 export type {
 	ExecutionPolicy,
 	FilesystemPolicy,
@@ -304,6 +327,7 @@ export type {
 	ToolExecutionOptions,
 	ToolExecutionResult,
 	ToolManifestEntry,
+	ToolPermissionGrant,
 	ToolPreviewOptions,
 	ToolRouterContract,
 } from "./types.ts";

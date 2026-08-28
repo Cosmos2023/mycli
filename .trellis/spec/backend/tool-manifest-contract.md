@@ -70,6 +70,10 @@ Each tool entry must include:
 - `ToolRegistry.render_for_model()` remains the provider-facing schema surface;
   manifest additions must not change provider schema ordering or contents unless
   the tool spec itself intentionally changes.
+- The built-in manifest and router retain `AskUserQuestion`, but the runtime exposes
+  it to the provider only for turns frozen in Plan mode. Default-mode turns ask
+  necessary questions through ordinary assistant text. A mode change affects the
+  next turn and must not mutate the tool set frozen for an active turn.
 - The provider-visible `Patch` schema has one required `operations` array with
   one to 64 ordered `add`, `update`, `delete`, or `move` objects. Each variant
   rejects additional properties. The only other top-level Patch fields are the
@@ -174,6 +178,10 @@ Required tests for manifest changes:
 
 - The resolved executable adapter is the sole concurrency authority. Capability
   absence and every value other than exact `true` mean sequential execution.
+- Built-in model instructions should ask for independent parallel-capable calls
+  together in one response and identify the current built-in capability split.
+  This is scheduling guidance only: the resolved adapter and execution policy
+  remain authoritative and may serialize any returned batch.
 - Built-in `Read`, `web_fetch`, `tool_search`, and the modern one-shot `Shell`
   adapter opt in. `Shell` approval and sandbox authorization remain independent
   per call. File mutations, planning, interaction, polling, subagent coordination,
@@ -552,6 +560,13 @@ skill synchronization remain out of scope.
   implicit `maxTurns=8` and `noProgressTurnLimit=3` defaults must not be reintroduced.
 - `SendMessage` and `SubagentOutput` are absent from runtime composition and provider definitions;
   queue delivery uses `send_message` and terminal results arrive through the durable mailbox.
+- The provider-visible system prompt and coordination-tool descriptions treat every spawned child
+  as outstanding parent work until it reaches a terminal state. The parent continues independent
+  work first, uses `wait_agent` when none remains, and incorporates relevant mailbox reports before
+  its final answer unless the user explicitly requested detached background work.
+- A `wait_agent` timeout is not a terminal child state. The parent waits again while relevant work
+  remains outstanding and may use `list_agents` after compaction, resume, or uncertain state; it
+  must not poll subagent output through shell commands or a compatibility output route.
 
 ### 4. Validation & Error Matrix
 
@@ -588,6 +603,8 @@ skill synchronization remain out of scope.
 - Subagent schema/controller/runtime tests assert `spawn_agent` is the only spawn route, profile
   properties are absent, parent tools are inherited, missing budgets remain empty, and turns can
   exceed the retired implicit defaults.
+- System-prompt and coordination-definition tests assert the parent wait/consume/integrate
+  lifecycle, timeout semantics, and compaction/resume recovery guidance.
 - The frozen M7 fixture records the approved absence of implicit child budgets.
 
 ### 7. Wrong vs Correct

@@ -8,6 +8,7 @@ import {
 	type ApprovalResolution,
 	type ApprovalTransition,
 	type CanonicalToolCall,
+	type PermissionRequestProfile,
 	type ShellLifecycleEvent,
 } from "@mycli/core";
 import type {
@@ -114,15 +115,23 @@ test("approval execution forwards the frozen execution policy", async () => {
 		network: "disabled" as const,
 		writableRoots: Object.freeze([] as string[]),
 	});
+	const sandboxOverridePolicy = Object.freeze({
+		mode: "workspace-write" as const,
+		filesystem: "workspace_write" as const,
+		network: "disabled" as const,
+		writableRoots: Object.freeze(["/managed"]),
+	});
 
 	await fixture.coordinator.resolve({
 		decisionId: "call-1",
 		choice: "approve_once",
 		signal: new AbortController().signal,
 		executionPolicy,
+		sandboxOverridePolicy,
 	});
 
 	assert.equal(fixture.executionOptions?.executionPolicy, executionPolicy);
+	assert.equal(fixture.executionOptions?.sandboxOverridePolicy, sandboxOverridePolicy);
 });
 
 test("approval recovery derives sandbox override authorization from the persisted Shell call", async () => {
@@ -295,6 +304,27 @@ test("allow session publishes the exact command pattern before claiming one effe
 	assert.ok(fixture.trace.indexOf("rules:allow_session") < fixture.trace.indexOf("store:claim_effect"));
 });
 
+test("permission approval restores the request and grants the selected scope before execution", async () => {
+	const fixture = approvalFixture({ permissionGrant: true });
+	fixture.coordinator.suspend(permissionSuspension());
+	assert.deepEqual(fixture.reopen().pending()?.permissionRequest, {
+		fileSystem: { read: [], write: ["/tmp/mycli-export"] },
+	});
+
+	await fixture.coordinator.resolve({
+		decisionId: "call-1",
+		choice: "allow_session",
+		signal: new AbortController().signal,
+	});
+
+	assert.deepEqual(fixture.executionOptions?.permissionGrant, {
+		scope: "session",
+		permissions: { fileSystem: { read: [], write: ["/tmp/mycli-export"] } },
+		constrained: false,
+	});
+	assert.ok(fixture.trace.indexOf("permissions:grant") < fixture.trace.indexOf("router:execute"));
+});
+
 interface CoordinatorContract {
 	suspend(input: ReturnType<typeof suspension>): PendingContract;
 	pending(): PendingContract | undefined;
@@ -304,6 +334,7 @@ interface CoordinatorContract {
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
 		readonly executionPolicy?: ToolExecutionOptions["executionPolicy"];
+		readonly sandboxOverridePolicy?: ToolExecutionOptions["sandboxOverridePolicy"];
 	}): Promise<{ readonly status: string; readonly continuation?: PendingContract }>;
 	finish(decisionId: string): void;
 	recover(): Promise<RuntimeTurnRecord | undefined> | RuntimeTurnRecord | undefined;
@@ -315,6 +346,7 @@ interface PendingContract {
 	readonly options: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly preparedMutationGuard?: PreparedMutationGuard;
+	readonly permissionRequest?: PermissionRequestProfile;
 }
 
 function approvalFixture(options: {
@@ -323,6 +355,7 @@ function approvalFixture(options: {
 	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 		readonly shellApproval?: boolean;
 	readonly refreshFailure?: boolean;
+	readonly permissionGrant?: boolean;
 } = {}) {
 	const trace: string[] = [];
 	const state = new Map<string, RuntimeStateRecord>();
@@ -457,6 +490,19 @@ function approvalFixture(options: {
 				trace.push("rules:allow_session");
 				sessionPatterns.push([...pattern]);
 			},
+			...(options.permissionGrant ? {
+				grantPermissions: (input: {
+					readonly scope: "turn" | "session";
+					readonly permissions: PermissionRequestProfile;
+				}) => {
+					trace.push("permissions:grant");
+					return {
+						scope: input.scope,
+						permissions: input.permissions,
+						constrained: false,
+					};
+				},
+			} : {}),
 		});
 	};
 	const coordinator = createCoordinator();
@@ -522,6 +568,25 @@ function shellCall(escalated = false): CanonicalToolCall {
 			prefix_rule: ["python", "-m", "pytest"],
 			...(escalated ? { sandbox_permissions: "require_escalated" } : {}),
 		}),
+	};
+}
+
+function permissionSuspension() {
+	return {
+		...suspension(),
+		call: {
+			callId: "call-1",
+			name: "request_permissions",
+			argumentsJson: JSON.stringify({
+				permissions: { file_system: { write: ["/tmp/mycli-export"] } },
+			}),
+		},
+		preview: "Request write /tmp/mycli-export",
+		reason: "Export the generated artifact.",
+		options: ["approve_once", "reject", "allow_session"] as const,
+		permissionRequest: {
+			fileSystem: { read: [], write: ["/tmp/mycli-export"] },
+		},
 	};
 }
 

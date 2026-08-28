@@ -10,6 +10,7 @@ export type TurnId = Brand<string, "TurnId">;
 export type ProviderId = "openai" | "codex" | "compatible" | "qwen" | "deepseek" | "anthropic";
 export type ProtocolId = "responses" | "chat_completions" | "anthropic_messages";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type WebSearchMode = "live" | "disabled";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
 
 export const PROVIDER_REPLAY_STATE_MAX_JSON_CHARS = 1_048_576;
@@ -49,6 +50,18 @@ export interface ApprovalPreviewDetails {
 	readonly diffTruncated?: boolean;
 }
 
+export type PermissionGrantScope = "turn" | "session";
+
+export interface PermissionRequestProfile {
+	readonly network?: {
+		readonly enabled: true;
+	};
+	readonly fileSystem?: {
+		readonly read: readonly string[];
+		readonly write: readonly string[];
+	};
+}
+
 export interface FileMutationPreviewChange {
 	readonly version: 1;
 	readonly kind: "add" | "update" | "delete" | "move";
@@ -70,6 +83,21 @@ export interface ProviderReplayState {
 	readonly provider: ProviderId;
 	readonly value: Readonly<Record<string, unknown>>;
 	readonly tokenEstimate?: number;
+}
+
+export type WebSearchAction =
+	| {
+		readonly type: "search";
+		readonly query?: string;
+		readonly queries?: readonly string[];
+	}
+	| { readonly type: "open_page"; readonly url?: string }
+	| { readonly type: "find_in_page"; readonly url?: string; readonly pattern?: string }
+	| { readonly type: "other" };
+
+export interface WebSearchCall {
+	readonly callId: string;
+	readonly action: WebSearchAction;
 }
 
 export type CanonicalContextKind =
@@ -137,6 +165,7 @@ export interface ProviderRequestConfig {
 	readonly store?: boolean;
 	readonly promptCacheKey?: string;
 	readonly cacheControlEnabled?: boolean;
+	readonly webSearchMode?: WebSearchMode;
 }
 
 export interface ProviderRequest extends ProviderRequestConfig {
@@ -156,6 +185,8 @@ export type ProviderEvent =
 	| { readonly type: "provider_state"; readonly state: ProviderReplayState }
 	| { readonly type: "usage"; readonly usage: ProviderUsage }
 	| { readonly type: "completed"; readonly responseId?: string }
+	| { readonly type: "web_search_started"; readonly callId: string }
+	| { readonly type: "web_search_completed"; readonly call: WebSearchCall }
 	| {
 		readonly type: "tool_call";
 		readonly callId: string;
@@ -195,9 +226,20 @@ export type RuntimeEvent =
 	| { readonly type: "reasoning_delta"; readonly text: string }
 	| { readonly type: "text_delta"; readonly text: string }
 	| { readonly type: "provider_usage"; readonly usage: ProviderUsage }
-	| { readonly type: "stream_retrying"; readonly attempt: number; readonly delayMs: number }
+	| {
+		readonly type: "stream_retrying";
+		readonly attempt: number;
+		readonly maxRetries: number;
+		readonly delayMs: number;
+		readonly recoveryKind: "request" | "stream";
+		readonly resetOutput: boolean;
+		readonly failureKind: RuntimeErrorCode;
+		readonly additionalDetails: string;
+	}
 	| { readonly type: "stream_recovered" }
 	| { readonly type: "message_complete"; readonly responseId?: string }
+	| { readonly type: "web_search_started"; readonly callId: string }
+	| { readonly type: "web_search_completed"; readonly call: WebSearchCall }
 	| { readonly type: "tool_call_accepted"; readonly callId: string; readonly toolName: string }
 	| (ApprovalPreviewDetails & {
 			readonly type: "file_mutation_started";
@@ -218,6 +260,7 @@ export type RuntimeEvent =
 		readonly preview: string;
 		readonly reason: string;
 		readonly options: readonly ApprovalChoice[];
+		readonly permissionRequest?: PermissionRequestProfile;
 	})
 	| {
 		readonly type: "clarification_requested";
@@ -261,8 +304,18 @@ export type RuntimeEvent =
 			readonly status: "pending" | "in_progress" | "completed";
 		}[];
 	}
-	| { readonly type: "turn_completed"; readonly assistantText: string; readonly usage: ProviderUsage }
-	| { readonly type: "turn_failed"; readonly code: RuntimeErrorCode; readonly message: string }
+	| {
+		readonly type: "turn_completed";
+		readonly assistantText: string;
+		readonly usage: ProviderUsage;
+		readonly durationMs?: number;
+	}
+	| {
+		readonly type: "turn_failed";
+		readonly code: RuntimeErrorCode;
+		readonly message: string;
+		readonly additionalDetails?: string;
+	}
 	| { readonly type: "turn_interrupted"; readonly message: string };
 
 export type ApprovalChoice =

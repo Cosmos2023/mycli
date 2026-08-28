@@ -1,4 +1,7 @@
-import type { SandboxProfile } from "../execution-policy.ts";
+import {
+	hasUnrestrictedNetwork,
+	type SandboxProfile,
+} from "../execution-policy.ts";
 import type { SandboxedProcessLaunch } from "../process-sandbox.ts";
 
 export const WINDOWS_SANDBOX_PROTOCOL_VERSION = 1;
@@ -15,7 +18,7 @@ export function windowsRestrictedTokenLaunch(
 		workspace_roots: [profile.workspaceRoot],
 		writable_roots: [...profile.writableRoots],
 		filesystem: profile.filesystem,
-		network: profile.network,
+		network: hasUnrestrictedNetwork(profile) ? "enabled" : "disabled",
 		mode: profile.mode,
 	};
 	return Object.freeze({

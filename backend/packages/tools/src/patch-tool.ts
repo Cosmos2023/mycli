@@ -41,6 +41,7 @@ export class PatchTool implements ToolAdapter {
 				const prepared = await this.#runtime.preparePatch({
 					operations,
 					allowOutsideWorkspace: sandbox.allowOutsideWorkspace,
+					allowedWritableRoots: sandbox.allowedWritableRoots,
 					signal: options.signal,
 				});
 				return Object.freeze({
@@ -76,6 +77,7 @@ export class PatchTool implements ToolAdapter {
 			const outcomes = await this.#runtime.patch({
 				operations,
 				allowOutsideWorkspace: sandbox.allowOutsideWorkspace,
+				allowedWritableRoots: sandbox.allowedWritableRoots,
 				history: {
 					turnId: options.ownerTurnId ?? options.callId,
 					toolName: "Patch",

@@ -31,8 +31,41 @@ test("accepts a typed turn.failed notification", () => {
 			turn_id: "turn-1",
 			message: "Authentication failed.",
 			code: "auth_error",
+			additional_details: "status 401",
 		},
 	}));
+});
+
+test("bounds turn.failed additional details", () => {
+	assert.throws(() => contracts.parseGatewayEvent({
+		jsonrpc: "2.0",
+		method: "turn.failed",
+		params: {
+			client_turn_id: "client-1",
+			turn_id: "turn-1",
+			message: "Provider request failed.",
+			code: "provider_error",
+			additional_details: "x".repeat(1_001),
+		},
+	}));
+});
+
+test("requires the complete turn.failed identity and diagnostic", () => {
+	const params = {
+		client_turn_id: "client-1",
+		turn_id: "turn-1",
+		message: "Authentication failed.",
+		code: "auth_error",
+	};
+	for (const field of ["client_turn_id", "turn_id", "message", "code"] as const) {
+		const incomplete: Record<string, unknown> = { ...params };
+		delete incomplete[field];
+		assert.throws(() => contracts.parseGatewayEvent({
+			jsonrpc: "2.0",
+			method: "turn.failed",
+			params: incomplete,
+		}));
+	}
 });
 
 test("accepts M3 tool runtime failures in durable turns and gateway events", () => {
@@ -50,6 +83,34 @@ test("accepts M3 tool runtime failures in durable turns and gateway events", () 
 				client_turn_id: "client-1",
 				turn_id: "turn-1",
 				message: "Tool turn failed.",
+				code,
+			},
+		}));
+	}
+});
+
+test("accepts transport and provider policy failures across durable and gateway contracts", () => {
+	for (const code of [
+		"permission_denied",
+		"invalid_request",
+		"connection_error",
+		"response_stream_error",
+		"server_overloaded",
+		"quota_exceeded",
+	] as const) {
+		assert.doesNotThrow(() => contracts.parseRuntimeTurnRecord({
+			...completedTurn,
+			status: "failed",
+			error_code: code,
+			result: { message: "Provider failed." },
+		}));
+		assert.doesNotThrow(() => contracts.parseGatewayEvent({
+			jsonrpc: "2.0",
+			method: "turn.failed",
+			params: {
+				client_turn_id: "client-1",
+				turn_id: "turn-1",
+				message: "Provider failed.",
 				code,
 			},
 		}));

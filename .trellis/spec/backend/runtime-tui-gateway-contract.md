@@ -252,9 +252,20 @@ and tool execution. A later permission change does not affect a running turn.
   - `kind`: renderable status kind, normally the same as `state`
   - `text`: human-readable short status
   - `client_turn_id`: optional string linking the status to the submitted turn
-  - `message`: optional bounded diagnostic detail for terminal or exceptional
-    states, such as an interrupt request
+  - `message`: optional bounded detail for exceptional state transitions such
+    as an interrupt request. Provider failure diagnostics belong exclusively to
+    `turn.failed` and must not be repeated here.
   - `severity`: optional string for future warning/error display
+- `turn.completed` may include authoritative `duration_ms`, measured from the
+  persisted turn's `started_at` through `completed_at` and bounded to 24 hours.
+  The same completion transaction appends one model-hidden `turn_completed`
+  display item containing only the bounded numeric duration. Live events and
+  `transcript.load` use the same stable turn-derived item id, so the TUI renders
+  one static `✻ <completion phrase> ...` row separated from the preceding
+  transcript by one blank row. The phrase is selected deterministically from a
+  small approved set using the stable item id, so turns vary without flickering
+  or changing after resume. Older gateways may fall back to the local running
+  timer; replay never recalculates elapsed time from wall-clock timestamps.
 - `approval.request` payload:
   - `decision_id`: stable string for the pending approval. Prefer the source
     tool call id when present; fall back to `decision_current` only when no
@@ -319,15 +330,53 @@ and tool execution. A later permission change does not affect a running turn.
     free-form text.
 - `clarify.respond` notification payload:
   - `client_turn_id`: string for the clarification-resolution turn.
+  - `turn_id`: stable owning turn id.
   - `request_id`: the resolved clarification request id.
-  - `response`: bounded response preview for UI/diagnostics. Do not include
-    secrets or unbounded text.
+  - `header`: optional bounded short label copied from the request.
+  - `question`: bounded question text copied from the request.
+  - `response`: bounded user response for the durable TUI transcript block.
+  - `multi_select`: boolean copied from the request.
 - `turn.completed` must include `client_turn_id`, `assistant_message`,
   `activity_events`, `progress_updates`, `plan_steps`, `pending_decision`,
   `turn_state`, and `usage`. A response with `pending_decision` maps to
   `waiting_approval`; a turn record with `WAITING_CLARIFICATION` maps to
   `waiting_clarification`; a turn record with `REJECTED` maps to `rejected`;
   otherwise it maps to `completed`.
+- `stream.retrying` is transient status, not transcript. It carries bounded
+  `attempt`, `max_retries`, delay, failure kind, and optional sanitized
+  `additional_details`. A structured upstream `error.message` may appear only after control/stack
+  removal, credential redaction, and length bounding; raw provider exception messages,
+  response bodies, and stacks must not cross into TUI text.
+- Stable Provider failure kinds distinguish credentials/policy, caller
+  correction, transport/stream, service health, and account throttling. In
+  particular, `connection_error` before output and `response_stream_error`
+  after output remain separate so clients can explain recovery without parsing
+  human text. `server_overloaded` remains retryable, while `quota_exceeded` is
+  terminal and must not be rendered as a transient rate limit.
+- Retry status text is taxonomy-driven: connection and response-stream recovery
+  use `Reconnecting...`; overload, rate-limit, and other retryable failures use
+  `Retrying...`. Gateway and TUI code must not infer this distinction from the
+  rendered failure message.
+- A terminal failed turn appends exactly one model-hidden `error` display item
+  with a stable turn-derived id and canonical public text in the same storage
+  transaction as terminalization. The main text remains concise; the same
+  sanitized Provider context shown while retrying is stored separately as
+  `additional_details`. Live events and `transcript.load` render the same item,
+  while duplicate terminal notifications remain idempotent.
+- `backend/packages/contracts/src/runtime-errors.ts` is the canonical taxonomy
+  and public-message module. It also owns the exhaustive optional recovery-hint
+  mapping. Provider, runtime, Worker RPC, storage, gateway, and TUI code must
+  not maintain separate runtime error-code lists, fallback message switches, or
+  hint maps.
+- `gateway.error` is request-scoped. It may add a bounded error notice but must
+  not terminalize an otherwise active turn; `turn.failed` owns terminal state
+  and closes foreground tools still shown as running.
+- TUI-facing error text is bounded, strips terminal controls and stack frames,
+  redacts credential-shaped values, rejects failure text without the expected stable
+  taxonomy prefix, and never includes raw Node internals.
+- A fatal custom-TUI render error restores terminal ownership before shutdown
+  and writes only a private redacted diagnostic record to
+  `~/.mycli/logs/tui-errors.log`; transcript content is not copied there.
 - `plan.proposed` payload:
   - `client_turn_id`: string for the turn that produced the plan.
   - `text`: Markdown content extracted from a Codex-style
@@ -362,7 +411,8 @@ and tool execution. A later permission change does not affect a running turn.
   - `text`: human-readable short status
   - `terminal`: boolean; true for `completed`, `failed`, `interrupted`, and
     `rejected`; false for `waiting_approval` and `waiting_clarification`
-  - `message`: optional failure, interruption, or rejection detail
+  - `message`: optional interruption or rejection detail. Provider failure
+    diagnostics belong exclusively to `turn.failed`.
   - Existing terminal method-name events remain the compatibility path. The
     gateway emits the existing event first, then `turn.status`, then
     `status.update` where applicable.
@@ -410,6 +460,21 @@ and tool execution. A later permission change does not affect a running turn.
   - Storage closes every interrupted pending canonical tool call with a
     synthetic failed result using `error_kind=tool_interrupted`; ordinary turn
     failures continue to use `tool_result_unavailable`.
+  - The same interrupted-turn storage transaction appends exactly one
+    model-hidden `warning` display item with a stable turn-derived id and the
+    canonical interrupted-turn notice. The separate `turn_aborted` context
+    marker remains model-visible and hidden from readable transcript projection.
+  - Live interruption and `transcript.load` resume projection render that
+    display item through the ordinary warning row. Repeated terminal events or
+    targeted recovery must not duplicate it.
+  - Readable projection also synthesizes the same warning for historical turns
+    that have an interrupted lifecycle or rollout but predate the display item.
+    This compatibility projection is read-only and must deduplicate a newer
+    persisted warning for the same turn.
+  - Readable pagination keeps the model-visible `turn_aborted` context marker
+    in its adjacent interrupted-turn group even though the marker has no
+    `turn_id`; complete, recent, and paged projections must produce the same
+    single warning.
   - TUI reducers defensively terminalize any foreground tool still marked
     `running` when a terminal interruption arrives. Detached background shell
     sessions remain running and continue through their own lifecycle.
@@ -831,6 +896,14 @@ queue.markStarted(record.queueId);
     approval response keybindings.
   - `pendingClarification` is cleared by `clarify.respond`, terminal status, or
     a `status.changed` snapshot with `suspended_turn === false`.
+  - An accepted `clarify.respond` replaces the transient question row with one
+    resolved clarification transcript block containing the original header,
+    question, and answer. It is not rendered as an ordinary user message or a
+    generic `AskUserQuestion` tool row.
+  - Clarification resolution is persisted as model-hidden display activity in
+    the same transaction as the model-visible original tool result. Live and
+    resumed sessions therefore render the same resolved block without adding
+    display-only text to provider context.
   - In the clarification selector, `Esc`/the cancel key interrupts the owning
     suspended turn (the custom-answer subview uses `Esc` first to return to the
     option list). The selector remains mounted until the confirmed interrupted
@@ -887,16 +960,29 @@ queue.markStarted(record.queueId);
     mirrors into visible state until a transport preference/dedup strategy is
     introduced.
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
-  - `turn.status(state=failed, terminal=true)` with a bounded `message` appends
-    one recoverable `error` transcript row so terminal failed `TurnResponse`
-    paths remain visible after later turns. If an adjacent `turn.failed` event
-    already produced the same error, the reducer must keep a single row.
+  - `turn.failed` is the sole live terminal-failure content event. It appends
+    the recoverable error row and closes foreground tools. `turn.status` and
+    `status.update` update state only and never append transcript errors or
+    repeat Provider diagnostics. Once the terminal error is in the transcript,
+    the idle status surface must not echo the same failure below it.
   - `gateway.error` appends an `error` transcript row without mutating turn
     status unless a separate `turn.failed` or `status.update` also arrives.
   - `error` and `warning` transcript rows may render a secondary diagnostic line
-    from allowlisted metadata (`source`, `method`, `code`). They must not dump
+    from allowlisted metadata (`additional_details`, `source`, `method`, `code`).
+    `additional_details` is error-only, sanitized, and capped at 1,000 characters.
+    A validated runtime `code` may additionally derive a non-persisted recovery
+    hint through `runtimeErrorRecoveryHint()`. The reducer must not parse
+    Provider text to invent guidance. When a hint exists, the one logical
+    secondary line shows the hint and safe detail instead of repeating
+    technical code/source labels; those fields remain available in structured
+    state.
+    These rows must not dump
     raw payloads, nested objects, request bodies, headers, or secret-like
     values.
+  - Runtime error display severity is derived from the shared error code, not
+    Provider text. A terminal `server_overloaded` row renders as one warning
+    notice, while its turn state remains failed. Live events and resumed error
+    items must project the same severity and stable notice identity.
   - JSON-RPC response errors from `GatewayClient.send(...)` reject with a
     request error carrying the original request method and error code. The
     RuntimeApp dispatches those as local `request.failed` actions so request
@@ -906,10 +992,14 @@ queue.markStarted(record.queueId);
   - If a local `request.failed` action and a `gateway.error` notification carry
     the same `code`, `method`, and `message` close together, the reducer keeps
     one visible error row to avoid double-reporting the same request failure.
-  - The input area should render a compact context-sensitive hint derived from
-    local TUI state. Completion popup, approval, clarification, running turn,
-    and normal input modes should each expose the most relevant keyboard action
-    without changing runtime or gateway semantics.
+  - The input area should render compact context-sensitive hints derived from
+    local TUI state. Completion popup, approval, clarification, and running-turn
+    modes expose the actions needed for the active interaction. Normal idle
+    input omits permanent `enter send` and `ctrl+p commands` footer text; the
+    cwd/session context remains on the left while context/model status is
+    right-aligned on the same row. The header, command palette, and `/help`
+    retain command discoverability without spending a persistent footer row on
+    obvious actions.
   - `/help` should be handled as a Node-local command that opens the existing
     overlay surface with static TUI key/action guidance. Non-local slash
     commands should continue to route to the gateway.
@@ -1029,8 +1119,10 @@ queue.markStarted(record.queueId);
 - Turn completes without a pending decision -> emit `turn.completed` with
   `turn_state=completed`, then `turn.status` with `state=completed` and
   `terminal=true`, then `status.update` with `completed`.
-- Turn raises -> emit `turn.failed`, then `turn.status` with `state=failed`,
-  `terminal=true`, and a bounded `message`, then `status.update` with `failed`.
+- Turn raises -> emit `turn.failed` with the complete bounded `code`, canonical
+  `message`, and optional sanitized `additional_details`, then state-only
+  `turn.status(state=failed, terminal=true)` and
+  `status.update(state=failed)` notifications without Provider diagnostics.
 - Unexpected request-handler exception outside a turn worker -> return
   JSON-RPC `internal_error`, emit `gateway.error`, and mirror it through
   `runtime.event`.
@@ -1063,6 +1155,8 @@ queue.markStarted(record.queueId);
 - Good: TUI sends a plain text `clarify.respond` while clarification is
   pending, and the runtime resumes the suspended turn with the answer as the
   original `AskUserQuestion` tool result.
+- Good: after the response is accepted, TUI retains one compact header,
+  question, and answer block; reopening the session produces the same block.
 - Good: TUI lets a user type `1` or `TUI` for a single-select clarification
   option and sends the canonical option label in `clarify.respond`.
 - Good: TUI pressing `Esc` while the clarification options are visible sends
@@ -1101,6 +1195,10 @@ queue.markStarted(record.queueId);
   empty.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   reasoning previews, `Waiting approval`, `Resolving approval`, or `Failed`.
+- Good: Generic running and thinking labels use a short phrase selected
+  deterministically for the active turn. Spinner frames, elapsed-time updates,
+  and redraws keep that phrase stable; explicit phases such as
+  `Compressing context`, approval waits, and reconnecting remain unchanged.
 - Good: A request-level gateway failure is visible as `gateway.error` without
   inventing a failed turn.
 - Good: A rejected `approval.respond` request is visible as one error row even
@@ -1198,6 +1296,9 @@ queue.markStarted(record.queueId);
 - Reducer/rendering/status tests proving Node TUI consumes `clarify.request`,
   stores `pendingClarification`, renders a distinct clarification row, supports
   `runtime.event` envelope unwrap, and shows `clarification pending` metadata.
+- Reducer and readable-transcript tests proving `clarify.respond` becomes one
+  resolved clarification block in both the live event order (`turn.started`
+  before `clarify.respond`) and session resume projection.
 - Session-service test proving `SuspendedTurn` persists and reloads pending
   clarification state.
 - Runtime test proving `AskUserQuestion` pauses with
@@ -1222,8 +1323,19 @@ queue.markStarted(record.queueId);
   deduplicates a matching `gateway.error`.
 - Rendering tests proving error diagnostics show only bounded allowlisted
   metadata fields.
+- Provider failure tests proving a sanitized upstream detail renders identically
+  from live terminal events and durable resume projection, while arbitrary exception
+  text, stacks, controls, and credentials remain hidden.
+- Contracts/reducer/rendering tests proving recovery hints are exhaustive,
+  code-derived, non-persisted, identical live and after `/resume`, and safe at
+  narrow terminal widths. Exact SDK `status code (no body)` text is hidden while
+  structured status/request-id detail remains visible.
+- Reducer tests proving `server_overloaded` remains one terminal notice, uses
+  warning severity, and has identical live and resumed projection.
 - Rendering tests proving contextual input hints change with completion,
-  approval, clarification, running, and normal modes.
+  approval, clarification, and running modes, while normal idle input omits
+  permanent send/command footer hints and aligns context/model status at the
+  right edge of the cwd/session row.
 - Local-command tests proving `/help` opens an overlay while non-local commands
   still route to the gateway.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
@@ -1276,6 +1388,14 @@ queue.markStarted(record.queueId);
   failed, and interrupted paths when those paths are changed.
 - Gateway tests for `turn.status` on completed, waiting approval, failed,
   interrupted, and approval-resolution paths when those paths are changed.
+- Gateway and reducer tests proving `turn.failed` alone carries and renders the
+  Provider diagnostic while the following failed status notifications remain
+  state-only.
+- Storage and reducer tests proving the interrupted-turn warning is model-hidden,
+  appears exactly once live, and is restored by `transcript.load` after resume.
+- Storage, gateway, reducer, and rendering tests proving completed-turn duration
+  is model-hidden, appears exactly once live, and is restored with the same
+  formatting by `transcript.load` after resume.
 - Gateway unit test proving `trace.export` returns unprefixed JSONL rows and
   honors bounded `tail` behavior.
 - Gateway unit test proving `extension.manifest` returns the service manifest.
@@ -1624,6 +1744,9 @@ await gatewayStartup;
 ### 2. Signatures
 - `SessionCoordinator.resume(sessionId) -> Promise<ActiveSessionSnapshot>`
 - `SessionCoordinator.startNew() -> Promise<ActiveSessionSnapshot>`
+- `SessionLeaseStore.acquireSessionLease(sessionId) -> boolean` (`true` only for a newly acquired or
+  stale-owner takeover lease; `false` for the same backend owner)
+- `SessionLeaseStore.releaseSessionLease(sessionId) -> void`
 - `SessionCoordinator.markExecuting(context, executing) -> boolean`
 - Gateway RPCs: `session.list`, `session.new`, `session.resume`, `session.tree`,
   `transcript.load`, and `turn.submit`.
@@ -1634,6 +1757,18 @@ await gatewayStartup;
 - Resume uses prepare/commit: load and validate transcript, queue, suspended
   approval, compaction state, continuation state, workspace, and runtime
   binding before incrementing the active generation.
+- Every live backend owns an operational SQLite lease for every root session runtime loaded by that
+  window. Initial startup acquires the lease before recovery or preparation. Cross-session resume
+  acquires the target before preparation and releases a newly acquired target on preparation
+  failure. A successful switch retains the source lease because its background Shells, subagents,
+  mailbox deliveries, and cached runtime may still write; backend close releases all owned sessions.
+  Same-session resume is idempotent.
+- Lease ownership is backend-window-scoped. A different live process cannot acquire the same session;
+  a stale owner PID may be atomically replaced after an abnormal exit. Releases are conditional on
+  both session id and owner id so an old process cannot delete a successor's lease.
+- Fork and subagent-child creation acquire the target session lease in the same SQLite transaction
+  that first exposes the target. A live `agent_runtime_leases` owner also blocks root-session
+  acquisition of that child, including from another backend in the same OS process.
 - New-session creation uses the same transition claim and generation commit. It installs a fresh
   backend runtime binding with an empty transcript and queue; the TUI must not clear local arrays
   or fabricate a session id independently.
@@ -1664,6 +1799,8 @@ await gatewayStartup;
 
 ### 4. Validation & Error Matrix
 - Missing resume target -> `session_not_found`; do not create a session.
+- Session owned by another live mycli process -> `session_in_use`; keep the active generation and
+  emit no target-session events.
 - Missing new-session factory -> `session_state_invalid`; keep the active generation unchanged.
 - Invalid or cross-session queue, suspended turn, approval, transcript, or
   continuation identity -> `session_state_invalid` with a fixed message.
@@ -1678,6 +1815,10 @@ await gatewayStartup;
 ### 5. Good/Base/Bad Cases
 - Good: Claim transition, prepare target state, commit one generation, then
   emit the ordered target snapshot events.
+- Good: two windows share one sessions database; the first owns session A, the second receives
+  `session_in_use`, and can acquire A after the first window closes.
+- Good: window one switches from A to B while an A background Shell completes; window two remains
+  unable to resume A until window one closes, so only one backend can persist A lifecycle events.
 - Good: `/new` creates a distinct backend session id, emits `session.changed`, and becomes durable
   on its first accepted turn.
 - Good: Claim execution for the current generation, reserve the turn, and
@@ -1694,7 +1835,8 @@ await gatewayStartup;
 ### 6. Tests Required
 - Pure coordinator tests for failed prepare, fresh-session creation, same-session idempotency,
   monotonic generation, stale context rejection, executing-turn rejection,
-  and transition/execution mutual exclusion across an async prepare.
+  transition/execution mutual exclusion across an async prepare, and lease cleanup on every
+  pre-commit failure.
 - Gateway tests for session catalog/tree/transcript responses, ordered resume
   events, sanitized state errors, read-only turn rejection, stale callback
   filtering, and no reservation during target preparation.
@@ -1702,7 +1844,9 @@ await gatewayStartup;
   three typed `queue_items` arrays.
 - Backend integration must use real SQLite state to prove target runtime
   rebinding, v1 snapshot import, invalid-state atomicity, and provider context
-  sourced from the target's canonical conversation.
+  sourced from the target's canonical conversation. It must also prove that two live backend
+  instances cannot own the same root session, switching retains source ownership, and normal
+  shutdown releases every session owned by the window.
 
 ### 7. Wrong vs Correct
 
@@ -1729,6 +1873,102 @@ try {
   coordinator.markExecuting(context, false);
   throw error;
 }
+```
+
+## Scenario: Session-Scoped Runtime Preferences
+
+### 1. Scope / Trigger
+
+- Trigger: changing model selection, reasoning effort, collaboration mode, session bootstrap/new/
+  resume/fork, provider construction, or session preference persistence.
+- This flow crosses user config, auth storage, SQLite session state, runtime bindings, gateway status,
+  and subagent provider inheritance.
+
+### 2. Signatures
+
+- Persisted state key: `session_state.state_key = 'session_preferences'`.
+- Payload v1: `{state_version: 1, provider, protocol, model, api_base_url, auth_ref,
+  reasoning_effort, collaboration_mode}`.
+- Runtime helpers: `loadSessionPreferences`, `saveSessionPreferences`,
+  `sessionPreferencesFromConfig`, and `sameSessionPreferences`.
+- Config resolution: `resolveConfig({overrides: {provider, protocol, model, apiBaseUrl, authRef,
+  reasoningEffort, thinkingEnabled, session}})`.
+- Gateway binding: `NodeGatewayRuntime.sessionPreferences()`, `setSessionPreferences(...)`, and
+  `ensureSessionPreferences(...)`.
+
+### 3. Contracts
+
+- `sessions.workspace_root` remains the authoritative per-session workdir. Do not duplicate workdir
+  inside `session_preferences`.
+- User/project/environment config is the fallback for a new session or a legacy session without
+  `session_preferences`. Once the state exists, its provider, protocol, model, endpoint identity,
+  reasoning effort, and collaboration mode are authoritative for that session.
+- Activating a session must load and validate its preference before publishing `session.changed`
+  and `status.changed`. A session with no preference must actively restore the current default
+  config; it must not inherit the previously active session's fields.
+- A virtual/new session remains unpersisted until an accepted turn, model selection, or mode change
+  needs a snapshot. Before provider IO, `turn.submit` ensures that the target session has one complete
+  preference snapshot matching the frozen turn model and collaboration mode.
+- Successful model selection updates the user-owned default config and the active session preference
+  together. Restoring another session changes only active runtime config and must not rewrite that
+  default.
+- `reasoning_effort='none'` restores with `thinkingEnabled=false`; every other supported effort
+  restores with `thinkingEnabled=true`.
+- `auth_ref` identifies the credential lookup. API keys remain in the auth store or process
+  environment and must never be serialized into `session_state`, gateway status, or diagnostics.
+- A child agent inherits the parent session preference used for the spawn. A fork copies only
+  `session_preferences`; it does not copy queues, approvals, suspended turns, or continuation state.
+
+### 4. Validation & Error Matrix
+
+| State | Required behavior |
+| --- | --- |
+| No preference row | Resolve current default config and use `collaboration_mode=default` |
+| Valid v1 row | Restore every field before status publication or provider construction |
+| Unsupported version, provider/protocol pair, effort, mode, URL, or identity | Fail with `session_state_invalid`; keep the source session active |
+| Base URL contains credentials or is not HTTP(S) | Fail with `session_state_invalid` |
+| Preference has `reasoning_effort='none'` | Disable thinking without a config conflict |
+| Model selection fails validation or auth lookup | Mutate neither user config nor session preference |
+
+### 5. Good/Base/Bad Cases
+
+- Good: session A resumes `model-a/high/plan`, session B resumes `model-b/none/default`, and a new
+  session uses the current user default without changing either stored snapshot.
+- Base: a pre-feature session has no preference and receives a snapshot on its next accepted action.
+- Bad: keep model/mode only in Gateway fields, or let resuming A change the fallback later used by
+  an unrelated new session.
+- Bad: store `apiKey`, an auth-store record, or provider headers beside `auth_ref`.
+
+### 6. Tests Required
+
+- Config tests prove a complete session override beats environment/user values and that `none` plus
+  disabled thinking restores successfully.
+- Runtime/gateway integration creates two sessions with different model/effort/mode values, resumes
+  each, restarts the backend, and asserts status plus subsequent submission use the target snapshot.
+- A new or legacy session activated after a stored session must use the current default config,
+  not the source session preference.
+- Invalid persisted payload tests assert `session_state_invalid`, no target `session.changed` or
+  `status.changed`, and unchanged active-session status.
+- Fork tests for both storage implementations assert only `session_preferences` is inherited.
+- Persistence tests inspect serialized state and assert no API key or secret value is present.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+gateway.model = resumedPreference?.model ?? gateway.model;
+activeModelOverride = resumedPreference?.model;
+```
+
+#### Correct
+
+```typescript
+const stored = runtime.sessionPreferences();
+const active = stored
+	? await resolveModelRuntimeConfig(sessionPreferenceOverrides(sessionId, stored))
+	: await resolveModelRuntimeConfig(sessionPreferenceOverrides(sessionId, defaultPreferences));
+gateway.applySessionPreferences(stored ?? sessionPreferencesFromConfig(active, "default"));
 ```
 
 ## Scenario: Durable Node One-Time Approval Continuation
@@ -4075,8 +4315,8 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 | Tail boundary is invalid or changed section is not final | Ignore the hint and run the complete bounded renderer |
 | Dynamic chrome is measured and then painted in one root frame | Render its children once and reuse the exact measured lines |
 | Editor, status, or size-dependent pending content reaches the next root frame | Render again because child-owned state may change without a parent rebuild |
-| Working status receives an unrelated frame with the same width, spinner frame, and elapsed second | Reuse the component's rendered lines while the parent remains frame-local |
-| Spinner frame, elapsed second, or status width changes | Reject the working-status component cache and render fresh lines |
+| Running activity receives an unrelated frame with the same width, spinner frame, and elapsed second | Reuse the component's rendered lines while the parent remains frame-local |
+| Spinner frame, elapsed second, or status width changes | Reject the running-activity component cache and render fresh lines without selecting a different phrase |
 | State-owned static footer or subagent chrome reaches the next root frame | Reuse lines only when the parent container revision and width are unchanged |
 | Static chrome parent rebuilds or terminal width changes | Reject the cross-frame cache and render its children again |
 | Assistant text appends inside the final Markdown token | Re-render the changed token and reuse stable prefix tokens |
@@ -4340,8 +4580,10 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
   render in the next frame, and no cache reuse for direct dynamic-container calls. Footer and
   subagent panel tests assert reuse across unrelated streaming frames, plus invalidation on parent
   rebuild and terminal-width change.
-- Working-status tests assert stable animation keys retain the exact rendered line array, while an
-  elapsed-second or width transition replaces it. The status parent remains frame-local.
+- Running-activity tests assert stable animation keys retain the exact rendered line array, while an
+  elapsed-second or width transition replaces it without changing the per-turn phrase. Generic
+  working and thinking states vary across turn keys; explicit phase labels remain unchanged. The
+  status parent remains frame-local.
 - Assistant streaming tests assert the retained component updates without consulting the generic
   serialized block-signature path.
 - Projection tests count indexed source reads across 10,000 blocks and assert a final assistant

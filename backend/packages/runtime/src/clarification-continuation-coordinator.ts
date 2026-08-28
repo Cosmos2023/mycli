@@ -51,6 +51,12 @@ export interface CommitClarificationResponseInput {
 	readonly sessionId: string;
 	readonly requestId: string;
 	readonly toolResult: AppendToolResultInput;
+	readonly display: Readonly<{
+		readonly header?: string;
+		readonly question: string;
+		readonly response: string;
+		readonly multiSelect: boolean;
+	}>;
 }
 
 export interface ClarificationContinuationStore {
@@ -144,6 +150,12 @@ export class ClarificationContinuationCoordinator {
 		this.#store.commitClarificationResponse({
 			sessionId: this.#sessionId,
 			requestId,
+			display: {
+				...(pending.header ? { header: pending.header } : {}),
+				question: pending.question,
+				response,
+				multiSelect: pending.multiSelect,
+			},
 			toolResult: {
 				sessionId: this.#sessionId,
 				clientTurnId: pending.clientTurnId,

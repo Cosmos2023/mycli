@@ -7,6 +7,7 @@ export interface ProviderProfile {
 	readonly supportsChatCompletions: boolean;
 	readonly supportsAnthropicMessages: boolean;
 	readonly supportsImages: boolean;
+	readonly supportsHostedWebSearch: boolean;
 	readonly defaultBaseUrl: string;
 	readonly defaultModel?: string;
 	readonly promptCacheKeyEnabled: boolean;
@@ -21,6 +22,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		supportsChatCompletions: true,
 		supportsAnthropicMessages: false,
 		supportsImages: true,
+		supportsHostedWebSearch: true,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		defaultModel: "gpt-5",
 		promptCacheKeyEnabled: true,
@@ -33,6 +35,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		supportsChatCompletions: false,
 		supportsAnthropicMessages: false,
 		supportsImages: true,
+		supportsHostedWebSearch: true,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		defaultModel: "gpt-5",
 		promptCacheKeyEnabled: true,
@@ -45,6 +48,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		supportsChatCompletions: true,
 		supportsAnthropicMessages: false,
 		supportsImages: true,
+		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		promptCacheKeyEnabled: true,
 		cacheControlEnabled: false,
@@ -56,6 +60,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		supportsChatCompletions: true,
 		supportsAnthropicMessages: false,
 		supportsImages: true,
+		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		defaultModel: "qwen3.6-plus",
 		promptCacheKeyEnabled: false,
@@ -68,6 +73,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		supportsChatCompletions: true,
 		supportsAnthropicMessages: false,
 		supportsImages: false,
+		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.deepseek.com",
 		defaultModel: "deepseek-chat",
 		promptCacheKeyEnabled: false,
@@ -80,6 +86,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		supportsChatCompletions: false,
 		supportsAnthropicMessages: true,
 		supportsImages: true,
+		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.anthropic.com",
 		defaultModel: "claude-sonnet-4-6",
 		promptCacheKeyEnabled: false,

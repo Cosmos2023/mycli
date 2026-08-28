@@ -1,7 +1,11 @@
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SandboxProfile } from "./execution-policy.ts";
+import {
+	hasUnrestrictedFilesystem,
+	hasUnrestrictedNetwork,
+	type SandboxProfile,
+} from "./execution-policy.ts";
 import {
 	LINUX_BUBBLEWRAP_EXECUTABLES,
 	linuxBubblewrapLaunch,
@@ -54,7 +58,9 @@ export function prepareSandboxedProcess(
 	probes: ProcessSandboxProbes = {},
 ): SandboxedProcessLaunch {
 	validateArgv(argv);
-	if (profile.mode === "danger-full-access") return hostLaunch(argv);
+	if (profile.mode === "danger-full-access" && hasUnrestrictedNetwork(profile)) {
+		return hostLaunch(argv);
+	}
 	const resolvedProfile = resolveProfile(profile);
 	const platform = probes.platform ?? process.platform;
 	const isExecutable = probes.isExecutable ?? executableExists;
@@ -62,7 +68,7 @@ export function prepareSandboxedProcess(
 	const isSymbolicLink = probes.isSymbolicLink ?? symbolicLinkExists;
 	if (platform === "darwin") {
 		if (!isExecutable(MACOS_SEATBELT_EXECUTABLE)) throw unavailable();
-		const protectedMetadata = protectedMetadataPaths(
+		const protectedMetadata = hasUnrestrictedFilesystem(resolvedProfile) ? [] : protectedMetadataPaths(
 			resolvedProfile,
 			pathExists,
 			isSymbolicLink,
@@ -75,7 +81,7 @@ export function prepareSandboxedProcess(
 	if (platform === "linux") {
 		const executable = LINUX_BUBBLEWRAP_EXECUTABLES.find(isExecutable);
 		if (!executable) throw unavailable();
-		const protectedMetadata = protectedMetadataPaths(
+		const protectedMetadata = hasUnrestrictedFilesystem(resolvedProfile) ? [] : protectedMetadataPaths(
 			resolvedProfile,
 			pathExists,
 			isSymbolicLink,
@@ -99,7 +105,7 @@ export function prepareSandboxedProcess(
 function resolveProfile(profile: SandboxProfile): SandboxProfile {
 	const workspaceRoot = realpathSync(profile.workspaceRoot);
 	const cwd = realpathSync(profile.cwd);
-	if (isOutside(workspaceRoot, cwd)) {
+	if (!hasUnrestrictedFilesystem(profile) && isOutside(workspaceRoot, cwd)) {
 		throw new ProcessSandboxError("sandbox_unavailable", "Sandbox cwd is outside the workspace.");
 	}
 	return Object.freeze({

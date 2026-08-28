@@ -5,6 +5,7 @@ import * as runtime from "../src/index.ts";
 type DecideRetry = (input: {
 	readonly retryable: boolean;
 	readonly eventsObserved: number;
+	readonly allowAfterEvents?: boolean;
 	readonly retriesUsed: number;
 	readonly maxRetries: number;
 	readonly retryAfterSeconds?: number;
@@ -37,6 +38,22 @@ test("retry policy applies exponential jitter, clamping, and retry-after", () =>
 		retryAfterSeconds: 1.25,
 		random: () => 0,
 	}), { shouldRetry: true, attempt: 1, delayMs: 1250 });
+	assert.deepEqual(decideRetry!({
+		retryable: true,
+		eventsObserved: 0,
+		retriesUsed: 0,
+		maxRetries: 1,
+		retryAfterSeconds: 7_200,
+		random: () => 0,
+	}), { shouldRetry: true, attempt: 1, delayMs: 3_600_000 });
+	assert.deepEqual(decideRetry!({
+		retryable: true,
+		eventsObserved: 0,
+		retriesUsed: 0,
+		maxRetries: 1,
+		retryAfterSeconds: Number.NaN,
+		random: () => 0.5,
+	}), { shouldRetry: true, attempt: 1, delayMs: 200 });
 });
 
 test("retry policy refuses exhausted, non-retryable, and post-event failures", () => {
@@ -49,4 +66,12 @@ test("retry policy refuses exhausted, non-retryable, and post-event failures", (
 	]) {
 		assert.deepEqual(decideRetry!({ ...input, random: () => 0.5 }), { shouldRetry: false });
 	}
+	assert.deepEqual(decideRetry!({
+		retryable: true,
+		eventsObserved: 1,
+		allowAfterEvents: true,
+		retriesUsed: 0,
+		maxRetries: 1,
+		random: () => 0.5,
+	}), { shouldRetry: true, attempt: 1, delayMs: 200 });
 });

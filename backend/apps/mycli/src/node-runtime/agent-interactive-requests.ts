@@ -9,6 +9,7 @@ import type {
 	ResolveClarificationInput,
 	SubmitTurnOptions,
 } from "@mycli/runtime";
+import { permissionRequestJson } from "@mycli/tools";
 import { approvalPreviewPayload } from "./approval-preview.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -173,8 +174,12 @@ export class AgentInteractiveRequestBroker implements AgentInteractiveRequestGat
 				session_id: pending.sessionId,
 				generation: pending.generation,
 				client_turn_id: pending.event.clientTurnId,
+				turn_id: pending.event.turnId,
 				request_id: pending.event.requestId,
-				response: response.slice(0, 512),
+				header: pending.event.header,
+				question: pending.event.question,
+				response,
+				multi_select: pending.event.multiSelect,
 			},
 		});
 		pending.turn.resumeClarification({ requestId, response });
@@ -375,6 +380,9 @@ function requestNotification(pending: PendingRequest): AgentInteractiveNotificat
 				tool_name: event.toolName,
 				action: event.toolName,
 				...approvalPreviewPayload(event),
+				...(event.permissionRequest ? {
+					permission_request: permissionRequestJson(event.permissionRequest),
+				} : {}),
 				options: event.options.map((choice) => ({
 					choice,
 					label: approvalChoiceLabel(choice),

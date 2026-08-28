@@ -43,6 +43,11 @@ the local log root and must never become provider transcript inputs.
   - `model-events.jsonl`: one redacted model event JSON object per line.
   - `model-raw/<safe-session-id>/*.json`: redacted raw request/response/error
     payloads bucketed by session.
+  - `../traces/<safe-session-id>-trace.jsonl`: bounded runtime-only diagnostic
+    rows consumed by `/trace` and `trace.export`.
+- Per-session runtime trace JSONL rotates at 5 MiB to one `.1` backup before
+  appending the next sanitized row. Trace inspection reads only the active file,
+  so it remains bounded even after high-frequency provider/tool diagnostics.
 - `agent.log`, `errors.log`, and `model-events.jsonl` use size-based rotation
   from `WorkspaceLogService` before append. The default active-file cap is
   5 MiB with 3 numbered backups (`.1`, `.2`, `.3`). Rotation is per file, has
@@ -140,11 +145,36 @@ the local log root and must never become provider transcript inputs.
   tracebacks, provider payloads, user text, tool output, headers, or
   secret-like values.
 - Model stream diagnostics append local `model_stream_diagnostics` trace rows
-  and workspace log entries after each streaming model request. Payloads include
-  bounded operational counters such as `ttfb_ms`, `elapsed_ms`,
-  `provider_event_count`, text/tool/completed event counts, `text_bytes`,
-  `success`, and optional failure kind/message. These diagnostics are local
-  observability only and must not alter provider-visible transcript content.
+  and workspace log entries after each real streaming model request attempt.
+  Retries therefore produce separate rows with increasing `attempt` values.
+  Payloads include bounded operational counters such as `ttfb_ms`, `ttft_ms`,
+  average `tbt_ms`, `max_tbt_ms`, text-delta interval count, `elapsed_ms`,
+  provider/reasoning/text/state/tool/usage/completed event counts, UTF-8
+  `reasoning_bytes`/`text_bytes`, `success`, and optional canonical failure kind.
+  TBT is derived only from intervals between consecutive non-empty text deltas;
+  a stream with fewer than two non-empty text deltas omits TBT. These diagnostics
+  are local observability only and must not alter provider-visible transcript
+  content.
+- Tool execution diagnostics append local `tool_execution` rows at the actual
+  execution terminal boundary. Payloads contain only bounded call/tool ids,
+  duration, success, model-output character count, truncation state, and optional
+  failure kind. They must not contain tool arguments, summaries, paths, file
+  contents, stdout/stderr, or model-output bodies.
+- Compaction diagnostics append local `compaction` rows for automatic pre-turn,
+  mid-turn, context-overflow, and explicit `/compact` attempts. Payloads contain source/status,
+  before/after/max token counts, and duration only. Compaction summaries and
+  rehydrated file content are forbidden.
+- Subagent lifecycle diagnostics append local `subagent_lifecycle` rows for
+  started and terminal child states. Payloads contain bounded child thread id,
+  status, and wall-clock duration only. Prompts, progress summaries, reports,
+  mailbox content, and provider output are forbidden.
+- Runtime diagnostic callbacks and local trace writes are best-effort. A sink
+  failure must be swallowed at the diagnostic boundary and must not fail a
+  provider request, tool, compaction, subagent, turn, or Worker lease.
+- Runtime diagnostic rows must never be written to canonical session SQLite,
+  provider replay/model-input ledgers, gateway live events, or TUI transcript
+  projections. They are available only through local logs and explicit trace
+  inspection/export.
 - Doctor may summarize `model_stream_diagnostics` trace rows with bounded
   counters and failure-kind counts. It must not print raw trace payloads or
   provider failure messages because those can contain sensitive upstream text.
@@ -225,8 +255,11 @@ the local log root and must never become provider transcript inputs.
   with bounded `session_id`, `turn_id`, `stop_reason`, `phase`, `error_type`,
   and `error_path` when available.
 - Streaming model request completes -> append one
-  `model_stream_diagnostics` runtime trace row and info-level workspace log
-  entry.
+	`model_stream_diagnostics` runtime trace row and info-level workspace log
+	entry.
+- Streaming model request is retried -> append one terminal diagnostic for the
+	failed attempt before retry backoff and a separate diagnostic for each later
+	real provider request; do not count the backoff itself as an attempt.
 - Streaming model request yields malformed/unsupported provider events ->
   append one `model_stream_diagnostics` runtime trace row and warning-level
   workspace log entry before re-raising the original model response error.
@@ -235,7 +268,9 @@ the local log root and must never become provider transcript inputs.
 - `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
   session trace without mutating trace files.
 - `trace.export` -> return the same bounded sanitized JSONL rows as raw row
-  strings, not prefixed command output.
+	strings, not prefixed command output.
+- Diagnostic sink or trace append fails -> preserve the original runtime result
+	and do not emit a gateway/TUI error for the observability failure.
 
 ### 5. Good/Base/Bad Cases
 - Good: `build_turn_service(..., home=home)` creates a log service rooted at
@@ -278,10 +313,16 @@ the local log root and must never become provider transcript inputs.
   appears in runtime trace and workspace logs while existing failed-turn status
   and raw error-payload behavior remain unchanged.
 - Unit tests for model stream diagnostics proving successful streams,
-  malformed provider events, sink failure isolation, and non-streaming adapter
-  behavior.
+  malformed provider events, retry-attempt separation, TTFB/TTFT/TBT timing,
+  UTF-8 byte counts, sink failure isolation, and non-streaming adapter behavior.
+- Worker RPC tests must accept bounded stream diagnostic frames and reject
+  unknown fields, negative/non-finite values, and unknown failure kinds.
+- Runtime tests must cover provider, tool, and compaction diagnostic projection
+  without copying tool content into the diagnostic payload.
 - Integration/runtime test proving `model_stream_diagnostics` reaches runtime
-  trace and workspace logs for a streaming turn.
+  trace and workspace logs for a streaming turn without entering the transcript.
+- Integration tests must cover explicit `/compact`, subagent started/terminal
+  diagnostics, sensitive-field allowlisting, and per-session trace rotation.
 - Doctor unit tests for approval diagnostics summaries, including warning rows
   that include raw command patterns or secret-like reason payloads.
 - Doctor unit tests for clarification diagnostics summaries, including warning

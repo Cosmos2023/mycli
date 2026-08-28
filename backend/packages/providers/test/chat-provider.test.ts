@@ -364,8 +364,9 @@ test("rejects a Chat stream that ends without a finish reason", async () => {
 		() => collect(new ChatProvider!({ client }).stream(request(), {
 			signal: new AbortController().signal,
 		})),
-		(error: unknown) => error instanceof Error
-			&& error.message === "provider_error: Chat stream ended without a finish reason",
+		(error: unknown) => error instanceof providers.ProviderFailure
+			&& error.message === "response_stream_error: Chat stream ended without a finish reason"
+			&& error.retryable,
 	);
 });
 

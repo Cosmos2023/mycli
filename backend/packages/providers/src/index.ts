@@ -1,6 +1,8 @@
 export {
 	classifyProviderError,
 	ProviderFailure,
+	providerFailurePublicMessage,
+	providerFailureToRuntimeFailure,
 } from "./errors.ts";
 export type { ProviderFailureOptions } from "./errors.ts";
 export type {

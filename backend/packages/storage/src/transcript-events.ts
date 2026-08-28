@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { isRuntimeErrorCode, sanitizeRuntimeErrorDetail } from "@mycli/contracts";
+import type { RuntimeErrorCode } from "@mycli/contracts";
 import type {
 	CanonicalContextMetadata,
 	CanonicalConversationItem,
@@ -7,7 +9,6 @@ import type {
 	CanonicalToolResult,
 	ProviderReplayState,
 	ProviderUsage,
-	RuntimeErrorCode,
 } from "@mycli/core";
 import { canonicalImages } from "./canonical-images.ts";
 import { stableJson } from "./stable-json.ts";
@@ -60,18 +61,21 @@ export type TranscriptEventType =
 export type TranscriptDisplayActivityType =
 	| "reasoning"
 	| "plan"
+	| "turn_completed"
 	| "approval_request"
 	| "approval_resolution"
 	| "clarification_request"
 	| "clarification_response"
 	| "shell"
+	| "error"
 	| "warning"
 	| "status"
 	| "file_change"
 	| "tool_activation"
 	| "context_baseline"
 	| "capability"
-	| "command_result";
+	| "command_result"
+	| "web_search";
 
 export type TranscriptLifecyclePhase = "started" | "completed" | "failed" | "interrupted";
 
@@ -159,10 +163,24 @@ export interface DisplayActivityTranscriptPayload {
 	readonly metadata?: Readonly<Record<string, TranscriptJsonValue>>;
 }
 
+export interface AppendTranscriptDisplayActivityInput {
+	readonly sessionId: string;
+	readonly eventId: string;
+	readonly turnId?: string;
+	readonly activityType: TranscriptDisplayActivityType;
+	readonly text?: string;
+	readonly callId?: string;
+	readonly toolName?: string;
+	readonly status?: string;
+	readonly metadata?: Readonly<Record<string, TranscriptJsonValue>>;
+	readonly createdAt: string;
+}
+
 export interface TurnLifecycleTranscriptPayload {
 	readonly phase: TranscriptLifecyclePhase;
 	readonly errorCode?: RuntimeErrorCode;
 	readonly message?: string;
+	readonly additionalDetails?: string;
 	readonly usage?: ProviderUsage;
 	readonly diagnostics?: Readonly<Record<string, TranscriptJsonValue>>;
 }
@@ -349,11 +367,13 @@ const EVENT_TYPES = new Set<TranscriptEventType>([
 const DISPLAY_ACTIVITY_TYPES = new Set<TranscriptDisplayActivityType>([
 	"reasoning",
 	"plan",
+	"turn_completed",
 	"approval_request",
 	"approval_resolution",
 	"clarification_request",
 	"clarification_response",
 	"shell",
+	"error",
 	"warning",
 	"status",
 	"file_change",
@@ -361,25 +381,13 @@ const DISPLAY_ACTIVITY_TYPES = new Set<TranscriptDisplayActivityType>([
 	"context_baseline",
 	"capability",
 	"command_result",
+	"web_search",
 ]);
 const LIFECYCLE_PHASES = new Set<TranscriptLifecyclePhase>([
 	"started",
 	"completed",
 	"failed",
 	"interrupted",
-]);
-const RUNTIME_ERROR_CODES = new Set<RuntimeErrorCode>([
-	"config_error",
-	"auth_error",
-	"provider_error",
-	"rate_limited",
-	"context_window_exceeded",
-	"retry_exhausted",
-	"persistence_error",
-	"interrupted",
-	"unsupported_capability",
-	"tool_budget_exceeded",
-	"tool_protocol_error",
 ]);
 const LEGACY_SOURCE_KINDS = new Set<TranscriptLegacySourceKind>([
 	"conversation_messages",
@@ -573,13 +581,21 @@ function displayActivity(value: unknown): DisplayActivityTranscriptPayload {
 
 function turnLifecycle(value: unknown): TurnLifecycleTranscriptPayload {
 	const payload = record(value, "payload");
-	keys(payload, ["phase", "errorCode", "message", "usage", "diagnostics"], ["phase"], "payload");
+	keys(payload, ["phase", "errorCode", "message", "additionalDetails", "usage", "diagnostics"], ["phase"], "payload");
 	if (!LIFECYCLE_PHASES.has(payload.phase as TranscriptLifecyclePhase)) invalid("payload.phase");
 	const errorCode = optionalIdentity(payload.errorCode, "payload.errorCode");
-	if (errorCode !== undefined && !RUNTIME_ERROR_CODES.has(errorCode as RuntimeErrorCode)) {
+	if (errorCode !== undefined && !isRuntimeErrorCode(errorCode)) {
 		invalid("payload.errorCode");
 	}
 	const message = optionalString(payload.message, "payload.message");
+	const additionalDetails = payload.additionalDetails === undefined
+		? undefined
+		: sanitizeRuntimeErrorDetail(boundedString(
+			payload.additionalDetails,
+			"payload.additionalDetails",
+			1_000,
+			false,
+		));
 	const usage = optionalNumberRecord(payload.usage, "payload.usage");
 	const diagnostics = optionalJsonRecord(payload.diagnostics, "payload.diagnostics");
 	if ((payload.phase === "failed" || payload.phase === "interrupted") && !message) {
@@ -587,8 +603,9 @@ function turnLifecycle(value: unknown): TurnLifecycleTranscriptPayload {
 	}
 	return Object.freeze({
 		phase: payload.phase as TranscriptLifecyclePhase,
-		...(errorCode ? { errorCode: errorCode as RuntimeErrorCode } : {}),
+		...(errorCode ? { errorCode } : {}),
 		...(message === undefined ? {} : { message }),
+		...(additionalDetails === undefined ? {} : { additionalDetails }),
 		...(usage ? { usage } : {}),
 		...(diagnostics ? { diagnostics } : {}),
 	});

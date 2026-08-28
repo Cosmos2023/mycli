@@ -116,11 +116,13 @@ test("parses display activity for reasoning, plans, approvals, clarifications, a
 	for (const [index, activityType] of ([
 		"reasoning",
 		"plan",
+		"turn_completed",
 		"approval_request",
 		"approval_resolution",
 		"clarification_request",
 		"clarification_response",
 		"shell",
+		"web_search",
 	] as const satisfies readonly string[]).entries()) {
 		const event = parseTranscriptEventEnvelope(envelope("display_activity", {
 			activityType,
@@ -135,10 +137,16 @@ test("parses display activity for reasoning, plans, approvals, clarifications, a
 
 test("parses lifecycle, rollback, compaction, and opaque legacy events", () => {
 	const lifecycle = parseTranscriptEventEnvelope(envelope("turn_lifecycle", {
-		phase: "completed",
-		usage: { input_tokens: 12, output_tokens: 3 },
+		phase: "failed",
+		errorCode: "provider_error",
+		message: "provider request failed",
+		additionalDetails: "bad api_key=private-value\n at request (file:///Users/private/app.ts:1:2)",
 	}));
 	assert.equal(lifecycle.eventType, "turn_lifecycle");
+	assert.equal(
+		lifecycle.eventType === "turn_lifecycle" ? lifecycle.payload.additionalDetails : undefined,
+		"bad api_key=[REDACTED]",
+	);
 
 	const rollback = parseTranscriptEventEnvelope(envelope("rollback", {
 		removedTurnIds: ["turn-2", "turn-3"],
@@ -201,6 +209,15 @@ test("enforces provider ordering and event type/payload agreement", () => {
 			message: "failed",
 		})),
 		(error: unknown) => invalidField(error, "payload.errorCode"),
+	);
+	assert.throws(
+		() => parseTranscriptEventEnvelope(envelope("turn_lifecycle", {
+			phase: "failed",
+			errorCode: "provider_error",
+			message: "provider request failed",
+			additionalDetails: "x".repeat(1_001),
+		})),
+		(error: unknown) => invalidField(error, "payload.additionalDetails"),
 	);
 });
 

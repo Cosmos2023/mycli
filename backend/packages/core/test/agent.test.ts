@@ -160,6 +160,31 @@ test("preserves approval-required authority and allows explicit narrowing", () =
 	}, approvalRequired), AgentAuthorityError);
 });
 
+test("subagents inherit network domain constraints without widening them", () => {
+	const constrained = {
+		trusted: true,
+		permission: "full-access",
+		sandboxMode: "danger-full-access",
+		filesystem: "unrestricted",
+		network: "enabled",
+		networkDomains: ["api.example.com", "*.assets.example.com"],
+		writableRoots: ["/workspace"],
+	} as const;
+
+	assert.deepEqual(narrowAgentExecutionPolicy(constrained), constrained);
+	assert.throws(() => narrowAgentExecutionPolicy(constrained, {
+		...constrained,
+		networkDomains: undefined,
+	}), AgentAuthorityError);
+	assert.deepEqual(narrowAgentExecutionPolicy(constrained, {
+		...constrained,
+		networkDomains: ["api.example.com"],
+	}), {
+		...constrained,
+		networkDomains: ["api.example.com"],
+	});
+});
+
 test("rejects ambiguous or non-canonical paths and task names", () => {
 	for (const value of ["root/a", "/other/a", "/root/../a", "/root/A", "/root/a/", " /root/a"] as const) {
 		assert.throws(() => parseAgentPath(value), AgentPathError);

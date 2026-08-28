@@ -14,7 +14,11 @@ export interface AgentCoordinationToolOptions {
 export const SPAWN_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "subagent:spawn_agent",
 	name: "spawn_agent",
-	description: "Spawn a durable child agent in an independent thread and return its status and canonical path.",
+	description: (
+		"Spawn a durable child agent for an independent, bounded task and return its status and canonical path. "
+		+ "The child runs asynchronously and its terminal report is delivered automatically through the caller's mailbox. "
+		+ "Continue useful independent work after spawning, then call wait_agent when none remains and integrate the relevant report before the final answer."
+	),
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -42,12 +46,18 @@ export const SPAWN_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 
 export const SEND_AGENT_MESSAGE_TOOL_DEFINITION: ToolDefinition = messageDefinition(
 	"send_message",
-	"Queue a durable message for an existing agent without starting a new turn.",
+	(
+		"Queue a durable message for an existing agent without starting a new turn. "
+		+ "Use this to clarify or steer work that is already running; it does not replace waiting for and integrating the agent's terminal report."
+	),
 );
 
 export const FOLLOWUP_TASK_TOOL_DEFINITION: ToolDefinition = messageDefinition(
 	"followup_task",
-	"Queue a durable follow-up task and trigger the target agent when it is eligible to run.",
+	(
+		"Queue a durable follow-up task and trigger the target agent when it is eligible to run. "
+		+ "Use this when an idle or completed agent must do additional work, then call wait_agent and integrate the subsequent report."
+	),
 );
 
 export const INTERRUPT_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
@@ -78,7 +88,10 @@ export const INTERRUPT_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 export const LIST_AGENTS_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "subagent:list_agents",
 	name: "list_agents",
-	description: "List durable loaded and unloaded agents in the caller's root tree, including their paths and lifecycle status.",
+	description: (
+		"List durable loaded and unloaded agents in the caller's root tree, including their paths and lifecycle status. "
+		+ "Use this after compaction or resume, or whenever outstanding-agent state is uncertain; terminal reports are still consumed through the mailbox after wait_agent."
+	),
 	inputSchema: {
 		type: "object",
 		properties: {

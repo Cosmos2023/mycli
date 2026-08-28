@@ -10,6 +10,7 @@ import type {
 	ApprovalChoice,
 	ApprovalPreviewDetails,
 	CanonicalToolCall,
+	PermissionRequestProfile,
 } from "@mycli/core";
 import {
 	matchExecPolicyRule,
@@ -33,6 +34,13 @@ import {
 } from "./file-sandbox-permissions.ts";
 import { builtinToolManifest } from "./manifest.ts";
 import { parseShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
+import {
+	parsePermissionRequest,
+	pathWithinRoot,
+	permissionRequestPreview,
+	permissionRequestSatisfied,
+	REQUEST_PERMISSIONS_TOOL_NAME,
+} from "./permission-grants.ts";
 import type { ToolExecutionResult } from "./types.ts";
 
 const MAX_PREVIEW_CHARS = 512;
@@ -69,6 +77,7 @@ export interface ApprovalPolicyRequest extends ApprovalPolicyDecisionBase {
 	readonly options: readonly ApprovalChoice[];
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
+	readonly permissionRequest?: PermissionRequestProfile;
 }
 
 export interface ApprovalPolicyDeny extends ApprovalPolicyDecisionBase {
@@ -222,6 +231,28 @@ export class ApprovalPolicy {
 			return deny(call, "Tool call is not valid for the active policy.");
 		}
 		if (!manifest) return this.#evaluateExtension(call, fullAccess, turnId);
+		if (call.name === REQUEST_PERMISSIONS_TOOL_NAME) {
+			const request = parsePermissionRequest(argumentsValue, this.#workspaceRoot);
+			if (!request.ok) {
+				return deny(
+					call,
+					"Permission request is not valid for the active policy.",
+					request.errorKind,
+				);
+			}
+			if (permissionRequestSatisfied(request.permissions, executionPolicy)) {
+				return allow(call, "Requested permissions are already available");
+			}
+			return Object.freeze({
+				kind: "request" as const,
+				callId: call.callId,
+				toolName: call.name,
+				preview: permissionRequestPreview(request.permissions),
+				reason: request.reason ?? "The agent requested additional permissions.",
+				options: SHELL_APPROVAL_OPTIONS,
+				permissionRequest: request.permissions,
+			});
+		}
 		if (call.name === "Shell" || call.name === "Bash") {
 			return this.#evaluateShell(call, argumentsValue, manifest.approval_policy, fullAccess);
 		}
@@ -240,7 +271,14 @@ export class ApprovalPolicy {
 		}
 		const paths = mutationPaths(argumentsValue);
 		const projected = paths.map((path) => this.#projectWorkspacePath(path));
-		const previewTarget = mutationPreviewTarget(manifest.name, paths, projected, fullAccess);
+		const permittedByRoots = executionPolicy !== undefined
+			&& paths.every((path) => this.#pathAllowedByPolicy(path, executionPolicy));
+		const previewTarget = mutationPreviewTarget(
+			manifest.name,
+			paths,
+			projected,
+			fullAccess || permittedByRoots,
+		);
 		if (sandbox.permissions === "danger-full-access") {
 			const escalationTarget = mutationPreviewTarget(manifest.name, paths, projected, true);
 			if (!escalationTarget) {
@@ -445,6 +483,17 @@ export class ApprovalPolicy {
 			return undefined;
 		}
 		return projected.split(sep).join("/");
+	}
+
+	#pathAllowedByPolicy(rawPath: string, policy: ExecutionPolicy): boolean {
+		const normalized = rawPath.trim();
+		if (!normalized || normalized.includes("\0") || WINDOWS_ABSOLUTE_PATH.test(normalized)) {
+			return false;
+		}
+		const candidate = isAbsolute(normalized)
+			? resolve(normalized)
+			: resolve(this.#workspaceRoot, normalized);
+		return policy.writableRoots.some((root) => pathWithinRoot(root, candidate));
 	}
 
 	#rememberMutationSandboxDenial(call: CanonicalToolCall, turnId: string | undefined): void {

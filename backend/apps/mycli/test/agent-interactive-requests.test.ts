@@ -133,8 +133,10 @@ test("child approval may resolve before the initial suspended submit returns", a
 test("interactive requests publish independently and clarification routes by child session", async () => {
 	const broker = new AgentInteractiveRequestBroker();
 	const notifications: string[] = [];
+	let clarificationResponse: Readonly<Record<string, unknown>> | undefined;
 	broker.subscribe((notification) => {
 		notifications.push(`${notification.method}:${String(notification.params.session_id)}`);
+		if (notification.method === "clarify.respond") clarificationResponse = notification.params;
 	});
 	const runtime = (sessionId: string): AgentInteractiveRuntime => ({
 		resolveApproval: async () => turn("completed", sessionId),
@@ -195,6 +197,17 @@ test("interactive requests publish independently and clarification routes by chi
 	});
 	assert.equal((await secondTerminal).status, "completed");
 	assert.equal(notifications.at(-1), "clarify.respond:child-b");
+	assert.deepEqual(clarificationResponse, {
+		session_id: "child-b",
+		generation: 2,
+		client_turn_id: "turn-b",
+		turn_id: "turn-turn-b",
+		request_id: "question-b",
+		header: "Tests",
+		question: "Which tests?",
+		response: "Use the integration tests",
+		multi_select: false,
+	});
 	assert.deepEqual(broker.pending(), []);
 });
 

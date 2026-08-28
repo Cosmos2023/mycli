@@ -6,6 +6,7 @@ import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	fingerprintSubmission,
 	type QueueSnapshot,
+	type ReasoningEffort,
 	type RuntimeEvent,
 	type ShellLifecycleEvent,
 } from "@mycli/core";
@@ -112,9 +113,15 @@ function gatewayHarness(options: {
 	memory?: boolean;
 	backgroundTasks?: boolean;
 	control?: boolean;
+	reasoningEffort?: ReasoningEffort;
 	maxPromptTokens?: number;
 	turnRollouts?: readonly Readonly<Record<string, unknown>>[];
 	transcript?: readonly TranscriptItem[];
+	compactResult?: {
+		readonly status: "compressed" | "skipped" | "not_needed" | "failed" | "interrupted";
+		readonly beforeTokens: number;
+		readonly afterTokens: number;
+	};
 	loadTranscriptPage?: (
 		sessionId: string,
 		input: { readonly before?: string; readonly limit?: number },
@@ -294,7 +301,8 @@ function gatewayHarness(options: {
 			commandAllowances = [];
 			return count;
 		},
-		compact: async () => ({ status: "compressed" as const, beforeTokens: 900, afterTokens: 300 }),
+		compact: async () => options.compactResult
+			?? ({ status: "compressed" as const, beforeTokens: 900, afterTokens: 300 }),
 		resolveApproval: async (
 			input: { readonly decisionId: string; readonly choice: PendingApprovalChoice },
 			emit: (event: RuntimeEvent) => void,
@@ -360,6 +368,7 @@ function gatewayHarness(options: {
 		workspaceRoot: "/repo",
 		provider: "openai",
 		model: "gpt-test",
+		...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
 		toolNames: ["Read"],
 			maxPromptTokens: options.maxPromptTokens,
 			runtime,
@@ -582,6 +591,15 @@ test("node gateway boots the real TUI startup sequence", async () => {
 	await harness.gateway.close();
 });
 
+test("gateway exposes fallback reasoning effort before the first turn", async () => {
+	const harness = gatewayHarness({ reasoningEffort: "none" });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const status = await harness.send("status.get", {});
+	assert.equal("result" in status ? status.result.thinking_effort : undefined, "none");
+	await harness.gateway.close();
+});
+
 test("transcript pagination reaches complete filtered history beyond the snapshot bound", async () => {
 	const transcript = Array.from({ length: 800 }, (_value, index): TranscriptItem => ({
 		id: `message-${index}`,
@@ -613,6 +631,33 @@ test("transcript pagination reaches complete filtered history beyond the snapsho
 		assert.equal((earlier.result.items as readonly Record<string, unknown>[])[0]?.id, "message-0");
 		assert.equal(earlier.result.next_before, null);
 	}
+	await harness.gateway.close();
+});
+
+test("transcript load restores persisted turn durations as structured completion items", async () => {
+	const harness = gatewayHarness({
+		transcript: [{
+			id: "turn-duration-1",
+			type: "turn_completed",
+			duration_ms: 4_000,
+		}],
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("transcript.load", {
+		session_id: "session-node",
+		before: null,
+		limit: 500,
+	});
+
+	assert.deepEqual("result" in response ? response.result.items : null, [{
+		id: "turn-duration-1",
+		type: "turn_completed",
+		text: "",
+		created_at: "",
+		folded: false,
+		metadata: { duration_ms: 4_000 },
+	}]);
 	await harness.gateway.close();
 });
 
@@ -1253,7 +1298,7 @@ test("Plan-mode completion emits one stripped proposed plan after the final mess
 	harness.emit({ type: "text_delta", text: "- Verify\n</proposed_" });
 	harness.emit({ type: "text_delta", text: "plan>\nAfter" });
 	harness.emit({ type: "message_complete", responseId: "plan-response" });
-	harness.emit({ type: "turn_completed", assistantText, usage: {} });
+	harness.emit({ type: "turn_completed", assistantText, usage: {}, durationMs: 992_000 });
 	harness.releaseTurn();
 
 	const proposed = await waitFor(() => notification(harness.messages, "plan.proposed"));
@@ -1268,6 +1313,7 @@ test("Plan-mode completion emits one stripped proposed plan after the final mess
 		"Before\nAfter",
 	);
 	assert.equal(completed.params.assistant_message, "Before\nAfter");
+	assert.equal(completed.params.duration_ms, 992_000);
 	assert.equal(finalMessage.params.text, "Before\nAfter");
 	assert.equal(proposed.params.text, "# Plan\n- Inspect\n- Verify");
 	assert.ok(harness.messages.indexOf(finalMessage) < harness.messages.indexOf(proposed));
@@ -1397,7 +1443,7 @@ test("active turns distinguish previous and live provider context usage", async 
 	assert.equal(previousContext.used_tokens, 150);
 	assert.equal(previousContext.source, "provider_previous");
 
-	harness.emit({
+		harness.emit({
 		type: "provider_usage",
 		usage: { input_tokens: 620, output_tokens: 30, total_tokens: 650 },
 	});
@@ -1502,8 +1548,45 @@ test("compact slash command runs the Node manual compaction boundary", async () 
 	if ("result" in response) {
 		assert.equal(response.result.command_kind, "compact");
 		assert.equal(response.result.compaction_status, "compressed");
-		assert.equal((response.result.display as { kind?: unknown }).kind, "notice");
+		assert.deepEqual(response.result.display, {
+			version: 1,
+			kind: "notice",
+			command: "/compact",
+			title: "Context compacted",
+			severity: "success",
+			summary: "Context compacted: 900 -> 300 tokens.",
+			fields: [],
+			rows: [],
+			sections: [],
+			suggestions: [],
+			omitted_rows: 0,
+			omitted_chars: 0,
+		});
 		assert.deepEqual(response.result.tokens, { before: 900, after: 300 });
+	}
+	await harness.gateway.close();
+});
+
+test("compact slash command explains when only retained context remains", async () => {
+	const harness = gatewayHarness({
+		compactResult: { status: "not_needed", beforeTokens: 7_875, afterTokens: 7_875 },
+	});
+	const response = await harness.send("command.run", { command: "/compact", surface: "tui" });
+	assert.ok("result" in response, JSON.stringify(response));
+	if ("result" in response) {
+		const display = response.result.display as {
+			readonly title?: unknown;
+			readonly summary?: unknown;
+			readonly severity?: unknown;
+		};
+		assert.equal(response.result.compaction_status, "not_needed");
+		assert.equal(display.title, "Nothing to compact");
+		assert.equal(
+			display.summary,
+			"Nothing to compact. Only base context and retained recent turns remain.",
+		);
+		assert.equal(display.severity, "info");
+		assert.deepEqual(response.result.tokens, { before: 7_875, after: 7_875 });
 	}
 	await harness.gateway.close();
 });
@@ -2008,6 +2091,17 @@ test("clarification bootstrap re-emits the request and response resumes the owni
 	assert.deepEqual(harness.reservedClientTurnIds, []);
 	assert.equal(harness.sessionCoordinator?.snapshot().pendingClarification, undefined);
 	const projected = await waitFor(() => notification(harness.messages, "clarify.respond"));
+	assert.deepEqual(projected.params, {
+		session_id: "session-node",
+		generation: 1,
+		client_turn_id: "client-session-node",
+		turn_id: "turn-session-node",
+		request_id: "question-session-node",
+		header: "Runtime",
+		question: "Which runtime?",
+		response: "Node",
+		multi_select: false,
+	});
 	parseGatewayEvent(projected);
 
 	harness.releaseTurn();
@@ -2351,6 +2445,22 @@ test("failed session preparation keeps the source active and emits no target sta
 	const response = await harness.send("session.resume", { session_id: "target" });
 
 	assert.equal("error" in response ? response.error.code : null, "session_state_invalid");
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "session-node");
+	assert.equal(notificationForSession(harness.messages, "session.changed", "target"), undefined);
+	await harness.gateway.close();
+});
+
+test("session ownership conflict keeps the source active and emits no target state", async () => {
+	const harness = gatewayHarness({ sessions: { targetFailure: "session_in_use" } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("session.resume", { session_id: "target" });
+
+	assert.equal("error" in response ? response.error.code : null, "session_in_use");
+	assert.equal(
+		"error" in response ? response.error.message : null,
+		"Session is already open in another mycli window.",
+	);
 	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "session-node");
 	assert.equal(notificationForSession(harness.messages, "session.changed", "target"), undefined);
 	await harness.gateway.close();
@@ -2867,6 +2977,149 @@ test("turn submission responds immediately and emits validated direct events bef
 	await harness.gateway.close();
 });
 
+test("gateway resets incomplete assistant output before publishing stream recovery", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "inspect",
+		client_turn_id: "client-retry",
+		client_user_message_id: "client-retry-message",
+	});
+	harness.emit({ type: "turn_started", clientTurnId: "client-retry", turnId: "turn-node" });
+	harness.emit({ type: "text_delta", text: "discarded answer" });
+	harness.emit({ type: "reasoning_delta", text: "discarded reasoning" });
+	harness.emit({
+		type: "stream_retrying",
+		attempt: 1,
+		maxRetries: 5,
+		delayMs: 200,
+		recoveryKind: "stream",
+		resetOutput: true,
+		failureKind: "response_stream_error",
+		additionalDetails: "provider response stream failed",
+	});
+
+	const reset = await waitFor(() => notification(harness.messages, "message.reset"));
+	const retrying = await waitFor(() => notification(harness.messages, "stream.retrying"));
+	parseGatewayEvent(reset);
+	parseGatewayEvent(retrying);
+	assert.ok(harness.messages.indexOf(reset) < harness.messages.indexOf(retrying));
+	assert.deepEqual(reset.params, { client_turn_id: "client-retry" });
+	assert.equal(retrying.params.recovery_kind, "stream");
+	assert.equal(retrying.params.text, "Reconnecting... 1/5");
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("gateway publishes hosted web search as an item lifecycle", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "search the web",
+		client_turn_id: "client-search",
+		client_user_message_id: "client-search-message",
+	});
+	harness.emit({ type: "turn_started", clientTurnId: "client-search", turnId: "turn-search" });
+	harness.emit({ type: "web_search_started", callId: "ws-1" });
+	harness.emit({
+		type: "web_search_completed",
+		call: {
+			callId: "ws-1",
+			action: { type: "search", queries: ["mycli docs", "mycli web search"] },
+		},
+	});
+
+	const started = await waitFor(() => notifications(harness.messages, "item.started")
+		.find((message) => message.params.item.type === "web_search"));
+	const completed = await waitFor(() => notifications(harness.messages, "item.completed")
+		.find((message) => message.params.item.type === "web_search"));
+	parseGatewayEvent(started);
+	parseGatewayEvent(completed);
+	assert.deepEqual(started.params, {
+		client_turn_id: "client-search",
+		turn_id: "turn-search",
+		item: {
+			id: "web-search:ws-1",
+			type: "web_search",
+			call_id: "ws-1",
+		},
+	});
+	assert.deepEqual(completed.params, {
+		client_turn_id: "client-search",
+		turn_id: "turn-search",
+		item: {
+			id: "web-search:ws-1",
+			type: "web_search",
+			call_id: "ws-1",
+			status: "completed",
+			action: { type: "search", queries: ["mycli docs", "mycli web search"] },
+			detail: "mycli docs ...",
+		},
+	});
+	assert.equal(
+		notifications(harness.messages, "status.update")
+			.some((message) => message.params.message === "Searching the web"),
+		false,
+	);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("gateway publishes provider diagnostics only through turn.failed", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "inspect",
+		client_turn_id: "client-auth",
+		client_user_message_id: "client-auth-message",
+	});
+	harness.emit({ type: "turn_started", clientTurnId: "client-auth", turnId: "turn-node" });
+	harness.emit({
+		type: "turn_failed",
+		code: "auth_error",
+		message: "provider authentication failed",
+		additionalDetails: "bad api_key=private-value (status 401)",
+	});
+
+	const failed = await waitFor(() => notification(harness.messages, "turn.failed"));
+	const turnStatus = await waitFor(() => notifications(harness.messages, "turn.status")
+		.find((message) => message.params.state === "failed"));
+	const statusUpdate = await waitFor(() => notifications(harness.messages, "status.update")
+		.find((message) => message.params.state === "failed"));
+	parseGatewayEvent(failed);
+	parseGatewayEvent(turnStatus);
+	parseGatewayEvent(statusUpdate);
+	assert.deepEqual(failed.params, {
+		client_turn_id: "client-auth",
+		turn_id: "turn-node",
+		code: "auth_error",
+		message: "provider authentication failed",
+		additional_details: "bad api_key=[REDACTED] (status 401)",
+	});
+	assert.doesNotMatch(JSON.stringify(failed), /private-value/u);
+	assert.deepEqual(turnStatus.params, {
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+		terminal: true,
+		client_turn_id: "client-auth",
+		turn_id: "turn-node",
+	});
+	assert.deepEqual(statusUpdate.params, {
+		state: "failed",
+		kind: "failed",
+		text: "Failed",
+		client_turn_id: "client-auth",
+	});
+	assert.ok(harness.messages.indexOf(failed) < harness.messages.indexOf(turnStatus));
+	assert.ok(harness.messages.indexOf(turnStatus) < harness.messages.indexOf(statusUpdate));
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
 test("gateway projects live file approval previews to the canonical snake-case payload", async () => {
 	const harness = gatewayHarness();
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
@@ -2935,6 +3188,10 @@ test("gateway projects live file approval previews to the canonical snake-case p
 		contentLineCount: 2,
 		contentChars: 13,
 		contentTruncated: false,
+		permissionRequest: {
+			network: { enabled: true },
+			fileSystem: { read: [], write: ["/tmp/export"] },
+		},
 	});
 
 	const request = await waitFor(() => notification(harness.messages, "approval.request"));
@@ -2942,6 +3199,10 @@ test("gateway projects live file approval previews to the canonical snake-case p
 	assert.equal(request.params.content_line_count, 2);
 	assert.equal(request.params.content_chars, 13);
 	assert.equal(request.params.content_truncated, false);
+	assert.deepEqual(request.params.permission_request, {
+		network: { enabled: true },
+		file_system: { read: [], write: ["/tmp/export"] },
+	});
 	assert.equal("contentPreview" in request.params, false);
 	assert.ok(harness.messages.indexOf(proposal) < harness.messages.indexOf(request));
 	parseGatewayEvent(request);
@@ -3070,6 +3331,46 @@ test("projects bounded tool and mutation lifecycle events without sensitive fiel
 	assert.equal(serialized.includes(fileContents), false);
 	assert.equal(serialized.includes(privateHash), false);
 	assert.equal(serialized.includes("argumentsJson"), false);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("projects a validated Skill name without exposing its instruction artifact", async () => {
+	const harness = gatewayHarness();
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "activate the repository skill",
+		client_turn_id: "client-skill",
+		client_user_message_id: "message-skill",
+		local_images: [],
+	});
+	harness.emit({
+		type: "tool_execution_started",
+		callId: "call-skill",
+		toolName: "Skill",
+	});
+	harness.emit({
+		type: "tool_execution_completed",
+		callId: "call-skill",
+		toolName: "Skill",
+		summary: "Activated skill: repository-analysis",
+		durationMs: 2,
+		metadata: {
+			skillInvocationArtifact: {
+				name: "repository-analysis",
+				text: "private skill instructions",
+			},
+		},
+	});
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+	const complete = harness.messages.find((message) => (
+		"method" in message && message.method === "tool.complete"
+	));
+	assert.ok(complete);
+	assert.equal("method" in complete ? complete.params.skill_name : undefined, "repository-analysis");
+	assert.doesNotMatch(JSON.stringify(complete), /private skill instructions/u);
 
 	harness.releaseTurn();
 	await harness.gateway.close();

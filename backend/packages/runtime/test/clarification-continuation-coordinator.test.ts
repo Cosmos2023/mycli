@@ -64,6 +64,12 @@ test("clarification continuation survives coordinator recreation and commits the
 		output: "User response: Node",
 		success: true,
 	});
+	assert.deepEqual(store.display, {
+		header: "Runtime",
+		question: "Which runtime?",
+		response: "Node",
+		multiSelect: false,
+	});
 	assert.equal(recovered.pending(), undefined);
 });
 
@@ -136,6 +142,7 @@ class MemoryClarificationStore {
 	conversation: readonly Readonly<{ readonly role: "user" | "assistant"; readonly content: string }>[] = [];
 	turnRecord: Readonly<Record<string, unknown>> | undefined;
 	toolResult: Readonly<Record<string, unknown>> | undefined;
+	display: Readonly<Record<string, unknown>> | undefined;
 
 	loadState(_sessionId: string, key: string): unknown {
 		return key === "suspended_turn" ? this.suspended : undefined;
@@ -164,6 +171,7 @@ class MemoryClarificationStore {
 
 	commitClarificationResponse(input: {
 		readonly requestId: string;
+		readonly display: Readonly<Record<string, unknown>>;
 		readonly toolResult: { readonly result: Readonly<Record<string, unknown>> };
 	}): void {
 		const payload = this.suspended as {
@@ -171,6 +179,7 @@ class MemoryClarificationStore {
 		};
 		assert.equal(payload.pending_clarification?.request_id, input.requestId);
 		this.toolResult = input.toolResult.result;
+		this.display = input.display;
 		this.suspended = undefined;
 		this.turnRecord = undefined;
 	}

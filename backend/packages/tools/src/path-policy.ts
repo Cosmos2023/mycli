@@ -37,6 +37,7 @@ export interface WritableWorkspaceFile {
 
 export interface WorkspacePathResolutionOptions {
 	readonly allowOutsideWorkspace?: boolean;
+	readonly allowedRoots?: readonly string[];
 }
 
 export async function resolveReadableWorkspaceFile(
@@ -53,7 +54,9 @@ export async function resolveReadableWorkspaceFile(
 		const unresolvedRoot = resolve(workspaceRoot);
 		realRoot = await realpath(unresolvedRoot);
 		const candidate = isAbsolute(rawPath) ? resolve(rawPath) : resolve(unresolvedRoot, rawPath);
-		if (!options.allowOutsideWorkspace && isOutside(unresolvedRoot, candidate)) {
+		if (!options.allowOutsideWorkspace
+			&& options.allowedRoots === undefined
+			&& isOutside(unresolvedRoot, candidate)) {
 			throw new WorkspacePathError("workspace_escape");
 		}
 		realTarget = await realpath(candidate);
@@ -63,7 +66,8 @@ export async function resolveReadableWorkspaceFile(
 		}
 		throw classifyPathError(error);
 	}
-	if (!options.allowOutsideWorkspace && isOutside(realRoot, realTarget)) {
+	if (!options.allowOutsideWorkspace
+		&& !isWithinAllowedRoots(realRoot, realTarget, options.allowedRoots)) {
 		throw new WorkspacePathError("workspace_escape");
 	}
 	try {
@@ -96,7 +100,9 @@ export async function resolveWritableWorkspaceFile(
 	}
 	const unresolvedRoot = resolve(workspaceRoot);
 	const candidate = isAbsolute(rawPath) ? resolve(rawPath) : resolve(unresolvedRoot, rawPath);
-	if (!options.allowOutsideWorkspace && isOutside(unresolvedRoot, candidate)) {
+	if (!options.allowOutsideWorkspace
+		&& options.allowedRoots === undefined
+		&& isOutside(unresolvedRoot, candidate)) {
 		throw new WorkspacePathError("workspace_escape");
 	}
 	if (candidate === unresolvedRoot) {
@@ -104,7 +110,8 @@ export async function resolveWritableWorkspaceFile(
 	}
 
 	const located = await locateWritableTarget(candidate);
-	if (!options.allowOutsideWorkspace && isOutside(realRoot, located.target)) {
+	if (!options.allowOutsideWorkspace
+		&& !isWithinAllowedRoots(realRoot, located.target, options.allowedRoots)) {
 		throw new WorkspacePathError("workspace_escape");
 	}
 	return {
@@ -183,6 +190,15 @@ async function locateWritableTarget(candidate: string): Promise<{
 function isOutside(root: string, candidate: string): boolean {
 	const fromRoot = relative(root, candidate);
 	return fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot);
+}
+
+function isWithinAllowedRoots(
+	workspaceRoot: string,
+	candidate: string,
+	allowedRoots: readonly string[] | undefined,
+): boolean {
+	return !isOutside(workspaceRoot, candidate)
+		|| (allowedRoots ?? []).some((root) => !isOutside(resolve(root), candidate));
 }
 
 function classifyPathError(error: unknown): WorkspacePathError {

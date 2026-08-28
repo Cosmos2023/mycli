@@ -290,6 +290,10 @@ test("accepts generation-aware M5 gateway event payloads", () => {
 				session_id: "s1",
 				generation: 2,
 				checkpoint_status: "waiting",
+				permission_request: {
+					network: { enabled: true },
+					file_system: { write: ["/tmp/export"] },
+				},
 			},
 		},
 		{

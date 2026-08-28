@@ -46,9 +46,10 @@ export const WAIT_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	id: "subagent:wait_agent",
 	name: "wait_agent",
 	description: (
-		"Wait for a background subagent completion notification or user steering. "
-		+ "Use this when no independent work remains; completion is delivered automatically. "
-		+ "Do not poll task output or create sleeping shell commands."
+		"Wait for background subagent activity or user steering when no independent work remains. "
+		+ "A terminal report is delivered automatically through the caller's mailbox and becomes available to the next model step; no output-fetch tool is needed. "
+		+ "A timeout is not completion, so wait again while relevant children remain outstanding. "
+		+ "Do not poll task output, create sleeping shell commands, or give the final answer before relevant reports are integrated unless the user explicitly requested detached background work."
 	),
 	inputSchema: {
 		type: "object",

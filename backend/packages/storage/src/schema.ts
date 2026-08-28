@@ -606,6 +606,19 @@ CREATE INDEX IF NOT EXISTS idx_session_summaries_session_sequence
 ON session_summaries(session_id, summary_index);
 `;
 
+export const SESSION_RUNTIME_LEASE_SQL = `
+CREATE TABLE IF NOT EXISTS session_runtime_leases (
+    session_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    owner_pid INTEGER NOT NULL,
+    acquired_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_runtime_leases_owner
+ON session_runtime_leases(owner_id);
+`;
+
 export const SCHEMA_V10_LEGACY_CLEANUP_SQL = `
 DROP TRIGGER IF EXISTS conversation_messages_fts_insert;
 DROP TRIGGER IF EXISTS conversation_messages_fts_delete;
@@ -767,6 +780,7 @@ export const SCHEMA_V10_SQL = `
 ${SCHEMA_V10_LEGACY_CLEANUP_SQL}
 ${SCHEMA_V10_LINEAGE_SQL}
 ${SCHEMA_V10_TRANSCRIPT_SQL}
+${SESSION_RUNTIME_LEASE_SQL}
 `;
 
 export const SCHEMA_V11_CONTENT_BLOB_SQL = `
@@ -842,6 +856,7 @@ ${SCHEMA_V10_LINEAGE_SQL}
 ${SCHEMA_V11_CONTENT_BLOB_SQL}
 ${SCHEMA_V11_TRANSCRIPT_SQL}
 ${SCHEMA_V11_CONTENT_REFERENCE_SQL}
+${SESSION_RUNTIME_LEASE_SQL}
 `;
 
 export const SCHEMA_V12_PROVIDER_LEDGER_SQL = `

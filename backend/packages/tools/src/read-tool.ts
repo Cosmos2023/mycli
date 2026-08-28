@@ -77,8 +77,15 @@ export class ReadTool implements ToolAdapter {
 		let path: string;
 		let snapshotPath: string;
 		try {
+			const allowedRoots = options.executionPolicy
+				? Object.freeze([
+					...(options.executionPolicy.readableRoots ?? []),
+					...options.executionPolicy.writableRoots,
+				])
+				: undefined;
 			target = await resolveReadableWorkspaceFile(this.#workspaceRoot, rawPath, {
 				allowOutsideWorkspace: hasUnrestrictedFilesystem(options.executionPolicy),
+				...(allowedRoots === undefined ? {} : { allowedRoots }),
 			});
 			snapshotPath = await this.#snapshotPath(target);
 			path = displayPath(snapshotPath);

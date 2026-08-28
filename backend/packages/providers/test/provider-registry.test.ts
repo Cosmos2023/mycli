@@ -58,8 +58,10 @@ function config(): NodeRuntimeConfig {
 		reasoningEffort: "medium",
 		thinkingEnabled: true,
 		supportsImages: true,
+		webSearchMode: "disabled",
 		promptCacheKeyEnabled: false,
 		cacheControlEnabled: true,
+		requestPermissionsToolEnabled: false,
 	};
 }
 

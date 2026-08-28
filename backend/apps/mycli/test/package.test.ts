@@ -55,6 +55,7 @@ test("app production bin targets compiled JavaScript", () => {
 	const manifest = readManifest(packages[0].root);
 
 	assert.deepEqual(manifest.bin, { mycli: "dist/cli.js" });
+	assert.equal(manifest.scripts?.prepack, "node scripts/vendor-internal-packages.mjs");
 	assertRuntimeMetadataUsesDist(manifest);
 });
 
@@ -221,29 +222,43 @@ test("default workspace imports keep production packages on compiled output", ()
 	assert.match(ripgrepRuntime ?? "", /\/backend\/packages\/tools\/dist\/ripgrep-runtime\.js$/u);
 });
 
-test("packed CLI smoke includes every local app and runtime dependency", () => {
+test("packed CLI smoke vendors internal workspaces into the application tarball", () => {
 	const app = readManifest(packages[0].root);
-	const runtime = readManifest(new URL("../../../packages/runtime/", import.meta.url));
 	const root = readManifest(ROOT);
 	const smoke = readFileSync(
 		new URL("../../../../scripts/smoke_packed_cli.mjs", import.meta.url),
 		"utf8",
 	);
+	const releaseConfig = readFileSync(
+		new URL("../../../../scripts/release-config.mjs", import.meta.url),
+		"utf8",
+	);
 	const localDependencies = new Set([
-		...Object.keys(app.dependencies ?? {}),
-		...Object.keys(runtime.dependencies ?? {}),
-	].filter((name) => name.startsWith("@mycli/") || name === "mycli-shell-tui"));
+		"@mycli/config",
+		"@mycli/contracts",
+		"@mycli/core",
+		"@mycli/integrations",
+		"@mycli/providers",
+		"@mycli/runtime",
+		"@mycli/storage",
+		"@mycli/tools",
+		"mycli-shell-tui",
+	]);
 
 	for (const dependency of localDependencies) {
+		assert.equal(app.dependencies?.[dependency], undefined, `${dependency} must be vendored`);
 		assert.equal(
-			smoke.includes(`"${dependency}"`),
+			releaseConfig.includes(`"${dependency}"`),
 			true,
-			`pack smoke is missing ${dependency}`,
+			`release package list is missing ${dependency}`,
 		);
 	}
 	assert.equal(root.scripts?.["smoke:package"], "node scripts/smoke_packed_cli.mjs");
-	assert.match(smoke, /process\.argv\.slice\(2\)\.includes\("--all-platforms"\)/u);
+	assert.match(smoke, /APPLICATION_RELEASE_PACKAGE\.name/u);
+	assert.match(smoke, /VENDORED_WORKSPACE_PACKAGES/u);
+	assert.match(smoke, /FLAGS\.has\("--all-platforms"\)/u);
 	assert.match(smoke, /name === CURRENT_PLATFORM_PACKAGE/u);
+	assert.match(smoke, /native\/windows\/mycli-windows-sandbox\.exe/u);
 });
 
 test("tools optional dependencies match every ripgrep platform package", () => {

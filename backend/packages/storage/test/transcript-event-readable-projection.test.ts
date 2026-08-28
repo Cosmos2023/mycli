@@ -3,6 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+	TURN_INTERRUPTED_NOTICE,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
 import Database from "better-sqlite3";
 import {
 	parseTranscriptEventAppendInput,
@@ -38,7 +42,13 @@ test("projects reasoning, plans, approvals, clarifications, shell activity, and 
 		displayEvent(5, "approval_request", "Approve command"),
 		displayEvent(6, "approval_resolution", "Approved"),
 		displayEvent(7, "clarification_request", "Which package?"),
-		displayEvent(8, "clarification_response", "storage"),
+		displayEvent(8, "clarification_response", "storage", {
+			request_id: "question-1",
+			header: "Package",
+			question: "Which package?",
+			response: "storage",
+			multi_select: false,
+		}),
 		event(9, "display_activity", {
 			activityType: "shell",
 			callId: "call-shell",
@@ -62,6 +72,17 @@ test("projects reasoning, plans, approvals, clarifications, shell activity, and 
 			summary: "Tests passed",
 		}, true),
 		displayEvent(11, "warning", "One warning remains"),
+		event(12, "display_activity", {
+			activityType: "web_search",
+			text: "mycli docs ...",
+			callId: "ws-1",
+			status: "completed",
+			metadata: {
+				action_type: "search",
+				queries: ["mycli docs", "mycli web search"],
+			},
+		}, false),
+		displayEvent(13, "turn_completed", "", { duration_ms: 4_000 }),
 	];
 
 	const items = projectTranscriptEventsToReadableItems(events, { limit: Number.MAX_SAFE_INTEGER });
@@ -74,8 +95,10 @@ test("projects reasoning, plans, approvals, clarifications, shell activity, and 
 		"warning",
 		"status",
 		"status",
-		"user_message",
+		"clarification",
 		"warning",
+		"web_search",
+		"turn_completed",
 	]);
 	const tool = items.find((item) => item.type === "tool");
 	assert.equal(items.find((item) => item.type === "assistant_message")?.id, "legacy-assistant-preamble");
@@ -86,6 +109,31 @@ test("projects reasoning, plans, approvals, clarifications, shell activity, and 
 	assert.deepEqual(items.find((item) => item.type === "plan_update")?.metadata?.items, [
 		{ id: "step-1", text: "Run tests", status: "completed" },
 	]);
+	assert.deepEqual(items.find((item) => item.type === "clarification")?.metadata, {
+		request_id: "question-1",
+		header: "Package",
+		question: "Which package?",
+		response: "storage",
+		multi_select: false,
+	});
+	assert.deepEqual(items.find((item) => item.type === "web_search"), {
+		id: "event-12",
+		type: "web_search",
+		text: "mycli docs ...",
+		created_at: NOW,
+		call_id: "ws-1",
+		metadata: {
+			action_type: "search",
+			queries: ["mycli docs", "mycli web search"],
+		},
+		status: "completed",
+	});
+	assert.deepEqual(items.find((item) => item.type === "turn_completed"), {
+		id: "event-13",
+		type: "turn_completed",
+		created_at: NOW,
+		duration_ms: 4_000,
+	});
 });
 
 test("hides model-only, compaction, rollback, activation, and internal user events", () => {
@@ -128,6 +176,87 @@ test("hides model-only, compaction, rollback, activation, and internal user even
 		text: "visible answer",
 		created_at: NOW,
 	}]);
+});
+
+test("restores historical interrupted warnings and deduplicates persisted notices", async (t) => {
+	const fixture = await repositoryFixture(t);
+	append(fixture.repository, 1, "user_input", "old-user", {
+		text: "/old",
+		clientUserMessageId: "old-user",
+		source: "submit",
+	}, true);
+	fixture.repository.appendEvent(parseTranscriptEventAppendInput({
+		schemaVersion: 1,
+		sessionId: "session-1",
+		eventId: "old-turn-aborted-context",
+		eventType: "context",
+		modelVisible: true,
+		createdAt: NOW,
+		payload: {
+			itemId: "turn-aborted:old",
+			text: "<turn_aborted>interrupted</turn_aborted>",
+			metadata: {
+				...contextMetadata(),
+				kind: "turn_aborted",
+				sourceId: "turn-aborted:old",
+			},
+		},
+	}));
+	append(fixture.repository, 1, "turn_lifecycle", "old-interrupted", {
+		phase: "interrupted",
+		errorCode: "interrupted",
+		message: "turn interrupted",
+	}, false);
+	append(fixture.repository, 2, "user_input", "new-user", {
+		text: "/new",
+		clientUserMessageId: "new-user",
+		source: "submit",
+	}, true);
+	append(
+		fixture.repository,
+		2,
+		"display_activity",
+		turnInterruptedNoticeId("turn-2"),
+		{
+			activityType: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			status: "interrupted",
+			metadata: {
+				event_kind: "turn_interrupted",
+				interrupted_turn_id: "turn-2",
+				status: "interrupted",
+			},
+		},
+		false,
+	);
+	append(fixture.repository, 2, "turn_lifecycle", "new-interrupted", {
+		phase: "interrupted",
+		errorCode: "interrupted",
+		message: "turn interrupted",
+	}, false);
+
+	const readable = fixture.repository.loadReadableTranscript("session-1");
+	const recent = fixture.repository.loadRecentReadableTranscript("session-1");
+	const page = fixture.repository.loadReadableTranscriptPage("session-1", { limit: 500 });
+	assert.deepEqual(
+		readable.filter((item) => item.type === "warning").map((item) => [
+			item.id,
+			item.text,
+			item.metadata?.status,
+		]),
+		[
+			[turnInterruptedNoticeId("turn-1"), TURN_INTERRUPTED_NOTICE, "interrupted"],
+			[turnInterruptedNoticeId("turn-2"), TURN_INTERRUPTED_NOTICE, "interrupted"],
+		],
+	);
+	assert.deepEqual(recent, readable);
+	assert.deepEqual(page.items, readable);
+	assert.equal(page.nextBeforeSequence, null);
+	assert.equal(
+		JSON.stringify(fixture.repository.loadConversationItems("session-1"))
+			.includes(TURN_INTERRUPTED_NOTICE),
+		false,
+	);
 });
 
 test("preserves valid opaque readable rows and fails malformed rows without exposing bytes", () => {

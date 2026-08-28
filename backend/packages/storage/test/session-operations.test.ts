@@ -13,6 +13,23 @@ test("forks a bounded conversation prefix and records session lineage atomically
 	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: () => NOW });
 	t.after(() => store.close());
 	seedCompletedTurn(store, fixture.root);
+	const preferences = {
+		state_version: 1,
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-session",
+		api_base_url: "https://session.invalid/v1",
+		auth_ref: "session-account",
+		reasoning_effort: "high",
+		collaboration_mode: "plan",
+	};
+	store.saveState({
+		sessionId: "source",
+		workspaceRoot: fixture.root,
+		threadId: "source",
+		key: "session_preferences",
+		payload: preferences,
+	});
 
 	const forked = store.forkSession({
 		sourceSessionId: "source",
@@ -35,6 +52,8 @@ test("forks a bounded conversation prefix and records session lineage atomically
 	]);
 	assert.equal(store.loadHistoryItems("branch").length, 1);
 	assert.equal(store.loadSession("branch")?.workspaceRoot, fixture.root);
+	assert.deepEqual(store.loadState("branch", "session_preferences"), preferences);
+	assert.equal(store.loadState("branch", "input_queue"), undefined);
 
 	assert.throws(
 		() => store.forkSession({ sourceSessionId: "source", targetSessionId: "branch" }),

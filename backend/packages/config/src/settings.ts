@@ -5,6 +5,7 @@ import type {
 	ProtocolId,
 	ProviderId,
 	ReasoningEffort,
+	WebSearchMode,
 } from "@mycli/core";
 import { parse } from "smol-toml";
 import { readApiKey } from "./auth-store.ts";
@@ -36,9 +37,11 @@ export interface NodeRuntimeConfig {
 	readonly reasoningEffort: ReasoningEffort;
 	readonly thinkingEnabled: boolean;
 	readonly supportsImages: boolean;
+	readonly webSearchMode: WebSearchMode;
 	readonly promptCacheKeyEnabled: boolean;
 	readonly cacheControlEnabled: boolean;
 	readonly memoryEnabled: boolean;
+	readonly requestPermissionsToolEnabled: boolean;
 	readonly compressionThresholdTokens: number;
 	readonly compactionTokenLimit: number;
 	readonly compactionReservedOutputTokens: number;
@@ -105,7 +108,13 @@ export interface ResolveConfigOptions {
 	readonly workspaceRoot: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly overrides?: {
+		readonly provider?: ProviderId;
+		readonly protocol?: ProtocolId;
 		readonly model?: string;
+		readonly apiBaseUrl?: string;
+		readonly authRef?: string;
+		readonly reasoningEffort?: ReasoningEffort;
+		readonly thinkingEnabled?: boolean;
 		readonly session?: string;
 	};
 	readonly createSessionId?: () => string;
@@ -136,6 +145,9 @@ const SECTION_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> =
 	},
 	memory: {
 		enabled: "memory_enabled",
+	},
+	features: {
+		request_permissions_tool: "request_permissions_tool",
 	},
 	context: {
 		compression_threshold_tokens: "compression_threshold_tokens",
@@ -185,16 +197,19 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 	);
 	const sources = [userConfig, projectConfig, legacyConfig] as const;
 	const configuredBaseUrl = firstTruthy(
+		options.overrides?.apiBaseUrl,
 		options.env.MYCLI_BASE_URL,
 		...sources.map((source) => source.api_base_url),
 	);
 	const inferenceUrl = stringValue(configuredBaseUrl) ?? "https://api.openai.com/v1";
 	const providerValue = stringValue(firstTruthy(
+		options.overrides?.provider,
 		options.env.MYCLI_PROVIDER,
 		...sources.map((source) => source.provider),
 	)) ?? inferProviderFromBaseUrl(inferenceUrl);
 	const initialProfile = resolveProviderProfile(providerValue);
 	const protocolValue = stringValue(firstTruthy(
+		options.overrides?.protocol,
 		options.env.MYCLI_PROTOCOL,
 		...sources.map((source) => source.protocol),
 	)) ?? initialProfile.defaultProtocol;
@@ -209,6 +224,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 	)) ?? "gpt-5";
 	const apiBaseUrl = (stringValue(configuredBaseUrl) ?? profile.defaultBaseUrl).replace(/\/+$/, "");
 	const authRef = stringValue(firstTruthy(
+		options.overrides?.authRef,
 		options.env.MYCLI_AUTH_REF,
 		...sources.map((source) => source.auth_ref),
 	))?.trim() || providerValue;
@@ -259,17 +275,18 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		...sources.map((source) => source.reasoning_effort),
 	);
 	const thinkingEffort = firstTruthy(
+		options.overrides?.reasoningEffort,
 		options.env.MYCLI_THINKING_EFFORT,
 		...sources.map((source) => source.thinking_effort),
 	);
 	const reasoningEffort = reasoningEffortValue(thinkingEffort ?? legacyReasoning ?? "medium");
-	const thinkingEnabled = optionalBoolean(setting(
+	const thinkingEnabled = options.overrides?.thinkingEnabled ?? optionalBoolean(setting(
 		options.env,
 		sources,
 		"MYCLI_THINKING_ENABLED",
 		"thinking_enabled",
 	)) ?? true;
-	if (!thinkingEnabled && thinkingEffort !== undefined) {
+	if (!thinkingEnabled && thinkingEffort !== undefined && thinkingEffort !== "none") {
 		throw new Error("config_error: thinking_effort requires thinking_enabled=true");
 	}
 	const supportsImagesOverride = optionalBoolean(setting(
@@ -294,6 +311,16 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		setting(options.env, sources, "MYCLI_MEMORY_ENABLED", "memory_enabled"),
 		NODE_RUNTIME_CONTEXT_DEFAULTS.memoryEnabled,
 		"memory_enabled",
+	);
+	const requestPermissionsToolEnabled = booleanSetting(
+		setting(
+			options.env,
+			sources,
+			"MYCLI_REQUEST_PERMISSIONS_TOOL",
+			"request_permissions_tool",
+		),
+		false,
+		"features.request_permissions_tool",
 	);
 	const compressionThresholdTokens = positiveSafeIntegerSetting(
 		setting(
@@ -500,9 +527,13 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		reasoningEffort,
 		thinkingEnabled,
 		supportsImages: supportsImagesOverride ?? profile.supportsImages,
+		webSearchMode: profile.supportsHostedWebSearch && protocol === "responses"
+			? "live"
+			: "disabled",
 		promptCacheKeyEnabled: promptCacheOverride ?? profile.promptCacheKeyEnabled,
 		cacheControlEnabled: cacheControlOverride ?? profile.cacheControlEnabled,
 		memoryEnabled,
+		requestPermissionsToolEnabled,
 		compressionThresholdTokens,
 		compactionTokenLimit,
 		compactionReservedOutputTokens,

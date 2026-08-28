@@ -20,6 +20,7 @@ export interface ModelCatalogEntry {
 	readonly contextWindowTokens?: number;
 	readonly maxOutputTokens?: number;
 	readonly store?: boolean;
+	readonly supportsHostedWebSearch?: boolean;
 	readonly isDefault: boolean;
 	readonly isCurrent: boolean;
 }
@@ -436,6 +437,10 @@ function parseProviderCatalog(
 			providerValueRaw.options,
 			`Provider '${providerValue}' in ${path}`,
 		);
+		const providerCapabilities = parseCapabilities(
+			providerValueRaw.capabilities,
+			`Provider '${providerValue}' in ${path}`,
+		);
 		if (providerStore !== undefined && protocol === "anthropic_messages") {
 			throw new ModelCatalogError(
 				`Provider '${providerValue}' in ${path} does not support the 'store' option.`,
@@ -454,9 +459,15 @@ function parseProviderCatalog(
 			const reasoning = parseReasoning(modelValue.reasoning, location);
 			const limits = parseLimits(modelValue.limits, location);
 			const modelStore = parseStoreOption(modelValue.options, location);
+			const modelCapabilities = parseCapabilities(modelValue.capabilities, location);
 			const store = modelStore ?? providerStore;
+			const supportsHostedWebSearch = modelCapabilities.supportsHostedWebSearch
+				?? providerCapabilities.supportsHostedWebSearch;
 			if (store !== undefined && protocol === "anthropic_messages") {
 				throw new ModelCatalogError(`${location} does not support the 'store' option.`);
+			}
+			if (supportsHostedWebSearch === true && protocol !== "responses") {
+				throw new ModelCatalogError(`${location} requires protocol 'responses' for web_search.`);
 			}
 			entries.push(Object.freeze({
 				provider: profile.provider,
@@ -472,6 +483,7 @@ function parseProviderCatalog(
 					: {}),
 				...limits,
 				...(store === undefined ? {} : { store }),
+				...(supportsHostedWebSearch === undefined ? {} : { supportsHostedWebSearch }),
 				isDefault: model.trim() === profile.defaultModel,
 				isCurrent: false,
 			}));
@@ -503,8 +515,12 @@ function parseLegacyEntry(value: unknown, path: string, index: number): ModelCat
 	}, location);
 	const limits = parseLimits(value.limits, location);
 	const store = parseStoreOption(value.options, location);
+	const capabilities = parseCapabilities(value.capabilities, location);
 	if (store !== undefined && protocol === "anthropic_messages") {
 		throw new ModelCatalogError(`${location} does not support the 'store' option.`);
+	}
+	if (capabilities.supportsHostedWebSearch === true && protocol !== "responses") {
+		throw new ModelCatalogError(`${location} requires protocol 'responses' for web_search.`);
 	}
 	return Object.freeze({
 		provider: profile.provider,
@@ -518,6 +534,9 @@ function parseLegacyEntry(value: unknown, path: string, index: number): ModelCat
 		...(reasoning.defaultEffort ? { defaultReasoningEffort: reasoning.defaultEffort } : {}),
 		...limits,
 		...(store === undefined ? {} : { store }),
+		...(capabilities.supportsHostedWebSearch === undefined
+			? {}
+			: { supportsHostedWebSearch: capabilities.supportsHostedWebSearch }),
 		isDefault: model === profile.defaultModel,
 		isCurrent: false,
 	});
@@ -597,6 +616,21 @@ function parseStoreOption(value: unknown, location: string): boolean | undefined
 		throw new ModelCatalogError(`${location} has invalid provider request options.`);
 	}
 	return value.store;
+}
+
+function parseCapabilities(
+	value: unknown,
+	location: string,
+): Pick<ModelCatalogEntry, "supportsHostedWebSearch"> {
+	if (value === undefined) return {};
+	if (!isRecord(value)
+		|| Object.keys(value).some((key) => key !== "web_search")
+		|| (value.web_search !== undefined && typeof value.web_search !== "boolean")) {
+		throw new ModelCatalogError(`${location} has invalid model capabilities.`);
+	}
+	return value.web_search === undefined
+		? {}
+		: { supportsHostedWebSearch: value.web_search };
 }
 
 function optionalPositiveSafeInteger(value: unknown, label: string): number | undefined {

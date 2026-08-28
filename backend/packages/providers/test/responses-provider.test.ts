@@ -64,7 +64,7 @@ test("maps a sanitized Responses stream into provider-neutral events", async () 
 			state: {
 				provider: "openai",
 				value: {
-					responsesReasoningItems: [{
+					responsesNativeItems: [{
 						type: "reasoning",
 						id: "rs_1",
 						summary: [{ type: "summary_text", text: "checking" }],
@@ -87,6 +87,109 @@ test("maps a sanitized Responses stream into provider-neutral events", async () 
 		role: "developer",
 		content: "Use the child role.",
 	});
+});
+
+test("serializes hosted web search only when live mode is enabled", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	const captured: Record<string, unknown>[] = [];
+	const client: ResponsesClient = {
+		create: async (body) => {
+			captured.push(body);
+			return events([completedResponse(`resp-search-${captured.length}`)]);
+		},
+	};
+	const provider = new ResponsesProvider!({ client });
+
+	await collect(provider.stream({ ...request(), webSearchMode: "live" }, {
+		signal: new AbortController().signal,
+	}));
+	await collect(provider.stream({ ...request(), webSearchMode: "disabled" }, {
+		signal: new AbortController().signal,
+	}));
+
+	assert.deepEqual(captured[0]?.tools, [{
+		type: "web_search",
+		external_web_access: true,
+	}]);
+	assert.equal("tools" in (captured[1] ?? {}), false);
+});
+
+test("maps hosted web-search lifecycle and preserves a bounded native replay item", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	const callId = `ws_${"x".repeat(300)}`;
+	const client: ResponsesClient = {
+		create: async () => events([
+			{
+				type: "response.output_item.added",
+				item: { type: "web_search_call", id: callId, status: "in_progress" },
+			},
+			{ type: "response.web_search_call.in_progress", item_id: callId },
+			{ type: "response.web_search_call.searching", item_id: callId },
+			{ type: "response.web_search_call.completed", item_id: callId },
+			{
+				type: "response.output_text.annotation.added",
+				annotation: { type: "url_citation", url: "https://example.com/private-result" },
+			},
+			{
+				type: "response.output_item.done",
+				item: {
+					type: "web_search_call",
+					id: callId,
+					status: "completed",
+					action: {
+						type: "search",
+						query: "mycli hosted search",
+						queries: ["mycli hosted search", "mycli Responses API"],
+						sources: [{ type: "url", url: "https://example.com/private-result" }],
+					},
+				},
+			},
+			completedResponse("resp-search"),
+		]),
+	};
+
+	const result = await collect(new ResponsesProvider!({ client }).stream({
+		...request(),
+		webSearchMode: "live",
+	}, { signal: new AbortController().signal }));
+	const boundedCallId = callId.slice(0, 256);
+
+	assert.deepEqual(result, [
+		{ type: "web_search_started", callId: boundedCallId },
+		{
+			type: "web_search_completed",
+			call: {
+				callId: boundedCallId,
+				action: {
+					type: "search",
+					query: "mycli hosted search",
+					queries: ["mycli hosted search", "mycli Responses API"],
+				},
+			},
+		},
+		{
+			type: "provider_state",
+			state: {
+				provider: "openai",
+				value: {
+					responsesNativeItems: [{
+						type: "web_search_call",
+						id: boundedCallId,
+						status: "completed",
+						action: {
+							type: "search",
+							query: "mycli hosted search",
+							queries: ["mycli hosted search", "mycli Responses API"],
+						},
+					}],
+				},
+			},
+		},
+		{ type: "completed", responseId: "resp-search" },
+	]);
+	assert.equal(JSON.stringify(result).includes("private-result"), false);
 });
 
 test("surfaces a provider tool call without executing it", async () => {
@@ -338,6 +441,51 @@ test("replays encrypted reasoning before a completed assistant turn", async () =
 		},
 		{ role: "assistant", content: "Initial answer." },
 		{ role: "user", content: "Follow up." },
+	]);
+});
+
+test("replays provider-native web-search calls before the matching assistant output", async () => {
+	const ResponsesProvider = Reflect.get(providers, "ResponsesProvider") as ResponsesProviderConstructor | undefined;
+	assert.equal(typeof ResponsesProvider, "function");
+	let capturedRequest: Record<string, unknown> | undefined;
+	const client: ResponsesClient = {
+		create: async (body) => {
+			capturedRequest = body;
+			return events([completedResponse("resp-search-follow-up")]);
+		},
+	};
+
+	await collect(new ResponsesProvider!({ client }).stream({
+		...request(),
+		items: [
+			{
+				type: "assistant",
+				text: "I found the source.",
+				providerState: {
+					provider: "openai",
+					value: {
+						responsesNativeItems: [{
+							type: "web_search_call",
+							id: "ws-1",
+							status: "completed",
+							action: { type: "open_page", url: "https://example.com/docs" },
+						}],
+					},
+				},
+			},
+			{ type: "user", text: "Summarize it." },
+		],
+	}, { signal: new AbortController().signal }));
+
+	assert.deepEqual(capturedRequest?.input, [
+		{
+			type: "web_search_call",
+			id: "ws-1",
+			status: "completed",
+			action: { type: "open_page", url: "https://example.com/docs" },
+		},
+		{ role: "assistant", content: "I found the source." },
+		{ role: "user", content: "Summarize it." },
 	]);
 });
 

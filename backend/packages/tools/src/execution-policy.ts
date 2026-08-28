@@ -1,4 +1,8 @@
 import { realpathSync } from "node:fs";
+export {
+	networkDomainAllowed,
+	normalizeNetworkDomains,
+} from "@mycli/core";
 
 export type PermissionProfile = "read-only" | "workspace" | "full-access";
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -9,6 +13,8 @@ export interface ExecutionPolicy {
 	readonly mode: SandboxMode;
 	readonly filesystem: FilesystemPolicy;
 	readonly network: NetworkPolicy;
+	readonly networkDomains?: readonly string[];
+	readonly readableRoots?: readonly string[];
 	readonly writableRoots: readonly string[];
 }
 
@@ -37,6 +43,12 @@ export function hasUnrestrictedFilesystem(
 	policy: ExecutionPolicy | undefined,
 ): boolean {
 	return policy?.filesystem === "unrestricted";
+}
+
+export function hasUnrestrictedNetwork(
+	policy: ExecutionPolicy | undefined,
+): boolean {
+	return policy?.network === "enabled" && policy.networkDomains === undefined;
 }
 
 function immutablePolicy(

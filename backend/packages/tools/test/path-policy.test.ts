@@ -137,6 +137,32 @@ test("resolves existing and new outside mutation targets only with unrestricted 
 	assert.equal(created.existed, false);
 });
 
+test("confines outside mutations to exact granted writable roots", async (t) => {
+	const fixture = await workspaceFixture(t);
+	const resolveWritableWorkspaceFile = requiredWritableResolver();
+	const grantedRoot = join(fixture.parent, "exports");
+	const denied = join(fixture.parent, "private.txt");
+	await mkdir(grantedRoot);
+	await writeFile(denied, "private", "utf8");
+	await symlink(denied, join(grantedRoot, "escape-link"));
+	const options = { allowedRoots: [await realpath(grantedRoot)] };
+
+	const granted = await resolveWritableWorkspaceFile(
+		fixture.root,
+		join(grantedRoot, "report.txt"),
+		options,
+	);
+	assert.equal(granted.target, join(await realpath(grantedRoot), "report.txt"));
+	await assert.rejects(
+		() => resolveWritableWorkspaceFile(fixture.root, denied, options),
+		hasKind("workspace_escape"),
+	);
+	await assert.rejects(
+		() => resolveWritableWorkspaceFile(fixture.root, join(grantedRoot, "escape-link"), options),
+		hasKind("workspace_escape"),
+	);
+});
+
 test("rejects directories workspace root and blank mutation paths", async (t) => {
 	const fixture = await workspaceFixture(t);
 	const resolveWritableWorkspaceFile = requiredWritableResolver();
@@ -157,6 +183,7 @@ test("rejects directories workspace root and blank mutation paths", async (t) =>
 
 interface ResolutionOptions {
 	readonly allowOutsideWorkspace?: boolean;
+	readonly allowedRoots?: readonly string[];
 }
 
 type Resolver = (

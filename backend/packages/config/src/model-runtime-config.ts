@@ -49,5 +49,8 @@ export async function resolveModelRuntimeConfig(
 			? {}
 			: { maxOutputTokens: entry.maxOutputTokens }),
 		...(entry.store === undefined ? {} : { store: entry.store }),
+		...(entry.supportsHostedWebSearch === undefined
+			? {}
+			: { webSearchMode: entry.supportsHostedWebSearch ? "live" : "disabled" }),
 	});
 }

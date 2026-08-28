@@ -1,6 +1,9 @@
+import { RUNTIME_RETRY_AFTER_MAX_SECONDS } from "@mycli/contracts";
+
 export interface RetryDecisionInput {
 	readonly retryable: boolean;
 	readonly eventsObserved: number;
+	readonly allowAfterEvents?: boolean;
 	readonly retriesUsed: number;
 	readonly maxRetries: number;
 	readonly retryAfterSeconds?: number;
@@ -13,13 +16,19 @@ export type RetryDecision =
 
 export function decideRetry(input: RetryDecisionInput): RetryDecision {
 	const retryLimit = clampInteger(input.maxRetries, 0, 100);
-	if (!input.retryable || input.eventsObserved > 0 || input.retriesUsed >= retryLimit) {
+	if (
+		!input.retryable
+		|| (input.eventsObserved > 0 && input.allowAfterEvents !== true)
+		|| input.retriesUsed >= retryLimit
+	) {
 		return { shouldRetry: false };
 	}
 	const attempt = input.retriesUsed + 1;
-	const retryAfterMs = input.retryAfterSeconds === undefined
-		? undefined
-		: Math.max(0, input.retryAfterSeconds * 1000);
+	const retryAfterMs = typeof input.retryAfterSeconds === "number"
+		&& Number.isFinite(input.retryAfterSeconds)
+		&& input.retryAfterSeconds >= 0
+		? Math.min(RUNTIME_RETRY_AFTER_MAX_SECONDS * 1_000, input.retryAfterSeconds * 1_000)
+		: undefined;
 	const baseDelayMs = Math.min(4000, 200 * (2 ** (attempt - 1)));
 	const random = Math.max(0, Math.min(1, input.random()));
 	const jitterFactor = 0.9 + (random * 0.2);

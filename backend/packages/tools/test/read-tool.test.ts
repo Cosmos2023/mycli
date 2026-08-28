@@ -148,9 +148,21 @@ test("full access reads outside files and records a canonical mutation snapshot"
 		signal: new AbortController().signal,
 		executionPolicy: tools.executionPolicy("full-access", fixture.root),
 	});
+	const granted = await read.execute({
+		file_path: outside,
+		offset: 1,
+		limit: 20,
+	}, {
+		signal: new AbortController().signal,
+		executionPolicy: {
+			...tools.executionPolicy("read-only", fixture.root),
+			readableRoots: [await realpath(fixture.parent)],
+		},
+	});
 
 	assert.equal(restricted.errorKind, "workspace_escape");
 	assert.equal(unrestricted.success, true);
+	assert.equal(granted.success, true);
 	assert.equal(unrestricted.summary, "Read outside.txt");
 	assert.equal(unrestricted.modelOutput.includes("outside content"), true);
 	assert.equal(unrestricted.modelOutput.includes(fixture.parent), false);

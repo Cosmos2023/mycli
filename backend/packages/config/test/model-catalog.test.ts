@@ -72,6 +72,7 @@ test("model catalog v2 inherits provider settings and validates model capabiliti
 			base_url: "https://models.example/v1/",
 			auth_ref: "private-account",
 			options: { store: false },
+			capabilities: { web_search: true },
 			models: {
 				"private-current": {
 					name: "Private Current",
@@ -98,6 +99,7 @@ test("model catalog v2 inherits provider settings and validates model capabiliti
 	assert.equal(entry.contextWindowTokens, 200_000);
 	assert.equal(entry.maxOutputTokens, 50_000);
 	assert.equal(entry.store, false);
+	assert.equal(entry.supportsHostedWebSearch, true);
 	assert.equal(modelInputTokenLimit(entry), 150_000);
 	assert.deepEqual(entry.supportedReasoningEfforts, ["low", "high", "max"]);
 	assert.equal(entry.defaultReasoningEffort, "high");
@@ -188,8 +190,10 @@ test("model runtime config derives prompt and request limits while preserving ex
 			base_url: "https://models.example/v1",
 			auth_ref: "private-account",
 			options: { store: false },
+			capabilities: { web_search: true },
 			models: {
 				"private-current": {
+					capabilities: { web_search: false },
 					limits: {
 						context_window_tokens: 200_000,
 						max_output_tokens: 50_000,
@@ -212,6 +216,7 @@ test("model runtime config derives prompt and request limits while preserving ex
 	assert.equal(derived.modelContextWindowTokens, 200_000);
 	assert.equal(derived.maxOutputTokens, 50_000);
 	assert.equal(derived.store, false);
+	assert.equal(derived.webSearchMode, "disabled");
 
 	const capped = await resolveModelRuntimeConfig({
 		homeDir,
@@ -278,6 +283,25 @@ test("model catalog rejects invalid v2 limits and provider request options", asy
 	await assert.rejects(
 		() => loadModelCatalog({ homeDir, currentConfig: CURRENT }),
 		/invalid provider request options/i,
+	);
+
+	await writeProviderCatalog(homeDir, {
+		openai: { ...provider, capabilities: { web_search: "yes" } },
+	});
+	await assert.rejects(
+		() => loadModelCatalog({ homeDir, currentConfig: CURRENT }),
+		/invalid model capabilities/i,
+	);
+
+	await writeProviderCatalog(homeDir, {
+		deepseek: {
+			protocol: "chat_completions",
+			models: { "deepseek-chat": { capabilities: { web_search: true } } },
+		},
+	});
+	await assert.rejects(
+		() => loadModelCatalog({ homeDir, currentConfig: CURRENT }),
+		/requires protocol 'responses' for web_search/i,
 	);
 });
 

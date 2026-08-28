@@ -1,3 +1,7 @@
+import {
+	canonicalTurnFailureMessage,
+	sanitizeRuntimeErrorDetail,
+} from "@mycli/contracts";
 import type { RuntimeStateRecord, RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	ApprovalResolution,
@@ -21,6 +25,10 @@ import type {
 } from "./shell-transcript-store.ts";
 import type { SubagentTaskStore } from "./subagent-task-store.ts";
 import type { AgentThreadStore } from "./agent-thread-store.ts";
+import type {
+	AppendTranscriptDisplayActivityInput,
+	TranscriptEventEnvelope,
+} from "./transcript-events.ts";
 
 export interface ReserveTurnInput {
 	readonly sessionId: string;
@@ -58,8 +66,22 @@ export interface FailStoredTurnInput {
 	readonly clientTurnId: string;
 	readonly code: RuntimeErrorCode;
 	readonly message: string;
+	readonly additionalDetails?: string;
 	readonly diagnostics?: Readonly<Record<string, string | number | boolean | null>>;
 	readonly completedAt: string;
+}
+
+export function normalizeStoredTurnFailure(input: FailStoredTurnInput): FailStoredTurnInput {
+	const additionalDetails = sanitizeRuntimeErrorDetail(input.additionalDetails);
+	return Object.freeze({
+		sessionId: input.sessionId,
+		clientTurnId: input.clientTurnId,
+		code: input.code,
+		message: canonicalTurnFailureMessage(input.code, input.message),
+		...(additionalDetails ? { additionalDetails } : {}),
+		...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+		completedAt: input.completedAt,
+	});
 }
 
 export interface AppendAssistantToolCallsInput {
@@ -124,6 +146,7 @@ export interface ProjectedMutationMetadata {
 
 export type RuntimeStateKey =
 	| "input_queue"
+	| "session_preferences"
 	| "pending_decision"
 	| "suspended_turn"
 	| "turn_record"
@@ -365,6 +388,12 @@ export interface CommitClarificationResponseInput {
 	readonly sessionId: string;
 	readonly requestId: string;
 	readonly toolResult: AppendToolResultInput;
+	readonly display: Readonly<{
+		readonly header?: string;
+		readonly question: string;
+		readonly response: string;
+		readonly multiSelect: boolean;
+	}>;
 }
 
 export interface CommitApprovalResultInput {
@@ -586,10 +615,18 @@ export interface TurnStore {
 	appendAssistantToolCalls(input: AppendAssistantToolCallsInput): void;
 	appendContextItem(input: AppendContextItemInput): void;
 	appendToolResult(input: AppendToolResultInput): void;
+	appendDisplayActivity?(
+		input: AppendTranscriptDisplayActivityInput,
+	): TranscriptEventEnvelope<"display_activity">;
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord;
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord;
 	recoverInterruptedTurns(): number;
 	close(): void;
+}
+
+export interface SessionLeaseStore {
+	acquireSessionLease(sessionId: string): boolean;
+	releaseSessionLease(sessionId: string): void;
 }
 
 export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscriptStore, ShellOutputTranscriptReader {
@@ -622,6 +659,15 @@ export class MessageIdConflictError extends Error {
 	constructor() {
 		super("message_id_conflict: client_turn_id already has a different payload");
 		this.name = "MessageIdConflictError";
+	}
+}
+
+export class SessionInUseError extends Error {
+	readonly code = "session_in_use" as const;
+
+	constructor() {
+		super("session_in_use: session is already owned by another process");
+		this.name = "SessionInUseError";
 	}
 }
 

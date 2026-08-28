@@ -328,7 +328,11 @@ async function* mapStream(
 	}
 	assertNotAborted(signal);
 	if (!started || !stopped || !stopReason || blocks.size > 0) {
-		throw streamFailure("Anthropic stream ended without completion");
+		throw new ProviderFailure({
+			code: "response_stream_error",
+			message: "Anthropic stream ended without completion",
+			retryable: true,
+		});
 	}
 	if (thinkingBlocks.length > 0) {
 		yield {

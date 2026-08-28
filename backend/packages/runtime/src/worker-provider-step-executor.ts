@@ -12,6 +12,7 @@ import type {
 	ProviderStepExecutor,
 } from "./provider-step-executor.ts";
 import type { ProviderAgentLoopResult } from "./provider-agent-loop.ts";
+import { publishProviderStreamDiagnostics } from "./runtime-observability.ts";
 
 export interface WorkerProviderStepExecutorOptions {
 	readonly lease: AgentWorkerLease;
@@ -72,6 +73,10 @@ export class WorkerProviderStepExecutor implements ProviderStepExecutor {
 				}
 				return;
 			}
+			if (response.type === "provider_step_diagnostic") {
+				publishProviderStreamDiagnostics(input.recordDiagnostic, response.diagnostic);
+				return;
+			}
 			if (settled) return;
 			settled = true;
 			resolveResult(response.result);
@@ -97,6 +102,7 @@ export class WorkerProviderStepExecutor implements ProviderStepExecutor {
 					...(input.config.apiKey ? { apiKey: input.config.apiKey } : {}),
 				}),
 				request: input.request,
+				requestMaxRetries: input.config.requestMaxRetries,
 				maxRetries: input.maxRetries,
 				toolCallsAllowed: input.toolCallsAllowed,
 			}));

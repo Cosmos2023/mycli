@@ -6,6 +6,7 @@ import {
 	AnthropicProvider,
 	type AnthropicMessagesClient,
 } from "../src/anthropic-provider.ts";
+import { ProviderFailure } from "../src/errors.ts";
 
 test("serializes Anthropic system, images, tools, signed thinking, and correlated results", async () => {
 	let captured: Readonly<Record<string, unknown>> | undefined;
@@ -303,7 +304,9 @@ test("rejects uncorrelated results, max-token stops, cancellation, and malformed
 		});
 		await assert.rejects(() => collect(provider.stream(anthropicRequest(), {
 			signal: new AbortController().signal,
-		})), /provider_error: Anthropic stream ended without completion/);
+		})), (error: unknown) => error instanceof ProviderFailure
+			&& error.message === "response_stream_error: Anthropic stream ended without completion"
+			&& error.retryable);
 	});
 });
 

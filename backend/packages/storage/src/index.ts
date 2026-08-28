@@ -1,6 +1,7 @@
 export {
 	MessageIdConflictError,
 	projectMutationMetadata,
+	SessionInUseError,
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
@@ -104,6 +105,7 @@ export type {
 	SequencedHistoryItem,
 	SessionSearchQuery,
 	SessionSearchResult,
+	SessionLeaseStore,
 	SessionStateErrorCode,
 	SessionStateSource,
 	SessionStateStore,
@@ -135,6 +137,7 @@ export {
 	SCHEMA_V12_PROVIDER_LEDGER_SQL,
 	SCHEMA_V12_SQL,
 	SCHEMA_V12_VERSION,
+	SESSION_RUNTIME_LEASE_SQL,
 	SCHEMA_VERSION,
 	TRANSCRIPT_PROJECTION_INDEX_SQL,
 } from "./schema.ts";
@@ -151,7 +154,6 @@ export { projectTranscriptEventToSearchDocument } from "./transcript-search-proj
 export type { TranscriptSearchDocument } from "./transcript-search-projector.ts";
 export type {
 	SQLiteTranscriptEventRepositoryOptions,
-	AppendTranscriptDisplayActivityInput,
 	TranscriptEventWindow,
 	TranscriptEventWindowOptions,
 	TranscriptEventRepository,
@@ -308,6 +310,7 @@ export {
 export type {
 	AssistantOutputTranscriptPayload,
 	AssistantToolCallBatchTranscriptPayload,
+	AppendTranscriptDisplayActivityInput,
 	CompactionTranscriptPayload,
 	ContextTranscriptPayload,
 	DisplayActivityTranscriptPayload,

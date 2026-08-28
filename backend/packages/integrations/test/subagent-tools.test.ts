@@ -104,6 +104,17 @@ test("Codex-style coordination definitions use closed validated schemas", () => 
 	}
 });
 
+test("coordination definitions require the parent to wait for and integrate child reports", () => {
+	assert.match(SPAWN_AGENT_TOOL_DEFINITION.description, /terminal report is delivered automatically/u);
+	assert.match(SPAWN_AGENT_TOOL_DEFINITION.description, /call wait_agent/u);
+	assert.match(SEND_AGENT_MESSAGE_TOOL_DEFINITION.description, /does not replace waiting/u);
+	assert.match(FOLLOWUP_TASK_TOOL_DEFINITION.description, /integrate the subsequent report/u);
+	assert.match(LIST_AGENTS_TOOL_DEFINITION.description, /after compaction or resume/u);
+	assert.match(WAIT_AGENT_TOOL_DEFINITION.description, /next model step/u);
+	assert.match(WAIT_AGENT_TOOL_DEFINITION.description, /timeout is not completion/u);
+	assert.match(WAIT_AGENT_TOOL_DEFINITION.description, /before relevant reports are integrated/u);
+});
+
 test("Codex-style coordination adapters return typed stable results", async () => {
 	const calls: Array<Readonly<Record<string, unknown>>> = [];
 	const control: AgentCoordinationControlContract = {

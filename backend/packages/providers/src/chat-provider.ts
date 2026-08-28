@@ -86,8 +86,9 @@ export class ChatProvider implements ModelProvider {
 
 			if (!sawFinishReason) {
 				throw new ProviderFailure({
-					code: "provider_error",
+					code: "response_stream_error",
 					message: "Chat stream ended without a finish reason",
+					retryable: true,
 				});
 			}
 			const completedToolCalls = toolCallEvents(toolCalls);

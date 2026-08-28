@@ -762,13 +762,19 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 				boundedString(item, "environment value", 32_768),
 			]),
 		)),
-		executionPolicy: Object.freeze({
+			executionPolicy: Object.freeze({
 			trusted: booleanValue(executionPolicy.trusted, "trusted"),
 			permission: enumValue(executionPolicy.permission, ["read-only", "workspace", "full-access"], "permission"),
 			sandboxMode: enumValue(executionPolicy.sandboxMode, ["read-only", "workspace-write", "danger-full-access"], "sandboxMode"),
 			filesystem: enumValue(executionPolicy.filesystem, ["read_only", "workspace_write", "unrestricted"], "filesystem"),
-			network: enumValue(executionPolicy.network, ["disabled", "enabled"], "network"),
-			writableRoots: stringArray(executionPolicy.writableRoots, "writableRoots", 256),
+				network: enumValue(executionPolicy.network, ["disabled", "enabled"], "network"),
+				...(executionPolicy.networkDomains === undefined ? {} : {
+					networkDomains: stringArray(executionPolicy.networkDomains, "networkDomains", 256),
+				}),
+				...(executionPolicy.readableRoots === undefined ? {} : {
+					readableRoots: stringArray(executionPolicy.readableRoots, "readableRoots", 256),
+				}),
+				writableRoots: stringArray(executionPolicy.writableRoots, "writableRoots", 256),
 		}),
 		provider: Object.freeze({
 			provider: enumValue(provider.provider, ["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"], "provider"),

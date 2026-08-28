@@ -34,6 +34,7 @@ export type FileSandboxAccess =
 	| {
 		readonly ok: true;
 		readonly allowOutsideWorkspace: boolean;
+		readonly allowedWritableRoots: readonly string[];
 	}
 	| {
 		readonly ok: false;
@@ -70,6 +71,7 @@ export function resolveFileSandboxAccess(
 	options: Readonly<{
 		readonly executionPolicy?: ExecutionPolicy;
 		readonly sandboxOverrideApproved?: boolean;
+		readonly sandboxOverridePolicy?: ExecutionPolicy;
 	}>,
 ): FileSandboxAccess {
 	const request = parseFileSandboxRequest(argumentsValue);
@@ -80,11 +82,18 @@ export function resolveFileSandboxAccess(
 		&& (options.executionPolicy === undefined || options.sandboxOverrideApproved !== true)) {
 		return { ok: false, errorKind: "sandbox_override_not_approved" };
 	}
+	const effectivePolicy = request.permissions === "danger-full-access"
+		&& options.sandboxOverrideApproved === true
+		&& options.sandboxOverridePolicy
+		? options.sandboxOverridePolicy
+		: options.executionPolicy;
 	return {
 		ok: true,
-		allowOutsideWorkspace: unrestricted
+		allowOutsideWorkspace: hasUnrestrictedFilesystem(effectivePolicy)
 			|| (request.permissions === "danger-full-access"
-				&& options.sandboxOverrideApproved === true),
+				&& options.sandboxOverrideApproved === true
+				&& options.sandboxOverridePolicy === undefined),
+		allowedWritableRoots: Object.freeze([...(effectivePolicy?.writableRoots ?? [])]),
 	};
 }
 

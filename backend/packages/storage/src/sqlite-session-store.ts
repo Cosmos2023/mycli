@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
-import { parseRuntimeTurnRecord } from "@mycli/contracts";
+import {
+	parseRuntimeTurnRecord,
+	TURN_INTERRUPTED_NOTICE,
+	turnFailedNoticeId,
+	turnFailureNotice,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
@@ -31,8 +37,10 @@ import {
 	SCHEMA_VERSION,
 	TRANSCRIPT_PROJECTION_INDEX_SQL,
 } from "./schema.ts";
+import { runtimeErrorStopReason } from "./runtime-error-stop-reason.ts";
 import {
 	MessageIdConflictError,
+	normalizeStoredTurnFailure,
 	projectMutationMetadata,
 	SessionStateError,
 	StorageFailure,
@@ -541,6 +549,7 @@ export class SQLiteSessionStore implements SessionStore {
 			const running = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
 			const status = input.code === "interrupted" ? "interrupted" : "failed";
 			const interrupted = input.code === "interrupted";
+			const failureInput = normalizeStoredTurnFailure(input);
 			const interruptedAttempts = interrupted
 				? this.#recoverInterruptedToolAttempts(running, input.completedAt)
 				: new Map<string, AgentEffectAttempt>();
@@ -568,10 +577,20 @@ export class SQLiteSessionStore implements SessionStore {
 					...(interrupted && recovered.metadata ? { metadata: recovered.metadata } : {}),
 					});
 				}
-				if (interrupted) this.#appendInterruptedTurnMarker(running);
+				if (interrupted) {
+					this.#appendInterruptedTurnMarker(running);
+					this.#appendInterruptedTurnDisplay(running);
+				} else {
+				this.#appendFailedTurnDisplay(
+					running,
+					input.code,
+					failureInput.message,
+					failureInput.additionalDetails,
+				);
+				}
 				this.#appendRollout(
 				input.sessionId,
-				failedRollout(running, input, status, this.#threadId(input.sessionId)),
+				failedRollout(running, failureInput, status, this.#threadId(input.sessionId)),
 			);
 			this.#database.prepare(`
 				UPDATE runtime_turns
@@ -582,7 +601,10 @@ export class SQLiteSessionStore implements SessionStore {
 				status,
 				input.code,
 					stableJson({
-						message: input.message,
+						message: failureInput.message,
+						...(failureInput.additionalDetails
+							? { additional_details: failureInput.additionalDetails }
+							: {}),
 						...(input.diagnostics && Object.keys(input.diagnostics).length > 0
 							? { diagnostics: input.diagnostics }
 							: {}),
@@ -637,6 +659,7 @@ export class SQLiteSessionStore implements SessionStore {
 				this.#recoverInterruptedTurnRecords(turn, this.#clock(), userInitiated);
 			} else if (turn.status === "interrupted" && userInitiated) {
 				this.#appendInterruptedTurnMarker(turn);
+				this.#appendInterruptedTurnDisplay(turn);
 			}
 			return this.#requiredTurn(sessionId, turn.client_turn_id);
 		});
@@ -698,6 +721,12 @@ export class SQLiteSessionStore implements SessionStore {
 				INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
 				VALUES (?, ?, ?, ?)
 			`).run(targetSessionId, sourceSessionId, forkPoint, now);
+			this.#database.prepare(`
+				INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+				SELECT ?, state_key, payload_json, ?
+				FROM session_state
+				WHERE session_id = ? AND state_key = 'session_preferences'
+			`).run(targetSessionId, now, sourceSessionId);
 
 			const selectedRows = messageRows.slice(0, forkPoint);
 			const insertMessage = this.#database.prepare(`
@@ -1254,6 +1283,14 @@ export class SQLiteSessionStore implements SessionStore {
 				throw new StorageFailure("clarification response does not match pending call");
 			}
 			this.#appendToolResultRecords(running, input.toolResult);
+			this.#appendHistoryItem(
+				input.sessionId,
+				clarificationResponseHistoryItem(
+					running,
+					input,
+					this.#threadId(input.sessionId),
+				),
+			);
 		});
 	}
 
@@ -1294,6 +1331,7 @@ export class SQLiteSessionStore implements SessionStore {
 					errorKind: input.errorKind,
 				});
 				this.#appendInterruptedTurnMarker(running);
+				this.#appendInterruptedTurnDisplay(running);
 				this.#appendRollout(input.sessionId, failedRollout(running, {
 				sessionId: input.sessionId,
 				clientTurnId: input.clientTurnId,
@@ -1841,6 +1879,58 @@ export class SQLiteSessionStore implements SessionStore {
 		});
 	}
 
+	#appendInterruptedTurnDisplay(turn: RuntimeTurnRecord): void {
+		const itemId = turnInterruptedNoticeId(turn.turn_id);
+		const existing = this.#database.prepare(`
+			SELECT 1 FROM history_items WHERE session_id = ? AND item_id = ? LIMIT 1
+		`).get(turn.session_id, itemId);
+		if (existing) return;
+		this.#appendHistoryItem(turn.session_id, {
+			id: itemId,
+			thread_id: this.#threadId(turn.session_id),
+			turn_id: turn.turn_id,
+			type: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			tool_name: null,
+			call_id: null,
+			metadata: {
+				event_kind: "turn_interrupted",
+				interrupted_turn_id: turn.turn_id,
+				status: "interrupted",
+			},
+		});
+	}
+
+	#appendFailedTurnDisplay(
+		turn: RuntimeTurnRecord,
+		code: RuntimeErrorCode,
+		message?: string,
+		additionalDetails?: string,
+	): void {
+		const itemId = turnFailedNoticeId(turn.turn_id);
+		const existing = this.#database.prepare(`
+			SELECT 1 FROM history_items WHERE session_id = ? AND item_id = ? LIMIT 1
+		`).get(turn.session_id, itemId);
+		if (existing) return;
+		this.#appendHistoryItem(turn.session_id, {
+			id: itemId,
+			thread_id: this.#threadId(turn.session_id),
+			turn_id: turn.turn_id,
+			type: "error",
+			text: turnFailureNotice(code, message),
+			tool_name: null,
+			call_id: null,
+			metadata: {
+				event_kind: "turn_failed",
+				failed_turn_id: turn.turn_id,
+				status: "failed",
+				code,
+				source: "runtime",
+				...(additionalDetails ? { additional_details: additionalDetails } : {}),
+			},
+		});
+	}
+
 	#recoverInterruptedTurnRecords(
 		turn: RuntimeTurnRecord,
 		completedAt: string,
@@ -1869,6 +1959,7 @@ export class SQLiteSessionStore implements SessionStore {
 			});
 		}
 		if (userInitiated) this.#appendInterruptedTurnMarker(turn);
+		this.#appendInterruptedTurnDisplay(turn);
 		this.#appendRollout(
 			turn.session_id,
 			recoveryRollout(turn, completedAt, this.#threadId(turn.session_id)),
@@ -2222,6 +2313,30 @@ function toolResultHistoryItem(
 	};
 }
 
+function clarificationResponseHistoryItem(
+	turn: RuntimeTurnRecord,
+	input: CommitClarificationResponseInput,
+	threadId: string,
+): Readonly<Record<string, unknown>> {
+	const display = input.display;
+	return {
+		id: `${turn.turn_id}:clarification-response:${input.requestId}`,
+		thread_id: threadId,
+		turn_id: turn.turn_id,
+		type: "clarification_response",
+		text: display.response,
+		tool_name: input.toolResult.result.toolName,
+		call_id: input.requestId,
+		metadata: {
+			request_id: input.requestId,
+			...(display.header ? { header: display.header } : {}),
+			question: display.question,
+			response: display.response,
+			multi_select: display.multiSelect,
+		},
+	};
+}
+
 function planUpdateHistoryItem(
 	turn: RuntimeTurnRecord,
 	input: AppendToolResultInput,
@@ -2448,22 +2563,7 @@ function recoveryRollout(
 }
 
 function stopReason(code: RuntimeErrorCode): string {
-	switch (code) {
-		case "auth_error":
-			return "auth_failed";
-		case "rate_limited":
-			return "rate_limited";
-		case "context_window_exceeded":
-			return "context_window_exceeded";
-		case "retry_exhausted":
-			return "retry_exhausted";
-		case "interrupted":
-			return "interrupted";
-		case "provider_error":
-			return "model_error";
-		default:
-			return "runtime_error";
-	}
+	return runtimeErrorStopReason(code);
 }
 
 const MAX_CONTEXT_ITEM_ID_CHARS = 512;

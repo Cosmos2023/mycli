@@ -162,7 +162,8 @@ Required tests for mutation tool changes:
   `Update={type:"update",file_path,old_string,new_string,replace_all?}`,
   `Delete={type:"delete",file_path}`, and
   `Move={type:"move",from_path,to_path}`.
-- Host-only execution inputs: `ToolExecutionOptions.sandboxOverrideApproved?: boolean` and
+- Host-only execution inputs: `ToolExecutionOptions.sandboxOverrideApproved?: boolean`,
+  `ToolExecutionOptions.sandboxOverridePolicy?: ExecutionPolicy`, and
   `ToolExecutionOptions.preparedMutationGuard?: PreparedMutationGuard`.
 - Approval detail projector:
   `fileMutationApprovalPreview(call: CanonicalToolCall) -> ApprovalPreviewDetails`.
@@ -192,6 +193,9 @@ Required tests for mutation tool changes:
 - Runtime forwards `sandboxOverrideApproved=true` only for the unchanged canonical call authorized
   by policy. Approval recovery derives the bit from the persisted call; model arguments alone and
   pre-tool hook modifications never inherit it.
+- Approved execution resolves access from the runtime-owned override policy when present. Managed
+  writable roots still cap the mutation; the approval bit by itself does not imply unrestricted
+  filesystem access.
 - The bounded justification is the user-visible approval reason. It is not copied into mutation
   receipts, result metadata, file-history rows, or diff output.
 - A live approved mutation includes the prepared guard mutation id in its effect fingerprint. Only
@@ -262,6 +266,7 @@ Required tests for mutation tool changes:
   `invalid_sandbox_permissions`, with no write. A justification without escalation is ignored.
 - Direct adapter escalation without the host authorization bit ->
   `sandbox_override_not_approved` with no write.
+- Approved escalation outside the runtime override roots -> `workspace_escape` with no write.
 - Successful create/overwrite -> `add`/`update` file-change kind, bounded diff, compact receipt,
   and durable call/result order.
 

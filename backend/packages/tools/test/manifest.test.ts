@@ -35,6 +35,7 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 	assert.deepEqual(manifest.toolsets, [
 		{ id: "file", tool_count: 4 },
 		{ id: "interaction", tool_count: 1 },
+		{ id: "permissions", tool_count: 1 },
 		{ id: "planning", tool_count: 1 },
 		{ id: "web", tool_count: 1 },
 		{ id: "discovery", tool_count: 1 },
@@ -46,6 +47,7 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"Patch",
 		"Write",
 		"AskUserQuestion",
+		"request_permissions",
 		"update_plan",
 		"web_fetch",
 		"tool_search",
@@ -62,6 +64,7 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"builtin:Patch",
 		"builtin:Write",
 		"builtin:AskUserQuestion",
+		"builtin:request_permissions",
 		"builtin:update_plan",
 		"builtin:web_fetch",
 		"builtin:tool_search",
@@ -220,7 +223,11 @@ test("web and discovery manifest entries preserve bounded schemas and effect met
 test("exposure planner preserves manifest order and provider schemas", () => {
 	const manifest = builtinManifest();
 	const planToolExposure = requiredFunction("planToolExposure");
-	const exposure = planToolExposure(manifest, { shell: true }) as readonly {
+	const exposure = planToolExposure(manifest, {
+		shell: true,
+		requestPermissionsTool: true,
+		collaborationMode: "plan",
+	}) as readonly {
 		readonly name: string;
 		readonly inputSchema: unknown;
 	}[];
@@ -231,6 +238,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 		"Patch",
 		"Write",
 		"AskUserQuestion",
+		"request_permissions",
 		"update_plan",
 		"web_fetch",
 		"tool_search",
@@ -275,7 +283,14 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	}[];
 	assert.deepEqual(
 		fileExposure.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write", "AskUserQuestion", "update_plan", "web_fetch", "tool_search"],
+		["Read", "Edit", "Patch", "Write", "update_plan", "web_fetch", "tool_search"],
+	);
+	assert.deepEqual(
+		(planToolExposure(manifest, {
+			shell: false,
+			requestPermissionsTool: true,
+		}) as readonly { readonly name: string }[]).map((tool) => tool.name),
+		["Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch", "tool_search"],
 	);
 	assert.deepEqual(
 		(planToolExposure(manifest) as readonly { readonly name: string }[])

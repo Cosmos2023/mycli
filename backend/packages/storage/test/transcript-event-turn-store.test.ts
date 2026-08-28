@@ -3,6 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+	TURN_INTERRUPTED_NOTICE,
+	turnCompletedDurationId,
+	turnFailedNoticeId,
+	turnFailureNotice,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
 import Database from "better-sqlite3";
 import {
 	SQLiteTranscriptEventRepository,
@@ -94,11 +101,30 @@ test("writes one canonical event per turn semantic action without legacy transcr
 		"tool_result",
 		"context",
 		"assistant_output",
+		"display_activity",
 		"turn_lifecycle",
 	]);
 	assert.equal(events.filter((event) => event.eventType === "user_input").length, 1);
 	const user = events.find((event) => event.eventType === "user_input");
 	assert.equal(user?.eventType === "user_input" && user.payload.images?.[0]?.data, "aGVsbG8=");
+	const completedDuration = events.find(
+		(event) => event.eventId === turnCompletedDurationId("turn-complete"),
+	);
+	assert.equal(completedDuration?.modelVisible, false);
+	assert.deepEqual(
+		completedDuration?.eventType === "display_activity" ? completedDuration.payload : undefined,
+		{
+			activityType: "turn_completed",
+			status: "completed",
+			metadata: { duration_ms: 60_000 },
+		},
+	);
+	assert.deepEqual(fixture.repository.loadReadableTranscript("session-complete").at(-1), {
+		id: turnCompletedDurationId("turn-complete"),
+		type: "turn_completed",
+		created_at: LATER,
+		duration_ms: 60_000,
+	});
 	assert.deepEqual(fixture.repository.loadConversationItems("session-complete").map((item) => item.type), [
 		"user",
 		"assistant_tool_calls",
@@ -137,6 +163,7 @@ test("writes terminal lifecycle events for failures and closes interrupted calls
 		clientTurnId: "client-failed",
 		code: "provider_error",
 		message: "provider request failed",
+		additionalDetails: "Invalid schema token=private-value (status 400)\n at request (/Users/private/app.ts:1:2)",
 		diagnostics: { status: 400 },
 		completedAt: LATER,
 	});
@@ -144,7 +171,41 @@ test("writes terminal lifecycle events for failures and closes interrupted calls
 	assert.deepEqual(
 		fixture.repository.loadEventWindow("session-failed", { limit: 20 }).events
 			.map((event) => event.eventType),
-		["user_input", "turn_lifecycle"],
+		["user_input", "display_activity", "turn_lifecycle"],
+	);
+	const failedTranscript = fixture.repository.loadReadableTranscript("session-failed");
+	assert.deepEqual(failedTranscript.map((item) => item.type), ["user_message", "error"]);
+	assert.deepEqual(
+		failedTranscript.filter((item) => item.id === turnFailedNoticeId("turn-failed")),
+		[{
+			id: turnFailedNoticeId("turn-failed"),
+			type: "error",
+			text: turnFailureNotice(
+				"provider_error",
+				"provider request failed",
+			),
+			created_at: LATER,
+			metadata: {
+				status: "failed",
+				source: "runtime",
+				code: "provider_error",
+				additional_details: "Invalid schema token=[REDACTED] (status 400)",
+			},
+		}],
+	);
+	assert.doesNotMatch(JSON.stringify(failedTranscript), /private-value/u);
+	assert.deepEqual(failed.result, {
+		message: "provider request failed",
+		additional_details: "Invalid schema token=[REDACTED] (status 400)",
+		diagnostics: { status: 400 },
+	});
+	const failedLifecycle = fixture.repository.loadEventWindow("session-failed", { limit: 20 }).events
+		.find((event) => event.eventType === "turn_lifecycle");
+	assert.equal(
+		failedLifecycle?.eventType === "turn_lifecycle"
+			? failedLifecycle.payload.additionalDetails
+			: undefined,
+		"Invalid schema token=[REDACTED] (status 400)",
 	);
 
 	fixture.repository.reserveTurn(
@@ -170,6 +231,7 @@ test("writes terminal lifecycle events for failures and closes interrupted calls
 		"assistant_tool_call_batch",
 		"tool_result",
 		"context",
+		"display_activity",
 		"turn_lifecycle",
 	]);
 	const generated = events.find((event) => event.eventType === "tool_result");
@@ -181,6 +243,32 @@ test("writes terminal lifecycle events for failures and closes interrupted calls
 		"session-interrupted",
 		"turn-interrupted",
 	), []);
+	const display = events.find((event) => event.eventType === "display_activity");
+	assert.equal(display?.modelVisible, false);
+	assert.equal(
+		display?.eventType === "display_activity" ? display.payload.activityType : undefined,
+		"warning",
+	);
+	assert.equal(
+		display?.eventType === "display_activity" ? display.payload.text : undefined,
+		TURN_INTERRUPTED_NOTICE,
+	);
+	assert.deepEqual(
+		fixture.repository.loadReadableTranscript("session-interrupted")
+			.filter((item) => item.id === turnInterruptedNoticeId("turn-interrupted")),
+		[{
+			id: turnInterruptedNoticeId("turn-interrupted"),
+			type: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			created_at: LATER,
+			metadata: { status: "interrupted" },
+		}],
+	);
+	assert.equal(
+		JSON.stringify(fixture.repository.loadConversationItems("session-interrupted"))
+			.includes(TURN_INTERRUPTED_NOTICE),
+		false,
+	);
 });
 
 test("recovers orphaned turns once with generated tool results and an interrupted lifecycle", async (t) => {
@@ -207,9 +295,15 @@ test("recovers orphaned turns once with generated tool results and an interrupte
 	assert.deepEqual(
 		recovered.loadEventWindow("session-recovery", { limit: 20 }).events
 			.map((event) => event.eventType),
-		["user_input", "assistant_tool_call_batch", "tool_result", "turn_lifecycle"],
+		["user_input", "assistant_tool_call_batch", "tool_result", "display_activity", "turn_lifecycle"],
 	);
 	assert.deepEqual(recovered.loadPendingToolCalls("session-recovery", "turn-recovery"), []);
+	assert.deepEqual(
+		recovered.loadReadableTranscript("session-recovery")
+			.filter((item) => item.id === turnInterruptedNoticeId("turn-recovery"))
+			.map((item) => [item.type, item.text]),
+		[["warning", TURN_INTERRUPTED_NOTICE]],
+	);
 });
 
 test("persists display-only activity without changing provider input or search visibility", async (t) => {

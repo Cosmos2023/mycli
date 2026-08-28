@@ -17,6 +17,7 @@ test("catalog exposes the versioned current gateway surface", () => {
 test("catalog exposes M5 session and approval failures", () => {
 	for (const code of [
 		"session_not_found",
+		"session_in_use",
 		"session_state_invalid",
 		"session_state_version_unsupported",
 		"approval_not_pending",

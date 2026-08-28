@@ -24,8 +24,8 @@ import {
 	startupProfileEnabled,
 	writeStartupProfile,
 } from "./node-runtime/startup-profile.ts";
+import { MYCLI_VERSION } from "./version.ts";
 
-const VERSION = "0.1.0";
 const HELP = `Usage: mycli [options]
        mycli <command> [arguments]
 
@@ -86,7 +86,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		return 0;
 	}
 	if (argv.includes("--version") || argv.includes("-V")) {
-		stdout.write(`${VERSION}\n`);
+		stdout.write(`${MYCLI_VERSION}\n`);
 		return 0;
 	}
 

@@ -27,6 +27,17 @@ Questions to answer:
 - Writes must go through the store's write-transaction helper rather than opening
   ad hoc write connections. The helper owns `BEGIN IMMEDIATE`, process-local
   locking, locked/busy retry with jitter, and periodic passive WAL checkpoints.
+- Root runtime ownership uses the operational `session_runtime_leases` table. It intentionally has
+  no `sessions` foreign key because a fresh virtual session must be owned before its first durable
+  turn. Acquire and stale-PID takeover run under `BEGIN IMMEDIATE`; release always matches
+  `session_id` plus `owner_id`, and repository close removes only the current owner's leases. A
+  backend retains leases for every root runtime loaded during its lifetime because inactive-session
+  background resources can still write. Fork and agent-child targets acquire this lease in the same
+  transaction that creates or reserves them; a live `agent_runtime_leases` row prevents a root
+  runtime from acquiring that child concurrently. Repository startup removes root leases whose PID
+  is no longer live. Empty-session and orphan cleanup compute live root/agent runtime ids inside the
+  cleanup write transaction and skip them, including leased virtual sessions without a `sessions`
+  row.
 - Read-only queries may use a short-lived connection and should return typed
   domain payloads rather than exposing SQLite rows outside the infrastructure
   layer.
@@ -838,7 +849,8 @@ return matches.map(formatMatch);
 - The report is read-only: no deletion, no `VACUUM`, no repair, and no automatic pruning.
 - Session counts are scoped by `workspace_root` when provided.
 - Empty sessions have no conversation messages, summaries, history items, turn rollouts, or session
-  state. Runtime-only sessions are durable and are not empty candidates.
+  state. Runtime-only sessions are durable and are not empty candidates. An otherwise-empty session
+  held by a live root or agent runtime lease is runtime-owned and must also be excluded.
 - Legacy payload metrics count only recognized terminal rollout/state payloads from inactive
   sessions. Sessions with an in-progress runtime turn, pending decision, or suspended turn are
   excluded.
@@ -855,6 +867,8 @@ return matches.map(formatMatch);
 - Malformed or unrecognized legacy payload -> excluded from payload cleanup metrics.
 - Empty candidates are ordered by oldest `last_active_at`, then `session_id`.
 - Empty candidate details are bounded by `candidate_limit`; omitted count is `empty_session_count - len(empty_session_candidates)`.
+- A stale owner PID does not permanently hide an empty session; startup lease reconciliation makes
+  it eligible again, while a live owner remains excluded throughout the cleanup transaction.
 
 ### 5. Good/Base/Bad Cases
 
@@ -869,6 +883,8 @@ return matches.map(formatMatch);
 - Store test for workspace-scoped total and empty-session counts.
 - Store test for bounded, workspace-scoped empty candidate details and omitted count.
 - Store test for rollout/state payload metrics, active-session exclusion, and malformed payloads.
+- Two-repository store test proving live leases are preserved while stale and unowned empty sessions
+  remain reclaimable.
 - Service/application test for formatted `key=value` lines.
 - CLI/TUI completion or command-routing tests for `/session-maintenance`.
 
@@ -886,6 +902,24 @@ store.vacuum();
 ```typescript
 const report = store.sessionMaintenanceReport({ workspaceRoot });
 return formatReport(report);
+```
+
+#### Wrong
+
+```typescript
+const candidates = this.#emptySessionCandidates(workspaceRoot);
+this.#write(() => {
+	this.#database.prepare("DELETE FROM sessions WHERE session_id IN (...)").run(...candidates);
+});
+```
+
+#### Correct
+
+```typescript
+this.#write(() => {
+	const candidates = this.#emptySessionCandidates(workspaceRoot);
+	this.#database.prepare("DELETE FROM sessions WHERE session_id IN (...)").run(...candidates);
+});
 ```
 
 ## Scenario: Explicit Legacy Session Payload Cleanup
@@ -936,6 +970,9 @@ return formatReport(report);
 
 - Store:
   `SessionStore.apply_session_maintenance_orphan_cleanup() -> SessionOrphanCleanupResult`
+- Internal ownership queries:
+  `SQLiteTranscriptEventRepository.#liveRuntimeSessionIds() -> readonly string[]` and the shared
+  repository write transaction.
 - Domain payload:
   `SessionOrphanCleanupResult(deleted_rows_by_table, total_deleted_rows, dry_run=False)`
 - CLI slash command: `/session-maintenance --apply-orphans`
@@ -946,15 +983,53 @@ return formatReport(report);
 - Orphan cleanup may delete rows only from known session child tables.
 - Orphan cleanup must not delete rows from `sessions`.
 - Orphan cleanup must not repair missing lineage parents or run `VACUUM`.
+- Orphan cleanup must skip child rows whose missing parent session id is held by a live root or agent
+  runtime lease. The lease read and child-row deletion belong to the same write transaction.
 - Output lines are bounded `key=value` fields, including total deleted rows and
   per-table counts for tables with deletions.
 
-### 4. Tests Required
+### 4. Validation & Error Matrix
+
+| Child-row parent state | Required behavior |
+| --- | --- |
+| Matching `sessions` row exists | Preserve the child row |
+| No parent and no live runtime lease | Delete the known orphan row |
+| No parent but a live root or agent lease exists | Preserve the row |
+| Root lease PID is stale and was reconciled | Treat the row as an ordinary orphan |
+
+### 5. Good/Base/Bad Cases
+
+- Good: cleanup reads live runtime ids and deletes eligible child rows in one `BEGIN IMMEDIATE`
+  transaction.
+- Base: a healthy database reports zero deleted orphan rows.
+- Bad: select orphan ids, commit, then delete them in a later transaction after another runtime may
+  have acquired the session.
+
+### 6. Tests Required
 
 - Store test proving orphan rows in multiple child tables are deleted while
   valid sessions and valid child rows remain.
 - Store test proving empty sessions are not deleted by orphan cleanup.
+- Two-repository test proving a live leased virtual session keeps its child state while an unowned
+  orphan is deleted.
 - Service/CLI/gateway tests for `/session-maintenance --apply-orphans`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+DELETE FROM session_state
+WHERE session_id NOT IN (SELECT session_id FROM sessions);
+```
+
+#### Correct
+
+```sql
+DELETE FROM session_state
+WHERE session_id NOT IN (SELECT session_id FROM sessions)
+  AND session_id NOT IN (<live runtime session ids>);
+```
 
 ## Scenario: Explicit Session Vacuum
 
@@ -1140,4 +1215,76 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 	&& "collectSessionContentBlobOrphans" in store) {
 	return store.collectSessionContentBlobOrphans();
 }
+```
+
+## Scenario: Versioned Session Preference State
+
+### 1. Scope / Trigger
+
+- Trigger: changing session-scoped provider/model/mode persistence, session state validation, or
+  fork behavior.
+
+### 2. Signatures
+
+- State row: `session_state(session_id, state_key='session_preferences', payload_json, updated_at)`.
+- Payload v1: `{state_version, provider, protocol, model, api_base_url, auth_ref,
+  reasoning_effort, collaboration_mode}`.
+- Store APIs: `loadState`, `saveState`, and both `forkSession` implementations.
+
+### 3. Contracts
+
+- Session preferences use the existing versioned `session_state` boundary and require no SQLite
+  schema migration. `sessions.workspace_root` separately owns the session workdir.
+- Writes serialize one complete v1 object. Reads validate the object at the Node runtime boundary
+  before any field influences provider or gateway state.
+- `api_base_url` and `auth_ref` are endpoint identity, not credentials. API keys, auth records,
+  request headers, and environment secrets must not enter this payload.
+- Fork performs one transactional copy of the source `session_preferences` row when present. It must
+  not bulk-copy other `session_state` rows because queue, approval, continuation, and recovery state
+  belong to the source execution.
+- Missing state is a supported legacy/fresh-session case. Malformed or unsupported state is not
+  equivalent to missing state and must fail closed.
+
+### 4. Validation & Error Matrix
+
+| Stored state | Required behavior |
+| --- | --- |
+| No row | Return `undefined`; runtime applies its default-config fallback |
+| Valid v1 object | Return the complete typed preference |
+| Invalid JSON/non-object/version/field/URL/provider pair | Surface `session_state_invalid` |
+| Fork source has a preference | Copy it byte-equivalently into the target transaction |
+| Fork source has other runtime state | Leave that state only on the source |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a fork inherits model identity and mode while starting with empty queue/continuation state.
+- Base: an old session has no row and resumes through the runtime fallback.
+- Bad: add model columns to `sessions` while retaining a competing JSON state authority.
+- Bad: `INSERT ... SELECT` every state key during fork or place a raw API key in `payload_json`.
+
+### 6. Tests Required
+
+- Both legacy conversation and normalized transcript repositories copy only the preference row on
+  fork and leave `input_queue` absent on the target.
+- Runtime integration persists two distinct session payloads, restarts, and verifies exact recovery.
+- Corruption tests cover invalid versions, identities, provider/protocol pairs, efforts, modes, and
+  credential-bearing or non-HTTP(S) URLs.
+- Serialized-payload assertions search for fixture secrets and require no match.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+SELECT ?, state_key, payload_json, ? FROM session_state WHERE session_id = ?;
+```
+
+#### Correct
+
+```sql
+INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+SELECT ?, state_key, payload_json, ?
+FROM session_state
+WHERE session_id = ? AND state_key = 'session_preferences';
 ```

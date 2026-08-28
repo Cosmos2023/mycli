@@ -6,6 +6,7 @@ import type { NodeRuntimeConfig } from "@mycli/config";
 import type { ProviderRequest, RuntimeEvent } from "@mycli/core";
 import {
 	AgentWorkerPool,
+	type ProviderStreamDiagnostics,
 	WorkerProviderStepExecutor,
 } from "../src/index.ts";
 
@@ -44,6 +45,7 @@ test("executes a provider step in the leased Worker and returns streamed events"
 		createRequestId: () => "provider-request-1",
 	});
 	const events: RuntimeEvent[] = [];
+	const diagnostics: ProviderStreamDiagnostics[] = [];
 
 	const result = await executor.execute({
 		config: config(`http://127.0.0.1:${address.port}/v1`),
@@ -55,6 +57,10 @@ test("executes a provider step in the leased Worker and returns streamed events"
 		toolCallsAllowed: false,
 		signal: new AbortController().signal,
 		emit: (event) => events.push(event),
+		recordDiagnostic: (diagnostic) => {
+			diagnostics.push(diagnostic);
+			throw new Error("diagnostic sink failed");
+		},
 	});
 
 	assert.equal("failure" in result, false);
@@ -70,6 +76,14 @@ test("executes a provider step in the leased Worker and returns streamed events"
 		{ type: "text_delta", text: "worker" },
 		{ type: "message_complete", responseId: "chatcmpl-worker" },
 	]);
+	assert.equal(diagnostics.length, 1);
+	assert.equal(diagnostics[0]?.success, true);
+	assert.equal(diagnostics[0]?.attempt, 1);
+	assert.equal(diagnostics[0]?.textBytes, 6);
+	assert.equal(diagnostics[0]?.textEventCount, 1);
+	assert.equal(diagnostics[0]?.completedEventCount, 1);
+	assert.equal(typeof diagnostics[0]?.ttfbMs, "number");
+	assert.equal(typeof diagnostics[0]?.ttftMs, "number");
 	await lease.release();
 	assert.equal(pool.snapshot().activeLeaseCount, 0);
 });
@@ -163,6 +177,7 @@ test("fences a stale provider frame before network dispatch and replaces the Wor
 			apiKey: "test-key",
 		},
 		request: providerRequest(),
+		requestMaxRetries: 0,
 		maxRetries: 0,
 		toolCallsAllowed: false,
 	});
@@ -233,6 +248,7 @@ test("rejects stale provider compound-fence fields with zero network dispatch", 
 					apiKey: "test-key",
 				},
 				request: providerRequest(),
+				requestMaxRetries: 0,
 				maxRetries: 0,
 				toolCallsAllowed: false,
 			};
@@ -344,6 +360,7 @@ test("rejects stale provider timeline state after establishing the Worker high-w
 					apiKey: "test-key",
 				},
 				request: providerRequest(),
+				requestMaxRetries: 0,
 				maxRetries: 0,
 				toolCallsAllowed: false,
 			});
@@ -380,9 +397,11 @@ function config(apiBaseUrl: string): NodeRuntimeConfig {
 		reasoningEffort: "none",
 		thinkingEnabled: false,
 		supportsImages: false,
+		webSearchMode: "disabled",
 		promptCacheKeyEnabled: false,
 		cacheControlEnabled: false,
 		memoryEnabled: false,
+		requestPermissionsToolEnabled: false,
 		compressionThresholdTokens: 8_000,
 		compactionTokenLimit: 9_600,
 		compactionReservedOutputTokens: 13_000,

@@ -18,18 +18,21 @@ import type {
 	ProviderReplayState,
 	ProviderUsage,
 	ReasoningEffort,
-	RuntimeErrorCode,
 	RuntimeEvent,
 	ShellLifecycleEvent,
 	ToolDefinition,
+	WebSearchAction,
+	WebSearchCall,
 } from "@mycli/core";
 import {
 	ProviderFailure,
+	providerFailureToRuntimeFailure,
 } from "@mycli/providers";
 import type { ModelProvider } from "@mycli/providers";
 import type {
 	ApprovalPolicyDecision,
 	ExecutionPolicy,
+	PermissionGrant,
 	PermissionProfile,
 	PreparedMutationGuard,
 	PreparedToolCall,
@@ -51,7 +54,15 @@ import type {
 	TurnReservation,
 	TurnStore,
 } from "@mycli/storage";
-import type { RuntimeTurnRecord } from "@mycli/contracts";
+import {
+	isRuntimeErrorCode,
+	runtimeErrorPublicMessage,
+} from "@mycli/contracts";
+import type {
+	RuntimeErrorCode,
+	RuntimeFailure,
+	RuntimeTurnRecord,
+} from "@mycli/contracts";
 import type { QueueCoordinator } from "./queue-coordinator.ts";
 import type {
 	ApprovalChoice,
@@ -73,6 +84,7 @@ import type { MemoryContextServiceContract } from "./memory-context-service.ts";
 import type {
 	ExecutionPolicyConfiguration,
 	ExecutionPolicySnapshot,
+	PermissionGrantInput,
 	TurnExecutionPolicy,
 } from "./execution-policy-coordinator.ts";
 import {
@@ -94,6 +106,8 @@ import {
 	InProcessProviderStepExecutor,
 } from "./provider-step-executor.ts";
 import type { ProviderStepExecutor } from "./provider-step-executor.ts";
+import { publishRuntimeDiagnostic } from "./runtime-observability.ts";
+import type { RuntimeDiagnosticEvent } from "./runtime-observability.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -134,7 +148,11 @@ export interface NodeTurnRuntimeOptions {
 	readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 	readonly random?: () => number;
 	readonly monotonicClock?: () => number;
-	readonly planTools?: (capabilities: { readonly shell: boolean }) => readonly ToolDefinition[];
+	readonly recordDiagnostic?: (event: RuntimeDiagnosticEvent) => void;
+	readonly planTools?: (capabilities: {
+		readonly shell: boolean;
+		readonly collaborationMode: string;
+	}) => readonly ToolDefinition[];
 	readonly deferredTools?: readonly ToolDefinition[] | ((turnId: string) => readonly ToolDefinition[]);
 	readonly loadToolActivations?: (turnId: string) => readonly string[];
 	readonly executionPolicyCoordinator?: ExecutionPolicyCoordinatorContract;
@@ -196,6 +214,7 @@ export interface ApprovalContinuationContract {
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
 		readonly executionPolicy?: ExecutionPolicy;
+		readonly sandboxOverridePolicy?: ExecutionPolicy;
 	}): Promise<ApprovalRuntimeResolution>;
 	finish(decisionId: string): void;
 	recover?(): RuntimeTurnRecord | undefined;
@@ -218,6 +237,8 @@ export interface ExecutionPolicyCoordinatorContract {
 	configure(input: ExecutionPolicyConfiguration): void;
 	snapshot(): ExecutionPolicySnapshot;
 	beginTurn(turnId: string): TurnExecutionPolicy;
+	grant?(input: PermissionGrantInput): PermissionGrant;
+	sandboxOverrideProfile?(): ExecutionPolicy;
 	finishTurn(turnId: string): void;
 }
 
@@ -238,6 +259,7 @@ export type ApprovalRuntimeResolution =
 		readonly status: "completed" | "rejected";
 		readonly continuation?: PendingApprovalContinuation;
 		readonly toolResult?: ToolExecutionResult;
+		readonly permissionGrant?: PermissionGrant;
 	}
 	| {
 		readonly status: "interrupted";
@@ -264,19 +286,14 @@ export interface ForceInterruptInput {
 	readonly turnId: string;
 }
 
-interface NormalizedFailure {
-	readonly code: RuntimeErrorCode;
-	readonly message: string;
-	readonly retryable: boolean;
-	readonly retryAfterSeconds?: number;
-	readonly diagnostics?: Readonly<Record<string, string | number | boolean | null>>;
-}
+type NormalizedFailure = RuntimeFailure;
 
 interface ProviderStepResult {
 	readonly assistantText: string;
 	readonly usage: ProviderUsage;
 	readonly responseId?: string;
 	readonly toolCalls: readonly CanonicalToolCall[];
+	readonly webSearchCalls: readonly WebSearchCall[];
 	readonly providerState?: ProviderReplayState;
 }
 
@@ -583,7 +600,7 @@ export class NodeTurnRuntime {
 			...(pending.modelOverride ? { modelOverride: pending.modelOverride } : {}),
 			...(pending.reasoningEffort ? { reasoningEffort: pending.reasoningEffort } : {}),
 		};
-		const context = await this.#executionContext(
+		let context = await this.#executionContext(
 			submission,
 			pending.turnId,
 			emit,
@@ -604,6 +621,12 @@ export class NodeTurnRuntime {
 				);
 			},
 			...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
+			...(this.#options.executionPolicyCoordinator?.sandboxOverrideProfile
+				? {
+					sandboxOverridePolicy: this.#options.executionPolicyCoordinator
+						.sandboxOverrideProfile(),
+				}
+				: {}),
 		});
 		if (resolution.status === "interrupted") {
 			if (activeTool) this.#interruptToolExecution(activeTool, emit);
@@ -626,6 +649,15 @@ export class NodeTurnRuntime {
 		if (resolution.toolResult) {
 			if (activeTool) this.#completeToolExecution(activeTool, resolution.toolResult, emit);
 			else emitToolResult(resolution.toolResult, 0, emit);
+		}
+		if (resolution.permissionGrant) {
+			context = await this.#executionContext(
+				submission,
+				pending.turnId,
+				emit,
+				options.signal,
+				pending.providerProtocol,
+			);
 		}
 		const continuation = resolution.continuation;
 		const resumed = await this.#runProviderLoop(context, {
@@ -751,7 +783,10 @@ export class NodeTurnRuntime {
 		const instructionSnapshot = this.#options.resolveInstructionSnapshot?.()
 			?? this.#fallbackInstructionSnapshot;
 		const instructions = instructionSnapshot.content;
-		const plannedTools = this.#options.planTools?.({ shell: turnPolicy?.toolsEnabled ?? false }) ?? [];
+		const plannedTools = this.#options.planTools?.({
+			shell: turnPolicy?.toolsEnabled ?? false,
+			collaborationMode,
+		}) ?? [];
 		const tools = this.#toolExposureForTurn(plannedTools, turnId);
 		if (config.sessionId !== this.#options.sessionId) {
 			throw configFailure("resolved session does not match runtime session");
@@ -783,8 +818,9 @@ export class NodeTurnRuntime {
 				...((this.#options.maxOutputTokens ?? config.maxOutputTokens) === undefined
 					? {}
 					: { maxOutputTokens: this.#options.maxOutputTokens ?? config.maxOutputTokens }),
-				...(config.store === undefined ? {} : { store: config.store }),
-			},
+					...(config.store === undefined ? {} : { store: config.store }),
+					webSearchMode: config.webSearchMode,
+				},
 			emit,
 			signal,
 			...(this.#options.hookRunner ? {
@@ -1090,6 +1126,17 @@ export class NodeTurnRuntime {
 				emit,
 				signal,
 				toolCallsAllowed: Boolean(this.#options.toolRouter),
+				recordDiagnostic: (diagnostic) => publishRuntimeDiagnostic(
+					this.#options.recordDiagnostic,
+					{
+						kind: "model_stream_diagnostics",
+						turnId,
+						provider: config.provider,
+						protocol: config.protocol,
+						model: config.model,
+						...diagnostic,
+					},
+				),
 				...(this.#options.sleep ? { sleep: this.#options.sleep } : {}),
 				...(this.#options.random ? { random: this.#options.random } : {}),
 			});
@@ -1156,6 +1203,15 @@ export class NodeTurnRuntime {
 				return this.#finalizeFailure(submission, rawStepResult.failure, emit);
 			}
 			const stepResult = providerStepWithReplayTokenEstimate(rawStepResult);
+			try {
+				this.#persistWebSearchCalls(turnId, stepResult.webSearchCalls);
+			} catch (error) {
+				return this.#finalizeFailure(
+					submission,
+					normalizeFailure(error, signal, "persistence_error"),
+					emit,
+				);
+			}
 			if (Object.keys(stepResult.usage).length > 0) {
 				emit({ type: "provider_usage", usage: Object.freeze({ ...stepResult.usage }) });
 			}
@@ -1264,12 +1320,34 @@ export class NodeTurnRuntime {
 		}
 	}
 
+	#persistWebSearchCalls(turnId: string, calls: readonly WebSearchCall[]): void {
+		const append = this.#options.store.appendDisplayActivity;
+		if (!append) return;
+		for (const call of calls) {
+			const presentation = webSearchPresentation(call.action);
+			append.call(this.#options.store, {
+				sessionId: this.#options.sessionId,
+				eventId: `web-search:${modelInputSha256([
+					this.#options.sessionId,
+					turnId,
+					call.callId,
+				])}`,
+				turnId,
+				activityType: "web_search",
+				text: presentation.detail,
+				callId: call.callId,
+				status: "completed",
+				metadata: presentation.metadata,
+				createdAt: this.#options.clock(),
+			});
+		}
+	}
+
 	#toolExposureForTurn(
 		baseTools: readonly ToolDefinition[],
 		turnId: string,
 	): readonly ToolDefinition[] {
 		const activated = new Set(this.#options.loadToolActivations?.(turnId) ?? []);
-		if (activated.size === 0) return baseTools;
 		const existing = new Set(baseTools.map((tool) => tool.name));
 		const deferredTools = typeof this.#options.deferredTools === "function"
 			? this.#options.deferredTools(turnId)
@@ -1381,7 +1459,7 @@ export class NodeTurnRuntime {
 		}
 	}
 
-	#compactContext(
+	async #compactContext(
 		context: TurnExecutionContext,
 		source: "pre_turn" | "mid_turn" | "context_overflow",
 		conversation: readonly CanonicalConversationItem[],
@@ -1389,7 +1467,8 @@ export class NodeTurnRuntime {
 	): Promise<CompactionResult> {
 		const coordinator = context.compactionCoordinator;
 		if (!coordinator) throw new StorageFailure("compaction coordinator is not configured");
-		return coordinator.compact({
+		const startedAt = this.#options.monotonicClock?.() ?? performance.now();
+		const result = await coordinator.compact({
 			clientTurnId: context.submission.clientTurnId,
 			turnId: context.turnId,
 			source,
@@ -1398,6 +1477,18 @@ export class NodeTurnRuntime {
 			emit: context.emit,
 			signal: context.signal,
 		});
+		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
+		publishRuntimeDiagnostic(this.#options.recordDiagnostic, {
+			kind: "compaction",
+			turnId: context.turnId,
+			source,
+			status: result.status,
+			beforeTokens: result.beforeTokens,
+			afterTokens: result.afterTokens,
+			maxTokens: context.config.maxPromptTokens,
+			durationMs: boundedDurationMs(startedAt, finishedAt),
+		});
+		return result;
 	}
 
 	async #collectMemoryItem(
@@ -1533,9 +1624,13 @@ export class NodeTurnRuntime {
 					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
 					preview: policy.preview,
 					reason: policy.reason,
+					options: policy.options,
 					...(policy.commandPattern ? { commandPattern: policy.commandPattern } : {}),
 					...(policy.proposedExecPolicyPattern ? {
 						proposedExecPolicyPattern: policy.proposedExecPolicyPattern,
+					} : {}),
+					...(policy.permissionRequest ? {
+						permissionRequest: policy.permissionRequest,
 					} : {}),
 					...(preparation?.mutationGuard ? {
 						preparedMutationGuard: preparation.mutationGuard,
@@ -1551,6 +1646,9 @@ export class NodeTurnRuntime {
 					preview: pending.preview,
 					reason: pending.reason,
 					options: pending.options,
+					...(pending.permissionRequest ? {
+						permissionRequest: pending.permissionRequest,
+					} : {}),
 					...fileMutationApprovalPreview(pending.call),
 				});
 				const running = this.#runningTurn(pending.clientTurnId);
@@ -1663,8 +1761,15 @@ export class NodeTurnRuntime {
 		const previewOptions = {
 			signal: context.signal,
 			ownerTurnId: context.turnId,
-			...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
-			...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+					...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
+					...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+					...(sandboxOverrideApproved
+						&& this.#options.executionPolicyCoordinator?.sandboxOverrideProfile
+						? {
+							sandboxOverridePolicy: this.#options.executionPolicyCoordinator
+								.sandboxOverrideProfile(),
+						}
+						: {}),
 		};
 		const prepared: PreparedToolCall = this.#options.toolRouter?.prepare
 			? await this.#options.toolRouter.prepare(call, previewOptions)
@@ -1942,7 +2047,14 @@ export class NodeTurnRuntime {
 				callId: call.callId,
 				publishLifecycle: this.#options.publishLifecycle,
 				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
-				...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+					...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+					...(sandboxOverrideApproved
+						&& this.#options.executionPolicyCoordinator?.sandboxOverrideProfile
+						? {
+							sandboxOverridePolicy: this.#options.executionPolicyCoordinator
+								.sandboxOverrideProfile(),
+						}
+						: {}),
 				...(preparedMutationGuard ? { preparedMutationGuard } : {}),
 			});
 			if (this.#coordinatorBroker && this.#options.agentEffectLedger) {
@@ -2018,7 +2130,21 @@ export class NodeTurnRuntime {
 		active.terminalEmitted = true;
 		this.#forgetToolExecution(active);
 		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
-		emitToolResult(result, boundedDurationMs(active.startedAt, finishedAt), emit);
+		const durationMs = boundedDurationMs(active.startedAt, finishedAt);
+		publishRuntimeDiagnostic(this.#options.recordDiagnostic, {
+			kind: "tool_execution",
+			turnId: active.turnId,
+			callId: active.callId,
+			toolName: active.toolName,
+			durationMs,
+			success: result.success,
+			outputChars: result.modelOutput.length,
+			outputTruncated: result.metadata.model_output_truncated === true,
+			...(result.success || !result.errorKind
+				? {}
+				: { failureKind: result.errorKind.slice(0, 128) }),
+		});
+		emitToolResult(result, durationMs, emit);
 	}
 
 	#interruptActiveTools(turnId: string, emit: (event: RuntimeEvent) => void): void {
@@ -2046,6 +2172,18 @@ export class NodeTurnRuntime {
 		active.terminalEmitted = true;
 		this.#forgetToolExecution(active);
 		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
+		const durationMs = boundedDurationMs(active.startedAt, finishedAt);
+		publishRuntimeDiagnostic(this.#options.recordDiagnostic, {
+			kind: "tool_execution",
+			turnId: active.turnId,
+			callId: active.callId,
+			toolName: active.toolName,
+			durationMs,
+			success: false,
+			outputChars: 0,
+			outputTruncated: false,
+			failureKind: errorKind.slice(0, 128),
+		});
 		emit({
 			type: "tool_execution_failed",
 			callId: active.callId,
@@ -2055,7 +2193,7 @@ export class NodeTurnRuntime {
 				: errorKind === "tool_interrupted"
 					? `${active.toolName} interrupted`
 					: `${active.toolName} failed`,
-			durationMs: boundedDurationMs(active.startedAt, finishedAt),
+			durationMs,
 			errorKind,
 			metadata: Object.freeze({}),
 		});
@@ -2154,6 +2292,7 @@ export class NodeTurnRuntime {
 				stepResult: {
 					assistantText,
 					toolCalls: Object.freeze([]),
+					webSearchCalls: Object.freeze([]),
 					usage: lastTokenUsage,
 					...(responseId ? { responseId } : {}),
 					...(providerState ? { providerState } : {}),
@@ -2167,7 +2306,12 @@ export class NodeTurnRuntime {
 				}
 			}
 			const snapshotWritten = await this.#writeTerminalSnapshot(completed);
-			emit({ type: "turn_completed", assistantText, usage });
+			emit({
+				type: "turn_completed",
+				assistantText,
+				usage,
+				durationMs: completedTurnDurationMs(completed),
+			});
 			if (snapshotWritten
 				&& memoryEnabled
 				&& submission.source !== "agent_mailbox"
@@ -2212,20 +2356,26 @@ export class NodeTurnRuntime {
 			const failed = this.#options.store.failTurn({
 				sessionId: this.#options.sessionId,
 				clientTurnId: submission.clientTurnId,
-				code: failure.code,
-				message: failure.message,
-				...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}),
+					code: failure.code,
+					message: failure.message,
+					...(failure.additionalDetails
+						? { additionalDetails: failure.additionalDetails }
+						: {}),
+					...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}),
 				completedAt: this.#options.clock(),
 			});
 			await this.#writeTerminalSnapshot(failed);
 			if (failure.code === "interrupted") {
 				emit({ type: "turn_interrupted", message: failure.message });
 			} else {
-				emit({
-					type: "turn_failed",
-					code: failure.code,
-					message: failure.message,
-				});
+					emit({
+						type: "turn_failed",
+						code: failure.code,
+						message: failure.message,
+						...(failure.additionalDetails
+							? { additionalDetails: failure.additionalDetails }
+							: {}),
+					});
 			}
 			return failed;
 		} catch (error) {
@@ -2346,30 +2496,26 @@ function normalizeFailure(
 	fallbackCode: RuntimeErrorCode,
 ): NormalizedFailure {
 	if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
-		return { code: "interrupted", message: "turn interrupted", retryable: false };
+		return {
+			code: "interrupted",
+			message: runtimeErrorPublicMessage("interrupted"),
+			retryable: false,
+		};
 	}
 	if (error instanceof AgentBudgetExhaustedError) {
 		return {
 			code: "tool_budget_exceeded",
-			message: `agent budget exhausted: ${error.kind}`,
+			message: `${runtimeErrorPublicMessage("tool_budget_exceeded")}: ${error.kind}`,
 			retryable: false,
 		};
 	}
 	if (error instanceof ProviderFailure) {
-		return {
-			code: error.code,
-			message: publicMessage(error.code),
-			retryable: error.retryable,
-			...(Object.keys(error.diagnostics).length > 0 ? { diagnostics: error.diagnostics } : {}),
-			...(error.retryAfterSeconds === undefined
-				? {}
-				: { retryAfterSeconds: error.retryAfterSeconds }),
-		};
+		return providerFailureToRuntimeFailure(error);
 	}
 	if (error instanceof StorageFailure) {
 		return {
 			code: "persistence_error",
-			message: "session persistence failed",
+			message: runtimeErrorPublicMessage("persistence_error"),
 			retryable: false,
 			...(Object.keys(error.diagnostics).length > 0 ? { diagnostics: error.diagnostics } : {}),
 		};
@@ -2377,11 +2523,15 @@ function normalizeFailure(
 	if (isFailureLike(error)) {
 		return {
 			code: error.code,
-			message: publicMessage(error.code),
+			message: runtimeErrorPublicMessage(error.code),
 			retryable: error.retryable === true,
 		};
 	}
-	return { code: fallbackCode, message: publicMessage(fallbackCode), retryable: false };
+	return {
+		code: fallbackCode,
+		message: runtimeErrorPublicMessage(fallbackCode),
+		retryable: false,
+	};
 }
 
 function insertMemoryBeforeCurrentInput(
@@ -2449,6 +2599,9 @@ function renderExecutionPolicyContext(
 		`sandbox_mode: ${policy.mode}`,
 		`filesystem: ${policy.filesystem}`,
 		`network: ${policy.network}`,
+		`network_domains: ${policy.networkDomains?.join(",")
+			?? (policy.network === "enabled" ? "all" : "none")}`,
+		`readable_roots: ${policy.readableRoots?.length ?? 0}`,
 		`writable_roots: ${policy.writableRoots.length}`,
 		"</execution_policy>",
 	].join("\n");
@@ -2466,33 +2619,6 @@ function currentUserRequest(
 	return context.submission.message;
 }
 
-function publicMessage(code: RuntimeErrorCode): string {
-	switch (code) {
-		case "config_error":
-			return "provider configuration failed";
-		case "auth_error":
-			return "provider authentication failed";
-		case "rate_limited":
-			return "provider rate limit exceeded";
-		case "context_window_exceeded":
-			return "provider context window exceeded";
-		case "retry_exhausted":
-			return "provider retry budget exhausted";
-		case "persistence_error":
-			return "session persistence failed";
-		case "interrupted":
-			return "turn interrupted";
-		case "unsupported_capability":
-			return "provider requested an unsupported capability";
-		case "tool_budget_exceeded":
-			return "tool turn budget exceeded";
-		case "tool_protocol_error":
-			return "provider tool protocol failed";
-		default:
-			return "provider request failed";
-	}
-}
-
 function assertNotAborted(signal: AbortSignal): void {
 	if (signal.aborted) {
 		const error = new Error("interrupted: turn aborted");
@@ -2508,7 +2634,7 @@ function configFailure(message: string): ProviderFailure {
 function unsupportedToolFailure(): NormalizedFailure {
 	return {
 		code: "unsupported_capability",
-		message: "provider requested an unsupported capability",
+		message: runtimeErrorPublicMessage("unsupported_capability"),
 		retryable: false,
 	};
 }
@@ -2524,7 +2650,7 @@ function unsupportedImageFailure(): NormalizedFailure {
 function toolProtocolFailure(): NormalizedFailure {
 	return {
 		code: "tool_protocol_error",
-		message: "provider tool protocol failed",
+		message: runtimeErrorPublicMessage("tool_protocol_error"),
 		retryable: false,
 	};
 }
@@ -2677,12 +2803,70 @@ function boundedToolName(value: string): string {
 	return value.slice(0, 128) || "Tool";
 }
 
+function webSearchPresentation(action: WebSearchAction): Readonly<{
+	readonly detail: string;
+	readonly metadata: Readonly<Record<string, string | readonly string[]>>;
+}> {
+	switch (action.type) {
+		case "search": {
+			const query = action.query ?? action.queries?.[0] ?? "";
+			const detail = !action.query && (action.queries?.length ?? 0) > 1 && query
+				? `${query} ...`
+				: query;
+			return Object.freeze({
+				detail,
+				metadata: Object.freeze({
+					action_type: action.type,
+					...(action.query ? { query: action.query } : {}),
+					...(action.queries && action.queries.length > 0
+						? { queries: Object.freeze([...action.queries]) }
+						: {}),
+				}),
+			});
+		}
+		case "open_page":
+			return Object.freeze({
+				detail: action.url ?? "",
+				metadata: Object.freeze({
+					action_type: action.type,
+					...(action.url ? { url: action.url } : {}),
+				}),
+			});
+		case "find_in_page": {
+			const detail = action.pattern && action.url
+				? `'${action.pattern}' in ${action.url}`
+				: action.pattern
+					? `'${action.pattern}'`
+					: action.url ?? "";
+			return Object.freeze({
+				detail,
+				metadata: Object.freeze({
+					action_type: action.type,
+					...(action.url ? { url: action.url } : {}),
+					...(action.pattern ? { pattern: action.pattern } : {}),
+				}),
+			});
+		}
+		case "other":
+			return Object.freeze({
+				detail: "",
+				metadata: Object.freeze({ action_type: action.type }),
+			});
+	}
+}
+
 function boundedDurationMs(startedAt: number, finishedAt: number): number {
 	const elapsed = finishedAt - startedAt;
 	if (!Number.isFinite(elapsed)) {
 		return 0;
 	}
 	return Math.min(86_400_000, Math.max(0, Math.round(elapsed)));
+}
+
+function completedTurnDurationMs(turn: RuntimeTurnRecord): number {
+	const startedAt = Date.parse(turn.started_at);
+	const completedAt = turn.completed_at === null ? Number.NaN : Date.parse(turn.completed_at);
+	return boundedDurationMs(startedAt, completedAt);
 }
 
 function isFailureLike(error: unknown): error is {
@@ -2692,19 +2876,5 @@ function isFailureLike(error: unknown): error is {
 	if (typeof error !== "object" || error === null || !("code" in error)) {
 		return false;
 	}
-	return typeof error.code === "string" && RUNTIME_ERROR_CODES.has(error.code);
+	return isRuntimeErrorCode(error.code);
 }
-
-const RUNTIME_ERROR_CODES = new Set<string>([
-	"config_error",
-	"auth_error",
-	"provider_error",
-	"rate_limited",
-	"context_window_exceeded",
-	"retry_exhausted",
-	"persistence_error",
-	"interrupted",
-	"unsupported_capability",
-	"tool_budget_exceeded",
-	"tool_protocol_error",
-]);

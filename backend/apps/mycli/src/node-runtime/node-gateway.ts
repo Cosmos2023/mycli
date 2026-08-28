@@ -5,6 +5,9 @@ import {
 	gatewayContractCatalog,
 	parseGatewayEvent,
 	parseJsonRpcMessage,
+	runtimeErrorPublicMessage,
+	runtimeRetryStatusText,
+	sanitizeRuntimeErrorDetail,
 } from "@mycli/contracts";
 import type { WorkspaceTrustState } from "@mycli/config";
 import type { RuntimeErrorCode, RuntimeTurnRecord } from "@mycli/contracts";
@@ -17,6 +20,7 @@ import {
 	type RuntimeEvent,
 	type ReasoningEffort,
 	type ShellLifecycleEvent,
+	type WebSearchAction,
 } from "@mycli/core";
 import type {
 	PendingSessionApproval,
@@ -35,7 +39,6 @@ import {
 	projectMutationMetadata,
 	sanitizeShellSnapshotPayload,
 	SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
-	StorageFailure,
 } from "@mycli/storage";
 import type {
 	LoadShellOutputPageInput,
@@ -43,7 +46,11 @@ import type {
 	TranscriptItem,
 	TurnReservation,
 } from "@mycli/storage";
-import type { PermissionProfile, ShellSessionSnapshot } from "@mycli/tools";
+import {
+	permissionRequestJson,
+	type PermissionProfile,
+	type ShellSessionSnapshot,
+} from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import {
 	builtinCommandNames,
@@ -70,6 +77,12 @@ import {
 	extractProposedPlan,
 	ProposedPlanStreamFilter,
 } from "./proposed-plan.ts";
+import {
+	GatewayFailure,
+	gatewayFailure,
+} from "./node-gateway-errors.ts";
+import type { SessionPreferences } from "./session-preferences.ts";
+import { MYCLI_VERSION } from "../version.ts";
 
 type JsonObject = Record<string, unknown>;
 type RpcId = string | number | null;
@@ -78,6 +91,14 @@ const GRACEFUL_INTERRUPT_TIMEOUT_MS = 100;
 
 export interface NodeGatewayRuntime {
 	readonly queueCoordinator?: QueueCoordinator;
+	sessionPreferences?(): SessionPreferences | undefined;
+	setSessionPreferences?(preferences: SessionPreferences): void;
+	ensureSessionPreferences?(input: {
+		readonly provider: string;
+		readonly model: string;
+		readonly reasoningEffort?: ReasoningEffort;
+		readonly collaborationMode: "default" | "plan";
+	}): SessionPreferences;
 	executionPolicySnapshot?(): ExecutionPolicySnapshot | undefined;
 	listCommandAllowances?(): readonly (readonly string[])[];
 	addCommandAllowance?(pattern: string): readonly (readonly string[])[];
@@ -86,11 +107,7 @@ export interface NodeGatewayRuntime {
 	compact?(input: {
 		readonly modelOverride?: string;
 		readonly signal: AbortSignal;
-	}): Promise<{
-		readonly status: "compressed" | "skipped" | "not_needed" | "failed" | "interrupted";
-		readonly beforeTokens: number;
-		readonly afterTokens: number;
-	}>;
+	}): Promise<NodeGatewayCompactionResult>;
 	configureExecutionPolicy?(input: {
 		readonly trust: WorkspaceTrustState;
 		readonly permission: PermissionProfile;
@@ -191,6 +208,9 @@ export interface NodeGatewayControlCommands {
 	saveApiKey(providerId: string, apiKey: string): Promise<JsonObject>;
 	models(): Promise<readonly JsonObject[]>;
 	selectModel(input: JsonObject): Promise<JsonObject>;
+	activateSessionPreferences?(
+		preferences: SessionPreferences | undefined,
+	): Promise<SessionPreferences>;
 	loadSettings(): Promise<JsonObject>;
 	saveSettings(settings: JsonObject): Promise<JsonObject>;
 	completePath(prefix: string): Promise<readonly JsonObject[]>;
@@ -201,6 +221,7 @@ export interface CreateNodeGatewayOptions {
 	readonly workspaceRoot: string;
 	readonly provider: string;
 	readonly model: string;
+	readonly reasoningEffort?: ReasoningEffort;
 	readonly toolNames?: readonly string[];
 	readonly maxPromptTokens?: number | (() => number);
 	readonly runtime: NodeGatewayRuntime;
@@ -344,6 +365,8 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#trustState = options.workspaceTrust?.initialState ?? "unknown";
 		this.#provider = options.provider;
 		this.#model = options.model;
+		this.#reasoningEffort = options.reasoningEffort;
+		this.#applySessionPreferences(options.runtime.sessionPreferences?.(), options.runtime);
 		this.#configureExecutionPolicy();
 		let resolveCompletion!: (code: number) => void;
 		this.completion = new Promise<number>((resolve) => { resolveCompletion = resolve; });
@@ -811,14 +834,20 @@ class InProcessNodeGateway implements NodeGateway {
 			protocol: requiredString(params.protocol, "protocol").trim(),
 			model: requiredString(params.model, "model").trim(),
 			base_url: requiredString(params.base_url, "base_url").trim(),
+			collaboration_mode: this.#collaborationMode,
 			...(effort ? { reasoning_effort: effort } : {}),
 		};
 		const commands = this.#options.controlCommands;
 		if (!commands) throw new GatewayFailure("internal_error", "Model selection is unavailable.");
 		const selected = await commands.selectModel(selection);
-		this.#provider = String(selected.provider ?? selection.provider);
-		this.#model = String(selected.model ?? selection.model);
-		this.#reasoningEffort = reasoningEffort(selected.reasoning_effort ?? effort);
+		const persisted = this.#runtime().sessionPreferences?.();
+		if (persisted) {
+			this.#applySessionPreferences(persisted);
+		} else {
+			this.#provider = String(selected.provider ?? selection.provider);
+			this.#model = String(selected.model ?? selection.model);
+			this.#reasoningEffort = reasoningEffort(selected.reasoning_effort ?? effort);
+		}
 		const status = this.#status();
 		this.#emitRuntime("status.changed", status);
 		return { selected, status, models: await this.#models() };
@@ -1348,15 +1377,16 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		if (invocation.commandId === "model") {
 			const selection = parseModelSelection(invocation.args);
-			if (selection.model) {
+			const selectedModel = selection.model ?? (selection.reasoningEffort ? this.#model : undefined);
+			if (selectedModel) {
 				const catalog = await this.#models();
-				const candidates = catalog.filter((entry) => entry.model === selection.model);
+				const candidates = catalog.filter((entry) => entry.model === selectedModel);
 				const entry = candidates.find((candidate) => candidate.provider === this.#provider)
 					?? candidates[0];
 				if (!entry) {
 					return errorCommandResult(
 						invocation,
-						`Model '${selection.model}' is not available`,
+						`Model '${selectedModel}' is not available`,
 						"/model [model] [--thinking-effort level]",
 					);
 				}
@@ -1366,12 +1396,11 @@ class InProcessNodeGateway implements NodeGateway {
 				if (!provider || !protocol || !baseUrl) {
 					throw new GatewayFailure("internal_error", "Model catalog entry is incomplete.");
 				}
-				let selectedResult: JsonObject;
 				try {
-					selectedResult = await this.#selectModel({
+					await this.#selectModel({
 						provider,
 						protocol,
-						model: selection.model,
+						model: selectedModel,
 						base_url: baseUrl,
 						...(selection.reasoningEffort
 							? { reasoning_effort: selection.reasoningEffort }
@@ -1385,12 +1414,6 @@ class InProcessNodeGateway implements NodeGateway {
 						"/model [model] [--thinking-effort level]",
 					);
 				}
-				const selected = isObject(selectedResult.selected) ? selectedResult.selected : {};
-				this.#model = typeof selected.model === "string" ? selected.model : selection.model;
-				this.#reasoningEffort = reasoningEffort(selected.reasoning_effort)
-					?? selection.reasoningEffort;
-			} else if (selection.reasoningEffort) {
-				this.#reasoningEffort = selection.reasoningEffort;
 			}
 			this.#emitRuntime("status.changed", this.#status());
 			return noticeCommandResult(invocation, "Model updated", [
@@ -1409,6 +1432,7 @@ class InProcessNodeGateway implements NodeGateway {
 			if (requested !== "default" && requested !== "plan") {
 				return errorCommandResult(invocation, "Unsupported collaboration mode", "/mode [default|plan]");
 			}
+			this.#ensureSessionPreferences(requested);
 			const mutated = requested !== this.#collaborationMode || invocation.commandId === "plan";
 			this.#collaborationMode = requested;
 			this.#runtime().configureRuntimeContext?.({ collaborationMode: requested });
@@ -1498,11 +1522,13 @@ class InProcessNodeGateway implements NodeGateway {
 				modelOverride: this.#model,
 				signal: new AbortController().signal,
 			});
+			const presentation = compactionCommandPresentation(result);
 			return noticeCommandResult(
 				invocation,
-				"Context compacted",
-				`status=${result.status}; before_tokens=${result.beforeTokens}; after_tokens=${result.afterTokens}`,
+				presentation.title,
+				presentation.summary,
 				{
+					severity: presentation.severity,
 					extra: {
 						command_kind: "compact",
 						compaction_status: result.status,
@@ -1603,6 +1629,11 @@ class InProcessNodeGateway implements NodeGateway {
 
 	async #activateSession(snapshot: ReturnType<SessionCoordinator<NodeGatewayRuntime>["snapshot"]>): Promise<void> {
 		this.#trustState = await this.#loadWorkspaceTrust(snapshot.workspaceRoot);
+		const storedPreferences = snapshot.binding.sessionPreferences?.();
+		const preferences = await this.#options.controlCommands?.activateSessionPreferences?.(
+			storedPreferences,
+		) ?? storedPreferences;
+		this.#applySessionPreferences(preferences, snapshot.binding);
 		this.#configureExecutionPolicy(snapshot.binding);
 		this.#bindQueue();
 		this.#emitDirect("session.changed", {
@@ -1721,6 +1752,7 @@ class InProcessNodeGateway implements NodeGateway {
 		const localImages = stringArray(params.local_images, "local_images");
 		const collaborationMode = collaborationModeParameter(params.collaboration_mode)
 			?? this.#collaborationMode;
+		this.#ensureSessionPreferences(collaborationMode);
 		const submission: TurnSubmission = {
 			clientTurnId,
 			clientUserMessageId,
@@ -1777,6 +1809,32 @@ class InProcessNodeGateway implements NodeGateway {
 			client_user_message_id: clientUserMessageId,
 			turn_id: turnId,
 		};
+	}
+
+	#ensureSessionPreferences(
+		collaborationMode: "default" | "plan",
+	): void {
+		const preferences = this.#runtime().ensureSessionPreferences?.({
+			provider: this.#provider,
+			model: this.#model,
+			...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
+			collaborationMode,
+		});
+		if (preferences) this.#applySessionPreferences(preferences);
+	}
+
+	#applySessionPreferences(
+		preferences: SessionPreferences | undefined,
+		runtime: NodeGatewayRuntime = this.#runtime(),
+	): void {
+		if (!preferences) return;
+		this.#provider = preferences.provider;
+		this.#model = preferences.model;
+		this.#reasoningEffort = preferences.reasoningEffort;
+		this.#collaborationMode = preferences.collaborationMode;
+		runtime.configureRuntimeContext?.({
+			collaborationMode: preferences.collaborationMode,
+		});
 	}
 
 	#approvalRespond(params: JsonObject): JsonObject {
@@ -1918,7 +1976,10 @@ class InProcessNodeGateway implements NodeGateway {
 			client_turn_id: pending.clientTurnId,
 			turn_id: pending.turnId,
 			request_id: pending.requestId,
-			response: boundedString(response, 512),
+			header: pending.header,
+			question: pending.question,
+			response: boundedString(response, 4_096),
+			multi_select: pending.multiSelect,
 		});
 		this.#activeTurnTask = new Promise<void>((resolve) => {
 			queueMicrotask(() => {
@@ -2417,12 +2478,22 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#emitRuntime("status.changed", this.#status());
 				break;
 			case "stream_retrying":
+				if (event.resetOutput) {
+					active.planStreamFilter?.reset();
+					this.#emitRuntime("message.reset", {
+						client_turn_id: active.clientTurnId,
+					});
+				}
 				this.#emitRuntime("stream.retrying", {
 					client_turn_id: active.clientTurnId,
-					text: "Reconnecting...",
+						text: runtimeRetryStatusText(event.failureKind, event.attempt, event.maxRetries),
 					attempt: event.attempt,
-					max_retries: Math.max(event.attempt, 1),
+					max_retries: Math.max(event.maxRetries, event.attempt),
 					delay_seconds: event.delayMs / 1000,
+					recovery_kind: event.recoveryKind,
+					failure_kind: event.failureKind,
+					additional_details: sanitizeRuntimeErrorDetail(event.additionalDetails)
+						?? runtimeErrorPublicMessage(event.failureKind),
 				});
 				break;
 			case "stream_recovered":
@@ -2435,6 +2506,39 @@ class InProcessNodeGateway implements NodeGateway {
 					...(event.responseId ? { response_id: event.responseId } : {}),
 				});
 				break;
+			case "web_search_started": {
+				active.visibleAgentOutput = true;
+				const callId = boundedString(event.callId, 256);
+				this.#emitRuntime("item.started", {
+					client_turn_id: active.clientTurnId,
+					turn_id: active.turnId ?? active.clientTurnId,
+					item: {
+						id: webSearchLifecycleId(callId),
+						type: "web_search",
+						call_id: callId,
+					},
+					});
+					this.#emitRuntime("status.update", statusPayload("running", active.clientTurnId));
+					break;
+				}
+			case "web_search_completed": {
+				active.visibleAgentOutput = true;
+				const callId = boundedString(event.call.callId, 256);
+				this.#emitRuntime("item.completed", {
+					client_turn_id: active.clientTurnId,
+					turn_id: active.turnId ?? active.clientTurnId,
+					item: {
+						id: webSearchLifecycleId(callId),
+						type: "web_search",
+						call_id: callId,
+						status: "completed",
+						action: event.call.action,
+						detail: webSearchActionDetail(event.call.action),
+					},
+				});
+				this.#emitRuntime("status.update", statusPayload("running", active.clientTurnId));
+				break;
+			}
 			case "tool_call_accepted":
 				break;
 			case "file_mutation_started": {
@@ -2468,6 +2572,9 @@ class InProcessNodeGateway implements NodeGateway {
 					preview: event.preview,
 					reason: event.reason,
 					options: event.options,
+					...(event.permissionRequest ? {
+						permissionRequest: event.permissionRequest,
+					} : {}),
 					...approvalPreviewDetails(event),
 				};
 				if (this.#options.sessionCoordinator?.updatePendingApproval(active.context, approval) === false) {
@@ -2571,13 +2678,18 @@ class InProcessNodeGateway implements NodeGateway {
 					});
 					this.#emitInterrupted(active);
 				} else {
-					this.#emitCompleted(active, event.assistantText, event.usage);
+					this.#emitCompleted(active, event.assistantText, event.usage, event.durationMs);
 				}
 				break;
 			case "turn_failed":
 				if (active.terminalEmitted) break;
 				active.terminalEmitted = true;
-				this.#emitTurnFailure(active, event.code, event.message);
+				this.#emitTurnFailure(
+					active,
+					event.code,
+					event.message,
+					event.additionalDetails,
+				);
 				break;
 			case "turn_interrupted":
 				this.#recordInterruptFinalized(active);
@@ -2659,15 +2771,27 @@ class InProcessNodeGateway implements NodeGateway {
 				active,
 				typeof result.assistant_text === "string" ? result.assistant_text : "",
 				isObject(result.usage) ? numberRecord(result.usage) : {},
+				completedTurnDurationMs(record),
 			);
 		} else if (record.status === "interrupted") {
 			this.#emitInterrupted(active);
 		} else if (record.status === "failed") {
-			this.#emitTurnFailure(active, record.error_code ?? "provider_error", "Turn failed.");
+			const result = isObject(record.result) ? record.result : {};
+			this.#emitTurnFailure(
+				active,
+				record.error_code ?? "provider_error",
+				typeof result.message === "string" ? result.message : "Turn failed.",
+				typeof result.additional_details === "string" ? result.additional_details : undefined,
+			);
 		}
 	}
 
-	#emitCompleted(active: ActiveTurn, assistantText: string, usage: Readonly<Record<string, number>>): void {
+	#emitCompleted(
+		active: ActiveTurn,
+		assistantText: string,
+		usage: Readonly<Record<string, number>>,
+		durationMs?: number,
+	): void {
 		active.terminalState = "completed";
 		const turnId = active.turnId ?? active.clientTurnId;
 		this.#emitAssistantDelta(active, active.planStreamFilter?.finishSegment() ?? "");
@@ -2685,6 +2809,7 @@ class InProcessNodeGateway implements NodeGateway {
 			pending_decision: false,
 			turn_state: "completed",
 			usage,
+			...(durationMs === undefined ? {} : { duration_ms: boundedDurationMs(durationMs) }),
 		});
 		this.#emitRuntime("turn.status", terminalStatus("completed", active, "Completed"));
 		this.#emitRuntime("message.complete", {
@@ -2712,17 +2837,24 @@ class InProcessNodeGateway implements NodeGateway {
 		});
 	}
 
-	#emitTurnFailure(active: ActiveTurn, code: RuntimeErrorCode, message: string): void {
+	#emitTurnFailure(
+		active: ActiveTurn,
+		code: RuntimeErrorCode,
+		message: string,
+		additionalDetails?: string,
+	): void {
 		active.terminalState = "failed";
 		this.#collaborationModeByTurn.delete(active.turnId ?? active.clientTurnId);
+		const safeAdditionalDetails = sanitizeRuntimeErrorDetail(additionalDetails);
 		this.#emitRuntime("turn.failed", {
 			client_turn_id: active.clientTurnId,
 			turn_id: active.turnId ?? active.clientTurnId,
 			code,
 			message,
+			...(safeAdditionalDetails ? { additional_details: safeAdditionalDetails } : {}),
 		});
-		this.#emitRuntime("turn.status", terminalStatus("failed", active, "Failed", message));
-		this.#emitRuntime("status.update", statusPayload("failed", active.clientTurnId, message));
+		this.#emitRuntime("turn.status", terminalStatus("failed", active, "Failed"));
+		this.#emitRuntime("status.update", statusPayload("failed", active.clientTurnId));
 	}
 
 	#emitInterrupted(active: ActiveTurn): void {
@@ -3150,6 +3282,55 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 }
 
+export interface NodeGatewayCompactionResult {
+	readonly status: "compressed" | "skipped" | "not_needed" | "failed" | "interrupted";
+	readonly beforeTokens: number;
+	readonly afterTokens: number;
+}
+
+interface CompactionCommandPresentation {
+	readonly title: string;
+	readonly summary: string;
+	readonly severity: "info" | "success" | "warning" | "error";
+}
+
+function compactionCommandPresentation(
+	result: NodeGatewayCompactionResult,
+): CompactionCommandPresentation {
+	switch (result.status) {
+		case "compressed":
+			return {
+				title: "Context compacted",
+				summary: `Context compacted: ${result.beforeTokens} -> ${result.afterTokens} tokens.`,
+				severity: "success",
+			};
+		case "not_needed":
+			return {
+				title: "Nothing to compact",
+				summary: "Nothing to compact. Only base context and retained recent turns remain.",
+				severity: "info",
+			};
+		case "skipped":
+			return {
+				title: "Compaction skipped",
+				summary: `Compaction skipped. Context remains at ${result.beforeTokens} tokens.`,
+				severity: "warning",
+			};
+		case "failed":
+			return {
+				title: "Compaction failed",
+				summary: `Compaction failed. Context remains at ${result.beforeTokens} tokens.`,
+				severity: "error",
+			};
+		case "interrupted":
+			return {
+				title: "Compaction interrupted",
+				summary: `Compaction interrupted. Context remains at ${result.beforeTokens} tokens.`,
+				severity: "warning",
+			};
+	}
+}
+
 export function createNodeGateway(options: CreateNodeGatewayOptions): NodeGateway {
 	return new InProcessNodeGateway(options);
 }
@@ -3331,90 +3512,25 @@ function shellLifecyclePayload(
 	};
 }
 
-class GatewayFailure extends Error {
-	constructor(
-		readonly code: string,
-		message: string,
-		readonly data: JsonObject = {},
-	) {
-		super(message);
-	}
-}
-
-function gatewayFailure(error: unknown): GatewayFailure {
-	if (error instanceof GatewayFailure) return error;
-	if (error instanceof SlashCommandError) {
-		return new GatewayFailure(error.code, error.message);
-	}
-	if (isObject(error) && error.code === "model_catalog_error") {
-		return new GatewayFailure(
-			"model_catalog_error",
-			error instanceof Error ? error.message : "Model catalog could not be loaded.",
-		);
-	}
-	if (isObject(error) && error.code === "session_state_invalid") {
-		return new GatewayFailure("session_state_invalid", "Persisted session state is invalid.");
-	}
-	if (isObject(error) && error.code === "session_state_version_unsupported") {
-		return new GatewayFailure(
-			"session_state_version_unsupported",
-			"Persisted session state version is unsupported.",
-		);
-	}
-	if (isObject(error) && error.code === "session_not_found") {
-		return new GatewayFailure("session_not_found", "Session was not found.");
-	}
-	if (isObject(error) && error.code === "turn_in_progress") {
-		return new GatewayFailure("turn_in_progress", "A turn is already running.");
-	}
-	if (isObject(error) && error.code === "message_id_conflict") {
-		return new GatewayFailure(
-			"message_id_conflict",
-			"client_turn_id already has a different payload.",
-		);
-	}
-	if (isObject(error) && error.code === "invalid_params") {
-		return new GatewayFailure(
-			"invalid_params",
-			error instanceof Error ? error.message : "Image attachments are invalid.",
-		);
-	}
-	if (error instanceof StorageFailure || (isObject(error) && error.code === "persistence_error")) {
-		return new GatewayFailure("persistence_error", "Session persistence failed.");
-	}
-	if (isObject(error) && error.code === "queue_conflict") {
-		return new GatewayFailure("queue_conflict", "Queued input conflicts with current state.");
-	}
-	if (isObject(error) && error.code === "queue_capacity") {
-		return new GatewayFailure("queue_capacity", "Queued input exceeds the queue capacity.");
-	}
-	if (isObject(error) && error.code === "approval_not_pending") {
-		return new GatewayFailure("approval_not_pending", "No pending approval is available.");
-	}
-	if (isObject(error) && error.code === "approval_conflict") {
-		return new GatewayFailure("approval_conflict", "Approval state conflicts with the request.");
-	}
-	if (isObject(error) && error.code === "clarification_not_pending") {
-		return new GatewayFailure(
-			"clarification_not_pending",
-			"No pending clarification is available.",
-		);
-	}
-	return new GatewayFailure("internal_error", "Gateway request failed.");
-}
-
 function gatewayTranscriptItem(item: TranscriptItem): JsonObject {
 	const type = {
 		user_message: "user",
 		assistant_message: "assistant_final",
+		turn_completed: "turn_completed",
+		clarification: "clarification",
 		reasoning_summary: "reasoning",
 		tool: "tool_summary",
+		error: "error",
 		warning: "warning",
 		status: "system_notice",
 		file_change: "system_notice",
 		plan_update: "plan_update",
+		web_search: "web_search",
 	}[item.type];
 	const metadata: JsonObject = { ...(item.metadata ?? {}) };
+	if (item.type === "turn_completed" && item.duration_ms !== undefined) {
+		metadata.duration_ms = item.duration_ms;
+	}
 	if (item.type === "tool") {
 		if (item.tool_name) metadata.tool_name = item.tool_name;
 		if (item.call_id) metadata.call_id = item.call_id;
@@ -3428,6 +3544,10 @@ function gatewayTranscriptItem(item: TranscriptItem): JsonObject {
 			if (item.status === "completed" && metadata.success === undefined) metadata.success = true;
 		}
 		if (item.output) metadata.output_preview = item.output;
+	}
+	if (item.type === "web_search") {
+		if (item.call_id) metadata.call_id = item.call_id;
+		if (item.status) metadata.status = item.status;
 	}
 	return {
 		id: item.id,
@@ -3525,6 +3645,9 @@ function approvalRequest(
 			choice,
 			label: approvalChoiceLabel(choice),
 		})),
+		...(approval.permissionRequest ? {
+			permission_request: permissionRequestJson(approval.permissionRequest),
+		} : {}),
 	};
 }
 
@@ -3753,7 +3876,7 @@ function permissionPayload(active: PermissionProfile, commandAllowanceCount = 0)
 function extensionManifest(toolNames: readonly string[], toolManifest?: JsonObject): JsonObject {
 	return {
 		schema_version: 1,
-		agent: { name: "mycli", version: "0.1.0", runtime: "node" },
+		agent: { name: "mycli", version: MYCLI_VERSION, runtime: "node" },
 		rpc_methods: gatewayContractCatalog.rpcMethods.map((name) => ({ name })),
 		event_streams: gatewayContractCatalog.eventStreams.map((name) => ({ name })),
 		capabilities: {
@@ -4337,6 +4460,8 @@ function safeToolMetadata(
 	success: boolean,
 ): JsonObject {
 	const safe: JsonObject = {};
+	const skillName = skillNameFromMetadata(metadata);
+	if (skillName) safe.skill_name = skillName;
 	const mutation = projectMutationMetadata(metadata, success);
 	if (mutation.path) safe.path = mutation.path;
 	if (mutation.status) safe.status = mutation.status;
@@ -4351,13 +4476,56 @@ function safeToolMetadata(
 	return safe;
 }
 
+function skillNameFromMetadata(metadata: Readonly<Record<string, unknown>>): string | undefined {
+	if (!isObject(metadata.skillInvocationArtifact)) return undefined;
+	const name = metadata.skillInvocationArtifact.name;
+	return typeof name === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(name)
+		? name
+		: undefined;
+}
+
 function toolLifecycleId(callId: string, toolName: string): string {
 	return callId || `builtin:${toolName}`.slice(0, 256);
+}
+
+function webSearchLifecycleId(callId: string): string {
+	return `web-search:${callId}`;
+}
+
+function webSearchActionDetail(action: WebSearchAction): string {
+	switch (action.type) {
+		case "search": {
+			const query = action.query ?? action.queries?.[0] ?? "";
+			return !action.query && (action.queries?.length ?? 0) > 1 && query
+				? `${query} ...`
+				: query;
+		}
+		case "open_page":
+			return action.url ?? "";
+		case "find_in_page":
+			return action.pattern && action.url
+				? `'${action.pattern}' in ${action.url}`
+				: action.pattern
+					? `'${action.pattern}'`
+					: action.url ?? "";
+		case "other":
+			return "";
+	}
 }
 
 function boundedDurationMs(value: number): number {
 	if (!Number.isFinite(value)) return 0;
 	return Math.min(86_400_000, Math.max(0, Math.round(value)));
+}
+
+function completedTurnDurationMs(turn: RuntimeTurnRecord): number | undefined {
+	if (turn.completed_at === null) return undefined;
+	const startedAt = Date.parse(turn.started_at);
+	const completedAt = Date.parse(turn.completed_at);
+	if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || completedAt < startedAt) {
+		return undefined;
+	}
+	return boundedDurationMs(completedAt - startedAt);
 }
 
 async function settlesWithin(task: Promise<void>, timeoutMs: number): Promise<boolean> {

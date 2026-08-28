@@ -1,4 +1,8 @@
-import type { SandboxProfile } from "../execution-policy.ts";
+import {
+	hasUnrestrictedFilesystem,
+	hasUnrestrictedNetwork,
+	type SandboxProfile,
+} from "../execution-policy.ts";
 import type { SandboxedProcessLaunch } from "../process-sandbox.ts";
 
 export const LINUX_BUBBLEWRAP_EXECUTABLES = ["/usr/bin/bwrap", "/bin/bwrap"] as const;
@@ -12,7 +16,7 @@ export function linuxBubblewrapLaunch(
 	const args = [
 		"--new-session",
 		"--die-with-parent",
-		"--ro-bind",
+		hasUnrestrictedFilesystem(profile) ? "--bind" : "--ro-bind",
 		"/",
 		"/",
 		"--dev",
@@ -21,7 +25,7 @@ export function linuxBubblewrapLaunch(
 	for (const root of profile.writableRoots) args.push("--bind", root, root);
 	for (const path of protectedRoots) args.push("--ro-bind", path, path);
 	args.push("--unshare-user", "--unshare-pid");
-	if (profile.network === "disabled") args.push("--unshare-net");
+	if (!hasUnrestrictedNetwork(profile)) args.push("--unshare-net");
 	args.push("--proc", "/proc", "--chdir", profile.cwd, "--", ...argv);
 	return Object.freeze({
 		executable,

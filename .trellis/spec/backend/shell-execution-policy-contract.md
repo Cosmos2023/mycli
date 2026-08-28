@@ -25,6 +25,8 @@
   `description?: string` on `Shell`, bounded to 512 characters.
 - Host-only execution option:
   `ToolExecutionOptions.sandboxOverrideApproved?: boolean`.
+- Host-only upper bound:
+  `ToolExecutionOptions.sandboxOverridePolicy?: ExecutionPolicy`.
 - Recovery derivation:
   `shellCallRequestsSandboxOverride(call) -> boolean` from the exact canonical call.
 
@@ -46,9 +48,12 @@
 - Consecutive allowed `Shell` calls may execute concurrently. Approval evaluation remains per call;
   an approval request flushes earlier parallel work and suspends before the requested call starts.
   Each running call receives only its own exact-call sandbox authorization.
-- The Shell adapter requires both the provider request and host authorization before replacing a
-  restricted execution policy with `full-access`. Model arguments alone never select host
+- The Shell adapter requires both the provider request and host authorization before applying the
+  runtime-owned override policy. Without managed/runtime constraints that policy is full access;
+  otherwise it remains capped. Model arguments and the approval boolean alone never select host
   execution.
+- A policy with `networkDomains` is not unrestricted network access. `web_fetch` can enforce the
+  domains directly, while Shell remains network-disabled until a domain-filtering proxy is present.
 - `description` is optional user-facing metadata. It does not alter the command, working directory,
   classification, approval decision, sandbox policy, or execution result, and it never substitutes
   for an escalation justification.
@@ -78,6 +83,8 @@
 | Restricted `require_escalated` without an allow rule | Suspend for durable approval |
 | Restricted adapter call with model escalation but no host bit | Return `sandbox_override_not_approved`; start no process |
 | Exact allow/session rule plus escalation | Allow and forward the host authorization bit |
+| Approved escalation under managed constraints | Apply the runtime override policy without exceeding it |
+| Domain-constrained Shell policy | Keep the sandbox network disabled |
 | Pre-tool hook changes an authorized call | Withhold the host authorization bit |
 | Consecutive allowed Shell calls | Execute concurrently and persist results in provider order |
 | Shell call requests approval after allowed parallel calls | Finish and persist the earlier phase, then suspend |

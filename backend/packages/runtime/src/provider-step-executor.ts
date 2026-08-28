@@ -6,6 +6,7 @@ import {
 	normalizeProviderAgentLoopFailure,
 } from "./provider-agent-loop.ts";
 import type { ProviderAgentLoopResult } from "./provider-agent-loop.ts";
+import type { ProviderStreamDiagnostics } from "./runtime-observability.ts";
 
 export interface ProviderStepExecutionInput {
 	readonly config: NodeRuntimeConfig;
@@ -17,8 +18,10 @@ export interface ProviderStepExecutionInput {
 	readonly signal: AbortSignal;
 	readonly toolCallsAllowed: boolean;
 	readonly emit: (event: RuntimeEvent) => void;
+	readonly recordDiagnostic?: (diagnostic: ProviderStreamDiagnostics) => void;
 	readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 	readonly random?: () => number;
+	readonly monotonicClock?: () => number;
 }
 
 export interface ProviderStepExecutor {
@@ -32,13 +35,16 @@ export class InProcessProviderStepExecutor implements ProviderStepExecutor {
 		return await this.#loop.runStep({
 			provider: input.provider,
 			request: input.request,
+			requestMaxRetries: input.config.requestMaxRetries,
 			maxRetries: input.maxRetries,
 			signal: input.signal,
 			toolCallsAllowed: input.toolCallsAllowed,
 			emit: input.emit,
+			...(input.recordDiagnostic ? { recordDiagnostic: input.recordDiagnostic } : {}),
 			normalizeFailure: (error) => normalizeProviderAgentLoopFailure(error, input.signal),
 			...(input.sleep ? { sleep: input.sleep } : {}),
 			...(input.random ? { random: input.random } : {}),
+			...(input.monotonicClock ? { monotonicClock: input.monotonicClock } : {}),
 		});
 	}
 }

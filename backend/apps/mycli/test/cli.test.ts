@@ -13,6 +13,7 @@ import {
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
+import { MYCLI_VERSION, parseAppVersion } from "../src/version.ts";
 
 type Deferred<T> = {
 	promise: Promise<T>;
@@ -77,7 +78,7 @@ function cliHarness(overrides: Record<string, unknown> = {}) {
 test("help and version are local and never start the Node backend", async (t) => {
 	for (const scenario of [
 		{ argv: ["--help"], expected: "Usage: mycli" },
-		{ argv: ["--version"], expected: "0.1.0" },
+		{ argv: ["--version"], expected: MYCLI_VERSION },
 	]) {
 		await t.test(scenario.argv[0] ?? "", async () => {
 			let starts = 0;
@@ -93,6 +94,10 @@ test("help and version are local and never start the Node backend", async (t) =>
 			assert.match(harness.stdout.join(""), new RegExp(scenario.expected.replaceAll(".", "\\.")));
 		});
 	}
+});
+
+test("app version rejects an invalid package manifest", () => {
+	assert.throws(() => parseAppVersion({}), /package_version_invalid/u);
 });
 
 test("help advertises the provider-free management surface", async () => {

@@ -1,3 +1,8 @@
+import {
+	TURN_INTERRUPTED_NOTICE,
+	turnInterruptedNoticeId,
+} from "@mycli/contracts";
+
 export const TRANSCRIPT_TEXT_MAX_CHARS = 8_000;
 
 const OMITTED_MARKER = "\n... output omitted ...\n";
@@ -16,25 +21,32 @@ const HIDDEN_HISTORY_TYPES = new Set([
 const SNAPSHOT_TYPES = new Map<string, TranscriptItemType>([
 	["user_message", "user_message"],
 	["assistant_message", "assistant_message"],
+	["turn_completed", "turn_completed"],
 	["reasoning", "reasoning_summary"],
 	["approval_request", "warning"],
 	["approval_resolution", "status"],
-	["clarification_response", "user_message"],
+	["clarification_response", "clarification"],
+	["error", "error"],
 	["warning", "warning"],
 	["compaction", "status"],
 	["file_change", "file_change"],
 	["plan_update", "plan_update"],
+	["web_search", "web_search"],
 ]);
 
 export type TranscriptItemType =
 	| "user_message"
 	| "assistant_message"
+	| "turn_completed"
+	| "clarification"
 	| "reasoning_summary"
 	| "tool"
+	| "error"
 	| "warning"
 	| "status"
 	| "file_change"
-	| "plan_update";
+	| "plan_update"
+	| "web_search";
 
 export interface TranscriptItem {
 	readonly id: string;
@@ -64,11 +76,12 @@ export function projectTranscript(
 	options: TranscriptProjectionOptions = {},
 ): readonly TranscriptItem[] {
 	const approvalTurns = approvalResumeTurnIds(turnRollouts);
+	const readableHistory = historyWithInterruptedNotices(historyItems, turnRollouts);
 	const projected: TranscriptItem[] = [];
 	const toolsByCallId = new Map<string, number>();
 	let legacyPreamble: LegacyToolPreamble | undefined;
 
-	for (const [index, rawItem] of historyItems.entries()) {
+	for (const [index, rawItem] of readableHistory.entries()) {
 		const item = historyItem(rawItem, index);
 		if (!item || suppressItem(item, approvalTurns)) continue;
 		if (item.type === "tool_call") {
@@ -114,6 +127,64 @@ export function projectTranscript(
 	return Object.freeze(projected.slice(Math.max(0, before - limit), before));
 }
 
+function historyWithInterruptedNotices(
+	historyItems: readonly Readonly<Record<string, unknown>>[],
+	turnRollouts: readonly Readonly<Record<string, unknown>>[],
+): readonly Readonly<Record<string, unknown>>[] {
+	const interruptedAtByTurn = new Map<string, string | undefined>();
+	for (const rollout of turnRollouts) {
+		const turnId = stringValue(rollout.turn_id);
+		if (!turnId || (rollout.status !== "interrupted" && rollout.stop_reason !== "interrupted")) {
+			continue;
+		}
+		interruptedAtByTurn.set(turnId, stringValue(rollout.completed_at));
+	}
+	if (interruptedAtByTurn.size === 0) return historyItems;
+
+	const lastIndexByTurn = new Map<string, number>();
+	const turnsWithNotice = new Set<string>();
+	for (const [index, item] of historyItems.entries()) {
+		const turnId = stringValue(item.turn_id);
+		if (!turnId) continue;
+		lastIndexByTurn.set(turnId, index);
+		const metadata = recordValue(item.metadata);
+		if (
+			item.id === turnInterruptedNoticeId(turnId)
+			|| metadata.event_kind === "turn_interrupted"
+		) {
+			turnsWithNotice.add(turnId);
+		}
+	}
+
+	let changed = false;
+	const result = historyItems.flatMap((item, index) => {
+		const turnId = stringValue(item.turn_id);
+		if (
+			!turnId
+			|| lastIndexByTurn.get(turnId) !== index
+			|| !interruptedAtByTurn.has(turnId)
+			|| turnsWithNotice.has(turnId)
+		) {
+			return [item];
+		}
+		changed = true;
+		const completedAt = interruptedAtByTurn.get(turnId);
+		return [item, Object.freeze({
+			id: turnInterruptedNoticeId(turnId),
+			turn_id: turnId,
+			type: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			metadata: Object.freeze({
+				...(completedAt ? { created_at: completedAt } : {}),
+				event_kind: "turn_interrupted",
+				interrupted_turn_id: turnId,
+				status: "interrupted",
+			}),
+		})];
+	});
+	return changed ? Object.freeze(result) : historyItems;
+}
+
 export function sanitizeTranscriptItem(value: unknown): TranscriptItem | undefined {
 	const raw = recordValue(value);
 	const id = boundedIdentity(raw.id, 512);
@@ -129,7 +200,13 @@ export function sanitizeTranscriptItem(value: unknown): TranscriptItem | undefin
 	const durationMs = safeInteger(raw.duration_ms);
 	const metadata = raw.type === "plan_update"
 		? visiblePlanMetadata(recordValue(raw.metadata))
-		: visibleMetadata(recordValue(raw.metadata));
+		: raw.type === "clarification"
+			? visibleClarificationMetadata(recordValue(raw.metadata))
+			: raw.type === "error"
+				? visibleErrorMetadata(recordValue(raw.metadata))
+				: raw.type === "web_search"
+					? visibleWebSearchMetadata(recordValue(raw.metadata))
+					: visibleMetadata(recordValue(raw.metadata));
 	const omitted = Math.max(
 		text?.omitted ?? 0,
 		output?.omitted ?? 0,
@@ -223,12 +300,29 @@ function suppressItem(item: ParsedHistoryItem, approvalTurns: ReadonlySet<string
 
 function visibleItem(item: ParsedHistoryItem): TranscriptItem | undefined {
 	if (HIDDEN_HISTORY_TYPES.has(item.type)) return undefined;
+	if (item.type === "web_search") return webSearchItem(item);
+	if (item.type === "turn_completed") {
+		const durationMs = boundedTurnDurationMs(item.metadata.duration_ms);
+		if (durationMs === undefined) return undefined;
+		return freezeItem({
+			id: item.id,
+			type: "turn_completed",
+			duration_ms: durationMs,
+			...(stringValue(item.metadata.created_at)
+				? { created_at: stringValue(item.metadata.created_at) }
+				: {}),
+		});
+	}
 	const snapshotType = SNAPSHOT_TYPES.get(item.type) ?? (item.text ? "status" : undefined);
 	if (!snapshotType) return undefined;
 	const bounded = boundedHeadTail(item.text);
 	const metadata = item.type === "plan_update"
 		? visiblePlanMetadata(item.metadata)
-		: visibleMetadata(item.metadata);
+		: item.type === "clarification_response"
+			? visibleClarificationMetadata(item.metadata)
+			: item.type === "error"
+				? visibleErrorMetadata(item.metadata)
+				: visibleMetadata(item.metadata);
 	return freezeItem({
 		id: item.id,
 		type: snapshotType,
@@ -236,6 +330,25 @@ function visibleItem(item: ParsedHistoryItem): TranscriptItem | undefined {
 		...(stringValue(item.metadata.created_at)
 			? { created_at: stringValue(item.metadata.created_at) }
 			: {}),
+		...(bounded.omitted > 0 ? { truncated: true, omitted_chars: bounded.omitted } : {}),
+		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+	});
+}
+
+function webSearchItem(item: ParsedHistoryItem): TranscriptItem | undefined {
+	if (!item.callId) return undefined;
+	const bounded = boundedHeadTail(item.text);
+	const metadata = visibleWebSearchMetadata(item.metadata);
+	const status = boundedIdentity(item.metadata.status, 100) ?? "completed";
+	return freezeItem({
+		id: item.id,
+		type: "web_search",
+		...(bounded.value ? { text: bounded.value } : {}),
+		...(stringValue(item.metadata.created_at)
+			? { created_at: stringValue(item.metadata.created_at) }
+			: {}),
+		call_id: item.callId,
+		status,
 		...(bounded.omitted > 0 ? { truncated: true, omitted_chars: bounded.omitted } : {}),
 		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
 	});
@@ -437,6 +550,60 @@ function visibleMetadata(metadata: Readonly<Record<string, unknown>>): Readonly<
 	return Object.freeze(visible);
 }
 
+function visibleWebSearchMetadata(
+	metadata: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	const visible: Record<string, unknown> = {};
+	const actionType = boundedIdentity(metadata.action_type, 32);
+	if (actionType && ["search", "open_page", "find_in_page", "other"].includes(actionType)) {
+		visible.action_type = actionType;
+	}
+	for (const key of ["query", "url", "pattern"] as const) {
+		const value = boundedIdentity(metadata[key], 2_048);
+		if (value) visible[key] = value;
+	}
+	if (Array.isArray(metadata.queries)) {
+		const queries = metadata.queries
+			.slice(0, 16)
+			.map((value) => boundedIdentity(value, 2_048))
+			.filter((value): value is string => value !== undefined);
+		if (queries.length > 0) visible.queries = Object.freeze(queries);
+	}
+	return Object.freeze(visible);
+}
+
+function visibleErrorMetadata(
+	metadata: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	const visible: Record<string, unknown> = { ...visibleMetadata(metadata) };
+	for (const key of ["source", "method", "code"] as const) {
+		const value = boundedIdentity(metadata[key], 128);
+		if (value) visible[key] = value;
+	}
+	const additionalDetails = boundedIdentity(metadata.additional_details, 1_000);
+	if (additionalDetails) visible.additional_details = additionalDetails;
+	return Object.freeze(visible);
+}
+
+function visibleClarificationMetadata(
+	metadata: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	const visible: Record<string, unknown> = {};
+	for (const [key, limit] of [
+		["request_id", 512],
+		["header", 256],
+		["question", 4_096],
+		["response", 4_096],
+	] as const) {
+		const value = boundedIdentity(metadata[key], limit);
+		if (value) visible[key] = value;
+	}
+	if (typeof metadata.multi_select === "boolean") {
+		visible.multi_select = metadata.multi_select;
+	}
+	return Object.freeze(visible);
+}
+
 function visiblePlanMetadata(
 	metadata: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
@@ -560,13 +727,17 @@ function isTranscriptItemType(value: unknown): value is TranscriptItemType {
 	switch (value) {
 		case "user_message":
 		case "assistant_message":
+		case "turn_completed":
+		case "clarification":
 		case "reasoning_summary":
 		case "tool":
+		case "error":
 		case "warning":
 		case "status":
 		case "file_change":
-		case "plan_update":
-			return true;
+			case "plan_update":
+			case "web_search":
+				return true;
 		default:
 			return false;
 	}
@@ -574,4 +745,10 @@ function isTranscriptItemType(value: unknown): value is TranscriptItemType {
 
 function safeInteger(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
+}
+
+function boundedTurnDurationMs(value: unknown): number | undefined {
+	const durationMs = safeInteger(value);
+	if (durationMs === undefined || durationMs < 0) return undefined;
+	return Math.min(86_400_000, durationMs);
 }

@@ -103,10 +103,42 @@
           ],
           "type": "string"
         },
-        "persistent_rule_preview": {
-          "type": "string"
-        },
-        "preview": {
+	        "persistent_rule_preview": {
+	          "type": "string"
+	        },
+	        "permission_request": {
+	          "additionalProperties": false,
+	          "properties": {
+	            "network": {
+	              "additionalProperties": false,
+	              "properties": {
+	                "enabled": {"const": true, "type": "boolean"}
+	              },
+	              "required": ["enabled"],
+	              "type": "object"
+	            },
+	            "file_system": {
+	              "additionalProperties": false,
+	              "properties": {
+	                "read": {
+	                  "items": {"type": "string"},
+	                  "maxItems": 32,
+	                  "type": "array",
+	                  "uniqueItems": true
+	                },
+	                "write": {
+	                  "items": {"type": "string"},
+	                  "maxItems": 32,
+	                  "type": "array",
+	                  "uniqueItems": true
+	                }
+	              },
+	              "type": "object"
+	            }
+	          },
+	          "type": "object"
+	        },
+	        "preview": {
           "type": "string"
         },
         "reason": {
@@ -259,16 +291,30 @@
           "minimum": 1,
           "type": "integer"
         },
+        "header": {
+          "type": "string"
+        },
+        "multi_select": {
+          "type": "boolean"
+        },
+        "question": {
+          "type": "string"
+        },
         "request_id": {
           "type": "string"
         },
         "response": {
           "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
         }
       },
       "required": [
         "request_id",
-        "response"
+        "question",
+        "response",
+        "multi_select"
       ],
       "type": "object"
     },
@@ -401,6 +447,7 @@
             "input_too_large",
             "message_id_conflict",
             "session_not_found",
+            "session_in_use",
             "session_state_invalid",
             "session_state_version_unsupported",
             "approval_not_pending",
@@ -433,9 +480,11 @@
         "client_turn_id": {
           "type": "string"
         },
-        "item": {
-          "properties": {
-            "client_user_message_id": {
+	        "item": {
+	          "oneOf": [
+	            {
+	              "properties": {
+	            "client_user_message_id": {
               "type": "string"
             },
             "content": {
@@ -457,16 +506,30 @@
               ],
               "type": "string"
             }
-          },
-          "required": [
-            "id",
+	              },
+	              "required": [
+	            "id",
             "type",
             "client_user_message_id",
             "content",
             "source"
-          ],
-          "type": "object"
-        },
+	              ],
+	              "type": "object"
+	            },
+	            {
+	              "properties": {
+	                "action": {"type": "object"},
+	                "call_id": {"type": "string"},
+	                "detail": {"type": "string"},
+	                "id": {"type": "string"},
+	                "status": {"enum": ["completed"], "type": "string"},
+	                "type": {"enum": ["web_search"], "type": "string"}
+	              },
+	              "required": ["id", "type", "call_id", "status", "action"],
+	              "type": "object"
+	            }
+	          ]
+	        },
         "turn_id": {
           "type": "string"
         }
@@ -623,8 +686,17 @@
                 "preview"
               ],
               "type": "object"
-            }
-          ]
+	            },
+	            {
+	              "properties": {
+	                "call_id": {"type": "string"},
+	                "id": {"type": "string"},
+	                "type": {"enum": ["web_search"], "type": "string"}
+	              },
+	              "required": ["id", "type", "call_id"],
+	              "type": "object"
+	            }
+	          ]
         },
         "turn_id": {
           "type": "string"
@@ -1712,6 +1784,11 @@
         "client_turn_id": {
           "type": "string"
         },
+        "duration_ms": {
+          "maximum": 86400000,
+          "minimum": 0,
+          "type": "integer"
+        },
         "input_rolled_back": {
           "type": "boolean"
         },
@@ -1818,6 +1895,10 @@
     "turn.failed": {
       "name": "turn.failed",
       "properties": {
+        "additional_details": {
+          "maxLength": 1000,
+          "type": "string"
+        },
         "client_turn_id": {
           "type": "string"
         },
@@ -1825,8 +1906,14 @@
           "enum": [
             "config_error",
             "auth_error",
+            "permission_denied",
+            "invalid_request",
             "provider_error",
+            "connection_error",
+            "response_stream_error",
+            "server_overloaded",
             "rate_limited",
+            "quota_exceeded",
             "context_window_exceeded",
             "retry_exhausted",
             "persistence_error",
@@ -1844,7 +1931,12 @@
           "type": "string"
         }
       },
-      "required": [],
+      "required": [
+        "client_turn_id",
+        "turn_id",
+        "code",
+        "message"
+      ],
       "type": "object"
     },
     "turn.interrupted": {

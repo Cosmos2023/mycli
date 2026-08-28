@@ -182,16 +182,61 @@ test("retries a retryable failure before the first provider event", async () => 
 	]);
 });
 
+test("uses the configured request retry budget before stream recovery", async () => {
+	const store = new FakeStore([]);
+	let calls = 0;
+	const provider: ModelProvider = {
+		stream: () => {
+			calls += 1;
+			return calls === 1
+				? failingProviderEvents(new ProviderFailure({
+					code: "provider_error",
+					message: "connection failed",
+					retryable: true,
+				}))
+				: providerEvents([
+					{ type: "text_delta", text: "recovered" },
+					{ type: "completed", responseId: "resp-request-retry" },
+				]);
+		},
+	};
+	const instance = createRuntime({
+		store,
+		provider,
+		config: config({ requestMaxRetries: 1, streamMaxRetries: 0 }),
+	});
+	const emitted: RuntimeEvent[] = [];
+
+	const result = await instance.submit(submission(), emitted.push.bind(emitted), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "completed");
+	assert.equal(calls, 2);
+	const retry = emitted.find((event) => event.type === "stream_retrying");
+	assert.deepEqual(retry, {
+		type: "stream_retrying",
+		attempt: 1,
+		maxRetries: 1,
+		delayMs: 200,
+		recoveryKind: "request",
+		resetOutput: false,
+		failureKind: "provider_error",
+		additionalDetails: "provider request failed",
+	});
+});
+
 test("persists retry exhaustion after the configured retry budget", async () => {
 	const store = new FakeStore([]);
 	let calls = 0;
 	const provider: ModelProvider = {
 		stream: () => {
 			calls += 1;
-			return failingProviderEvents(new ProviderFailure({
-				code: "provider_error",
-				message: "provider request failed",
-				retryable: true,
+				return failingProviderEvents(new ProviderFailure({
+					code: "provider_error",
+					message: "provider request failed",
+					publicDetail: "Invalid schema api_key=private-value",
+					retryable: true,
 				diagnostics: {
 					status: 400,
 					provider_error_code: "invalid_function_parameters",
@@ -219,6 +264,7 @@ test("persists retry exhaustion after the configured retry budget", async () => 
 	});
 	assert.deepEqual(result.result, {
 		message: "provider retry budget exhausted",
+		additional_details: "Invalid schema api_key=[REDACTED] (status 400)",
 		diagnostics: {
 			status: 400,
 			provider_error_code: "invalid_function_parameters",
@@ -261,7 +307,7 @@ test("interrupts during retry backoff without starting another provider attempt"
 	assert.equal(emitted.at(-1)?.type, "turn_interrupted");
 });
 
-test("does not replay a retryable failure after output begins", async () => {
+test("does not replay a retryable failure after output when stream retries are disabled", async () => {
 	const store = new FakeStore([]);
 	let calls = 0;
 	const provider: ModelProvider = {
@@ -274,7 +320,11 @@ test("does not replay a retryable failure after output begins", async () => {
 			}));
 		},
 	};
-	const instance = createRuntime({ store, provider });
+	const instance = createRuntime({
+		store,
+		provider,
+		config: config({ requestMaxRetries: 0, streamMaxRetries: 0 }),
+	});
 	const emitted: RuntimeEvent[] = [];
 
 	const result = await instance.submit(submission(), emitted.push.bind(emitted), {
@@ -473,6 +523,7 @@ class FakeStore implements TurnStore {
 			error_code: input.code,
 			result: {
 				message: input.message,
+				...(input.additionalDetails ? { additional_details: input.additionalDetails } : {}),
 				...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
 			},
 			completed_at: input.completedAt,
@@ -544,6 +595,8 @@ function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 		supportsImages: true,
 		promptCacheKeyEnabled: true,
 		...overrides,
+		webSearchMode: overrides.webSearchMode ?? "live",
+		requestPermissionsToolEnabled: overrides.requestPermissionsToolEnabled ?? false,
 	};
 }
 

@@ -11,6 +11,7 @@ import {
 	type SandboxProfile,
 } from "@mycli/tools";
 import { LegacyHttpTransport } from "./legacy-http-transport.ts";
+import { INTEGRATIONS_VERSION } from "../version.ts";
 import type {
 	McpClientContract,
 	McpContentItem,
@@ -150,7 +151,7 @@ export class McpClient implements McpClientContract {
 }
 
 class SdkProtocolClient implements McpProtocolClient {
-	readonly #client = new SdkClient({ name: "mycli", version: "0.1.0" });
+	readonly #client = new SdkClient({ name: "mycli", version: INTEGRATIONS_VERSION });
 	readonly #transport: Transport;
 	readonly #timeoutMs: number;
 

@@ -98,6 +98,8 @@ export interface AgentExecutionPolicySnapshot {
 	readonly sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
 	readonly filesystem: "read_only" | "workspace_write" | "unrestricted";
 	readonly network: "disabled" | "enabled";
+	readonly networkDomains?: readonly string[];
+	readonly readableRoots?: readonly string[];
 	readonly writableRoots: readonly string[];
 }
 
@@ -432,11 +434,23 @@ export function narrowAgentExecutionPolicy(
 		|| sandboxRank(candidate.sandboxMode) > sandboxRank(parent.sandboxMode)
 		|| filesystemRank(candidate.filesystem) > filesystemRank(parent.filesystem)
 		|| networkRank(candidate.network) > networkRank(parent.network)
+		|| networkDomainsBroadenAuthority(parent, candidate)
+		|| (parent.filesystem !== "unrestricted"
+			&& (candidate.readableRoots ?? []).some((root) => (
+				!(parent.readableRoots ?? []).includes(root)
+				&& !parent.writableRoots.includes(root)
+			)))
 		|| (parent.filesystem !== "unrestricted"
 			&& candidate.writableRoots.some((root) => !parent.writableRoots.includes(root)));
 	if (broader) throw new AgentAuthorityError();
 	return Object.freeze({
 		...candidate,
+		...(candidate.networkDomains === undefined ? {} : {
+			networkDomains: Object.freeze([...candidate.networkDomains]),
+		}),
+		...(candidate.readableRoots === undefined ? {} : {
+			readableRoots: Object.freeze([...candidate.readableRoots]),
+		}),
 		writableRoots: Object.freeze([...candidate.writableRoots]),
 	});
 }
@@ -511,6 +525,15 @@ function filesystemRank(value: AgentExecutionPolicySnapshot["filesystem"]): numb
 
 function networkRank(value: AgentExecutionPolicySnapshot["network"]): number {
 	return value === "disabled" ? 0 : 1;
+}
+
+function networkDomainsBroadenAuthority(
+	parent: AgentExecutionPolicySnapshot,
+	candidate: AgentExecutionPolicySnapshot,
+): boolean {
+	if (candidate.network !== "enabled" || parent.networkDomains === undefined) return false;
+	if (candidate.networkDomains === undefined) return true;
+	return candidate.networkDomains.some((domain) => !parent.networkDomains?.includes(domain));
 }
 
 function boundedMailboxIdentity(value: string, field: string, maximum = 256): string {

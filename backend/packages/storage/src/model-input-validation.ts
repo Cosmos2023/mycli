@@ -398,7 +398,7 @@ export function normalizeProviderRequest(value: ProviderRequest): ProviderReques
 	const record = normalizedRecord(value, "logical provider request", MODEL_INPUT_JSON_MAX_CHARS);
 	assertKeys(record, [
 		"provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey",
-		"cacheControlEnabled", "instructions", "developerInstructions", "messages", "items", "tools",
+		"cacheControlEnabled", "webSearchMode", "instructions", "developerInstructions", "messages", "items", "tools",
 		"previousResponseId",
 	], ["provider", "protocol", "model", "instructions", "messages", "tools"], "logical provider request");
 	const config = normalizeProviderConfig(record, true);
@@ -594,7 +594,7 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	const record = normalizedRecord(value, "provider request configuration");
 	if (!allowRequestFields) {
 		for (const key of Object.keys(record)) {
-			if (!["provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey", "cacheControlEnabled"].includes(key)) {
+			if (!["provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey", "cacheControlEnabled", "webSearchMode"].includes(key)) {
 				throw invalid("provider request configuration contains unknown fields");
 			}
 		}
@@ -607,6 +607,11 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	}
 	if (record.cacheControlEnabled !== undefined && typeof record.cacheControlEnabled !== "boolean") {
 		throw invalid("provider cache-control setting is invalid");
+	}
+	if (record.webSearchMode !== undefined
+		&& record.webSearchMode !== "live"
+		&& record.webSearchMode !== "disabled") {
+		throw invalid("provider web-search mode is invalid");
 	}
 	if (record.store !== undefined && typeof record.store !== "boolean") {
 		throw invalid("provider storage setting is invalid");
@@ -628,6 +633,9 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 		...(record.cacheControlEnabled === undefined ? {} : {
 			cacheControlEnabled: record.cacheControlEnabled,
 		}),
+		...(record.webSearchMode === undefined ? {} : {
+			webSearchMode: record.webSearchMode,
+		}),
 	});
 }
 
@@ -642,6 +650,9 @@ function providerConfigFromRequest(request: ProviderRequest): ProviderRequestCon
 		...(request.promptCacheKey === undefined ? {} : { promptCacheKey: request.promptCacheKey }),
 		...(request.cacheControlEnabled === undefined ? {} : {
 			cacheControlEnabled: request.cacheControlEnabled,
+		}),
+		...(request.webSearchMode === undefined ? {} : {
+			webSearchMode: request.webSearchMode,
 		}),
 	});
 }

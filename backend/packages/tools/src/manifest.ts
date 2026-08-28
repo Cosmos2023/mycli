@@ -328,6 +328,89 @@ export const ASK_USER_QUESTION_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	},
 });
 
+const REQUEST_PERMISSIONS_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
+	{
+		name: "permissions",
+		type: "object",
+		required: true,
+		description: "Additional filesystem or network access needed for later tool calls in the current turn.",
+	},
+	{
+		name: "reason",
+		type: "string",
+		required: false,
+		description: "Optional short user-facing explanation of why the additional access is needed.",
+	},
+]);
+
+const PERMISSION_PATH_ARRAY_SCHEMA = deepFreeze({
+	type: "array",
+	maxItems: 32,
+	uniqueItems: true,
+	items: {
+		type: "string",
+		minLength: 1,
+		maxLength: 4_096,
+	},
+});
+
+export const REQUEST_PERMISSIONS_TOOL_DEFINITION: ToolDefinition = deepFreeze({
+	id: "builtin:request_permissions",
+	name: "request_permissions",
+	description: [
+		"Request additional filesystem or network permissions from the user and wait for approval.",
+		"Relative filesystem paths resolve from the workspace root and must already exist.",
+		"Approved permissions apply to later tool calls in the current turn, or for the rest of the session when the user selects session scope.",
+	].join("\n"),
+	inputSchema: {
+		type: "object",
+		properties: {
+			permissions: {
+				type: "object",
+				description: parameterDescription(REQUEST_PERMISSIONS_PARAMETERS, "permissions"),
+				properties: {
+					network: {
+						type: "object",
+						description: "Network access request.",
+						properties: {
+							enabled: {
+								type: "boolean",
+								description: "True requests network access; false requests no network access.",
+							},
+						},
+						required: ["enabled"],
+						additionalProperties: false,
+					},
+					file_system: {
+						type: "object",
+						description: "Filesystem access request.",
+						properties: {
+							read: {
+								...PERMISSION_PATH_ARRAY_SCHEMA,
+								description: "Paths to grant read access; omit when none are needed.",
+							},
+							write: {
+								...PERMISSION_PATH_ARRAY_SCHEMA,
+								description: "Paths to grant write access; omit when none are needed.",
+							},
+						},
+						additionalProperties: false,
+					},
+				},
+				additionalProperties: false,
+			},
+			reason: {
+				type: "string",
+				minLength: 1,
+				maxLength: 512,
+				description: parameterDescription(REQUEST_PERMISSIONS_PARAMETERS, "reason"),
+			},
+		},
+		required: ["permissions"],
+		additionalProperties: false,
+	},
+});
+
 const UPDATE_PLAN_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 	{
 		name: "explanation",
@@ -533,6 +616,20 @@ const ASK_USER_QUESTION_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	model_visible: true,
 });
 
+const REQUEST_PERMISSIONS_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
+	...REQUEST_PERMISSIONS_TOOL_DEFINITION,
+	source: "builtin",
+	toolset: "permissions",
+	parameters: REQUEST_PERMISSIONS_PARAMETERS,
+	risk_level: "medium",
+	supports_parallel_tool_calls: false,
+	approval_policy: "request_permissions",
+	capability_tags: ["permissions", "approval", "sandbox"],
+	effects: { filesystem: "none", network: false, process: false },
+	availability: { status: "available" },
+	model_visible: true,
+});
+
 const UPDATE_PLAN_MANIFEST_ENTRY: ToolManifestEntry = deepFreeze({
 	...UPDATE_PLAN_TOOL_DEFINITION,
 	source: "builtin",
@@ -581,6 +678,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 	toolsets: [
 		{ id: "file", tool_count: 4 },
 		{ id: "interaction", tool_count: 1 },
+		{ id: "permissions", tool_count: 1 },
 		{ id: "planning", tool_count: 1 },
 		{ id: "web", tool_count: 1 },
 		{ id: "discovery", tool_count: 1 },
@@ -592,6 +690,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		PATCH_MANIFEST_ENTRY,
 		WRITE_MANIFEST_ENTRY,
 		ASK_USER_QUESTION_MANIFEST_ENTRY,
+		REQUEST_PERMISSIONS_MANIFEST_ENTRY,
 		UPDATE_PLAN_MANIFEST_ENTRY,
 		WEB_FETCH_MANIFEST_ENTRY,
 		TOOL_SEARCH_MANIFEST_ENTRY,

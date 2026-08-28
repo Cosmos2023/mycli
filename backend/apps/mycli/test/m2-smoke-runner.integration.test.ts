@@ -93,7 +93,14 @@ for (const protocol of ["responses", "chat_completions"] as const) {
 			requests[0]?.body[protocol === "responses" ? "max_output_tokens" : "max_completion_tokens"],
 			64,
 		);
-		assert.equal("tools" in (requests[0]?.body ?? {}), false);
+		if (protocol === "responses") {
+			assert.deepEqual(requests[0]?.body.tools, [{
+				type: "web_search",
+				external_web_access: true,
+			}]);
+		} else {
+			assert.equal("tools" in (requests[0]?.body ?? {}), false);
+		}
 		assert.doesNotMatch(result.stdout + result.stderr, /test-secret|127\.0\.0\.1/);
 	});
 }

@@ -22,8 +22,46 @@ test("failed target preparation leaves the source session active", async () => {
 	assert.equal(coordinator.snapshot().binding.name, "runtime-source");
 });
 
+test("lease conflict rejects resume before target preparation", async () => {
+	const acquired: string[] = [];
+	const released: string[] = [];
+	const prepared: string[] = [];
+	const coordinator = fixture({
+		targetLeaseFailure: "session_in_use",
+		acquired,
+		released,
+		prepared,
+	});
+
+	await assert.rejects(
+		() => coordinator.resume("target"),
+		(error: unknown) => hasCode(error, "session_in_use"),
+	);
+	assert.deepEqual(acquired, ["target"]);
+	assert.deepEqual(prepared, []);
+	assert.deepEqual(released, []);
+	assert.equal(coordinator.snapshot().sessionId, "source");
+});
+
+test("failed target preparation releases its lease and retains the source lease", async () => {
+	const acquired: string[] = [];
+	const released: string[] = [];
+	const coordinator = fixture({
+		targetFailure: "session_state_invalid",
+		acquired,
+		released,
+	});
+
+	await assert.rejects(() => coordinator.resume("target"));
+	assert.deepEqual(acquired, ["target"]);
+	assert.deepEqual(released, ["target"]);
+	assert.equal(coordinator.snapshot().sessionId, "source");
+});
+
 test("successful resume replaces every session-scoped value in one generation", async () => {
-	const coordinator = fixture();
+	const acquired: string[] = [];
+	const released: string[] = [];
+	const coordinator = fixture({ acquired, released });
 
 	const result = await coordinator.resume("target");
 
@@ -35,6 +73,32 @@ test("successful resume replaces every session-scoped value in one generation", 
 	assert.equal(result.binding.name, "runtime-target");
 	assert.strictEqual(coordinator.snapshot(), result);
 	assert.ok(Object.isFrozen(result));
+	assert.deepEqual(acquired, ["target"]);
+	assert.deepEqual(released, ["source"]);
+});
+
+test("retained source ownership survives a successful session switch", async () => {
+	const released: string[] = [];
+	const coordinator = fixture({ retainSourceSession: true, released });
+
+	await coordinator.resume("target");
+
+	assert.equal(coordinator.snapshot().sessionId, "target");
+	assert.deepEqual(released, []);
+});
+
+test("failed preparation does not release a target already owned by this window", async () => {
+	const released: string[] = [];
+	const coordinator = fixture({
+		targetFailure: "session_state_invalid",
+		targetLeaseRetained: true,
+		released,
+	});
+
+	await assert.rejects(() => coordinator.resume("target"));
+
+	assert.deepEqual(released, []);
+	assert.equal(coordinator.snapshot().sessionId, "source");
 });
 
 test("same-session resume is idempotent and does not prepare twice", async () => {
@@ -140,6 +204,20 @@ test("starts a fresh prepared session in a new generation", async () => {
 	assert.strictEqual(coordinator.snapshot(), result);
 });
 
+test("retains source ownership when starting a fresh session", async () => {
+	const released: string[] = [];
+	const coordinator = fixture({
+		createSessionId: "fresh",
+		retainSourceSession: true,
+		released,
+	});
+
+	await coordinator.startNew();
+
+	assert.equal(coordinator.snapshot().sessionId, "fresh");
+	assert.deepEqual(released, []);
+});
+
 test("rejects new session creation while the active generation is executing", async () => {
 	const coordinator = fixture({ createSessionId: "fresh" });
 	const context = coordinator.context();
@@ -155,8 +233,13 @@ test("rejects new session creation while the active generation is executing", as
 
 function fixture(options: {
 	readonly targetFailure?: string;
+	readonly targetLeaseFailure?: string;
+	readonly targetLeaseRetained?: boolean;
+	readonly retainSourceSession?: boolean;
 	readonly targetReadOnly?: boolean;
 	readonly prepared?: string[];
+	readonly acquired?: string[];
+	readonly released?: string[];
 	readonly createSessionId?: string;
 } = {}): SessionCoordinator<Binding> {
 	const overviews: readonly SessionOverview[] = [
@@ -165,6 +248,18 @@ function fixture(options: {
 	];
 	return new SessionCoordinator({
 		initial: preparedSession("source"),
+		acquireSession: (sessionId) => {
+			options.acquired?.push(sessionId);
+			if (options.targetLeaseFailure) {
+				throw Object.assign(new Error("target lease failed"), {
+					code: options.targetLeaseFailure,
+				});
+			}
+			return options.targetLeaseRetained ? false : undefined;
+		},
+		releaseSession: (sessionId) => {
+			options.released?.push(sessionId);
+		},
 		prepare: async (sessionId) => {
 			options.prepared?.push(sessionId);
 			if (options.targetFailure) {
@@ -184,6 +279,7 @@ function fixture(options: {
 				{ sessionId: "target", parentId: "source", forkPoint: 1 },
 			]
 			: [{ sessionId }],
+		retainSourceSession: options.retainSourceSession,
 	});
 }
 

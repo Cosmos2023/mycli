@@ -34,6 +34,43 @@ test("web_fetch refuses network work when policy disables it", async () => {
 	assert.equal(calls, 0);
 });
 
+test("web_fetch enforces exact and wildcard domain constraints across redirects", async () => {
+	const calls: string[] = [];
+	const tool = new WebFetchTool({ fetcher: fetcher(async (url) => {
+		calls.push(url.hostname);
+		if (url.hostname === "api.example.com") {
+			return {
+				statusCode: 302,
+				headers: { location: "https://cdn.example.com/result" },
+				body: new Uint8Array(),
+			};
+		}
+		return response(200, "text/plain", "ok");
+	}) });
+	const constrained = {
+		...NETWORK_ENABLED,
+		networkDomains: ["api.example.com", "*.assets.example.com"],
+	} as const;
+
+	const exact = await tool.execute(
+		{ url: "https://api.example.com/start" },
+		executionOptions(constrained),
+	);
+	const wildcard = await tool.execute(
+		{ url: "https://img.assets.example.com/file" },
+		executionOptions(constrained),
+	);
+	const apex = await tool.execute(
+		{ url: "https://assets.example.com/file" },
+		executionOptions(constrained),
+	);
+
+	assert.equal(exact.errorKind, "network_domain_denied");
+	assert.equal(wildcard.success, true);
+	assert.equal(apex.errorKind, "network_domain_denied");
+	assert.deepEqual(calls, ["api.example.com", "img.assets.example.com"]);
+});
+
 test("URL and address policy rejects local private reserved and documentation targets", async () => {
 	for (const value of [
 		"http://127.0.0.1/",
@@ -175,7 +212,7 @@ function response(statusCode: number, contentType: string, body: string): WebFet
 }
 
 function executionOptions(
-	policy: { readonly network: "enabled" | "disabled" } | undefined = NETWORK_ENABLED,
+	policy: Pick<ExecutionPolicy, "network" | "networkDomains"> | undefined = NETWORK_ENABLED,
 	signal = new AbortController().signal,
 ): ToolExecutionOptions {
 	return {
@@ -185,10 +222,13 @@ function executionOptions(
 		callId: "call-1",
 		publishLifecycle: () => undefined,
 		...(policy ? {
-			executionPolicy: {
-				...NETWORK_ENABLED,
-				network: policy.network,
-			},
+				executionPolicy: {
+					...NETWORK_ENABLED,
+					network: policy.network,
+					...(policy.networkDomains === undefined
+						? {}
+						: { networkDomains: policy.networkDomains }),
+				},
 		} : {}),
 	};
 }

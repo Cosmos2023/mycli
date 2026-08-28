@@ -837,7 +837,9 @@ function runtimeConfig(): NodeRuntimeConfig {
 		reasoningEffort: "none",
 		thinkingEnabled: false,
 		supportsImages: true,
+		webSearchMode: "live",
 		promptCacheKeyEnabled: false,
+		requestPermissionsToolEnabled: false,
 	});
 }
 
@@ -847,5 +849,6 @@ function runtimeRequestConfig() {
 		protocol: "responses" as const,
 		model: "gpt-test",
 		reasoningEffort: "none" as const,
+		webSearchMode: "live" as const,
 	});
 }

@@ -310,6 +310,21 @@ export interface Approval {
   worker_name?: string;
   checkpoint_status?: "waiting" | "rejected" | "approved" | "executing" | "completed";
   persistent_rule_preview?: string;
+  permission_request?: {
+    network?: {
+      enabled: true;
+    };
+    file_system?: {
+      /**
+       * @maxItems 32
+       */
+      read?: string[];
+      /**
+       * @maxItems 32
+       */
+      write?: string[];
+    };
+  };
   preview: string;
   reason?: string;
   risk?: string;
@@ -383,8 +398,12 @@ export interface Clarify1 {
   client_turn_id?: string;
   session_id?: string;
   generation?: number;
+  header?: string;
+  multi_select: boolean;
+  question: string;
   request_id: string;
   response: string;
+  turn_id?: string;
   [k: string]: any;
 }
 export interface Compaction {
@@ -437,6 +456,7 @@ export interface Gateway {
     | "input_too_large"
     | "message_id_conflict"
     | "session_not_found"
+    | "session_in_use"
     | "session_state_invalid"
     | "session_state_version_unsupported"
     | "approval_not_pending"
@@ -451,14 +471,26 @@ export interface Gateway {
 }
 export interface Item {
   client_turn_id: string;
-  item: {
-    client_user_message_id: string;
-    content: string;
-    id: string;
-    source: "submit" | "steer";
-    type: "user_message";
-    [k: string]: any;
-  };
+  item:
+    | {
+        client_user_message_id: string;
+        content: string;
+        id: string;
+        source: "submit" | "steer";
+        type: "user_message";
+        [k: string]: any;
+      }
+    | {
+        action: {
+          [k: string]: any;
+        };
+        call_id: string;
+        detail?: string;
+        id: string;
+        status: "completed";
+        type: "web_search";
+        [k: string]: any;
+      };
   turn_id: string;
   [k: string]: any;
 }
@@ -501,6 +533,12 @@ export interface Item1 {
         name: string;
         preview: string;
         type: "file_change";
+        [k: string]: any;
+      }
+    | {
+        call_id: string;
+        id: string;
+        type: "web_search";
         [k: string]: any;
       };
   turn_id: string;
@@ -787,6 +825,7 @@ export interface Turn {
   activity_events: any[];
   assistant_message: string;
   client_turn_id: string;
+  duration_ms?: number;
   input_rolled_back?: boolean;
   pending_decision: boolean;
   plan_steps: any[];
@@ -817,12 +856,19 @@ export interface Turn2 {
   [k: string]: any;
 }
 export interface Turn3 {
-  client_turn_id?: string;
-  code?:
+  additional_details?: string;
+  client_turn_id: string;
+  code:
     | "config_error"
     | "auth_error"
+    | "permission_denied"
+    | "invalid_request"
     | "provider_error"
+    | "connection_error"
+    | "response_stream_error"
+    | "server_overloaded"
     | "rate_limited"
+    | "quota_exceeded"
     | "context_window_exceeded"
     | "retry_exhausted"
     | "persistence_error"
@@ -830,8 +876,8 @@ export interface Turn3 {
     | "unsupported_capability"
     | "tool_budget_exceeded"
     | "tool_protocol_error";
-  message?: string;
-  turn_id?: string;
+  message: string;
+  turn_id: string;
   [k: string]: any;
 }
 export interface Turn4 {

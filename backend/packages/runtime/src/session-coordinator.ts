@@ -1,6 +1,7 @@
 import type {
 	ApprovalChoice,
 	ApprovalPreviewDetails,
+	PermissionRequestProfile,
 	QueueSnapshot,
 } from "@mycli/core";
 import type {
@@ -24,6 +25,7 @@ export interface PendingSessionApproval extends ApprovalPreviewDetails {
 	readonly preview: string;
 	readonly reason: string;
 	readonly options: readonly PendingApprovalChoice[];
+	readonly permissionRequest?: PermissionRequestProfile;
 }
 
 export interface PendingSessionClarification {
@@ -70,6 +72,9 @@ export interface SessionGenerationContext {
 export interface SessionCoordinatorOptions<Binding> {
 	readonly initial: PreparedSession<Binding>;
 	readonly prepare: (sessionId: string) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
+	readonly acquireSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
+	readonly releaseSession?: (sessionId: string) => void | Promise<void>;
+	readonly retainSourceSession?: boolean;
 	readonly create?: (
 		current: ActiveSessionSnapshot<Binding>,
 	) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
@@ -92,6 +97,9 @@ export class SessionTransitionError extends Error {
 
 export class SessionCoordinator<Binding> {
 	readonly #prepareSession: SessionCoordinatorOptions<Binding>["prepare"];
+	readonly #acquireSession: NonNullable<SessionCoordinatorOptions<Binding>["acquireSession"]>;
+	readonly #releaseSession: NonNullable<SessionCoordinatorOptions<Binding>["releaseSession"]>;
+	readonly #retainSourceSession: boolean;
 	readonly #createSession: SessionCoordinatorOptions<Binding>["create"];
 	readonly #listSessions: SessionCoordinatorOptions<Binding>["listSessions"];
 	readonly #loadSessionLineage: SessionCoordinatorOptions<Binding>["loadSessionLineage"];
@@ -103,6 +111,9 @@ export class SessionCoordinator<Binding> {
 	constructor(options: SessionCoordinatorOptions<Binding>) {
 		this.#snapshot = activeSnapshot(options.initial, 1);
 		this.#prepareSession = options.prepare;
+		this.#acquireSession = options.acquireSession ?? (() => undefined);
+		this.#releaseSession = options.releaseSession ?? (() => undefined);
+		this.#retainSourceSession = options.retainSourceSession ?? false;
 		this.#createSession = options.create;
 		this.#listSessions = options.listSessions;
 		this.#loadSessionLineage = options.loadSessionLineage;
@@ -203,7 +214,10 @@ export class SessionCoordinator<Binding> {
 		}
 		if (normalized === this.#snapshot.sessionId) return this.#snapshot;
 		this.#transitioning = true;
+		let targetAcquired = false;
+		let committed = false;
 		try {
+			targetAcquired = await this.#acquireSession(normalized) !== false;
 			const prepared = freezePrepared(await this.#prepareSession(normalized));
 			this.#failpoint("session_after_prepare");
 			if (this.#executing) {
@@ -218,9 +232,21 @@ export class SessionCoordinator<Binding> {
 			if (this.#snapshot.generation === Number.MAX_SAFE_INTEGER) {
 				throw new SessionTransitionError("session_state_invalid", "session generation is exhausted");
 			}
+			const sourceSessionId = this.#snapshot.sessionId;
 			this.#snapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			committed = true;
+			if (!this.#retainSourceSession) await this.#releaseSession(sourceSessionId);
 			this.#failpoint("session_after_commit");
 			return this.#snapshot;
+		} catch (error) {
+			if (targetAcquired && !committed) {
+				try {
+					await this.#releaseSession(normalized);
+				} catch {
+					// The process still owns the target lease; store shutdown is the final cleanup boundary.
+				}
+			}
+			throw error;
 		} finally {
 			this.#transitioning = false;
 		}
@@ -234,6 +260,9 @@ export class SessionCoordinator<Binding> {
 			throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
 		}
 		this.#transitioning = true;
+		let targetSessionId: string | undefined;
+		let targetAcquired = false;
+		let committed = false;
 		try {
 			const prepared = freezePrepared(await this.#createSession(this.#snapshot));
 			this.#failpoint("session_after_prepare");
@@ -246,12 +275,26 @@ export class SessionCoordinator<Binding> {
 					"new session identity matches the active session",
 				);
 			}
+			targetSessionId = prepared.sessionId;
+			targetAcquired = await this.#acquireSession(targetSessionId) !== false;
 			if (this.#snapshot.generation === Number.MAX_SAFE_INTEGER) {
 				throw new SessionTransitionError("session_state_invalid", "session generation is exhausted");
 			}
+			const sourceSessionId = this.#snapshot.sessionId;
 			this.#snapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			committed = true;
+			if (!this.#retainSourceSession) await this.#releaseSession(sourceSessionId);
 			this.#failpoint("session_after_commit");
 			return this.#snapshot;
+		} catch (error) {
+			if (targetSessionId && targetAcquired && !committed) {
+				try {
+					await this.#releaseSession(targetSessionId);
+				} catch {
+					// The process still owns the target lease; store shutdown is the final cleanup boundary.
+				}
+			}
+			throw error;
 		} finally {
 			this.#transitioning = false;
 		}
@@ -308,6 +351,19 @@ function freezePendingApproval(approval: PendingSessionApproval): PendingSession
 	return Object.freeze({
 		...approval,
 		options: Object.freeze([...approval.options]),
+		...(approval.permissionRequest ? {
+			permissionRequest: Object.freeze({
+				...(approval.permissionRequest.network ? {
+					network: Object.freeze({ enabled: true as const }),
+				} : {}),
+				...(approval.permissionRequest.fileSystem ? {
+					fileSystem: Object.freeze({
+						read: Object.freeze([...approval.permissionRequest.fileSystem.read]),
+						write: Object.freeze([...approval.permissionRequest.fileSystem.write]),
+					}),
+				} : {}),
+			}),
+		} : {}),
 	});
 }
 

@@ -121,7 +121,18 @@ function readableRows(event: TranscriptEventEnvelope): Readonly<{
 		case "display_activity":
 			return historyRows(displayHistoryRow(event));
 		case "turn_lifecycle":
-			return emptyRows();
+			return event.payload.phase === "interrupted" && event.turnId
+				? {
+					history: Object.freeze([]),
+					rollouts: Object.freeze([{
+						turn_id: event.turnId,
+						status: "interrupted",
+						completed_at: event.createdAt,
+						stop_reason: "interrupted",
+						events: Object.freeze([]),
+					}]),
+				}
+				: emptyRows();
 		case "rollback":
 			return historyRows({
 				...base,
@@ -172,17 +183,20 @@ function displayHistoryType(activityType: string): string {
 	switch (activityType) {
 		case "reasoning": return "reasoning";
 		case "plan": return "plan_update";
+		case "turn_completed": return "turn_completed";
 		case "approval_request": return "approval_request";
 		case "approval_resolution": return "approval_resolution";
 		case "clarification_request": return "clarification_request";
 		case "clarification_response": return "clarification_response";
 		case "shell": return "shell_session";
+		case "error": return "error";
 		case "warning": return "warning";
 		case "file_change": return "file_change";
 		case "tool_activation": return "tool_exposure";
 		case "context_baseline": return "context_baseline_update";
 		case "capability": return "capability";
 		case "command_result": return "command_result";
+		case "web_search": return "web_search";
 		default: return "status";
 	}
 }

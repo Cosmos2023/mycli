@@ -50,3 +50,8 @@ export type {
 	ExecPolicyRule,
 	ExecPolicySource,
 } from "@mycli/core";
+export { loadManagedExecutionPolicy } from "./managed-execution-policy.ts";
+export type {
+	LoadManagedExecutionPolicyOptions,
+	ManagedExecutionPolicyConstraints,
+} from "./managed-execution-policy.ts";
