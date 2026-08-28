@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session DB diagnostics and read-only maintenance-report contract"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor diagnostic testing and read-only health-check expectations"}
-{"file": ".trellis/tasks/05-31-doctor-session-maintenance-readiness/research/current-state.md", "reason": "Current doctor/session maintenance gap and scoped design"}

@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Check that scripted smoke assertions match documented runtime/TUI states."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check verification coverage for gateway/TUI changes."}
-{"file": ".trellis/tasks/05-31-scripted-terminal-state-assertions/prd.md", "reason": "Acceptance criteria for the scripted terminal-state assertion slice."}

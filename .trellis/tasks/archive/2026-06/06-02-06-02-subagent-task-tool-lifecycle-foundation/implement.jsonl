@@ -1,2 +1,0 @@
-{"file": ".trellis/spec/backend/tool-manifest-contract.md", "reason": "Subagent contributed tools must preserve combined manifest contract"}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Extension manifest and runtime lifecycle surfaces must remain aligned"}

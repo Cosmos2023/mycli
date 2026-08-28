@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session DB read/write boundaries and SQLite store conventions"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Testing expectations for diagnostics and local runtime health surfaces"}
-{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer thinking guidance for store-service-CLI changes"}
-{"file": ".trellis/tasks/05-31-session-maintenance-dry-run-report/research/current-state.md", "reason": "Current state and scoped design for the dry-run maintenance report"}

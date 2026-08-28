@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Trace JSONL and diagnostic payload safety contracts"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Diagnostics must stay local, bounded, and test-backed"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace persistence feeds CLI and gateway export consumers"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing redaction semantics where reasonable"}
-{"file": ".trellis/tasks/05-31-05-31-trace-payload-redaction-hardening/research/trace-redaction-gap.md", "reason": "Recorded trace sanitization gap and slice scope"}

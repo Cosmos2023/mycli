@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Request assembly, cache classes, trace, doctor, and smoke contracts for this task."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor and trace diagnostics must remain read-only and redacted."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "The change crosses context, request shape, provider projection, trace, doctor, and tests."}
-{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p1/research/request-chain.md", "reason": "Local request-chain research and provider cache policy notes."}

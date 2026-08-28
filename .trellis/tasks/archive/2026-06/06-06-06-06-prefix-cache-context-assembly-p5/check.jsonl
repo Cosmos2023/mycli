@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify P5 remains aligned with context, cache class, redaction, and wire-only hint contracts."}
-{"file": "docs/prefix-cache-context-assembly-goals.md", "reason": "Verify P5 scope and acceptance criteria are satisfied without pulling in P6-P8 work."}
-{"file": "docs/mycli-context-assembly-reference.md", "reason": "Verify canonical persistence and api_only boundaries match the reference design."}
-{"file": ".trellis/tasks/06-06-06-06-prefix-cache-context-assembly-p5/research/canonical-timeline-persistence.md", "reason": "Verify implementation follows researched P5 data flow and avoids broad session migration risk."}

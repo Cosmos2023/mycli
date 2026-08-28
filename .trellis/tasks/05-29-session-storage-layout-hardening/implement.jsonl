@@ -1,7 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline index for implementation context"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Cache-aware diagnostics and stable-surface contract"}
-{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Search-before-helper guidance"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace/session data flow boundary guidance"}
-{"file": ".trellis/tasks/05-29-session-storage-layout-hardening/research/hermes-session-storage-notes.md", "reason": "Hermes storage layout research"}

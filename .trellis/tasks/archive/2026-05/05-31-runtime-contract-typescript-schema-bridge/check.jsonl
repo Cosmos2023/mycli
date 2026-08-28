@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "verify TS/Python contract bridge follows runtime gateway spec"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "verify diagnostics/test expectations remain aligned"}
-{"file": ".trellis/tasks/05-31-runtime-contract-typescript-schema-bridge/research/current-state.md", "reason": "verify implementation covers researched gap"}

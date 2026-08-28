@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend layering and project-wide implementation constraints for runtime services."}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Logging-specific conventions, redaction expectations, and operational diagnostics boundaries."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Testing, type-checking, and implementation quality requirements."}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse-first guidance before adding new logging abstractions."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer consistency guidance for CLI, application runtime, and infrastructure logging changes."}

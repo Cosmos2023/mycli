@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .mycli/
+.mycli_backups/
 *.pyc
 .omx/
 .superpowers/

@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines gateway.error and reducer-visible runtime/TUI diagnostics."}
-{"file": ".trellis/spec/backend/error-handling.md", "reason": "Applies to request error propagation and client-visible feedback."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Points to cross-layer thinking for gateway response errors and reducer/UI state."}

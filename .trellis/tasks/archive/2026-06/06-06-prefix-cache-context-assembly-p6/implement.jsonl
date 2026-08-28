@@ -1,8 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for active adapter/runtime guidelines."}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context assembly, provider projection, wire-only hints, and canonical persistence contracts."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "P6 spans canonical runtime state, provider adapters, serializers, clients, diagnostics, and tests."}
-{"file": "docs/prefix-cache-context-assembly-goals.md", "reason": "P6 goal source and scope boundaries."}
-{"file": "docs/prefix-cache-context-assembly-roadmap.md", "reason": "P6 roadmap and phase sequencing."}
-{"file": "docs/mycli-context-assembly-reference.md", "reason": "Provider adapter replay hardening semantic reference."}
-{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p6/research/provider-adapter-replay-hardening.md", "reason": "Task-specific current-state research."}

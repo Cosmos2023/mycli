@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index and active guideline map"}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Authoritative runtime/TUI event contract"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime/TUI contract quality and test expectations"}
-{"file": ".trellis/tasks/05-31-node-tui-typed-gateway-events/research/node-tui-typed-gateway-events.md", "reason": "Research for Node typed gateway events"}

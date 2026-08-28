@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify doctor maintenance check stays read-only and bounded"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor tests and actionable diagnostics"}
-{"file": ".trellis/tasks/05-31-doctor-session-maintenance-readiness/prd.md", "reason": "Verify implementation against acceptance criteria"}

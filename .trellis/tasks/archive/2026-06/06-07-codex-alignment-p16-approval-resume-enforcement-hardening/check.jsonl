@@ -1,6 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend quality gate index."}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify resume/fork continuity and compact boundary guard."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor/runtime diagnostics redaction and test requirements."}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify local diagnostics remain bounded."}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify waiting approval/gateway behavior does not regress."}
-{"file": ".trellis/tasks/06-07-codex-alignment-p16-approval-resume-enforcement-hardening/research/current-approval-resume-shape.md", "reason": "Check implementation against discovered approval resume gap."}

@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for runtime sandbox policy work"}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Runtime environment and sandbox redaction contracts"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime diagnostics and doctor quality contracts"}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Trace/log redaction boundary for runtime policy diagnostics"}
-{"file": ".trellis/tasks/06-07-codex-alignment-p15c-sandbox-policy-enforcement/research/current-sandbox-policy-shape.md", "reason": "Current runtime gate and effect-profile research"}

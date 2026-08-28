@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for applicable contracts."}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context/cache/compaction contracts for P7a implementation."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis thinking guides."}
-{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p7a/research/cheap-pruning-tail-protection.md", "reason": "P7a research on existing compaction architecture and boundaries."}

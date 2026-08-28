@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend service and gateway guidelines."}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Gateway JSON-RPC contract for extension manifest discovery."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer thinking guide for service-to-gateway discovery behavior."}
-{"file": ".trellis/tasks/05-31-extension-capability-manifest/research/extension-capability-manifest.md", "reason": "Task-specific manifest design notes."}

@@ -1,2 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines message.complete as non-authoritative stream completion metadata and the reducer contract."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Points to cross-layer and reuse thinking for event payload consumption changes."}

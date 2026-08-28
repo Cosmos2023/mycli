@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines tool.complete/tool.failed diagnostic payload fields."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Keep cross-layer contract change focused and tested."}
-{"file": ".trellis/tasks/05-31-tool-lifecycle-diagnostic-payload-contract/research/current-state.md", "reason": "Documents the payload typing and gateway smoke gap."}

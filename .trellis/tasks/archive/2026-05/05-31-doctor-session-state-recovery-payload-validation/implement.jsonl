@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor service contracts and sessions_db diagnostic expectations."}
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session DB and lineage persistence contracts."}
-{"file": ".trellis/tasks/05-31-doctor-session-state-recovery-payload-validation/research/current-state.md", "reason": "Current diagnostic gap and proposed validation scope."}

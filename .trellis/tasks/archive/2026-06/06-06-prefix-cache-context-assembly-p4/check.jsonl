@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify P4 stays within bounded cache diagnostics, wire-only hints, and provider-free dry-run contracts."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor/trace redaction and required quality checks."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify profile/config capability data survives cross-layer projection without drift."}
-{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p4/research/cache-policy-runtime-adoption.md", "reason": "Verify implementation matches researched P4 adoption path and risks."}

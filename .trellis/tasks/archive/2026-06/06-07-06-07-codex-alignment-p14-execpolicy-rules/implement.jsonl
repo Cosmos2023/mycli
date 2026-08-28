@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime policy, doctor, dry-run, and redaction contracts for execution diagnostics."}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Trace/log redaction boundary for approval and shell safety diagnostics."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "P14 crosses rules files, domain policy, runtime gate, trace, doctor, and dry-run projections."}
-{"file": ".trellis/tasks/06-07-06-07-codex-alignment-p14-execpolicy-rules/research/current-runtime-policy-shape.md", "reason": "Current-state research and selected P14 insertion point."}
