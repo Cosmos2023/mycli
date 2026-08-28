@@ -1,6 +1,7 @@
 {
   "name": "@mycli/ripgrep-linux-arm64",
   "version": "0.1.0",
+  "private": false,
   "description": "ripgrep binary for mycli on Linux ARM64",
   "license": "MIT OR Unlicense",
   "os": ["linux"],

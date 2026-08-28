@@ -1,0 +1,93 @@
+# Releasing mycli
+
+mycli coordinates one version across 16 components, while publishing only `@mycli/app` and six
+optional ripgrep platform packages. The other nine runtime workspaces are private and are vendored
+under the app's `dist/node_modules` directory during packing. The workspace root is never published.
+
+## One-Time Repository Setup
+
+1. Ensure the npm account or organization owns the `@mycli` scope.
+2. Create a protected GitHub environment named `npm`. Require a reviewer so pushing a version tag
+   cannot publish without a separate approval.
+3. Configure npm Trusted Publishing for `.github/workflows/release.yml` on all seven public packages.
+   The workflow grants only `id-token: write` and `contents: write` in the protected publish job.
+4. For the first release, packages that do not exist yet may need a granular npm access token in
+   the environment secret `NPM_TOKEN`. After bootstrapping the packages and configuring Trusted
+   Publishing, remove that secret. An explicit token takes precedence over OIDC.
+
+Never commit an npm token or write one into a project `.npmrc`.
+
+## Prepare A Version
+
+Start from a clean, current `main` checkout. Do not release from a feature worktree.
+
+```bash
+npm ci
+npm run release:version -- 0.2.0
+npm run release:verify
+npm run contracts:check
+npm run lint
+npm test
+npm run typecheck
+npm run test:m8
+npm run smoke:m8
+npm run smoke:package -- --all-platforms
+```
+
+`release:version` updates all coordinated manifests, internal dependency specifications, and the
+workspace lockfile. `release:verify` fails when the root is publishable, a public package is private,
+a vendored workspace is public, the app dependency closure is incomplete, versions drift, or
+publish access is invalid.
+
+Review and commit the version change before tagging. A local package publication preview is also
+available:
+
+```bash
+npm run release:dry-run
+```
+
+The preview builds every workspace and invokes `npm publish --dry-run` for all seven public
+packages. It does not publish, tag, or create a GitHub Release. The complete CI package smoke
+additionally inserts the Windows sandbox helper compiled by the Windows release job. Publish
+commands use the ignored workspace cache at `.npm-cache/release`, so a broken or differently owned
+user-level npm cache does
+not make the release result machine-dependent.
+
+## Publish
+
+Create an annotated tag matching the manifest version and push it:
+
+```bash
+git tag -a v0.2.0 -m "mycli v0.2.0"
+git push origin v0.2.0
+```
+
+The release workflow then:
+
+1. builds the Windows sandbox helper on Windows;
+2. verifies the tagged commit belongs to `main` and validates the tag and coordinated metadata;
+3. runs contract, lint, test, typecheck, M8, and all-platform package gates;
+4. publishes the six platform packages followed by the application package;
+5. publishes stable versions under `latest` and prereleases under `next`;
+6. creates a GitHub Release only after npm publication succeeds.
+
+The publisher pins the public npm registry and uses provenance. Real publication requires both the
+`--publish` mode embedded in `release:publish` and an explicit `--confirm X.Y.Z` matching the app
+manifest. A rerun checks each exact package version first, skips versions already published, and
+continues from the first missing package. Authentication, connectivity, and other non-404 registry
+errors stop the release instead of being treated as missing packages.
+
+## Failed Or Partial Release
+
+Do not delete or replace versions already accepted by npm. Fix the workflow or infrastructure
+failure, then rerun the failed GitHub Actions job. The ordered publisher safely skips completed
+packages.
+
+If no package was published, delete the bad tag, correct the release commit, and create a new tag.
+If any package was published, keep the immutable version and finish that same release; publish a
+new patch version for code corrections. Rollback for users is installation of the previous app
+version:
+
+```bash
+npm install -g @mycli/app@0.1.0
+```

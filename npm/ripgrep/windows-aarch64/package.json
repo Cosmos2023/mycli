@@ -1,6 +1,7 @@
 {
   "name": "@mycli/ripgrep-win32-arm64",
   "version": "0.1.0",
+  "private": false,
   "description": "ripgrep binary for mycli on Windows ARM64",
   "license": "MIT OR Unlicense",
   "os": ["win32"],

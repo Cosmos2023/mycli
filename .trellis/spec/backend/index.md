@@ -16,18 +16,20 @@ This directory contains guidelines for backend development. Fill in each file wi
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | Active |
 | [Database Guidelines](./database-guidelines.md) | SQLite query, migration, and session-storage contracts | Active |
-| [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
+| [Error Handling](./error-handling.md) | Error taxonomy, boundary mapping, retry, terminalization, and UI projection | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
 | [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
 | [Context Management Contract](./context-management-contract.md) | Project context files, cache classes, fencing, and context diagnostics | Active |
 | [Tool Manifest Contract](./tool-manifest-contract.md) | Built-in local tool registry and manifest metadata | Active |
 | [Shell Execution Policy Contract](./shell-execution-policy-contract.md) | Sandbox-first Shell classification, approval, escalation, and recovery | Active |
+| [Permission Grant Contract](./permission-grant-contract.md) | Runtime-owned permission grants, managed upper bounds, and domain enforcement | Active |
 | [Plugin Runtime Contract](./plugin-runtime-contract.md) | Minimal local plugin manifest, loading, hook/tool registration, and diagnostics | Active |
 | [Read-only Tool Output Contract](./read-only-tool-output-contract.md) | Model-visible LS/Glob/Grep/Read discovery output | Active |
 | [File Mutation Tool Contract](./file-mutation-tool-contract.md) | Write/Edit/Patch safety, diffs, and diagnostics | Active |
 | [Provider Tool Replay Contract](./provider-tool-replay-contract.md) | Bounded tool persistence, terminal call closure, replay repair, and safe provider diagnostics | Active |
 | [Multimodal Input Contract](./multimodal-input-contract.md) | Bounded local-image loading, persistence, capability checks, and provider projection | Active |
+| [Coordinated npm Release Contract](./release-contract.md) | Coordinated versions, package order, artifact gates, publishing, and recovery | Active |
 
 ---
 

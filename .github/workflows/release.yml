@@ -1,0 +1,95 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-sandbox-helper:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows sandbox helper
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            release-artifacts/mycli-windows-sandbox.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-sandbox-helper
+          path: release-artifacts/mycli-windows-sandbox.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: windows-sandbox-helper
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential make g++
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-sandbox-helper
+          path: backend/packages/tools/native/windows
+      - name: Verify tagged commit belongs to main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Verify release metadata and tag
+        run: npm run release:verify -- --tag "$GITHUB_REF_NAME" --require-windows-helper
+      - run: npm run contracts:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run test:m8
+      - run: npm run smoke:m8
+      - name: Validate every packed npm artifact
+        run: npm run smoke:package -- --all-platforms --require-windows-helper
+      - name: Publish npm packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dist_tag="latest"
+          if [[ "$version" == *-* ]]; then
+            dist_tag="next"
+          fi
+          npm run release:publish -- --confirm "$version" --tag "$dist_tag" --provenance
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            exit 0
+          fi
+          args=("$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME")
+          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

@@ -11,36 +11,33 @@ import {
 	RIPGREP_TARGETS,
 	ripgrepPlatformKey,
 } from "../backend/packages/tools/dist/ripgrep-targets.js";
+import {
+	APPLICATION_RELEASE_PACKAGE,
+	VENDORED_WORKSPACE_PACKAGES,
+} from "./release-config.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const WORKSPACES = [
-	"@mycli/contracts",
-	"@mycli/core",
-	"@mycli/config",
-	"@mycli/tools",
-	"@mycli/providers",
-	"@mycli/storage",
-	"@mycli/integrations",
-	"@mycli/runtime",
-	"mycli-shell-tui",
-	"@mycli/app",
-];
 const ALL_PLATFORM_PACKAGES = Object.entries(RIPGREP_TARGETS).map(([target, info]) => ({
 	name: info.npmPackage,
 	target,
 }));
 const CURRENT_PLATFORM_PACKAGE = RIPGREP_TARGETS[ripgrepPlatformKey()].npmPackage;
-const PACK_ALL_PLATFORMS = process.argv.slice(2).includes("--all-platforms");
-const PLATFORM_PACKAGES = PACK_ALL_PLATFORMS
-	? ALL_PLATFORM_PACKAGES
-	: ALL_PLATFORM_PACKAGES.filter(({ name }) => name === CURRENT_PLATFORM_PACKAGE);
+const FLAGS = new Set(process.argv.slice(2));
+const PACK_ALL_PLATFORMS = FLAGS.has("--all-platforms");
+const APP_ONLY = FLAGS.has("--app-only");
+const REQUIRE_WINDOWS_HELPER = FLAGS.has("--require-windows-helper");
+const PLATFORM_PACKAGES = APP_ONLY
+	? []
+	: (PACK_ALL_PLATFORMS
+		? ALL_PLATFORM_PACKAGES
+		: ALL_PLATFORM_PACKAGES.filter(({ name }) => name === CURRENT_PLATFORM_PACKAGE));
 const NATIVE_PTY_SMOKE = String.raw`
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import process from "node:process";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { startNodePtyTransport } from "@mycli/tools";
+import { startNodePtyTransport } from "./node_modules/@mycli/app/dist/node_modules/@mycli/tools/dist/index.js";
 
 const require = createRequire(import.meta.url);
 const nodePtyPackage = require.resolve("node-pty/package.json");
@@ -105,7 +102,7 @@ import {
 	PluginProcessHost,
 	SkillRegistry,
 	SubagentController,
-} from "@mycli/integrations";
+} from "./node_modules/@mycli/app/dist/node_modules/@mycli/integrations/dist/index.js";
 
 assert.equal(typeof HookAllowlistStore, "function");
 assert.equal(typeof McpClient, "function");
@@ -114,7 +111,10 @@ assert.equal(typeof SkillRegistry, "function");
 assert.equal(typeof SubagentController, "function");
 assert.ok(import.meta.resolve("@anthropic-ai/sdk"));
 assert.ok(import.meta.resolve("@modelcontextprotocol/sdk/server/mcp.js"));
-const integrationsEntry = fileURLToPath(import.meta.resolve("@mycli/integrations"));
+const integrationsEntry = fileURLToPath(new URL(
+	"./node_modules/@mycli/app/dist/node_modules/@mycli/integrations/dist/index.js",
+	import.meta.url,
+));
 const workerBootstrap = join(dirname(integrationsEntry), "plugins", "worker-bootstrap.js");
 assert.equal(statSync(workerBootstrap).isFile(), true);
 process.stdout.write("m7-package-ok\n");
@@ -131,7 +131,7 @@ import {
 	RIPGREP_VERSION,
 	ripgrepOutputPath,
 	ripgrepPlatformKey,
-} from "@mycli/tools";
+} from "./node_modules/@mycli/app/dist/node_modules/@mycli/tools/dist/index.js";
 
 const require = createRequire(import.meta.url);
 const target = ripgrepPlatformKey();
@@ -155,27 +155,31 @@ process.stdout.write("ripgrep-package-ok\n");
 
 const tempRoot = await mkdtemp(join(tmpdir(), "mycli-packed-cli-"));
 try {
+	if (APP_ONLY && (PACK_ALL_PLATFORMS || REQUIRE_WINDOWS_HELPER)) {
+		throw new Error("--app-only cannot be combined with platform gates");
+	}
 	const packDir = join(tempRoot, "packs");
 	const installDir = join(tempRoot, "install");
 	const cacheDir = join(tempRoot, "npm-cache");
 	await mkdir(packDir);
 	await mkdir(installDir);
 	const packedArtifacts = [];
-	for (const workspace of WORKSPACES) {
-		const output = await run("npm", [
-			"pack",
-			"--json",
-			"--workspace",
-			workspace,
-			"--pack-destination",
-			packDir,
-			"--cache",
-			cacheDir,
-			"--silent",
-		], ROOT, true);
-		const entry = assertPackFileList(JSON.parse(output));
-		packedArtifacts.push({ name: workspace, path: join(packDir, basename(entry.filename)) });
-	}
+	const applicationOutput = await run("npm", [
+		"pack",
+		"--json",
+		"--workspace",
+		APPLICATION_RELEASE_PACKAGE.name,
+		"--pack-destination",
+		packDir,
+		"--cache",
+		cacheDir,
+		"--silent",
+	], ROOT, true);
+	const applicationEntry = assertPackFileList(JSON.parse(applicationOutput));
+	packedArtifacts.push({
+		name: APPLICATION_RELEASE_PACKAGE.name,
+		path: join(packDir, basename(applicationEntry.filename)),
+	});
 	for (const platformPackage of PLATFORM_PACKAGES) {
 		let output;
 		try {
@@ -200,7 +204,7 @@ try {
 	}
 	const tarballs = (await readdir(packDir)).filter((name) => name.endsWith(".tgz"));
 	if (tarballs.length !== packedArtifacts.length) {
-		throw new Error("packed_cli_smoke_failed: workspace tarball count mismatch");
+		throw new Error("packed_cli_smoke_failed: release tarball count mismatch");
 	}
 	const platformNames = new Set(PLATFORM_PACKAGES.map((value) => value.name));
 	const installTarballs = packedArtifacts
@@ -240,27 +244,42 @@ try {
 	}
 	const nativeSmoke = join(installDir, "native-pty-smoke.mjs");
 	await writeFile(nativeSmoke, NATIVE_PTY_SMOKE, "utf8");
-	const nativeOutput = await run(process.execPath, [nativeSmoke], installDir, true);
+	const nativeOutput = await runStage(
+		"native_pty",
+		process.execPath,
+		[nativeSmoke],
+		installDir,
+		true,
+	);
 	if (!nativeOutput.includes("native-pty-ok")) {
 		throw new Error("packed_cli_smoke_failed: installed native PTY smoke is incomplete");
 	}
 	const m7PackageSmoke = join(installDir, "m7-package-smoke.mjs");
 	await writeFile(m7PackageSmoke, M7_PACKAGE_SMOKE, "utf8");
-	const m7PackageOutput = await run(process.execPath, [m7PackageSmoke], installDir, true);
+	const m7PackageOutput = await runStage(
+		"integrations",
+		process.execPath,
+		[m7PackageSmoke],
+		installDir,
+		true,
+	);
 	if (!m7PackageOutput.includes("m7-package-ok")) {
 		throw new Error("packed_cli_smoke_failed: installed M7 assets are incomplete");
 	}
-	const ripgrepPackageSmoke = join(installDir, "ripgrep-package-smoke.mjs");
-	await writeFile(ripgrepPackageSmoke, RIPGREP_PACKAGE_SMOKE, "utf8");
-	const ripgrepOutput = await run(
-		process.execPath,
-		[ripgrepPackageSmoke],
-		installDir,
-		true,
-		guardedEnv,
-	);
-	if (!ripgrepOutput.includes("ripgrep-package-ok")) {
-		throw new Error("packed_cli_smoke_failed: installed ripgrep is incomplete");
+	if (!APP_ONLY) {
+		const ripgrepPackageSmoke = join(installDir, "ripgrep-package-smoke.mjs");
+		await writeFile(ripgrepPackageSmoke, RIPGREP_PACKAGE_SMOKE, "utf8");
+		const ripgrepOutput = await runStage(
+			"ripgrep",
+			process.execPath,
+			[ripgrepPackageSmoke],
+			installDir,
+			true,
+			guardedEnv,
+		);
+		if (!ripgrepOutput.includes("ripgrep-package-ok")) {
+			throw new Error("packed_cli_smoke_failed: installed ripgrep is incomplete");
+		}
 	}
 	const packedHome = join(tempRoot, "home");
 	const managementEnv = {
@@ -284,15 +303,29 @@ try {
 	}
 	const m8RuntimeSmoke = join(installDir, "m8-runtime-smoke.mjs");
 	const sourceSmoke = await readFile(join(ROOT, "scripts", "smoke_node_m8.mjs"), "utf8");
-	const installedSmoke = sourceSmoke.replace(
-		'../backend/apps/mycli/dist/node-runtime/node-backend.js',
-		'./node_modules/@mycli/app/dist/node-runtime/node-backend.js',
-	);
-	if (installedSmoke === sourceSmoke) {
+	const installedSmoke = sourceSmoke
+		.replace(
+			'../backend/apps/mycli/dist/node-runtime/node-backend.js',
+			'./node_modules/@mycli/app/dist/node-runtime/node-backend.js',
+		)
+		.replace(
+			'from "@mycli/contracts"',
+			'from "./node_modules/@mycli/app/dist/node_modules/@mycli/contracts/dist/index.js"',
+		);
+	if (installedSmoke === sourceSmoke
+		|| installedSmoke.includes('from "@mycli/contracts"')
+		|| installedSmoke.includes('../backend/apps/mycli/dist/node-runtime/node-backend.js')) {
 		throw new Error("packed_cli_smoke_failed: M8 runtime smoke entry was not relocated");
 	}
 	await writeFile(m8RuntimeSmoke, installedSmoke, "utf8");
-	const m8Output = await run(process.execPath, [m8RuntimeSmoke], installDir, true, managementEnv);
+	const m8Output = await runStage(
+		"m8_runtime",
+		process.execPath,
+		[m8RuntimeSmoke],
+		installDir,
+		true,
+		managementEnv,
+	);
 	const m8Summary = JSON.parse(m8Output);
 	if (m8Summary.status !== "completed" || m8Summary.runtime !== "node") {
 		throw new Error("packed_cli_smoke_failed: installed Node runtime smoke is incomplete");
@@ -302,9 +335,9 @@ try {
 	}
 	process.stdout.write(`${JSON.stringify({
 		status: "completed",
-		packed_workspaces: WORKSPACES.length,
+		packed_applications: 1,
 		packed_platforms: PLATFORM_PACKAGES.length,
-		platform_scope: PACK_ALL_PLATFORMS ? "all" : "current",
+		platform_scope: APP_ONLY ? "none" : PACK_ALL_PLATFORMS ? "all" : "current",
 	})}\n`);
 } catch (error) {
 	const detail = error instanceof Error ? error.message : "unknown_error";
@@ -334,15 +367,29 @@ function assertPackFileList(output, expectedTarget) {
 		if (/\.py$/u.test(path) || /python-sidecar|backend-router/u.test(path)) {
 			throw new Error("packed_cli_smoke_failed: Python runtime file entered an npm artifact");
 		}
+		if (/(?:^|\/)(?:src|test)\//u.test(path) || /(?:^|\/)tsconfig(?:\.[^/]*)?\.json$/u.test(path)) {
+			throw new Error(`packed_cli_smoke_failed: development source entered ${entry?.name ?? "package"}`);
+		}
 	}
-	if (entry?.name === "@mycli/tools" && files.some(
-		(file) => typeof file?.path === "string" && file.path.startsWith("native/ripgrep/"),
-	)) {
-		throw new Error("packed_cli_smoke_failed: tools package still embeds ripgrep");
-	}
-	if (entry?.name === "@mycli/app"
-		&& !files.some((file) => file?.path === "dist/assets/system.md")) {
-		throw new Error("packed_cli_smoke_failed: app system prompt asset is missing");
+	if (entry?.name === "@mycli/app") {
+		if (!files.some((file) => file?.path === "dist/assets/system.md")) {
+			throw new Error("packed_cli_smoke_failed: app system prompt asset is missing");
+		}
+		for (const releasePackage of VENDORED_WORKSPACE_PACKAGES) {
+			const prefix = `dist/node_modules/${releasePackage.name}/`;
+			if (!files.some((file) => file?.path === `${prefix}package.json`)
+				|| !files.some((file) => file?.path.startsWith(`${prefix}dist/`))) {
+				throw new Error(`packed_cli_smoke_failed: vendored package missing: ${releasePackage.name}`);
+			}
+		}
+		const windowsHelper = "dist/node_modules/@mycli/tools/native/windows/mycli-windows-sandbox.exe";
+		if (REQUIRE_WINDOWS_HELPER && !files.some((file) => file?.path === windowsHelper)) {
+			throw new Error("packed_cli_smoke_failed: Windows sandbox helper is missing");
+		}
+		if (files.some((file) => typeof file?.path === "string"
+			&& file.path.startsWith("dist/node_modules/@mycli/tools/native/ripgrep/"))) {
+			throw new Error("packed_cli_smoke_failed: vendored tools still embeds ripgrep");
+		}
 	}
 	if (expectedTarget) {
 		const expectedExecutable = expectedTarget.startsWith("windows-") ? "rg.exe" : "rg";
@@ -417,11 +464,32 @@ function run(command, args, cwd, capture = false, env = process.env) {
 				resolve(stdout);
 				return;
 			}
+			const missingModule = commandFailureModule(stderr);
 			reject(new Error(
-				`command_failed: ${command} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`,
+				`command_failed: ${command} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`
+				+ (missingModule ? ` module=${missingModule}` : ""),
 			));
 		});
 	});
+}
+
+async function runStage(stage, command, args, cwd, capture = false, env = process.env) {
+	try {
+		return await run(command, args, cwd, capture, env);
+	} catch (error) {
+		throw new Error(
+			`stage=${stage} ${error instanceof Error ? error.message : "command_failed"}`,
+		);
+	}
+}
+
+function commandFailureModule(stderr) {
+	const match = /Cannot find (?:package|module) ['"]([^'"]{1,500})['"]/u.exec(stderr);
+	if (!match?.[1]) return undefined;
+	const normalized = match[1].replaceAll("\\", "/");
+	const marker = normalized.lastIndexOf("/node_modules/");
+	const value = marker >= 0 ? normalized.slice(marker + "/node_modules/".length) : normalized;
+	return /^[A-Za-z0-9@._/+:-]{1,200}$/u.test(value) ? value : undefined;
 }
 
 function commandFailureKind(stderr) {

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
+  "files": ["dist"],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@mycli/config": "0.1.0",
+    "@mycli/contracts": "0.1.0",
     "@mycli/core": "0.1.0",
     "@mycli/providers": "0.1.0",
     "@mycli/storage": "0.1.0",

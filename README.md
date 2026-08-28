@@ -76,6 +76,8 @@ shipped, so existing users must install and launch the npm CLI shown above.
 Setup writes user state under `~/.mycli`:
 
 - `config.toml`: provider, model, runtime, context, memory, shell, and TUI settings.
+- `managed_config.toml`: optional execution-policy upper bounds loaded independently of user and
+  project configuration.
 - `auth.json`: API keys referenced by `auth_ref`.
 - `models.json`: the provider-grouped model catalog used by `/model`, including reasoning and
   context/output capabilities. Legacy flat catalogs remain readable.
@@ -115,11 +117,53 @@ sandbox_mode = "workspace-write"
 
 [memory]
 enabled = false
+
+[features]
+request_permissions_tool = false
 ```
+
+`request_max_retries` controls connection/request retries before the first provider event.
+`stream_max_retries` controls recovery of an incomplete provider stream; any partial assistant
+output from the failed attempt is discarded before the replacement stream is displayed.
+
+Hosted web search is enabled by default for the `openai` and `codex` profiles when they use the
+Responses protocol. It is disabled by default for compatible, Qwen, DeepSeek, and Anthropic
+profiles; model names are not used to guess support. A custom Responses endpoint can opt in at the
+provider level, and an individual model can override that choice in `~/.mycli/models.json`:
+
+```json
+{
+  "version": 2,
+  "providers": {
+    "compatible": {
+      "protocol": "responses",
+      "base_url": "https://provider.example/v1",
+      "auth_ref": "compatible",
+      "capabilities": { "web_search": true },
+      "models": {
+        "search-model": {},
+        "offline-model": {
+          "capabilities": { "web_search": false }
+        }
+      }
+    }
+  }
+}
+```
+
+`capabilities.web_search = true` is valid only with `protocol = "responses"`. Hosted search runs
+inside the provider without a local tool approval. mycli persists a bounded provider-native call
+for continuation replay and a readable search activity for `/resume`, but not fetched page bodies
+or raw search results.
 
 Memory is disabled by default so normal turns never incur memory selection,
 extraction, consolidation, or injected-context token usage. Set
 `[memory].enabled = true` or `MYCLI_MEMORY_ENABLED=true` to opt in.
+
+The experimental `request_permissions` model tool is disabled by default. Enable it with
+`[features].request_permissions_tool = true` or `MYCLI_REQUEST_PERMISSIONS_TOOL=true`. Normal
+Shell and file operations continue to request approval at their own execution boundary when this
+feature is disabled.
 
 Environment overrides take precedence over files:
 
@@ -155,7 +199,10 @@ data is retained in SQLite so a resumed provider turn does not depend on the ori
   turn, `danger-full-access` is accepted only as a justified, one-time retry of the same operation
   after workspace confinement returned `workspace_escape`, and still requires user approval.
 - `web_fetch` retrieves only bounded public HTTP(S) text under a network-enabled execution policy;
-  it blocks private/local targets and fences returned content as untrusted external data.
+  it blocks private/local targets, enforces managed exact/wildcard domain constraints across every
+  redirect, and fences returned content as untrusted external data.
+- Responses `web_search` is provider-hosted and intended for discovering current external sources;
+  `web_fetch` remains the local tool for retrieving a known URL under mycli's execution policy.
 - MCP and plugin schemas are discovered through `tool_search` and become visible only after the
   search result is durably persisted for the current turn. Their adapters, approvals, and sandbox
   policy remain active throughout.
@@ -233,6 +280,22 @@ Missing isolation fails with `sandbox_unavailable`; mycli does not downgrade to 
 process. Diagnostics exclude API keys, headers, prompts, provider payloads, raw tool output,
 commands, and private file contents.
 
+An administrator may place upper bounds in `~/.mycli/managed_config.toml`:
+
+```toml
+[execution_policy]
+network = "enabled"
+readable_roots = ["/absolute/managed-input"]
+writable_roots = ["/absolute/managed-output"]
+allowed_network_domains = ["api.example.com", "*.assets.example.com"]
+```
+
+Managed roots must exist when mycli starts. User, project, session, approval, and subagent settings
+cannot exceed these bounds. Exact domain entries match only that host; `*.example.com` matches
+subdomains but not `example.com`. `web_fetch` enforces the list before the first request and after
+every redirect. Until the Shell sandbox has a domain-filtering proxy, a domain-constrained Shell
+remains offline rather than receiving unrestricted network access.
+
 ## Development
 
 ```bash
@@ -246,16 +309,23 @@ npm run smoke:m8
 npm run smoke:package
 ```
 
-The packed smoke installs all local workspace tarballs, exercises the compiled CLI and native PTY,
+The packed smoke installs the app tarball with its nine vendored runtime workspaces, exercises the compiled CLI and native PTY,
 runs provider-free management commands, and fails if the npm artifact imports, starts, invokes, or
 probes for Python. It packages only the current ripgrep platform by default; release validation can
 package all six platform artifacts with `npm run smoke:package -- --all-platforms`. CI runs the Node
 gate on Node 22.19 and Node 24 across Linux, macOS, and Windows, plus native helper matrices. A
 credential-gated Responses smoke runs only after the offline Node gates pass.
 
+When a ripgrep download source is unavailable, `npm run smoke:package -- --app-only` still performs
+the real application pack/install/runtime checks without weakening the normal release gate.
+
 Canonical contracts live under `backend/packages/contracts/schemas`; generated TypeScript is checked for
 drift. The final M8 capability inventory is in
 [docs/parity/node-runtime-m8-capability-audit.md](docs/parity/node-runtime-m8-capability-audit.md).
+
+Release preparation, npm Trusted Publishing setup, coordinated versioning, tag publication, and
+partial-release recovery are documented in [docs/releasing.md](docs/releasing.md). The workspace
+root remains private; users install the published CLI with `npm install -g @mycli/app`.
 
 ## Troubleshooting And Rollback
 

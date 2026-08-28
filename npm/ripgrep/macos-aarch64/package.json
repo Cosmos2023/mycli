@@ -1,6 +1,7 @@
 {
   "name": "@mycli/ripgrep-darwin-arm64",
   "version": "0.1.0",
+  "private": false,
   "description": "ripgrep binary for mycli on macOS ARM64",
   "license": "MIT OR Unlicense",
   "os": ["darwin"],

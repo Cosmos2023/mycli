@@ -1,7 +1,10 @@
 {
   "name": "@mycli/app",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "mycli": "dist/cli.js"
@@ -11,6 +14,7 @@
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-system-prompt.mjs",
+    "prepack": "node scripts/vendor-internal-packages.mjs",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "test:m5": "node --import tsx --test test/m5-state-recovery.integration.test.ts",
     "test:m6": "node --import tsx --test test/m6-persistent-shell.integration.test.ts",
@@ -20,15 +24,32 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@mycli/config": "0.1.0",
-    "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0",
-    "@mycli/integrations": "0.1.0",
-    "@mycli/providers": "0.1.0",
-    "@mycli/runtime": "0.1.0",
-    "@mycli/storage": "0.1.0",
-    "@mycli/tools": "0.1.0",
-    "mycli-shell-tui": "0.1.0"
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "adm-zip": "^0.6.0",
+    "ajv": "^8.17.1",
+    "better-sqlite3": "^13.0.2",
+    "cli-highlight": "2.1.11",
+    "csv-parse": "^6.1.0",
+    "diff": "^9.0.0",
+    "get-east-asian-width": "1.6.0",
+    "js-tiktoken": "^1.0.21",
+    "marked": "15.0.12",
+    "node-pty": "1.2.0-beta.15",
+    "openai": "^7.3.0",
+    "parse-diff": "0.12.0",
+    "parse5": "^7.3.0",
+    "smol-toml": "^1.7.1",
+    "tar": "^7.5.22",
+    "yaml": "^2.9.0"
+  },
+  "optionalDependencies": {
+    "@mycli/ripgrep-darwin-arm64": "0.1.0",
+    "@mycli/ripgrep-darwin-x64": "0.1.0",
+    "@mycli/ripgrep-linux-arm64": "0.1.0",
+    "@mycli/ripgrep-linux-x64": "0.1.0",
+    "@mycli/ripgrep-win32-arm64": "0.1.0",
+    "@mycli/ripgrep-win32-x64": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",
