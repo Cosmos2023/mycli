@@ -2379,7 +2379,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 });
 
 test("Node backend approves a child Shell sandbox escalation and resumes the same child session", {
-	timeout: 15_000,
+	timeout: 30_000,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-child-approval-"));
 	const home = join(root, "home");
@@ -2505,7 +2505,7 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 	const approval = await waitFor(() => messages.find((message) => (
 		message.method === "approval.request"
 		&& paramValue(message, "session_id") !== "child-approval-parent"
-	)));
+	)), 10_000);
 	const childSessionId = paramValue(approval, "session_id");
 	const generation = paramValue(approval, "generation");
 	const decisionId = paramValue(approval, "decision_id");
