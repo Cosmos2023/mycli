@@ -46,21 +46,21 @@ test("manifest and lockfile version transforms preserve dependency intent", () =
 	const manifest = {
 		name: "fixture",
 		version: "0.1.0",
-		dependencies: { "@mycli/core": "0.1.0", "@mycli/app": "^0.1.0", external: "^4.0.0" },
-		optionalDependencies: { "@mycli/ripgrep-linux-x64": "~0.1.0" },
+		dependencies: { "@mycli/core": "0.1.0", "@cosmos2023/app": "^0.1.0", external: "^4.0.0" },
+		optionalDependencies: { "@cosmos2023/ripgrep-linux-x64": "~0.1.0" },
 	};
 	const updated = updateManifestVersions(manifest, "0.2.0", VERSIONED_PACKAGE_NAMES);
 	assert.equal(updated.version, "0.2.0");
 	assert.equal(updated.dependencies["@mycli/core"], "0.2.0");
-	assert.equal(updated.dependencies["@mycli/app"], "^0.2.0");
+	assert.equal(updated.dependencies["@cosmos2023/app"], "^0.2.0");
 	assert.equal(updated.dependencies.external, "^4.0.0");
-	assert.equal(updated.optionalDependencies["@mycli/ripgrep-linux-x64"], "~0.2.0");
+	assert.equal(updated.optionalDependencies["@cosmos2023/ripgrep-linux-x64"], "~0.2.0");
 	assert.equal(manifest.version, "0.1.0");
 	assert.equal(updateManifestVersions({}, "0.2.0", VERSIONED_PACKAGE_NAMES).version, "0.2.0");
 	assert.equal(dependencySpecForVersion("0.1.0", "0.2.0"), "0.2.0");
 
 	const lockfile = { lockfileVersion: 3, packages: { "": manifest, app: {
-		name: "@mycli/app",
+		name: "@cosmos2023/app",
 		version: "0.1.0",
 		dependencies: { "@mycli/core": "0.1.0" },
 	} } };
@@ -76,10 +76,10 @@ test("version synchronization updates all release manifests and detects drift", 
 		await writeJson(join(root, "package.json"), {
 			name: "fixture-root",
 			private: true,
-			dependencies: { "@mycli/app": "^0.1.0" },
+			dependencies: { "@cosmos2023/app": "^0.1.0" },
 		});
 		const lockPackages = {
-			"": { dependencies: { "@mycli/app": "^0.1.0" } },
+			"": { dependencies: { "@cosmos2023/app": "^0.1.0" } },
 		};
 		for (const releasePackage of VERSIONED_PACKAGES) {
 			const manifestPath = releaseManifestPath(releasePackage, root);
@@ -104,7 +104,7 @@ test("version synchronization updates all release manifests and detects drift", 
 
 		const result = await synchronizeReleaseVersion({ root, version: "0.2.0" });
 		assert.equal(result.changed.length, VERSIONED_PACKAGES.length + 2);
-		assert.equal((await readJson(join(root, "package.json"))).dependencies["@mycli/app"], "^0.2.0");
+		assert.equal((await readJson(join(root, "package.json"))).dependencies["@cosmos2023/app"], "^0.2.0");
 		assert.equal(
 			(await readJson(releaseManifestPath(RELEASE_PACKAGES.at(-1), root))).version,
 			"0.2.0",
@@ -148,7 +148,7 @@ test("vendored manifests stay private and the app carries their external depende
 		version: "0.1.0",
 		private: true,
 		dependencies: { ajv: "^8.17.1", "@mycli/core": "0.1.0" },
-		optionalDependencies: { "@mycli/ripgrep-linux-x64": "0.1.0" },
+		optionalDependencies: { "@cosmos2023/ripgrep-linux-x64": "0.1.0" },
 	};
 	assert.doesNotThrow(() => validateVendoredManifest(releasePackage, manifest, "0.1.0"));
 	assert.throws(
@@ -158,7 +158,7 @@ test("vendored manifests stay private and the app carries their external depende
 	const vendoredManifests = [{ releasePackage, manifest }];
 	assert.doesNotThrow(() => validateApplicationDependencyClosure({
 		dependencies: { ajv: "^8.17.1" },
-		optionalDependencies: { "@mycli/ripgrep-linux-x64": "0.1.0" },
+		optionalDependencies: { "@cosmos2023/ripgrep-linux-x64": "0.1.0" },
 	}, vendoredManifests));
 	assert.throws(
 		() => validateApplicationDependencyClosure({ dependencies: {} }, vendoredManifests),
@@ -167,14 +167,14 @@ test("vendored manifests stay private and the app carries their external depende
 	assert.throws(
 		() => validateApplicationDependencyClosure({
 			dependencies: { ajv: "^8.17.1", "@mycli/contracts": "0.1.0" },
-			optionalDependencies: { "@mycli/ripgrep-linux-x64": "0.1.0" },
+			optionalDependencies: { "@cosmos2023/ripgrep-linux-x64": "0.1.0" },
 		}, vendoredManifests),
 		/release_app_vendored_dependency_exposed/u,
 	);
 	assert.throws(
 		() => validateApplicationDependencyClosure({
 			dependencies: { ajv: "^8.17.1" },
-			optionalDependencies: { "@mycli/ripgrep-linux-x64": "0.1.0" },
+			optionalDependencies: { "@cosmos2023/ripgrep-linux-x64": "0.1.0" },
 			peerDependencies: { "@mycli/contracts": "0.1.0" },
 		}, vendoredManifests),
 		/release_app_vendored_dependency_exposed/u,
@@ -200,8 +200,8 @@ test("publisher defaults to dry-run and guards real publication", () => {
 });
 
 test("publish invocations preserve dependency order and registry boundary", () => {
-	assert.equal(RELEASE_PACKAGES[0].name, "@mycli/ripgrep-darwin-arm64");
-	assert.equal(RELEASE_PACKAGES.at(-1).name, "@mycli/app");
+	assert.equal(RELEASE_PACKAGES[0].name, "@cosmos2023/ripgrep-darwin-arm64");
+	assert.equal(RELEASE_PACKAGES.at(-1).name, "@cosmos2023/app");
 	const platform = publishInvocation(RELEASE_PACKAGES[0], {
 		publish: false,
 		provenance: false,
@@ -218,7 +218,7 @@ test("publish invocations preserve dependency order and registry boundary", () =
 		tag: "latest",
 	}, "/repo");
 	assert.deepEqual(app.args, [
-		"publish", "--workspace", "@mycli/app", "--access", "public", "--tag", "latest",
+		"publish", "--workspace", "@cosmos2023/app", "--access", "public", "--tag", "latest",
 		"--registry", "https://registry.npmjs.org/", "--cache", "/repo/.npm-cache/release",
 		"--provenance",
 	]);
@@ -228,18 +228,18 @@ test("publish invocations preserve dependency order and registry boundary", () =
 
 test("registry checks distinguish existing, missing, and failed lookups", async () => {
 	assert.equal(await registryVersionExists(
-		"@mycli/app",
+		"@cosmos2023/app",
 		"0.1.0",
 		async () => ({ code: 0, stdout: '"0.1.0"\n', stderr: "" }),
 	), true);
 	assert.equal(await registryVersionExists(
-		"@mycli/app",
+		"@cosmos2023/app",
 		"0.1.0",
 		async () => ({ code: 1, stdout: "", stderr: "npm error code E404" }),
 	), false);
 	await assert.rejects(
 		registryVersionExists(
-			"@mycli/app",
+			"@cosmos2023/app",
 			"0.1.0",
 			async () => ({ code: 1, stdout: "", stderr: "npm error code E401 npm_secret_value_1234567890" }),
 		),

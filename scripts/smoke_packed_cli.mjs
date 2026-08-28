@@ -22,6 +22,7 @@ const ALL_PLATFORM_PACKAGES = Object.entries(RIPGREP_TARGETS).map(([target, info
 	target,
 }));
 const CURRENT_PLATFORM_PACKAGE = RIPGREP_TARGETS[ripgrepPlatformKey()].npmPackage;
+const APPLICATION_PACKAGE_MODULE_PATH = `./node_modules/${APPLICATION_RELEASE_PACKAGE.name}`;
 const FLAGS = new Set(process.argv.slice(2));
 const PACK_ALL_PLATFORMS = FLAGS.has("--all-platforms");
 const APP_ONLY = FLAGS.has("--app-only");
@@ -37,7 +38,7 @@ import { createRequire } from "node:module";
 import process from "node:process";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { startNodePtyTransport } from "./node_modules/@mycli/app/dist/node_modules/@mycli/tools/dist/index.js";
+import { startNodePtyTransport } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/tools/dist/index.js";
 
 const require = createRequire(import.meta.url);
 const nodePtyPackage = require.resolve("node-pty/package.json");
@@ -102,7 +103,7 @@ import {
 	PluginProcessHost,
 	SkillRegistry,
 	SubagentController,
-} from "./node_modules/@mycli/app/dist/node_modules/@mycli/integrations/dist/index.js";
+} from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/integrations/dist/index.js";
 
 assert.equal(typeof HookAllowlistStore, "function");
 assert.equal(typeof McpClient, "function");
@@ -112,7 +113,7 @@ assert.equal(typeof SubagentController, "function");
 assert.ok(import.meta.resolve("@anthropic-ai/sdk"));
 assert.ok(import.meta.resolve("@modelcontextprotocol/sdk/server/mcp.js"));
 const integrationsEntry = fileURLToPath(new URL(
-	"./node_modules/@mycli/app/dist/node_modules/@mycli/integrations/dist/index.js",
+	"${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/integrations/dist/index.js",
 	import.meta.url,
 ));
 const workerBootstrap = join(dirname(integrationsEntry), "plugins", "worker-bootstrap.js");
@@ -131,7 +132,7 @@ import {
 	RIPGREP_VERSION,
 	ripgrepOutputPath,
 	ripgrepPlatformKey,
-} from "./node_modules/@mycli/app/dist/node_modules/@mycli/tools/dist/index.js";
+} from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/tools/dist/index.js";
 
 const require = createRequire(import.meta.url);
 const target = ripgrepPlatformKey();
@@ -228,13 +229,12 @@ try {
 		PATH: `${pythonProbe.binDir}${delimiter}${dirname(process.execPath)}`,
 		MYCLI_PYTHON_PROBE_MARKER: pythonProbe.marker,
 	};
-	await assertNoPythonRuntimeSurface(join(
+	const applicationInstallRoot = join(
 		installDir,
 		"node_modules",
-		"@mycli",
-		"app",
-		"dist",
-	));
+		...APPLICATION_RELEASE_PACKAGE.name.split("/"),
+	);
+	await assertNoPythonRuntimeSurface(join(applicationInstallRoot, "dist"));
 	const bin = process.platform === "win32"
 		? join(installDir, "node_modules", ".bin", "mycli.cmd")
 		: join(installDir, "node_modules", ".bin", "mycli");
@@ -306,11 +306,11 @@ try {
 	const installedSmoke = sourceSmoke
 		.replace(
 			'../backend/apps/mycli/dist/node-runtime/node-backend.js',
-			'./node_modules/@mycli/app/dist/node-runtime/node-backend.js',
+			`${APPLICATION_PACKAGE_MODULE_PATH}/dist/node-runtime/node-backend.js`,
 		)
 		.replace(
 			'from "@mycli/contracts"',
-			'from "./node_modules/@mycli/app/dist/node_modules/@mycli/contracts/dist/index.js"',
+			`from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/contracts/dist/index.js"`,
 		);
 	if (installedSmoke === sourceSmoke
 		|| installedSmoke.includes('from "@mycli/contracts"')
@@ -371,7 +371,7 @@ function assertPackFileList(output, expectedTarget) {
 			throw new Error(`packed_cli_smoke_failed: development source entered ${entry?.name ?? "package"}`);
 		}
 	}
-	if (entry?.name === "@mycli/app") {
+	if (entry?.name === APPLICATION_RELEASE_PACKAGE.name) {
 		if (!files.some((file) => file?.path === "dist/assets/system.md")) {
 			throw new Error("packed_cli_smoke_failed: app system prompt asset is missing");
 		}

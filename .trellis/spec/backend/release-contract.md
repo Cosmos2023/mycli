@@ -6,7 +6,7 @@
 
 Apply this contract whenever a runtime workspace, ripgrep platform package, package dependency, or
 user-visible runtime version changes. mycli uses one coordinated version for 16 components, but
-publishes only `@mycli/app` and six ripgrep platform packages. Nine private runtime workspaces are
+publishes only `@cosmos2023/app` and six ripgrep platform packages. Nine private runtime workspaces are
 vendored into the app tarball; the workspace root is never published.
 
 ### 2. Signatures
@@ -20,7 +20,7 @@ npm run release:publish -- --confirm <semver> [--tag <dist-tag>] [--provenance]
 ```
 
 `scripts/release-config.mjs` is the canonical inventory for both versioned and published packages.
-Platform packages precede `@mycli/app`; private runtime workspaces are versioned but never sent to
+Platform packages precede `@cosmos2023/app`; private runtime workspaces are versioned but never sent to
 the registry.
 
 ### 3. Contracts

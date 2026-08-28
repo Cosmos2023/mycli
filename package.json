@@ -11,7 +11,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace @mycli/core && npm run build --workspace @mycli/config && npm run build --workspace @mycli/tools && npm run build --workspace @mycli/providers && npm run build --workspace @mycli/storage && npm run build --workspace @mycli/integrations && npm run build --workspace @mycli/runtime && npm run build --workspace mycli-shell-tui && npm run build --workspace @mycli/app",
+    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace @mycli/core && npm run build --workspace @mycli/config && npm run build --workspace @mycli/tools && npm run build --workspace @mycli/providers && npm run build --workspace @mycli/storage && npm run build --workspace @mycli/integrations && npm run build --workspace @mycli/runtime && npm run build --workspace mycli-shell-tui && npm run build --workspace @cosmos2023/app",
     "contracts:generate": "npm run generate --workspace @mycli/contracts",
     "contracts:check": "npm run check --workspace @mycli/contracts",
     "dev": "node --conditions=mycli-source --import tsx backend/apps/mycli/src/cli.ts",
@@ -57,7 +57,7 @@
     "typescript-eslint": "^8.0.0"
   },
   "dependencies": {
-    "@mycli/app": "^0.1.0",
+    "@cosmos2023/app": "^0.1.0",
     "@mycli/config": "^0.1.0",
     "@mycli/contracts": "^0.1.0",
     "@mycli/core": "^0.1.0",

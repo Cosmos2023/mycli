@@ -59,7 +59,7 @@ Each slice must build, typecheck, lint, and pass focused tests before the next s
 ## Package Architecture
 
 ```text
-@mycli/app
+@cosmos2023/app
   |-- @mycli/providers
   |-- @mycli/runtime
   `-- @mycli/integrations
@@ -85,7 +85,7 @@ Ownership is fixed as follows:
 | `@mycli/storage` | Additive durable child-task and replay metadata storage |
 | `@mycli/integrations` | Skills, MCP, hooks, plugin host, subagent control plane, management data |
 | `@mycli/runtime` | Hook ordering, instruction injection, tool-loop and child-runtime-neutral hooks |
-| `@mycli/app` | Composition, utility CLI routing, setup, doctor, shutdown, and output rendering |
+| `@cosmos2023/app` | Composition, utility CLI routing, setup, doctor, shutdown, and output rendering |
 
 `@mycli/runtime` does not import `@mycli/integrations`. The application creates integrations and
 injects generic tool registrations, a neutral ordered hook runner, and a child runtime factory.

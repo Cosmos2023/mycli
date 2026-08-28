@@ -225,7 +225,7 @@ Run:
 ```bash
 npm run test --workspace @mycli/runtime
 npm run typecheck --workspace @mycli/runtime
-npm run typecheck --workspace @mycli/app
+npm run typecheck --workspace @cosmos2023/app
 ```
 
 Expected: all commands exit `0`.

@@ -666,7 +666,7 @@ Do not add a Python fallback, approval handler, external root, or runtime tool-n
 
 - [ ] **Step 4: Run M4 integration and all app tests**
 
-Run: `node --import tsx --test apps/mycli/test/m4-file-mutation.integration.test.ts && npm run test --workspace @mycli/app`
+Run: `node --import tsx --test apps/mycli/test/m4-file-mutation.integration.test.ts && npm run test --workspace @cosmos2023/app`
 
 Expected: PASS.
 

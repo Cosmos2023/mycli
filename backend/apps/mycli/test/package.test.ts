@@ -255,6 +255,8 @@ test("packed CLI smoke vendors internal workspaces into the application tarball"
 	}
 	assert.equal(root.scripts?.["smoke:package"], "node scripts/smoke_packed_cli.mjs");
 	assert.match(smoke, /APPLICATION_RELEASE_PACKAGE\.name/u);
+	assert.match(smoke, /APPLICATION_PACKAGE_MODULE_PATH/u);
+	assert.doesNotMatch(smoke, /node_modules\/@cosmos2023\/app/u);
 	assert.match(smoke, /VENDORED_WORKSPACE_PACKAGES/u);
 	assert.match(smoke, /FLAGS\.has\("--all-platforms"\)/u);
 	assert.match(smoke, /name === CURRENT_PLATFORM_PACKAGE/u);

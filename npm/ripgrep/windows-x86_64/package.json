@@ -1,5 +1,5 @@
 {
-  "name": "@mycli/ripgrep-win32-x64",
+  "name": "@cosmos2023/ripgrep-win32-x64",
   "version": "0.1.0",
   "private": false,
   "description": "ripgrep binary for mycli on Windows x64",

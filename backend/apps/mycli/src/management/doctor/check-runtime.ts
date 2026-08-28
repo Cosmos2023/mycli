@@ -83,7 +83,7 @@ async function checkPackageLayout(root: string, appRoot: string): Promise<Doctor
 
 async function checkInstalledPackageLayout(appRoot: string): Promise<DoctorCheck> {
 	const manifest = await packageManifest(appRoot);
-	if (!manifest || manifest.name !== "@mycli/app") {
+	if (!manifest || manifest.name !== "@cosmos2023/app") {
 		return check("package_layout", "failed", "application package manifest missing");
 	}
 	const missing: string[] = [];

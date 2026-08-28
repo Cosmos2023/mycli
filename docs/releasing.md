@@ -1,6 +1,6 @@
 # Releasing mycli
 
-mycli coordinates one version across 16 components, while publishing only `@mycli/app` and six
+mycli coordinates one version across 16 components, while publishing only `@cosmos2023/app` and six
 optional ripgrep platform packages. The other nine runtime workspaces are private and are vendored
 under the app's `dist/node_modules` directory during packing. The workspace root is never published.
 
@@ -89,5 +89,5 @@ new patch version for code corrections. Rollback for users is installation of th
 version:
 
 ```bash
-npm install -g @mycli/app@0.1.0
+npm install -g @cosmos2023/app@0.1.0
 ```
