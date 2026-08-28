@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import Database from "better-sqlite3";
 import {
 	RELEASE_PACKAGES,
 	VERSIONED_PACKAGE_NAMES,
@@ -287,6 +288,64 @@ test("release workflow keeps publication behind the release gates", async () => 
 		workflow.indexOf("smoke:package -- --all-platforms")
 		< workflow.indexOf("release:publish -- --confirm"),
 	);
+});
+
+test("cross-platform long-history gate seeds the current session schema", async () => {
+	const workflow = await readFile(
+		new URL("../../.github/workflows/cross-platform.yml", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		workflow,
+		/benchmark:long-history -- --profile compact_stress --storage-schema v12/u,
+	);
+
+	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v12-"));
+	try {
+		await mkdir(join(root, "home"), { recursive: true });
+		await mkdir(join(root, "workspace"), { recursive: true });
+		const script = fileURLToPath(new URL("../benchmark_long_history_resume.mjs", import.meta.url));
+		const result = spawnSync(process.execPath, [
+			"--conditions=mycli-source",
+			"--import",
+			"tsx",
+			"--expose-gc",
+			script,
+			"--profile",
+			"blob_smoke",
+			"--storage-schema",
+			"v12",
+			"--seed-only",
+			"--fixture-root",
+			root,
+		], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(typeof JSON.parse(result.stdout).seedMilliseconds, "number");
+
+		const database = new Database(join(root, "home", ".mycli", "sessions.db"), {
+			readonly: true,
+		});
+		try {
+			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 12);
+			assert.equal(database.prepare(`
+				SELECT COUNT(*) FROM transcript_events WHERE session_id = 'target'
+			`).pluck().get(), 195);
+			assert.equal(database.prepare(`
+				SELECT COUNT(*) FROM transcript_events
+				WHERE session_id = 'target' AND event_type = 'compaction'
+			`).pluck().get(), 3);
+			assert.equal(database.prepare(`
+				SELECT COUNT(*) FROM sqlite_master
+				WHERE type = 'table' AND name IN (
+					'conversation_messages', 'history_items', 'turn_rollouts', 'session_summaries'
+				)
+			`).pluck().get(), 0);
+		} finally {
+			database.close();
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("ripgrep package staging reports bounded failures without a Node stack", () => {

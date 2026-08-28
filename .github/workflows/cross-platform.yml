@@ -30,7 +30,7 @@ jobs:
       - name: Measure Agent Worker memory scenarios
         run: npm run benchmark:agent-workers -- --output agent-worker-memory.jsonl
       - name: Measure 500-compaction resume and transcript paging
-        run: npm run --silent benchmark:long-history -- --profile compact_stress > compact-stress-resume.json
+        run: npm run --silent benchmark:long-history -- --profile compact_stress --storage-schema v12 > compact-stress-resume.json
       - uses: actions/upload-artifact@v4
         with:
           name: agent-worker-memory-${{ runner.os }}

@@ -18,6 +18,7 @@ import {
 	applyV10ContentBlobMigrationCutover,
 	applyV9TranscriptNormalizationCutover,
 	openRuntimeSessionStore,
+	SCHEMA_V12_VERSION,
 	SQLiteSessionStore,
 	stageV10ContentBlobMigrationBatch,
 	stageV9TranscriptNormalizationBatch,
@@ -69,7 +70,8 @@ const PROFILES = Object.freeze({
 });
 const REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 const SAMPLE_INTERVAL_MS = 10;
-const STORAGE_SCHEMAS = new Set(["v9", "v10", "v11", "paired"]);
+const CURRENT_STORAGE_SCHEMA = `v${SCHEMA_V12_VERSION}`;
+const STORAGE_SCHEMAS = new Set(["v9", "v10", "v11", CURRENT_STORAGE_SCHEMA, "paired"]);
 const CONTENT_BLOB_BATCH_SIZE = 500;
 const TOOL_HEAVY_PAYLOAD_REDUCTION_MINIMUM = 0.35;
 const COMPACTION_PHYSICAL_REDUCTION_MINIMUM = 0.30;
@@ -92,7 +94,7 @@ async function main() {
 		({ values } = parseArgs({
 			options: {
 				profile: { type: "string", default: "heavy" },
-				"storage-schema": { type: "string", default: "v9" },
+				"storage-schema": { type: "string", default: CURRENT_STORAGE_SCHEMA },
 				keep: { type: "boolean", default: false },
 				"seed-only": { type: "boolean", default: false },
 				"fixture-root": { type: "string" },
@@ -246,6 +248,7 @@ async function main() {
 		const providerRequests = [...providerServer.requests];
 		assertResumeSemantics({
 			profile,
+			storageSchema,
 			transcriptItems,
 			providerRequests,
 			compactionStarted,
@@ -533,6 +536,9 @@ async function seedFixtureInChild(root, profileName, storageSchema) {
 }
 
 function seedDatabase({ dbPath, workspace, profile, storageSchema }) {
+	if (storageSchema === CURRENT_STORAGE_SCHEMA) {
+		return seedCurrentDatabase({ dbPath, workspace, profile });
+	}
 	const initialize = new SQLiteSessionStore({ dbPath });
 	initialize.close();
 	const database = new Database(dbPath);
@@ -711,6 +717,112 @@ function seedDatabase({ dbPath, workspace, profile, storageSchema }) {
 		normalizationVacuum,
 		contentBlobMigration: migrateSeedDatabaseToV11(dbPath),
 	};
+}
+
+function seedCurrentDatabase({ dbPath, workspace, profile }) {
+	const now = "2026-08-13T00:00:00.000Z";
+	const store = openRuntimeSessionStore({ dbPath, clock: () => now });
+	try {
+		const compactAfterTurns = compactionTurnCounts(profile);
+		for (let turnIndex = 0; turnIndex < profile.turns; turnIndex += 1) {
+			const turnId = `seed-turn-${turnIndex}`;
+			const clientTurnId = `seed-client-${turnIndex}`;
+			const userText = `User request ${turnIndex}: ${denseText(480, turnIndex + 1)}`;
+			const assistantPreamble = `Inspecting turn ${turnIndex}: ${denseText(180, turnIndex + 17)}`;
+			const assistantText = `Completed turn ${turnIndex}: ${denseText(480, turnIndex + 31)}`;
+			const calls = Array.from({ length: profile.toolsPerTurn }, (_value, toolIndex) => ({
+				callId: `call-${turnIndex}-${toolIndex}`,
+				name: toolIndex % 2 === 0 ? "Read" : "Bash",
+				argumentsJson: JSON.stringify({
+					target: `fixture-${turnIndex}-${toolIndex}`,
+					offset: turnIndex,
+				}),
+			}));
+			store.reserveTurn({
+				sessionId: "target",
+				clientTurnId,
+				clientUserMessageId: clientTurnId,
+				turnId,
+				requestFingerprint: benchmarkFingerprint(`turn:${turnIndex}`),
+				workspaceRoot: workspace,
+				threadId: "target",
+				userText,
+				startedAt: now,
+			});
+			store.appendAssistantToolCalls({
+				sessionId: "target",
+				clientTurnId,
+				assistantText: assistantPreamble,
+				calls,
+				responseId: `resp-seed-${turnIndex}`,
+			});
+			for (const [toolIndex, call] of calls.entries()) {
+				store.appendToolResult({
+					sessionId: "target",
+					clientTurnId,
+					result: {
+						callId: call.callId,
+						toolName: call.name,
+						output: benchmarkToolOutput(profile, turnIndex, toolIndex),
+						success: true,
+					},
+					summary: `${call.name} completed`,
+				});
+			}
+			store.completeTurn({
+				sessionId: "target",
+				clientTurnId,
+				assistantText,
+				usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+				responseId: `resp-seed-final-${turnIndex}`,
+				completedAt: now,
+			});
+
+			const windowIndex = compactAfterTurns.indexOf(turnIndex + 1);
+			if (windowIndex < 0) continue;
+			const windowNumber = windowIndex + 1;
+			const windowId = `benchmark-window-${windowNumber}`;
+			const marker = windowNumber === profile.compactions
+				? "LATEST_COMPACTION_SUMMARY_MARKER"
+				: `OLDER_COMPACTION_SUMMARY_MARKER_${windowNumber}`;
+			const summary = benchmarkCompactionSummary(
+				marker,
+				profile.compactionSummaryChars,
+				windowNumber,
+				profile.contentPattern,
+			);
+			const replacementText = `[compact-summary]\n${summary}`;
+			store.commitCompaction({
+				sessionId: "target",
+				replacementMessages: [storedMessage("user", replacementText)],
+				replacementItems: [{ type: "user", text: replacementText }],
+				summary,
+				checkpoint: {
+					version: 1,
+					turn_id: turnId,
+					reason: "context_limit",
+					phase: "pre_turn",
+					window_number: windowNumber,
+					window_id: windowId,
+					history_item_count: (turnIndex + 1) * (profile.toolsPerTurn * 2 + 3)
+						+ windowIndex,
+					input_history_hash: benchmarkFingerprint(`input:${windowNumber}`),
+					replacement_history_hash: benchmarkFingerprint(`replacement:${windowNumber}`),
+					replacement_messages: [storedMessage("user", replacementText)],
+					status: "completed",
+					summary_request_fingerprint: benchmarkFingerprint(`summary:${windowNumber}`),
+					updated_at: now,
+				},
+			});
+		}
+		return {};
+	} finally {
+		store.close();
+	}
+}
+
+function benchmarkFingerprint(value) {
+	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 function normalizeSeedDatabase(dbPath) {
@@ -1289,6 +1401,7 @@ function assertSuccessfulResponse(message, method) {
 
 function assertResumeSemantics({
 	profile,
+	storageSchema,
 	transcriptItems,
 	providerRequests,
 	compactionStarted,
@@ -1313,9 +1426,28 @@ function assertResumeSemantics({
 		|| request.functionCallOutputs !== expectedToolItems) {
 		throw new Error("resume_provider_tool_window_mismatch");
 	}
-	const expectedTranscriptItems = profile.turns * (profile.toolsPerTurn + 3);
+	const expectedTranscriptItems = profile.turns * (
+		profile.toolsPerTurn + (storageSchema === CURRENT_STORAGE_SCHEMA ? 4 : 3)
+	);
 	if (transcriptItems.length !== expectedTranscriptItems) {
 		throw new Error("resume_transcript_projection_count_mismatch");
+	}
+	if (storageSchema === CURRENT_STORAGE_SCHEMA) {
+		const counts = Object.fromEntries([
+			"user",
+			"assistant_final",
+			"tool_summary",
+			"turn_completed",
+		].map((type) => [
+			type,
+			transcriptItems.filter((item) => item.type === type).length,
+		]));
+		if (counts.user !== profile.turns
+			|| counts.assistant_final !== profile.turns * 2
+			|| counts.tool_summary !== profile.turns * profile.toolsPerTurn
+			|| counts.turn_completed !== profile.turns) {
+			throw new Error("resume_transcript_projection_type_mismatch");
+		}
 	}
 	const transcriptJson = JSON.stringify(transcriptItems);
 	if (!transcriptJson.includes("User request 0:")
