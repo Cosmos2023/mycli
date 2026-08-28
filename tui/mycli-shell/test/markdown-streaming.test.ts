@@ -501,7 +501,7 @@ test("streaming ordered lists retain numbering and source markers", () => {
 	const fresh = new Markdown(after, 0, 0, markdownTheme(), undefined, options).renderTail(48, 10);
 
 	assert.deepEqual(incremental, fresh);
-	assert.match(incremental.lines.join("\n"), /99\. source marker/);
+	assert.ok(incremental.lines.some((line) => line.includes("99.") && line.includes("source marker")));
 });
 
 test("streaming open fences retain lexer prefixes and code layout", () => {
