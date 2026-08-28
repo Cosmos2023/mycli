@@ -6,7 +6,7 @@
 
 Apply this contract whenever a runtime workspace, ripgrep platform package, package dependency, or
 user-visible runtime version changes. mycli uses one coordinated version for 16 components, but
-publishes only `@cosmos2023/app` and six ripgrep platform packages. Nine private runtime workspaces are
+publishes only `@cosmos2023/mycli` and six ripgrep platform packages. Nine private runtime workspaces are
 vendored into the app tarball; the workspace root is never published.
 
 ### 2. Signatures
@@ -20,12 +20,14 @@ npm run release:publish -- --confirm <semver> [--tag <dist-tag>] [--provenance]
 ```
 
 `scripts/release-config.mjs` is the canonical inventory for both versioned and published packages.
-Platform packages precede `@cosmos2023/app`; private runtime workspaces are versioned but never sent to
+Platform packages precede `@cosmos2023/mycli`; private runtime workspaces are versioned but never sent to
 the registry.
 
 ### 3. Contracts
 
 * Root `package.json`: `private: true`.
+* Public application identity: npm package `@cosmos2023/mycli` with
+  `bin.mycli = "dist/cli.js"`. The package basename and installed command must not drift together.
 * Every published manifest: the coordinated `version`, `private: false`, and
   `publishConfig.access: "public"`.
 * Every vendored workspace manifest: the coordinated `version`, `private: true`, and no
@@ -49,6 +51,7 @@ the registry.
 | Invalid semantic version | `invalid_release_version` |
 | Manifest or lockfile drift | `release_version_drift` |
 | Root is publishable | `release_root_must_remain_private` |
+| Application or platform manifest has the wrong package name | `release_package_name_mismatch` |
 | Published package is private or not public | `release_package_is_private` / `release_package_access_invalid` |
 | Vendored workspace is public | `release_vendored_package_must_be_private` |
 | App exposes or omits a vendored dependency | `release_app_vendored_dependency_exposed` / `release_app_dependency_missing` |
@@ -71,7 +74,8 @@ the registry.
 * Unit: semantic version parsing, manifest/lockfile transformation, publisher argument gates,
   registry 404 classification, credential redaction, and Windows PE validation.
 * Repository contract: seven release manifests are public, nine vendored manifests are private,
-  all are coordinated, and release workflow gates occur before publication.
+  all are coordinated, the application package and `mycli` bin identities are exact, and release
+  workflow gates occur before publication.
 * Package smoke: no `src/`, `test/`, TypeScript config, Python runtime, or embedded generic ripgrep;
   all vendored workspace files are present, and release CI additionally requires the Windows
   sandbox helper inside the app artifact.

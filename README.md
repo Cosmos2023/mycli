@@ -325,7 +325,7 @@ drift. The final M8 capability inventory is in
 
 Release preparation, npm Trusted Publishing setup, coordinated versioning, tag publication, and
 partial-release recovery are documented in [docs/releasing.md](docs/releasing.md). The workspace
-root remains private; users install the published CLI with `npm install -g @cosmos2023/app`.
+root remains private; users install the published CLI with `npm install -g @cosmos2023/mycli`.
 
 ## Troubleshooting And Rollback
 

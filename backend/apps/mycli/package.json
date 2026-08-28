@@ -1,5 +1,5 @@
 {
-  "name": "@cosmos2023/app",
+  "name": "@cosmos2023/mycli",
   "version": "0.1.0",
   "private": false,
   "publishConfig": {

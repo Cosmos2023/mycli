@@ -568,7 +568,7 @@ assert.equal(sidecarStarts, 0);
 
 - [ ] **Step 2: Run app tests and verify failure**
 
-Run: `npm run test --workspace @cosmos2023/app -- --test-name-pattern="Node backend|node gateway"`
+Run: `npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="Node backend|node gateway"`
 
 Expected: FAIL because Node remains unavailable in M1.
 
@@ -587,7 +587,7 @@ lifecycle (`transport`, `completion`, `close`, `kill`, `diagnostic`). Update hel
 
 - [ ] **Step 5: Run compiled real-process tests**
 
-Run: `npm run test --workspace @cosmos2023/app && npm run build && node apps/mycli/test/fixtures/node-backend-smoke.mjs`
+Run: `npm run test --workspace @cosmos2023/mycli && npm run build && node apps/mycli/test/fixtures/node-backend-smoke.mjs`
 
 The `.mjs` fixture imports compiled `dist/node-runtime/node-gateway.js`, injects a fake runtime,
 drives initialize/submit/shutdown over the paired streams, and exits nonzero on any invalid event

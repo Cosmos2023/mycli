@@ -499,7 +499,7 @@ Gateway event callbacks capture `{sessionId, generation}` and ignore late mismat
 
 - [x] **Step 5: Run gateway, app, and runtime gates**
 
-Run: `npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/app && npm run typecheck --workspace @mycli/runtime && npm run typecheck --workspace @cosmos2023/app`
+Run: `npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/mycli && npm run typecheck --workspace @mycli/runtime && npm run typecheck --workspace @cosmos2023/mycli`
 
 Expected: PASS.
 
@@ -581,7 +581,7 @@ summary input, and reserve at most one queued next turn after terminal completio
 
 - [x] **Step 5: Run queue, runtime, gateway, and TUI regression tests**
 
-Run: `npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/app && npm run test --workspace mycli-shell-tui`
+Run: `npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/mycli && npm run test --workspace mycli-shell-tui`
 
 Expected: PASS.
 
@@ -674,7 +674,7 @@ calls in their original order without appending another user message.
 
 - [x] **Step 6: Run tool, runtime, gateway, and M4 regressions**
 
-Run: `npm run test --workspace @mycli/tools && npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/app && npm run test:m4`
+Run: `npm run test --workspace @mycli/tools && npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/mycli && npm run test:m4`
 
 Expected: PASS.
 
@@ -994,7 +994,7 @@ rebind session-scoped coordinators without rebuilding provider-independent globa
 
 - [x] **Step 7: Run package and M4 regressions**
 
-Run: `npm run test --workspace @mycli/core && npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/app && npm run test:m4`
+Run: `npm run test --workspace @mycli/core && npm run test --workspace @mycli/runtime && npm run test --workspace @cosmos2023/mycli && npm run test:m4`
 
 Expected: PASS.
 

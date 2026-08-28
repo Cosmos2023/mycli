@@ -31,7 +31,7 @@ export const VENDORED_WORKSPACE_PACKAGES = Object.freeze([
 ]);
 
 export const APPLICATION_RELEASE_PACKAGE = releasePackage(
-	"@cosmos2023/app",
+	"@cosmos2023/mycli",
 	"backend/apps/mycli",
 	true,
 );
