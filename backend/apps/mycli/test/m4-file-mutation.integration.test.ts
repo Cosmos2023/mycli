@@ -275,7 +275,7 @@ async function submitAndWait(fixture: ScenarioFixture, message: string): Promise
 		if (item.method !== "message.complete") return false;
 		const params = item.params as JsonObject | undefined;
 		return params?.final === true;
-	}));
+	}), 10_000);
 }
 
 function responsesTool(callId: string, name: string, argumentsValue: JsonObject): readonly JsonObject[] {
