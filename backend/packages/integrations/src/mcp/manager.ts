@@ -262,6 +262,10 @@ export class McpManager {
 	}
 
 	async #closeAll(): Promise<void> {
+		await Promise.allSettled([
+			...(this.#cachePromise ? [this.#cachePromise] : []),
+			...(this.#refreshPromise ? [this.#refreshPromise] : []),
+		]);
 		let failed = false;
 		for (const client of [...this.#lifecycles].reverse()) {
 			try {

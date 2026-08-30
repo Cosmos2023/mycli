@@ -246,6 +246,35 @@ test("loads a cached catalog immediately and refreshes it through live discovery
 	await manager.close();
 });
 
+test("close waits for an in-flight catalog save before returning", async () => {
+	const saveStarted = deferred<void>();
+	const releaseSave = deferred<void>();
+	let saveCompleted = false;
+	const manager = new McpManager({
+		configs: [],
+		catalogCache: {
+			load: async () => undefined,
+			save: async () => {
+				saveStarted.resolve();
+				await releaseSave.promise;
+				saveCompleted = true;
+			},
+		},
+		createClient: () => client("unused", []),
+	});
+	const refresh = manager.refresh(new AbortController().signal);
+	await saveStarted.promise;
+	let closeSettled = false;
+	const closing = manager.close().then(() => { closeSettled = true; });
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+	assert.equal(closeSettled, false);
+	assert.equal(saveCompleted, false);
+	releaseSave.resolve();
+	await Promise.all([refresh, closing]);
+	assert.equal(saveCompleted, true);
+});
+
 function deferred<Value>(): {
 	readonly promise: Promise<Value>;
 	readonly resolve: (value: Value | PromiseLike<Value>) => void;
