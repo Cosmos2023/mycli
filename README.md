@@ -107,6 +107,9 @@ Use the provider-free configuration commands to check configuration before start
 ```bash
 mycli config validate
 mycli config show
+mycli config get model.name
+mycli config set memory.enabled true
+mycli config unset context.compaction_l4_summarizer_model
 mycli config show --json
 ```
 
@@ -115,6 +118,13 @@ and exits `1` for fatal syntax or value errors. `config show` lists effective no
 their winning layer, and lower-priority overridden layers. It reports only `present` or `missing`
 for the API key and never prints credential values, raw TOML, environment values, or absolute
 configuration paths. Project configuration remains disabled until the workspace is trusted.
+
+`config get` reads one effective setting with the same value and provenance boundary as `show`.
+`config set` and `config unset` update only `~/.mycli/config.toml`; they accept supported scalar
+settings, preserve comments and unrelated TOML, validate the complete candidate before an atomic
+write, and report when an environment or trusted project setting still wins. Credentials,
+arbitrary TOML paths, structured settings, and project-file mutation are intentionally rejected;
+use `mycli setup` or `/login` for credentials.
 
 `sessions.db` is authoritative. The Node runtime repairs derivable session files during session
 preparation; deleting or corrupting a projection does not make it a provider-recovery source.
@@ -275,6 +285,9 @@ Provider-free management commands:
 ```bash
 npm run mycli -- config validate --json
 npm run mycli -- config show --json
+npm run mycli -- config get model.name --json
+npm run mycli -- config set memory.enabled true --json
+npm run mycli -- config unset memory.enabled --json
 npm run mycli -- doctor --json
 npm run mycli -- hooks list --json
 npm run mycli -- plugins list --json

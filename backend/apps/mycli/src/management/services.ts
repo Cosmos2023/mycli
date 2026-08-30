@@ -53,6 +53,9 @@ export interface McpManagementContract {
 export interface ConfigManagementContract {
 	validate(signal: AbortSignal): MaybePromise<ManagementResponse>;
 	show(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	get(key: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	set(key: string, value: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	unset(key: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
 export interface ManagementServicesOptions {
@@ -99,9 +102,13 @@ export class ManagementServices implements ManagementExecutor {
 		if (command.kind === "doctor") return this.#services.doctor(signal);
 		if (command.kind === "setup") return this.#services.setup(signal);
 		if (command.kind === "config") {
-			return command.action === "validate"
-				? this.#services.config.validate(signal)
-				: this.#services.config.show(signal);
+			if (command.action === "validate") return this.#services.config.validate(signal);
+			if (command.action === "show") return this.#services.config.show(signal);
+			if (command.action === "get") return this.#services.config.get(command.key, signal);
+			if (command.action === "set") {
+				return this.#services.config.set(command.key, command.value, signal);
+			}
+			if (command.action === "unset") return this.#services.config.unset(command.key, signal);
 		}
 		if (command.kind === "hooks") {
 			if (command.action === "list") return this.#services.hooks.list();

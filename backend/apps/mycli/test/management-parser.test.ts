@@ -19,6 +19,24 @@ test("parser recognizes provider-free management commands before interactive fla
 		kind: "management",
 		command: { kind: "config", action: "show", json: false },
 	});
+	assert.deepEqual(parseCliMode(["config", "get", "model.name", "--json"]), {
+		kind: "management",
+		command: { kind: "config", action: "get", key: "model.name", json: true },
+	});
+	assert.deepEqual(parseCliMode(["config", "set", "memory.enabled", "true"]), {
+		kind: "management",
+		command: {
+			kind: "config",
+			action: "set",
+			key: "memory.enabled",
+			value: "true",
+			json: false,
+		},
+	});
+	assert.deepEqual(parseCliMode(["config", "unset", "model.name"]), {
+		kind: "management",
+		command: { kind: "config", action: "unset", key: "model.name", json: false },
+	});
 	assert.deepEqual(parseCliMode(["hooks", "approve", "repo:audit:post_tool_use", "--json"]), {
 		kind: "management",
 		command: {
@@ -72,6 +90,13 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["config"],
 		["config", "unknown"],
 		["config", "show", "extra"],
+		["config", "get"],
+		["config", "get", "model.name", "extra"],
+		["config", "set", "model.name"],
+		["config", "set", "model.name", "value", "extra"],
+		["config", "unset"],
+		["config", "unset", "model.name", "extra"],
+		["config", "get", ""],
 		["config", "validate", "--json", "--json"],
 		["hooks", "inspect"],
 		["hooks", "list", "extra"],

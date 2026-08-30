@@ -33,11 +33,25 @@ export type McpManagementCommand =
 		readonly json: boolean;
 	};
 
-export type ConfigManagementCommand = {
-	readonly kind: "config";
-	readonly action: "validate" | "show";
-	readonly json: boolean;
-};
+export type ConfigManagementCommand =
+	| {
+		readonly kind: "config";
+		readonly action: "validate" | "show";
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "get" | "unset";
+		readonly key: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "set";
+		readonly key: string;
+		readonly value: string;
+		readonly json: boolean;
+	};
 
 export type ManagementCommand =
 	| { readonly kind: "doctor"; readonly json: boolean }

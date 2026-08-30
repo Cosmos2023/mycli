@@ -39,7 +39,19 @@ function parseConfig(args: readonly string[], json: boolean): ConfigManagementCo
 	if ((action === "validate" || action === "show") && args.length === 1) {
 		return Object.freeze({ kind: "config", action, json });
 	}
-	throw usage("config validate|show [--json]");
+	if ((action === "get" || action === "unset") && args.length === 2) {
+		return Object.freeze({ kind: "config", action, key: nonEmpty(args[1]), json });
+	}
+	if (action === "set" && args.length === 3) {
+		return Object.freeze({
+			kind: "config",
+			action,
+			key: nonEmpty(args[1]),
+			value: args[2]!,
+			json,
+		});
+	}
+	throw configUsage();
 }
 
 function parseHooks(args: readonly string[], json: boolean): HooksManagementCommand {
@@ -165,6 +177,10 @@ function nonEmpty(value: string | undefined): string {
 
 function pluginUsage(): Error {
 	return usage("plugins list|inspect|run [plugin_id] [command] [--json-args JSON] [--json]");
+}
+
+function configUsage(): Error {
+	return usage("config validate|show|get|set|unset [key] [value] [--json]");
 }
 
 function usage(command: string): Error {

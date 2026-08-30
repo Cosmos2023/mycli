@@ -1,5 +1,9 @@
 import type { ManagementCommand, ManagementResponse } from "./types.ts";
-import type { ConfigManagementResponse, ConfigSettingValue } from "./config.ts";
+import type {
+	ConfigManagementResponse,
+	ConfigSettingRow,
+	ConfigSettingValue,
+} from "./config.ts";
 import { redactDoctorText } from "./doctor/redaction.ts";
 
 export function renderManagementResponse(
@@ -31,15 +35,14 @@ function renderConfig(response: ConfigManagementResponse): string {
 				...(layer.disabledReason ? [`reason=${layer.disabledReason}`] : []),
 			].join(" "));
 		}
-		for (const setting of response.settings) {
-			lines.push([
-				"setting",
-				`${setting.key}=${configValue(setting.value)}`,
-				`source=${setting.source}`,
-				`overridden=${setting.overridden.join(",") || "none"}`,
-				...(setting.truncated ? ["truncated=true"] : []),
-			].join(" "));
-		}
+		for (const setting of response.settings) lines.push(renderConfigSetting(setting));
+	} else if (response.action === "get" && response.ok) {
+		lines.push(renderConfigSetting(response.setting));
+	} else if ((response.action === "set" || response.action === "unset") && response.ok) {
+		lines.push(`key=${response.key}`);
+		lines.push(`changed=${response.changed}`);
+		lines.push(`effective_source=${response.effectiveSource}`);
+		lines.push(`overridden=${response.overridden.join(",") || "none"}`);
 	} else {
 		lines.push(response.message ?? (response.ok ? "configuration valid" : "configuration invalid"));
 	}
@@ -57,6 +60,16 @@ function renderConfig(response: ConfigManagementResponse): string {
 		if (diagnostic.remediation) lines.push(`  remedy: ${diagnostic.remediation}`);
 	}
 	return `${lines.join("\n")}\n`;
+}
+
+function renderConfigSetting(setting: ConfigSettingRow): string {
+	return [
+		"setting",
+		`${setting.key}=${configValue(setting.value)}`,
+		`source=${setting.source}`,
+		`overridden=${setting.overridden.join(",") || "none"}`,
+		...(setting.truncated ? ["truncated=true"] : []),
+	].join(" ");
 }
 
 function configValue(value: ConfigSettingValue): string {

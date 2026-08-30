@@ -52,6 +52,12 @@ test("management facade dispatches every extension command to its provider-free 
 		config: {
 			validate: async () => { calls.push("config:validate"); return result("validate"); },
 			show: async () => { calls.push("config:show"); return result("show"); },
+			get: async (key) => { calls.push(`config:get:${key}`); return result("get"); },
+			set: async (key, value) => {
+				calls.push(`config:set:${key}:${value}`);
+				return result("set");
+			},
+			unset: async (key) => { calls.push(`config:unset:${key}`); return result("unset"); },
 		},
 		hooks: {
 			list: async () => { calls.push("hooks:list"); return result("list"); },
@@ -79,6 +85,9 @@ test("management facade dispatches every extension command to its provider-free 
 	for (const command of [
 		{ kind: "config", action: "validate", json: false },
 		{ kind: "config", action: "show", json: false },
+		{ kind: "config", action: "get", key: "model.name", json: false },
+		{ kind: "config", action: "set", key: "memory.enabled", value: "true", json: false },
+		{ kind: "config", action: "unset", key: "model.name", json: false },
 		{ kind: "hooks", action: "list", json: false },
 		{ kind: "hooks", action: "inspect", identity: "hook", json: false },
 		{ kind: "hooks", action: "approve", identity: "hook", json: false },
@@ -104,6 +113,9 @@ test("management facade dispatches every extension command to its provider-free 
 	assert.deepEqual(calls, [
 		"config:validate",
 		"config:show",
+		"config:get:model.name",
+		"config:set:memory.enabled:true",
+		"config:unset:model.name",
 		"hooks:list",
 		"hooks:inspect:hook",
 		"hooks:approve:hook",

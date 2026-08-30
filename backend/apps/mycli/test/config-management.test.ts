@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseToml } from "smol-toml";
 import {
 	ConfigManagementService,
 	type ConfigShowResponse,
@@ -136,6 +137,98 @@ test("config validate keeps unknown keys as value-free warnings", async (t) => {
 		keyPath: "model.nmae",
 	}]);
 	assert.equal(JSON.stringify(response).includes(sentinel), false);
+});
+
+test("config get set and unset report effective precedence without echoing submitted values", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-config-mutation-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const service = new ConfigManagementService({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_MEMORY_ENABLED: "false" },
+		workspaceTrust: "untrusted",
+	});
+
+	const updated = await service.set(
+		"memory.enabled",
+		"true",
+		new AbortController().signal,
+	);
+	const rendered = renderManagementResponse(
+		{ kind: "config", action: "set", key: "memory.enabled", value: "true", json: false },
+		updated,
+	);
+	assert.deepEqual({
+		action: updated.action,
+		key: updated.key,
+		changed: updated.changed,
+		effectiveSource: updated.effectiveSource,
+		overridden: updated.overridden,
+	}, {
+		action: "set",
+		key: "memory.enabled",
+		changed: true,
+		effectiveSource: "environment",
+		overridden: ["user"],
+	});
+	assert.match(rendered, /key=memory\.enabled\nchanged=true\neffective_source=environment/u);
+	assert.doesNotMatch(JSON.stringify(updated), /"value"/u);
+	assert.deepEqual(
+		(await service.get("memory.enabled", new AbortController().signal)).setting,
+		{ key: "memory.enabled", value: false, source: "environment", overridden: ["user"] },
+	);
+	assert.deepEqual(
+		parseToml(await readFile(join(homeDir, ".mycli", "config.toml"), "utf8")),
+		{ memory: { enabled: true } },
+	);
+
+	const removed = await service.unset("memory.enabled", new AbortController().signal);
+	assert.deepEqual({
+		changed: removed.changed,
+		effectiveSource: removed.effectiveSource,
+		overridden: removed.overridden,
+	}, { changed: true, effectiveSource: "environment", overridden: [] });
+	const repeated = await service.unset("memory.enabled", new AbortController().signal);
+	assert.equal(repeated.changed, false);
+});
+
+test("config mutation failures are typed and omit submitted values", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-config-mutation-invalid-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	const sentinel = "private-config-value-sentinel";
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const services = await createDefaultManagementServices({ homeDir, workspaceRoot, env: {} });
+
+	const command = {
+		kind: "config",
+		action: "set",
+		key: "memory.enabled",
+		value: sentinel,
+		json: true,
+	} as const;
+	const response = await services.execute(command);
+
+	assert.equal(response.ok, false);
+	assert.equal(response.action, "set");
+	assert.equal(response.exitCode, 1);
+	assert.deepEqual(response.issues, ["invalid_value"]);
+	assert.equal(JSON.stringify(response).includes(sentinel), false);
+	assert.equal(renderManagementResponse({ ...command, json: false }, response).includes(sentinel), false);
+	assert.equal(renderManagementResponse(command, response).includes(sentinel), false);
+
+	const unknownKey = `unknown.${sentinel}`;
+	const unknownResponse = await services.execute({
+		...command,
+		key: unknownKey,
+		value: "true",
+	});
+	assert.equal(JSON.stringify(unknownResponse).includes(sentinel), false);
+	assert.equal(renderManagementResponse({ ...command, key: unknownKey, json: false }, unknownResponse)
+		.includes(sentinel), false);
+	await assert.rejects(access(join(homeDir, ".mycli", "config.toml")));
 });
 
 test("config management does not read malformed untrusted project config", async (t) => {

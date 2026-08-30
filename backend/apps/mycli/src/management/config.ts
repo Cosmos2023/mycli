@@ -1,18 +1,22 @@
 import {
+	configDiagnostic,
 	isConfigError,
+	mutateUserConfigSetting,
 	resolveConfigWithMetadata,
+	runtimeSettingSnapshots,
 	type ConfigDiagnostic,
 	type ConfigLayerDisabledReason,
 	type ConfigLayerId,
 	type ConfigLayerScope,
 	type ConfigLayerStack,
-	type NodeRuntimeConfig,
 	type WorkspaceTrustState,
 } from "@mycli/config";
 import { redactDoctorText } from "./doctor/redaction.ts";
 import type { ManagementResponse } from "./types.ts";
 
 export const CONFIG_MANAGEMENT_RESPONSE_VERSION = 1 as const;
+
+export type ConfigManagementAction = "get" | "set" | "show" | "unset" | "validate";
 
 export type ConfigSettingSource = ConfigLayerId | "default";
 export type ConfigSettingValue = string | number | boolean | null | Readonly<Record<string, number>>;
@@ -38,7 +42,7 @@ export interface ConfigCredentialState {
 
 interface ConfigManagementResponseBase extends ManagementResponse {
 	readonly version: typeof CONFIG_MANAGEMENT_RESPONSE_VERSION;
-	readonly action: "validate" | "show";
+	readonly action: ConfigManagementAction;
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }
 
@@ -56,14 +60,31 @@ export interface ConfigShowResponse extends ConfigManagementResponseBase {
 	readonly settings: readonly ConfigSettingRow[];
 }
 
+export interface ConfigGetResponse extends ConfigManagementResponseBase {
+	readonly ok: true;
+	readonly action: "get";
+	readonly setting: ConfigSettingRow;
+}
+
+export interface ConfigMutationResponse extends ConfigManagementResponseBase {
+	readonly ok: true;
+	readonly action: "set" | "unset";
+	readonly key: string;
+	readonly changed: boolean;
+	readonly effectiveSource: ConfigSettingSource;
+	readonly overridden: readonly ConfigLayerId[];
+}
+
 export interface ConfigFailureResponse extends ConfigManagementResponseBase {
 	readonly ok: false;
-	readonly action: "validate" | "show";
+	readonly action: ConfigManagementAction;
 }
 
 export type ConfigManagementResponse =
 	| ConfigValidateResponse
 	| ConfigShowResponse
+	| ConfigGetResponse
+	| ConfigMutationResponse
 	| ConfigFailureResponse;
 
 export interface ConfigManagementServiceOptions {
@@ -73,108 +94,7 @@ export interface ConfigManagementServiceOptions {
 	readonly workspaceTrust: WorkspaceTrustState;
 }
 
-interface ConfigSettingDefinition {
-	readonly key: string;
-	readonly originKeys: readonly string[];
-	readonly value: (config: NodeRuntimeConfig) => ConfigSettingValue;
-}
-
 const MAX_RATIO_ROWS = 64;
-
-const CONFIG_SETTING_DEFINITIONS: readonly ConfigSettingDefinition[] = Object.freeze([
-	setting("context.compaction_l4_buffer_tokens", "compaction_l4_buffer_tokens", (config) => (
-		config.compactionBufferTokens
-	)),
-	setting("context.compaction_l4_carry_cost_per_1k", "compaction_l4_carry_cost_per_1k", (config) => (
-		config.compactionCarryCostPer1k
-	)),
-	setting("context.compaction_l4_carry_turns", "compaction_l4_carry_turns", (config) => (
-		config.compactionCarryTurns
-	)),
-	setting(
-		"context.compaction_l4_expected_summary_tokens",
-		"compaction_l4_expected_summary_tokens",
-		(config) => config.compactionExpectedSummaryTokens,
-	),
-	setting("context.compaction_l4_input_cost_per_1k", "compaction_l4_input_cost_per_1k", (config) => (
-		config.compactionInputCostPer1k
-	)),
-	setting("context.compaction_l4_min_savings_ratio", "compaction_l4_min_savings_ratio", (config) => (
-		config.compactionMinSavingsRatio ?? null
-	)),
-	setting("context.compaction_l4_output_cost_per_1k", "compaction_l4_output_cost_per_1k", (config) => (
-		config.compactionOutputCostPer1k
-	)),
-	setting("context.compaction_l4_summarizer_model", "compaction_l4_summarizer_model", (config) => (
-		config.compactionSummarizerModel ?? null
-	)),
-	setting("context.compaction_l4_trigger_ratio", "compaction_l4_trigger_ratio", (config) => (
-		config.compactionTriggerRatio
-	)),
-	setting(
-		"context.compaction_l4_trigger_ratios_by_model",
-		"compaction_l4_trigger_ratios_by_model",
-		(config) => boundedRatioMap(config.compactionTriggerRatiosByModel),
-	),
-	setting(
-		"context.compaction_rehydration_file_max_item_tokens",
-		"compaction_rehydration_file_max_item_tokens",
-		(config) => config.compactionRehydrationFileMaxItemTokens,
-	),
-	setting(
-		"context.compaction_rehydration_file_max_total_tokens",
-		"compaction_rehydration_file_max_total_tokens",
-		(config) => config.compactionRehydrationFileMaxTotalTokens,
-	),
-	setting("context.compaction_rehydration_max_files", "compaction_rehydration_max_files", (config) => (
-		config.compactionRehydrationMaxFiles
-	)),
-	setting("context.compaction_reserved_output_tokens", "compaction_reserved_output_tokens", (config) => (
-		config.compactionReservedOutputTokens
-	)),
-	setting("context.compaction_tail_max_tokens", "compaction_tail_max_tokens", (config) => (
-		config.compactionTailMaxTokens
-	)),
-	setting("context.compaction_tail_turns", "compaction_tail_turns", (config) => (
-		config.compactionTailTurns
-	)),
-	setting("context.compaction_token_limit", "compaction_token_limit", (config) => (
-		config.compactionTokenLimit
-	)),
-	setting("context.compression_threshold_tokens", "compression_threshold_tokens", (config) => (
-		config.compressionThresholdTokens
-	)),
-	setting("features.request_permissions_tool", "request_permissions_tool", (config) => (
-		config.requestPermissionsToolEnabled
-	)),
-	setting("memory.enabled", "memory_enabled", (config) => config.memoryEnabled),
-	setting("model.api_base_url", "api_base_url", (config) => safeBaseUrl(config.apiBaseUrl)),
-	setting("model.auth_ref", "auth_ref", (config) => config.authRef),
-	setting("model.name", "model", (config) => config.model),
-	setting("model.protocol", "protocol", (config) => config.protocol),
-	setting("model.provider", "provider", (config) => config.provider),
-	setting("model.supports_images", "supports_images", (config) => config.supportsImages),
-	setting("model.web_search_mode", "web_search_mode", (config) => config.webSearchMode),
-	setting(
-		"reasoning.effort",
-		["thinking_effort", "reasoning_effort"],
-		(config) => config.reasoningEffort,
-	),
-	setting("reasoning.enabled", "thinking_enabled", (config) => config.thinkingEnabled),
-	setting("request.cache_control_enabled", "cache_control_enabled", (config) => (
-		config.cacheControlEnabled
-	)),
-	setting("request.max_prompt_tokens", "max_prompt_tokens", (config) => config.maxPromptTokens),
-	setting("request.prompt_cache_key_enabled", "prompt_cache_key_enabled", (config) => (
-		config.promptCacheKeyEnabled
-	)),
-	setting("request.request_max_retries", "request_max_retries", (config) => (
-		config.requestMaxRetries
-	)),
-	setting("request.stream_max_retries", ["stream_max_retries", "transport_retry_limit"], (config) => (
-		config.streamMaxRetries
-	)),
-]);
 
 export class ConfigManagementService {
 	readonly #options: ConfigManagementServiceOptions;
@@ -211,6 +131,60 @@ export class ConfigManagementService {
 		});
 	}
 
+	async get(key: string, signal: AbortSignal): Promise<ConfigGetResponse> {
+		const resolved = await this.#resolve(signal);
+		return Object.freeze({
+			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+			ok: true,
+			action: "get",
+			message: "effective configuration setting",
+			setting: requireSettingRow(key, resolved.config, resolved.layers),
+			diagnostics: Object.freeze([...resolved.diagnostics]),
+		});
+	}
+
+	async set(key: string, value: string, signal: AbortSignal): Promise<ConfigMutationResponse> {
+		return this.#mutate("set", key, value, signal);
+	}
+
+	async unset(key: string, signal: AbortSignal): Promise<ConfigMutationResponse> {
+		return this.#mutate("unset", key, undefined, signal);
+	}
+
+	async #mutate(
+		action: "set" | "unset",
+		key: string,
+		value: string | undefined,
+		signal: AbortSignal,
+	): Promise<ConfigMutationResponse> {
+		signal.throwIfAborted();
+		let mutation: Awaited<ReturnType<typeof mutateUserConfigSetting>>;
+		try {
+			mutation = await mutateUserConfigSetting({
+				...this.#options,
+				action,
+				key,
+				...(value === undefined ? {} : { value }),
+			});
+		} catch (error) {
+			if (!isConfigError(error)) throw error;
+			throw new ConfigManagementError(error.diagnostic);
+		}
+		const resolved = await this.#resolve(signal);
+		const setting = requireSettingRow(mutation.key, resolved.config, resolved.layers);
+		return Object.freeze({
+			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+			ok: true,
+			action,
+			message: mutation.changed ? "user configuration updated" : "user configuration unchanged",
+			key: mutation.key,
+			changed: mutation.changed,
+			effectiveSource: setting.source,
+			overridden: setting.overridden,
+			diagnostics: Object.freeze([...resolved.diagnostics]),
+		});
+	}
+
 	async #resolve(signal: AbortSignal): ReturnType<typeof resolveConfigWithMetadata> {
 		signal.throwIfAborted();
 		try {
@@ -238,7 +212,7 @@ export class ConfigManagementError extends Error {
 }
 
 export function configFailureResponse(
-	action: "validate" | "show",
+	action: ConfigManagementAction,
 	error: ConfigManagementError,
 ): ConfigFailureResponse {
 	return Object.freeze({
@@ -249,18 +223,6 @@ export function configFailureResponse(
 		issues: Object.freeze([error.diagnostic.code]),
 		exitCode: 1,
 		diagnostics: Object.freeze([error.diagnostic]),
-	});
-}
-
-function setting(
-	key: string,
-	originKeys: string | readonly string[],
-	value: (config: NodeRuntimeConfig) => ConfigSettingValue,
-): ConfigSettingDefinition {
-	return Object.freeze({
-		key,
-		originKeys: Object.freeze(typeof originKeys === "string" ? [originKeys] : [...originKeys]),
-		value,
 	});
 }
 
@@ -276,23 +238,42 @@ function projectLayers(layers: ConfigLayerStack): readonly ConfigLayerRow[] {
 }
 
 function projectSettings(
-	config: NodeRuntimeConfig,
+	config: Awaited<ReturnType<typeof resolveConfigWithMetadata>>["config"],
 	layers: ConfigLayerStack,
 ): readonly ConfigSettingRow[] {
-	return Object.freeze(CONFIG_SETTING_DEFINITIONS.map((definition) => {
-		const origin = definition.originKeys
+	return Object.freeze(runtimeSettingSnapshots(config).map((snapshot) => {
+		const origin = snapshot.originKeys
 			.map((key) => layers.origins[key])
 			.find((candidate) => candidate !== undefined);
-		const value = definition.value(config);
-		const truncated = definition.key === "context.compaction_l4_trigger_ratios_by_model"
+		const value = snapshot.key === "model.api_base_url"
+			? safeBaseUrl(String(snapshot.value))
+			: snapshot.key === "context.compaction_l4_trigger_ratios_by_model"
+				? boundedRatioMap(config.compactionTriggerRatiosByModel)
+				: snapshot.value;
+		const truncated = snapshot.key === "context.compaction_l4_trigger_ratios_by_model"
 			&& Object.keys(config.compactionTriggerRatiosByModel).length > MAX_RATIO_ROWS;
 		return Object.freeze({
-			key: definition.key,
+			key: snapshot.key,
 			value: safeSettingValue(value),
 			source: origin?.source.id ?? "default",
 			overridden: Object.freeze(origin?.overridden.map((layer) => layer.id) ?? []),
 			...(truncated ? { truncated: true } : {}),
 		});
+	}));
+}
+
+function requireSettingRow(
+	key: string,
+	config: Awaited<ReturnType<typeof resolveConfigWithMetadata>>["config"],
+	layers: ConfigLayerStack,
+): ConfigSettingRow {
+	const setting = projectSettings(config, layers).find((candidate) => candidate.key === key);
+	if (setting) return setting;
+	throw new ConfigManagementError(configDiagnostic({
+		code: "invalid_value",
+		severity: "error",
+		message: "configuration setting is not supported",
+		remediation: "Use 'mycli config show' to list supported settings.",
 	}));
 }
 

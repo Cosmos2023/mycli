@@ -172,34 +172,54 @@ test("JSON management commands run without TTY, backend, provider, or TUI startu
 	assert.equal(tuiImports, 0);
 });
 
-test("configuration management runs without TTY, backend, provider, or TUI startup", async () => {
-	let nodeStarts = 0;
-	let tuiImports = 0;
-	let managementCalls = 0;
-	const harness = cliHarness({
-		argv: ["config", "show", "--json"],
-		stdin: { isTTY: false },
-		stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
-		startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
-		importTui: async () => { tuiImports += 1; },
-		management: {
-			execute: async (command: ManagementCommand) => {
-				managementCalls += 1;
-				assert.deepEqual(command, { kind: "config", action: "show", json: true });
-				return { ok: true, action: "show", message: "effective configuration" };
+test("configuration management runs without TTY, backend, provider, or TUI startup", async (t) => {
+	for (const expected of [
+		{ argv: ["config", "show", "--json"], command: { kind: "config", action: "show", json: true } },
+		{
+			argv: ["config", "get", "model.name", "--json"],
+			command: { kind: "config", action: "get", key: "model.name", json: true },
+		},
+		{
+			argv: ["config", "set", "memory.enabled", "true", "--json"],
+			command: {
+				kind: "config",
+				action: "set",
+				key: "memory.enabled",
+				value: "true",
+				json: true,
 			},
 		},
-	});
+		{
+			argv: ["config", "unset", "model.name", "--json"],
+			command: { kind: "config", action: "unset", key: "model.name", json: true },
+		},
+	] as const) {
+		await t.test(expected.command.action, async () => {
+			let nodeStarts = 0;
+			let tuiImports = 0;
+			let managementCalls = 0;
+			const harness = cliHarness({
+				argv: expected.argv,
+				stdin: { isTTY: false },
+				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+				startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
+				importTui: async () => { tuiImports += 1; },
+				management: {
+					execute: async (command: ManagementCommand) => {
+						managementCalls += 1;
+						assert.deepEqual(command, expected.command);
+						return { ok: true, action: expected.command.action, message: "configuration command" };
+					},
+				},
+			});
 
-	assert.equal(await runCli(harness.options), 0);
-	assert.deepEqual(JSON.parse(harness.stdout.join("")), {
-		ok: true,
-		action: "show",
-		message: "effective configuration",
-	});
-	assert.equal(managementCalls, 1);
-	assert.equal(nodeStarts, 0);
-	assert.equal(tuiImports, 0);
+			assert.equal(await runCli(harness.options), 0);
+			assert.equal(JSON.parse(harness.stdout.join("")).action, expected.command.action);
+			assert.equal(managementCalls, 1);
+			assert.equal(nodeStarts, 0);
+			assert.equal(tuiImports, 0);
+		});
+	}
 });
 
 test("doctor and setup route before backend selection", async (t) => {
