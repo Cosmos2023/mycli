@@ -35,6 +35,7 @@ import {
 	SCHEMA_V8_SQL,
 	SCHEMA_V9_SQL,
 	SCHEMA_VERSION,
+	SESSION_RUNTIME_LEASE_SQL,
 	TRANSCRIPT_PROJECTION_INDEX_SQL,
 } from "./schema.ts";
 import { runtimeErrorStopReason } from "./runtime-error-stop-reason.ts";
@@ -86,12 +87,15 @@ import type {
 	SessionPayloadCleanupResult,
 	SessionOrphanCleanupResult,
 	SessionOverview,
+	SessionMetadata,
+	SessionStateBatchEntry,
 	SessionSearchQuery,
 	SessionSearchResult,
 	SessionStore,
 	SessionStorageMetrics,
 	SessionVacuumResult,
 	TurnReservation,
+	UpdateSessionMetadataInput,
 } from "./session-store.ts";
 import type {
 	LoadShellOutputPageInput,
@@ -149,6 +153,7 @@ export interface SQLiteSessionStoreOptions {
 	readonly isProcessAlive?: (processId: number) => boolean;
 	readonly stateFailpoint?: (name: string) => void;
 	readonly modelInputFailpoint?: (name: ModelInputLedgerFailpoint) => void;
+	readonly reconcileRuntimeState?: boolean;
 }
 
 interface RuntimeTurnRow {
@@ -228,10 +233,13 @@ export class SQLiteSessionStore implements SessionStore {
 			});
 			this.#configure(options.busyTimeoutMs ?? 1000);
 			this.#initialize();
+			this.#database.exec(SESSION_RUNTIME_LEASE_SQL);
 			this.#stateRepository = new SQLiteSessionStateRepository({
 				database: this.#database,
 				clock: this.#clock,
 				write: <Result>(operation: () => Result) => this.#write(operation),
+				ownerId: this.#ownerId,
+				isProcessAlive: this.#isProcessAlive,
 				...(options.stateFailpoint ? { failpoint: options.stateFailpoint } : {}),
 			});
 			this.subagentTasks = new SQLiteSubagentTaskRepository({
@@ -268,9 +276,11 @@ export class SQLiteSessionStore implements SessionStore {
 				database: this.#database,
 				write: <Result>(operation: () => Result) => this.#write(operation),
 			});
-			this.agentThreads.projectLegacyTasks();
-			this.agentThreads.reconcileStaleRuntimes("agent runtime owner unavailable after restart");
-			this.recoverInterruptedTurns();
+			if (options.reconcileRuntimeState !== false) {
+				this.agentThreads.projectLegacyTasks();
+				this.agentThreads.reconcileStaleRuntimes("agent runtime owner unavailable after restart");
+				this.recoverInterruptedTurns();
+			}
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -680,6 +690,9 @@ export class SQLiteSessionStore implements SessionStore {
 	forkSession(input: ForkSessionInput): ForkSessionResult {
 		const sourceSessionId = requiredSessionId(input.sourceSessionId, "source session");
 		const targetSessionId = requiredSessionId(input.targetSessionId, "target session");
+		const targetWorkspaceRoot = input.targetWorkspaceRoot === undefined
+			? undefined
+			: requiredSessionId(input.targetWorkspaceRoot, "target workspace root");
 		if (sourceSessionId === targetSessionId) {
 			throw new StorageFailure("target session already exists");
 		}
@@ -716,7 +729,14 @@ export class SQLiteSessionStore implements SessionStore {
 					session_id, workspace_root, thread_id, created_at,
 					updated_at, last_active_at, status
 				) VALUES (?, ?, ?, ?, ?, ?, 'active')
-			`).run(targetSessionId, String(source.workspace_root), targetSessionId, now, now, now);
+			`).run(
+				targetSessionId,
+				targetWorkspaceRoot ?? String(source.workspace_root),
+				targetSessionId,
+				now,
+				now,
+				now,
+			);
 			this.#database.prepare(`
 				INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
 				VALUES (?, ?, ?, ?)
@@ -1064,6 +1084,21 @@ export class SQLiteSessionStore implements SessionStore {
 
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined {
 		return this.#stateRepository.loadState(sessionId, key);
+	}
+
+	loadStates(
+		sessionIds: readonly string[],
+		keys: readonly RuntimeStateKey[],
+	): readonly SessionStateBatchEntry[] {
+		return this.#stateRepository.loadStates(sessionIds, keys);
+	}
+
+	loadSessionMetadata(sessionId: string): SessionMetadata {
+		return this.#stateRepository.loadSessionMetadata(sessionId);
+	}
+
+	updateSessionMetadata(input: UpdateSessionMetadataInput): SessionMetadata {
+		return this.#stateRepository.updateSessionMetadata(input);
 	}
 
 	saveState(input: SaveStateInput): void {

@@ -12,6 +12,7 @@ import type {
 } from "@mycli/core";
 import type Database from "better-sqlite3";
 import {
+	SessionMetadataConflictError,
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
@@ -33,9 +34,14 @@ import type {
 	SaveClarificationSuspensionInput,
 	SaveStateInput,
 	SessionLineageNode,
+	SessionLeaseState,
 	SessionListQuery,
+	SessionMetadata,
 	SessionOverview,
+	SessionPendingState,
+	SessionStateBatchEntry,
 	SessionStateStore,
+	UpdateSessionMetadataInput,
 } from "./session-store.ts";
 import { stableJson } from "./stable-json.ts";
 import {
@@ -48,6 +54,8 @@ export interface SQLiteSessionStateRepositoryOptions {
 	readonly database: Database.Database;
 	readonly clock: () => string;
 	readonly write: <Result>(operation: () => Result) => Result;
+	readonly ownerId?: string;
+	readonly isProcessAlive?: (processId: number) => boolean;
 	readonly failpoint?: (name: string) => void;
 	readonly transcriptAdapter?: SQLiteSessionStateTranscriptAdapter;
 }
@@ -74,6 +82,25 @@ interface SessionOverviewRow {
 	readonly summary_count: unknown;
 	readonly parent_id: unknown;
 	readonly fork_point: unknown;
+}
+
+interface SessionOperationalStateRow {
+	readonly session_id: unknown;
+	readonly metadata_payload_json: unknown;
+	readonly lease_owner_id: unknown;
+	readonly lease_owner_pid: unknown;
+	readonly agent_owner_pid: unknown;
+	readonly has_pending_decision: unknown;
+	readonly has_suspended_turn: unknown;
+	readonly latest_turn_status: unknown;
+}
+
+export interface SessionOperationalStateProjection {
+	readonly metadata: SessionMetadata;
+	readonly leaseState: SessionLeaseState;
+	readonly pendingState: SessionPendingState;
+	readonly latestTurnStatus?: string;
+	readonly metadataIssue?: SessionStateError["code"];
 }
 
 const VALIDATED_STATE_KINDS: Partial<Record<RuntimeStateKey,
@@ -106,6 +133,8 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 	readonly #database: Database.Database;
 	readonly #clock: () => string;
 	readonly #writeTransaction: <Result>(operation: () => Result) => Result;
+	readonly #ownerId?: string;
+	readonly #isProcessAlive: (processId: number) => boolean;
 	readonly #failpoint: (name: string) => void;
 	readonly #transcriptAdapter?: SQLiteSessionStateTranscriptAdapter;
 
@@ -113,35 +142,90 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 		this.#database = options.database;
 		this.#clock = options.clock;
 		this.#writeTransaction = options.write;
+		this.#ownerId = options.ownerId;
+		this.#isProcessAlive = options.isProcessAlive ?? processIsAlive;
 		this.#failpoint = options.failpoint ?? (() => undefined);
 		this.#transcriptAdapter = options.transcriptAdapter;
 	}
 
 	listSessions(query: SessionListQuery = {}): readonly SessionOverview[] {
 		return this.#read(() => {
-			const { limit, offset } = page(query);
-			const workspaceRoot = query.workspaceRoot?.trim();
-			const where = workspaceRoot ? "WHERE sessions.workspace_root = ?" : "";
-			const parameters = workspaceRoot
-				? [workspaceRoot, limit, offset]
-				: [limit, offset];
+			const { limit, offset } = sessionListPage(query);
+			const filters = sessionListSqlFilter(query);
 			const rows = this.#database.prepare(`
 				${sessionOverviewSelect()}
-				${where}
+				${filters.where}
 				ORDER BY sessions.last_active_at DESC, sessions.session_id DESC
 				LIMIT ? OFFSET ?
-			`).all(...parameters) as readonly SessionOverviewRow[];
-			return Object.freeze(rows.map(sessionOverviewFromRow));
+			`).all(...filters.parameters, limit, offset) as readonly SessionOverviewRow[];
+			const operational = this.loadSessionOperationalStates(
+				rows.map((row) => nonEmpty(row.session_id, "sessionId")),
+			);
+			return Object.freeze(rows.map((row) => sessionOverviewFromRow(
+				row,
+				requiredOperationalState(operational, nonEmpty(row.session_id, "sessionId")),
+			)));
 		});
 	}
 
 	loadSession(sessionId: string): SessionOverview | undefined {
 		return this.#read(() => {
+			const normalizedSessionId = nonEmpty(sessionId, "sessionId");
 			const row = this.#database.prepare(`
 				${sessionOverviewSelect()}
 				WHERE sessions.session_id = ?
-			`).get(nonEmpty(sessionId, "sessionId")) as SessionOverviewRow | undefined;
-			return row ? sessionOverviewFromRow(row) : undefined;
+			`).get(normalizedSessionId) as SessionOverviewRow | undefined;
+			if (!row) return undefined;
+			const operational = this.loadSessionOperationalStates([normalizedSessionId]);
+			return sessionOverviewFromRow(
+				row,
+				requiredOperationalState(operational, normalizedSessionId),
+			);
+		});
+	}
+
+	loadSessionOperationalStates(
+		sessionIds: readonly string[],
+	): ReadonlyMap<string, SessionOperationalStateProjection> {
+		const normalizedSessionIds = boundedIdentities(sessionIds, "sessionIds");
+		if (normalizedSessionIds.length === 0) return new Map();
+		return this.#read(() => {
+			const rows = this.#database.prepare(`
+				SELECT requested.value AS session_id,
+					metadata.payload_json AS metadata_payload_json,
+					root_lease.owner_id AS lease_owner_id,
+					root_lease.owner_pid AS lease_owner_pid,
+					agent_lease.owner_pid AS agent_owner_pid,
+					CASE WHEN pending.rowid IS NULL THEN 0 ELSE 1 END AS has_pending_decision,
+					CASE WHEN suspended.rowid IS NULL THEN 0 ELSE 1 END AS has_suspended_turn,
+					(
+						SELECT status FROM runtime_turns
+						WHERE runtime_turns.session_id = requested.value
+						ORDER BY started_at DESC, rowid DESC LIMIT 1
+					) AS latest_turn_status
+				FROM json_each(?) AS requested
+				LEFT JOIN session_state AS metadata
+					ON metadata.session_id = requested.value
+					AND metadata.state_key = 'session_metadata'
+				LEFT JOIN session_runtime_leases AS root_lease
+					ON root_lease.session_id = requested.value
+				LEFT JOIN agent_runtime_leases AS agent_lease
+					ON agent_lease.thread_id = requested.value
+				LEFT JOIN session_state AS pending
+					ON pending.session_id = requested.value
+					AND pending.state_key = 'pending_decision'
+				LEFT JOIN session_state AS suspended
+					ON suspended.session_id = requested.value
+					AND suspended.state_key = 'suspended_turn'
+			`).all(JSON.stringify(normalizedSessionIds)) as readonly SessionOperationalStateRow[];
+			return new Map(rows.map((row) => {
+				const sessionId = nonEmpty(row.session_id, "sessionId");
+				return [sessionId, operationalStateFromRow(
+					row,
+					this.#ownerId,
+					this.#isProcessAlive,
+				)] as const;
+			}));
 		});
 	}
 
@@ -203,6 +287,76 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 			} | undefined;
 			if (!row) return undefined;
 			return freezeJson(parseStateJson(row.payload_json, key));
+		});
+	}
+
+	loadStates(
+		sessionIds: readonly string[],
+		keys: readonly RuntimeStateKey[],
+	): readonly SessionStateBatchEntry[] {
+		const normalizedSessionIds = boundedIdentities(sessionIds, "sessionIds");
+		const normalizedKeys = boundedStateKeys(keys);
+		if (normalizedSessionIds.length === 0 || normalizedKeys.length === 0) {
+			return Object.freeze([]);
+		}
+		return this.#read(() => Object.freeze((this.#database.prepare(`
+			SELECT session_id, state_key, payload_json
+			FROM session_state
+			WHERE session_id IN (SELECT value FROM json_each(?))
+				AND state_key IN (SELECT value FROM json_each(?))
+			ORDER BY session_id, state_key
+		`).all(
+			JSON.stringify(normalizedSessionIds),
+			JSON.stringify(normalizedKeys),
+		) as readonly {
+			readonly session_id: unknown;
+			readonly state_key: unknown;
+			readonly payload_json: unknown;
+		}[]).map((row): SessionStateBatchEntry => {
+			const key = runtimeStateKey(row.state_key);
+			return Object.freeze({
+				sessionId: nonEmpty(row.session_id, "sessionId"),
+				key,
+				payload: freezeJson(parseStateJson(row.payload_json, key)),
+			});
+		})));
+	}
+
+	loadSessionMetadata(sessionId: string): SessionMetadata {
+		const payload = this.loadState(sessionId, "session_metadata");
+		return payload === undefined ? EMPTY_SESSION_METADATA : sessionMetadataFromPayload(payload);
+	}
+
+	updateSessionMetadata(input: UpdateSessionMetadataInput): SessionMetadata {
+		const sessionId = nonEmpty(input.sessionId, "sessionId");
+		const expectedRevision = metadataRevision(input.expectedRevision);
+		return this.#writeTransaction(() => {
+			if (!this.#sessionExists(sessionId)) throw new StorageFailure("session does not exist");
+			const row = this.#database.prepare(`
+				SELECT payload_json FROM session_state
+				WHERE session_id = ? AND state_key = 'session_metadata'
+			`).get(sessionId) as { readonly payload_json: unknown } | undefined;
+			const current = row
+				? sessionMetadataFromPayload(parseStateJson(row.payload_json, "session_metadata"))
+				: EMPTY_SESSION_METADATA;
+			if (current.revision !== expectedRevision) throw new SessionMetadataConflictError();
+			const title = input.title === undefined
+				? current.title
+				: input.title === null ? undefined : sessionTitle(input.title);
+			const archived = input.archived ?? current.archived;
+			const deleted = input.deleted ?? current.deleted;
+			if (title === current.title && archived === current.archived && deleted === current.deleted) {
+				return current;
+			}
+			const next = Object.freeze({
+				revision: increment(current.revision, "session metadata revision"),
+				archived,
+				deleted,
+				...(title ? { title } : {}),
+			});
+			this.#upsertState(sessionId, "session_metadata", sessionMetadataPayload(next));
+			this.#touchExistingSession(sessionId);
+			return next;
 		});
 	}
 
@@ -912,6 +1066,7 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 				|| error instanceof SessionStateError
 				|| error instanceof QueueConflictError
 				|| error instanceof ApprovalConflictError
+				|| error instanceof SessionMetadataConflictError
 			) {
 				throw error;
 			}
@@ -942,7 +1097,10 @@ function sessionOverviewSelect(): string {
 	`;
 }
 
-function sessionOverviewFromRow(row: SessionOverviewRow): SessionOverview {
+function sessionOverviewFromRow(
+	row: SessionOverviewRow,
+	operational: SessionOperationalStateProjection,
+): SessionOverview {
 	const forkPoint = typeof row.fork_point === "number"
 		&& Number.isSafeInteger(row.fork_point)
 		&& row.fork_point >= 0
@@ -958,6 +1116,16 @@ function sessionOverviewFromRow(row: SessionOverviewRow): SessionOverview {
 		status: String(row.status),
 		messageCount: Number(row.message_count),
 		summaryCount: Number(row.summary_count),
+		metadataRevision: operational.metadata.revision,
+		archived: operational.metadata.archived,
+		deleted: operational.metadata.deleted,
+		leaseState: operational.leaseState,
+		pendingState: operational.pendingState,
+		...(operational.latestTurnStatus
+			? { latestTurnStatus: operational.latestTurnStatus }
+			: {}),
+		...(operational.metadata.title ? { title: operational.metadata.title } : {}),
+		...(operational.metadataIssue ? { metadataIssue: operational.metadataIssue } : {}),
 		...(typeof row.parent_id === "string" && row.parent_id
 			? { parentId: row.parent_id }
 			: {}),
@@ -965,7 +1133,133 @@ function sessionOverviewFromRow(row: SessionOverviewRow): SessionOverview {
 	});
 }
 
-function page(query: SessionListQuery): { readonly limit: number; readonly offset: number } {
+function requiredOperationalState(
+	states: ReadonlyMap<string, SessionOperationalStateProjection>,
+	sessionId: string,
+): SessionOperationalStateProjection {
+	return states.get(sessionId) ?? Object.freeze({
+		metadata: EMPTY_SESSION_METADATA,
+		leaseState: "unlocked",
+		pendingState: "none",
+	});
+}
+
+function operationalStateFromRow(
+	row: SessionOperationalStateRow,
+	ownerId: string | undefined,
+	isProcessAlive: (processId: number) => boolean,
+): SessionOperationalStateProjection {
+	let metadata = EMPTY_SESSION_METADATA;
+	let metadataIssue: SessionStateError["code"] | undefined;
+	if (typeof row.metadata_payload_json === "string") {
+		try {
+			metadata = sessionMetadataFromPayload(
+				parseStateJson(row.metadata_payload_json, "session_metadata"),
+			);
+		} catch (error) {
+			if (!(error instanceof SessionStateError)) throw error;
+			metadataIssue = error.code;
+		}
+	}
+	const latestTurnStatus = typeof row.latest_turn_status === "string"
+		&& row.latest_turn_status.length <= 64
+		? row.latest_turn_status
+		: undefined;
+	const pendingState: SessionPendingState = Number(row.has_pending_decision) === 1
+		? "approval"
+		: Number(row.has_suspended_turn) === 1
+			? "clarification"
+			: latestTurnStatus === "interrupted" ? "interrupted" : "none";
+	return Object.freeze({
+		metadata,
+		leaseState: sessionLeaseState(row, ownerId, isProcessAlive),
+		pendingState,
+		...(latestTurnStatus ? { latestTurnStatus } : {}),
+		...(metadataIssue ? { metadataIssue } : {}),
+	});
+}
+
+function sessionLeaseState(
+	row: SessionOperationalStateRow,
+	ownerId: string | undefined,
+	isProcessAlive: (processId: number) => boolean,
+): SessionLeaseState {
+	if (typeof row.lease_owner_id === "string" && row.lease_owner_id) {
+		if (ownerId && row.lease_owner_id === ownerId) return "owned";
+		return liveProcess(row.lease_owner_pid, isProcessAlive) ? "active" : "stale";
+	}
+	if (row.agent_owner_pid !== null && row.agent_owner_pid !== undefined) {
+		return liveProcess(row.agent_owner_pid, isProcessAlive) ? "active" : "stale";
+	}
+	return "unlocked";
+}
+
+function liveProcess(
+	value: unknown,
+	isProcessAlive: (processId: number) => boolean,
+): boolean {
+	return typeof value === "number"
+		&& Number.isSafeInteger(value)
+		&& value > 0
+		&& isProcessAlive(value);
+}
+
+export function sessionListSqlFilter(query: SessionListQuery): Readonly<{
+	readonly where: string;
+	readonly parameters: readonly string[];
+}> {
+	const predicates: string[] = [];
+	const parameters: string[] = [];
+	const workspaceRoot = query.workspaceRoot?.trim();
+	if (workspaceRoot) {
+		predicates.push("sessions.workspace_root = ?");
+		parameters.push(workspaceRoot);
+	}
+	if (query.includeArchived !== true) {
+		predicates.push(`NOT EXISTS (
+			SELECT 1 FROM session_state AS archived_metadata
+			WHERE archived_metadata.session_id = sessions.session_id
+				AND archived_metadata.state_key = 'session_metadata'
+				AND json_valid(archived_metadata.payload_json)
+				AND json_extract(archived_metadata.payload_json, '$.archived') = 1
+		)`);
+	}
+	if (query.includeDeleted !== true) {
+		predicates.push(`NOT EXISTS (
+			SELECT 1 FROM session_state AS deleted_metadata
+			WHERE deleted_metadata.session_id = sessions.session_id
+				AND deleted_metadata.state_key = 'session_metadata'
+				AND json_valid(deleted_metadata.payload_json)
+				AND json_extract(deleted_metadata.payload_json, '$.deleted') = 1
+		)`);
+	}
+	const search = query.search?.trim();
+	if (search) {
+		if (search.length > 256 || /[\r\n\0]/u.test(search)) {
+			throw new RangeError("session search must be at most 256 characters on one line");
+		}
+		const pattern = `%${search.toLocaleLowerCase().replace(/[\\%_]/gu, "\\$&")}%`;
+		predicates.push(`(
+			LOWER(sessions.session_id) LIKE ? ESCAPE '\\'
+			OR LOWER(sessions.workspace_root) LIKE ? ESCAPE '\\'
+			OR EXISTS (
+				SELECT 1 FROM session_state AS title_metadata
+				WHERE title_metadata.session_id = sessions.session_id
+					AND title_metadata.state_key = 'session_metadata'
+					AND json_valid(title_metadata.payload_json)
+					AND LOWER(COALESCE(json_extract(title_metadata.payload_json, '$.title'), ''))
+						LIKE ? ESCAPE '\\'
+			)
+		)`);
+		parameters.push(pattern, pattern, pattern);
+	}
+	return Object.freeze({
+		where: predicates.length > 0 ? `WHERE ${predicates.join(" AND ")}` : "",
+		parameters: Object.freeze(parameters),
+	});
+}
+
+export function sessionListPage(query: SessionListQuery): { readonly limit: number; readonly offset: number } {
 	const limit = query.limit ?? 20;
 	const offset = query.offset ?? 0;
 	if (!Number.isSafeInteger(limit) || limit < 0 || limit > 1000) {
@@ -1014,6 +1308,68 @@ function validateStatePayload(key: RuntimeStateKey, payload: unknown): unknown {
 		throw new SessionStateError("session_state_invalid", key);
 	}
 	return payload;
+}
+
+const EMPTY_SESSION_METADATA: SessionMetadata = Object.freeze({
+	revision: 0,
+	archived: false,
+	deleted: false,
+});
+
+function sessionMetadataFromPayload(payload: unknown): SessionMetadata {
+	if (!isRecord(payload) || payload.state_version !== 1) {
+		throw new SessionStateError("session_state_invalid", "session_metadata");
+	}
+	const revision = metadataRevision(payload.revision);
+	if (typeof payload.archived !== "boolean" || typeof payload.deleted !== "boolean") {
+		throw new SessionStateError("session_state_invalid", "session_metadata");
+	}
+	let title: string | undefined;
+	try {
+		title = payload.title === undefined ? undefined : sessionTitle(payload.title);
+	} catch {
+		throw new SessionStateError("session_state_invalid", "session_metadata");
+	}
+	return Object.freeze({
+		revision,
+		archived: payload.archived,
+		deleted: payload.deleted,
+		...(title ? { title } : {}),
+	});
+}
+
+function sessionMetadataPayload(metadata: SessionMetadata): Readonly<Record<string, unknown>> {
+	return Object.freeze({
+		state_version: 1,
+		revision: metadata.revision,
+		archived: metadata.archived,
+		deleted: metadata.deleted,
+		...(metadata.title ? { title: metadata.title } : {}),
+	});
+}
+
+function metadataRevision(value: unknown): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+		throw new SessionStateError("session_state_invalid", "session_metadata");
+	}
+	return value;
+}
+
+function sessionTitle(value: unknown): string {
+	if (typeof value !== "string") throw new TypeError("session title must be a string");
+	const title = value.trim();
+	if (!title || title.length > 256 || hasAsciiControlCharacter(title)) {
+		throw new RangeError("session title must be between 1 and 256 printable characters");
+	}
+	return title;
+}
+
+function hasAsciiControlCharacter(value: string): boolean {
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		if (code <= 0x1f || code === 0x7f) return true;
+	}
+	return false;
 }
 
 function queueSnapshotFromPayload(payload: Readonly<Record<string, unknown>>): QueueSnapshot {
@@ -1356,11 +1712,56 @@ function freezeJson<Value>(value: Value): Value {
 	return value;
 }
 
-function nonEmpty(value: string, name: string): string {
+const RUNTIME_STATE_KEYS = new Set<RuntimeStateKey>([
+	"input_queue",
+	"session_metadata",
+	"session_preferences",
+	"pending_decision",
+	"suspended_turn",
+	"turn_record",
+	"compact_checkpoint",
+	"context_baseline",
+	"responses_continuation_state",
+	"provider_timeline",
+	"node_effect_checkpoint",
+]);
+
+function boundedIdentities(values: readonly string[], name: string): readonly string[] {
+	if (!Array.isArray(values) || values.length > 1_000) {
+		throw new RangeError(`${name} must contain at most 1000 values`);
+	}
+	return Object.freeze([...new Set(values.map((value) => nonEmpty(value, name)))]);
+}
+
+function boundedStateKeys(values: readonly RuntimeStateKey[]): readonly RuntimeStateKey[] {
+	if (!Array.isArray(values) || values.length > RUNTIME_STATE_KEYS.size) {
+		throw new RangeError("state keys exceed the supported limit");
+	}
+	return Object.freeze([...new Set(values.map(runtimeStateKey))]);
+}
+
+function runtimeStateKey(value: unknown): RuntimeStateKey {
+	if (typeof value !== "string" || !RUNTIME_STATE_KEYS.has(value as RuntimeStateKey)) {
+		throw new TypeError("invalid runtime state key");
+	}
+	return value as RuntimeStateKey;
+}
+
+function nonEmpty(value: unknown, name: string): string {
 	if (typeof value !== "string" || !value.trim()) {
 		throw new TypeError(`${name} must be a non-empty string`);
 	}
 	return value.trim();
+}
+
+function processIsAlive(processId: number): boolean {
+	try {
+		process.kill(processId, 0);
+		return true;
+	} catch (error) {
+		return typeof error === "object" && error !== null && "code" in error
+			&& error.code === "EPERM";
+	}
 }
 
 function boundedRecentStateRowLimit(value: number): number {

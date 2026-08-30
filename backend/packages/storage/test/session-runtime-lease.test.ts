@@ -60,7 +60,7 @@ test("session runtime leases reject live owners and permit stale-owner takeover"
 	assert.equal(third.acquireSessionLease("virtual-session"), true);
 });
 
-test("session maintenance preserves live runtimes and reclaims stale or unowned rows", async (t) => {
+test("session maintenance preserves runtime leases and reclaims unowned rows", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-session-runtime-maintenance-"));
 	const dbPath = join(root, "sessions.db");
 	const liveProcesses = new Set([101, 202, 303]);
@@ -145,9 +145,20 @@ test("session maintenance preserves live runtimes and reclaims stale or unowned 
 		assert.equal(Number((verify.prepare(`
 			SELECT COUNT(*) AS count FROM session_runtime_leases
 			WHERE owner_id = 'owner-stale'
-		`).get() as { readonly count: unknown }).count), 0);
+		`).get() as { readonly count: unknown }).count), 1);
 	} finally {
 		verify.close();
+	}
+	assert.equal(maintainer.acquireSessionLease("stale-empty"), true);
+	maintainer.releaseSessionLease("stale-empty");
+	const afterTakeover = new Database(dbPath, { readonly: true });
+	try {
+		assert.equal(Number((afterTakeover.prepare(`
+			SELECT COUNT(*) AS count FROM session_runtime_leases
+			WHERE session_id = 'stale-empty'
+		`).get() as { readonly count: unknown }).count), 0);
+	} finally {
+		afterTakeover.close();
 	}
 });
 

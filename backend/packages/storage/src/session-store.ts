@@ -146,6 +146,7 @@ export interface ProjectedMutationMetadata {
 
 export type RuntimeStateKey =
 	| "input_queue"
+	| "session_metadata"
 	| "session_preferences"
 	| "pending_decision"
 	| "suspended_turn"
@@ -160,8 +161,36 @@ export type SessionStateSource = RuntimeStateKey | "session_lineage";
 
 export interface SessionListQuery {
 	readonly workspaceRoot?: string;
+	readonly search?: string;
+	readonly includeArchived?: boolean;
+	readonly includeDeleted?: boolean;
 	readonly limit?: number;
 	readonly offset?: number;
+}
+
+export type SessionLeaseState = "unlocked" | "owned" | "active" | "stale";
+
+export type SessionPendingState = "none" | "approval" | "clarification" | "interrupted";
+
+export interface SessionMetadata {
+	readonly revision: number;
+	readonly archived: boolean;
+	readonly deleted: boolean;
+	readonly title?: string;
+}
+
+export interface UpdateSessionMetadataInput {
+	readonly sessionId: string;
+	readonly expectedRevision: number;
+	readonly title?: string | null;
+	readonly archived?: boolean;
+	readonly deleted?: boolean;
+}
+
+export interface SessionStateBatchEntry {
+	readonly sessionId: string;
+	readonly key: RuntimeStateKey;
+	readonly payload: unknown;
 }
 
 export interface SessionOverview {
@@ -174,6 +203,14 @@ export interface SessionOverview {
 	readonly status: string;
 	readonly messageCount: number;
 	readonly summaryCount: number;
+	readonly metadataRevision?: number;
+	readonly archived?: boolean;
+	readonly deleted?: boolean;
+	readonly leaseState?: SessionLeaseState;
+	readonly pendingState?: SessionPendingState;
+	readonly latestTurnStatus?: string;
+	readonly title?: string;
+	readonly metadataIssue?: SessionStateErrorCode;
 	readonly parentId?: string;
 	readonly forkPoint?: number;
 }
@@ -189,6 +226,7 @@ export interface SessionLineageNode {
 export interface ForkSessionInput {
 	readonly sourceSessionId: string;
 	readonly targetSessionId: string;
+	readonly targetWorkspaceRoot?: string;
 	readonly forkPoint?: number;
 	readonly forkEventId?: string;
 }
@@ -447,6 +485,12 @@ export interface SessionStateStore {
 	loadSession(sessionId: string): SessionOverview | undefined;
 	loadSessionLineage(sessionId: string): readonly SessionLineageNode[];
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined;
+	loadStates(
+		sessionIds: readonly string[],
+		keys: readonly RuntimeStateKey[],
+	): readonly SessionStateBatchEntry[];
+	loadSessionMetadata(sessionId: string): SessionMetadata;
+	updateSessionMetadata(input: UpdateSessionMetadataInput): SessionMetadata;
 	saveState(input: SaveStateInput): void;
 	saveQueueSnapshot(input: SaveQueueSnapshotInput): QueueSnapshot;
 	deleteState(sessionId: string, key: RuntimeStateKey): void;
@@ -668,6 +712,15 @@ export class SessionInUseError extends Error {
 	constructor() {
 		super("session_in_use: session is already owned by another process");
 		this.name = "SessionInUseError";
+	}
+}
+
+export class SessionMetadataConflictError extends Error {
+	readonly code = "session_metadata_conflict" as const;
+
+	constructor() {
+		super("session_metadata_conflict: session metadata revision is stale");
+		this.name = "SessionMetadataConflictError";
 	}
 }
 

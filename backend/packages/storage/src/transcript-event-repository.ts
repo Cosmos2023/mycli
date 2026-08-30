@@ -45,6 +45,7 @@ import {
 	normalizeStoredTurnFailure,
 	projectMutationMetadata,
 	SessionInUseError,
+	SessionMetadataConflictError,
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
@@ -88,7 +89,10 @@ import type {
 	SessionLeaseStore,
 	SessionListQuery,
 	SessionOverview,
+	SessionMetadata,
+	SessionStateBatchEntry,
 	TurnReservation,
+	UpdateSessionMetadataInput,
 } from "./session-store.ts";
 import { ftsMatchQuery, searchSnippet } from "./session-search.ts";
 import { canonicalConversationItem } from "./legacy-provider-projection.ts";
@@ -104,7 +108,12 @@ import {
 	type UserInputTranscriptPayload,
 } from "./transcript-events.ts";
 import { stableJson } from "./stable-json.ts";
-import { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
+import {
+	sessionListPage,
+	sessionListSqlFilter,
+	SQLiteSessionStateRepository,
+	type SessionOperationalStateProjection,
+} from "./sqlite-session-state.ts";
 import { SQLiteSubagentTaskRepository } from "./subagent-task-store.ts";
 import type { SubagentTaskStore } from "./subagent-task-store.ts";
 import { SQLiteAgentThreadRepository } from "./agent-thread-store.ts";
@@ -248,6 +257,12 @@ export interface TranscriptEventRepository extends SessionLeaseStore {
 	forkSession(input: ForkSessionInput): ForkSessionResult;
 	forkAgentConversation(input: ForkAgentConversationInput): ForkAgentConversationResult;
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined;
+	loadStates(
+		sessionIds: readonly string[],
+		keys: readonly RuntimeStateKey[],
+	): readonly SessionStateBatchEntry[];
+	loadSessionMetadata(sessionId: string): SessionMetadata;
+	updateSessionMetadata(input: UpdateSessionMetadataInput): SessionMetadata;
 	saveState(input: SaveStateInput): void;
 	saveQueueSnapshot(input: SaveQueueSnapshotInput): QueueSnapshot;
 	deleteState(sessionId: string, key: RuntimeStateKey): void;
@@ -309,6 +324,7 @@ export interface SQLiteTranscriptEventRepositoryOptions {
 	readonly isProcessAlive?: (processId: number) => boolean;
 	readonly stateFailpoint?: (name: string) => void;
 	readonly modelInputFailpoint?: (name: ModelInputLedgerFailpoint) => void;
+	readonly reconcileRuntimeState?: boolean;
 }
 
 interface TranscriptEventRow {
@@ -451,7 +467,6 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				throw new StorageFailure("session schema version marker is invalid");
 			}
 			this.#database.exec(SESSION_RUNTIME_LEASE_SQL);
-			this.#reconcileStaleSessionRuntimeLeases();
 			this.#contentBlobs = new SQLiteSessionContentBlobRepository({
 				database: this.#database,
 				clock: this.#clock,
@@ -461,6 +476,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				database: this.#database,
 				clock: this.#clock,
 				write: <Result>(operation: () => Result) => this.#write(operation),
+				ownerId: this.#ownerId,
+				isProcessAlive: this.#isProcessAlive,
 				...(options.stateFailpoint ? { failpoint: options.stateFailpoint } : {}),
 				transcriptAdapter: {
 					loadCommittedQueueIds: (sessionId) => this.#committedQueueIds(sessionId),
@@ -519,9 +536,11 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				database: this.#database,
 				write: <Result>(operation: () => Result) => this.#write(operation),
 			});
-			this.agentThreads.projectLegacyTasks();
-			this.agentThreads.reconcileStaleRuntimes("agent runtime owner unavailable after restart");
-			this.recoverInterruptedTurns();
+			if (options.reconcileRuntimeState !== false) {
+				this.agentThreads.projectLegacyTasks();
+				this.agentThreads.reconcileStaleRuntimes("agent runtime owner unavailable after restart");
+				this.recoverInterruptedTurns();
+			}
 		} catch (error) {
 			this.#database.close();
 			throw storageError(error);
@@ -634,26 +653,25 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 
 	listSessions(query: SessionListQuery = {}): readonly SessionOverview[] {
 		try {
-			const limit = query.limit ?? 20;
-			const offset = query.offset ?? 0;
-			if (!Number.isSafeInteger(limit) || limit < 0 || limit > 1_000) {
-				throw new RangeError("session list limit must be between 0 and 1000");
-			}
-			if (!Number.isSafeInteger(offset) || offset < 0) {
-				throw new RangeError("session list offset must be a non-negative safe integer");
-			}
-			const workspaceRoot = query.workspaceRoot?.trim();
+			const { limit, offset } = sessionListPage(query);
+			const filters = sessionListSqlFilter(query);
 			const rows = this.#database.prepare(`
 				SELECT session_id, workspace_root, thread_id, created_at,
 				       updated_at, last_active_at, status
 				FROM sessions
-				${workspaceRoot ? "WHERE workspace_root = ?" : ""}
+				${filters.where}
 				ORDER BY last_active_at DESC, session_id DESC
 				LIMIT ? OFFSET ?
-			`).all(...(
-				workspaceRoot ? [workspaceRoot, limit, offset] : [limit, offset]
-			)) as readonly NormalizedSessionRow[];
-			return Object.freeze(rows.map((row) => this.#sessionOverview(row)));
+			`).all(...filters.parameters, limit, offset) as readonly NormalizedSessionRow[];
+			const operational = this.#stateRepository.loadSessionOperationalStates(
+				rows.map((row) => identity(row.session_id, "sessionId")),
+			);
+			return Object.freeze(rows.map((row) => {
+				const sessionId = identity(row.session_id, "sessionId");
+				const state = operational.get(sessionId);
+				if (!state) throw new StorageFailure("session operational state is missing");
+				return this.#sessionOverview(row, state);
+			}));
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -661,12 +679,17 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 
 	loadSession(sessionId: string): SessionOverview | undefined {
 		try {
+			const normalizedSessionId = identity(sessionId, "sessionId");
 			const row = this.#database.prepare(`
 				SELECT session_id, workspace_root, thread_id, created_at,
 				       updated_at, last_active_at, status
 				FROM sessions WHERE session_id = ?
-			`).get(identity(sessionId, "sessionId")) as NormalizedSessionRow | undefined;
-			return row ? this.#sessionOverview(row) : undefined;
+			`).get(normalizedSessionId) as NormalizedSessionRow | undefined;
+			if (!row) return undefined;
+			const operational = this.#stateRepository
+				.loadSessionOperationalStates([normalizedSessionId]).get(normalizedSessionId);
+			if (!operational) throw new StorageFailure("session operational state is missing");
+			return this.#sessionOverview(row, operational);
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -730,6 +753,9 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			return this.#write(() => {
 				const sourceSessionId = identity(input.sourceSessionId, "sourceSessionId");
 				const targetSessionId = identity(input.targetSessionId, "targetSessionId");
+				const targetWorkspaceRoot = input.targetWorkspaceRoot === undefined
+					? undefined
+					: identity(input.targetWorkspaceRoot, "targetWorkspaceRoot");
 				if (sourceSessionId === targetSessionId || this.#sessionExists(targetSessionId)) {
 					throw new StorageFailure("target session already exists");
 				}
@@ -744,7 +770,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					) VALUES (?, ?, ?, ?, ?, ?, 'active')
 				`).run(
 					targetSessionId,
-					source.workspaceRoot,
+					targetWorkspaceRoot ?? source.workspaceRoot,
 					targetSessionId,
 					now,
 					now,
@@ -1361,6 +1387,33 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				throw new StorageFailure("compact checkpoint transcript reference is invalid");
 			}
 			return state;
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	loadStates(
+		sessionIds: readonly string[],
+		keys: readonly RuntimeStateKey[],
+	): readonly SessionStateBatchEntry[] {
+		try {
+			return this.#stateRepository.loadStates(sessionIds, keys);
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	loadSessionMetadata(sessionId: string): SessionMetadata {
+		try {
+			return this.#stateRepository.loadSessionMetadata(identity(sessionId, "sessionId"));
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	updateSessionMetadata(input: UpdateSessionMetadataInput): SessionMetadata {
+		try {
+			return this.#stateRepository.updateSessionMetadata(input);
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -3058,30 +3111,6 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		return Object.freeze([...sessionIds]);
 	}
 
-	#reconcileStaleSessionRuntimeLeases(): void {
-		this.#write(() => {
-			const rows = this.#database.prepare(`
-				SELECT rowid, owner_pid FROM session_runtime_leases
-			`).all() as readonly {
-				readonly rowid: unknown;
-				readonly owner_pid: unknown;
-			}[];
-			const staleRowIds = rows.flatMap((row): number[] => {
-				if (typeof row.rowid !== "number" || !Number.isSafeInteger(row.rowid)) return [];
-				if (typeof row.owner_pid !== "number" || !Number.isSafeInteger(row.owner_pid)
-					|| row.owner_pid <= 0 || !this.#isProcessAlive(row.owner_pid)) {
-					return [row.rowid];
-				}
-				return [];
-			});
-			if (staleRowIds.length === 0) return;
-			this.#database.prepare(`
-				DELETE FROM session_runtime_leases
-				WHERE rowid IN (SELECT value FROM json_each(?))
-			`).run(JSON.stringify(staleRowIds));
-		});
-	}
-
 	#storageMetrics(): SessionStorageMetrics {
 		const metric = (name: "page_count" | "freelist_count" | "page_size"): number =>
 			Number(this.#database.pragma(name, { simple: true }));
@@ -3241,7 +3270,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		return Object.freeze({ workspaceRoot: row.workspace_root, threadId: row.thread_id });
 	}
 
-	#sessionOverview(row: NormalizedSessionRow): SessionOverview {
+	#sessionOverview(
+		row: NormalizedSessionRow,
+		operational: SessionOperationalStateProjection,
+	): SessionOverview {
 		const sessionId = identity(row.session_id, "sessionId");
 		const segments = this.#lineageSegments(sessionId);
 		let messageCount = 0;
@@ -3273,6 +3305,16 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			status: identity(row.status, "status"),
 			messageCount,
 			summaryCount,
+			metadataRevision: operational.metadata.revision,
+			archived: operational.metadata.archived,
+			deleted: operational.metadata.deleted,
+			leaseState: operational.leaseState,
+			pendingState: operational.pendingState,
+			...(operational.latestTurnStatus
+				? { latestTurnStatus: operational.latestTurnStatus }
+				: {}),
+			...(operational.metadata.title ? { title: operational.metadata.title } : {}),
+			...(operational.metadataIssue ? { metadataIssue: operational.metadataIssue } : {}),
 			...(link.parentId ? { parentId: link.parentId } : {}),
 			...(link.forkPoint === undefined ? {} : { forkPoint: link.forkPoint }),
 		});
@@ -4518,6 +4560,7 @@ function eventSequence(value: unknown): number {
 function storageError(error: unknown): Error {
 	if (error instanceof StorageFailure
 		|| error instanceof SessionInUseError
+		|| error instanceof SessionMetadataConflictError
 		|| error instanceof SessionStateError
 		|| error instanceof RangeError) return error;
 	const code = sqliteCode(error);

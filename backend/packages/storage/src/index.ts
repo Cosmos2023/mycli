@@ -2,6 +2,7 @@ export {
 	MessageIdConflictError,
 	projectMutationMetadata,
 	SessionInUseError,
+	SessionMetadataConflictError,
 	SessionStateError,
 	StorageFailure,
 } from "./session-store.ts";
@@ -102,6 +103,10 @@ export type {
 	SessionPayloadCleanupResult,
 	SessionOrphanCleanupResult,
 	SessionOverview,
+	SessionLeaseState,
+	SessionMetadata,
+	SessionPendingState,
+	SessionStateBatchEntry,
 	SequencedHistoryItem,
 	SessionSearchQuery,
 	SessionSearchResult,
@@ -114,6 +119,7 @@ export type {
 	SessionVacuumResult,
 	TurnStore,
 	TurnReservation,
+	UpdateSessionMetadataInput,
 } from "./session-store.ts";
 export {
 	BACKFILL_SEARCH_SQL,
