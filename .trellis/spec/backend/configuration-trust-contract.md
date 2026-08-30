@@ -36,6 +36,34 @@ export interface ResolveConfigOptions {
 export interface ResolvedConfig {
 	readonly config: NodeRuntimeConfig;
 	readonly layers: ConfigLayerStack;
+	readonly diagnostics: readonly ConfigDiagnostic[];
+}
+
+export const CONFIG_DIAGNOSTIC_VERSION = 1 as const;
+
+export type ConfigDiagnosticCode =
+	| "config_read_failed"
+	| "deprecated_inline_secret"
+	| "forbidden_inline_secret"
+	| "invalid_toml"
+	| "invalid_value"
+	| "unknown_key"
+	| "unknown_table";
+
+export interface ConfigDiagnostic {
+	readonly version: typeof CONFIG_DIAGNOSTIC_VERSION;
+	readonly code: ConfigDiagnosticCode;
+	readonly severity: "warning" | "error";
+	readonly layer?: ConfigLayerId;
+	readonly keyPath?: string;
+	readonly line?: number;
+	readonly column?: number;
+	readonly message: string;
+	readonly remediation?: string;
+}
+
+export class ConfigError extends Error {
+	readonly diagnostic: ConfigDiagnostic;
 }
 
 export function resolveConfig(
@@ -66,6 +94,30 @@ Layers are passed to the pure resolver in descending precedence:
 
 `resolveConfig` remains the compatibility facade. New diagnostics and settings surfaces use
 `resolveConfigWithMetadata` instead of reconstructing precedence.
+
+### Diagnostic ownership
+
+`backend/packages/config` owns diagnostic classification. Successful metadata resolution returns
+warnings through `ResolvedConfig.diagnostics`; fatal read, parse, credential, and known-value
+failures throw `ConfigError` through both resolver entry points. Diagnostic surfaces such as doctor
+consume the typed shape and must not classify raw TOML, filesystem, or provider-profile exception
+text. The compatibility `resolveConfig` facade returns only the effective config on success.
+
+Unknown root keys, unknown tables, and unknown keys inside known tables are warnings. Their values
+remain ignored, preserving existing runtime behavior. Known legacy flat runtime keys, root TUI keys,
+`[plugins].enabled`, `[plugins].disabled`, and `compaction_l4_trigger_ratios_by_model` are accepted
+without false unknown-key warnings.
+
+Syntax diagnostics copy only the numeric `TomlError.line` and `TomlError.column`. Schema findings
+use a bounded dotted `keyPath`; the parser does not retain ordinary key ranges. Diagnostic fields
+must not include raw values, TOML source/code blocks, exception stacks, request data, credentials,
+or absolute paths. Unsupported provider/protocol settings are converted at the settings boundary
+to value-free `invalid_value` diagnostics rather than exposing the helper exception message.
+
+Project credential fields are forbidden. Only a root-level `api_key` in `user` or `legacy_user`
+remains runtime-readable and emits `deprecated_inline_secret`; credentials inside tables, including
+`model.api_key`, are forbidden in every file layer. Environment credentials and the credential
+store remain valid and warning-free.
 
 ### Metadata
 
@@ -107,10 +159,15 @@ restart before repository hooks, MCP, plugins, and skills become visible.
 |---|---|
 | Trust record is missing, malformed, stale, or unreadable | Resolve trust as `unknown`; disable repository input |
 | Workspace cannot be canonicalized | Resolve trust as `unknown`; disable repository input |
-| Trust is `unknown` or `untrusted` and project TOML is malformed/unreadable | Do not read it; continue with user/legacy/default layers |
-| Trust is `trusted` and project TOML is malformed | Throw `config_error: invalid TOML in project config` |
-| Trust is `trusted` and project TOML cannot be read for a non-`ENOENT` reason | Throw `config_error: could not read project config` |
+| Trust is `unknown` or `untrusted` and project TOML is malformed/unreadable | Do not read it; continue with user/legacy/default layers and emit no project diagnostic |
+| Trust is `trusted` and project TOML is malformed | Throw `ConfigError` with `invalid_toml`, `layer=project`, and parser-provided line/column only |
+| A config file cannot be read for a non-`ENOENT` reason | Throw `ConfigError` with `config_read_failed` and the file layer, without its absolute path |
 | Any config file is missing (`ENOENT`) | Treat that layer as empty |
+| A root key, table, or key inside a known table is unsupported | Return a deterministic `unknown_key` or `unknown_table` warning with layer and dotted key path; ignore the value |
+| A project config contains an inline credential field | Throw `forbidden_inline_secret` with layer and key path; do not include the value |
+| A user or legacy-user config contains root `api_key` | Keep it readable and return `deprecated_inline_secret` with migration remediation |
+| Any file config contains a credential field inside a table | Throw `forbidden_inline_secret`; `[model].api_key` is not a compatibility field |
+| A known value, provider, or protocol is invalid | Throw `invalid_value` with the canonical key path and value-free remediation |
 | A lower-priority layer supplies the same key | Keep it in `origin.overridden`; do not select its value |
 | Metadata is serialized for diagnostics | Expose source and key names only; never expose values or secrets |
 | Resumed session workspace differs from launch workspace | Re-resolve trust and configuration using persisted `workspace_root` |
@@ -119,12 +176,18 @@ restart before repository hooks, MCP, plugins, and skills become visible.
 
 - Good: a trusted project model overrides the user model; an environment model overrides both;
   provenance reports environment as the source and project/user as overridden.
+- Good: `model.nmae` produces one `unknown_key` warning naming the owning layer and key path while
+  the configured value remains absent from the diagnostic and runtime configuration.
 - Base: no project trust record exists; user configuration and defaults load normally, and the
   project layer reports `workspace_not_trusted`.
+- Base: a legacy user root `api_key` still resolves but produces one migration warning; the same key
+  under `[model]` is rejected.
 - Bad: startup parses `.mycli/config.toml`, then checks trust and discards the result. Parsing alone
   crosses the security boundary and can surface project-controlled failures.
 - Bad: resume uses `process.cwd()` for trust while loading the session from another workspace. This
   can expose the wrong project's integrations and omit the session project's user decision.
+- Bad: doctor catches `Error` and displays its message. Provider/profile helpers may include a raw
+  configured value, while TOML errors may include source code and private paths.
 
 ## 6. Tests Required
 
@@ -133,6 +196,13 @@ restart before repository hooks, MCP, plugins, and skills become visible.
   resolution succeeds without reading it.
 - Config unit tests cover trusted project, user-only, legacy fallback, environment override, CLI
   override, malformed enabled layers, and missing files.
+- Config unit tests assert diagnostic version, code, severity, deterministic order, owning file
+  layer, dotted key path, and parser-provided line/column where applicable.
+- Config tests cover unknown roots/tables/known-table keys, accepted legacy/TUI/plugin vocabulary,
+  project credential rejection, legacy root `api_key` migration, table credential rejection, and
+  unsupported provider/protocol redaction.
+- Every redaction test places a sentinel in the configured value and asserts it is absent from both
+  `ConfigError.message` and the serialized diagnostic.
 - Integration adapter tests make repository hook/MCP/plugin files unreadable or malformed and
   assert `includeRepository: false` neither reads nor reports them.
 - Backend integration tests assert project configuration becomes active only after trust is
@@ -141,6 +211,8 @@ restart before repository hooks, MCP, plugins, and skills become visible.
   and assert trust status and discovered resources belong only to the persisted workspace.
 - Management and doctor tests assert their repository visibility uses the same trust state as
   runtime composition.
+- Doctor tests assert warnings and fatal `ConfigError` values map to one bounded row containing only
+  layer, key, line, column, public message, and remediation; doctor must not start a provider.
 
 ## 7. Wrong vs Correct
 
@@ -172,3 +244,31 @@ const integrations = await discoverIntegrations({
 ```
 
 On resume, assign `workspaceRoot` from the stored session before repeating this sequence.
+
+### Diagnostic projection
+
+Wrong:
+
+```ts
+try {
+	await resolveConfig(options);
+} catch (error) {
+	return { status: "failed", message: String(error) };
+}
+```
+
+Correct:
+
+```ts
+try {
+	const resolved = await resolveConfigWithMetadata(options);
+	return resolved.diagnostics.map(projectDiagnosticRow);
+} catch (error) {
+	return isConfigError(error)
+		? [projectDiagnosticRow(error.diagnostic)]
+		: [{ status: "failed", message: "configuration invalid" }];
+}
+```
+
+`projectDiagnosticRow` may project only the bounded typed fields; it must not inspect raw parser or
+filesystem exceptions.

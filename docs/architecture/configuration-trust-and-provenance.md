@@ -1,6 +1,6 @@
 # Configuration Trust And Provenance
 
-Status: accepted for the v0.2 configuration foundation.
+Status: accepted for the v0.2 configuration foundation and diagnostics.
 
 ## Context
 
@@ -61,6 +61,29 @@ configuration must not contain credentials. Provenance and diagnostics may expos
 source categories, but never raw values. The existing `resolveConfig` result remains an internal
 runtime object and must not be serialized directly to the TUI or logs.
 
+## Diagnostic Boundary
+
+The configuration package owns one versioned diagnostic vocabulary. `resolveConfigWithMetadata`
+returns value-free warning diagnostics with the resolved configuration and layer stack. Fatal read,
+parse, credential, and known-value failures cross the boundary as `ConfigError` with the same
+diagnostic shape. Runtime and management callers consume that contract instead of classifying raw
+parser or filesystem exceptions themselves.
+
+Unknown root keys, tables, and keys inside known tables are warnings. They retain the owning file
+layer and a bounded dotted key path, but do not change effective runtime behavior. TOML syntax
+failures retain only the parser-provided numeric line and column. Schema findings do not claim a
+source range because the current TOML parser does not retain one for ordinary keys.
+
+Diagnostics may contain a stable version, code, severity, file-layer id, bounded key path, numeric
+source position, public message, and remediation. They must not contain raw configured values,
+TOML source or code blocks, exception stacks, request data, credentials, or absolute file paths.
+`mycli doctor` maps this structure into bounded rows without starting a provider.
+
+Project credential fields are fatal. For compatibility, only a root-level `api_key` in the user or
+legacy-user file remains readable and emits a migration warning. Credential fields inside tables,
+including `[model].api_key`, are rejected in every file layer. Environment credentials and
+`~/.mycli/auth.json` remain valid without warnings.
+
 ## Compatibility
 
 `resolveConfig` remains the compatibility facade for existing callers. Callers that need source
@@ -69,8 +92,8 @@ behavior for compatibility tests and controlled adapters; interactive runtime an
 management callers must always pass the persisted state.
 
 Legacy flat keys remain readable. Reads do not rewrite TOML. The v0.2 foundation does not yet add
-unknown-key diagnostics, line/column TOML diagnostics, profiles, system configuration, migrations,
-or a complete schema service.
+profiles, system configuration, automatic migrations, strict unknown-key enforcement, exact source
+ranges for schema findings, or a complete generated schema service.
 
 ## Operational Consequences
 

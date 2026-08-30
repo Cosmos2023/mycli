@@ -94,6 +94,14 @@ config at `~/.mycli/config.toml`, legacy user config at `~/.config/mycli/config.
 defaults. Project configuration is not read until the canonical workspace has a persisted `trusted`
 decision. Credentials belong in `auth.json` or the environment, never in project configuration.
 
+Configuration validation is value-free: `mycli doctor` reports the owning layer and dotted key path
+for unknown keys or tables, and reports parser-provided line and column numbers for invalid TOML.
+Unknown entries are warnings and are ignored by the runtime. Invalid known values and credential
+fields inside configuration tables are errors. A legacy root-level `api_key` in user configuration
+remains readable with a migration warning; move it to `~/.mycli/auth.json` and remove it from TOML.
+Diagnostic output never includes the configured value, TOML source text, an exception stack, or an
+absolute configuration path.
+
 `sessions.db` is authoritative. The Node runtime repairs derivable session files during session
 preparation; deleting or corrupting a projection does not make it a provider-recovery source.
 
@@ -116,10 +124,6 @@ prompt_cache_key_enabled = true
 [reasoning]
 enabled = true
 effort = "medium"
-
-[runtime]
-collaboration_mode = "default"
-sandbox_mode = "workspace-write"
 
 [memory]
 enabled = false
