@@ -283,3 +283,47 @@ Enabled manifest-gated concurrent execution for safe Node tool phases while pres
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Configuration trust foundation
+
+**Date**: 2026-08-30
+**Task**: Configuration trust foundation
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added typed configuration layers and provenance, gated project configuration and repository integrations on canonical workspace trust, made resume use the persisted session workspace, and documented the resulting contract.
+
+### Main Changes
+
+- Added versioned configuration layer and per-key provenance metadata while preserving the
+  `resolveConfig` compatibility facade.
+- Gated project TOML, execution rules, hooks, MCP, plugins, and repository skills on canonical
+  workspace trust.
+- Made resumed sessions resolve trust and integrations from the persisted session workspace.
+- Added provider-free regression coverage and configuration trust architecture/code-spec docs.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8ceca308` | feat(config): gate project configuration on workspace trust |
+| `d44bb4c4` | docs(config): document trust and provenance contract |
+
+### Testing
+
+- [OK] `npm test`
+- [OK] `npm run test:release`
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] `npm run contracts:check`
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
