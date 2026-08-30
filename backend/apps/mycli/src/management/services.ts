@@ -24,6 +24,7 @@ import {
 	doctorResponseFromReport,
 	runDoctor,
 } from "./doctor/runner.ts";
+import { inspectSandboxStatus } from "./sandbox.ts";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -64,6 +65,7 @@ export interface ManagementServicesOptions {
 	readonly plugins: PluginManagementContract;
 	readonly mcp: McpManagementContract;
 	readonly doctor: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly sandbox: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 	readonly setup: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 }
 
@@ -100,6 +102,7 @@ export class ManagementServices implements ManagementExecutor {
 
 	#dispatch(command: ManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse> {
 		if (command.kind === "doctor") return this.#services.doctor(signal);
+		if (command.kind === "sandbox") return this.#services.sandbox(signal);
 		if (command.kind === "setup") return this.#services.setup(signal);
 		if (command.kind === "config") {
 			if (command.action === "validate") return this.#services.config.validate(signal);
@@ -181,6 +184,7 @@ export async function createDefaultManagementServices(
 			workspaceTrust,
 			includeRepository,
 		}, signal)),
+		sandbox: (signal) => inspectSandboxStatus({}, signal),
 		setup: options.setup ?? (async () => failure(
 			"setup",
 			"setup is not available in this M7 batch",

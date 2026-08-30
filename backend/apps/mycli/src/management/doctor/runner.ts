@@ -48,7 +48,7 @@ export function runDoctor(
 		{ name: "extensions", collect: (collectorSignal) => (
 			collectExtensionChecks(options, collectorSignal)
 		) },
-		{ name: "process", collect: () => collectProcessChecks(options) },
+		{ name: "process", collect: (collectorSignal) => collectProcessChecks(options, collectorSignal) },
 	], signal);
 }
 

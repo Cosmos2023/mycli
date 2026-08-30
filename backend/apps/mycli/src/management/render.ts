@@ -5,6 +5,7 @@ import type {
 	ConfigSettingValue,
 } from "./config.ts";
 import { redactDoctorText } from "./doctor/redaction.ts";
+import type { SandboxStatusManagementResponse } from "./sandbox.ts";
 
 export function renderManagementResponse(
 	command: ManagementCommand,
@@ -12,12 +13,27 @@ export function renderManagementResponse(
 ): string {
 	if (command.json) return `${JSON.stringify(response)}\n`;
 	if (command.kind === "doctor") return renderDoctor(response);
+	if (command.kind === "sandbox") {
+		return renderSandbox(response as SandboxStatusManagementResponse);
+	}
 	if (command.kind === "config") {
 		return renderConfig(response as ConfigManagementResponse);
 	}
 	const lines = [response.message ?? `mycli ${command.kind} ${response.ok ? "complete" : "failed"}`];
 	for (const row of responseRows(command, response)) lines.push(row);
 	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
+	return `${lines.join("\n")}\n`;
+}
+
+function renderSandbox(response: SandboxStatusManagementResponse): string {
+	const lines = [
+		"mycli sandbox status",
+		`state=${response.readiness.state}`,
+		`code=${response.readiness.code}`,
+		`platform=${response.readiness.platform}`,
+		`isolation=${response.readiness.isolation}`,
+	];
+	if (response.remediation) lines.push(`remediation=${response.remediation}`);
 	return `${lines.join("\n")}\n`;
 }
 

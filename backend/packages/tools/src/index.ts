@@ -116,6 +116,20 @@ export type {
 	ProcessSandboxProbes,
 	SandboxedProcessLaunch,
 } from "./process-sandbox.ts";
+export {
+	inspectSandboxReadiness,
+	packagedWindowsSandboxHelper,
+	sandboxExecutableExists,
+	sandboxNotRequired,
+} from "./sandbox-readiness.ts";
+export type {
+	SandboxReadiness,
+	SandboxReadinessCode,
+	SandboxReadinessIsolation,
+	SandboxReadinessProbes,
+	SandboxReadinessState,
+	WindowsSandboxHandshake,
+} from "./sandbox-readiness.ts";
 export { MACOS_SEATBELT_EXECUTABLE } from "./sandbox/macos-seatbelt.ts";
 export { LINUX_BUBBLEWRAP_EXECUTABLES } from "./sandbox/linux-bubblewrap.ts";
 export { WINDOWS_SANDBOX_PROTOCOL_VERSION } from "./sandbox/windows-restricted-token.ts";

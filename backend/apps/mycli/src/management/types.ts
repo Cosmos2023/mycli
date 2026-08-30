@@ -53,9 +53,16 @@ export type ConfigManagementCommand =
 		readonly json: boolean;
 	};
 
+export type SandboxManagementCommand = {
+	readonly kind: "sandbox";
+	readonly action: "status";
+	readonly json: boolean;
+};
+
 export type ManagementCommand =
 	| { readonly kind: "doctor"; readonly json: boolean }
 	| { readonly kind: "setup"; readonly json: boolean }
+	| SandboxManagementCommand
 	| ConfigManagementCommand
 	| HooksManagementCommand
 	| PluginsManagementCommand

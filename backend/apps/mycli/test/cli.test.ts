@@ -105,7 +105,7 @@ test("help advertises the provider-free management surface", async () => {
 	const harness = cliHarness({ argv: ["--help"] });
 
 	assert.equal(await runCli(harness.options), 0);
-	for (const command of ["setup", "config", "doctor", "hooks", "plugins", "mcp"]) {
+	for (const command of ["setup", "config", "doctor", "sandbox", "hooks", "plugins", "mcp"]) {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
 	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);
@@ -223,24 +223,41 @@ test("configuration management runs without TTY, backend, provider, or TUI start
 });
 
 test("doctor and setup route before backend selection", async (t) => {
-	for (const kind of ["doctor", "setup"] as const) {
+	for (const kind of ["doctor", "setup", "sandbox"] as const) {
 		await t.test(kind, async () => {
 			let commandKind = "";
+			const response = kind === "sandbox"
+				? {
+					ok: true,
+					action: "status",
+					message: "mycli sandbox status",
+					readiness: {
+						state: "ready",
+						code: "ready",
+						platform: "darwin",
+						isolation: "macos_seatbelt",
+					},
+					exitCode: 0,
+				}
+				: { ok: true, action: kind, message: `${kind} complete` };
 			const harness = cliHarness({
-				argv: [kind],
+				argv: kind === "sandbox" ? [kind, "status"] : [kind],
 				stdin: { isTTY: false },
 				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
 				management: {
 					execute: async (command: { kind: string }) => {
 						commandKind = command.kind;
-						return { ok: true, action: kind, message: `${kind} complete` };
+						return response;
 					},
 				},
 			});
 
 			assert.equal(await runCli(harness.options), 0);
 			assert.equal(commandKind, kind);
-			assert.match(harness.stdout.join(""), new RegExp(`${kind} complete`));
+			assert.match(
+				harness.stdout.join(""),
+				new RegExp(kind === "sandbox" ? "mycli sandbox status" : `${kind} complete`),
+			);
 		});
 	}
 });
@@ -269,6 +286,7 @@ test("default management composition lists local extensions without backend star
 	let starts = 0;
 	for (const argv of [
 		["doctor", "--json"],
+		["sandbox", "status", "--json"],
 		["hooks", "list", "--json"],
 		["plugins", "list", "--json"],
 		["mcp", "list", "--json"],

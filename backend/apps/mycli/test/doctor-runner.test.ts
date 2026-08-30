@@ -1088,15 +1088,13 @@ test("runtime and process doctor validate local contracts without starting work"
 	const root = await doctorFixture(t);
 	const runtime = await collectRuntimeChecks();
 	let executableProbes = 0;
-	const processChecks = collectProcessChecks({
+	const processChecks = await collectProcessChecks({
 		workspaceRoot: root.workspaceRoot,
 		platform: "darwin",
 		isExecutable: () => {
 			executableProbes += 1;
 			return true;
 		},
-		pathExists: () => false,
-		isSymbolicLink: () => false,
 	});
 
 	assert.deepEqual(runtime.map((check) => [check.name, check.status]), [

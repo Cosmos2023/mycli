@@ -78,6 +78,7 @@ test("management facade dispatches every extension command to its provider-free 
 			inspect: async (id) => { calls.push(`mcp:inspect:${id}`); return result("inspect"); },
 		},
 		doctor: async () => { calls.push("doctor"); return result("doctor"); },
+		sandbox: async () => { calls.push("sandbox:status"); return result("status"); },
 		setup: async () => { calls.push("setup"); return result("setup"); },
 	});
 	const signal = new AbortController().signal;
@@ -105,6 +106,7 @@ test("management facade dispatches every extension command to its provider-free 
 		{ kind: "mcp", action: "list", json: false },
 		{ kind: "mcp", action: "inspect", serverId: "files", json: false },
 		{ kind: "doctor", json: false },
+		{ kind: "sandbox", action: "status", json: false },
 		{ kind: "setup", json: false },
 	] as const) {
 		assert.equal((await services.execute(command, signal)).ok, true);
@@ -126,6 +128,7 @@ test("management facade dispatches every extension command to its provider-free 
 		"mcp:list",
 		"mcp:inspect:files",
 		"doctor",
+		"sandbox:status",
 		"setup",
 	]);
 });
@@ -142,6 +145,7 @@ test("management facade converts service exceptions to one redacted failure", as
 		plugins: unusedService(),
 		mcp: unusedService(),
 		doctor: async () => never(),
+		sandbox: async () => never(),
 		setup: async () => never(),
 	});
 

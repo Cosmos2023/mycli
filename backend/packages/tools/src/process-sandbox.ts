@@ -1,6 +1,5 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import {
 	hasUnrestrictedFilesystem,
 	hasUnrestrictedNetwork,
@@ -15,6 +14,10 @@ import {
 	macosSeatbeltLaunch,
 } from "./sandbox/macos-seatbelt.ts";
 import { windowsRestrictedTokenLaunch } from "./sandbox/windows-restricted-token.ts";
+import {
+	packagedWindowsSandboxHelper,
+	sandboxExecutableExists,
+} from "./sandbox-readiness.ts";
 
 const PROTECTED_METADATA = [
 	[".git", "PROTECTED_ROOT_GIT"],
@@ -63,7 +66,7 @@ export function prepareSandboxedProcess(
 	}
 	const resolvedProfile = resolveProfile(profile);
 	const platform = probes.platform ?? process.platform;
-	const isExecutable = probes.isExecutable ?? executableExists;
+	const isExecutable = probes.isExecutable ?? sandboxExecutableExists;
 	const pathExists = probes.pathExists ?? existsSync;
 	const isSymbolicLink = probes.isSymbolicLink ?? symbolicLinkExists;
 	if (platform === "darwin") {
@@ -95,7 +98,7 @@ export function prepareSandboxedProcess(
 		);
 	}
 	if (platform === "win32") {
-		const helper = probes.windowsHelperPath ?? packagedWindowsHelper();
+		const helper = probes.windowsHelperPath ?? packagedWindowsSandboxHelper();
 		if (!isExecutable(helper)) throw unavailable();
 		return windowsRestrictedTokenLaunch(helper, argv, resolvedProfile);
 	}
@@ -147,27 +150,9 @@ function hostLaunch(argv: readonly string[]): SandboxedProcessLaunch {
 	});
 }
 
-function packagedWindowsHelper(): string {
-	return join(
-		dirname(fileURLToPath(import.meta.url)),
-		"..",
-		"native",
-		"windows",
-		"mycli-windows-sandbox.exe",
-	);
-}
-
 function validateArgv(argv: readonly string[]): void {
 	if (argv.length === 0 || !argv[0]?.trim()) {
 		throw new TypeError("process argv must contain a non-empty executable");
-	}
-}
-
-function executableExists(path: string): boolean {
-	try {
-		return statSync(path).isFile() && (process.platform === "win32" || (statSync(path).mode & 0o111) !== 0);
-	} catch {
-		return false;
 	}
 }
 

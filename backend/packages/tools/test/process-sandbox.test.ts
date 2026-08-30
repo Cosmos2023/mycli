@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	executionPolicy,
+	inspectSandboxReadiness,
 	prepareSandboxedProcess,
 	ProcessSandboxError,
 	type ProcessSandboxProbes,
@@ -191,6 +192,82 @@ test("restricted profiles fail closed when the platform wrapper is unavailable",
 			return true;
 		});
 	}
+});
+
+test("sandbox readiness reports macOS Linux and unsupported platforms without execution", async () => {
+	assert.deepEqual(await inspectSandboxReadiness(probes("darwin", ["/usr/bin/sandbox-exec"])), {
+		state: "ready",
+		code: "ready",
+		platform: "darwin",
+		isolation: "macos_seatbelt",
+	});
+	assert.deepEqual(await inspectSandboxReadiness(probes("linux", [])), {
+		state: "unavailable",
+		code: "helper_missing",
+		platform: "linux",
+		isolation: "linux_bubblewrap",
+	});
+	assert.deepEqual(await inspectSandboxReadiness({ platform: "aix" }), {
+		state: "unavailable",
+		code: "unsupported_platform",
+		platform: "aix",
+		isolation: "none",
+	});
+});
+
+test("Windows sandbox readiness validates bounded handshake states", async () => {
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const inspect = (handshake: {
+		readonly name: string;
+		readonly protocolVersion: number;
+		readonly setupComplete: boolean;
+		readonly sandboxReady: boolean;
+	}) => inspectSandboxReadiness({
+		platform: "win32",
+		windowsHelperPath: helper,
+		isExecutable: (path) => path === helper,
+		windowsHandshake: async () => handshake,
+	});
+
+	assert.equal((await inspect({
+		name: "mycli-windows-sandbox",
+		protocolVersion: 1,
+		setupComplete: false,
+		sandboxReady: false,
+	})).state, "setup_required");
+	assert.equal((await inspect({
+		name: "mycli-windows-sandbox",
+		protocolVersion: 1,
+		setupComplete: true,
+		sandboxReady: false,
+	})).code, "enforcement_unavailable");
+	assert.equal((await inspect({
+		name: "mycli-windows-sandbox",
+		protocolVersion: 1,
+		setupComplete: true,
+		sandboxReady: true,
+	})).state, "ready");
+	assert.equal((await inspect({
+		name: "other-helper",
+		protocolVersion: 1,
+		setupComplete: true,
+		sandboxReady: true,
+	})).code, "handshake_failed");
+});
+
+test("Windows sandbox readiness fails closed for a missing or failed helper", async () => {
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	assert.equal((await inspectSandboxReadiness({
+		platform: "win32",
+		windowsHelperPath: helper,
+		isExecutable: () => false,
+	})).code, "helper_missing");
+	assert.equal((await inspectSandboxReadiness({
+		platform: "win32",
+		windowsHelperPath: helper,
+		isExecutable: () => true,
+		windowsHandshake: async () => { throw new Error("private helper output"); },
+	})).code, "handshake_failed");
 });
 
 test("Linux fails closed when protected metadata is a writable symlink", async (t) => {

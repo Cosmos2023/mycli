@@ -7,7 +7,15 @@ import type {
 	PluginsManagementCommand,
 } from "./types.ts";
 
-const MANAGEMENT_COMMANDS = new Set(["config", "doctor", "setup", "hooks", "plugins", "mcp"]);
+const MANAGEMENT_COMMANDS = new Set([
+	"config",
+	"doctor",
+	"setup",
+	"sandbox",
+	"hooks",
+	"plugins",
+	"mcp",
+]);
 
 export function parseCliMode(argv: readonly string[]): CliMode {
 	const root = argv[0];
@@ -27,6 +35,12 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	if (root === "doctor") {
 		if (args.length > 0) throw usage("doctor [--json]");
 		return Object.freeze({ kind: "doctor", json });
+	}
+	if (root === "sandbox") {
+		if (args.length !== 1 || args[0] !== "status") {
+			throw usage("sandbox status [--json]");
+		}
+		return Object.freeze({ kind: "sandbox", action: "status", json });
 	}
 	if (root === "config") return parseConfig(args, json);
 	if (root === "hooks") return parseHooks(args, json);

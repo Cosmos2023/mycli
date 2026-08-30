@@ -11,6 +11,10 @@ test("parser recognizes provider-free management commands before interactive fla
 		kind: "management",
 		command: { kind: "setup", json: false },
 	});
+	assert.deepEqual(parseCliMode(["sandbox", "status", "--json"]), {
+		kind: "management",
+		command: { kind: "sandbox", action: "status", json: true },
+	});
 	assert.deepEqual(parseCliMode(["config", "validate", "--json"]), {
 		kind: "management",
 		command: { kind: "config", action: "validate", json: true },
@@ -105,6 +109,9 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["mcp", "inspect"],
 		["subagents", "unknown"],
 		["setup", "--json"],
+		["sandbox"],
+		["sandbox", "setup"],
+		["sandbox", "status", "extra"],
 		["--runtime-backend=node"],
 	] as const) {
 		assert.throws(

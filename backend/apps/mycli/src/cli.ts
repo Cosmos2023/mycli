@@ -13,7 +13,7 @@ import {
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
 import type { SetupInputStream, SetupOutputStream } from "./management/setup.ts";
-import type { ManagementExecutor } from "./management/types.ts";
+import type { ManagementCommand, ManagementExecutor } from "./management/types.ts";
 import type {
 	NodeBackend,
 	StartNodeBackendOptions,
@@ -33,6 +33,7 @@ Commands:
   setup                             Configure provider credentials
   config validate|show|get|set|unset Validate, inspect, or update user configuration
   doctor [--json]                   Check local runtime health
+  sandbox status [--json]           Inspect platform sandbox readiness
   hooks list|inspect|approve|revoke Manage configured hooks
   plugins list|inspect|run          Manage local plugins
   mcp list|inspect                  Inspect MCP servers
@@ -102,6 +103,16 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		try {
 			const homeDir = options.homeDir ?? homedir();
 			const management = options.management ?? await (async () => {
+				if (mode.command.kind === "sandbox") {
+					const { inspectSandboxStatus } = await import("./management/sandbox.ts");
+					const executor: ManagementExecutor = {
+						execute: (
+							_command: ManagementCommand,
+							signal = new AbortController().signal,
+						) => inspectSandboxStatus({}, signal),
+					};
+					return executor;
+				}
 				const [{ createDefaultManagementServices }, { runSetupCommand }] = await Promise.all([
 					import("./management/services.ts"),
 					import("./management/setup.ts"),
