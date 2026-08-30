@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend spec index and pre-development routing."}
+{"file":".trellis/spec/backend/runtime-tui-gateway-contract.md","reason":"Gateway request, runtime ownership, session persistence, and TUI projection contract."}
+{"file":".trellis/spec/backend/configuration-trust-contract.md","reason":"Configuration layer, user mutation, provenance, and secret-boundary rules."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Bounded gateway/config failure mapping and live/resume error behavior."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Project testing and cross-layer quality requirements."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"The change spans TUI, gateway, runtime, config, and storage."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing session preference and config mutation boundaries."}
+{"file":".trellis/tasks/08-30-session-scoped-model-selection/research/model-selection-scope.md","reason":"Selected scope contract, Codex comparison, alternatives, and edge cases."}

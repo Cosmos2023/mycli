@@ -1933,9 +1933,10 @@ try {
 - A virtual/new session remains unpersisted until an accepted turn, model selection, or mode change
   needs a snapshot. Before provider IO, `turn.submit` ensures that the target session has one complete
   preference snapshot matching the frozen turn model and collaboration mode.
-- Successful model selection updates the user-owned default config and the active session preference
-  together. Restoring another session changes only active runtime config and must not rewrite that
-  default.
+- Successful model selection always persists the active session preference. It updates the
+  user-owned default config and new-session fallback only for explicit `user` scope; omitted or
+  explicit `session` scope must not rewrite that default. Restoring another session changes only
+  active runtime config.
 - `reasoning_effort='none'` restores with `thinkingEnabled=false`; every other supported effort
   restores with `thinkingEnabled=true`.
 - `auth_ref` identifies the credential lookup. API keys remain in the auth store or process
@@ -3278,8 +3279,9 @@ return nodeRuntime.run(turn);
 
 - Node registry: `node-slash-command-registry.ts`.
 - Node execution: `command.run`, command-specific RPCs, and TUI client actions.
-- Model catalog: `~/.mycli/models.json` -> `model.list` -> TUI model selector -> `model.select` ->
-  `~/.mycli/config.toml`.
+- Model catalog: `~/.mycli/models.json` -> `model.list` -> TUI model selector ->
+  `model.select({scope: session|user})` -> active session preferences, with user config mutation
+  only for explicit `user` scope.
 - Visual settings: TUI settings selector -> `settings.save` -> `saveShellSettings` ->
   `~/.mycli/config.toml`.
 
@@ -3302,9 +3304,13 @@ return nodeRuntime.run(turn);
   and a successful `model.select` response refreshes the stored catalog so current markers and
   runtime edits to `models.json` are visible without restarting.
 - `model.select` resolves `auth_ref` on the backend from the selected catalog entry, verifies the
-  credential exists, validates provider/protocol/base URL and supported reasoning effort, and only
-  then atomically persists the complete model/request/reasoning group through the config package's
-  lossless batch editor.
+  credential exists, and validates provider/protocol/base URL and supported reasoning effort before
+  changing state. Scope is exactly `session` or `user`; missing scope defaults to `session`.
+- `session` scope saves and activates only the current session preferences. `user` scope first
+  atomically persists the complete model/request/reasoning group through the config package's
+  lossless batch editor, then saves and activates the same current-session preferences and updates
+  model defaults used by new sessions. It does not promote the active session's collaboration mode
+  into the new-session default.
 - `model.select` and `settings.save` pass the active session workspace, process environment, and
   persisted workspace-trust decision to the typed config writer. The gateway/TUI never submits TOML
   paths, credentials, or arbitrary tables.
@@ -3313,9 +3319,12 @@ return nodeRuntime.run(turn);
   `statusline_enabled`, `tui_statusbar_mode`, and `tui_theme`. It preserves unrelated TOML,
   comments, and newline style rather than serializing the complete user document.
 - Bare TUI `/model`, direct `model.list`/`model.select`, and inline `/model <name>` share the same
-  catalog and selection path. Inline selection must not mutate only transient Gateway fields.
-- A failed selection leaves the active provider/model and durable config unchanged. A successful
-  selection is visible in `/status`, subsequent turns and subagents, and after restart.
+  catalog and selection path. The TUI adds a final scope stage with `Use for this session` first and
+  selected by default; inline selection omits scope and is therefore session-local.
+- A failed selection leaves the active provider/model, session preferences, and durable config
+  unchanged. A successful session selection is visible in `/status`, subsequent turns, subagents,
+  and resume without changing defaults for new sessions. A successful user selection additionally
+  survives as the default for new sessions.
 - Explicitly retired commands remain absent. Behavioral parity must not reintroduce retired
   surfaces such as agent-profile management.
 - Interactive input classifies a Slash command only when its canonical name or alias appears in the
@@ -3337,8 +3346,9 @@ return nodeRuntime.run(turn);
 - Public model payload or error -> no API key, bearer token, raw auth-store content, or private
   absolute path.
 - Invalid visual setting -> reject before config mutation with the existing bounded settings error.
-- Model or settings candidate/atomic write failure -> leave the prior user TOML and active runtime
-  state unchanged; return one bounded gateway error without source text, paths, or credentials.
+- Model or settings candidate/atomic write failure -> leave the prior user TOML, active runtime,
+  and session preferences unchanged; keep the selector open and return one bounded gateway error
+  without source text, paths, credentials, or raw submitted values.
 
 ### 5. Good/Base/Bad Cases
 
@@ -3359,12 +3369,16 @@ return nodeRuntime.run(turn);
   matching, duplicate and reasoning validation, and credential-free payloads.
 - A shared-fixture test feeds the same `models.json` through config, gateway, and TUI projections
   and compares all public fields and ordering.
-- Gateway tests cover bare/inline ownership, catalog-backed inline selection, structured failures,
-  current `/status` projection, and the next turn's model/reasoning overrides.
+- Gateway tests cover missing-scope session defaulting, invalid-scope rejection, explicit user scope,
+  bare/inline ownership, catalog-backed inline selection, structured failures, current `/status`
+  projection, and the next turn's model/reasoning overrides.
+- TUI tests cover the final scope stage, session-first focus, user/session callbacks, Esc
+  back-navigation, inline errors, and narrow widths.
 - TUI adapter tests pass a catalog through the top-level bootstrap envelope, project every entry,
   preserve it across a catalog-free `status.changed`, and replace it from a later `model.list`.
 - Backend integration tests use a temporary HOME with a real catalog and auth store, verify
-  catalog-owned `auth_ref`, persistence, restart recovery, and absence of credentials in responses.
+  catalog-owned `auth_ref`, session-only config isolation, resume persistence, user-default
+  persistence, failed-write atomicity, and absence of credentials in responses.
 - Config and backend tests assert model and settings writers share the user-config lock, retain
   comments/CRLF and unrelated keys, skip byte-identical replacement, and preserve the previous file
   after validation or atomic-write failure.
@@ -3386,13 +3400,10 @@ gateway.model = requestedModel;
 const catalog = await loadModelCatalog({ homeDir, currentConfig });
 const selected = validateCatalogSelection(catalog, request);
 const active = sessionCoordinator.snapshot();
-await writeUserProviderConfig({
-	...selected,
-	homeDir,
-	workspaceRoot: active.workspaceRoot,
-	env,
-	workspaceTrust: await trustStore.load(active.workspaceRoot),
-});
+const preferences = sessionPreferencesFromSelection(selected, active);
+if (request.scope === "user") await writeUserProviderConfig({ ...selected, homeDir });
+saveSessionPreferences(active, preferences);
+active.binding.setSessionPreferences(preferences);
 ```
 
 ## Scenario: Transcript And Content-Blob Maintenance With Backend Restart

@@ -266,6 +266,12 @@ active session. Provider-free setup uses an untrusted, environment-free validati
 at the user home. Credentials remain in `auth.json`; setup retains separate atomic config/auth
 writes and its existing partial-success ordering.
 
+Ordinary `model.select` requests use the closed `session | user` scope contract and default a
+missing scope to `session`. Session scope validates the complete catalog selection and credential,
+then persists only active-session preferences. User scope calls `writeUserProviderConfig` before
+changing session/default state; a failed user write must leave both the prior session preferences
+and user TOML unchanged. The setup wizard remains an explicit user-default configuration flow.
+
 Successful mutation responses contain only the canonical key, `changed`, the post-write effective
 source, overridden layer ids, and bounded diagnostics. They never contain the submitted value.
 Post-write resolution is mandatory because an environment or trusted project layer may continue
@@ -323,9 +329,9 @@ sanitized response.
   unknown tables, and reports `effectiveSource=environment` when `MYCLI_MEMORY_ENABLED` still wins.
 - Good: setting `model.name` over a legacy root `model = "..."` replaces the scalar collision with
   canonical `[model].name` without changing unrelated TOML.
-- Good: setup, `model.select`, `config set`, and `settings.save` race on one user file; each completed
-  batch observes the prior committed bytes under the same lock, so unrelated model, memory, and TUI
-  settings all survive.
+- Good: setup, user-scoped `model.select`, `config set`, and `settings.save` race on one user file;
+  each completed batch observes the prior committed bytes under the same lock, so unrelated model,
+  memory, and TUI settings all survive.
 - Good: provider selection removes legacy inline API keys while preserving CRLF, comments, plugin
   tables, and unknown extension keys inside `[model]` and `[request]`.
 - Base: no project trust record exists; user configuration and defaults load normally, and the

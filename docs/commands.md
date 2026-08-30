@@ -5,7 +5,7 @@ palette normally shows the common subset; hidden commands below remain supported
 
 | Command | Arguments | TUI behavior | During turn | Aliases |
 | --- | --- | --- | --- | --- |
-| `/model` | optional `[model] [--thinking-effort level]` | `~/.mycli/models.json` picker when bare; validated backend selection when inline | yes | - |
+| `/model` | optional `[model] [--thinking-effort level]` | `~/.mycli/models.json` picker when bare; validated session-scoped selection when inline | yes | - |
 | `/plan` | none | backend | no | - |
 | `/mode` | optional `[default\|plan]` | backend | no | - |
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | `/tools permissions` |
@@ -79,8 +79,12 @@ provider-ledger checks before the separate `--apply-vacuum` action is used for p
 
 `/model` uses the user-owned `~/.mycli/models.json` catalog. The Node runtime bootstraps it when it
 is missing, validates provider/protocol, endpoint,
-`auth_ref`, and reasoning-effort compatibility on selection, and persists successful selections
-to `~/.mycli/config.toml`. Catalog payloads sent to the TUI never include credentials or `auth_ref`.
+`auth_ref`, and reasoning-effort compatibility on selection. The TUI then asks whether to use the
+selection for the current session or make it the user default. `Use for this session` is the safe
+default and survives resume without changing `~/.mycli/config.toml` or new sessions. `Make user
+default` atomically updates the user configuration and applies the same selection to the active
+session. Inline `/model <name>` requests remain session-scoped. Catalog payloads sent to the TUI
+never include credentials or `auth_ref`.
 
 The current catalog format groups models by provider so one endpoint and credential reference are
 shared without repetition:

@@ -47,12 +47,9 @@ the trust decision and integration discovery scope.
 
 Session/CLI overrides affect the active runtime resolution and outrank durable files. Environment
 variables affect the process. User configuration is the durable cross-workspace default. Project
-configuration is durable only for its trusted workspace. A later settings service must make these
-destinations explicit and default interactive experiments to session scope.
-
-The current `/model` workflow still has legacy write semantics that update both user defaults and
-session preferences. Separating those actions is a follow-up change; it must consume this layer
-contract rather than introducing another resolver.
+configuration is durable only for its trusted workspace. Ordinary `/model` selection defaults to
+session scope and persists only active-session preferences; an explicit `Make user default` choice
+uses the typed user-config writer before applying the same preferences to the active session.
 
 ## Secret Boundary
 
