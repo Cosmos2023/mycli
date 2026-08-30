@@ -510,3 +510,37 @@ Added explicit session and user model-selection scopes across contracts, backend
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Phase 3 startup credential readiness
+
+**Date**: 2026-08-30
+**Task**: Phase 3 startup credential readiness
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added provider credential readiness to bootstrap, startup, model/session transitions, and turn submission; implemented cancellable TUI login recovery with draft preservation; expanded backend and TUI coverage; documented the runtime contract and user workflow.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e759ec6d` | (see git log) |
+| `52c977f6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
