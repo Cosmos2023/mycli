@@ -73,6 +73,20 @@ export function resolveConfig(
 export function resolveConfigWithMetadata(
 	options: ResolveConfigOptions,
 ): Promise<ResolvedConfig>;
+
+export type ConfigManagementCommand = {
+	readonly kind: "config";
+	readonly action: "validate" | "show";
+	readonly json: boolean;
+};
+
+export interface ConfigSettingRow {
+	readonly key: string;
+	readonly value: string | number | boolean | null | Readonly<Record<string, number>>;
+	readonly source: ConfigLayerId | "default";
+	readonly overridden: readonly ConfigLayerId[];
+	readonly truncated?: boolean;
+}
 ```
 
 Repository integration adapters accept an `includeRepository?: boolean` option. Runtime and
@@ -153,6 +167,28 @@ for the resumed session.
 Repository integrations are startup-scoped. Granting trust during a running session requires a
 restart before repository hooks, MCP, plugins, and skills become visible.
 
+### Provider-free configuration management
+
+`mycli config validate [--json]` and `mycli config show [--json]` are read-only management commands.
+Default management composition loads `WorkspaceTrustStore` before constructing
+`ConfigManagementService`, and each action calls `resolveConfigWithMetadata` exactly once. These
+commands run before TTY validation and never construct a model provider, turn runtime, gateway, or
+TUI.
+
+Both responses use `version=1`, their exact action, and the resolver's bounded diagnostics.
+`validate` adds no raw configuration fields. Successful `show` adds `workspaceTrust`, credential
+status, stable layer rows, and a deterministic allowlist of `ConfigSettingRow` values. Layer rows
+contain only `id`, `scope`, `enabled`, and optional `disabledReason`; internal source paths and key
+values do not cross the management boundary. Setting origins expose only stable layer ids or
+`default`, and overridden origins expose stable ids in precedence order.
+
+The resolved config object must never be spread or serialized. The allowlist excludes workspace,
+home, session-database, and generated session-id fields. API-key output is only `present` or
+`missing`. Strings are control-safe, secret-redacted, and bounded; API base URLs retain only an
+HTTP(S) origin/path after removing user info, query, and fragment. The bounded model-ratio map
+reports `truncated=true` when more than 64 rows exist. Human and JSON renderers consume the same
+sanitized response.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Required behavior |
@@ -171,6 +207,11 @@ restart before repository hooks, MCP, plugins, and skills become visible.
 | A lower-priority layer supplies the same key | Keep it in `origin.overridden`; do not select its value |
 | Metadata is serialized for diagnostics | Expose source and key names only; never expose values or secrets |
 | Resumed session workspace differs from launch workspace | Re-resolve trust and configuration using persisted `workspace_root` |
+| `config validate` resolves with warnings | Return `ok=true`, keep diagnostics, and exit `0` |
+| `config validate` or `show` catches `ConfigError` | Return one typed diagnostic, `ok=false`, and exit `1` without exception text |
+| `config` action is missing/unknown, has extra args, or repeats `--json` | Exit `2` before management/backend construction |
+| `config show` resolves a credential | Report only `apiKey=present`; never include its value or credential source payload |
+| An unexpected configuration-management exception occurs | Return stable `management_command_failed`; omit stack and raw message |
 
 ## 5. Good / Base / Bad Cases
 
@@ -178,8 +219,11 @@ restart before repository hooks, MCP, plugins, and skills become visible.
   provenance reports environment as the source and project/user as overridden.
 - Good: `model.nmae` produces one `unknown_key` warning naming the owning layer and key path while
   the configured value remains absent from the diagnostic and runtime configuration.
+- Good: `config show --json` reports an environment model over project/user models as
+  `source=environment, overridden=[project,user]` while omitting layer source paths.
 - Base: no project trust record exists; user configuration and defaults load normally, and the
   project layer reports `workspace_not_trusted`.
+- Base: a fresh home returns defaults and `apiKey=missing` without creating `.mycli`.
 - Base: a legacy user root `api_key` still resolves but produces one migration warning; the same key
   under `[model]` is rejected.
 - Bad: startup parses `.mycli/config.toml`, then checks trust and discards the result. Parsing alone
@@ -188,6 +232,8 @@ restart before repository hooks, MCP, plugins, and skills become visible.
   can expose the wrong project's integrations and omit the session project's user decision.
 - Bad: doctor catches `Error` and displays its message. Provider/profile helpers may include a raw
   configured value, while TOML errors may include source code and private paths.
+- Bad: `config show` returns `{...resolved.config}` or serializes `ConfigLayerMetadata.source`,
+  exposing credentials, generated ids, or absolute paths.
 
 ## 6. Tests Required
 
@@ -213,6 +259,12 @@ restart before repository hooks, MCP, plugins, and skills become visible.
   runtime composition.
 - Doctor tests assert warnings and fatal `ConfigError` values map to one bounded row containing only
   layer, key, line, column, public message, and remediation; doctor must not start a provider.
+- Configuration-management parser tests cover both actions, JSON mode, missing/unknown actions,
+  extra arguments, and duplicate flags.
+- Configuration-management tests cover a fresh home, trusted environment/project/user provenance,
+  an unread malformed untrusted project file, warning-only unknown keys, fatal TOML/value errors,
+  and human/JSON sentinel redaction.
+- CLI tests run `config show --json` under non-TTY streams and assert zero backend/provider/TUI starts.
 
 ## 7. Wrong vs Correct
 
@@ -272,3 +324,23 @@ try {
 
 `projectDiagnosticRow` may project only the bounded typed fields; it must not inspect raw parser or
 filesystem exceptions.
+
+### Effective configuration projection
+
+Wrong:
+
+```ts
+return { ok: true, action: "show", settings: resolved.config, layers: resolved.layers };
+```
+
+Correct:
+
+```ts
+return {
+	ok: true,
+	action: "show",
+	credentials: { apiKey: resolved.config.apiKey ? "present" : "missing" },
+	layers: resolved.layers.layers.map(projectStableLayer),
+	settings: CONFIG_SETTING_DEFINITIONS.map((definition) => projectSetting(definition, resolved)),
+};
+```

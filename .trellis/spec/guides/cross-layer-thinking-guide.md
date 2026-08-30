@@ -105,6 +105,25 @@ For durable TUI transcript projection:
 
 ---
 
+## Background Lifecycle Ownership
+
+When an owner starts asynchronous refresh, persistence, lazy initialization, or worker activity,
+resource lists alone do not describe everything that must be closed.
+
+### Checklist: Closing Background Work
+
+- [ ] Record every started background promise at the component that owns its effects
+- [ ] Abort/cancel first, then await in-flight work before closing stores or releasing filesystem state
+- [ ] Make repeated `close()` calls share one promise and reject new work after close begins
+- [ ] Require that no cache write, publication, registration, or child creation can happen after close resolves
+- [ ] Add a deterministic unit test that holds one async effect open and proves close stays pending
+- [ ] Treat full-suite cleanup races as lifecycle evidence; do not hide them with directory-removal retries
+
+See the background MCP refresh contract in
+[`backend/runtime-tui-gateway-contract.md`](../backend/runtime-tui-gateway-contract.md).
+
+---
+
 ## Atomic Acceptance And Durable Ownership
 
 When an API or gateway accepts work that depends on a durable reservation, the

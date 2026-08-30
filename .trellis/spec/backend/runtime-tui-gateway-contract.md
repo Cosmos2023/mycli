@@ -1469,7 +1469,7 @@ return bootstrap;
 ## Scenario: Provider-Free Node Management CLI And Setup
 
 ### 1. Scope / Trigger
-- Trigger: Changes to Node CLI parsing, `setup`, `doctor`, hooks/plugins/MCP management,
+- Trigger: Changes to Node CLI parsing, `setup`, `config`, `doctor`, hooks/plugins/MCP management,
   user provider config writes, auth writes, or the setup TUI entrypoint.
 - Utility commands are a control-plane path. They must remain outside interactive backend,
   provider, turn-runtime, and gateway/TUI startup unless `setup` explicitly opens its own TUI.
@@ -1478,6 +1478,8 @@ return bootstrap;
 - Parser:
   `parseCliMode(argv) -> {kind: "interactive", runtimeArgs} | {kind: "management", command}`.
 - Executor: `ManagementExecutor.execute(command, signal?) -> Promise<ManagementResponse>`.
+- Configuration service:
+  `ConfigManagementService.validate(signal)` and `ConfigManagementService.show(signal)`.
 - Auth writer:
   `writeApiKey({homeDir, authRef, apiKey}) -> Promise<void>`.
 - Config writer:
@@ -1492,7 +1494,7 @@ return bootstrap;
   `{checks: readonly DoctorCheck[], okCount, warningCount, failedCount}`, where each check is
   `{name, status: "ok" | "warning" | "failed", message, detail?}`.
 - Commands:
-  `setup`, `doctor [--json]`, `hooks list|inspect|approve|revoke`,
+  `setup`, `config validate|show [--json]`, `doctor [--json]`, `hooks list|inspect|approve|revoke`,
   `plugins list|inspect|run`, and `mcp list|inspect`.
 
 ### 3. Contracts
@@ -1507,6 +1509,10 @@ return bootstrap;
   and missing values are invalid usage.
 - Management rows expose bounded metadata only. Hook rows omit command/env values; no response
   includes API keys. Agent-profile management commands and profile discovery are disabled.
+- Configuration management loads workspace trust first and calls the canonical metadata resolver.
+  `validate` returns only bounded typed diagnostics. `show` uses a versioned explicit setting
+  allowlist, stable layer ids, `default` origins, and `present|missing` credential status; it never
+  serializes the resolved config, internal layer source paths, raw TOML, or environment values.
 - Setup builds provider rows from Node provider profiles and auth presence, including Anthropic.
   TTY setup calls the in-process setup TUI; non-TTY setup and TUI startup failures use the plain
   interaction. A user cancel does not fall through from TUI to plain setup.
@@ -1542,6 +1548,8 @@ return bootstrap;
 - Malformed or non-object `--json-args` -> exit `2` with `invalid_json_arguments`; do not include
   the raw argument in diagnostics.
 - Management service response with `ok=false` -> exit `1`, except setup cancellation -> exit `130`.
+- Configuration warnings -> `ok=true`, exit `0`; fatal typed config diagnostics -> `ok=false`,
+  exit `1`; invalid config action/flags -> exit `2` before management construction.
 - Non-TTY interactive mode -> exit `2` with `tty_required`; provider-free management remains valid.
 - TUI setup cancellation or interrupt -> `undefined`, no config/auth write.
 - TUI startup failure -> plain setup fallback without the raw import/startup error.
@@ -1564,6 +1572,8 @@ return bootstrap;
 
 ### 5. Good/Base/Bad Cases
 - Good: `mycli mcp list --json` succeeds with piped stdio and starts zero backends/providers/TUIs.
+- Good: `mycli config show --json` succeeds with piped stdio, reports effective origins without
+  secret/path values, and starts zero backends/providers/TUIs.
 - Good: `mycli setup` consumes pre-buffered piped answers, writes private config/auth files, and
   never writes the API key to stdout or the response object.
 - Base: doctor reports `subagents=ok mode=prompt_driven profiles=disabled` without scanning profile
@@ -1576,6 +1586,7 @@ return bootstrap;
 - Base: A fresh home has no sessions DB, logs, traces, or extensions; doctor reports bounded lazy
   state without creating any of them.
 - Bad: Checking TTY or starting the Node backend before recognizing `hooks list`.
+- Bad: Reuse the runtime config object itself as the `config show` JSON response.
 - Bad: Returning the setup wizard result as JSON, printing the API key, or writing it through a
   world-readable temporary result file.
 - Bad: Reintroducing `subagents list|inspect` or exposing profile-selected prompts, tools, models,
@@ -1589,6 +1600,9 @@ return bootstrap;
   and object-only plugin JSON arguments.
 - CLI tests run JSON management under non-TTY streams and assert backend/provider/TUI factory call
   counts remain zero; test default hooks/plugins/MCP composition as well as injected fakes.
+- Configuration-management tests assert deterministic setting/layer projection, trust gating,
+  warning/fatal exit semantics, no file creation on a fresh home, and sentinel absence from human
+  and JSON output.
 - Config tests cover auth merge/replacement, concurrent writers, mode `0600`, TOML preservation,
   inline-key removal, pre-rename failure preservation, redacted errors, and temp cleanup.
 - Setup tests cover all provider rows, stored-auth presence, success persistence, cancellation,
@@ -1623,6 +1637,16 @@ if (mode.kind === "management") {
 	return response.exitCode ?? (response.ok ? 0 : 1);
 }
 if (!stdin.isTTY) return 2;
+```
+
+Configuration projection remains explicit:
+
+```typescript
+// Wrong: crosses the credential and local-path boundary.
+return { ...resolved.config, layers: resolved.layers };
+
+// Correct: closed, versioned, and secret-safe.
+return configShowResponseFromResolved(resolved, workspaceTrust);
 ```
 
 Doctor collector isolation follows the same control-plane boundary:
@@ -2877,7 +2901,9 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
   emits one direct `extension.updated({version})` notification. The TUI coalesces that notification,
   refreshes `extension.manifest` and `resource.list`, and appends no transcript item. A failed live
   refresh retains a valid cached MCP snapshot when one exists, otherwise it publishes only bounded
-  diagnostics. Shutdown aborts discovery and closes every initialized client.
+  diagnostics. Shutdown aborts discovery, awaits every started cache-load/live-refresh promise,
+  and closes every initialized client. `close()` must not resolve while a refresh can still create
+  or replace cache files, publish a snapshot, or register a client.
 - Provider-visible definitions, tool-search candidates, approval metadata, adapter routes, and
   parallel-call capability are frozen together at turn start. A background MCP refresh affects the
   next turn only; it cannot change schemas or adapters inside a running or approval-suspended turn.
@@ -2908,6 +2934,8 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
   `integration_start_failed` without the raw exception.
 - MCP catalog cache read/write fails -> continue with live discovery or the already discovered live
   result; cache failure never disables MCP or fails runtime startup by itself.
+- Shutdown races an in-flight MCP cache save -> abort discovery, wait for that save promise to
+  settle, then finish client cleanup; no cache write may begin or complete after close resolves.
 - Duplicate source id -> `duplicate_integration_source`; duplicate tool route ->
   `duplicate_tool_route`; neither may mutate the built-in manifest.
 - Unknown extension approval route -> deny before adapter execution.
@@ -2929,12 +2957,16 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
   updated but its UI event is filtered from B.
 - Base: no MCP/plugin config exists; built-in skills and prompt-driven subagent controls still
   compose, and close remains a no-op-safe ordered lifecycle.
+- Good: close begins while an empty-config refresh is saving its catalog; close stays pending until
+  save settlement, then no later filesystem activity occurs.
 - Bad: keep `parentSessionId` only in controller constructor state; children started after resume are
   persisted under the backend's original session.
 - Bad: expose `parent_session_id`, child report text, or provider response fields in
   `subagent.updated`.
 - Bad: add `[key: string]: unknown` or open `additionalProperties` to a security-bounded event solely
   because a generic reducer expects `Record<string, unknown>`.
+- Bad: make temporary-directory cleanup retry `ENOTEMPTY` while the owner still permits refresh work
+  after `close()` resolves.
 
 ### 6. Tests Required
 
@@ -2942,7 +2974,8 @@ const fullOutput = await send("shell.output.load", pageRequest); // Viewer only.
   failure cleanup, built-in manifest immutability, collision rejection, and package DAG direction.
 - MCP manager tests assert cross-server and per-server discovery concurrency, deterministic result
   order, cache hit without directory RPCs, configuration/TTL/corruption invalidation, private file
-  permissions, and absence of endpoint/header/environment secret values from cache content.
+  permissions, absence of endpoint/header/environment secret values from cache content, and that
+  close waits for an explicitly held in-flight cache save.
 - Backend startup tests hold an uncached MCP server open and assert `runtime.ready` arrives before
   discovery completes; shutdown must abort and clean the background client. Tool/runtime tests
   assert old and new turns retain their matching MCP catalog, route, and approval snapshot.
@@ -2987,6 +3020,24 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, inp
 	const params = Object.fromEntries(Object.entries(input));
 	if (method === "subagent.updated") return applySubagentUpdate(state, params);
 	return state;
+}
+```
+
+Background work is part of owner shutdown:
+
+```typescript
+// Wrong: close can return while refresh is still persisting cache state.
+async function closeAll() {
+	await closeClients();
+}
+
+// Correct: cancellation happens at the composition boundary, then manager close drains started work.
+async function closeAll() {
+	await Promise.allSettled([
+		...(cachePromise ? [cachePromise] : []),
+		...(refreshPromise ? [refreshPromise] : []),
+	]);
+	await closeClients();
 }
 ```
 
