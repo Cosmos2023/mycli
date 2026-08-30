@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-08-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~478 | Active |
+| `journal-1.md` | ~512 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-08-30 | Session-scoped model selection | `2d630270`, `138a9ac9` | `feature/mycli-agent-worker-pool` |
 | 12 | 2026-08-30 | Unified setup and TUI settings persistence | `b503c018`, `fa8857e8` | `feature/mycli-agent-worker-pool` |
 | 11 | 2026-08-30 | Safe configuration mutation CLI | `4524e6fc`, `bbb503d6`, `68e00929` | `feature/mycli-agent-worker-pool` |
 | 10 | 2026-08-30 | Configuration inspection and MCP shutdown hardening | `f712ae8e`, `b40fe4c4`, `e18fe899` | `feature/mycli-agent-worker-pool` |

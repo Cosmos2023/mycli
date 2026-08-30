@@ -476,3 +476,37 @@ Added one lossless ordered user-config batch editor, migrated provider/model and
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Session-scoped model selection
+
+**Date**: 2026-08-30
+**Task**: Session-scoped model selection
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added explicit session and user model-selection scopes across contracts, backend, gateway, TUI, persistence, tests, and documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2d630270` | (see git log) |
+| `138a9ac9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
