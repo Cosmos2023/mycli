@@ -43,6 +43,7 @@ export const CONFIG_DIAGNOSTIC_VERSION = 1 as const;
 
 export type ConfigDiagnosticCode =
 	| "config_read_failed"
+	| "config_write_failed"
 	| "deprecated_inline_secret"
 	| "forbidden_inline_secret"
 	| "invalid_toml"
@@ -74,11 +75,41 @@ export function resolveConfigWithMetadata(
 	options: ResolveConfigOptions,
 ): Promise<ResolvedConfig>;
 
-export type ConfigManagementCommand = {
-	readonly kind: "config";
-	readonly action: "validate" | "show";
-	readonly json: boolean;
-};
+export function resolveConfigWithUserConfigText(
+	options: ResolveConfigOptions,
+	userConfigText: string,
+): Promise<ResolvedConfig>;
+
+export type ConfigManagementCommand =
+	| { readonly kind: "config"; readonly action: "validate" | "show"; readonly json: boolean }
+	| {
+		readonly kind: "config";
+		readonly action: "get" | "unset";
+		readonly key: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "set";
+		readonly key: string;
+		readonly value: string;
+		readonly json: boolean;
+	};
+
+export interface WritableRuntimeSetting {
+	readonly key: string;
+	readonly path: readonly string[];
+	readonly legacyPaths: readonly (readonly string[])[];
+	readonly valueKind: "boolean" | "integer" | "number" | "string";
+}
+
+export function mutateUserConfigSetting(
+	options: ResolveConfigOptions & {
+		readonly action: "set" | "unset";
+		readonly key: string;
+		readonly value?: string;
+	},
+): Promise<{ readonly key: string; readonly changed: boolean }>;
 
 export interface ConfigSettingRow {
 	readonly key: string;
@@ -169,18 +200,39 @@ restart before repository hooks, MCP, plugins, and skills become visible.
 
 ### Provider-free configuration management
 
-`mycli config validate [--json]` and `mycli config show [--json]` are read-only management commands.
-Default management composition loads `WorkspaceTrustStore` before constructing
-`ConfigManagementService`, and each action calls `resolveConfigWithMetadata` exactly once. These
-commands run before TTY validation and never construct a model provider, turn runtime, gateway, or
-TUI.
+`mycli config validate [--json]`, `show [--json]`, and `get <key> [--json]` are read-only management
+commands. `mycli config set <key> <value> [--json]` and `unset <key> [--json]` mutate only
+`~/.mycli/config.toml`. Default management composition loads `WorkspaceTrustStore` before
+constructing `ConfigManagementService`. Every action runs before TTY validation and never
+constructs a model provider, turn runtime, gateway, or TUI.
 
-Both responses use `version=1`, their exact action, and the resolver's bounded diagnostics.
+All configuration-management responses use `version=1`, their exact action, and bounded config
+diagnostics.
 `validate` adds no raw configuration fields. Successful `show` adds `workspaceTrust`, credential
 status, stable layer rows, and a deterministic allowlist of `ConfigSettingRow` values. Layer rows
 contain only `id`, `scope`, `enabled`, and optional `disabledReason`; internal source paths and key
 values do not cross the management boundary. Setting origins expose only stable layer ids or
 `default`, and overridden origins expose stable ids in precedence order.
+
+The configuration package owns one deterministic setting catalog used by both `show` projection
+and mutation lookup. `get` accepts every catalog key, including read-only rows. `set` and `unset`
+accept only catalog rows with scalar write metadata; arbitrary paths, structured rows, derived
+rows, and credential fields fail before filesystem mutation. Values are parsed according to the
+declared type: booleans are exactly `true` or `false`, integers are safe decimal integers, finite
+numbers use decimal/exponent syntax, and strings must be nonblank.
+
+Mutation parses the current user document through the lossless TOML patch boundary, writes the
+canonical sectioned path, and clears matching legacy aliases. The read/patch/validate/write cycle
+runs under the existing per-file lock. Before rename, the complete candidate is validated once as
+an isolated user layer and once with every enabled higher layer. Atomic replacement occurs only
+when the candidate differs byte-for-byte; an absent unset or repeated set returns `changed=false`.
+Comments, newline style, unrelated formatting, unknown keys, and unrelated tables remain owned by
+the source document rather than a whole-document serializer.
+
+Successful mutation responses contain only the canonical key, `changed`, the post-write effective
+source, overridden layer ids, and bounded diagnostics. They never contain the submitted value.
+Post-write resolution is mandatory because an environment or trusted project layer may continue
+to win after the user file is saved.
 
 The resolved config object must never be spread or serialized. The allowlist excludes workspace,
 home, session-database, and generated session-id fields. API-key output is only `present` or
@@ -211,6 +263,12 @@ sanitized response.
 | `config validate` or `show` catches `ConfigError` | Return one typed diagnostic, `ok=false`, and exit `1` without exception text |
 | `config` action is missing/unknown, has extra args, or repeats `--json` | Exit `2` before management/backend construction |
 | `config show` resolves a credential | Report only `apiKey=present`; never include its value or credential source payload |
+| `config get` receives an unknown key | Return value-free `invalid_value`; do not echo the submitted key |
+| `config set` or `unset` receives a read-only, structured, credential-like, or unknown key | Return value-free `invalid_value` before creating or replacing the user config |
+| A scalar value has invalid syntax or exceeds its numeric type | Return `invalid_value`; omit the submitted value and preserve the original bytes |
+| The current document or complete candidate is invalid in isolation or with enabled higher layers | Return the typed config diagnostic and preserve the original bytes |
+| A mutation changes no TOML bytes | Return `changed=false`; do not create a temporary file or replace the target |
+| Lossless patching, locking, or atomic replacement fails unexpectedly | Return `config_write_failed` without an absolute path, source text, stack, or submitted value |
 | An unexpected configuration-management exception occurs | Return stable `management_command_failed`; omit stack and raw message |
 
 ## 5. Good / Base / Bad Cases
@@ -221,9 +279,15 @@ sanitized response.
   the configured value remains absent from the diagnostic and runtime configuration.
 - Good: `config show --json` reports an environment model over project/user models as
   `source=environment, overridden=[project,user]` while omitting layer source paths.
+- Good: `config set memory.enabled true` patches only `[memory].enabled`, preserves comments and
+  unknown tables, and reports `effectiveSource=environment` when `MYCLI_MEMORY_ENABLED` still wins.
+- Good: setting `model.name` over a legacy root `model = "..."` replaces the scalar collision with
+  canonical `[model].name` without changing unrelated TOML.
 - Base: no project trust record exists; user configuration and defaults load normally, and the
   project layer reports `workspace_not_trusted`.
 - Base: a fresh home returns defaults and `apiKey=missing` without creating `.mycli`.
+- Base: unsetting an absent writable key returns `changed=false`; a repeated set with identical TOML
+  does not replace the file.
 - Base: a legacy user root `api_key` still resolves but produces one migration warning; the same key
   under `[model]` is rejected.
 - Bad: startup parses `.mycli/config.toml`, then checks trust and discards the result. Parsing alone
@@ -234,6 +298,10 @@ sanitized response.
   configured value, while TOML errors may include source code and private paths.
 - Bad: `config show` returns `{...resolved.config}` or serializes `ConfigLayerMetadata.source`,
   exposing credentials, generated ids, or absolute paths.
+- Bad: mutation parses with `smol-toml`, stringifies the complete object, and writes after releasing
+  the lock. This discards comments and permits a concurrent writer to be overwritten.
+- Bad: a mutation response includes `value`, a raw parser error, or the target path. Submitted
+  values and private paths must not cross the management boundary even on failure.
 
 ## 6. Tests Required
 
@@ -259,12 +327,18 @@ sanitized response.
   runtime composition.
 - Doctor tests assert warnings and fatal `ConfigError` values map to one bounded row containing only
   layer, key, line, column, public message, and remediation; doctor must not start a provider.
-- Configuration-management parser tests cover both actions, JSON mode, missing/unknown actions,
-  extra arguments, and duplicate flags.
+- Configuration-management parser tests cover all five actions, JSON placement, blank/missing
+  keys and values, extra arguments, and duplicate flags.
 - Configuration-management tests cover a fresh home, trusted environment/project/user provenance,
   an unread malformed untrusted project file, warning-only unknown keys, fatal TOML/value errors,
   and human/JSON sentinel redaction.
-- CLI tests run `config show --json` under non-TTY streams and assert zero backend/provider/TUI starts.
+- Config editor tests assert canonical/legacy collision handling, comment and CRLF/LF preservation,
+  typed scalar rejection, isolated and higher-layer cross-field validation, no-op identity,
+  concurrent lock serialization, private modes, and byte preservation after every failed candidate.
+- Every mutation redaction test places a submitted sentinel in the value or unknown key and asserts
+  it is absent from human output, JSON output, serialized diagnostics, and exception messages.
+- CLI tests run `config show/get/set/unset --json` under non-TTY streams and assert zero
+  backend/provider/TUI starts.
 
 ## 7. Wrong vs Correct
 
@@ -341,6 +415,42 @@ return {
 	action: "show",
 	credentials: { apiKey: resolved.config.apiKey ? "present" : "missing" },
 	layers: resolved.layers.layers.map(projectStableLayer),
-	settings: CONFIG_SETTING_DEFINITIONS.map((definition) => projectSetting(definition, resolved)),
+	settings: runtimeSettingSnapshots(resolved.config)
+		.map((snapshot) => projectSetting(snapshot, resolved.layers)),
 };
 ```
+
+### User configuration mutation
+
+Wrong:
+
+```ts
+const parsed = parse(await readFile(userPath, "utf8"));
+setPath(parsed, key.split("."), rawValue);
+await writeFile(userPath, stringify(parsed));
+return { ok: true, key, value: rawValue };
+```
+
+Correct:
+
+```ts
+const mutation = await mutateUserConfigSetting({
+	...resolveOptions,
+	action: "set",
+	key,
+	value: rawValue,
+});
+const resolved = await resolveConfigWithMetadata(resolveOptions);
+const setting = projectSettingByKey(mutation.key, resolved);
+return {
+	ok: true,
+	action: "set",
+	key: mutation.key,
+	changed: mutation.changed,
+	effectiveSource: setting.source,
+	overridden: setting.overridden,
+};
+```
+
+The editor owns type parsing, lossless path edits, lock scope, candidate validation, atomicity, and
+value-free diagnostics. The management layer owns only post-write effective projection.
