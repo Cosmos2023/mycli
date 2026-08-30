@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ModelSelectionScope } from "@mycli/contracts";
 import { ModelSelectorComponent } from "../src/components/model-selector.ts";
 import type { MycliShellModel } from "../src/model.ts";
 import type { TUI } from "../src/tui-core/index.ts";
@@ -43,7 +44,9 @@ const models: MycliShellModel[] = [
 	},
 ];
 
-function selector(onSelect: (model: MycliShellModel) => void = () => {}): ModelSelectorComponent {
+function selector(
+	onSelect: (model: MycliShellModel, scope: ModelSelectionScope) => void = () => {},
+): ModelSelectorComponent {
 	return new ModelSelectorComponent({
 		tui,
 		models,
@@ -78,20 +81,80 @@ test("model selector escape restores the model query and selection", () => {
 	assert.equal(component.getSearchInput().getValue(), "g");
 });
 
-test("model selector applies models with zero or one effort directly", () => {
-	const selected: MycliShellModel[] = [];
-	const noEffort = selector((model) => selected.push(model));
+test("model selector sends zero and one effort models through the scope stage", () => {
+	const selected: Array<{ model: MycliShellModel; scope: ModelSelectionScope }> = [];
+	const noEffort = selector((model, scope) => selected.push({ model, scope }));
 	noEffort.handleInput("deepseek-chat");
 	noEffort.handleInput("\r");
+	assert.match(stripAnsi(noEffort.render(100).join("\n")), /Choose where to apply/);
+	assert.equal(selected.length, 0);
+	noEffort.handleInput("\r");
 
-	const fixedEffort = selector((model) => selected.push(model));
+	const fixedEffort = selector((model, scope) => selected.push({ model, scope }));
 	fixedEffort.handleInput("deepseek-reasoner");
 	fixedEffort.handleInput("\r");
+	fixedEffort.handleInput("\r");
 
-	assert.equal(selected[0]?.model, "deepseek-chat");
-	assert.equal(selected[0]?.thinkingLevel, undefined);
-	assert.equal(selected[1]?.model, "deepseek-reasoner");
-	assert.equal(selected[1]?.thinkingLevel, "medium");
+	assert.equal(selected[0]?.model.model, "deepseek-chat");
+	assert.equal(selected[0]?.model.thinkingLevel, undefined);
+	assert.equal(selected[0]?.scope, "session");
+	assert.equal(selected[1]?.model.model, "deepseek-reasoner");
+	assert.equal(selected[1]?.model.thinkingLevel, "medium");
+	assert.equal(selected[1]?.scope, "session");
+});
+
+test("model selector defaults to session scope and can select user scope", () => {
+	const selected: Array<{ model: string; scope: ModelSelectionScope }> = [];
+	const component = selector((model, scope) => selected.push({ model: model.model, scope }));
+
+	component.handleInput("\r");
+	component.handleInput("\r");
+	let output = stripAnsi(component.render(100).join("\n"));
+	assert.match(output, /Choose where to apply/);
+	assert.match(output, /› Use for this session/);
+	assert.match(output, /Make user default/);
+
+	component.handleInput("\x1b[B");
+	component.handleInput("\r");
+	assert.deepEqual(selected, [{ model: "gpt-5.4", scope: "user" }]);
+
+	const sessionComponent = selector((model, scope) => selected.push({ model: model.model, scope }));
+	sessionComponent.handleInput("deepseek-chat");
+	sessionComponent.handleInput("\r");
+	sessionComponent.handleInput("\r");
+	assert.equal(selected.at(-1)?.scope, "session");
+});
+
+test("model selector submits one scope request at a time and allows retry after failure", () => {
+	const selected: ModelSelectionScope[] = [];
+	const component = selector((_model, scope) => selected.push(scope));
+	component.handleInput("deepseek-chat");
+	component.handleInput("\r");
+
+	component.handleInput("\r");
+	component.handleInput("\x1b[B");
+	component.handleInput("\r");
+	assert.deepEqual(selected, ["session"]);
+
+	component.setError("Selection failed.");
+	component.handleInput("\x1b[B");
+	component.handleInput("\r");
+	assert.deepEqual(selected, ["session", "user"]);
+});
+
+test("model selector escape returns from scope to the preceding stage", () => {
+	const reasoning = selector();
+	reasoning.handleInput("\r");
+	reasoning.handleInput("\r");
+	reasoning.handleInput("\x1b");
+	assert.match(stripAnsi(reasoning.render(100).join("\n")), /Select reasoning effort/);
+
+	const noReasoning = selector();
+	noReasoning.handleInput("deepseek-chat");
+	noReasoning.handleInput("\r");
+	noReasoning.handleInput("\x1b");
+	assert.match(stripAnsi(noReasoning.render(100).join("\n")), /Select model/);
+	assert.equal(noReasoning.getSearchInput().getValue(), "deepseek-chat");
 });
 
 test("model selector shows inline backend errors", () => {
@@ -106,6 +169,14 @@ test("model selector never renders wider than narrow terminal", () => {
 	const component = selector();
 
 	for (const width of [30, 40, 60, 100]) {
+		for (const line of component.render(width)) {
+			assert.ok(visibleWidth(line) <= width, `${width}: ${stripAnsi(line)}`);
+		}
+	}
+
+	component.handleInput("\r");
+	component.handleInput("\r");
+	for (const width of [20, 30, 40]) {
 		for (const line of component.render(width)) {
 			assert.ok(visibleWidth(line) <= width, `${width}: ${stripAnsi(line)}`);
 		}

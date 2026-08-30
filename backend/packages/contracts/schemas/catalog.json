@@ -37,6 +37,10 @@
     "approval_not_pending",
     "approval_conflict"
   ],
+  "modelSelectionScopes": [
+    "session",
+    "user"
+  ],
   "eventStreams": [
     "approval.request",
     "approval.respond",

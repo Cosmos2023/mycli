@@ -2,6 +2,11 @@ export { gatewayContractCatalog } from "./catalog.ts";
 export { parsePackageVersion } from "./package-version.ts";
 export type { PackageVersionManifest } from "./package-version.ts";
 export {
+	isModelSelectionScope,
+	MODEL_SELECTION_SCOPES,
+} from "./model-selection.ts";
+export type { ModelSelectionScope } from "./model-selection.ts";
+export {
 	canonicalRuntimeFailureMessage,
 	canonicalTurnFailureMessage,
 	isRuntimeErrorCode,

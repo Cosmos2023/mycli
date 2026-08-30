@@ -11,7 +11,12 @@ import {
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { parseRuntimeState, type RuntimeTurnRecord } from "@mycli/contracts";
+import {
+	isModelSelectionScope,
+	parseRuntimeState,
+	type ModelSelectionScope,
+	type RuntimeTurnRecord,
+} from "@mycli/contracts";
 import {
 	ExecPolicyStore,
 	findModelCatalogEntry,
@@ -1660,11 +1665,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						selectModel: async (input) => {
 							const provider = controlString(input.provider, "provider");
 							const protocolValue = controlString(input.protocol, "protocol");
-							const profile = resolveProviderProfile(provider, protocolValue);
-							const protocol = parseProtocol(protocolValue);
+							let profile: ReturnType<typeof resolveProviderProfile>;
+							let protocol: ReturnType<typeof parseProtocol>;
+							try {
+								profile = resolveProviderProfile(provider, protocolValue);
+								protocol = parseProtocol(protocolValue);
+							} catch {
+								throw controlRequestError("Selected provider or protocol is not supported.");
+							}
 							const model = controlString(input.model, "model");
 							const apiBaseUrl = controlString(input.base_url, "base_url").replace(/\/+$/u, "");
 							const collaborationMode = controlCollaborationMode(input.collaboration_mode);
+							const scope = controlModelSelectionScope(input.scope);
 							const requestedEffort = controlReasoningEffort(input.reasoning_effort);
 							const catalog = await loadModelCatalog({ homeDir, currentConfig: controlConfig });
 							const entry = findModelCatalogEntry(catalog, {
@@ -1674,7 +1686,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								baseUrl: apiBaseUrl,
 							});
 							if (!entry) {
-								throw controlRequestError(`Model '${profile.provider}/${model}' is not available.`);
+								throw controlRequestError("Selected model is not available.");
 							}
 							const reasoningEffort = requestedEffort
 								?? entry.defaultReasoningEffort
@@ -1683,7 +1695,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									: undefined);
 							if (reasoningEffort && !entry.supportedReasoningEfforts.includes(reasoningEffort)) {
 								throw controlRequestError(
-									`Model '${model}' does not support reasoning effort '${reasoningEffort}'.`,
+									"Selected model does not support that reasoning effort.",
 								);
 							}
 							let apiKey = await readApiKey({ homeDir, authRef: entry.authRef });
@@ -1695,46 +1707,43 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								apiKey = controlConfig.apiKey;
 							}
 							if (!apiKey) {
-								throw controlRequestError(`No API key configured for auth_ref '${entry.authRef}'.`);
+								throw controlRequestError("No API key is configured for the selected model.");
 							}
 							const nextReasoningEffort = reasoningEffort ?? controlConfig.reasoningEffort;
 							const thinkingEnabled = reasoningEffort !== undefined && reasoningEffort !== "none";
 							const active = sessionCoordinator.snapshot();
-							await writeUserProviderConfig({
-								homeDir,
-								workspaceRoot: active.workspaceRoot,
-								env: options.env,
-								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+							const preferences = Object.freeze({
 								provider: entry.provider,
 								protocol,
 								model,
 								apiBaseUrl: entry.baseUrl,
 								authRef: entry.authRef,
-								promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
-								cacheControlEnabled: profile.cacheControlEnabled,
-								thinkingEnabled,
-								reasoningEffort: nextReasoningEffort,
-							});
-							controlConfig = await resolveWorkspaceModelRuntimeConfig({
+								reasoningEffort: thinkingEnabled ? nextReasoningEffort : "none",
+								collaborationMode,
+							}) satisfies SessionPreferences;
+							const nextControlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
-								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+								workspaceRoot: active.workspaceRoot,
 								env: options.env,
-								overrides: {
-									session: sessionCoordinator.snapshot().sessionId,
+								overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+							});
+							if (scope === "user") {
+								await writeUserProviderConfig({
+									homeDir,
+									workspaceRoot: active.workspaceRoot,
+									env: options.env,
+									workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
 									provider: entry.provider,
 									protocol,
 									model,
 									apiBaseUrl: entry.baseUrl,
 									authRef: entry.authRef,
-									reasoningEffort: thinkingEnabled ? nextReasoningEffort : "none",
+									promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
+									cacheControlEnabled: profile.cacheControlEnabled,
 									thinkingEnabled,
-								},
-							});
-							defaultPreferences = sessionPreferencesFromConfig(controlConfig, "default");
-							const preferences = Object.freeze({
-								...defaultPreferences,
-								collaborationMode,
-							});
+									reasoningEffort: nextReasoningEffort,
+								});
+							}
 							saveSessionPreferences(store, {
 								sessionId: active.sessionId,
 								workspaceRoot: active.workspaceRoot,
@@ -1742,20 +1751,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								preferences,
 							});
 							active.binding.setSessionPreferences?.(preferences);
-							const selectedCatalog = await loadModelCatalog({
-								homeDir,
-								currentConfig: controlConfig,
-							});
-							const selected = findModelCatalogEntry(selectedCatalog, {
-								provider: entry.provider,
-								protocol: entry.protocol,
-								model: entry.model,
-								baseUrl: entry.baseUrl,
-							})!;
+							if (scope === "user") {
+								defaultPreferences = Object.freeze({
+									...preferences,
+									collaborationMode: defaultPreferences.collaborationMode,
+								});
+							}
+							controlConfig = nextControlConfig;
 							return {
-								...modelCatalogEntryPayload(selected),
+								...modelCatalogEntryPayload(entry),
+								current: true,
 								reasoning_effort: reasoningEffort ?? null,
 								thinking_enabled: thinkingEnabled,
+								scope,
 							};
 						},
 						activateSessionPreferences: async (preferences) => {
@@ -1904,6 +1912,12 @@ function controlReasoningEffort(value: unknown): ReasoningEffort | undefined {
 		|| value === "ultra"
 	) return value;
 	throw new Error("invalid_arguments: unsupported reasoning_effort");
+}
+
+function controlModelSelectionScope(value: unknown): ModelSelectionScope {
+	if (value === undefined) return "session";
+	if (isModelSelectionScope(value)) return value;
+	throw controlRequestError("Model selection scope is not supported.");
 }
 
 async function pathCompletionCandidates(

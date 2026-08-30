@@ -490,10 +490,10 @@ function gatewayHarness(options: {
 					models: async () => [{
 						provider: "openai",
 						protocol: "responses",
-						model: "gpt-test",
+						model: String(selectedModels.at(-1)?.model ?? "gpt-test"),
 						name: "GPT Test",
 						base_url: "https://example.invalid/v1",
-						current: selectedModels.length === 0,
+						current: true,
 					}],
 					selectModel: async (input: Readonly<Record<string, unknown>>) => {
 						selectedModels.push({ ...input });
@@ -960,7 +960,36 @@ test("canonical control RPCs use injected Node services and update active state"
 	});
 	assert.equal("result" in selected ? selected.result.selected.model : null, "gpt-selected");
 	assert.equal("result" in selected ? selected.result.status.model : null, "gpt-selected");
+	assert.equal("result" in selected ? selected.result.scope : null, "session");
+	assert.equal("result" in selected ? selected.result.models[0]?.model : null, "gpt-selected");
+	assert.equal("result" in selected ? selected.result.models[0]?.current : null, true);
+	assert.equal(harness.selectedModels[0]?.scope, "session");
 	assert.equal(harness.selectedModels.length, 1);
+
+	const selectedDefault = await harness.send("model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-selected",
+		base_url: "https://example.invalid/v1",
+		scope: "user",
+	});
+	assert.equal("result" in selectedDefault ? selectedDefault.result.scope : null, "user");
+	assert.equal(harness.selectedModels[1]?.scope, "user");
+
+	for (const scope of ["project", null, ""]) {
+		const invalidScope = await harness.send("model.select", {
+			provider: "openai",
+			protocol: "responses",
+			model: "gpt-selected",
+			base_url: "https://example.invalid/v1",
+			scope,
+		});
+		assert.equal("error" in invalidScope ? invalidScope.error.code : null, "invalid_params");
+		if (typeof scope === "string" && scope) {
+			assert.equal(JSON.stringify(invalidScope).includes(scope), false);
+		}
+	}
+	assert.equal(harness.selectedModels.length, 2);
 
 	const loadedSettings = await harness.send("settings.load");
 	assert.equal("result" in loadedSettings ? loadedSettings.result.settings.view_mode : null, "default");

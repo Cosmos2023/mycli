@@ -1,3 +1,4 @@
+import type { ModelSelectionScope } from "@mycli/contracts";
 import { copyText } from "./adapters/clipboard.ts";
 import { isSlashCommandSubmission } from "./adapters/slash-commands.ts";
 import { Spacer } from "./tui-core/components/spacer.ts";
@@ -109,7 +110,10 @@ export type MycliShellRuntimeOptions = {
 	onExit?: () => void | Promise<void>;
 	onSuspend?: () => boolean;
 	onFatalError?: (error: unknown) => void;
-	onModelSelect?: (model: MycliShellModel) => void | MycliShellModel | Promise<void | MycliShellModel>;
+	onModelSelect?: (
+		model: MycliShellModel,
+		scope: ModelSelectionScope,
+	) => void | MycliShellModel | Promise<void | MycliShellModel>;
 	onPermissionSelect?: (profile: MycliShellPermissionProfile) => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onPermissionClearAllowances?: () => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onApiKeyLogin?: (providerId: string, apiKey: string) => void | { message?: string } | Promise<void | { message?: string }>;
@@ -1619,8 +1623,8 @@ export class MycliShellRuntime {
 				currentModel: this.state.currentModel,
 				models,
 				initialSearchInput,
-					onSelect: (model) => {
-						void this.submitModelSelection(model, selector, done);
+					onSelect: (model, scope) => {
+						void this.submitModelSelection(model, scope, selector, done);
 					},
 				onCancel: () => done(),
 			});
@@ -3250,8 +3254,8 @@ export class MycliShellRuntime {
 		return (this.state.models ?? []).filter((model) => model.provider === providerId);
 	}
 
-	private async selectModel(model: MycliShellModel): Promise<void> {
-		const selected = await this.options.onModelSelect?.(model);
+	private async selectModel(model: MycliShellModel, scope: ModelSelectionScope): Promise<void> {
+		const selected = await this.options.onModelSelect?.(model, scope);
 		const applied = selected ?? model;
 		this.setState({
 			...this.state,
@@ -3267,11 +3271,12 @@ export class MycliShellRuntime {
 
 	private async submitModelSelection(
 		model: MycliShellModel,
+		scope: ModelSelectionScope,
 		selector: ModelSelectorComponent,
 		done: () => void,
 	): Promise<void> {
 		try {
-			await this.selectModel(model);
+			await this.selectModel(model, scope);
 			done();
 		} catch (error) {
 			selector.setError(safeErrorMessage(error, "Model selection failed."));

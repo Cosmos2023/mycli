@@ -4623,6 +4623,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 		model: "gpt-selected",
 		base_url: "https://example.invalid/v1",
 		reasoning_effort: "high",
+		scope: "user",
 	});
 	const model = await waitFor(() => response(firstMessages, "model"));
 	const selected = resultValue(model, "selected") as Record<string, unknown>;
@@ -4729,6 +4730,7 @@ test("Node backend restores model effort and mode from each session preference",
 		model: "gpt-session-b",
 		base_url: "https://session.invalid/v1",
 		reasoning_effort: "none",
+		scope: "user",
 	});
 	await waitFor(() => response(firstMessages, "select-b"));
 	writeRequest(first, "mode-b", "command.run", { command: "/mode default", surface: "tui" });
@@ -4807,6 +4809,171 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(resultValue(afterCorrupt, "session_id"), "session-a");
 	assert.equal(resultValue(afterCorrupt, "model"), "gpt-session-a");
 	writeRequest(second, "shutdown-session-preferences-restarted", "shutdown", {});
+	assert.equal(await second.completion, 0);
+});
+
+test("Node backend separates session model choices from user defaults", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-model-scope-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const configPath = join(home, ".mycli", "config.toml");
+	await Promise.all([mkdir(join(home, ".mycli"), { recursive: true }), mkdir(workspace)]);
+	await writeFile(join(home, ".mycli", "auth.json"), `${JSON.stringify({
+		"scope-account": { type: "api_key", key: "scope-secret" },
+	}, null, 2)}\n`, "utf8");
+	await writeFile(join(home, ".mycli", "models.json"), `${JSON.stringify({
+		version: 2,
+		providers: {
+			openai: {
+				protocol: "responses",
+				base_url: "https://scope.invalid/v1",
+				auth_ref: "scope-account",
+				models: {
+					"gpt-default": { reasoning: { efforts: ["low"], default: "low" } },
+					"gpt-session": { reasoning: { efforts: ["high"], default: "high" } },
+					"gpt-user": { reasoning: { efforts: ["medium"], default: "medium" } },
+				},
+			},
+		},
+	}, null, 2)}\n`, "utf8");
+	const initialConfig = [
+		"[model]",
+		'provider = "openai"',
+		'protocol = "responses"',
+		'name = "gpt-default"',
+		'api_base_url = "https://scope.invalid/v1"',
+		'auth_ref = "scope-account"',
+		"",
+		"[reasoning]",
+		"enabled = true",
+		'effort = "low"',
+		'reasoning_effort = "low"',
+		"",
+	].join("\n");
+	await writeFile(configPath, initialConfig, "utf8");
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "scope-session"],
+		env: { HOME: home },
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "session-selection", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-session",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "high",
+	});
+	const sessionSelection = await waitFor(() => response(firstMessages, "session-selection"));
+	assert.equal(resultValue(sessionSelection, "scope"), "session");
+	assert.equal(await readFile(configPath, "utf8"), initialConfig);
+
+	writeRequest(first, "session-status", "status.inspect", {});
+	const sessionStatus = await waitFor(() => response(firstMessages, "session-status"));
+	assert.equal(resultValue(sessionStatus, "model"), "gpt-session");
+	assert.equal(resultValue(sessionStatus, "thinking_effort"), "high");
+
+	writeRequest(first, "new-default", "session.new", {});
+	await waitFor(() => response(firstMessages, "new-default"));
+	writeRequest(first, "default-status", "status.inspect", {});
+	const defaultStatus = await waitFor(() => response(firstMessages, "default-status"));
+	assert.equal(resultValue(defaultStatus, "model"), "gpt-default");
+	assert.equal(resultValue(defaultStatus, "thinking_effort"), "low");
+	writeRequest(first, "shutdown-model-scope-first", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "resumed-status", "status.inspect", {});
+	const resumedStatus = await waitFor(() => response(secondMessages, "resumed-status"));
+	assert.equal(resultValue(resumedStatus, "model"), "gpt-session");
+	assert.equal(resultValue(resumedStatus, "thinking_effort"), "high");
+	writeRequest(second, "plan-before-user-selection", "command.run", {
+		command: "/mode plan",
+		surface: "tui",
+	});
+	await waitFor(() => response(secondMessages, "plan-before-user-selection"));
+
+	writeRequest(second, "user-selection", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-user",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "medium",
+		scope: "user",
+	});
+	const userSelection = await waitFor(() => response(secondMessages, "user-selection"));
+	assert.equal(resultValue(userSelection, "scope"), "user");
+	assert.equal(
+		(resultValue(userSelection, "selected") as Record<string, unknown>).scope,
+		"user",
+	);
+	const userConfig = await readFile(configPath, "utf8");
+	assert.match(userConfig, /name = "gpt-user"/u);
+	writeRequest(second, "user-selection-status", "status.inspect", {});
+	const userSelectionStatus = await waitFor(() => response(secondMessages, "user-selection-status"));
+	assert.equal(resultValue(userSelectionStatus, "model"), "gpt-user");
+	assert.equal(resultValue(userSelectionStatus, "thinking_effort"), "medium");
+	assert.equal(resultValue(userSelectionStatus, "collaboration_mode"), "plan");
+
+	writeRequest(second, "new-user-default", "session.new", {});
+	await waitFor(() => response(secondMessages, "new-user-default"));
+	writeRequest(second, "user-default-status", "status.inspect", {});
+	const userDefaultStatus = await waitFor(() => response(secondMessages, "user-default-status"));
+	assert.equal(resultValue(userDefaultStatus, "model"), "gpt-user");
+	assert.equal(resultValue(userDefaultStatus, "thinking_effort"), "medium");
+	assert.equal(resultValue(userDefaultStatus, "collaboration_mode"), "default");
+
+	writeRequest(second, "resume-before-failure", "session.resume", { session_id: "scope-session" });
+	await waitFor(() => response(secondMessages, "resume-before-failure"));
+	writeRequest(second, "session-before-failure", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-session",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "high",
+		scope: "session",
+	});
+	await waitFor(() => response(secondMessages, "session-before-failure"));
+	assert.equal(await readFile(configPath, "utf8"), userConfig);
+	const lockPath = join(home, ".mycli", ".config.toml.lock");
+	await mkdir(lockPath);
+	writeRequest(second, "failed-user-selection", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-default",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "low",
+		scope: "user",
+	});
+	const failedSelection = await waitFor(
+		() => response(secondMessages, "failed-user-selection"),
+		4_000,
+	);
+	assert.equal("error" in failedSelection, true);
+	const failedSelectionText = JSON.stringify(failedSelection);
+	assert.equal(failedSelectionText.includes(home), false);
+	assert.equal(failedSelectionText.includes(configPath), false);
+	assert.equal(failedSelectionText.includes("scope-secret"), false);
+	assert.equal(failedSelectionText.includes("gpt-default"), false);
+	assert.equal(await readFile(configPath, "utf8"), userConfig);
+	writeRequest(second, "status-after-failure", "status.inspect", {});
+	const statusAfterFailure = await waitFor(() => response(secondMessages, "status-after-failure"));
+	assert.equal(resultValue(statusAfterFailure, "model"), "gpt-session");
+	assert.equal(resultValue(statusAfterFailure, "thinking_effort"), "high");
+	await rm(lockPath, { recursive: true, force: true });
+	writeRequest(second, "shutdown-model-scope-second", "shutdown", {});
 	assert.equal(await second.completion, 0);
 });
 

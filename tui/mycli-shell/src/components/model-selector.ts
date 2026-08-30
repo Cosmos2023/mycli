@@ -7,16 +7,34 @@ import {
 	truncateToWidth,
 	type TUI,
 } from "../tui-core/index.ts";
+import type { ModelSelectionScope } from "@mycli/contracts";
 import type { MycliShellModel } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 
-type SelectorStage = "model" | "reasoning";
+type SelectorStage = "model" | "reasoning" | "scope";
+
+const SCOPE_OPTIONS: readonly {
+	readonly scope: ModelSelectionScope;
+	readonly label: string;
+	readonly description: string;
+}[] = Object.freeze([
+	{
+		scope: "session",
+		label: "Use for this session",
+		description: "Restored when this session resumes",
+	},
+	{
+		scope: "user",
+		label: "Make user default",
+		description: "Also used by new sessions",
+	},
+]);
 
 export type ModelSelectorOptions = {
 	tui: TUI;
 	currentModel?: MycliShellModel;
 	models: MycliShellModel[];
-	onSelect: (model: MycliShellModel) => void;
+	onSelect: (model: MycliShellModel, scope: ModelSelectionScope) => void;
 	onCancel: () => void;
 	initialSearchInput?: string;
 };
@@ -39,10 +57,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private filteredModels: MycliShellModel[];
 	private selectedModelIndex = 0;
 	private selectedEffortIndex = 0;
+	private selectedScopeIndex = 0;
 	private selectedModel?: MycliShellModel;
 	private stage: SelectorStage = "model";
 	private error?: string;
-	private readonly onSelectCallback: (model: MycliShellModel) => void;
+	private submitting = false;
+	private readonly onSelectCallback: (model: MycliShellModel, scope: ModelSelectionScope) => void;
 	private readonly onCancelCallback: () => void;
 	private _focused = false;
 
@@ -74,6 +94,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	setError(message: string): void {
+		this.submitting = false;
 		this.error = message.trim() || "Model selection failed.";
 		this.tui.requestRender();
 	}
@@ -82,7 +103,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		const safeWidth = Math.max(1, width);
 		const border = theme.fg("border", "─".repeat(safeWidth));
 		const lines = [border, ""];
-		if (this.stage === "reasoning") {
+		if (this.stage === "scope") {
+			lines.push(this.line(theme.bold("Choose where to apply"), safeWidth));
+			lines.push(this.line(theme.fg("muted", this.selectedModel?.model ?? ""), safeWidth));
+			lines.push("");
+			lines.push(...this.scopeRows(safeWidth));
+			lines.push("");
+			lines.push(this.line(theme.fg("muted", "Enter select · Esc back"), safeWidth));
+		} else if (this.stage === "reasoning") {
 			lines.push(this.line(theme.bold("Select reasoning effort"), safeWidth));
 			lines.push(this.line(theme.fg("muted", this.selectedModel?.model ?? ""), safeWidth));
 			lines.push("");
@@ -106,8 +134,22 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	handleInput(keyData: string): void {
+		if (this.submitting) return;
 		this.error = undefined;
 		const kb = getKeybindings();
+		if (this.stage === "scope") {
+			if (kb.matches(keyData, "tui.select.up")) {
+				this.selectedScopeIndex = this.previousIndex(this.selectedScopeIndex, SCOPE_OPTIONS.length);
+			} else if (kb.matches(keyData, "tui.select.down")) {
+				this.selectedScopeIndex = this.nextIndex(this.selectedScopeIndex, SCOPE_OPTIONS.length);
+			} else if (kb.matches(keyData, "tui.select.confirm")) {
+				this.confirmScope();
+			} else if (kb.matches(keyData, "tui.select.cancel")) {
+				this.backFromScope();
+			}
+			this.tui.requestRender();
+			return;
+		}
 		if (this.stage === "reasoning") {
 			const efforts = this.selectedModel?.supportedReasoningEfforts ?? [];
 			if (kb.matches(keyData, "tui.select.up")) {
@@ -147,7 +189,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		if (!model) return;
 		const efforts = model.supportedReasoningEfforts ?? [];
 		if (efforts.length <= 1) {
-			this.onSelectCallback({
+			this.openScope({
 				...model,
 				thinkingLevel: efforts[0],
 			});
@@ -165,7 +207,28 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		const model = this.selectedModel;
 		const effort = model?.supportedReasoningEfforts?.[this.selectedEffortIndex];
 		if (!model || !effort) return;
-		this.onSelectCallback({ ...model, thinkingLevel: effort });
+		this.openScope({ ...model, thinkingLevel: effort });
+	}
+
+	private openScope(model: MycliShellModel): void {
+		this.selectedModel = model;
+		this.selectedScopeIndex = 0;
+		this.stage = "scope";
+		this.searchInput.focused = false;
+	}
+
+	private confirmScope(): void {
+		const model = this.selectedModel;
+		const option = SCOPE_OPTIONS[this.selectedScopeIndex];
+		if (!model || !option) return;
+		this.submitting = true;
+		this.onSelectCallback(model, option.scope);
+	}
+
+	private backFromScope(): void {
+		const efforts = this.selectedModel?.supportedReasoningEfforts ?? [];
+		this.stage = efforts.length > 1 ? "reasoning" : "model";
+		this.searchInput.focused = this.focused && this.stage === "model";
 	}
 
 	private filterModels(query: string): void {
@@ -209,6 +272,16 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const prefix = selected ? theme.fg("accent", "› ") : "  ";
 			const label = selected ? theme.fg("accent", effort) : effort;
 			return this.line(`${prefix}${label}${defaultMarker}`, width);
+		});
+	}
+
+	private scopeRows(width: number): string[] {
+		return SCOPE_OPTIONS.map((option, index) => {
+			const selected = index === this.selectedScopeIndex;
+			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const label = selected ? theme.fg("accent", option.label) : option.label;
+			const description = theme.fg("muted", `  ${option.description}`);
+			return this.line(`${prefix}${label}${description}`, width);
 		});
 	}
 

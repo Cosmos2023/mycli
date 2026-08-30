@@ -4674,8 +4674,8 @@ test("mycli shell model selector opens from slash command and selects model", as
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
-		onModelSelect: (model) => {
-			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}`;
+		onModelSelect: (model, scope) => {
+			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}/${scope}`;
 		},
 	});
 
@@ -4688,12 +4688,13 @@ test("mycli shell model selector opens from slash command and selects model", as
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\r");
 	terminal.input?.("\r");
+	terminal.input?.("\r");
 	await setTimeout(25);
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.equal(runtime.getState().footer.model, "gpt-5.4");
 	assert.equal(runtime.getState().footer.provider, "openai");
 	assert.equal(runtime.getState().footer.reasoningLevel, "medium");
-	assert.equal(selected, "openai/gpt-5.4/medium");
+	assert.equal(selected, "openai/gpt-5.4/medium/session");
 });
 
 test("mycli shell shows command inventory as a dismissible editor overlay", async () => {
@@ -4744,8 +4745,8 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 			saved.push([providerId, apiKey]);
 			return { message: `Saved API key for ${providerId}` };
 		},
-		onModelSelect: (model) => {
-			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}`;
+		onModelSelect: (model, scope) => {
+			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}/${scope}`;
 		},
 	});
 
@@ -4787,10 +4788,11 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 	assert.match(output, /Saved API key for deepseek/);
 
 	terminal.input?.("\r");
+	terminal.input?.("\r");
 	await setTimeout(25);
 
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
-	assert.equal(selected, "deepseek/deepseek-v4-flash/");
+	assert.equal(selected, "deepseek/deepseek-v4-flash//session");
 });
 
 test("mycli shell model selector can change thinking effort with model selection", async () => {
@@ -4799,8 +4801,8 @@ test("mycli shell model selector can change thinking effort with model selection
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
-		onModelSelect: (model) => {
-			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}`;
+		onModelSelect: (model, scope) => {
+			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}/${scope}`;
 		},
 	});
 
@@ -4816,11 +4818,12 @@ test("mycli shell model selector can change thinking effort with model selection
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\r");
+	terminal.input?.("\r");
 	await setTimeout(25);
 
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.equal(runtime.getState().footer.reasoningLevel, "xhigh");
-	assert.equal(selected, "openai/gpt-5.4/xhigh");
+	assert.equal(selected, "openai/gpt-5.4/xhigh/session");
 });
 
 test("mycli shell keeps model selector open until backend selection succeeds", async () => {
@@ -4837,6 +4840,7 @@ test("mycli shell keeps model selector open until backend selection succeeds", a
 	await setTimeout(25);
 	await runtime.handleClientAction("open_model_selector", "");
 
+	terminal.input?.("\r");
 	terminal.input?.("\r");
 	await setTimeout(10);
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
@@ -4860,11 +4864,18 @@ test("mycli shell keeps model selector open and shows backend selection errors",
 	await runtime.handleClientAction("open_model_selector", "");
 
 	terminal.input?.("\r");
+	terminal.input?.("\r");
 	await setTimeout(25);
 
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Provider rejected this model/);
 	assert.equal(runtime.getState().footer.model, "deepseek-v4-flash");
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Select model/);
+	assert.doesNotMatch(output, /Provider rejected this model/);
 });
 
 test("mycli shell model selector opens from app model keybinding", async () => {

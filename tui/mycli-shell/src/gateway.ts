@@ -1026,7 +1026,7 @@ async function main(): Promise<void> {
 		onClarificationRespond: respondClarification,
 		onPlanImplementation: startPlanImplementation,
 		onApiKeyLogin: saveApiKey,
-		onModelSelect: async (model) => {
+		onModelSelect: async (model, scope) => {
 			if (!model.protocol || !model.baseUrl) {
 				throw new Error("Model catalog entry is missing provider protocol or endpoint metadata.");
 			}
@@ -1036,6 +1036,7 @@ async function main(): Promise<void> {
 				model: model.model,
 				base_url: model.baseUrl,
 				reasoning_effort: model.thinkingLevel ?? null,
+				scope,
 			});
 			setRuntimeState(runtimeStateWithModelCatalog(runtimeState, result));
 			return model;

@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import {
 	gatewayContractCatalog,
+	isModelSelectionScope,
 	parseGatewayEvent,
 	parseJsonRpcMessage,
 	runtimeErrorPublicMessage,
@@ -10,7 +11,11 @@ import {
 	sanitizeRuntimeErrorDetail,
 } from "@mycli/contracts";
 import type { WorkspaceTrustState } from "@mycli/config";
-import type { RuntimeErrorCode, RuntimeTurnRecord } from "@mycli/contracts";
+import type {
+	ModelSelectionScope,
+	RuntimeErrorCode,
+	RuntimeTurnRecord,
+} from "@mycli/contracts";
 import {
 	type QueueMutation,
 	type QueueSnapshot,
@@ -829,12 +834,14 @@ class InProcessNodeGateway implements NodeGateway {
 			);
 		}
 		const effort = reasoningEffort(params.reasoning_effort);
+		const scope = modelSelectionScope(params.scope);
 		const selection: JsonObject = {
 			provider: requiredString(params.provider, "provider").trim(),
 			protocol: requiredString(params.protocol, "protocol").trim(),
 			model: requiredString(params.model, "model").trim(),
 			base_url: requiredString(params.base_url, "base_url").trim(),
 			collaboration_mode: this.#collaborationMode,
+			scope,
 			...(effort ? { reasoning_effort: effort } : {}),
 		};
 		const commands = this.#options.controlCommands;
@@ -850,7 +857,16 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		const status = this.#status();
 		this.#emitRuntime("status.changed", status);
-		return { selected, status, models: await this.#models() };
+		const models = await this.#models();
+		return {
+			selected,
+			scope,
+			status,
+			models: models.map((entry) => ({
+				...entry,
+				current: sameModelCatalogIdentity(entry, selected),
+			})),
+		};
 	}
 
 	async #loadSettings(): Promise<JsonObject> {
@@ -4310,6 +4326,19 @@ function reasoningEffortValue(value: string): ReasoningEffort {
 		return value as ReasoningEffort;
 	}
 	throw new GatewayFailure("invalid_arguments", "Unsupported thinking effort.");
+}
+
+function modelSelectionScope(value: unknown): ModelSelectionScope {
+	if (value === undefined) return "session";
+	if (isModelSelectionScope(value)) return value;
+	throw new GatewayFailure("invalid_params", "Model selection scope is not supported.");
+}
+
+function sameModelCatalogIdentity(left: JsonObject, right: JsonObject): boolean {
+	return left.provider === right.provider
+		&& left.protocol === right.protocol
+		&& left.model === right.model
+		&& left.base_url === right.base_url;
 }
 
 function requestedSandboxMode(
