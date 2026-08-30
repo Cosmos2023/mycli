@@ -2,6 +2,9 @@
 
 The Node runtime owns one canonical registry for parsing, discovery, dispatch, and errors. The TUI
 palette normally shows the common subset; hidden commands below remain supported and test-covered.
+`Ctrl+P` starts with common commands that are available in the current runtime. Typing a query also
+searches aliases, descriptions, settings terminology, and current setting values; directly matched
+hidden or unavailable commands are shown with their reason, but unavailable rows cannot execute.
 
 | Command | Arguments | TUI behavior | During turn | Aliases |
 | --- | --- | --- | --- | --- |
@@ -10,7 +13,7 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/mode` | optional `[default\|plan]` | backend | no | - |
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | `/tools permissions` |
 | `/sandbox` | optional `[read-only\|workspace-write\|danger-full-access\|next]` | backend | no | - |
-| `/settings` | none | opens settings | yes | - |
+| `/settings` | none | opens the categorized settings center | yes | - |
 | `/new` | none | creates and switches to a fresh backend session | no | - |
 | `/resume` | optional `[session-id]` | picker when bare; backend when inline | no | `/session`, `/session list`, `/sessions`, `/session resume` |
 | `/fork` | optional `[source] [new-session] [message-index]` | backend | no | `/session fork` |
@@ -45,9 +48,39 @@ When the TUI is idle, `Shift+Tab` cycles between Default and Plan mode. The foot
 shortcut while Plan mode is active and the terminal has enough room; overlays, selectors, and
 running turns keep ownership of the key.
 
-Prefix aliases can inject a canonical subcommand. For example, `/logs` resolves to
-`/trace logs`, `/trace-jsonl` resolves to `/trace export`, and `/subagents` resolves to
-`/agents`.
+Prefix aliases can inject a canonical subcommand. `/hooks`, `/toolsets`, `/extensions`, and
+`/plugin` enter the matching `/tools` view. `/tasks agents`, `/jobs subagents`, `/subagents`, and
+`/agents runs` resolve to `/agents`; `/tasks kill-agents`, `/jobs kill-subagents`, and
+`/agents kill` inject the matching agent action. `/tasks bashes`, `/bashes`, and `/jobs bashes`
+resolve to `/ps`. `/logs` resolves to `/trace logs`, and `/trace-jsonl` resolves to
+`/trace export`.
+
+## Settings Center
+
+`/settings` searches and navigates seven runtime-projected categories: model/reasoning,
+providers/credentials, permissions/sandbox, appearance/accessibility, sessions/context,
+integrations, and updates/diagnostics. Action rows open the same model, login, permission, trust,
+session, resource, and diagnostic flows used by their slash commands. Esc returns one selector
+level at a time and preserves the composer draft.
+
+Appearance changes show `old -> new` before applying. `Use for this session` updates the active TUI
+without writing configuration. `Make user default` uses the atomic user-config writer and rolls the
+active value back if persistence fails. The settings center displays each effective value and its
+source/scope; managed or unavailable rows stay locked with a bounded explanation.
+
+Every appearance setting is also available through the provider-free config CLI:
+
+```bash
+mycli config get tui.theme
+mycli config set tui.theme light
+mycli config set tui.hide_thinking false
+mycli config unset tui.statusbar_mode
+```
+
+The allowlisted keys are `tui.statusbar_mode`, `tui.view_mode`, `tui.theme`,
+`tui.hide_thinking`, `tui.tool_details_default`, `tui.hardware_cursor`,
+`tui.clear_on_shrink`, `tui.terminal_progress`, and `tui.subagent_density`. These commands do not
+accept arbitrary TOML paths.
 
 `/session maintenance` is a dry-run report. `--apply-payloads` compacts eligible legacy terminal
 rollouts and removes inactive legacy continuation snapshots without deleting canonical transcript,

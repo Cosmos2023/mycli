@@ -556,3 +556,95 @@ await writeUserProviderConfig({
 Domain writers compile a complete ordered batch internally. Callers never construct arbitrary
 paths, and a grouped provider or TUI update has one lock scope, one final validation, and at most one
 rename.
+
+## Scenario: Single Visual Setting Persistence And Provenance
+
+### 1. Scope / Trigger
+
+- Trigger: changing the TUI settings catalog, `settings.save`, shell-setting descriptors, or the
+  lossless user-config writer.
+- A user-default visual change owns one descriptor. It must not materialize unrelated defaults in
+  the user file or report those defaults as user-owned.
+
+### 2. Signatures
+
+```ts
+export interface SaveShellSettingOptions extends LoadShellSettingsOptions {
+	readonly key: string;
+	readonly value: string | boolean;
+	readonly workspaceRoot?: string;
+	readonly env?: NodeJS.ProcessEnv;
+	readonly workspaceTrust?: WorkspaceTrustState;
+}
+
+export interface LoadedShellSettings {
+	readonly settings: ShellSettings;
+	readonly sources: Readonly<Record<ShellSettingName, "default" | "user">>;
+}
+
+export function saveShellSetting(
+	options: SaveShellSettingOptions,
+): Promise<LoadedShellSettings>;
+```
+
+### 3. Contracts
+
+- `key` is an exact stable id from `SHELL_SETTING_DESCRIPTORS`, such as `tui.theme`; it is not an
+  arbitrary TOML path or a general runtime setting id.
+- The config package validates the typed value against the owning descriptor, clears only that
+  descriptor's legacy aliases, writes only its canonical path, and performs one validated atomic
+  replacement under the shared user-config lock.
+- `tui.statusbar_mode` additionally maintains the existing `statusline_enabled` compatibility key;
+  changing another descriptor leaves that key untouched.
+- After the write, the config package reloads the complete shell snapshot. `sources` is derived
+  from keys actually present in user TOML, not from the values submitted by the caller.
+- `saveShellSettings` remains the compatibility grouped writer. New interactive single-row changes
+  use `saveShellSetting` so defaults not owned by the change remain absent.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Unknown or non-TUI `key` | Reject with bounded `shell_settings_invalid`; do not create or replace config |
+| Value is outside descriptor values or has the wrong scalar type | Reject before persistence; do not echo the value |
+| Current config, candidate validation, locking, or rename fails | Preserve prior bytes and return bounded `shell_settings_write_failed` |
+| Selected value already matches canonical user config | Return the authoritative snapshot without replacing the file |
+| Another visual setting is still a built-in default | Return its source as `default` and leave its path absent |
+
+### 5. Good / Base / Bad Cases
+
+- Good: save `tui.theme=light`; only `tui_theme` is added, `sources.theme=user`, and all other fresh
+  settings remain `default`.
+- Base: a legacy alias owns the selected setting; saving migrates only that setting to its canonical
+  path while preserving unrelated comments, tables, and newline style.
+- Bad: receive a full effective settings object from the TUI and rewrite all nine descriptors,
+  converting every built-in default into an apparent user preference.
+
+### 6. Tests Required
+
+- Config unit tests persist one descriptor and assert exact TOML, selected source `user`, and every
+  untouched descriptor source `default`.
+- Gateway/backend integration tests save one stable id, reload the snapshot, and assert untouched
+  sources do not change.
+- Existing grouped-writer tests retain comment, CRLF, validation, no-op, redaction, and concurrency
+  coverage.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+await saveShellSettings({ homeDir, settings: completeEffectiveSettings });
+return { settings: completeEffectiveSettings, sources: allUserSources };
+```
+
+#### Correct
+
+```ts
+const loaded = await saveShellSetting({
+	homeDir,
+	key: "tui.theme",
+	value: "light",
+});
+return { settings: loaded.settings, sources: loaded.sources };
+```

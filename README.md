@@ -120,6 +120,8 @@ mycli config validate
 mycli config show
 mycli config get model.name
 mycli config set memory.enabled true
+mycli config set tui.theme light
+mycli config set tui.hide_thinking false
 mycli config unset context.compaction_l4_summarizer_model
 mycli config show --json
 ```
@@ -136,6 +138,12 @@ settings, preserve comments and unrelated TOML, validate the complete candidate 
 write, and report when an environment or trusted project setting still wins. Credentials,
 arbitrary TOML paths, structured settings, and project-file mutation are intentionally rejected;
 use `mycli setup` or `/login` for credentials.
+
+Inside the TUI, `/settings` provides the same visual allowlist together with model, credential,
+permission, session, integration, and diagnostic navigation. Visual changes are previewed before
+application: session scope changes only the active TUI, while user-default scope writes
+`~/.mycli/config.toml` atomically. `Ctrl+P` searches commands, aliases, and settings terminology;
+unavailable commands remain non-executable and show a bounded reason.
 
 `sessions.db` is authoritative. The Node runtime repairs derivable session files during session
 preparation; deleting or corrupting a projection does not make it a provider-recovery source.

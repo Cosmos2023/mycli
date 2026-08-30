@@ -1421,6 +1421,7 @@ queue.markStarted(record.queueId);
   event list and its payload requires `session_id`.
 - Contract fixture tests proving valid `runtime.ready` and `rejected_steer` payloads pass Ajv while
   malformed boundary payloads fail without leaking their content.
+
 - Workspace tests proving the root lockfile owns both packages, no nested TUI
   lockfile is required, and generated outputs pass `npm run contracts:check`.
 
@@ -5889,3 +5890,118 @@ const readiness = await inspectSandboxReadiness();
 
 The snapshot supplies effective authority; the readiness classifier observes platform capability
 without mutating it.
+
+## Scenario: Unified Settings And Command Discovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing `/settings`, `settings.load`, `settings.save`, slash registry discovery metadata,
+  command palette/help/autocomplete behavior, or a dedicated domain selector reachable from settings.
+- Settings is a bounded discovery and navigation surface. It must not become a generic config editor
+  or duplicate model, credential, permission, trust, session, integration, or diagnostic ownership.
+
+### 2. Signatures
+
+```ts
+type SettingsSaveRequest =
+	| { readonly setting_id: string; readonly value: string | boolean }
+	| { readonly settings: Readonly<Record<string, unknown>> }; // compatibility
+
+interface SettingsSnapshotPayload {
+	readonly settings: Readonly<Record<string, unknown>>;
+	readonly sources: Readonly<Record<string, "default" | "user">>;
+	readonly source: "defaults" | "user_config";
+	readonly catalog: {
+		readonly version: 1;
+		readonly categories: readonly SettingsCategory[];
+		readonly items: readonly SettingsItem[];
+	};
+}
+
+interface CommandDiscoveryRow {
+	readonly id: string;
+	readonly name: string;
+	readonly aliases: readonly string[];
+	readonly category: string;
+	readonly search_only: boolean;
+	readonly available: boolean;
+	readonly unavailable_reason?: string;
+}
+```
+
+### 3. Contracts
+
+- `settings.load` and successful `settings.save` return the same versioned snapshot shape. The seven
+  categories are model, providers, permissions, appearance, sessions, integrations, and diagnostics.
+- Catalog items contain stable id/category, kind, label, bounded description/value/source/scope,
+  allowed values or action, lock state/reason, restart requirement, command path, and search terms.
+  Credential values, raw policy/helper failures, absolute private paths, and unbounded extension text
+  never enter the payload.
+- The preferred save request carries exactly one visual descriptor id and typed value. Gateway
+  validates against the config-owned shell descriptor catalog, rejects non-TUI ids, delegates one
+  atomic write, and rebuilds the catalog from the authoritative post-write settings and sources.
+- Session-scoped visual changes remain TUI-local and do not call `settings.save`. User-default changes
+  show `old -> new`, require explicit scope selection, and roll back optimistic state in place if the
+  request fails.
+- Action rows open the existing model, login, permissions, trust, session, resource, or command flow.
+  A selector stack returns one level on Esc and preserves the composer draft and focus.
+- `command.list` derives aliases, category, search-only state, and availability from the canonical
+  slash registry plus runtime capabilities. Default palette/help show common available commands;
+  explicit fuzzy search may reveal matching search-only or unavailable rows, which cannot execute.
+- Slash autocomplete excludes search-only and unavailable commands. Canonical parsing/routing stays
+  independent of presentation metadata, and integration commands remain additive.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| `setting_id` is missing, unknown, or names a non-TUI config key | JSON-RPC `invalid_params`; do not echo the id or value |
+| Value is not one of the descriptor's typed allowed values | JSON-RPC `invalid_params`; preserve settings and user config |
+| User-default persistence fails | Keep settings selector mounted, restore prior state, preserve draft, render one bounded error |
+| Session scope is selected | Apply locally and perform zero persistence RPCs |
+| Catalog action capability is absent | Keep a bounded locked/searchable row or unavailable command reason; block execution |
+| Esc is pressed in a nested settings selector | Return to settings before returning to the composer |
+| Command is search-only or unavailable with an empty query | Omit it from default palette and autocomplete |
+
+### 5. Good / Base / Bad Cases
+
+- Good: search `api key`, open the existing login selector, cancel back to settings, and retain the
+  unsent composer draft.
+- Good: save only `tui.hide_thinking=false`; response marks that row `user` while unrelated defaults
+  remain `default`.
+- Base: a build has no integration resource service; direct search explains the locked resource row
+  without exposing plugin/MCP errors.
+- Bad: hard-code a second list of visual labels/values in the gateway or accept an arbitrary TOML path
+  through `settings.save`.
+- Bad: include hidden/unavailable commands in autocomplete or let a palette row bypass canonical
+  command availability checks.
+
+### 6. Tests Required
+
+- Gateway tests assert all seven categories, bounded item fields, single-setting validation, accurate
+  post-write sources, unavailable reasons, and sentinel redaction.
+- Config/gateway/backend integration asserts one user-default change persists across restart without
+  claiming unrelated defaults.
+- TUI tests cover widths 60/80/100/140, CJK and Windows-style values, preview/scope selection, zero
+  session persistence, user rollback, nested Esc, draft preservation, and blocked unavailable rows.
+- Registry/docs drift tests cover canonical names, aliases, categories, search-only metadata, slash
+  fixture hash, help grouping, and documented commands.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+await send("settings.save", { settings: effectiveVisualSettings });
+openGenericConfigEditor(item.config_key);
+```
+
+#### Correct
+
+```ts
+await send("settings.save", {
+	setting_id: item.configKey,
+	value: selectedValue,
+});
+openExistingDomainSelector(item.action);
+```
