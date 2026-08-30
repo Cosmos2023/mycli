@@ -111,6 +111,22 @@ export function mutateUserConfigSetting(
 	},
 ): Promise<{ readonly key: string; readonly changed: boolean }>;
 
+// Package-internal: not exported from the @mycli/config root.
+type UserConfigEdit =
+	| { readonly action: "set"; readonly path: readonly string[]; readonly value: string | number | boolean }
+	| { readonly action: "clear"; readonly path: readonly string[]; readonly onlyIfScalar?: boolean };
+
+function applyUserConfigEdits(
+	options: ResolveConfigOptions & {
+		readonly edits: readonly UserConfigEdit[];
+		readonly validateCurrent?: boolean;
+		readonly failpoint?: (name: string) => void;
+	},
+): Promise<boolean>;
+
+export function writeUserProviderConfig(input: UserProviderConfigInput): Promise<string>;
+export function saveShellSettings(options: SaveShellSettingsOptions): Promise<ShellSettings>;
+
 export interface ConfigSettingRow {
 	readonly key: string;
 	readonly value: string | number | boolean | null | Readonly<Record<string, number>>;
@@ -229,6 +245,27 @@ when the candidate differs byte-for-byte; an absent unset or repeated set return
 Comments, newline style, unrelated formatting, unknown keys, and unrelated tables remain owned by
 the source document rather than a whole-document serializer.
 
+`applyUserConfigEdits` is the single package-internal persistence kernel for user TOML. It applies
+ordered scalar `set` and `clear` edits to one lossless document while holding one per-file lock,
+validates the complete final candidate, and performs at most one atomic replacement. It is not
+re-exported from `@mycli/config`; model-facing tools and configuration-management commands cannot
+submit arbitrary paths. `mutateUserConfigSetting` remains the public allowlisted compiler and asks
+the kernel to validate the current document before applying its canonical and legacy-path edits.
+
+`writeUserProviderConfig` and `saveShellSettings` are typed domain compilers over the same kernel.
+The provider compiler validates its provider/protocol profile, removes root and `[model]` inline
+credentials plus owned flat aliases, normalizes the base URL, and emits one model/request/reasoning
+batch. It may repair those owned legacy fields before validation, but the complete final candidate
+must still validate, including on a byte-identical no-op. The shell compiler accepts its existing
+camelCase and snake_case input aliases, clears their legacy root aliases, and writes the canonical
+root TUI compatibility keys in one batch. Both preserve existing bounded domain errors.
+
+Runtime callers pass the active session workspace, environment, and persisted trust state into
+provider and shell persistence so higher-layer validation uses the same ownership context as the
+active session. Provider-free setup uses an untrusted, environment-free validation context rooted
+at the user home. Credentials remain in `auth.json`; setup retains separate atomic config/auth
+writes and its existing partial-success ordering.
+
 Successful mutation responses contain only the canonical key, `changed`, the post-write effective
 source, overridden layer ids, and bounded diagnostics. They never contain the submitted value.
 Post-write resolution is mandatory because an environment or trusted project layer may continue
@@ -267,7 +304,10 @@ sanitized response.
 | `config set` or `unset` receives a read-only, structured, credential-like, or unknown key | Return value-free `invalid_value` before creating or replacing the user config |
 | A scalar value has invalid syntax or exceeds its numeric type | Return `invalid_value`; omit the submitted value and preserve the original bytes |
 | The current document or complete candidate is invalid in isolation or with enabled higher layers | Return the typed config diagnostic and preserve the original bytes |
+| A provider write finds an owned legacy root or `[model]` inline credential | Remove it in the lossless batch, validate the credential-free final candidate, and never expose its value |
+| A provider or shell batch fails validation, locking, or replacement | Preserve the original bytes and map to the existing bounded domain write error without paths, source, stacks, or values |
 | A mutation changes no TOML bytes | Return `changed=false`; do not create a temporary file or replace the target |
+| A provider batch changes no bytes and skipped current-document validation for cleanup compatibility | Validate the byte-identical final candidate before returning no-op |
 | Lossless patching, locking, or atomic replacement fails unexpectedly | Return `config_write_failed` without an absolute path, source text, stack, or submitted value |
 | An unexpected configuration-management exception occurs | Return stable `management_command_failed`; omit stack and raw message |
 
@@ -283,6 +323,11 @@ sanitized response.
   unknown tables, and reports `effectiveSource=environment` when `MYCLI_MEMORY_ENABLED` still wins.
 - Good: setting `model.name` over a legacy root `model = "..."` replaces the scalar collision with
   canonical `[model].name` without changing unrelated TOML.
+- Good: setup, `model.select`, `config set`, and `settings.save` race on one user file; each completed
+  batch observes the prior committed bytes under the same lock, so unrelated model, memory, and TUI
+  settings all survive.
+- Good: provider selection removes legacy inline API keys while preserving CRLF, comments, plugin
+  tables, and unknown extension keys inside `[model]` and `[request]`.
 - Base: no project trust record exists; user configuration and defaults load normally, and the
   project layer reports `workspace_not_trusted`.
 - Base: a fresh home returns defaults and `apiKey=missing` without creating `.mycli`.
@@ -300,6 +345,8 @@ sanitized response.
   exposing credentials, generated ids, or absolute paths.
 - Bad: mutation parses with `smol-toml`, stringifies the complete object, and writes after releasing
   the lock. This discards comments and permits a concurrent writer to be overwritten.
+- Bad: implement provider or TUI persistence as repeated public `config set` calls. Intermediate
+  provider states can become visible and TUI-only aliases would leak into the public catalog.
 - Bad: a mutation response includes `value`, a raw parser error, or the target path. Submitted
   values and private paths must not cross the management boundary even on failure.
 
@@ -335,6 +382,14 @@ sanitized response.
 - Config editor tests assert canonical/legacy collision handling, comment and CRLF/LF preservation,
   typed scalar rejection, isolated and higher-layer cross-field validation, no-op identity,
   concurrent lock serialization, private modes, and byte preservation after every failed candidate.
+- Provider-writer tests assert owned legacy and inline-secret cleanup, base-URL and reasoning
+  normalization, extension-key/comment/CRLF preservation, byte-identical no-op, final-candidate
+  rejection, private modes, and failure redaction.
+- Shell-settings tests assert camelCase/snake_case input compatibility, canonical alias cleanup,
+  comment/CRLF preservation, byte-identical no-op, and exact-byte preservation after validation or
+  pre-rename failure.
+- One concurrency test runs provider, catalog-backed CLI, and shell-settings mutations against the
+  same home and asserts every independently owned path survives.
 - Every mutation redaction test places a submitted sentinel in the value or unknown key and asserts
   it is absent from human output, JSON output, serialized diagnostics, and exception messages.
 - CLI tests run `config show/get/set/unset --json` under non-TTY streams and assert zero
@@ -454,3 +509,29 @@ return {
 
 The editor owns type parsing, lossless path edits, lock scope, candidate validation, atomicity, and
 value-free diagnostics. The management layer owns only post-write effective projection.
+
+### Typed grouped user-config persistence
+
+Wrong:
+
+```ts
+for (const [key, value] of Object.entries(modelSettings)) {
+	await mutateUserConfigSetting({ ...resolveOptions, action: "set", key, value: String(value) });
+}
+```
+
+Correct:
+
+```ts
+await writeUserProviderConfig({
+	...validatedProviderSelection,
+	homeDir,
+	workspaceRoot: active.workspaceRoot,
+	env,
+	workspaceTrust: await trustStore.load(active.workspaceRoot),
+});
+```
+
+Domain writers compile a complete ordered batch internally. Callers never construct arbitrary
+paths, and a grouped provider or TUI update has one lock scope, one final validation, and at most one
+rename.

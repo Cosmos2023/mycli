@@ -3280,6 +3280,8 @@ return nodeRuntime.run(turn);
 - Node execution: `command.run`, command-specific RPCs, and TUI client actions.
 - Model catalog: `~/.mycli/models.json` -> `model.list` -> TUI model selector -> `model.select` ->
   `~/.mycli/config.toml`.
+- Visual settings: TUI settings selector -> `settings.save` -> `saveShellSettings` ->
+  `~/.mycli/config.toml`.
 
 ### 3. Contracts
 
@@ -3301,7 +3303,15 @@ return nodeRuntime.run(turn);
   runtime edits to `models.json` are visible without restarting.
 - `model.select` resolves `auth_ref` on the backend from the selected catalog entry, verifies the
   credential exists, validates provider/protocol/base URL and supported reasoning effort, and only
-  then atomically persists model settings.
+  then atomically persists the complete model/request/reasoning group through the config package's
+  lossless batch editor.
+- `model.select` and `settings.save` pass the active session workspace, process environment, and
+  persisted workspace-trust decision to the typed config writer. The gateway/TUI never submits TOML
+  paths, credentials, or arbitrary tables.
+- `settings.save` persists one complete normalized `ShellSettings` object. Its config wrapper owns
+  camelCase/snake_case compatibility input and canonical root keys such as `view_mode`,
+  `statusline_enabled`, `tui_statusbar_mode`, and `tui_theme`. It preserves unrelated TOML,
+  comments, and newline style rather than serializing the complete user document.
 - Bare TUI `/model`, direct `model.list`/`model.select`, and inline `/model <name>` share the same
   catalog and selection path. Inline selection must not mutate only transient Gateway fields.
 - A failed selection leaves the active provider/model and durable config unchanged. A successful
@@ -3326,15 +3336,21 @@ return nodeRuntime.run(turn);
   effort while retaining a valid base reasoning setting for future models.
 - Public model payload or error -> no API key, bearer token, raw auth-store content, or private
   absolute path.
+- Invalid visual setting -> reject before config mutation with the existing bounded settings error.
+- Model or settings candidate/atomic write failure -> leave the prior user TOML and active runtime
+  state unchanged; return one bounded gateway error without source text, paths, or credentials.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: one shared fixture produces identical config, gateway, and TUI public model-catalog payloads,
   then a catalog selection survives restart and is used by the next turn.
+- Good: a visual settings save changes only owned root compatibility keys while preserving provider
+  comments and plugin tables; a later model selection preserves those TUI keys.
 - Base: an existing catalog with no exact current entry is returned intact with no row marked
   current.
 - Bad: synthesize one default model per provider and call it catalog parity.
 - Bad: accept arbitrary `model.select` input or trust `auth_ref` supplied by the TUI.
+- Bad: let `model.select` or `settings.save` parse/stringify the whole TOML document in the gateway.
 - Bad: freeze only the slash registry checksum while command services use different data sources.
 
 ### 6. Tests Required
@@ -3349,6 +3365,9 @@ return nodeRuntime.run(turn);
   preserve it across a catalog-free `status.changed`, and replace it from a later `model.list`.
 - Backend integration tests use a temporary HOME with a real catalog and auth store, verify
   catalog-owned `auth_ref`, persistence, restart recovery, and absence of credentials in responses.
+- Config and backend tests assert model and settings writers share the user-config lock, retain
+  comments/CRLF and unrelated keys, skip byte-identical replacement, and preserve the previous file
+  after validation or atomic-write failure.
 - Every other retained slash command changed in the future requires an equivalent behavioral test;
   updating only the registry hash is insufficient.
 
@@ -3366,7 +3385,14 @@ gateway.model = requestedModel;
 ```typescript
 const catalog = await loadModelCatalog({ homeDir, currentConfig });
 const selected = validateCatalogSelection(catalog, request);
-await persistModelSelection(selected);
+const active = sessionCoordinator.snapshot();
+await writeUserProviderConfig({
+	...selected,
+	homeDir,
+	workspaceRoot: active.workspaceRoot,
+	env,
+	workspaceTrust: await trustStore.load(active.workspaceRoot),
+});
 ```
 
 ## Scenario: Transcript And Content-Blob Maintenance With Backend Restart
