@@ -614,3 +614,39 @@ Implemented the unified settings center, config provenance and single-setting pe
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Phase 6 session continuity and recovery
+
+**Date**: 2026-08-30
+**Task**: Phase 6 session continuity and recovery
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Unified CLI and TUI session discovery through one backend service, added operational metadata and explicit recovery previews/actions, persisted session permission choices with safe default fallback, documented behavior, and passed the complete repository quality suite.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b3dabadd` | (see git log) |
+| `93bfb3fc` | (see git log) |
+| `f2e48cf4` | (see git log) |
+| `f45c53b7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
