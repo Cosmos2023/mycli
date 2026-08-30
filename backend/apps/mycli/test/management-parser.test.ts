@@ -87,6 +87,60 @@ test("parser retains validated interactive arguments", () => {
 		kind: "interactive",
 		runtimeArgs: ["--session", "demo", "--model=gpt-5"],
 	});
+	assert.deepEqual(parseCliMode(["session", "resume", "release-session"]), {
+		kind: "interactive",
+		runtimeArgs: ["--session", "release-session"],
+	});
+});
+
+test("parser exposes bounded session management filters and destructive confirmation", () => {
+	assert.deepEqual(parseCliMode([
+		"session",
+		"list",
+		"--all",
+		"--last",
+		"--workspace",
+		"/workspace",
+		"--search",
+		"release",
+		"--model",
+		"gpt-5",
+		"--mode",
+		"plan",
+		"--permission",
+		"workspace",
+		"--status",
+		"interrupted",
+		"--limit",
+		"5",
+		"--json",
+	]), {
+		kind: "management",
+		command: {
+			kind: "session",
+			action: "list",
+			json: true,
+			all: true,
+			last: true,
+			workspaceRoot: "/workspace",
+			search: "release",
+			model: "gpt-5",
+			collaborationMode: "plan",
+			permissionProfile: "workspace",
+			status: "interrupted",
+			limit: 5,
+		},
+	});
+	assert.deepEqual(parseCliMode(["session", "delete", "release", "--force"]), {
+		kind: "management",
+		command: {
+			kind: "session",
+			action: "delete",
+			sessionId: "release",
+			force: true,
+			json: false,
+		},
+	});
 });
 
 test("parser rejects invalid management usage and JSON arguments", () => {
@@ -112,6 +166,10 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["sandbox"],
 		["sandbox", "setup"],
 		["sandbox", "status", "extra"],
+		["session", "resume"],
+		["session", "list", "--mode", "broken"],
+		["session", "list", "--limit", "many"],
+		["session", "delete", "id", "--force", "--force"],
 		["--runtime-backend=node"],
 	] as const) {
 		assert.throws(

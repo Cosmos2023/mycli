@@ -94,6 +94,14 @@ import {
 	gatewayFailure,
 } from "./node-gateway-errors.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
+import type {
+	ApplyResumeRepairInput,
+	ApplyResumeRepairResult,
+	ResumeRepairPreview,
+	ResumeRepairAction,
+	SessionQuery,
+	SessionSummary,
+} from "./session-service.ts";
 import { MYCLI_VERSION } from "../version.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -123,6 +131,7 @@ export interface NodeGatewayRuntime {
 		readonly model: string;
 		readonly reasoningEffort?: ReasoningEffort;
 		readonly collaborationMode: "default" | "plan";
+		readonly permissionProfile?: PermissionProfile;
 	}): SessionPreferences;
 	executionPolicySnapshot?(): ExecutionPolicySnapshot | undefined;
 	listCommandAllowances?(): readonly (readonly string[])[];
@@ -183,6 +192,10 @@ export interface NodeGatewayBackgroundTaskCommands {
 }
 
 export interface NodeGatewaySessionCommands {
+	list?(query: SessionQuery): readonly SessionSummary[];
+	inspect?(sessionId: string): SessionSummary | undefined;
+	previewResume?(sessionId: string): Promise<ResumeRepairPreview>;
+	applyResumeRepair?(input: ApplyResumeRepairInput): Promise<ApplyResumeRepairResult>;
 	fork(input: {
 		readonly sourceSessionId: string;
 		readonly targetSessionId: string;
@@ -567,7 +580,9 @@ class InProcessNodeGateway implements NodeGateway {
 			case "trace.export":
 				return this.#traceExport(request.params);
 			case "session.list":
-				return this.#sessionList();
+				return this.#sessionList(request.params);
+			case "session.resume.preview":
+				return this.#sessionResumePreview(request.params);
 			case "session.new":
 				return this.#sessionNew();
 			case "session.resume":
@@ -1088,6 +1103,9 @@ class InProcessNodeGateway implements NodeGateway {
 				},
 				{ label: "Pending", value: status.pending_decision ? "yes" : "no" },
 				{ label: "Suspended", value: status.suspended_turn ? "yes" : "no" },
+				{ label: "Session state", value: String(status.session_lifecycle_status ?? "active") },
+				{ label: "Session lock", value: String(status.session_lock_state ?? "unlocked") },
+				{ label: "Recovery", value: String(status.session_pending_state ?? "none") },
 				{ label: "Permissions", value: String(permissions.active ?? this.#permissionProfile) },
 				{ label: "Sandbox", value: String(effective.sandbox_mode ?? "unknown") },
 				{ label: "Filesystem", value: String(effective.filesystem ?? "unknown") },
@@ -1581,6 +1599,7 @@ class InProcessNodeGateway implements NodeGateway {
 		if (invocation.commandId === "sandbox") {
 			const sandbox = requestedSandboxMode(invocation.args, this.#permissionProfile);
 			this.#permissionProfile = permissionForSandbox(sandbox);
+			this.#ensureSessionPreferences(this.#collaborationMode);
 			this.#configureExecutionPolicy();
 			this.#emitRuntime("status.changed", this.#status());
 			return noticeCommandResult(invocation, "Sandbox", `sandbox=${sandbox}`, {
@@ -1718,7 +1737,7 @@ class InProcessNodeGateway implements NodeGateway {
 		return { resources: resources.map(boundedResource).filter(isObject) };
 	}
 
-	#sessionList(): JsonObject {
+	#sessionList(params: JsonObject = {}): JsonObject {
 		const coordinator = this.#options.sessionCoordinator;
 		if (!coordinator) {
 			return {
@@ -1731,7 +1750,10 @@ class InProcessNodeGateway implements NodeGateway {
 			};
 		}
 		const activeSessionId = coordinator.snapshot().sessionId;
-		const sessions: JsonObject[] = coordinator.listSessions({ limit: 20 }).map((item) => ({
+		const serviceSessions = this.#options.sessionCommands?.list?.(sessionQueryFromParams(params));
+		const sessions: JsonObject[] = serviceSessions
+			? serviceSessions.map((item) => sessionSummaryPayload(item, activeSessionId))
+			: coordinator.listSessions({ limit: 20 }).map((item) => ({
 				id: item.sessionId,
 				workspace: item.workspaceRoot,
 				cwd: item.workspaceRoot,
@@ -1742,7 +1764,7 @@ class InProcessNodeGateway implements NodeGateway {
 				message_count: item.messageCount,
 				current: item.sessionId === activeSessionId,
 			}));
-		if (!sessions.some((item) => item.id === activeSessionId)) {
+		if (!serviceSessions && !sessions.some((item) => item.id === activeSessionId)) {
 			sessions.unshift({
 				id: activeSessionId,
 				workspace: coordinator.snapshot().workspaceRoot,
@@ -1768,9 +1790,61 @@ class InProcessNodeGateway implements NodeGateway {
 		const coordinator = this.#options.sessionCoordinator;
 		if (!coordinator) throw new GatewayFailure("method_not_found", "Session resume is unavailable.");
 		this.#assertSessionTransitionAvailable(coordinator);
-		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
+		let sessionId = requiredString(params.session_id, "session_id");
+		const previewResume = this.#options.sessionCommands?.previewResume;
+		if (previewResume) {
+			let preview: ResumeRepairPreview | undefined;
+			try {
+				preview = await previewResume(sessionId);
+			} catch (error) {
+				if (gatewayFailure(error).code !== "session_not_found") throw error;
+			}
+			if (preview && !preview.ready) {
+				const action = optionalString(params.repair_action);
+				const revision = integerValue(params.metadata_revision);
+				const applyRepair = this.#options.sessionCommands?.applyResumeRepair;
+				if (!action || revision === undefined || !applyRepair) {
+					throw new GatewayFailure(
+						"session_repair_required",
+						"Review the session recovery options before resuming.",
+						{ preview: resumeRepairPreviewPayload(preview) },
+					);
+				}
+				if (!isResumeRepairAction(action)) {
+					throw new GatewayFailure("invalid_params", "Unknown session repair action.");
+				}
+				const repaired = await applyRepair({
+					sessionId,
+					expectedMetadataRevision: revision,
+					action,
+				});
+				sessionId = repaired.sessionId;
+				const repairedPreview = resumePreviewAfterConfirmedAction(
+					await previewResume(sessionId),
+					action,
+				);
+				if (!repairedPreview.ready) {
+					throw new GatewayFailure(
+						"session_repair_required",
+						"Review the remaining session recovery options before resuming.",
+						{ preview: resumeRepairPreviewPayload(repairedPreview) },
+					);
+				}
+			}
+		}
+		const snapshot = await coordinator.resume(sessionId);
 		await this.#activateSession(snapshot);
 		return await this.#sessionTransitionPayload(snapshot);
+	}
+
+	async #sessionResumePreview(params: JsonObject): Promise<JsonObject> {
+		const previewResume = this.#options.sessionCommands?.previewResume;
+		if (!previewResume) {
+			throw new GatewayFailure("method_not_found", "Session recovery preview is unavailable.");
+		}
+		return resumeRepairPreviewPayload(await previewResume(
+			requiredString(params.session_id, "session_id"),
+		));
 	}
 
 	#assertSessionTransitionAvailable(coordinator: SessionCoordinator<NodeGatewayRuntime>): void {
@@ -1992,6 +2066,7 @@ class InProcessNodeGateway implements NodeGateway {
 			model: this.#model,
 			...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
 			collaborationMode,
+			permissionProfile: this.#permissionProfile,
 		});
 		if (preferences) this.#applySessionPreferences(preferences);
 	}
@@ -2005,6 +2080,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#model = preferences.model;
 		this.#reasoningEffort = preferences.reasoningEffort;
 		this.#collaborationMode = preferences.collaborationMode;
+		if (preferences.permissionProfile) this.#permissionProfile = preferences.permissionProfile;
 		runtime.configureRuntimeContext?.({
 			collaborationMode: preferences.collaborationMode,
 		});
@@ -3078,6 +3154,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#status(): JsonObject {
 		const session = this.#options.sessionCoordinator?.snapshot();
+		const summary = this.#options.sessionCommands?.inspect?.(this.#sessionId());
 		const queue = this.#queueCoordinator()?.snapshot() ?? session?.queue;
 		const steering = queue?.pendingSteers ?? [];
 		const rejectedSteers = queue?.rejectedSteers ?? [];
@@ -3092,6 +3169,14 @@ class InProcessNodeGateway implements NodeGateway {
 			model: this.#model,
 			...(this.#reasoningEffort ? { thinking_effort: this.#reasoningEffort } : {}),
 			collaboration_mode: this.#collaborationMode,
+			...(summary ? {
+				session_lifecycle_status: summary.lifecycleStatus,
+				session_lock_state: summary.leaseState,
+				session_pending_state: summary.pendingState,
+				session_metadata_revision: summary.metadataRevision,
+				...(summary.parentId ? { parent_session_id: summary.parentId } : {}),
+				...(summary.forkPoint === undefined ? {} : { fork_point: summary.forkPoint }),
+			} : {}),
 			context_window: this.#contextWindow(),
 			pending_decision: session?.pendingApproval !== undefined,
 			pending_clarification: session?.pendingClarification !== undefined,
@@ -3190,6 +3275,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#updatePermissions(params: JsonObject): JsonObject {
 		this.#permissionProfile = permissionProfile(params.profile);
+		this.#ensureSessionPreferences(this.#collaborationMode);
 		this.#configureExecutionPolicy();
 		const permissions = this.#permissions();
 		const status = this.#status();
@@ -4331,6 +4417,117 @@ function optionalBoundedIdentity(value: unknown, name: string): string | undefin
 		throw new GatewayFailure("invalid_params", `${name} is invalid.`);
 	}
 	return normalized;
+}
+
+function sessionQueryFromParams(params: JsonObject): SessionQuery {
+	const workspaceRoot = optionalBoundedIdentity(params.workspace_root, "workspace_root");
+	const search = optionalBoundedIdentity(params.search, "search");
+	const model = optionalBoundedIdentity(params.model, "model");
+	const collaborationMode = collaborationModeParameter(params.collaboration_mode);
+	const permission = params.permission_profile === undefined
+		? undefined
+		: permissionProfile(params.permission_profile);
+	const lifecycleStatus = optionalSessionLifecycleStatus(params.status);
+	const limit = params.limit === undefined ? 50 : integerValue(params.limit);
+	if (limit === undefined || limit < 1 || limit > 200) {
+		throw new GatewayFailure("invalid_params", "session list limit must be between 1 and 200.");
+	}
+	return Object.freeze({
+		...(workspaceRoot ? { workspaceRoot } : {}),
+		...(search ? { search } : {}),
+		...(model ? { model } : {}),
+		...(collaborationMode ? { collaborationMode } : {}),
+		...(permission ? { permissionProfile: permission } : {}),
+		...(lifecycleStatus ? { lifecycleStatus } : {}),
+		includeArchived: params.include_archived === true,
+		includeDeleted: params.include_deleted === true,
+		limit,
+	});
+}
+
+function sessionSummaryPayload(summary: SessionSummary, activeSessionId?: string): JsonObject {
+	return {
+		version: summary.version,
+		id: summary.id,
+		...(summary.title ? { title: summary.title } : {}),
+		workspace: summary.cwd,
+		workspace_root: summary.cwd,
+		cwd: summary.cwd,
+		created: summary.createdAt,
+		created_at: summary.createdAt,
+		updated: summary.updatedAt,
+		updated_at: summary.updatedAt,
+		last_active: summary.lastActiveAt,
+		modified: summary.lastActiveAt,
+		model: summary.model,
+		provider: summary.provider,
+		reasoning_effort: summary.reasoningEffort,
+		collaboration_mode: summary.collaborationMode,
+		permission_profile: summary.permissionProfile,
+		status: summary.lifecycleStatus,
+		storage_status: summary.storageStatus,
+		lock_state: summary.leaseState,
+		pending_state: summary.pendingState,
+		message_count: summary.messageCount,
+		summary_count: summary.summaryCount,
+		metadata_revision: summary.metadataRevision,
+		...(summary.parentId ? { parent_session_id: summary.parentId } : {}),
+		...(summary.forkPoint === undefined ? {} : { fork_point: summary.forkPoint }),
+		...(summary.preferenceIssue ? { preference_issue: summary.preferenceIssue } : {}),
+		...(summary.metadataIssue ? { metadata_issue: summary.metadataIssue } : {}),
+		...(activeSessionId ? { current: summary.id === activeSessionId } : {}),
+	};
+}
+
+function resumeRepairPreviewPayload(preview: ResumeRepairPreview): JsonObject {
+	return {
+		version: preview.version,
+		session: sessionSummaryPayload(preview.session),
+		ready: preview.ready,
+		requires_confirmation: preview.requiresConfirmation,
+		issues: preview.issues.map((item) => ({
+			code: item.code,
+			blocking: item.blocking,
+			message: item.message,
+			...(item.action ? { action: item.action } : {}),
+		})),
+		actions: [...preview.actions],
+	};
+}
+
+function resumePreviewAfterConfirmedAction(
+	preview: ResumeRepairPreview,
+	action: ResumeRepairAction,
+): ResumeRepairPreview {
+	if (action !== "takeover_stale_owner") return preview;
+	const issues = preview.issues.filter((item) => item.code !== "stale_owner");
+	return Object.freeze({
+		...preview,
+		ready: !issues.some((item) => item.blocking),
+		requiresConfirmation: issues.some((item) => item.blocking && item.action !== undefined),
+		issues: Object.freeze(issues),
+		actions: Object.freeze(preview.actions.filter((item) => item !== action)),
+	});
+}
+
+function optionalSessionLifecycleStatus(value: unknown): SessionQuery["lifecycleStatus"] {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (value === "active" || value === "archived" || value === "deleted"
+		|| value === "waiting_approval" || value === "waiting_clarification"
+		|| value === "interrupted") return value;
+	throw new GatewayFailure("invalid_params", "session status is invalid.");
+}
+
+function isResumeRepairAction(value: string): value is ResumeRepairAction {
+	return value === "takeover_stale_owner"
+		|| value === "unarchive"
+		|| value === "fork_with_current_settings";
+}
+
+function integerValue(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+		? value
+		: undefined;
 }
 
 function credentialReadinessPayload(

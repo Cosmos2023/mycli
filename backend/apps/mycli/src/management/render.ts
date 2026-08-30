@@ -6,6 +6,8 @@ import type {
 } from "./config.ts";
 import { redactDoctorText } from "./doctor/redaction.ts";
 import type { SandboxStatusManagementResponse } from "./sandbox.ts";
+import type { SessionManagementResponse } from "./session.ts";
+import type { SessionSummary } from "../node-runtime/session-service.ts";
 
 export function renderManagementResponse(
 	command: ManagementCommand,
@@ -19,10 +21,42 @@ export function renderManagementResponse(
 	if (command.kind === "config") {
 		return renderConfig(response as ConfigManagementResponse);
 	}
+	if (command.kind === "session") {
+		return renderSession(response as SessionManagementResponse);
+	}
 	const lines = [response.message ?? `mycli ${command.kind} ${response.ok ? "complete" : "failed"}`];
 	for (const row of responseRows(command, response)) lines.push(row);
 	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
 	return `${lines.join("\n")}\n`;
+}
+
+function renderSession(response: SessionManagementResponse): string {
+	if (response.exportedSession) return `${JSON.stringify(response.exportedSession, null, 2)}\n`;
+	const lines = [`mycli session ${response.action}`];
+	for (const session of response.sessions ?? []) lines.push(renderSessionSummary(session));
+	if (response.session) lines.push(renderSessionSummary(response.session));
+	if (!response.ok || (!response.session && (response.sessions?.length ?? 0) === 0)) {
+		lines.push(response.message ?? (response.ok ? "no sessions found" : "session command failed"));
+	}
+	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
+	return `${lines.join("\n")}\n`;
+}
+
+function renderSessionSummary(session: SessionSummary): string {
+	return [
+		"session",
+		`id=${scalar(session.id)}`,
+		...(session.title ? [`title=${JSON.stringify(session.title)}`] : []),
+		`cwd=${JSON.stringify(session.cwd)}`,
+		`last_active=${session.lastActiveAt}`,
+		`model=${scalar(session.model)}`,
+		`effort=${session.reasoningEffort}`,
+		`mode=${session.collaborationMode}`,
+		`permission=${session.permissionProfile}`,
+		`status=${session.lifecycleStatus}`,
+		`lock=${session.leaseState}`,
+		...(session.parentId ? [`parent=${scalar(session.parentId)}`] : []),
+	].join(" ");
 }
 
 function renderSandbox(response: SandboxStatusManagementResponse): string {

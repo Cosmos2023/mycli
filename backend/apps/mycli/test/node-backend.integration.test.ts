@@ -243,10 +243,13 @@ test("Node backend gives one live window exclusive ownership of a session", asyn
 	await waitFor(() => event(messages, "runtime.ready"));
 	writeRequest(other, "resume-owned", "session.resume", { session_id: "exclusive-session" });
 	const blocked = await waitFor(() => response(messages, "resume-owned"));
-	assert.equal(errorValue(blocked, "code"), "session_in_use");
-	assert.equal(
-		errorValue(blocked, "message"),
-		"Session is already open in another mycli window.",
+	assert.equal(errorValue(blocked, "code"), "session_repair_required");
+	const blockedPreview = (
+		(blocked.error as Record<string, unknown>).data as Record<string, unknown>
+	).preview as Record<string, unknown>;
+	assert.deepEqual(
+		(blockedPreview.issues as Array<Record<string, unknown>>).map((issue) => issue.code),
+		["active_owner"],
 	);
 
 	await first.close();
@@ -4875,6 +4878,8 @@ test("Node backend restores model effort and mode from each session preference",
 	await waitFor(() => response(firstMessages, "select-a"));
 	writeRequest(first, "mode-a", "command.run", { command: "/mode plan", surface: "tui" });
 	await waitFor(() => response(firstMessages, "mode-a"));
+	writeRequest(first, "permission-a", "permissions.update", { profile: "full-access" });
+	await waitFor(() => response(firstMessages, "permission-a"));
 
 	writeRequest(first, "new-b", "session.new", {});
 	const created = await waitFor(() => response(firstMessages, "new-b"));
@@ -4890,6 +4895,8 @@ test("Node backend restores model effort and mode from each session preference",
 	await waitFor(() => response(firstMessages, "select-b"));
 	writeRequest(first, "mode-b", "command.run", { command: "/mode default", surface: "tui" });
 	await waitFor(() => response(firstMessages, "mode-b"));
+	writeRequest(first, "permission-b", "permissions.update", { profile: "read-only" });
+	await waitFor(() => response(firstMessages, "permission-b"));
 
 	writeRequest(first, "resume-a", "session.resume", { session_id: "session-a" });
 	await waitFor(() => response(firstMessages, "resume-a"));
@@ -4898,6 +4905,10 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(resultValue(activeA, "model"), "gpt-session-a");
 	assert.equal(resultValue(activeA, "thinking_effort"), "high");
 	assert.equal(resultValue(activeA, "collaboration_mode"), "plan");
+	assert.equal(
+		(resultValue(activeA, "permissions") as Record<string, unknown>).active,
+		"full-access",
+	);
 
 	writeRequest(first, "new-fallback", "session.new", {});
 	await waitFor(() => response(firstMessages, "new-fallback"));
@@ -4906,6 +4917,10 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(resultValue(fallback, "model"), "gpt-session-b");
 	assert.equal(resultValue(fallback, "thinking_effort"), "none");
 	assert.equal(resultValue(fallback, "collaboration_mode"), "default");
+	assert.equal(
+		(resultValue(fallback, "permissions") as Record<string, unknown>).active,
+		"workspace",
+	);
 	writeRequest(first, "shutdown-session-preferences", "shutdown", {});
 	assert.equal(await first.completion, 0);
 
@@ -4913,12 +4928,22 @@ test("Node backend restores model effort and mode from each session preference",
 	const sessionA = store.loadState("session-a", "session_preferences") as Record<string, unknown>;
 	const storedB = store.loadState(sessionB, "session_preferences") as Record<string, unknown>;
 	assert.deepEqual(
-		[sessionA.model, sessionA.reasoning_effort, sessionA.collaboration_mode],
-		["gpt-session-a", "high", "plan"],
+		[
+			sessionA.model,
+			sessionA.reasoning_effort,
+			sessionA.collaboration_mode,
+			sessionA.permission_profile,
+		],
+		["gpt-session-a", "high", "plan", "full-access"],
 	);
 	assert.deepEqual(
-		[storedB.model, storedB.reasoning_effort, storedB.collaboration_mode],
-		["gpt-session-b", "none", "default"],
+		[
+			storedB.model,
+			storedB.reasoning_effort,
+			storedB.collaboration_mode,
+			storedB.permission_profile,
+		],
+		["gpt-session-b", "none", "default", "read-only"],
 	);
 	assert.equal(JSON.stringify([sessionA, storedB]).includes("session-secret"), false);
 	store.saveState({
@@ -4951,13 +4976,20 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(restartedStatus.model, "gpt-session-a");
 	assert.equal(restartedStatus.thinking_effort, "high");
 	assert.equal(restartedStatus.collaboration_mode, "plan");
+	assert.equal(
+		(restartedStatus.permissions as Record<string, unknown>).active,
+		"full-access",
+	);
 	writeRequest(second, "resume-corrupt", "session.resume", { session_id: "session-corrupt" });
 	const corruptResume = await waitFor(() => response(secondMessages, "resume-corrupt"));
-	assert.equal(
-		"error" in corruptResume
-			? (corruptResume.error as Record<string, unknown>).code
-			: undefined,
-		"session_state_invalid",
+	assert.equal(errorValue(corruptResume, "code"), "session_repair_required");
+	const corruptPreview = (
+		(corruptResume.error as Record<string, unknown>).data as Record<string, unknown>
+	).preview as Record<string, unknown>;
+	assert.equal(corruptPreview.ready, false);
+	assert.deepEqual(
+		(corruptPreview.issues as Array<Record<string, unknown>>).map((issue) => issue.code),
+		["schema_incompatible"],
 	);
 	writeRequest(second, "status-after-corrupt", "status.inspect", {});
 	const afterCorrupt = await waitFor(() => response(secondMessages, "status-after-corrupt"));

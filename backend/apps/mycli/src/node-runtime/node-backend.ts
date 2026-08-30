@@ -147,6 +147,7 @@ import {
 	KillShellTool,
 	type BuiltInToolManifest,
 	type CombinedToolManifest,
+	type PermissionProfile,
 	type ToolAdapter,
 	UpdatePlanTool,
 	WebFetchTool,
@@ -202,6 +203,7 @@ import {
 	sessionPreferencesFromConfig,
 	type SessionPreferences,
 } from "./session-preferences.ts";
+import { SessionService } from "./session-service.ts";
 
 export interface NodeBackend {
 	readonly transport: NodeGateway["transport"];
@@ -236,6 +238,7 @@ type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
 const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
 const DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS = 12_000;
+const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "workspace";
 const MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
@@ -309,7 +312,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		store.close();
 		throw error;
 	}
-	let defaultPreferences = sessionPreferencesFromConfig(config, "default");
+	let defaultPreferences = sessionPreferencesFromConfig(
+		config,
+		"default",
+		DEFAULT_PERMISSION_PROFILE,
+	);
 	startupProfiler.mark("config_ready");
 	startupProfiler.mark("storage_ready");
 	const productSystemPrompt = packagedSystemPrompt();
@@ -1151,9 +1158,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					readonly model: string;
 					readonly reasoningEffort?: ReasoningEffort;
 					readonly collaborationMode: "default" | "plan";
+					readonly permissionProfile?: PermissionProfile;
 				}): SessionPreferences => {
 					const base = sessionPreferences
-						?? sessionPreferencesFromConfig(controlConfig, input.collaborationMode);
+						?? sessionPreferencesFromConfig(
+							controlConfig,
+							input.collaborationMode,
+							input.permissionProfile,
+						);
 					if (base.provider !== input.provider || base.model !== input.model) {
 						throw new SessionTransitionError(
 							"session_state_invalid",
@@ -1164,6 +1176,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						...base,
 						reasoningEffort: input.reasoningEffort ?? base.reasoningEffort,
 						collaborationMode: input.collaborationMode,
+						...(input.permissionProfile
+							? { permissionProfile: input.permissionProfile }
+							: {}),
 					});
 					if (!sameSessionPreferences(sessionPreferences, next)) {
 						saveSessionPreferences(store, {
@@ -1512,6 +1527,21 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				homeDir,
 				workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
 			});
+			const sessionService = new SessionService({
+				store,
+				currentConfig: () => controlConfig,
+				currentPermissionProfile: () => sessionCoordinator.snapshot().binding
+					.sessionPreferences?.()?.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+				loadModelCatalog: () => loadModelCatalog({
+					homeDir,
+					currentConfig: controlConfig,
+				}),
+				hasCredential: async (preferences) => {
+					if (preferences.authRef === controlConfig.authRef && controlConfig.apiKey) return true;
+					return Boolean(await readApiKey({ homeDir, authRef: preferences.authRef }));
+				},
+				...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
+			});
 			let closeRuntimeResourcesPromise: Promise<void> | undefined;
 			const closeRuntimeResources = (): Promise<void> => {
 				closeRuntimeResourcesPromise ??= (async () => {
@@ -1600,6 +1630,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						},
 					},
 					sessionCommands: {
+						list: (query) => sessionService.list(query),
+						inspect: (sessionId) => sessionService.inspect(sessionId),
+						previewResume: (sessionId) => sessionService.previewResume(sessionId),
+						applyResumeRepair: (input) => sessionService.applyResumeRepair(input),
 						fork: (input) => store.forkSession(input),
 						search: (query, workspaceRoot) => store.searchMessages(query, {
 							workspaceRoot,
@@ -1803,6 +1837,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								defaultPreferences = Object.freeze({
 									...preferences,
 									collaborationMode: defaultPreferences.collaborationMode,
+									permissionProfile: defaultPreferences.permissionProfile
+										?? DEFAULT_PERMISSION_PROFILE,
 								});
 							}
 							controlConfig = nextControlConfig;
@@ -1825,7 +1861,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									: sessionPreferenceOverrides(active.sessionId, defaultPreferences),
 							});
 							return preferences
-								?? sessionPreferencesFromConfig(controlConfig, "default");
+								?? sessionPreferencesFromConfig(
+									controlConfig,
+									"default",
+									defaultPreferences.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+								);
 						},
 						loadSettings: async () => {
 							const loaded = await loadShellSettingsState({ homeDir });

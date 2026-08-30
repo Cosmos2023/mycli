@@ -37,6 +37,8 @@ Commands:
   hooks list|inspect|approve|revoke Manage configured hooks
   plugins list|inspect|run          Manage local plugins
   mcp list|inspect                  Inspect MCP servers
+  session list|resume|fork|rename|archive|unarchive|delete|export
+                                    Discover and manage local sessions
 Options:
   --session <id>                    Resume or create a session
   --model <model>                   Override the configured model

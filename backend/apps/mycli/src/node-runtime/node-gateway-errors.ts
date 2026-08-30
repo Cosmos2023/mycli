@@ -1,5 +1,6 @@
 import { StorageFailure } from "@mycli/storage";
 import { SlashCommandError } from "./node-slash-command-registry.ts";
+import { SessionServiceError } from "./session-service.ts";
 
 type GatewayErrorData = Record<string, unknown>;
 
@@ -19,6 +20,7 @@ export function gatewayFailure(error: unknown): GatewayFailure {
 	if (error instanceof SlashCommandError) {
 		return new GatewayFailure(error.code, error.message);
 	}
+	if (error instanceof SessionServiceError) return sessionServiceFailure(error);
 	if (isObject(error) && error.code === "model_catalog_error") {
 		return new GatewayFailure(
 			"model_catalog_error",
@@ -41,6 +43,12 @@ export function gatewayFailure(error: unknown): GatewayFailure {
 		return new GatewayFailure(
 			"session_in_use",
 			"Session is already open in another mycli window.",
+		);
+	}
+	if (isObject(error) && error.code === "session_metadata_conflict") {
+		return new GatewayFailure(
+			"session_changed",
+			"Session metadata changed. Review the latest recovery options and try again.",
 		);
 	}
 	if (isObject(error) && error.code === "turn_in_progress") {
@@ -77,6 +85,40 @@ export function gatewayFailure(error: unknown): GatewayFailure {
 		);
 	}
 	return new GatewayFailure("internal_error", "Gateway request failed.");
+}
+
+function sessionServiceFailure(error: SessionServiceError): GatewayFailure {
+	switch (error.code) {
+		case "session_not_found":
+			return new GatewayFailure("session_not_found", "Session was not found.");
+		case "session_ambiguous":
+			return new GatewayFailure("session_ambiguous", "More than one session has that title.");
+		case "session_in_use":
+			return new GatewayFailure("session_in_use", "Session is already open in another mycli window.");
+		case "session_deleted":
+			return new GatewayFailure("session_deleted", "Deleted sessions cannot be resumed or changed.");
+		case "session_changed":
+			return new GatewayFailure(
+				"session_changed",
+				"Session metadata changed. Review the latest recovery options and try again.",
+			);
+		case "repair_not_available":
+			return new GatewayFailure(
+				"repair_not_available",
+				"The selected session recovery action is no longer available.",
+			);
+		case "repair_unavailable":
+			return new GatewayFailure(
+				"repair_unavailable",
+				"The selected session recovery action cannot be completed in this workspace.",
+			);
+		case "repair_failed":
+			return new GatewayFailure("repair_failed", "Session recovery could not be completed.");
+		case "invalid_arguments":
+			return new GatewayFailure("invalid_params", "Request parameters are invalid.");
+		default:
+			return new GatewayFailure("internal_error", "Gateway request failed.");
+	}
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

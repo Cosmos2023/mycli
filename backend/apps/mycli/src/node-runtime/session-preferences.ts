@@ -6,6 +6,7 @@ import {
 import type { ProtocolId, ProviderId, ReasoningEffort } from "@mycli/core";
 import { SessionTransitionError } from "@mycli/runtime";
 import type { RuntimeSessionStore } from "@mycli/storage";
+import type { PermissionProfile } from "@mycli/tools";
 
 export const SESSION_PREFERENCES_STATE_KEY = "session_preferences" as const;
 
@@ -17,7 +18,20 @@ export interface SessionPreferences {
 	readonly authRef: string;
 	readonly reasoningEffort: ReasoningEffort;
 	readonly collaborationMode: "default" | "plan";
+	readonly permissionProfile?: PermissionProfile;
 }
+
+export type SessionPreferenceConfig = Pick<
+	NodeRuntimeConfig,
+	| "workspaceRoot"
+	| "provider"
+	| "protocol"
+	| "model"
+	| "apiBaseUrl"
+	| "authRef"
+	| "reasoningEffort"
+	| "thinkingEnabled"
+>;
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>([
 	"none",
@@ -31,8 +45,9 @@ const REASONING_EFFORTS = new Set<ReasoningEffort>([
 ]);
 
 export function sessionPreferencesFromConfig(
-	config: NodeRuntimeConfig,
+	config: SessionPreferenceConfig,
 	collaborationMode: SessionPreferences["collaborationMode"],
+	permissionProfile?: PermissionProfile,
 ): SessionPreferences {
 	return Object.freeze({
 		provider: config.provider,
@@ -42,6 +57,7 @@ export function sessionPreferencesFromConfig(
 		authRef: config.authRef,
 		reasoningEffort: config.thinkingEnabled ? config.reasoningEffort : "none",
 		collaborationMode,
+		...(permissionProfile ? { permissionProfile } : {}),
 	});
 }
 
@@ -81,6 +97,9 @@ export function saveSessionPreferences(
 			auth_ref: input.preferences.authRef,
 			reasoning_effort: input.preferences.reasoningEffort,
 			collaboration_mode: input.preferences.collaborationMode,
+			...(input.preferences.permissionProfile
+				? { permission_profile: input.preferences.permissionProfile }
+				: {}),
 		},
 	});
 }
@@ -96,10 +115,11 @@ export function sameSessionPreferences(
 		&& left.apiBaseUrl === right.apiBaseUrl
 		&& left.authRef === right.authRef
 		&& left.reasoningEffort === right.reasoningEffort
-		&& left.collaborationMode === right.collaborationMode;
+		&& left.collaborationMode === right.collaborationMode
+		&& left.permissionProfile === right.permissionProfile;
 }
 
-function parseSessionPreferences(value: unknown): SessionPreferences {
+export function parseSessionPreferences(value: unknown): SessionPreferences {
 	if (!isRecord(value) || value.state_version !== 1) throw new Error("invalid session preferences");
 	const provider = boundedIdentity(value.provider, "provider") as ProviderId;
 	const protocol = parseProtocol(boundedIdentity(value.protocol, "protocol"));
@@ -115,6 +135,7 @@ function parseSessionPreferences(value: unknown): SessionPreferences {
 	if (collaborationMode !== "default" && collaborationMode !== "plan") {
 		throw new Error("invalid collaboration mode");
 	}
+	const permissionProfile = optionalPermissionProfile(value.permission_profile);
 	return Object.freeze({
 		provider,
 		protocol,
@@ -123,7 +144,16 @@ function parseSessionPreferences(value: unknown): SessionPreferences {
 		authRef,
 		reasoningEffort: reasoningEffort as ReasoningEffort,
 		collaborationMode,
+		...(permissionProfile ? { permissionProfile } : {}),
 	});
+}
+
+function optionalPermissionProfile(value: unknown): PermissionProfile | undefined {
+	if (value === undefined) return undefined;
+	if (value !== "read-only" && value !== "workspace" && value !== "full-access") {
+		throw new Error("invalid permission profile");
+	}
+	return value;
 }
 
 function boundedIdentity(value: unknown, label: string): string {

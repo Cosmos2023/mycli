@@ -4,8 +4,15 @@ import {
 	McpManagementService,
 	PluginManagementService,
 } from "@mycli/integrations";
-import { WorkspaceTrustStore } from "@mycli/config";
+import {
+	loadManagedExecutionPolicy,
+	loadModelCatalog,
+	readApiKey,
+	resolveConfig,
+	WorkspaceTrustStore,
+} from "@mycli/config";
 import type { McpServerConfig } from "@mycli/integrations";
+import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	pluginSandboxProfile,
 	workspaceSandboxProfile,
@@ -25,6 +32,9 @@ import {
 	runDoctor,
 } from "./doctor/runner.ts";
 import { inspectSandboxStatus } from "./sandbox.ts";
+import { SessionManagementService } from "./session.ts";
+import { SessionService } from "../node-runtime/session-service.ts";
+import type { SessionManagementCommand } from "./types.ts";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -59,6 +69,10 @@ export interface ConfigManagementContract {
 	unset(key: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
+export interface SessionManagementContract {
+	execute(command: SessionManagementCommand): MaybePromise<ManagementResponse>;
+}
+
 export interface ManagementServicesOptions {
 	readonly config: ConfigManagementContract;
 	readonly hooks: HookManagementContract;
@@ -67,6 +81,7 @@ export interface ManagementServicesOptions {
 	readonly doctor: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 	readonly sandbox: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 	readonly setup: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly session?: SessionManagementContract;
 }
 
 export interface DefaultManagementServicesOptions {
@@ -136,6 +151,10 @@ export class ManagementServices implements ManagementExecutor {
 				? this.#services.mcp.list(signal)
 				: this.#services.mcp.inspect(command.serverId, signal);
 		}
+		if (command.kind === "session") {
+			return this.#services.session?.execute(command)
+				?? failure(command.action, "session management is unavailable", "session_unavailable");
+		}
 		return this.#services.setup(signal);
 	}
 }
@@ -190,6 +209,47 @@ export async function createDefaultManagementServices(
 			"setup is not available in this M7 batch",
 			"setup_not_implemented",
 		)),
+		session: {
+			execute: async (command) => {
+				const currentConfig = await resolveConfig({
+					homeDir: options.homeDir,
+					workspaceRoot: options.workspaceRoot,
+					env: options.env,
+					workspaceTrust,
+				});
+				const store = openRuntimeSessionStore({
+					dbPath: currentConfig.sessionsDbPath,
+					reconcileRuntimeState: false,
+				});
+				try {
+					const managedExecutionPolicy = await loadManagedExecutionPolicy({
+						homeDir: options.homeDir,
+					});
+					const sessions = new SessionService({
+						store,
+						currentConfig: () => currentConfig,
+						currentPermissionProfile: () => "workspace",
+						loadModelCatalog: () => loadModelCatalog({
+							homeDir: options.homeDir,
+							currentConfig,
+						}),
+						hasCredential: async (preferences) => {
+							if (preferences.authRef === currentConfig.authRef && currentConfig.apiKey) {
+								return true;
+							}
+							return Boolean(await readApiKey({
+								homeDir: options.homeDir,
+								authRef: preferences.authRef,
+							}));
+						},
+						...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
+					});
+					return new SessionManagementService(sessions).execute(command);
+				} finally {
+					store.close();
+				}
+			},
+		},
 	});
 }
 

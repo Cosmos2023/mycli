@@ -59,6 +59,56 @@ export type SandboxManagementCommand = {
 	readonly json: boolean;
 };
 
+export type SessionManagementCommand =
+	| {
+		readonly kind: "session";
+		readonly action: "list";
+		readonly json: boolean;
+		readonly all: boolean;
+		readonly last: boolean;
+		readonly workspaceRoot?: string;
+		readonly search?: string;
+		readonly model?: string;
+		readonly collaborationMode?: "default" | "plan";
+		readonly permissionProfile?: "read-only" | "workspace" | "full-access";
+		readonly status?: "active" | "archived" | "deleted" | "waiting_approval"
+			| "waiting_clarification" | "interrupted";
+		readonly limit?: number;
+	}
+	| {
+		readonly kind: "session";
+		readonly action: "fork";
+		readonly sessionId: string;
+		readonly targetSessionId?: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "session";
+		readonly action: "rename";
+		readonly sessionId: string;
+		readonly title: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "session";
+		readonly action: "archive" | "unarchive";
+		readonly sessionId: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "session";
+		readonly action: "delete";
+		readonly sessionId: string;
+		readonly force: boolean;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "session";
+		readonly action: "export";
+		readonly sessionId: string;
+		readonly json: boolean;
+	};
+
 export type ManagementCommand =
 	| { readonly kind: "doctor"; readonly json: boolean }
 	| { readonly kind: "setup"; readonly json: boolean }
@@ -66,7 +116,8 @@ export type ManagementCommand =
 	| ConfigManagementCommand
 	| HooksManagementCommand
 	| PluginsManagementCommand
-	| McpManagementCommand;
+	| McpManagementCommand
+	| SessionManagementCommand;
 
 export type CliMode =
 	| { readonly kind: "interactive"; readonly runtimeArgs: readonly string[] }

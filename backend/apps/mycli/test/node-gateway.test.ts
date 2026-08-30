@@ -36,6 +36,13 @@ import type {
 	AgentInteractiveNotification,
 	AgentInteractiveRequestGateway,
 } from "../src/node-runtime/agent-interactive-requests.ts";
+import type {
+	ApplyResumeRepairInput,
+	ApplyResumeRepairResult,
+	ResumeRepairPreview,
+	SessionQuery,
+	SessionSummary,
+} from "../src/node-runtime/session-service.ts";
 
 type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
 
@@ -221,6 +228,14 @@ function gatewayHarness(options: {
 	executionPolicySnapshot?: (
 		configuration: GatewayPolicyConfiguration,
 	) => ExecutionPolicySnapshot;
+	sessionService?: {
+		readonly list?: (query: SessionQuery) => readonly SessionSummary[];
+		readonly inspect?: (sessionId: string) => SessionSummary | undefined;
+		readonly previewResume?: (sessionId: string) => Promise<ResumeRepairPreview>;
+		readonly applyResumeRepair?: (
+			input: ApplyResumeRepairInput,
+		) => Promise<ApplyResumeRepairResult>;
+	};
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -486,6 +501,27 @@ function gatewayHarness(options: {
 		...(options.loadShellOutput ? { loadShellOutput: options.loadShellOutput } : {}),
 		loadTurnRollouts: () => options.turnRollouts ?? [],
 		sessionCommands: {
+			...(options.sessionService?.list ? {
+				list: (query: SessionQuery) => {
+					sessionCommandCalls.push({ kind: "list", query });
+					return options.sessionService!.list!(query);
+				},
+			} : {}),
+			...(options.sessionService?.inspect ? {
+				inspect: (sessionId: string) => options.sessionService!.inspect!(sessionId),
+			} : {}),
+			...(options.sessionService?.previewResume ? {
+				previewResume: async (sessionId: string) => {
+					sessionCommandCalls.push({ kind: "preview_resume", sessionId });
+					return await options.sessionService!.previewResume!(sessionId);
+				},
+			} : {}),
+			...(options.sessionService?.applyResumeRepair ? {
+				applyResumeRepair: async (input: ApplyResumeRepairInput) => {
+					sessionCommandCalls.push({ kind: "apply_resume_repair", ...input });
+					return await options.sessionService!.applyResumeRepair!(input);
+				},
+			} : {}),
 			fork: (input: {
 				readonly sourceSessionId: string;
 				readonly targetSessionId: string;
@@ -2808,6 +2844,203 @@ test("approval resolution excludes normal turns and session transitions", async 
 	await harness.gateway.close();
 });
 
+test("session list uses the shared service filters and projects enriched summaries", async () => {
+	const summary = testSessionSummary("target", {
+		title: "Release review",
+		lifecycleStatus: "waiting_approval",
+		leaseState: "stale",
+		pendingState: "approval",
+		parentId: "session-node",
+		forkPoint: 4,
+	});
+	const harness = gatewayHarness({
+		sessions: {},
+		sessionService: {
+			list: () => [summary],
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("session.list", {
+		workspace_root: "/repo",
+		search: "release",
+		model: "gpt-test",
+		collaboration_mode: "plan",
+		permission_profile: "workspace",
+		status: "waiting_approval",
+		include_archived: true,
+		include_deleted: true,
+		limit: 25,
+	});
+
+	assert.ok("result" in response, JSON.stringify(response));
+	if (!("result" in response)) return;
+	assert.deepEqual(harness.sessionCommandCalls.find((call) => call.kind === "list"), {
+		kind: "list",
+		query: {
+			workspaceRoot: "/repo",
+			search: "release",
+			model: "gpt-test",
+			collaborationMode: "plan",
+			permissionProfile: "workspace",
+			lifecycleStatus: "waiting_approval",
+			includeArchived: true,
+			includeDeleted: true,
+			limit: 25,
+		},
+	});
+	assert.deepEqual(response.result.sessions, [{
+		version: 1,
+		id: "target",
+		title: "Release review",
+		workspace: "/repo",
+		workspace_root: "/repo",
+		cwd: "/repo",
+		created: summary.createdAt,
+		created_at: summary.createdAt,
+		updated: summary.updatedAt,
+		updated_at: summary.updatedAt,
+		last_active: summary.lastActiveAt,
+		modified: summary.lastActiveAt,
+		model: "gpt-test",
+		provider: "openai",
+		reasoning_effort: "high",
+		collaboration_mode: "plan",
+		permission_profile: "workspace",
+		status: "waiting_approval",
+		storage_status: "active",
+		lock_state: "stale",
+		pending_state: "approval",
+		message_count: 5,
+		summary_count: 1,
+		metadata_revision: 2,
+		parent_session_id: "session-node",
+		fork_point: 4,
+		current: false,
+	}]);
+	await harness.gateway.close();
+});
+
+test("status and status command expose shared session lifecycle and ownership state", async () => {
+	const summary = testSessionSummary("session-node", {
+		lifecycleStatus: "interrupted",
+		leaseState: "owned",
+		pendingState: "interrupted",
+		parentId: "session-root",
+		forkPoint: 3,
+	});
+	const harness = gatewayHarness({
+		sessions: {},
+		sessionService: { inspect: () => summary },
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const status = await harness.send("status.inspect");
+	assert.ok("result" in status, JSON.stringify(status));
+	if (!("result" in status)) return;
+	assert.equal(status.result.session_lifecycle_status, "interrupted");
+	assert.equal(status.result.session_lock_state, "owned");
+	assert.equal(status.result.session_pending_state, "interrupted");
+	assert.equal(status.result.session_metadata_revision, 2);
+	assert.equal(status.result.parent_session_id, "session-root");
+	assert.equal(status.result.fork_point, 3);
+
+	const command = await harness.send("command.run", { command: "/status", surface: "tui" });
+	assert.ok("result" in command, JSON.stringify(command));
+	if (!("result" in command)) return;
+	const fields = (command.result.display as {
+		readonly fields: readonly { readonly label: string; readonly value: string }[];
+	}).fields;
+	assert.equal(fields.find((field) => field.label === "Session state")?.value, "interrupted");
+	assert.equal(fields.find((field) => field.label === "Session lock")?.value, "owned");
+	assert.equal(fields.find((field) => field.label === "Recovery")?.value, "interrupted");
+	await harness.gateway.close();
+});
+
+test("session resume exposes a provider-free preview and requires an explicit repair", async () => {
+	const target = testSessionSummary("target");
+	const recovered = testSessionSummary("recovered", { parentId: "target" });
+	const preview = testResumePreview(target, {
+		code: "unsupported_model",
+		blocking: true,
+		message: "The saved model is no longer available.",
+		action: "fork_with_current_settings",
+	});
+	const ready = testResumePreview(recovered);
+	const harness = gatewayHarness({
+		sessions: {},
+		sessionService: {
+			previewResume: async (sessionId) => sessionId === "recovered" ? ready : preview,
+			applyResumeRepair: async (input) => ({
+				sourceSessionId: input.sessionId,
+				sessionId: "recovered",
+				forked: true,
+				summary: recovered,
+			}),
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const inspected = await harness.send("session.resume.preview", { session_id: "target" });
+	assert.equal("result" in inspected ? inspected.result.ready : true, false);
+	assert.deepEqual("result" in inspected ? inspected.result.actions : [], ["fork_with_current_settings"]);
+
+	const blocked = await harness.send("session.resume", { session_id: "target" });
+	assert.equal("error" in blocked ? blocked.error.code : null, "session_repair_required");
+	assert.equal(
+		"error" in blocked
+			? (blocked.error.data.preview as Readonly<Record<string, unknown>>).ready
+			: true,
+		false,
+	);
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "session-node");
+
+	const resumed = await harness.send("session.resume", {
+		session_id: "target",
+		repair_action: "fork_with_current_settings",
+		metadata_revision: target.metadataRevision,
+	});
+	assert.equal("result" in resumed ? resumed.result.session_id : null, "recovered");
+	assert.deepEqual(harness.sessionCommandCalls.find((call) => call.kind === "apply_resume_repair"), {
+		kind: "apply_resume_repair",
+		sessionId: "target",
+		expectedMetadataRevision: target.metadataRevision,
+		action: "fork_with_current_settings",
+	});
+	await harness.gateway.close();
+});
+
+test("confirmed stale-owner takeover proceeds to atomic coordinator acquisition", async () => {
+	const target = testSessionSummary("target", { leaseState: "stale" });
+	const preview = testResumePreview(target, {
+		code: "stale_owner",
+		blocking: true,
+		message: "The previous session owner is no longer running.",
+		action: "takeover_stale_owner",
+	});
+	const harness = gatewayHarness({
+		sessions: {},
+		sessionService: {
+			previewResume: async () => preview,
+			applyResumeRepair: async (input) => ({
+				sourceSessionId: input.sessionId,
+				sessionId: input.sessionId,
+				forked: false,
+				summary: target,
+			}),
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const resumed = await harness.send("session.resume", {
+		session_id: "target",
+		repair_action: "takeover_stale_owner",
+		metadata_revision: target.metadataRevision,
+	});
+	assert.equal("result" in resumed ? resumed.result.session_id : null, "target");
+	await harness.gateway.close();
+});
+
 test("failed session preparation keeps the source active and emits no target state", async () => {
 	const harness = gatewayHarness({ sessions: { targetFailure: "session_state_invalid" } });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
@@ -4520,6 +4753,48 @@ function sessionOverview(sessionId: string, lastActiveAt: string): SessionOvervi
 		messageCount: 1,
 		summaryCount: 0,
 	};
+}
+
+function testSessionSummary(
+	id: string,
+	overrides: Partial<SessionSummary> = {},
+): SessionSummary {
+	return Object.freeze({
+		version: 1,
+		id,
+		cwd: "/repo",
+		createdAt: "2026-08-30T00:00:00.000Z",
+		updatedAt: "2026-08-30T00:05:00.000Z",
+		lastActiveAt: "2026-08-30T00:05:00.000Z",
+		model: "gpt-test",
+		provider: "openai",
+		reasoningEffort: "high",
+		collaborationMode: "plan",
+		permissionProfile: "workspace",
+		lifecycleStatus: "active",
+		storageStatus: "active",
+		messageCount: 5,
+		summaryCount: 1,
+		metadataRevision: 2,
+		leaseState: "unlocked",
+		pendingState: "none",
+		...overrides,
+	});
+}
+
+function testResumePreview(
+	session: SessionSummary,
+	issue?: ResumeRepairPreview["issues"][number],
+): ResumeRepairPreview {
+	const issues = issue ? [issue] : [];
+	return Object.freeze({
+		version: 1,
+		session,
+		ready: !issue?.blocking,
+		requiresConfirmation: issue?.blocking === true && issue.action !== undefined,
+		issues: Object.freeze(issues),
+		actions: Object.freeze(issue?.action ? [issue.action] : []),
+	});
 }
 
 async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 1_000): Promise<T> {
