@@ -372,3 +372,38 @@ Added typed value-free configuration schema diagnostics, project credential enfo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Configuration inspection and MCP shutdown hardening
+
+**Date**: 2026-08-30
+**Task**: Configuration inspection and MCP shutdown hardening
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added provider-free config validate/show commands with secret-safe provenance, fixed MCP close to drain in-flight refresh persistence, synchronized executable specs, and passed the full repository quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f712ae8e` | (see git log) |
+| `b40fe4c4` | (see git log) |
+| `e18fe899` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
