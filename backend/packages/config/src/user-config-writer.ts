@@ -1,8 +1,11 @@
 import { join } from "node:path";
 import type { ProtocolId, ProviderId, ReasoningEffort } from "@mycli/core";
-import { parse, stringify } from "smol-toml";
-import { atomicPrivateFileUpdate } from "./private-file-writer.ts";
 import { resolveProviderProfile } from "./provider-profiles.ts";
+import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
+import {
+	applyUserConfigEdits,
+	type UserConfigEdit,
+} from "./user-config-editor.ts";
 
 export interface UserProviderConfigInput {
 	readonly homeDir: string;
@@ -15,6 +18,9 @@ export interface UserProviderConfigInput {
 	readonly cacheControlEnabled: boolean;
 	readonly thinkingEnabled?: boolean;
 	readonly reasoningEffort?: ReasoningEffort;
+	readonly workspaceRoot?: string;
+	readonly env?: NodeJS.ProcessEnv;
+	readonly workspaceTrust?: WorkspaceTrustState;
 	readonly failpoint?: (name: string) => void;
 }
 
@@ -42,10 +48,13 @@ export async function writeUserProviderConfig(
 	try {
 		resolveProviderProfile(input.provider, input.protocol);
 		const directory = join(input.homeDir, ".mycli");
-		await atomicPrivateFileUpdate({
-			directory,
-			fileName: "config.toml",
-			buildContent: (current) => serializeConfig(current, input),
+		await applyUserConfigEdits({
+			homeDir: input.homeDir,
+			workspaceRoot: input.workspaceRoot ?? input.homeDir,
+			env: input.env ?? {},
+			workspaceTrust: input.workspaceTrust ?? "untrusted",
+			edits: providerConfigEdits(input),
+			validateCurrent: false,
 			...(input.failpoint ? { failpoint: input.failpoint } : {}),
 		});
 		return join(directory, "config.toml");
@@ -54,51 +63,46 @@ export async function writeUserProviderConfig(
 	}
 }
 
-function serializeConfig(current: string | undefined, input: UserProviderConfigInput): string {
-	const payload = parsePayload(current);
-	delete payload.api_key;
-	for (const key of LEGACY_MODEL_KEYS) delete payload[key];
-	for (const key of LEGACY_REQUEST_KEYS) delete payload[key];
-	const model = recordCopy(payload.model);
-	delete model.api_key;
-	Object.assign(model, {
-		provider: input.provider,
-		protocol: input.protocol,
-		name: input.model.trim(),
-		api_base_url: input.apiBaseUrl.trim().replace(/\/+$/u, ""),
-		auth_ref: input.authRef.trim(),
-	});
-	const request = recordCopy(payload.request);
-	Object.assign(request, {
-		prompt_cache_key_enabled: input.promptCacheKeyEnabled,
-		cache_control_enabled: input.cacheControlEnabled,
-	});
-	payload.model = model;
-	payload.request = request;
+function providerConfigEdits(input: UserProviderConfigInput): readonly UserConfigEdit[] {
+	const edits: UserConfigEdit[] = [
+		clear("api_key"),
+		...LEGACY_MODEL_KEYS
+			.filter((key) => key !== "model")
+			.map((key) => clear(key)),
+		...LEGACY_REQUEST_KEYS.map((key) => clear(key)),
+		{ action: "clear", path: ["model", "api_key"] },
+		set(["model", "provider"], input.provider),
+		set(["model", "protocol"], input.protocol),
+		set(["model", "name"], input.model.trim()),
+		set(["model", "api_base_url"], input.apiBaseUrl.trim().replace(/\/+$/u, "")),
+		set(["model", "auth_ref"], input.authRef.trim()),
+		set(["request", "prompt_cache_key_enabled"], input.promptCacheKeyEnabled),
+		set(["request", "cache_control_enabled"], input.cacheControlEnabled),
+	];
 	if (input.thinkingEnabled !== undefined || input.reasoningEffort !== undefined) {
-		const reasoning = recordCopy(payload.reasoning);
-		if (input.thinkingEnabled !== undefined) reasoning.enabled = input.thinkingEnabled;
-		if (input.reasoningEffort !== undefined) {
-			reasoning.reasoning_effort = input.reasoningEffort;
-			if (input.thinkingEnabled !== false) reasoning.effort = input.reasoningEffort;
+		if (input.thinkingEnabled !== undefined) {
+			edits.push(set(["reasoning", "enabled"], input.thinkingEnabled));
 		}
-		if (input.thinkingEnabled === false) delete reasoning.effort;
-		payload.reasoning = reasoning;
+		if (input.reasoningEffort !== undefined) {
+			edits.push(set(["reasoning", "reasoning_effort"], input.reasoningEffort));
+			if (input.thinkingEnabled !== false) {
+				edits.push(set(["reasoning", "effort"], input.reasoningEffort));
+			}
+		}
+		if (input.thinkingEnabled === false) {
+			edits.push({ action: "clear", path: ["reasoning", "effort"] });
+		}
 	}
-	return `${stringify(payload).trimEnd()}\n`;
+	return edits;
 }
 
-function parsePayload(raw: string | undefined): Record<string, unknown> {
-	if (!raw) return {};
-	const parsed: unknown = parse(raw);
-	if (!isRecord(parsed)) throw new Error("invalid_config");
-	return { ...parsed };
+function clear(key: string): UserConfigEdit {
+	return { action: "clear", path: [key] };
 }
 
-function recordCopy(value: unknown): Record<string, unknown> {
-	return isRecord(value) ? { ...value } : {};
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+function set(
+	path: readonly string[],
+	value: string | boolean,
+): UserConfigEdit {
+	return { action: "set", path, value };
 }

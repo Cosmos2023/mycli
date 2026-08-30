@@ -1699,8 +1699,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							}
 							const nextReasoningEffort = reasoningEffort ?? controlConfig.reasoningEffort;
 							const thinkingEnabled = reasoningEffort !== undefined && reasoningEffort !== "none";
+							const active = sessionCoordinator.snapshot();
 							await writeUserProviderConfig({
 								homeDir,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
 								provider: entry.provider,
 								protocol,
 								model,
@@ -1727,7 +1731,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								},
 							});
 							defaultPreferences = sessionPreferencesFromConfig(controlConfig, "default");
-							const active = sessionCoordinator.snapshot();
 							const preferences = Object.freeze({
 								...defaultPreferences,
 								collaborationMode,
@@ -1769,9 +1772,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								?? sessionPreferencesFromConfig(controlConfig, "default");
 						},
 						loadSettings: async () => ({ ...await loadShellSettings({ homeDir }) }),
-						saveSettings: async (settings) => ({
-							...await saveShellSettings({ homeDir, settings }),
-						}),
+						saveSettings: async (settings) => {
+							const active = sessionCoordinator.snapshot();
+							return {
+								...await saveShellSettings({
+									homeDir,
+									settings,
+									workspaceRoot: active.workspaceRoot,
+									env: options.env,
+									workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								}),
+							};
+						},
 						completePath: (prefix) => pathCompletionCandidates(
 							sessionCoordinator.snapshot().workspaceRoot,
 							prefix,

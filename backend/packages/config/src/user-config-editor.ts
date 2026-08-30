@@ -27,6 +27,24 @@ export interface UserConfigMutationResult {
 	readonly changed: boolean;
 }
 
+export type UserConfigEdit =
+	| {
+		readonly action: "set";
+		readonly path: readonly string[];
+		readonly value: UserConfigScalar;
+	}
+	| {
+		readonly action: "clear";
+		readonly path: readonly string[];
+		readonly onlyIfScalar?: boolean;
+	};
+
+export interface ApplyUserConfigEditsOptions extends ResolveConfigOptions {
+	readonly edits: readonly UserConfigEdit[];
+	readonly validateCurrent?: boolean;
+	readonly failpoint?: (name: string) => void;
+}
+
 type MutableConfigMap = Record<string, unknown>;
 
 export async function mutateUserConfigSetting(
@@ -36,28 +54,47 @@ export async function mutateUserConfigSetting(
 	const value = options.action === "set"
 		? parseSettingValue(setting, options.value)
 		: undefined;
+	const edits = settingEdits(setting, options.action, value);
+	const changed = await applyUserConfigEdits({
+		...options,
+		edits,
+		validateCurrent: true,
+	});
+	return Object.freeze({ key: setting.key, changed });
+}
+
+export async function applyUserConfigEdits(
+	options: ApplyUserConfigEditsOptions,
+): Promise<boolean> {
 	try {
-		const changed = await atomicPrivateFileUpdate({
+		return await atomicPrivateFileUpdate({
 			directory: join(options.homeDir, ".mycli"),
 			fileName: "config.toml",
 			buildContent: async (current) => {
 				const source = current ?? "";
-				await validateCandidate(options, source);
+				if (options.validateCurrent !== false) await validateCandidate(options, source);
 				const document = parseDocument(source);
 				const payload = mutableRecord(document.toJsObject);
-				if (options.action === "set") {
-					applySet(payload, setting, value!);
-				} else {
-					applyUnset(payload, setting);
+				for (const edit of options.edits) {
+					if (edit.action === "set") {
+						setPath(payload, edit.path, edit.value);
+					} else {
+						if (!edit.onlyIfScalar || !isRecord(valueAtPath(payload, edit.path))) {
+							deletePath(payload, edit.path);
+						}
+					}
 				}
 				document.patch(payload);
 				const candidate = document.toTomlString;
-				if (candidate === source) return undefined;
+				if (candidate === source) {
+					if (options.validateCurrent === false) await validateCandidate(options, candidate);
+					return undefined;
+				}
 				await validateCandidate(options, candidate);
 				return candidate;
 			},
+			...(options.failpoint ? { failpoint: options.failpoint } : {}),
 		});
-		return Object.freeze({ key: setting.key, changed });
 	} catch (error) {
 		if (isConfigError(error)) throw error;
 		throw configError({
@@ -68,6 +105,32 @@ export async function mutateUserConfigSetting(
 			remediation: "Check that the user configuration directory is writable and try again.",
 		});
 	}
+}
+
+function settingEdits(
+	setting: WritableRuntimeSetting,
+	action: "set" | "unset",
+	value: UserConfigScalar | undefined,
+): readonly UserConfigEdit[] {
+	const edits: UserConfigEdit[] = [];
+	if (action === "set") {
+		for (const legacyPath of setting.legacyPaths) {
+			if (!isPathPrefix(legacyPath, setting.path)) {
+				edits.push({ action: "clear", path: legacyPath });
+			}
+		}
+		edits.push({ action: "set", path: setting.path, value: value! });
+		return edits;
+	}
+	edits.push({ action: "clear", path: setting.path });
+	for (const legacyPath of setting.legacyPaths) {
+		edits.push({
+			action: "clear",
+			path: legacyPath,
+			...(isPathPrefix(legacyPath, setting.path) ? { onlyIfScalar: true } : {}),
+		});
+	}
+	return edits;
 }
 
 function requireWritableSetting(key: string): WritableRuntimeSetting {
@@ -143,29 +206,6 @@ async function validateCandidate(
 		workspaceTrust: "untrusted",
 	}, candidate);
 	await resolveConfigWithUserConfigText(options, candidate);
-}
-
-function applySet(
-	payload: MutableConfigMap,
-	setting: WritableRuntimeSetting,
-	value: UserConfigScalar,
-): void {
-	for (const legacyPath of setting.legacyPaths) {
-		if (!isPathPrefix(legacyPath, setting.path)) deletePath(payload, legacyPath);
-	}
-	setPath(payload, setting.path, value);
-}
-
-function applyUnset(payload: MutableConfigMap, setting: WritableRuntimeSetting): void {
-	deletePath(payload, setting.path);
-	for (const legacyPath of setting.legacyPaths) {
-		if (isPathPrefix(legacyPath, setting.path)) {
-			const legacy = valueAtPath(payload, legacyPath);
-			if (!isRecord(legacy)) deletePath(payload, legacyPath);
-			continue;
-		}
-		deletePath(payload, legacyPath);
-	}
 }
 
 function setPath(payload: MutableConfigMap, path: readonly string[], value: UserConfigScalar): void {

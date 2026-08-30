@@ -77,6 +77,74 @@ test("shell settings reject invalid values without replacing the current config"
 	assert.equal(await readFile(path, "utf8"), current);
 });
 
+test("shell settings preserve comments and CRLF and skip identical replacements", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const directory = join(homeDir, ".mycli");
+	const path = join(directory, "config.toml");
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, [
+		"# keep shell comment",
+		'custom = "keep" # keep inline comment',
+		'statusbarMode = "compact"',
+		'viewMode = "verbose"',
+		"",
+		"[plugins]",
+		'enabled = ["demo"]',
+		"",
+	].join("\r\n"), "utf8");
+
+	const settings = {
+		statusbarMode: "compact",
+		viewMode: "verbose",
+		theme: "light",
+		hideThinking: false,
+		toolDetailsDefault: "expanded",
+		hardwareCursor: true,
+		clearOnShrink: false,
+		terminalProgress: false,
+		subagentDensity: "detailed",
+	};
+	await saveShellSettings({ homeDir, settings });
+	const raw = await readFile(path, "utf8");
+	const payload = parse(raw) as Record<string, unknown>;
+	assert.match(raw, /# keep shell comment\r\n/u);
+	assert.match(raw, /custom = "keep" # keep inline comment\r\n/u);
+	assert.equal(raw.includes("\n") && !raw.includes("\r\n"), false);
+	assert.equal(payload.statusbarMode, undefined);
+	assert.equal(payload.viewMode, undefined);
+	assert.equal(payload.tui_statusbar_mode, "compact");
+	assert.equal(payload.view_mode, "verbose");
+	assert.deepEqual(payload.plugins, { enabled: ["demo"] });
+
+	await saveShellSettings({
+		homeDir,
+		settings,
+		failpoint: () => { throw new Error("no-op must not replace"); },
+	});
+	assert.equal(await readFile(path, "utf8"), raw);
+});
+
+test("shell settings preserve the current config on atomic replacement failure", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const directory = join(homeDir, ".mycli");
+	const path = join(directory, "config.toml");
+	const current = 'custom = "keep"\n';
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, current, "utf8");
+
+	await assert.rejects(
+		() => saveShellSettings({
+			homeDir,
+			settings: { theme: "light" },
+			failpoint: () => { throw new Error("private-shell-sentinel"); },
+		}),
+		(error: unknown) => error instanceof Error
+			&& error.message === "shell_settings_write_failed: unable to update user config"
+			&& !error.message.includes("private-shell-sentinel"),
+	);
+	assert.equal(await readFile(path, "utf8"), current);
+});
+
 async function temporaryDirectory(t: TestContext): Promise<string> {
 	const path = await mkdtemp(join(tmpdir(), "mycli-shell-settings-"));
 	t.after(() => rm(path, { recursive: true, force: true }));

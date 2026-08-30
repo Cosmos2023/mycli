@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parse, stringify } from "smol-toml";
-import { atomicPrivateFileUpdate } from "./private-file-writer.ts";
+import { parse } from "smol-toml";
+import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
+import {
+	applyUserConfigEdits,
+	type UserConfigEdit,
+} from "./user-config-editor.ts";
 
 export interface ShellSettings {
 	readonly statusbar_mode: "off" | "compact" | "full";
@@ -21,6 +25,10 @@ export interface LoadShellSettingsOptions {
 
 export interface SaveShellSettingsOptions extends LoadShellSettingsOptions {
 	readonly settings: Readonly<Record<string, unknown>>;
+	readonly workspaceRoot?: string;
+	readonly env?: NodeJS.ProcessEnv;
+	readonly workspaceTrust?: WorkspaceTrustState;
+	readonly failpoint?: (name: string) => void;
 }
 
 const DEFAULTS: ShellSettings = Object.freeze({
@@ -55,10 +63,14 @@ export async function saveShellSettings(options: SaveShellSettingsOptions): Prom
 	const current = await loadShellSettings(options);
 	const settings = settingsFromPayload(options.settings, current);
 	try {
-		await atomicPrivateFileUpdate({
-			directory: join(options.homeDir, ".mycli"),
-			fileName: "config.toml",
-			buildContent: (raw) => serializeSettings(raw, settings),
+		await applyUserConfigEdits({
+			homeDir: options.homeDir,
+			workspaceRoot: options.workspaceRoot ?? options.homeDir,
+			env: options.env ?? {},
+			workspaceTrust: options.workspaceTrust ?? "untrusted",
+			edits: shellSettingEdits(settings),
+			validateCurrent: true,
+			...(options.failpoint ? { failpoint: options.failpoint } : {}),
 		});
 	} catch {
 		throw new Error("shell_settings_write_failed: unable to update user config");
@@ -66,33 +78,45 @@ export async function saveShellSettings(options: SaveShellSettingsOptions): Prom
 	return settings;
 }
 
-function serializeSettings(raw: string | undefined, settings: ShellSettings): string {
-	const payload = raw ? parsePayload(raw) : {};
+function shellSettingEdits(settings: ShellSettings): readonly UserConfigEdit[] {
+	const edits: UserConfigEdit[] = [];
 	for (const key of [
+		"statusbarMode",
 		"statusbar_mode",
+		"viewMode",
 		"theme",
+		"hideThinking",
 		"hide_thinking",
+		"toolDetailsDefault",
 		"tool_details_default",
+		"hardwareCursor",
 		"hardware_cursor",
+		"clearOnShrink",
 		"clear_on_shrink",
+		"terminalProgress",
 		"terminal_progress",
+		"subagentDensity",
 		"subagent_density",
 	] as const) {
-		delete payload[key];
+		edits.push({ action: "clear", path: [key] });
 	}
-	Object.assign(payload, {
-		view_mode: settings.view_mode,
-		statusline_enabled: settings.statusbar_mode !== "off",
-		tui_statusbar_mode: settings.statusbar_mode,
-		tui_theme: settings.theme,
-		tui_hide_thinking: settings.hide_thinking,
-		tui_tool_details_default: settings.tool_details_default,
-		tui_hardware_cursor: settings.hardware_cursor,
-		tui_clear_on_shrink: settings.clear_on_shrink,
-		tui_terminal_progress: settings.terminal_progress,
-		tui_subagent_density: settings.subagent_density,
-	});
-	return `${stringify(payload).trimEnd()}\n`;
+	edits.push(
+		set("view_mode", settings.view_mode),
+		set("statusline_enabled", settings.statusbar_mode !== "off"),
+		set("tui_statusbar_mode", settings.statusbar_mode),
+		set("tui_theme", settings.theme),
+		set("tui_hide_thinking", settings.hide_thinking),
+		set("tui_tool_details_default", settings.tool_details_default),
+		set("tui_hardware_cursor", settings.hardware_cursor),
+		set("tui_clear_on_shrink", settings.clear_on_shrink),
+		set("tui_terminal_progress", settings.terminal_progress),
+		set("tui_subagent_density", settings.subagent_density),
+	);
+	return edits;
+}
+
+function set(key: string, value: string | boolean): UserConfigEdit {
+	return { action: "set", path: [key], value };
 }
 
 function settingsFromPayload(

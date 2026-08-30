@@ -8,6 +8,8 @@ import {
 	isConfigError,
 	mutateUserConfigSetting,
 	resolveConfigWithMetadata,
+	saveShellSettings,
+	writeUserProviderConfig,
 } from "../src/index.ts";
 
 test("user config mutation preserves formatting and replaces a colliding legacy model key", async (t) => {
@@ -74,6 +76,31 @@ test("user config mutation clears canonical and legacy aliases without changing 
 		await mutate(root, "unset", "request.stream_max_retries"),
 		{ key: "request.stream_max_retries", changed: false },
 	);
+});
+
+test("user config mutation unsets a colliding legacy scalar without clearing a canonical table", async (t) => {
+	const root = await temporaryRoot(t);
+	const path = await writeConfig(root.homeDir, 'model = "legacy-model"\n');
+
+	assert.deepEqual(
+		await mutate(root, "unset", "model.name"),
+		{ key: "model.name", changed: true },
+	);
+	assert.deepEqual(parse(await readFile(path, "utf8")), {});
+
+	await writeFile(path, [
+		"[model]",
+		'provider = "openai"',
+		'name = "gpt-5.6-sol"',
+		"",
+	].join("\n"), "utf8");
+	assert.deepEqual(
+		await mutate(root, "unset", "model.name"),
+		{ key: "model.name", changed: true },
+	);
+	assert.deepEqual(parse(await readFile(path, "utf8")), {
+		model: { provider: "openai" },
+	});
 });
 
 test("user config mutation validates typed and cross-field candidates before replacement", async (t) => {
@@ -150,6 +177,40 @@ test("concurrent user config mutations serialize without losing either update", 
 	});
 	assert.equal(resolved.config.memoryEnabled, true);
 	assert.equal(resolved.config.cacheControlEnabled, true);
+});
+
+test("provider CLI and shell config mutations serialize without losing completed updates", async (t) => {
+	const root = await temporaryRoot(t);
+	await Promise.all([
+		writeUserProviderConfig({
+			homeDir: root.homeDir,
+			provider: "openai",
+			protocol: "responses",
+			model: "gpt-5.6-sol",
+			apiBaseUrl: "https://api.openai.com/v1/",
+			authRef: "openai",
+			promptCacheKeyEnabled: true,
+			cacheControlEnabled: false,
+		}),
+		mutate(root, "set", "memory.enabled", "true"),
+		saveShellSettings({
+			homeDir: root.homeDir,
+			settings: { theme: "light", statusbarMode: "compact" },
+		}),
+	]);
+
+	const raw = await readFile(join(root.homeDir, ".mycli", "config.toml"), "utf8");
+	const payload = parse(raw) as Record<string, unknown>;
+	assert.deepEqual(payload.model, {
+		provider: "openai",
+		protocol: "responses",
+		name: "gpt-5.6-sol",
+		api_base_url: "https://api.openai.com/v1",
+		auth_ref: "openai",
+	});
+	assert.deepEqual(payload.memory, { enabled: true });
+	assert.equal(payload.tui_theme, "light");
+	assert.equal(payload.tui_statusbar_mode, "compact");
 });
 
 async function mutate(

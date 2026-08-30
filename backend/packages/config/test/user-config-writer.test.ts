@@ -27,7 +27,8 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 	await mkdir(directory, { recursive: true });
 	await writeFile(path, [
 		'api_key = "legacy-secret"',
-		'custom_flag = "keep"',
+		"# keep provider comment",
+		'custom_flag = "keep" # keep inline comment',
 		"",
 		"[model]",
 		'provider = "openai"',
@@ -35,11 +36,15 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		'name = "old-model"',
 		'api_base_url = "https://old.example/v1"',
 		'api_key = "nested-legacy-secret"',
+		'custom_option = "keep" # keep model extension',
+		"",
+		"[request]",
+		'custom_option = "keep" # keep request extension',
 		"",
 		"[plugins]",
 		'enabled = ["demo"]',
 		"",
-	].join("\n"), { encoding: "utf8", mode: 0o644 });
+	].join("\r\n"), { encoding: "utf8", mode: 0o644 });
 	const writeUserProviderConfig = (
 		config as { writeUserProviderConfig?: WriteUserProviderConfig }
 	).writeUserProviderConfig;
@@ -62,6 +67,9 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 	const raw = await readFile(path, "utf8");
 	const payload = parse(raw) as Record<string, unknown>;
 	assert.equal(raw.includes("legacy-secret"), false);
+	assert.match(raw, /# keep provider comment\r\n/u);
+	assert.match(raw, /custom_flag = "keep" # keep inline comment\r\n/u);
+	assert.equal(raw.includes("\n") && !raw.includes("\r\n"), false);
 	assert.equal(payload.custom_flag, "keep");
 	assert.deepEqual(payload.plugins, { enabled: ["demo"] });
 	assert.deepEqual(payload.model, {
@@ -70,8 +78,10 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		name: "claude-sonnet-4-6",
 		api_base_url: "https://api.anthropic.com",
 		auth_ref: "anthropic",
+		custom_option: "keep",
 	});
 	assert.deepEqual(payload.request, {
+		custom_option: "keep",
 		prompt_cache_key_enabled: false,
 		cache_control_enabled: true,
 	});
@@ -85,6 +95,21 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		assert.equal((await stat(directory)).mode & 0o777, 0o700);
 	}
 	assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".tmp")), []);
+
+	await writeUserProviderConfig!({
+		homeDir,
+		provider: "anthropic",
+		protocol: "anthropic_messages",
+		model: "claude-sonnet-4-6",
+		apiBaseUrl: "https://api.anthropic.com/",
+		authRef: "anthropic",
+		promptCacheKeyEnabled: false,
+		cacheControlEnabled: true,
+		thinkingEnabled: true,
+		reasoningEffort: "high",
+		failpoint: () => { throw new Error("no-op must not replace"); },
+	});
+	assert.equal(await readFile(path, "utf8"), raw);
 });
 
 test("user config writer preserves the old file and redacts atomic replacement failures", async (t) => {
@@ -176,6 +201,39 @@ test("user config writer clears active thinking effort when model reasoning is d
 	});
 	assert.equal(resolved.thinkingEnabled, false);
 	assert.equal(resolved.reasoningEffort, "high");
+});
+
+test("user config writer validates the complete candidate before replacement", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const directory = join(homeDir, ".mycli");
+	const path = join(directory, "config.toml");
+	const invalid = [
+		"[context]",
+		"compaction_token_limit = 11000",
+		"",
+		"[request]",
+		"max_prompt_tokens = 10000",
+		"",
+	].join("\n");
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, invalid, "utf8");
+
+	await assert.rejects(
+		() => config.writeUserProviderConfig({
+			homeDir,
+			provider: "openai",
+			protocol: "responses",
+			model: "private-model-sentinel",
+			apiBaseUrl: "https://private.example/v1",
+			authRef: "openai",
+			promptCacheKeyEnabled: true,
+			cacheControlEnabled: false,
+		}),
+		(error: unknown) => error instanceof Error
+			&& error.message === "config_write_failed: unable to update user config"
+			&& !error.message.includes("private-model-sentinel"),
+	);
+	assert.equal(await readFile(path, "utf8"), invalid);
 });
 
 async function temporaryDirectory(t: TestContext): Promise<string> {
