@@ -169,9 +169,79 @@ test("config doctor validates profiles and reports API key presence without expo
 		homeDir: root.homeDir,
 		env: {},
 	});
-	assert.equal(malformed[0]?.status, "failed");
+	assert.deepEqual(
+		malformed.map((check) => [check.name, check.status]),
+		[
+			["config_invalid_toml_1", "failed"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(malformed[0]?.message ?? "", /project config contains invalid TOML/u);
+	assert.match(malformed[0]?.detail ?? "", /layer=project line=1 column=2/u);
 	assert.equal(malformed[1]?.status, "warning");
-	assert.doesNotMatch(JSON.stringify(malformed), /file-test-secret|invalid TOML in .*config/u);
+	assert.doesNotMatch(JSON.stringify(malformed), /file-test-secret|\[model/u);
+
+	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'name = "gpt-5"',
+		'nmae = "must-not-leak"',
+	].join("\n"), "utf8");
+	const unknown = await collectConfigChecks({
+		workspaceRoot: root.workspaceRoot,
+		homeDir: root.homeDir,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+	assert.deepEqual(
+		unknown.map((check) => [check.name, check.status]),
+		[
+			["config", "ok"],
+			["config_unknown_key_1", "warning"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(unknown[1]?.detail ?? "", /layer=project key=model\.nmae/u);
+	assert.doesNotMatch(JSON.stringify(unknown), /must-not-leak/u);
+
+	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'api_key = "must-not-leak"',
+	].join("\n"), "utf8");
+	const forbidden = await collectConfigChecks({
+		workspaceRoot: root.workspaceRoot,
+		homeDir: root.homeDir,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+	assert.deepEqual(
+		forbidden.map((check) => [check.name, check.status]),
+		[
+			["config_forbidden_inline_secret_1", "failed"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(forbidden[0]?.detail ?? "", /layer=project key=model\.api_key/u);
+	assert.doesNotMatch(JSON.stringify(forbidden), /must-not-leak/u);
+
+	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'provider = "must-not-leak"',
+	].join("\n"), "utf8");
+	const unsupportedProvider = await collectConfigChecks({
+		workspaceRoot: root.workspaceRoot,
+		homeDir: root.homeDir,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+	assert.deepEqual(
+		unsupportedProvider.map((check) => [check.name, check.status]),
+		[
+			["config_invalid_value_1", "failed"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(unsupportedProvider[0]?.detail ?? "", /key=provider/u);
+	assert.doesNotMatch(JSON.stringify(unsupportedProvider), /must-not-leak/u);
 });
 
 test("storage doctor validates SQLite through a read-only connection and creates nothing", async (t) => {

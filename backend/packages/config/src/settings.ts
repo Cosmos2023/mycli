@@ -7,8 +7,13 @@ import type {
 	ReasoningEffort,
 	WebSearchMode,
 } from "@mycli/core";
-import { parse } from "smol-toml";
+import { parse, TomlError } from "smol-toml";
 import { readApiKey } from "./auth-store.ts";
+import {
+	configError,
+	type ConfigDiagnostic,
+	type ConfigFileLayerId,
+} from "./config-diagnostics.ts";
 import {
 	CONFIG_LAYER_STACK_VERSION,
 	resolveConfigLayers,
@@ -16,6 +21,11 @@ import {
 	type ConfigLayerMetadata,
 	type ConfigLayerStack,
 } from "./config-layers.ts";
+import {
+	MODEL_COMPACTION_RATIOS_KEY,
+	validateConfigDocument,
+	type ValidatedConfigDocument,
+} from "./config-schema.ts";
 import {
 	inferProviderFromBaseUrl,
 	parseProtocol,
@@ -138,59 +148,8 @@ export interface ResolveConfigOptions {
 export interface ResolvedConfig {
 	readonly config: NodeRuntimeConfig;
 	readonly layers: ConfigLayerStack;
+	readonly diagnostics: readonly ConfigDiagnostic[];
 }
-
-const SECTION_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-	model: {
-		provider: "provider",
-		protocol: "protocol",
-		name: "model",
-		api_base_url: "api_base_url",
-		auth_ref: "auth_ref",
-		supports_images: "supports_images",
-	},
-	request: {
-		max_prompt_tokens: "max_prompt_tokens",
-		request_max_retries: "request_max_retries",
-		stream_max_retries: "stream_max_retries",
-		prompt_cache_key_enabled: "prompt_cache_key_enabled",
-		cache_control_enabled: "cache_control_enabled",
-	},
-	reasoning: {
-		enabled: "thinking_enabled",
-		effort: "thinking_effort",
-		reasoning_effort: "reasoning_effort",
-	},
-	memory: {
-		enabled: "memory_enabled",
-	},
-	features: {
-		request_permissions_tool: "request_permissions_tool",
-	},
-	context: {
-		compression_threshold_tokens: "compression_threshold_tokens",
-		compaction_token_limit: "compaction_token_limit",
-		compaction_reserved_output_tokens: "compaction_reserved_output_tokens",
-		compaction_tail_turns: "compaction_tail_turns",
-		compaction_tail_max_tokens: "compaction_tail_max_tokens",
-		compaction_l4_trigger_ratio: "compaction_l4_trigger_ratio",
-		compaction_l4_buffer_tokens: "compaction_l4_buffer_tokens",
-		compaction_l4_min_savings_ratio: "compaction_l4_min_savings_ratio",
-		compaction_l4_input_cost_per_1k: "compaction_l4_input_cost_per_1k",
-		compaction_l4_output_cost_per_1k: "compaction_l4_output_cost_per_1k",
-		compaction_l4_carry_cost_per_1k: "compaction_l4_carry_cost_per_1k",
-		compaction_l4_expected_summary_tokens: "compaction_l4_expected_summary_tokens",
-		compaction_l4_carry_turns: "compaction_l4_carry_turns",
-		compaction_l4_summarizer_model: "compaction_l4_summarizer_model",
-		compaction_rehydration_file_max_total_tokens:
-			"compaction_rehydration_file_max_total_tokens",
-		compaction_rehydration_file_max_item_tokens:
-			"compaction_rehydration_file_max_item_tokens",
-		compaction_rehydration_max_files: "compaction_rehydration_max_files",
-	},
-};
-
-const MODEL_COMPACTION_RATIOS_KEY = "compaction_l4_trigger_ratios_by_model";
 
 const ENVIRONMENT_CONFIG_KEYS = Object.freeze({
 	MYCLI_API_KEY: "api_key",
@@ -252,7 +211,7 @@ export async function resolveConfigWithMetadata(
 ): Promise<ResolvedConfig> {
 	const loaded = await loadConfigLayers(options);
 	const config = await resolveConfigFromSources(options, loaded.sources);
-	return Object.freeze({ config, layers: loaded.stack });
+	return Object.freeze({ config, layers: loaded.stack, diagnostics: loaded.diagnostics });
 }
 
 async function resolveConfigFromSources(
@@ -270,13 +229,13 @@ async function resolveConfigFromSources(
 		options.env.MYCLI_PROVIDER,
 		...sources.map((source) => source.provider),
 	)) ?? inferProviderFromBaseUrl(inferenceUrl);
-	const initialProfile = resolveProviderProfile(providerValue);
+	const initialProfile = providerProfileSetting(providerValue);
 	const protocolValue = stringValue(firstTruthy(
 		options.overrides?.protocol,
 		options.env.MYCLI_PROTOCOL,
 		...sources.map((source) => source.protocol),
 	)) ?? initialProfile.defaultProtocol;
-	const profile = resolveProviderProfile(providerValue, protocolValue);
+	const profile = providerProfileSetting(providerValue, protocolValue);
 	const protocol = parseProtocol(protocolValue);
 	const model = stringValue(firstTruthy(
 		options.overrides?.model,
@@ -350,7 +309,11 @@ async function resolveConfigFromSources(
 		"thinking_enabled",
 	)) ?? true;
 	if (!thinkingEnabled && thinkingEffort !== undefined && thinkingEffort !== "none") {
-		throw new Error("config_error: thinking_effort requires thinking_enabled=true");
+		throw invalidConfigValue(
+			"thinking_effort",
+			"thinking_effort requires thinking_enabled=true",
+			"Set reasoning.enabled=true or remove the configured reasoning effort.",
+		);
 	}
 	const supportsImagesOverride = optionalBoolean(setting(
 		options.env,
@@ -433,7 +396,11 @@ async function resolveConfigFromSources(
 			"compaction_token_limit",
 		);
 	if (compactionTokenLimit > maxPromptTokens) {
-		throw new Error("config_error: compaction_token_limit cannot exceed max_prompt_tokens");
+		throw invalidConfigValue(
+			"compaction_token_limit",
+			"compaction_token_limit cannot exceed max_prompt_tokens",
+			"Reduce context.compaction_token_limit or increase request.max_prompt_tokens.",
+		);
 	}
 	const compactionReservedOutputTokens = nonNegativeSafeIntegerSetting(
 		setting(
@@ -558,8 +525,10 @@ async function resolveConfigFromSources(
 		"compaction_rehydration_file_max_item_tokens",
 	);
 	if (compactionRehydrationFileMaxItemTokens > compactionRehydrationFileMaxTotalTokens) {
-		throw new Error(
-			"config_error: compaction_rehydration_file_max_item_tokens cannot exceed total tokens",
+		throw invalidConfigValue(
+			"compaction_rehydration_file_max_item_tokens",
+			"compaction_rehydration_file_max_item_tokens cannot exceed total tokens",
+			"Reduce the per-file token limit or increase the total rehydration limit.",
 		);
 	}
 	const compactionRehydrationMaxFiles = nonNegativeSafeIntegerSetting(
@@ -621,17 +590,21 @@ async function resolveConfigFromSources(
 async function loadConfigLayers(options: ResolveConfigOptions): Promise<{
 	readonly sources: readonly ConfigMap[];
 	readonly stack: ConfigLayerStack;
+	readonly diagnostics: readonly ConfigDiagnostic[];
 }> {
 	const userPath = join(options.homeDir, ".mycli", "config.toml");
 	const projectPath = join(options.workspaceRoot, ".mycli", "config.toml");
 	const legacyPath = join(options.homeDir, ".config", "mycli", "config.toml");
 	const projectEnabled = options.workspaceTrust === undefined
 		|| options.workspaceTrust === "trusted";
-	const [userConfig, projectConfig, legacyConfig] = await Promise.all([
+	const [userDocument, projectDocument, legacyDocument] = await Promise.all([
 		readToml(userPath, "user"),
-		projectEnabled ? readToml(projectPath, "project") : Promise.resolve({}),
-		readToml(legacyPath, "legacy user"),
+		projectEnabled ? readToml(projectPath, "project") : Promise.resolve(emptyConfigDocument()),
+		readToml(legacyPath, "legacy_user"),
 	]);
+	const userConfig = userDocument.values;
+	const projectConfig = projectDocument.values;
+	const legacyConfig = legacyDocument.values;
 	const inputs: readonly ConfigLayerInput[] = [
 		configLayer(
 			"session",
@@ -663,6 +636,11 @@ async function loadConfigLayers(options: ResolveConfigOptions): Promise<{
 			legacyConfig,
 		]),
 		stack: resolution.stack,
+		diagnostics: Object.freeze([
+			...(projectEnabled ? projectDocument.diagnostics : []),
+			...userDocument.diagnostics,
+			...legacyDocument.diagnostics,
+		]),
 	});
 }
 
@@ -713,45 +691,59 @@ function definedEntries(values: ConfigMap): ConfigMap {
 	return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 }
 
-async function readToml(path: string, label: string): Promise<ConfigMap> {
+async function readToml(
+	path: string,
+	layer: ConfigFileLayerId,
+): Promise<ValidatedConfigDocument> {
 	let raw: string;
 	try {
 		raw = await readFile(path, "utf8");
 	} catch (error) {
 		if (isNodeError(error) && error.code === "ENOENT") {
-			return {};
+			return emptyConfigDocument();
 		}
-		throw new Error(`config_error: could not read ${label} config`);
+		throw configError({
+			code: "config_read_failed",
+			severity: "error",
+			layer,
+			message: `${configLayerLabel(layer)} config could not be read`,
+			remediation: "Check that the config file is readable and try again.",
+		});
 	}
 	try {
-		return flattenConfig(parse(raw) as ConfigMap);
-	} catch {
-		throw new Error(`config_error: invalid TOML in ${label} config`);
+		const parsed: unknown = parse(raw);
+		if (!isRecord(parsed)) {
+			throw configError({
+				code: "invalid_value",
+				severity: "error",
+				layer,
+				message: `${configLayerLabel(layer)} config must contain a TOML table`,
+				remediation: "Replace the document root with TOML key-value entries.",
+			});
+		}
+		return validateConfigDocument(parsed, layer);
+	} catch (error) {
+		if (error instanceof TomlError) {
+			throw configError({
+				code: "invalid_toml",
+				severity: "error",
+				layer,
+				line: error.line,
+				column: error.column,
+				message: `${configLayerLabel(layer)} config contains invalid TOML`,
+				remediation: "Fix the TOML syntax at the reported location.",
+			});
+		}
+		throw error;
 	}
 }
 
-function flattenConfig(input: ConfigMap): ConfigMap {
-	const flattened: ConfigMap = {};
-	for (const [key, value] of Object.entries(input)) {
-		if (!(key in SECTION_KEYS) && !isRecord(value)) {
-			flattened[key] = value;
-		}
-	}
-	for (const [section, mappings] of Object.entries(SECTION_KEYS)) {
-		const table = input[section];
-		if (!isRecord(table)) {
-			continue;
-		}
-		for (const [sectionKey, flatKey] of Object.entries(mappings)) {
-			if (sectionKey in table) {
-				flattened[flatKey] = table[sectionKey];
-			}
-		}
-	}
-	if (isRecord(input[MODEL_COMPACTION_RATIOS_KEY])) {
-		flattened[MODEL_COMPACTION_RATIOS_KEY] = input[MODEL_COMPACTION_RATIOS_KEY];
-	}
-	return flattened;
+function emptyConfigDocument(): ValidatedConfigDocument {
+	return Object.freeze({ values: Object.freeze({}), diagnostics: Object.freeze([]) });
+}
+
+function configLayerLabel(layer: ConfigFileLayerId): string {
+	return layer === "legacy_user" ? "legacy user" : layer;
 }
 
 function setting(
@@ -785,7 +777,7 @@ function integerSetting(value: unknown, fallback: number, label: string): number
 	}
 	const parsed = Number(value);
 	if (!Number.isInteger(parsed)) {
-		throw new Error(`config_error: ${label} must be an integer`);
+		throw invalidConfigValue(label, `${label} must be an integer`);
 	}
 	return Math.max(0, Math.min(100, parsed));
 }
@@ -796,7 +788,7 @@ function positiveIntegerSetting(value: unknown, fallback: number, label: string)
 	}
 	const parsed = Number(value);
 	if (!Number.isInteger(parsed) || parsed <= 0) {
-		throw new Error(`config_error: ${label} must be a positive integer`);
+		throw invalidConfigValue(label, `${label} must be a positive integer`);
 	}
 	return parsed;
 }
@@ -804,7 +796,7 @@ function positiveIntegerSetting(value: unknown, fallback: number, label: string)
 function positiveSafeIntegerSetting(value: unknown, fallback: number, label: string): number {
 	const parsed = value === undefined || value === null ? fallback : Number(value);
 	if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-		throw new Error(`config_error: ${label} must be a positive safe integer`);
+		throw invalidConfigValue(label, `${label} must be a positive safe integer`);
 	}
 	return parsed;
 }
@@ -816,7 +808,7 @@ function nonNegativeSafeIntegerSetting(
 ): number {
 	const parsed = value === undefined || value === null ? fallback : Number(value);
 	if (!Number.isSafeInteger(parsed) || parsed < 0) {
-		throw new Error(`config_error: ${label} must be a non-negative safe integer`);
+		throw invalidConfigValue(label, `${label} must be a non-negative safe integer`);
 	}
 	return parsed;
 }
@@ -824,7 +816,7 @@ function nonNegativeSafeIntegerSetting(
 function nonNegativeFiniteSetting(value: unknown, fallback: number, label: string): number {
 	const parsed = value === undefined || value === null ? fallback : Number(value);
 	if (!Number.isFinite(parsed) || parsed < 0) {
-		throw new Error(`config_error: ${label} must be a non-negative finite number`);
+		throw invalidConfigValue(label, `${label} must be a non-negative finite number`);
 	}
 	return parsed;
 }
@@ -832,7 +824,7 @@ function nonNegativeFiniteSetting(value: unknown, fallback: number, label: strin
 function ratioSetting(value: unknown, fallback: number, label: string): number {
 	const parsed = value === undefined || value === null ? fallback : Number(value);
 	if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
-		throw new Error(`config_error: ${label} must be between 0 and 1`);
+		throw invalidConfigValue(label, `${label} must be between 0 and 1`);
 	}
 	return parsed;
 }
@@ -841,17 +833,19 @@ function optionalRatioSetting(value: unknown, label: string): number | undefined
 	if (value === undefined || value === null) return undefined;
 	const parsed = Number(value);
 	if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-		throw new Error(`config_error: ${label} must be between 0 and 1`);
+		throw invalidConfigValue(label, `${label} must be between 0 and 1`);
 	}
 	return parsed;
 }
 
 function ratioMapSetting(value: unknown, label: string): Readonly<Record<string, number>> {
 	if (value === undefined) return Object.freeze({});
-	if (!isRecord(value)) throw new Error(`config_error: ${label} must be a table`);
+	if (!isRecord(value)) throw invalidConfigValue(label, `${label} must be a table`);
 	const ratios: Record<string, number> = {};
 	for (const [model, ratio] of Object.entries(value)) {
-		if (!model.trim()) throw new Error(`config_error: ${label} contains an empty model`);
+		if (!model.trim()) {
+			throw invalidConfigValue(label, `${label} contains an empty model`);
+		}
 		ratios[model] = ratioSetting(ratio, 1, `${label}.${model}`);
 	}
 	return Object.freeze(ratios);
@@ -860,7 +854,7 @@ function ratioMapSetting(value: unknown, label: string): Readonly<Record<string,
 function booleanSetting(value: unknown, fallback: boolean, label: string): boolean {
 	if (value === undefined || value === null) return fallback;
 	const parsed = optionalBoolean(value);
-	if (parsed === undefined) throw new Error(`config_error: ${label} must be a boolean`);
+	if (parsed === undefined) throw invalidConfigValue(label, `${label} must be a boolean`);
 	return parsed;
 }
 
@@ -899,9 +893,45 @@ function optionalBoolean(value: unknown): boolean | undefined {
 function reasoningEffortValue(value: unknown): ReasoningEffort {
 	const normalized = String(value).trim().toLowerCase();
 	if (!REASONING_EFFORTS.has(normalized)) {
-		throw new Error(`config_error: unsupported reasoning effort '${normalized}'`);
+		throw invalidConfigValue(
+			"thinking_effort",
+			"unsupported reasoning effort",
+			"Use one of: none, minimal, low, medium, high, xhigh, max, or ultra.",
+		);
 	}
 	return normalized as ReasoningEffort;
+}
+
+function invalidConfigValue(
+	keyPath: string,
+	message: string,
+	remediation = `Correct '${keyPath}' or remove it from configuration.`,
+): Error {
+	return configError({
+		code: "invalid_value",
+		severity: "error",
+		keyPath,
+		message,
+		remediation,
+	});
+}
+
+function providerProfileSetting(
+	provider: string,
+	protocol?: string,
+): ReturnType<typeof resolveProviderProfile> {
+	try {
+		return resolveProviderProfile(provider, protocol);
+	} catch {
+		const keyPath = protocol === undefined ? "provider" : "protocol";
+		throw invalidConfigValue(
+			keyPath,
+			`unsupported ${keyPath} configuration`,
+			keyPath === "provider"
+				? "Use a provider supported by this mycli installation."
+				: "Use a protocol supported by the selected provider.",
+		);
+	}
 }
 
 function isRecord(value: unknown): value is ConfigMap {

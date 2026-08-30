@@ -28,6 +28,17 @@ export type {
 	ConfigLayerStack,
 	ConfigOrigin,
 } from "./config-layers.ts";
+export {
+	CONFIG_DIAGNOSTIC_VERSION,
+	ConfigError,
+	isConfigError,
+} from "./config-diagnostics.ts";
+export type {
+	ConfigDiagnostic,
+	ConfigDiagnosticCode,
+	ConfigDiagnosticSeverity,
+	ConfigFileLayerId,
+} from "./config-diagnostics.ts";
 export { resolveModelRuntimeConfig } from "./model-runtime-config.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";

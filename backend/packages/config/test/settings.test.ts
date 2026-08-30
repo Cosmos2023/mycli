@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { resolveConfig, resolveConfigWithMetadata } from "../src/index.ts";
+import {
+	ConfigError,
+	resolveConfig,
+	resolveConfigWithMetadata,
+} from "../src/index.ts";
 
 test("resolves trusted project precedence with source provenance", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);
@@ -64,6 +68,7 @@ test("keeps untrusted project configuration disabled without reading it", async 
 		assert.equal(project?.metadata.disabledReason, "workspace_not_trusted");
 		assert.deepEqual(project?.keys, []);
 		assert.equal(resolved.layers.origins.model?.source.id, "user");
+		assert.deepEqual(resolved.diagnostics, []);
 	}
 });
 
@@ -95,6 +100,201 @@ test("attributes session and environment overrides above file layers", async (t)
 	assert.deepEqual(
 		session.layers.origins.model?.overridden.map((source) => source.id),
 		["environment", "project"],
+	);
+});
+
+test("reports deterministic value-free schema diagnostics", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		'typo_root = "must-not-leak"',
+		"[model]",
+		'name = "valid-model"',
+		'nmae = "must-not-leak"',
+		"[plugins]",
+		'enabled = ["demo"]',
+		'extra = "must-not-leak"',
+		"[runtime]",
+		'collaboration_mode = "default"',
+	]);
+
+	const resolved = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: {},
+	});
+
+	assert.equal(resolved.config.model, "valid-model");
+	assert.deepEqual(
+		resolved.diagnostics.map((diagnostic) => ({
+			version: diagnostic.version,
+			code: diagnostic.code,
+			severity: diagnostic.severity,
+			layer: diagnostic.layer,
+			keyPath: diagnostic.keyPath,
+		})),
+		[
+			{
+				version: 1,
+				code: "unknown_key",
+				severity: "warning",
+				layer: "user",
+				keyPath: "model.nmae",
+			},
+			{
+				version: 1,
+				code: "unknown_key",
+				severity: "warning",
+				layer: "user",
+				keyPath: "plugins.extra",
+			},
+			{
+				version: 1,
+				code: "unknown_table",
+				severity: "warning",
+				layer: "user",
+				keyPath: "runtime",
+			},
+			{
+				version: 1,
+				code: "unknown_key",
+				severity: "warning",
+				layer: "user",
+				keyPath: "typo_root",
+			},
+		],
+	);
+	assert.equal(JSON.stringify(resolved.diagnostics).includes("must-not-leak"), false);
+});
+
+test("accepts existing legacy runtime shell and plugin config vocabulary", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		'model = "legacy-model"',
+		"request_max_retries = 2",
+		'tui_theme = "dark"',
+		'view_mode = "default"',
+		"[plugins]",
+		'enabled = ["demo"]',
+		'disabled = ["old"]',
+	]);
+
+	const resolved = await resolveConfigWithMetadata({ homeDir, workspaceRoot, env: {} });
+
+	assert.equal(resolved.config.model, "legacy-model");
+	assert.deepEqual(resolved.diagnostics, []);
+});
+
+test("warns for user and legacy-user root API keys without exposing them", async (t) => {
+	for (const [relativePath, layer] of [
+		[[".mycli", "config.toml"], "user"],
+		[[".config", "mycli", "config.toml"], "legacy_user"],
+	] as const) {
+		const { homeDir, workspaceRoot } = await configTree(t);
+		await writeToml(join(homeDir, ...relativePath), [
+			'api_key = "must-not-leak"',
+		]);
+
+		const resolved = await resolveConfigWithMetadata({ homeDir, workspaceRoot, env: {} });
+
+		assert.equal(resolved.config.apiKey, "must-not-leak");
+		assert.deepEqual(
+			resolved.diagnostics.map((diagnostic) => [
+				diagnostic.code,
+				diagnostic.severity,
+				diagnostic.layer,
+				diagnostic.keyPath,
+			]),
+			[["deprecated_inline_secret", "warning", layer, "api_key"]],
+		);
+		assert.equal(JSON.stringify(resolved.diagnostics).includes("must-not-leak"), false);
+	}
+});
+
+test("rejects project inline credentials with a value-free typed error", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'api_key = "must-not-leak"',
+	]);
+
+	await assert.rejects(
+		() => resolveConfig({ homeDir, workspaceRoot, env: {}, workspaceTrust: "trusted" }),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "forbidden_inline_secret"
+			&& error.diagnostic.layer === "project"
+			&& error.diagnostic.keyPath === "model.api_key"
+			&& !JSON.stringify(error.diagnostic).includes("must-not-leak"),
+	);
+});
+
+test("rejects table credentials in user config instead of treating them as legacy", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'api_key = "must-not-leak"',
+	]);
+
+	await assert.rejects(
+		() => resolveConfig({ homeDir, workspaceRoot, env: {} }),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "forbidden_inline_secret"
+			&& error.diagnostic.layer === "user"
+			&& error.diagnostic.keyPath === "model.api_key"
+			&& !JSON.stringify(error.diagnostic).includes("must-not-leak"),
+	);
+});
+
+test("reports invalid known values without echoing the configured value", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[reasoning]",
+		'effort = "must-not-leak"',
+	]);
+
+	await assert.rejects(
+		() => resolveConfig({ homeDir, workspaceRoot, env: {} }),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_value"
+			&& error.diagnostic.keyPath === "thinking_effort"
+			&& !JSON.stringify(error.diagnostic).includes("must-not-leak")
+			&& !error.message.includes("must-not-leak"),
+	);
+});
+
+test("rejects unsupported providers without echoing configured values", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'provider = "must-not-leak"',
+	]);
+
+	await assert.rejects(
+		() => resolveConfig({ homeDir, workspaceRoot, env: {} }),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_value"
+			&& error.diagnostic.keyPath === "provider"
+			&& error.diagnostic.message === "unsupported provider configuration"
+			&& !JSON.stringify(error.diagnostic).includes("must-not-leak")
+			&& !error.message.includes("must-not-leak"),
+	);
+});
+
+test("rejects unsupported protocols without echoing configured values", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'provider = "openai"',
+		'protocol = "must-not-leak"',
+	]);
+
+	await assert.rejects(
+		() => resolveConfig({ homeDir, workspaceRoot, env: {} }),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_value"
+			&& error.diagnostic.keyPath === "protocol"
+			&& error.diagnostic.message === "unsupported protocol configuration"
+			&& !JSON.stringify(error.diagnostic).includes("must-not-leak")
+			&& !error.message.includes("must-not-leak"),
 	);
 });
 
@@ -475,8 +675,13 @@ test("malformed TOML raises a bounded config error", async (t) => {
 
 	await assert.rejects(
 		() => resolveConfig({ homeDir, workspaceRoot, env: {} }),
-		(error: unknown) => error instanceof Error
-			&& /^config_error: invalid TOML in user config$/.test(error.message),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_toml"
+			&& error.diagnostic.layer === "user"
+			&& error.diagnostic.line === 1
+			&& error.diagnostic.column === 2
+			&& error.message === "config_error: user config contains invalid TOML"
+			&& !("codeblock" in error.diagnostic),
 	);
 });
 
