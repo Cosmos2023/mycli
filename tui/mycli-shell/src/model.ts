@@ -352,6 +352,21 @@ export type MycliShellAuthProvider = {
 	name: string;
 	configured?: boolean;
 	defaultModel?: string;
+	authRef?: string;
+	credentialSource?: MycliShellCredentialSource;
+};
+
+export type MycliShellCredentialSource =
+	| "environment"
+	| "stored"
+	| "legacy_config"
+	| "missing";
+
+export type MycliShellCredentialReadiness = {
+	ready: boolean;
+	providerId: string;
+	authRef: string;
+	source: MycliShellCredentialSource;
 };
 
 export type MycliShellVisualSettings = {
@@ -502,6 +517,7 @@ export type MycliShellState = {
 	pendingClarification?: MycliShellPendingClarification;
 	models?: MycliShellModel[];
 	authProviders?: MycliShellAuthProvider[];
+	authReadiness?: MycliShellCredentialReadiness;
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;
 	sessions?: MycliShellSession[];

@@ -116,7 +116,11 @@ export type MycliShellRuntimeOptions = {
 	) => void | MycliShellModel | Promise<void | MycliShellModel>;
 	onPermissionSelect?: (profile: MycliShellPermissionProfile) => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onPermissionClearAllowances?: () => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
-	onApiKeyLogin?: (providerId: string, apiKey: string) => void | { message?: string } | Promise<void | { message?: string }>;
+	onApiKeyLogin?: (
+		providerId: string,
+		apiKey: string,
+		authRef?: string,
+	) => void | { message?: string } | Promise<void | { message?: string }>;
 	onSessionSelect?: (sessionId: string) => void | Promise<void>;
 	onSessionTreeLoad?: () => MycliShellSessionTree | Promise<MycliShellSessionTree>;
 	onSessionTreeSelect?: (node: MycliShellSessionTreeNode) => void | Promise<void>;
@@ -1240,7 +1244,7 @@ export class MycliShellRuntime {
 		this.editor.onAction("app.transcript.open", () => this.showTranscriptViewer());
 		this.ui.addInputListener((data) => this.handleGlobalInput(data));
 		this.editorContainer.addChild(this.editor);
-		if (!options.requireTrust) {
+		if (!options.requireTrust && !this.startupAuthenticationRequired()) {
 			this.mountMain();
 			this.rebuildAll();
 		}
@@ -1254,6 +1258,8 @@ export class MycliShellRuntime {
 		this.ui.start();
 		if (this.options.requireTrust) {
 			this.showTrustGate();
+		} else if (this.startupAuthenticationRequired()) {
+			this.showStartupLoginFlow();
 		} else if (!this.selectorActive) {
 			this.ui.setFocus(this.editor);
 		}
@@ -1492,7 +1498,11 @@ export class MycliShellRuntime {
 								done();
 								this.mountMain();
 								this.patchFooter({ trust: "trusted" });
-								this.ui.setFocus(this.editor);
+								if (this.startupAuthenticationRequired()) {
+									this.showStartupLoginFlow();
+								} else {
+									this.ui.setFocus(this.editor);
+								}
 								return;
 							}
 							void this.shutdown();
@@ -1603,7 +1613,7 @@ export class MycliShellRuntime {
 			open_hotkeys: () => this.showHelp(),
 			copy_last_response: () => this.copyLastAssistantMessage(),
 			clear_transcript: () => this.clearTranscript(),
-			open_login: () => this.showLoginFlow(),
+			open_login: () => this.showLoginFlow(args || undefined),
 			open_trust: () => this.showTrustGate(),
 			quit: () => this.shutdown(),
 		};
@@ -1649,18 +1659,36 @@ export class MycliShellRuntime {
 		});
 	}
 
-	showLoginFlow(): void {
+	showLoginFlow(
+		initialProviderId?: string,
+		initialAuthRef?: string,
+		exitOnCancel = false,
+	): void {
+		this.ensureSelectorHostMounted();
 		this.showSelector((done) => {
 			const selector = new LoginFlowComponent({
 				tui: this.ui,
 				providers: this.authProviders(),
-				onSubmit: ({ providerId, apiKey }) => {
-					void this.submitApiKeyLogin(providerId, apiKey, done);
+				...(initialProviderId ? { initialProviderId } : {}),
+				...(initialAuthRef ? { initialAuthRef } : {}),
+				onSubmit: ({ providerId, authRef, apiKey }) => {
+					void this.submitApiKeyLogin(providerId, authRef, apiKey, selector, done);
 				},
-				onCancel: () => done(),
+				onCancel: () => {
+					if (exitOnCancel) {
+						void this.shutdown();
+						return;
+					}
+					done();
+				},
 			});
 			return { component: selector, focus: selector };
 		});
+	}
+
+	private showStartupLoginFlow(): void {
+		const readiness = this.state.authReadiness;
+		this.showLoginFlow(readiness?.providerId, readiness?.authRef, true);
 	}
 
 	showSettingsSelector(): void {
@@ -2783,6 +2811,21 @@ export class MycliShellRuntime {
 				text: input,
 				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
 			});
+			const authRecovery = authRecoveryFromError(error);
+			if (authRecovery) {
+				this.editor.removeLastFromHistory?.(input);
+				this.setState({
+					...this.state,
+					authReadiness: {
+						ready: false,
+						providerId: authRecovery.providerId,
+						authRef: authRecovery.authRef,
+						source: "missing",
+					},
+				});
+				this.showLoginFlow(authRecovery.providerId, authRecovery.authRef);
+				return;
+			}
 			throw error;
 		}
 	}
@@ -3221,9 +3264,19 @@ export class MycliShellRuntime {
 		];
 	}
 
-	private async submitApiKeyLogin(providerId: string, apiKey: string, done: () => void): Promise<void> {
+	private startupAuthenticationRequired(): boolean {
+		return this.state.authReadiness?.ready === false;
+	}
+
+	private async submitApiKeyLogin(
+		providerId: string,
+		authRef: string,
+		apiKey: string,
+		selector: LoginFlowComponent,
+		done: () => void,
+	): Promise<void> {
 		try {
-			const result = await this.options.onApiKeyLogin?.(providerId, apiKey);
+			const result = await this.options.onApiKeyLogin?.(providerId, apiKey, authRef);
 			const message = result && "message" in result && result.message
 				? result.message
 				: `Saved API key for ${this.authProviderName(providerId)}.`;
@@ -3231,10 +3284,23 @@ export class MycliShellRuntime {
 			const nextState = {
 				...this.state,
 				authProviders: this.authProviders().map((provider) =>
-					provider.id === providerId ? { ...provider, configured: true } : provider,
+					provider.id === providerId
+						? { ...provider, configured: true, authRef, credentialSource: "stored" as const }
+						: provider,
 				),
+				...(this.state.authReadiness?.providerId === providerId
+					&& this.state.authReadiness.authRef === authRef
+					? {
+						authReadiness: {
+							...this.state.authReadiness,
+							ready: true,
+							source: "stored" as const,
+						},
+					}
+					: {}),
 			};
 			this.setState(nextState);
+			this.mountMain();
 			const providerModels = this.modelsForProvider(providerId);
 			if (providerModels.length > 0) {
 				this.showModelSelector(providerId);
@@ -3242,7 +3308,7 @@ export class MycliShellRuntime {
 				done();
 			}
 		} catch (error) {
-			this.addSystemNotice(safeErrorMessage(error, "Failed to save API key."));
+			selector.setError(safeErrorMessage(error, "Failed to save API key."));
 		}
 	}
 
@@ -3339,6 +3405,25 @@ export class MycliShellRuntime {
 		}
 		await this.options.onCommandSubmit?.(command);
 	}
+}
+
+function authRecoveryFromError(error: unknown): {
+	readonly providerId: string;
+	readonly authRef: string;
+} | null {
+	if (typeof error !== "object" || error === null || !("code" in error)
+		|| error.code !== "auth_required" || !("data" in error)) {
+		return null;
+	}
+	const data = error.data;
+	if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+	const providerId = "provider_id" in data && typeof data.provider_id === "string"
+		? data.provider_id.trim()
+		: "";
+	const authRef = "auth_ref" in data && typeof data.auth_ref === "string"
+		? data.auth_ref.trim()
+		: "";
+	return providerId && authRef ? { providerId, authRef } : null;
 }
 
 function defaultPermissionState(): MycliShellPermissionState {

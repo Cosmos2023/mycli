@@ -16,6 +16,7 @@ import { theme } from "../src/theme/theme.ts";
 import { completionDurationText } from "../src/components/turn-completed.ts";
 import { turnActivityHeaderText } from "../src/components/turn-activity-label.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
+import { GatewayRequestError } from "../src/adapters/gateway-client.ts";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
@@ -4793,6 +4794,146 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.equal(selected, "deepseek/deepseek-v4-flash//session");
+});
+
+test("startup trust chains into credential recovery and cancel exits cleanly", async () => {
+	const terminal = new TestTerminal();
+	let exits = 0;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			authProviders: [{
+				id: "openai",
+				name: "OpenAI",
+				configured: false,
+				authRef: "catalog-account",
+				credentialSource: "missing",
+			}],
+			authReadiness: {
+				ready: false,
+				providerId: "openai",
+				authRef: "catalog-account",
+				source: "missing",
+			},
+		},
+		terminal,
+		requireTrust: true,
+		onTrustSelect: async () => undefined,
+		onExit: () => { exits += 1; },
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Project trust/);
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Login to OpenAI/);
+	assert.equal(runtime.ui.children.length, 6);
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Select provider to configure:/);
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.equal(exits, 1);
+	assert.equal(terminal.stopped, true);
+});
+
+test("submit-time auth recovery preserves one draft and custom credential reference", async () => {
+	const terminal = new TestTerminal();
+	const submissions: string[] = [];
+	const saved: Array<[string, string, string | undefined]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			models: [],
+			authProviders: [{ id: "openai", name: "OpenAI", configured: false }],
+		},
+		terminal,
+		onSubmit: async (text) => {
+			submissions.push(text);
+			throw new GatewayRequestError({
+				code: "auth_required",
+				message: "Provider credentials are required before starting a turn.",
+				method: "turn.submit",
+				data: {
+					ready: false,
+					provider_id: "openai",
+					auth_ref: "catalog-account",
+					source: "missing",
+				},
+			});
+		},
+		onApiKeyLogin: async (providerId, apiKey, authRef) => {
+			saved.push([providerId, apiKey, authRef]);
+			return { message: "Credential saved." };
+		},
+	});
+
+	runtime.start();
+	runtime.editor.setText("keep this draft");
+	await runtime.editor.onSubmit?.("keep this draft");
+	await setTimeout(25);
+	assert.deepEqual(submissions, ["keep this draft"]);
+	assert.equal(runtime.editor.getText(), "keep this draft");
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Login to OpenAI/);
+	assert.doesNotMatch(output, /Message submission failed/);
+
+	terminal.input?.("\x1b[200~secret-value\x1b[201~");
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.deepEqual(saved, [["openai", "secret-value", "catalog-account"]]);
+	assert.deepEqual(submissions, ["keep this draft"]);
+	assert.equal(runtime.editor.getText(), "keep this draft");
+	assert.deepEqual(runtime.getState().authReadiness, {
+		ready: true,
+		providerId: "openai",
+		authRef: "catalog-account",
+		source: "stored",
+	});
+	assert.deepEqual(runtime.getState().authProviders, [{
+		id: "openai",
+		name: "OpenAI",
+		configured: true,
+		authRef: "catalog-account",
+		credentialSource: "stored",
+	}]);
+	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
+	assert.equal(runtime.ui.children.length, 6);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.doesNotMatch(output, /secret-value/);
+});
+
+test("startup credential save failures remain visible and keep login mounted", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			authProviders: [{ id: "openai", name: "OpenAI", configured: false }],
+			authReadiness: {
+				ready: false,
+				providerId: "openai",
+				authRef: "openai",
+				source: "missing",
+			},
+		},
+		terminal,
+		onApiKeyLogin: async () => {
+			throw new Error("api_key=secret-value-must-not-render");
+		},
+	});
+
+	runtime.start();
+	terminal.input?.("\x1b[200~secret-value-must-not-render\x1b[201~");
+	terminal.input?.("\r");
+	await setTimeout(25);
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /api_key=\[REDACTED\]/);
+	assert.doesNotMatch(output, /secret-value-must-not-render/);
+	assert.match(output, /Login to OpenAI/);
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 });
 
 test("mycli shell model selector can change thinking effort with model selection", async () => {

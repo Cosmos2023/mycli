@@ -17,12 +17,15 @@ type LoginStep = "provider" | "api_key";
 
 export type LoginFlowResult = {
 	providerId: string;
+	authRef: string;
 	apiKey: string;
 };
 
 export type LoginFlowOptions = {
 	tui: TUI;
 	providers: MycliShellAuthProvider[];
+	initialProviderId?: string;
+	initialAuthRef?: string;
 	onSubmit: (result: LoginFlowResult) => void;
 	onCancel: () => void;
 };
@@ -38,6 +41,8 @@ export class LoginFlowComponent extends Container implements Focusable {
 	private apiKey = "";
 	private step: LoginStep = "provider";
 	private selectedProvider: MycliShellAuthProvider | null = null;
+	private selectedAuthRef = "";
+	private errorMessage = "";
 	private _focused = false;
 
 	get focused(): boolean {
@@ -60,9 +65,24 @@ export class LoginFlowComponent extends Container implements Focusable {
 		});
 		this.onSubmitCallback = options.onSubmit;
 		this.onCancelCallback = options.onCancel;
+		const initialProvider = options.initialProviderId
+			? this.providers.find((provider) => provider.id === options.initialProviderId) ?? null
+			: null;
+		if (initialProvider) {
+			this.selectedProvider = initialProvider;
+			this.selectedAuthRef = options.initialAuthRef?.trim()
+				|| initialProvider.authRef
+				|| initialProvider.id;
+			this.step = "api_key";
+		}
 		this.searchInput.onSubmit = () => this.selectCurrentProvider();
 		this.apiKeyInput.onSubmit = () => this.submitApiKey();
 		this.apiKeyInput.onEscape = () => this.showProviderSelector();
+		this.rebuild();
+	}
+
+	setError(message: string): void {
+		this.errorMessage = message.trim() || "Failed to save API key.";
 		this.rebuild();
 	}
 
@@ -101,6 +121,7 @@ export class LoginFlowComponent extends Container implements Focusable {
 	private showProviderSelector(): void {
 		this.step = "provider";
 		this.apiKey = "";
+		this.errorMessage = "";
 		this.searchInput.focused = this._focused;
 		this.apiKeyInput.focused = false;
 		this.rebuild();
@@ -130,11 +151,15 @@ export class LoginFlowComponent extends Container implements Focusable {
 	private renderApiKeyDialog(): void {
 		const provider = this.selectedProvider ?? this.providerList.current() ?? defaultAuthProviders()[0]!;
 		this.selectedProvider = provider;
+		this.selectedAuthRef ||= provider.authRef ?? provider.id;
 		this.apiKey = this.apiKeyInput.getValue();
 		this.addChild(new DynamicBorder());
 		this.addHeader(`Login to ${provider.name}`);
 		this.addChild(new Text(theme.fg("text", "Enter API key:"), 1, 0));
 		this.addChild(new Text(`${theme.fg("muted", "> ")}${this.maskedApiKey()}${this.cursor()}`, 1, 0));
+		if (this.errorMessage) {
+			this.addChild(new Text(theme.fg("error", this.errorMessage), 1, 0));
+		}
 		this.addHint(`${keyHint("tui.select.cancel", "back,")} ${keyHint("tui.select.confirm", "save")}`);
 		this.addChild(new DynamicBorder());
 	}
@@ -153,6 +178,7 @@ export class LoginFlowComponent extends Container implements Focusable {
 		const provider = this.providerList.current() ?? null;
 		if (!provider) return;
 		this.selectedProvider = provider;
+		this.selectedAuthRef = provider.authRef ?? provider.id;
 		this.step = "api_key";
 		this.apiKey = "";
 		this.apiKeyInput.setValue("");
@@ -167,6 +193,7 @@ export class LoginFlowComponent extends Container implements Focusable {
 			this.submitApiKey();
 			return;
 		}
+		this.errorMessage = "";
 		this.apiKeyInput.handleInput(keyData);
 		this.apiKey = this.apiKeyInput.getValue();
 		this.rebuild();
@@ -175,7 +202,11 @@ export class LoginFlowComponent extends Container implements Focusable {
 	private submitApiKey(): void {
 		const apiKey = this.apiKeyInput.getValue().trim();
 		if (apiKey && this.selectedProvider) {
-			this.onSubmitCallback({ providerId: this.selectedProvider.id, apiKey });
+			this.onSubmitCallback({
+				providerId: this.selectedProvider.id,
+				authRef: this.selectedAuthRef || this.selectedProvider.id,
+				apiKey,
+			});
 		}
 	}
 

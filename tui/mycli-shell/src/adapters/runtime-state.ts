@@ -17,6 +17,8 @@ import type {
 	MycliShellCommandDiagnostic,
 	MycliShellCommandResult,
 	MycliShellClarificationResponse,
+	MycliShellCredentialReadiness,
+	MycliShellCredentialSource,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
 	MycliShellFileChange,
@@ -152,6 +154,7 @@ export type RuntimeShellState = {
 	pendingClarification: Record<string, unknown> | null;
 	taskProgress: { completed: number; total: number } | null;
 	authProviders: MycliShellAuthProvider[];
+	authReadiness: MycliShellCredentialReadiness | null;
 	resources: MycliShellResource[];
 	permissions: MycliShellPermissionState | null;
 	backgroundShells: Record<string, RuntimeShellProcess>;
@@ -197,6 +200,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		pendingClarification: null,
 		taskProgress: null,
 		authProviders: [],
+		authReadiness: null,
 		resources: [],
 		permissions: null,
 		backgroundShells: {},
@@ -717,6 +721,7 @@ function projectRuntimeShellState(
 				? [currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status))]
 				: []),
 		authProviders: state.authProviders,
+		authReadiness: state.authReadiness ?? undefined,
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
 		settings: {
 			...state.settings,
@@ -797,6 +802,7 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		provider,
 		models,
 		authProviders: authProvidersFromUnknown(payload.auth_providers),
+		authReadiness: credentialReadinessFromUnknown(payload.auth_status) ?? state.authReadiness,
 		permissions: permissionStateFromUnknown(payload.permissions ?? status.permissions) ?? state.permissions,
 		status,
 		trust,
@@ -865,6 +871,9 @@ export function runtimeStateAfterSessionResume(
 		? payload.background_shells
 		: eventStatus.background_shells;
 	nextState = applyShellBootstrap(nextState, backgroundShells);
+	nextState = runtimeStateWithCredentialReadiness(nextState, payload);
+	const authProviders = authProvidersFromUnknown(payload.auth_providers);
+	if (authProviders.length > 0) nextState = { ...nextState, authProviders };
 	return runtimeStateWithLegacyQueueMigration(nextState, payload);
 }
 
@@ -4359,7 +4368,16 @@ export function runtimeStateWithModelCatalog(
 	payload: Record<string, unknown>,
 ): RuntimeShellState {
 	const models = modelCatalogFromPayload(payload);
-	return models === null ? state : { ...state, models };
+	const nextState = models === null ? state : { ...state, models };
+	return runtimeStateWithCredentialReadiness(nextState, payload);
+}
+
+export function runtimeStateWithCredentialReadiness(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+): RuntimeShellState {
+	const readiness = credentialReadinessFromUnknown(payload.auth_status);
+	return readiness ? { ...state, authReadiness: readiness } : state;
 }
 
 function modelCatalogFromPayload(payload: Record<string, unknown>): MycliShellModel[] | null {
@@ -4446,7 +4464,29 @@ function authProviderFromUnknown(value: unknown): MycliShellAuthProvider | null 
 		name: stringValue(record.name) ?? id,
 		configured: typeof record.configured === "boolean" ? record.configured : undefined,
 		defaultModel: stringValue(record.default_model) ?? stringValue(record.defaultModel) ?? undefined,
+		authRef: stringValue(record.auth_ref) ?? stringValue(record.authRef) ?? undefined,
+		credentialSource: credentialSourceValue(
+			record.credential_source ?? record.credentialSource,
+		) ?? undefined,
 	};
+}
+
+function credentialReadinessFromUnknown(value: unknown): MycliShellCredentialReadiness | null {
+	const record = recordValue(value);
+	const providerId = stringValue(record.provider_id) ?? stringValue(record.providerId);
+	const authRef = stringValue(record.auth_ref) ?? stringValue(record.authRef);
+	const source = credentialSourceValue(record.source);
+	if (!providerId || !authRef || !source || typeof record.ready !== "boolean") return null;
+	return { ready: record.ready, providerId, authRef, source };
+}
+
+function credentialSourceValue(value: unknown): MycliShellCredentialSource | null {
+	return value === "environment"
+		|| value === "stored"
+		|| value === "legacy_config"
+		|| value === "missing"
+		? value
+		: null;
 }
 
 function resourceFromUnknown(value: unknown): MycliShellResource | null {

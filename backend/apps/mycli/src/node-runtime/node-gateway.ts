@@ -94,6 +94,19 @@ type RpcId = string | number | null;
 
 const GRACEFUL_INTERRUPT_TIMEOUT_MS = 100;
 
+export type CredentialReadinessSource =
+	| "environment"
+	| "stored"
+	| "legacy_config"
+	| "missing";
+
+export interface NodeGatewayCredentialReadiness {
+	readonly ready: boolean;
+	readonly providerId: string;
+	readonly authRef: string;
+	readonly source: CredentialReadinessSource;
+}
+
 export interface NodeGatewayRuntime {
 	readonly queueCoordinator?: QueueCoordinator;
 	sessionPreferences?(): SessionPreferences | undefined;
@@ -210,7 +223,8 @@ export interface NodeGatewayFileHistoryCommands {
 
 export interface NodeGatewayControlCommands {
 	authProviders(): Promise<readonly JsonObject[]>;
-	saveApiKey(providerId: string, apiKey: string): Promise<JsonObject>;
+	credentialReadiness?(): Promise<NodeGatewayCredentialReadiness>;
+	saveApiKey(providerId: string, apiKey: string, authRef?: string): Promise<JsonObject>;
 	models(): Promise<readonly JsonObject[]>;
 	selectModel(input: JsonObject): Promise<JsonObject>;
 	activateSessionPreferences?(
@@ -595,6 +609,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#failRequest(request: RpcRequest, error: unknown): void {
 		const failure = gatewayFailure(error);
 		this.#writeError(request.id, failure.code, failure.message, failure.data);
+		if (failure.code === "auth_required") return;
 		this.#emitRuntime("gateway.error", {
 			code: failure.code === "persistence_error" ? "internal_error" : failure.code,
 			message: failure.message,
@@ -606,9 +621,10 @@ class InProcessNodeGateway implements NodeGateway {
 		if (params.protocol_version !== 1) {
 			throw new GatewayFailure("incompatible_protocol", "Unsupported gateway protocol version.");
 		}
-		const [authProviders, models] = await Promise.all([
+		const [authProviders, models, authStatus] = await Promise.all([
 			this.#authProviders(),
 			this.#models(),
+			this.#credentialReadiness(),
 		]);
 		const payload: JsonObject = {
 			protocol_version: 1,
@@ -620,6 +636,7 @@ class InProcessNodeGateway implements NodeGateway {
 			background_shells: this.#activeShells().map((snapshot) =>
 				shellSnapshotPayload(snapshot, this.#sessionContext())),
 			auth_providers: authProviders,
+			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
 			models,
 			permissions: this.#permissions(),
 			welcome: {
@@ -807,15 +824,25 @@ class InProcessNodeGateway implements NodeGateway {
 	async #saveApiKey(params: JsonObject): Promise<JsonObject> {
 		const providerId = requiredString(params.provider_id, "provider_id").trim();
 		const apiKey = requiredString(params.api_key, "api_key").trim();
+		const authRef = optionalBoundedIdentity(params.auth_ref, "auth_ref");
 		const commands = this.#options.controlCommands;
 		if (!commands) {
 			throw new GatewayFailure("internal_error", "Credential storage is unavailable.");
 		}
-		return commands.saveApiKey(providerId, apiKey);
+		const saved = await commands.saveApiKey(providerId, apiKey, authRef);
+		const readiness = await this.#credentialReadiness();
+		return {
+			...saved,
+			...(readiness ? { auth_status: credentialReadinessPayload(readiness) } : {}),
+		};
 	}
 
 	async #authProviders(): Promise<readonly JsonObject[]> {
 		return await this.#options.controlCommands?.authProviders() ?? [];
+	}
+
+	async #credentialReadiness(): Promise<NodeGatewayCredentialReadiness | null> {
+		return await this.#options.controlCommands?.credentialReadiness?.() ?? null;
 	}
 
 	async #models(): Promise<readonly JsonObject[]> {
@@ -858,6 +885,7 @@ class InProcessNodeGateway implements NodeGateway {
 		const status = this.#status();
 		this.#emitRuntime("status.changed", status);
 		const models = await this.#models();
+		const authStatus = await this.#credentialReadiness();
 		return {
 			selected,
 			scope,
@@ -866,6 +894,7 @@ class InProcessNodeGateway implements NodeGateway {
 				...entry,
 				current: sameModelCatalogIdentity(entry, selected),
 			})),
+			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
 		};
 	}
 
@@ -1618,7 +1647,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#assertSessionTransitionAvailable(coordinator);
 		const snapshot = await coordinator.startNew();
 		await this.#activateSession(snapshot);
-		return this.#sessionTransitionPayload(snapshot);
+		return await this.#sessionTransitionPayload(snapshot);
 	}
 
 	async #sessionResume(params: JsonObject): Promise<JsonObject> {
@@ -1627,7 +1656,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#assertSessionTransitionAvailable(coordinator);
 		const snapshot = await coordinator.resume(requiredString(params.session_id, "session_id"));
 		await this.#activateSession(snapshot);
-		return this.#sessionTransitionPayload(snapshot);
+		return await this.#sessionTransitionPayload(snapshot);
 	}
 
 	#assertSessionTransitionAvailable(coordinator: SessionCoordinator<NodeGatewayRuntime>): void {
@@ -1668,12 +1697,18 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 	}
 
-	#sessionTransitionPayload(
+	async #sessionTransitionPayload(
 		snapshot: ReturnType<SessionCoordinator<NodeGatewayRuntime>["snapshot"]>,
-	): JsonObject {
+	): Promise<JsonObject> {
+		const [authProviders, authStatus] = await Promise.all([
+			this.#authProviders(),
+			this.#credentialReadiness(),
+		]);
 		return {
 			session_id: snapshot.sessionId,
 			generation: snapshot.generation,
+			...(authProviders.length > 0 ? { auth_providers: authProviders } : {}),
+			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
 			read_only: snapshot.readOnly,
 			lines: [],
 			background_shells: this.#activeShells().map((shell) =>
@@ -1745,7 +1780,7 @@ class InProcessNodeGateway implements NodeGateway {
 		return { session_id: active.sessionId, active_path: activePath, nodes };
 	}
 
-	#submit(params: JsonObject): JsonObject {
+	async #submit(params: JsonObject): Promise<JsonObject> {
 		if (this.#activeTurn !== null) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
@@ -1768,6 +1803,14 @@ class InProcessNodeGateway implements NodeGateway {
 		const localImages = stringArray(params.local_images, "local_images");
 		const collaborationMode = collaborationModeParameter(params.collaboration_mode)
 			?? this.#collaborationMode;
+		const readiness = await this.#credentialReadiness();
+		if (readiness && !readiness.ready) {
+			throw new GatewayFailure(
+				"auth_required",
+				"Provider credentials are required before starting a turn.",
+				credentialReadinessPayload(readiness),
+			);
+		}
 		this.#ensureSessionPreferences(collaborationMode);
 		const submission: TurnSubmission = {
 			clientTurnId,
@@ -4037,6 +4080,29 @@ function slashCommandSurface(value: unknown): SlashCommandSurface {
 
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function optionalBoundedIdentity(value: unknown, name: string): string | undefined {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (typeof value !== "string") {
+		throw new GatewayFailure("invalid_params", `${name} must be a string.`);
+	}
+	const normalized = value.trim();
+	if (!normalized || normalized.length > 512 || /[\r\n\0]/u.test(normalized)) {
+		throw new GatewayFailure("invalid_params", `${name} is invalid.`);
+	}
+	return normalized;
+}
+
+function credentialReadinessPayload(
+	readiness: NodeGatewayCredentialReadiness,
+): JsonObject {
+	return {
+		ready: readiness.ready,
+		provider_id: boundedString(readiness.providerId.replace(/[\r\n\0]/gu, ""), 256),
+		auth_ref: boundedString(readiness.authRef.replace(/[\r\n\0]/gu, ""), 512),
+		source: readiness.source,
+	};
 }
 
 function collaborationModeParameter(value: unknown): "default" | "plan" | undefined {

@@ -28,6 +28,7 @@ import type {
 import type { ShellSessionSnapshot } from "@mycli/tools";
 import {
 	createNodeGateway,
+	type NodeGatewayCredentialReadiness,
 	type NodeGatewayRuntime,
 } from "../src/node-runtime/node-gateway.ts";
 import type {
@@ -134,6 +135,7 @@ function gatewayHarness(options: {
 	agentInteractiveRequests?: AgentInteractiveRequestGateway;
 	cooperativeInterrupt?: boolean;
 	loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
+	credentialReadiness?: NodeGatewayCredentialReadiness;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -184,7 +186,12 @@ function gatewayHarness(options: {
 	const taskInterruptions: string[] = [];
 	const traceAppends: Array<{ sessionId: string; event: Record<string, unknown> }> = [];
 	const sessionCommandCalls: Array<Readonly<Record<string, unknown>>> = [];
-	const savedApiKeys: Array<Readonly<{ providerId: string; apiKey: string }>> = [];
+	const savedApiKeys: Array<Readonly<{
+		providerId: string;
+		apiKey: string;
+		authRef?: string;
+	}>> = [];
+	let credentialReadiness = options.credentialReadiness;
 	const selectedModels: Array<Readonly<Record<string, unknown>>> = [];
 	let visualSettings: Readonly<Record<string, unknown>> = {
 		statusbar_mode: "full",
@@ -483,8 +490,24 @@ function gatewayHarness(options: {
 						configured: savedApiKeys.some((item) => item.providerId === "openai"),
 						default_model: "gpt-test",
 					}],
-					saveApiKey: async (providerId: string, apiKey: string) => {
-						savedApiKeys.push({ providerId, apiKey });
+					...(credentialReadiness ? {
+						credentialReadiness: async () => credentialReadiness!,
+					} : {}),
+					saveApiKey: async (providerId: string, apiKey: string, authRef?: string) => {
+						savedApiKeys.push({
+							providerId,
+							apiKey,
+							...(authRef ? { authRef } : {}),
+						});
+						if (credentialReadiness
+							&& providerId === credentialReadiness.providerId
+							&& (authRef ?? providerId) === credentialReadiness.authRef) {
+							credentialReadiness = {
+								...credentialReadiness,
+								ready: true,
+								source: "stored",
+							};
+						}
 						return { ok: true, provider_id: providerId, message: `Saved API key for ${providerId}.` };
 					},
 					models: async () => [{
@@ -1014,6 +1037,95 @@ test("canonical control RPCs use injected Node services and update active state"
 		format: "jsonl",
 		rows: [JSON.stringify({ kind: "turn", turn_id: "turn-1", status: "completed" })],
 	});
+	await harness.gateway.close();
+});
+
+test("credential readiness is projected at bootstrap and blocks turn acceptance without side effects", async () => {
+	const harness = gatewayHarness({
+		control: true,
+		credentialReadiness: {
+			ready: false,
+			providerId: "openai",
+			authRef: "catalog-account",
+			source: "missing",
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
+	assert.deepEqual("result" in bootstrap ? bootstrap.result.auth_status : null, {
+		ready: false,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "missing",
+	});
+
+	const rejected = await harness.send("turn.submit", {
+		message: "must remain only in the rejected request",
+		client_turn_id: "missing-auth-turn",
+		client_user_message_id: "missing-auth-message",
+	});
+	assert.equal("error" in rejected ? rejected.error.code : null, "auth_required");
+	assert.deepEqual("error" in rejected ? rejected.error.data : null, {
+		ready: false,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "missing",
+	});
+	assert.deepEqual(harness.reservedClientTurnIds, []);
+	assert.deepEqual(harness.submissions, []);
+	assert.equal(notification(harness.messages, "gateway.error"), undefined);
+	assert.equal(notifications(harness.messages, "item.started").some((message) =>
+		message.params.item?.client_user_message_id === "missing-auth-message"), false);
+
+	const saved = await harness.send("auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		api_key: "credential-value-must-not-return",
+	});
+	assert.deepEqual(harness.savedApiKeys, [{
+		providerId: "openai",
+		authRef: "catalog-account",
+		apiKey: "credential-value-must-not-return",
+	}]);
+	assert.deepEqual("result" in saved ? saved.result.auth_status : null, {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "stored",
+	});
+	assert.equal(JSON.stringify(saved).includes("credential-value-must-not-return"), false);
+	const accepted = await harness.send("turn.submit", {
+		message: "stored credential is now ready",
+		client_turn_id: "stored-auth-turn",
+		client_user_message_id: "stored-auth-message",
+	});
+	assert.equal("result" in accepted ? accepted.result.accepted : false, true);
+	assert.deepEqual(harness.reservedClientTurnIds, ["stored-auth-turn"]);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("ready credentials allow the gateway to reserve and submit a turn", async () => {
+	const harness = gatewayHarness({
+		control: true,
+		credentialReadiness: {
+			ready: true,
+			providerId: "openai",
+			authRef: "openai",
+			source: "environment",
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const submitted = await harness.send("turn.submit", {
+		message: "accepted with environment credentials",
+		client_turn_id: "ready-auth-turn",
+		client_user_message_id: "ready-auth-message",
+	});
+	assert.equal("result" in submitted ? submitted.result.accepted : false, true);
+	assert.deepEqual(harness.reservedClientTurnIds, ["ready-auth-turn"]);
+	harness.releaseTurn();
 	await harness.gateway.close();
 });
 
@@ -2043,6 +2155,30 @@ test("session RPCs atomically resume and publish one target generation", async (
 		next_before: null,
 		read_only: false,
 	});
+	await harness.gateway.close();
+});
+
+test("session transitions refresh credential readiness for the selected session", async () => {
+	const harness = gatewayHarness({
+		sessions: {},
+		control: true,
+		credentialReadiness: {
+			ready: false,
+			providerId: "openai",
+			authRef: "target-account",
+			source: "missing",
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const resumed = await harness.send("session.resume", { session_id: "target" });
+	assert.deepEqual("result" in resumed ? resumed.result.auth_status : null, {
+		ready: false,
+		provider_id: "openai",
+		auth_ref: "target-account",
+		source: "missing",
+	});
+	assert.equal("result" in resumed ? resumed.result.auth_providers[0]?.id : null, "openai");
 	await harness.gateway.close();
 });
 

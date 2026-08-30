@@ -11,6 +11,7 @@ import {
 	runtimeStateAfterSessionResume,
 	runtimeStateAfterCommandResult,
 	runtimeStateWithSettings,
+	runtimeStateWithCredentialReadiness,
 	runtimeStateWithModelCatalog,
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
@@ -425,6 +426,10 @@ async function submitTurn(
 			);
 			return;
 		}
+		if (error instanceof GatewayRequestError && error.code === "auth_required") {
+			backendTurnBusy = false;
+			throw error;
+		}
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "gateway.error", {
 				code: error instanceof GatewayRequestError ? error.code : "request_failed",
@@ -798,15 +803,25 @@ function interactiveRequestBelongsToStatus(
 	return true;
 }
 
-async function saveApiKey(providerId: string, apiKey: string): Promise<{ message?: string }> {
-	const result = await send("auth.api_key.save", { provider_id: providerId, api_key: apiKey });
+async function saveApiKey(
+	providerId: string,
+	apiKey: string,
+	authRef?: string,
+): Promise<{ message?: string }> {
+	const result = await send("auth.api_key.save", {
+		provider_id: providerId,
+		api_key: apiKey,
+		...(authRef ? { auth_ref: authRef } : {}),
+	});
 	const modelResult = await send("model.list", {}, { recordErrors: false });
-	setRuntimeState(runtimeStateWithModelCatalog({
+	setRuntimeState(runtimeStateWithCredentialReadiness(runtimeStateWithModelCatalog({
 		...runtimeState,
 		authProviders: runtimeState.authProviders.map((provider) =>
-			provider.id === providerId ? { ...provider, configured: true } : provider,
+			provider.id === providerId
+				? { ...provider, configured: true, authRef: authRef ?? provider.authRef ?? provider.id, credentialSource: "stored" }
+				: provider,
 		),
-	}, modelResult));
+	}, modelResult), result));
 	return { message: typeof result.message === "string" ? result.message : undefined };
 }
 

@@ -255,6 +255,19 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 		workspace: "/repo",
 		model: "deepseek-v4-flash",
 		provider: "deepseek/openai",
+		auth_providers: [{
+			id: "deepseek",
+			name: "DeepSeek",
+			configured: false,
+			auth_ref: "catalog-account",
+			credential_source: "missing",
+		}],
+		auth_status: {
+			ready: false,
+			provider_id: "deepseek",
+			auth_ref: "catalog-account",
+			source: "missing",
+		},
 		permissions: {
 			active: "workspace",
 			command_allowance_count: 2,
@@ -293,6 +306,20 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.permissions?.active, "workspace");
 	assert.equal(shell.permissions?.commandAllowanceCount, 2);
 	assert.equal(shell.permissions?.profiles[0]?.current, true);
+	assert.deepEqual(shell.authReadiness, {
+		ready: false,
+		providerId: "deepseek",
+		authRef: "catalog-account",
+		source: "missing",
+	});
+	assert.deepEqual(shell.authProviders, [{
+		id: "deepseek",
+		name: "DeepSeek",
+		configured: false,
+		defaultModel: undefined,
+		authRef: "catalog-account",
+		credentialSource: "missing",
+	}]);
 	assert.equal(shell.messages.some((message) => message.role === "assistant" && message.thinking === "think"), true);
 	assert.equal(shell.tools[0]?.name, "Read");
 	assert.equal(shell.tools[0]?.args, "word.txt");

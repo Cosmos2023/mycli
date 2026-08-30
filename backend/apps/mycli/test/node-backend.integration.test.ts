@@ -4550,6 +4550,152 @@ test("Node backend undoes a file created by a real provider tool turn", async (t
 	assert.equal(await backend.completion, 0);
 });
 
+test("Node backend gates missing custom credentials and reports bounded readiness sources", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-auth-readiness-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(workspace),
+	]);
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		"[model]",
+		'provider = "openai"',
+		'protocol = "responses"',
+		'name = "gpt-auth-readiness"',
+		'api_base_url = "https://example.invalid/v1"',
+		'auth_ref = "catalog-account"',
+	].join("\n"), "utf8");
+	const options = {
+		cwd: workspace,
+		args: ["--session", "auth-readiness-session"],
+		env: { HOME: home },
+	} as const;
+	const backend = await startNodeBackend(options);
+	const additionalBackends: Array<Awaited<ReturnType<typeof startNodeBackend>>> = [];
+	t.after(async () => {
+		for (const activeBackend of additionalBackends) await activeBackend.close();
+		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "bootstrap-missing-auth", "session.bootstrap", { protocol_version: 1 });
+	const missingBootstrap = await waitFor(() => response(messages, "bootstrap-missing-auth"));
+	assert.deepEqual(resultValue(missingBootstrap, "auth_status"), {
+		ready: false,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "missing",
+	});
+	const providerRows = resultValue(missingBootstrap, "auth_providers") as Array<Record<string, unknown>>;
+	assert.equal(providerRows.find((provider) => provider.id === "openai")?.auth_ref, "catalog-account");
+	assert.equal(providerRows.find((provider) => provider.id === "openai")?.credential_source, "missing");
+
+	writeRequest(backend, "submit-missing-auth", "turn.submit", {
+		message: "prompt-sentinel-must-not-persist",
+		client_turn_id: "missing-auth-turn",
+		client_user_message_id: "missing-auth-message",
+	});
+	const rejected = await waitFor(() => response(messages, "submit-missing-auth"));
+	assert.equal(errorValue(rejected, "code"), "auth_required");
+	assert.equal(JSON.stringify(rejected).includes("prompt-sentinel-must-not-persist"), false);
+	assert.equal(event(messages, "gateway.error"), undefined);
+	writeRequest(backend, "transcript-after-auth-rejection", "transcript.load", {
+		session_id: "auth-readiness-session",
+		before: null,
+	});
+	const transcript = await waitFor(() => response(messages, "transcript-after-auth-rejection"));
+	assert.deepEqual(resultValue(transcript, "items"), []);
+
+	writeRequest(backend, "save-unrelated-auth", "auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "unrelated-account",
+		api_key: "rejected-secret-sentinel",
+	});
+	const unrelated = await waitFor(() => response(messages, "save-unrelated-auth"));
+	assert.equal(errorValue(unrelated, "code"), "invalid_params");
+	assert.equal(JSON.stringify(unrelated).includes("unrelated-account"), false);
+	assert.equal(JSON.stringify(unrelated).includes("rejected-secret-sentinel"), false);
+
+	writeRequest(backend, "save-current-auth", "auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		api_key: "stored-secret-sentinel",
+	});
+	const saved = await waitFor(() => response(messages, "save-current-auth"));
+	assert.deepEqual(resultValue(saved, "auth_status"), {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "stored",
+	});
+	assert.equal(JSON.stringify(saved).includes("stored-secret-sentinel"), false);
+	const authFile = await readFile(join(home, ".mycli", "auth.json"), "utf8");
+	assert.equal(JSON.parse(authFile)["catalog-account"].key, "stored-secret-sentinel");
+
+	writeRequest(backend, "shutdown-auth-readiness", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+
+	const environmentBackend = await startNodeBackend({
+		...options,
+		env: { HOME: home, MYCLI_API_KEY: "environment-secret-sentinel" },
+	});
+	additionalBackends.push(environmentBackend);
+	const environmentMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: environmentBackend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		environmentMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(environmentMessages, "runtime.ready"));
+	writeRequest(environmentBackend, "bootstrap-environment-auth", "session.bootstrap", { protocol_version: 1 });
+	const environmentBootstrap = await waitFor(() => response(
+		environmentMessages,
+		"bootstrap-environment-auth",
+	));
+	assert.deepEqual(resultValue(environmentBootstrap, "auth_status"), {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "environment",
+	});
+	assert.equal(JSON.stringify(environmentBootstrap).includes("environment-secret-sentinel"), false);
+	writeRequest(environmentBackend, "shutdown-environment-auth", "shutdown", {});
+	assert.equal(await environmentBackend.completion, 0);
+
+	await writeFile(join(home, ".mycli", "auth.json"), "{}\n", "utf8");
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		'api_key = "legacy-secret-sentinel"',
+		"[model]",
+		'provider = "openai"',
+		'protocol = "responses"',
+		'name = "gpt-auth-readiness"',
+		'api_base_url = "https://example.invalid/v1"',
+		'auth_ref = "catalog-account"',
+	].join("\n"), "utf8");
+	const legacyBackend = await startNodeBackend(options);
+	additionalBackends.push(legacyBackend);
+	const legacyMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: legacyBackend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		legacyMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(legacyMessages, "runtime.ready"));
+	writeRequest(legacyBackend, "bootstrap-legacy-auth", "session.bootstrap", { protocol_version: 1 });
+	const legacyBootstrap = await waitFor(() => response(legacyMessages, "bootstrap-legacy-auth"));
+	assert.deepEqual(resultValue(legacyBootstrap, "auth_status"), {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "legacy_config",
+	});
+	assert.equal(JSON.stringify(legacyBootstrap).includes("legacy-secret-sentinel"), false);
+	writeRequest(legacyBackend, "shutdown-legacy-auth", "shutdown", {});
+	assert.equal(await legacyBackend.completion, 0);
+});
+
 test("Node backend persists canonical TUI control state without exposing credentials", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-controls-"));
 	const home = join(root, "home");

@@ -162,6 +162,7 @@ import {
 import {
 	createNodeGateway,
 	type NodeGateway,
+	type NodeGatewayCredentialReadiness,
 	type NodeGatewayIntegrationCommands,
 	type NodeGatewayIntegrations,
 	type NodeGatewayRuntime,
@@ -1468,6 +1469,32 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					overrides: sessionPreferenceOverrides(initial.sessionId, initialPreferences),
 				});
 			}
+			const credentialReadiness = async (): Promise<NodeGatewayCredentialReadiness> => {
+				const active = sessionCoordinator.snapshot();
+				const preferences = active.binding.sessionPreferences?.()
+					?? loadSessionPreferences(store, active.sessionId)
+					?? defaultPreferences;
+				const resolved = await resolveWorkspaceModelRuntimeConfig({
+					homeDir,
+					workspaceRoot: active.workspaceRoot,
+					env: options.env,
+					overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+				});
+				const environmentApiKey = options.env.MYCLI_API_KEY?.trim();
+				const storedApiKey = await readApiKey({ homeDir, authRef: resolved.authRef });
+				return Object.freeze({
+					ready: Boolean(resolved.apiKey),
+					providerId: resolved.provider,
+					authRef: resolved.authRef,
+					source: environmentApiKey
+						? "environment"
+						: storedApiKey
+							? "stored"
+							: resolved.apiKey
+								? "legacy_config"
+								: "missing",
+				});
+			};
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
 		const gatewayIntegrations = integrationGateway(
@@ -1643,21 +1670,38 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						undo: (sessionId) => activeFileHistory().undoLatest({ sessionId }),
 					},
 					controlCommands: {
-						authProviders: async () => await Promise.all(listProviderProfiles().map(async (profile) => ({
-							id: profile.provider,
-							name: providerDisplayName(profile.provider),
-							configured: Boolean(await readApiKey({
-								homeDir,
-								authRef: profile.provider,
-							})),
-							...(profile.defaultModel ? { default_model: profile.defaultModel } : {}),
-						}))),
-						saveApiKey: async (providerId, apiKey) => {
+						authProviders: async () => {
+							const current = await credentialReadiness();
+							return await Promise.all(listProviderProfiles().map(async (profile) => {
+								const isCurrent = profile.provider === current.providerId;
+								const authRef = isCurrent ? current.authRef : profile.provider;
+								const stored = isCurrent && current.source === "stored"
+									? true
+									: Boolean(await readApiKey({ homeDir, authRef }));
+								return {
+									id: profile.provider,
+									name: providerDisplayName(profile.provider),
+									configured: isCurrent ? current.ready : stored,
+									credential_source: isCurrent ? current.source : stored ? "stored" : "missing",
+									...(isCurrent ? { auth_ref: current.authRef } : {}),
+									...(profile.defaultModel ? { default_model: profile.defaultModel } : {}),
+								};
+							}));
+						},
+						credentialReadiness,
+						saveApiKey: async (providerId, apiKey, requestedAuthRef) => {
 							const profile = resolveProviderProfile(providerId);
-							await writeApiKey({ homeDir, authRef: profile.provider, apiKey });
+							const current = await credentialReadiness();
+							const authRef = requestedAuthRef ?? profile.provider;
+							if (authRef !== profile.provider
+								&& (profile.provider !== current.providerId || authRef !== current.authRef)) {
+								throw controlRequestError("Credential reference is not active for this provider.");
+							}
+							await writeApiKey({ homeDir, authRef, apiKey });
 							return {
 								ok: true,
 								provider_id: profile.provider,
+								auth_ref: authRef,
 								message: `Saved API key for ${providerDisplayName(profile.provider)}.`,
 							};
 						},
