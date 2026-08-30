@@ -48,6 +48,31 @@ test("discovers flat user and repository hooks in precedence order", async (t) =
 	assert.deepEqual(discovery.diagnostics, []);
 });
 
+test("does not read repository hooks when project configuration is disabled", async (t) => {
+	const fixture = await configFixture(t);
+	await writeHooks(fixture.homeDir, {
+		hooks: [{
+			id: "user-hook",
+			hook_point: "stop",
+			command: [process.execPath, "user.mjs"],
+		}],
+	});
+	await mkdir(join(fixture.workspaceRoot, ".mycli"), { recursive: true });
+	await writeFile(
+		join(fixture.workspaceRoot, ".mycli", "hooks.json"),
+		"{not-json",
+		"utf8",
+	);
+
+	const discovery = await discoverHookConfig({
+		...fixture,
+		includeRepository: false,
+	});
+
+	assert.deepEqual(discovery.hooks.map((hook) => hook.name), ["configured:user:user-hook"]);
+	assert.deepEqual(discovery.diagnostics, []);
+});
+
 test("normalizes supported Codex groups and resolves string commands through the active shell", async (t) => {
 	const fixture = await configFixture(t);
 	await writeHooks(fixture.workspaceRoot, {

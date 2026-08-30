@@ -18,6 +18,7 @@ import type {
 export interface DiscoverPluginsOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
+	readonly includeRepository?: boolean;
 	readonly maxPlugins?: number;
 }
 
@@ -46,7 +47,12 @@ export async function discoverPlugins(
 	const maxPlugins = pluginLimit(options.maxPlugins);
 	const enablement = await loadEnablement(options);
 	const directories: readonly PluginDirectory[] = [
-		{ source: "repo", root: join(options.workspaceRoot, ".mycli", "plugins") },
+		...(options.includeRepository === false
+			? []
+			: [{
+				source: "repo" as const,
+				root: join(options.workspaceRoot, ".mycli", "plugins"),
+			}]),
 		{ source: "user", root: join(options.homeDir, ".mycli", "plugins") },
 	];
 	const candidates: PluginCandidate[] = [];
@@ -213,17 +219,19 @@ async function pluginDirectories(root: string): Promise<readonly string[]> {
 async function loadEnablement(options: DiscoverPluginsOptions): Promise<PluginEnablement> {
 	const modernUserPath = join(options.homeDir, ".mycli", "config.toml");
 	const modernUser = await readConfig(modernUserPath, "user");
-	const repo = await readConfig(
-		join(options.workspaceRoot, ".mycli", "config.toml"),
-		"repo",
-	);
+	const repo = options.includeRepository === false
+		? undefined
+		: await readConfig(
+			join(options.workspaceRoot, ".mycli", "config.toml"),
+			"repo",
+		);
 	const legacy = modernUser.exists
 		? undefined
 		: await readConfig(join(options.homeDir, ".config", "mycli", "config.toml"), "legacy_user");
 	const enabled = new Set<string>();
 	const disabled = new Set<string>();
 	const issues: PluginDiagnostic[] = [];
-	for (const config of [modernUser, repo, ...(legacy ? [legacy] : [])]) {
+	for (const config of [modernUser, ...(repo ? [repo] : []), ...(legacy ? [legacy] : [])]) {
 		if (config.diagnostic) issues.push(config.diagnostic);
 		if (!config.payload) continue;
 		const plugins = config.payload.plugins;

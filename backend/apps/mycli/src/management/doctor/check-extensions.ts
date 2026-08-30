@@ -23,6 +23,7 @@ export interface ExtensionDoctorOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: NodeJS.ProcessEnv;
+	readonly includeRepository?: boolean;
 	readonly builtinSkillRoot?: string;
 	readonly createPluginHost?: (manifest: LoadedPluginManifest) => PluginHostContract;
 	readonly createMcpClient?: (config: McpServerConfig) => McpManagedClient;
@@ -74,6 +75,9 @@ async function checkPlugins(
 			workspaceRoot: options.workspaceRoot,
 			homeDir: options.homeDir,
 			env: options.env,
+			...(options.includeRepository === undefined
+				? {}
+				: { includeRepository: options.includeRepository }),
 			sandboxProfile: pluginSandboxProfile,
 			...(options.createPluginHost ? { createHost: options.createPluginHost } : {}),
 		},
@@ -102,8 +106,10 @@ async function checkSkills(options: ExtensionDoctorOptions): Promise<DoctorCheck
 	const registry = await SkillRegistry.discover({
 		builtinRoot: options.builtinSkillRoot ?? defaultBuiltinSkillRoot(),
 		userRoot: join(options.homeDir, ".mycli", "skills"),
-		sharedRepoRoot: join(options.workspaceRoot, ".agents", "skills"),
-		repoRoot: join(options.workspaceRoot, ".mycli", "skills"),
+		...(options.includeRepository === false ? {} : {
+			sharedRepoRoot: join(options.workspaceRoot, ".agents", "skills"),
+			repoRoot: join(options.workspaceRoot, ".mycli", "skills"),
+		}),
 	});
 	const diagnostics = registry.diagnostics();
 	return check(
@@ -122,6 +128,9 @@ async function checkMcp(
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
 		env: options.env,
+		...(options.includeRepository === undefined
+			? {}
+			: { includeRepository: options.includeRepository }),
 		createClient: options.createMcpClient ?? ((config) => new McpClient({
 			config,
 			cwd: options.workspaceRoot,

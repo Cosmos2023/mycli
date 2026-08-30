@@ -242,14 +242,21 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
 	const homeDir = runtimeHome(options.env);
 	const managedExecutionPolicy = await loadManagedExecutionPolicy({ homeDir });
-	const config = await resolveModelRuntimeConfig({
+	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
+	const resolveWorkspaceModelRuntimeConfig = async (
+		input: ResolveConfigOptions,
+	): Promise<NodeRuntimeConfig> => resolveModelRuntimeConfig({
+		...input,
+		workspaceTrust: await workspaceTrustStore.load(input.workspaceRoot),
+	});
+	let startupTrustState = await workspaceTrustStore.load(options.cwd);
+	let config = await resolveModelRuntimeConfig({
 		homeDir,
 		workspaceRoot: options.cwd,
 		env: options.env,
 		overrides,
+		workspaceTrust: startupTrustState,
 	});
-	let defaultPreferences = sessionPreferencesFromConfig(config, "default");
-	startupProfiler.mark("config_ready");
 	for (const recovery of options.recoverInterruptedTurns ?? []) {
 		if (recovery.sessionId !== config.sessionId) {
 			throw new Error("recovered_interrupt_session_mismatch");
@@ -265,6 +272,17 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	}[];
 	try {
 		store.acquireSessionLease(config.sessionId);
+		const persisted = store.loadSession(config.sessionId);
+		if (persisted && persisted.workspaceRoot !== config.workspaceRoot) {
+			startupTrustState = await workspaceTrustStore.load(persisted.workspaceRoot);
+			config = await resolveModelRuntimeConfig({
+				homeDir,
+				workspaceRoot: persisted.workspaceRoot,
+				env: options.env,
+				overrides,
+				workspaceTrust: startupTrustState,
+			});
+		}
 		recoveredInterrupts = (options.recoverInterruptedTurns ?? []).flatMap((recovery) => {
 			const record = store.recoverInterruptedTurn(
 				recovery.sessionId,
@@ -282,9 +300,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		store.close();
 		throw error;
 	}
+	let defaultPreferences = sessionPreferencesFromConfig(config, "default");
+	startupProfiler.mark("config_ready");
 	startupProfiler.mark("storage_ready");
 	const productSystemPrompt = packagedSystemPrompt();
-	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new ProviderRegistry();
 	const agentWorkerPool = Object.values(agentExecutionAdapters).includes("worker")
 		? new AgentWorkerPool(agentWorkerSettings)
@@ -509,6 +528,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot: config.workspaceRoot,
 			homeDir,
 			env: options.env,
+			projectConfigurationEnabled: startupTrustState === "trusted",
 			parentSessionId: config.sessionId,
 			parentTurnId: () => "parent-turn-unavailable",
 			parentTools: () => allToolExposure.map((tool) => tool.name),
@@ -537,7 +557,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
 				const parentPreferences = runtimeBySessionId.get(input.parentSessionId)
 					?.sessionPreferences?.();
-				const resolved = await resolveModelRuntimeConfig({
+				const resolved = await resolveWorkspaceModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -665,7 +685,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const preferences = runtimeOptions.provider
 					? undefined
 					: sessionPreferences ?? defaultPreferences;
-				const resolved = await resolveModelRuntimeConfig({
+				const resolved = await resolveWorkspaceModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -724,8 +744,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			})),
 		});
 		let loadExecPolicy: Promise<void> | undefined;
-		const ensureExecPolicyLoaded = (): Promise<void> => {
-			loadExecPolicy ??= execPolicyStore.load().then((rules) => {
+		let loadedExecPolicyTrustState: Awaited<ReturnType<WorkspaceTrustStore["load"]>> | undefined;
+		const ensureExecPolicyLoaded = async (): Promise<void> => {
+			const trustState = await workspaceTrustStore.load(workspaceRoot);
+			if (loadExecPolicy && loadedExecPolicyTrustState === trustState) {
+				return loadExecPolicy;
+			}
+			loadedExecPolicyTrustState = trustState;
+			loadExecPolicy = (trustState === "trusted"
+				? execPolicyStore.load()
+				: execPolicyStore.loadUserRules()).then((rules) => {
 				approvalPolicy.replaceExecPolicyRules(rules);
 			});
 			return loadExecPolicy;
@@ -1428,7 +1456,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
 			const initialPreferences = initial.binding.sessionPreferences?.();
 			if (initialPreferences) {
-				controlConfig = await resolveModelRuntimeConfig({
+				controlConfig = await resolveWorkspaceModelRuntimeConfig({
 					homeDir,
 					workspaceRoot: initial.workspaceRoot,
 					env: options.env,
@@ -1683,7 +1711,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								thinkingEnabled,
 								reasoningEffort: nextReasoningEffort,
 							});
-							controlConfig = await resolveModelRuntimeConfig({
+							controlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
 								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
 								env: options.env,
@@ -1729,7 +1757,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						},
 						activateSessionPreferences: async (preferences) => {
 							const active = sessionCoordinator.snapshot();
-							controlConfig = await resolveModelRuntimeConfig({
+							controlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,

@@ -1,6 +1,49 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { ManagementServices } from "../src/management/services.ts";
+import { WorkspaceTrustStore } from "@mycli/config";
+import {
+	createDefaultManagementServices,
+	ManagementServices,
+} from "../src/management/services.ts";
+
+test("default management services expose repository sources only after trust", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-management-trust-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	await Promise.all([
+		mkdir(homeDir),
+		mkdir(join(workspaceRoot, ".mycli"), { recursive: true }),
+	]);
+	await writeFile(join(workspaceRoot, ".mycli", "hooks.json"), JSON.stringify({
+		hooks: [{
+			id: "repo-hook",
+			hook_point: "stop",
+			command: [process.execPath, "repo-hook.mjs"],
+		}],
+	}), "utf8");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const command = { kind: "hooks", action: "list", json: true } as const;
+
+	const untrusted = await createDefaultManagementServices({
+		workspaceRoot,
+		homeDir,
+		env: {},
+	});
+	const hidden = await untrusted.execute(command);
+	assert.deepEqual(managementHooks(hidden), []);
+
+	await new WorkspaceTrustStore({ homeDir }).save(workspaceRoot, "trusted");
+	const trusted = await createDefaultManagementServices({
+		workspaceRoot,
+		homeDir,
+		env: {},
+	});
+	const visible = await trusted.execute(command);
+	assert.equal(managementHooks(visible).length, 1);
+});
 
 test("management facade dispatches every extension command to its provider-free service", async () => {
 	const calls: string[] = [];
@@ -103,4 +146,9 @@ function unusedService(): never {
 
 function never(): never {
 	throw new Error("must not call unrelated management service");
+}
+
+function managementHooks(value: unknown): readonly unknown[] {
+	if (typeof value !== "object" || value === null || !("hooks" in value)) return [];
+	return Array.isArray(value.hooks) ? value.hooks : [];
 }

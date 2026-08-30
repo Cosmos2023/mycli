@@ -3,7 +3,100 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { resolveConfig } from "../src/index.ts";
+import { resolveConfig, resolveConfigWithMetadata } from "../src/index.ts";
+
+test("resolves trusted project precedence with source provenance", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".config", "mycli", "config.toml"), [
+		"[model]",
+		'name = "legacy-model"',
+	]);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'name = "user-model"',
+	]);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'name = "project-model"',
+	]);
+
+	const resolved = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+
+	assert.equal(resolved.config.model, "project-model");
+	assert.deepEqual(resolved.layers.layers.map((layer) => layer.metadata.id), [
+		"session",
+		"environment",
+		"project",
+		"user",
+		"legacy_user",
+	]);
+	assert.equal(resolved.layers.origins.model?.source.id, "project");
+	assert.deepEqual(
+		resolved.layers.origins.model?.overridden.map((source) => source.id),
+		["user", "legacy_user"],
+	);
+});
+
+test("keeps untrusted project configuration disabled without reading it", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'name = "user-model"',
+	]);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), ["[broken"]);
+
+	for (const workspaceTrust of ["unknown", "untrusted"] as const) {
+		const resolved = await resolveConfigWithMetadata({
+			homeDir,
+			workspaceRoot,
+			env: {},
+			workspaceTrust,
+		});
+
+		assert.equal(resolved.config.model, "user-model");
+		const project = resolved.layers.layers.find((layer) => layer.metadata.id === "project");
+		assert.equal(project?.metadata.enabled, false);
+		assert.equal(project?.metadata.disabledReason, "workspace_not_trusted");
+		assert.deepEqual(project?.keys, []);
+		assert.equal(resolved.layers.origins.model?.source.id, "user");
+	}
+});
+
+test("attributes session and environment overrides above file layers", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'name = "project-model"',
+	]);
+
+	const environment = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_MODEL: "environment-model" },
+		workspaceTrust: "trusted",
+	});
+	const session = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_MODEL: "environment-model" },
+		overrides: { model: "session-model" },
+		workspaceTrust: "trusted",
+	});
+
+	assert.equal(environment.config.model, "environment-model");
+	assert.equal(environment.layers.origins.model?.source.id, "environment");
+	assert.equal(session.config.model, "session-model");
+	assert.equal(session.layers.origins.model?.source.id, "session");
+	assert.deepEqual(
+		session.layers.origins.model?.overridden.map((source) => source.id),
+		["environment", "project"],
+	);
+});
 
 test("resolves CLI, environment, user, project, and legacy precedence", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);

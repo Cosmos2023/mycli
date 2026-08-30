@@ -8,11 +8,26 @@ export {
 } from "./provider-profiles.ts";
 export type { ProviderProfile } from "./provider-profiles.ts";
 export { redactValue } from "./redaction.ts";
-export { NODE_RUNTIME_CONTEXT_DEFAULTS, resolveConfig } from "./settings.ts";
+export {
+	NODE_RUNTIME_CONTEXT_DEFAULTS,
+	resolveConfig,
+	resolveConfigWithMetadata,
+} from "./settings.ts";
 export type {
 	NodeRuntimeConfig,
+	ResolvedConfig,
 	ResolveConfigOptions,
 } from "./settings.ts";
+export { CONFIG_LAYER_STACK_VERSION } from "./config-layers.ts";
+export type {
+	ConfigLayer,
+	ConfigLayerDisabledReason,
+	ConfigLayerId,
+	ConfigLayerMetadata,
+	ConfigLayerScope,
+	ConfigLayerStack,
+	ConfigOrigin,
+} from "./config-layers.ts";
 export { resolveModelRuntimeConfig } from "./model-runtime-config.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";

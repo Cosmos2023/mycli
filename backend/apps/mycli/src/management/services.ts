@@ -4,6 +4,7 @@ import {
 	McpManagementService,
 	PluginManagementService,
 } from "@mycli/integrations";
+import { WorkspaceTrustStore } from "@mycli/config";
 import type { McpServerConfig } from "@mycli/integrations";
 import {
 	pluginSandboxProfile,
@@ -113,12 +114,17 @@ export class ManagementServices implements ManagementExecutor {
 export async function createDefaultManagementServices(
 	options: DefaultManagementServicesOptions,
 ): Promise<ManagementServices> {
-	const hooks = new HookManagementService(options);
+	const workspaceTrust = await new WorkspaceTrustStore({
+		homeDir: options.homeDir,
+	}).load(options.workspaceRoot);
+	const includeRepository = workspaceTrust === "trusted";
+	const hooks = new HookManagementService({ ...options, includeRepository });
 	const plugins = new PluginManagementService({
 		runtimeOptions: {
 			workspaceRoot: options.workspaceRoot,
 			homeDir: options.homeDir,
 			env: options.env,
+			includeRepository,
 			sandboxProfile: pluginSandboxProfile,
 		},
 	});
@@ -126,6 +132,7 @@ export async function createDefaultManagementServices(
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
 		env: options.env,
+		includeRepository,
 		createClient: (config: McpServerConfig) => new McpClient({
 			config,
 			cwd: options.workspaceRoot,
@@ -136,7 +143,11 @@ export async function createDefaultManagementServices(
 		hooks,
 		plugins,
 		mcp,
-		doctor: async (signal) => doctorResponseFromReport(await runDoctor(options, signal)),
+		doctor: async (signal) => doctorResponseFromReport(await runDoctor({
+			...options,
+			workspaceTrust,
+			includeRepository,
+		}, signal)),
 		setup: options.setup ?? (async () => failure(
 			"setup",
 			"setup is not available in this M7 batch",

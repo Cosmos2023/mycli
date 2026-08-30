@@ -14,6 +14,7 @@ import type {
 export interface DiscoverHookConfigOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
+	readonly includeRepository?: boolean;
 	readonly platform?: NodeJS.Platform;
 	readonly env?: Readonly<NodeJS.ProcessEnv>;
 	readonly shellPath?: string;
@@ -63,7 +64,12 @@ export async function discoverHookConfig(
 ): Promise<HookConfigDiscovery> {
 	const files: readonly HookConfigFile[] = [
 		{ path: join(options.homeDir, ".mycli", "hooks.json"), scope: "user" },
-		{ path: join(options.workspaceRoot, ".mycli", "hooks.json"), scope: "repo" },
+		...(options.includeRepository === false
+			? []
+			: [{
+				path: join(options.workspaceRoot, ".mycli", "hooks.json"),
+				scope: "repo" as const,
+			}]),
 	];
 	const hooks: ConfiguredHookSpec[] = [];
 	const diagnostics: HookConfigDiagnostic[] = [];

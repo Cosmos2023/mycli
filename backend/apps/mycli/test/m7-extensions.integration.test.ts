@@ -9,6 +9,7 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
 	discoverHookConfig,
@@ -173,6 +174,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		`env = { MCP_PID_FILE = ${JSON.stringify(mcpPidFile)} }`,
 		"timeout_seconds = 3",
 	].join("\n"), "utf8");
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	const requests: JsonObject[] = [];
 	const server = createServer((request, response) => {
 		let raw = "";
@@ -275,6 +277,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		mcpPidFile,
 		pluginPidFile,
 	});
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	const hookDiscovery = await discoverHookConfig({ homeDir: home, workspaceRoot: workspace });
 	assert.equal(hookDiscovery.hooks.length, 1);
 	await new HookAllowlistStore({ homeDir: home }).approve(hookDiscovery.hooks[0]!);

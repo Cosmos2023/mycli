@@ -162,6 +162,29 @@ test("keeps a valid repository config when the user TOML is malformed", async (t
 	assert.equal(JSON.stringify(discovery.diagnostics).includes("must-not-leak"), false);
 });
 
+test("does not read repository MCP config when project configuration is disabled", async (t) => {
+	const fixture = await configFixture(t);
+	await writeConfig(fixture.homeDir, [
+		"[servers.user]",
+		'transport = "stdio"',
+		`command = ${JSON.stringify(process.execPath)}`,
+	]);
+	await mkdir(join(fixture.workspaceRoot, ".mycli"), { recursive: true });
+	await writeFile(
+		join(fixture.workspaceRoot, ".mycli", "mcp_servers.toml"),
+		"[servers.invalid\nsecret = 'must-not-leak'",
+		"utf8",
+	);
+
+	const discovery = await discoverMcpConfig({
+		...fixture,
+		includeRepository: false,
+	});
+
+	assert.deepEqual(discovery.servers.map((server) => server.id), ["user"]);
+	assert.deepEqual(discovery.diagnostics, []);
+});
+
 async function configFixture(t: TestContext): Promise<{
 	readonly root: string;
 	readonly homeDir: string;

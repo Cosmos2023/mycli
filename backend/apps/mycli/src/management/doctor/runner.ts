@@ -1,5 +1,6 @@
 import { redactDoctorText } from "./redaction.ts";
 import { collectConfigChecks } from "./check-config.ts";
+import type { WorkspaceTrustState } from "@mycli/config";
 import { collectExtensionChecks } from "./check-extensions.ts";
 import type { ExtensionDoctorOptions } from "./check-extensions.ts";
 import { collectProcessChecks } from "./check-process.ts";
@@ -32,7 +33,9 @@ class DoctorCollectorTimeoutError extends Error {
 	}
 }
 
-export type DoctorRunOptions = ExtensionDoctorOptions;
+export type DoctorRunOptions = ExtensionDoctorOptions & {
+	readonly workspaceTrust?: WorkspaceTrustState;
+};
 
 export function runDoctor(
 	options: DoctorRunOptions,

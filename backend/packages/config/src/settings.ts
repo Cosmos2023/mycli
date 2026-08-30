@@ -10,10 +10,18 @@ import type {
 import { parse } from "smol-toml";
 import { readApiKey } from "./auth-store.ts";
 import {
+	CONFIG_LAYER_STACK_VERSION,
+	resolveConfigLayers,
+	type ConfigLayerInput,
+	type ConfigLayerMetadata,
+	type ConfigLayerStack,
+} from "./config-layers.ts";
+import {
 	inferProviderFromBaseUrl,
 	parseProtocol,
 	resolveProviderProfile,
 } from "./provider-profiles.ts";
+import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
 
 type ConfigMap = Record<string, unknown>;
 
@@ -120,6 +128,16 @@ export interface ResolveConfigOptions {
 	readonly createSessionId?: () => string;
 	readonly defaultMaxPromptTokens?: number;
 	readonly maxPromptTokensCeiling?: number;
+	/**
+	 * Omit only for compatibility callers that intentionally load project configuration without a
+	 * runtime trust decision. Runtime callers must pass the persisted workspace trust state.
+	 */
+	readonly workspaceTrust?: WorkspaceTrustState;
+}
+
+export interface ResolvedConfig {
+	readonly config: NodeRuntimeConfig;
+	readonly layers: ConfigLayerStack;
 }
 
 const SECTION_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
@@ -174,6 +192,46 @@ const SECTION_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> =
 
 const MODEL_COMPACTION_RATIOS_KEY = "compaction_l4_trigger_ratios_by_model";
 
+const ENVIRONMENT_CONFIG_KEYS = Object.freeze({
+	MYCLI_API_KEY: "api_key",
+	MYCLI_AUTH_REF: "auth_ref",
+	MYCLI_BASE_URL: "api_base_url",
+	MYCLI_CACHE_CONTROL_ENABLED: "cache_control_enabled",
+	MYCLI_COMPACTION_L4_BUFFER_TOKENS: "compaction_l4_buffer_tokens",
+	MYCLI_COMPACTION_L4_CARRY_COST_PER_1K: "compaction_l4_carry_cost_per_1k",
+	MYCLI_COMPACTION_L4_CARRY_TURNS: "compaction_l4_carry_turns",
+	MYCLI_COMPACTION_L4_EXPECTED_SUMMARY_TOKENS: "compaction_l4_expected_summary_tokens",
+	MYCLI_COMPACTION_L4_INPUT_COST_PER_1K: "compaction_l4_input_cost_per_1k",
+	MYCLI_COMPACTION_L4_MIN_SAVINGS_RATIO: "compaction_l4_min_savings_ratio",
+	MYCLI_COMPACTION_L4_OUTPUT_COST_PER_1K: "compaction_l4_output_cost_per_1k",
+	MYCLI_COMPACTION_L4_SUMMARIZER_MODEL: "compaction_l4_summarizer_model",
+	MYCLI_COMPACTION_L4_TRIGGER_RATIO: "compaction_l4_trigger_ratio",
+	MYCLI_COMPACTION_REHYDRATION_FILE_MAX_ITEM_TOKENS:
+		"compaction_rehydration_file_max_item_tokens",
+	MYCLI_COMPACTION_REHYDRATION_FILE_MAX_TOTAL_TOKENS:
+		"compaction_rehydration_file_max_total_tokens",
+	MYCLI_COMPACTION_REHYDRATION_MAX_FILES: "compaction_rehydration_max_files",
+	MYCLI_COMPACTION_RESERVED_OUTPUT_TOKENS: "compaction_reserved_output_tokens",
+	MYCLI_COMPACTION_TAIL_MAX_TOKENS: "compaction_tail_max_tokens",
+	MYCLI_COMPACTION_TAIL_TURNS: "compaction_tail_turns",
+	MYCLI_COMPACTION_TOKEN_LIMIT: "compaction_token_limit",
+	MYCLI_COMPRESSION_THRESHOLD_TOKENS: "compression_threshold_tokens",
+	MYCLI_MAX_PROMPT_TOKENS: "max_prompt_tokens",
+	MYCLI_MEMORY_ENABLED: "memory_enabled",
+	MYCLI_MODEL: "model",
+	MYCLI_PROMPT_CACHE_KEY_ENABLED: "prompt_cache_key_enabled",
+	MYCLI_PROTOCOL: "protocol",
+	MYCLI_PROVIDER: "provider",
+	MYCLI_REASONING_EFFORT: "reasoning_effort",
+	MYCLI_REQUEST_MAX_RETRIES: "request_max_retries",
+	MYCLI_REQUEST_PERMISSIONS_TOOL: "request_permissions_tool",
+	MYCLI_STREAM_MAX_RETRIES: "stream_max_retries",
+	MYCLI_SUPPORTS_IMAGES: "supports_images",
+	MYCLI_THINKING_EFFORT: "thinking_effort",
+	MYCLI_THINKING_ENABLED: "thinking_enabled",
+	MYCLI_TRANSPORT_RETRY_LIMIT: "transport_retry_limit",
+} satisfies Readonly<Record<string, string>>);
+
 const REASONING_EFFORTS = new Set<string>([
 	"none",
 	"minimal",
@@ -186,16 +244,21 @@ const REASONING_EFFORTS = new Set<string>([
 ]);
 
 export async function resolveConfig(options: ResolveConfigOptions): Promise<NodeRuntimeConfig> {
-	const userConfig = await readToml(join(options.homeDir, ".mycli", "config.toml"), "user");
-	const projectConfig = await readToml(
-		join(options.workspaceRoot, ".mycli", "config.toml"),
-		"project",
-	);
-	const legacyConfig = await readToml(
-		join(options.homeDir, ".config", "mycli", "config.toml"),
-		"legacy user",
-	);
-	const sources = [userConfig, projectConfig, legacyConfig] as const;
+	return (await resolveConfigWithMetadata(options)).config;
+}
+
+export async function resolveConfigWithMetadata(
+	options: ResolveConfigOptions,
+): Promise<ResolvedConfig> {
+	const loaded = await loadConfigLayers(options);
+	const config = await resolveConfigFromSources(options, loaded.sources);
+	return Object.freeze({ config, layers: loaded.stack });
+}
+
+async function resolveConfigFromSources(
+	options: ResolveConfigOptions,
+	sources: readonly ConfigMap[],
+): Promise<NodeRuntimeConfig> {
 	const configuredBaseUrl = firstTruthy(
 		options.overrides?.apiBaseUrl,
 		options.env.MYCLI_BASE_URL,
@@ -553,6 +616,101 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Node
 		compactionRehydrationFileMaxItemTokens,
 		compactionRehydrationMaxFiles,
 	};
+}
+
+async function loadConfigLayers(options: ResolveConfigOptions): Promise<{
+	readonly sources: readonly ConfigMap[];
+	readonly stack: ConfigLayerStack;
+}> {
+	const userPath = join(options.homeDir, ".mycli", "config.toml");
+	const projectPath = join(options.workspaceRoot, ".mycli", "config.toml");
+	const legacyPath = join(options.homeDir, ".config", "mycli", "config.toml");
+	const projectEnabled = options.workspaceTrust === undefined
+		|| options.workspaceTrust === "trusted";
+	const [userConfig, projectConfig, legacyConfig] = await Promise.all([
+		readToml(userPath, "user"),
+		projectEnabled ? readToml(projectPath, "project") : Promise.resolve({}),
+		readToml(legacyPath, "legacy user"),
+	]);
+	const inputs: readonly ConfigLayerInput[] = [
+		configLayer(
+			"session",
+			"session",
+			"runtime overrides",
+			sessionLayerValues(options),
+		),
+		configLayer(
+			"environment",
+			"environment",
+			"process environment",
+			environmentLayerValues(options.env),
+		),
+		configLayer(
+			"project",
+			"project",
+			projectPath,
+			projectConfig,
+			projectEnabled,
+		),
+		configLayer("user", "user", userPath, userConfig),
+		configLayer("legacy_user", "user", legacyPath, legacyConfig),
+	];
+	const resolution = resolveConfigLayers(inputs);
+	return Object.freeze({
+		sources: Object.freeze([
+			...(projectEnabled ? [projectConfig] : []),
+			userConfig,
+			legacyConfig,
+		]),
+		stack: resolution.stack,
+	});
+}
+
+function configLayer(
+	id: ConfigLayerMetadata["id"],
+	scope: ConfigLayerMetadata["scope"],
+	source: string,
+	values: ConfigMap,
+	enabled = true,
+): ConfigLayerInput {
+	return Object.freeze({
+		metadata: Object.freeze({
+			id,
+			scope,
+			source,
+			version: CONFIG_LAYER_STACK_VERSION,
+			enabled,
+			...(enabled ? {} : { disabledReason: "workspace_not_trusted" as const }),
+		}),
+		values: Object.freeze({ ...values }),
+	});
+}
+
+function sessionLayerValues(options: ResolveConfigOptions): ConfigMap {
+	const overrides = options.overrides;
+	if (!overrides) return {};
+	return definedEntries({
+		provider: overrides.provider,
+		protocol: overrides.protocol,
+		model: overrides.model,
+		api_base_url: overrides.apiBaseUrl,
+		auth_ref: overrides.authRef,
+		thinking_effort: overrides.reasoningEffort,
+		thinking_enabled: overrides.thinkingEnabled,
+		session_id: overrides.session,
+	});
+}
+
+function environmentLayerValues(env: NodeJS.ProcessEnv): ConfigMap {
+	const values: ConfigMap = {};
+	for (const [environmentKey, configKey] of Object.entries(ENVIRONMENT_CONFIG_KEYS)) {
+		if (environmentKey in env) values[configKey] = env[environmentKey];
+	}
+	return values;
+}
+
+function definedEntries(values: ConfigMap): ConfigMap {
+	return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 }
 
 async function readToml(path: string, label: string): Promise<ConfigMap> {

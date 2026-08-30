@@ -57,6 +57,28 @@ test("uses legacy user config only when the modern user config is absent", async
 	assert.equal(discovery.plugins[0]?.enabled, true);
 });
 
+test("does not read repository plugins or enablement when project configuration is disabled", async (t) => {
+	const fixture = await discoveryFixture(t);
+	await writeV2Plugin(fixture.repoPlugins, "repo-only", "Repository Only");
+	await writeV2Plugin(fixture.userPlugins, "user-only", "User Only");
+	await writeConfig(join(fixture.homeDir, ".mycli", "config.toml"), ["user-only"]);
+	await mkdir(join(fixture.workspaceRoot, ".mycli"), { recursive: true });
+	await writeFile(
+		join(fixture.workspaceRoot, ".mycli", "config.toml"),
+		"[plugins\nsecret = 'must-not-leak'",
+		"utf8",
+	);
+
+	const discovery = await discoverPlugins({
+		...fixture,
+		includeRepository: false,
+	});
+
+	assert.deepEqual(discovery.candidates.map((candidate) => candidate.pluginId), ["user-only"]);
+	assert.deepEqual(discovery.plugins.map((plugin) => plugin.pluginId), ["user-only"]);
+	assert.deepEqual(discovery.diagnostics, []);
+});
+
 test("attributes invalid plugin table diagnostics to the owning config source", async (t) => {
 	const fixture = await discoveryFixture(t);
 	await mkdir(join(fixture.homeDir, ".mycli"), { recursive: true });

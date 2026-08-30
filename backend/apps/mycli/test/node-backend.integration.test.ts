@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
 import { fingerprintSubmission, rootAgentPath } from "@mycli/core";
 import {
@@ -1478,6 +1479,7 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 		"---",
 		"PRIVATE SKILL BODY THAT MUST NOT CROSS RESOURCE LIST",
 	].join("\n"), "utf8");
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 
 	const backend = await startNodeBackend({
@@ -1523,6 +1525,72 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 	assert.equal(JSON.stringify(resources).includes("PRIVATE SKILL BODY"), false);
 
 	writeRequest(backend, "shutdown-integrations", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("resumed sessions gate integrations using the persisted workspace trust", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-resume-trust-root-"));
+	const home = join(root, "home");
+	const launchWorkspace = join(root, "launch-workspace");
+	const sessionWorkspace = join(root, "session-workspace");
+	await Promise.all([
+		mkdir(join(launchWorkspace, ".mycli", "skills"), { recursive: true }),
+		mkdir(join(sessionWorkspace, ".mycli", "skills"), { recursive: true }),
+		mkdir(home),
+	]);
+	await Promise.all([
+		writeFile(join(launchWorkspace, ".mycli", "skills", "launch.md"), [
+			"---",
+			"name: launch-skill",
+			"description: Launch workspace skill",
+			"---",
+			"launch",
+		].join("\n"), "utf8"),
+		writeFile(join(sessionWorkspace, ".mycli", "skills", "session.md"), [
+			"---",
+			"name: session-skill",
+			"description: Session workspace skill",
+			"---",
+			"session",
+		].join("\n"), "utf8"),
+	]);
+	await new WorkspaceTrustStore({ homeDir: home }).save(launchWorkspace, "trusted");
+	const seed = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		seedCompletedSession(seed, sessionWorkspace, "resume-trust", "question", "answer");
+	} finally {
+		seed.close();
+	}
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+	const backend = await startNodeBackend({
+		cwd: launchWorkspace,
+		args: ["--session", "resume-trust", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "resume-trust-resources", "resource.list", {});
+	const listed = await waitFor(() => response(messages, "resume-trust-resources"));
+	const resources = resultValue(listed, "resources") as readonly Record<string, unknown>[];
+	assert.equal(resources.some((resource) => resource.id === "skill:launch-skill"), false);
+	assert.equal(resources.some((resource) => resource.id === "skill:session-skill"), false);
+	writeRequest(backend, "resume-trust-status", "status.inspect", {});
+	const inspected = await waitFor(() => response(messages, "resume-trust-status"));
+	const trust = resultValue(inspected, "trust") as Record<string, unknown>;
+	assert.equal(trust.workspace, sessionWorkspace);
+	assert.equal(trust.state, "unknown");
+	writeRequest(backend, "shutdown-resume-trust", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 });
 
@@ -3756,6 +3824,60 @@ test("Node backend persists workspace trust across process restarts", async (t) 
 		enforced: true,
 	});
 	writeRequest(second, "shutdown-second", "shutdown", {});
+	assert.equal(await second.completion, 0);
+});
+
+test("Node backend loads project configuration only after workspace trust is persisted", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-config-trust-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const userConfig = join(home, ".mycli", "config.toml");
+	const projectConfig = join(workspace, ".mycli", "config.toml");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(join(workspace, ".mycli"), { recursive: true }),
+	]);
+	await writeFile(userConfig, "[model]\nname = \"user-model\"\n", "utf8");
+	await writeFile(projectConfig, "[broken\nprivate = 'not-read'\n", "utf8");
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "config-trust-session"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+		},
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "bootstrap-untrusted-config", "session.bootstrap", { protocol_version: 1 });
+	const untrusted = await waitFor(() => response(firstMessages, "bootstrap-untrusted-config"));
+	assert.equal(resultValue(untrusted, "model"), "user-model");
+	writeRequest(first, "trust-config", "workspace.trust.set", { state: "trusted" });
+	await waitFor(() => response(firstMessages, "trust-config"));
+	writeRequest(first, "shutdown-untrusted-config", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	await writeFile(projectConfig, "[model]\nname = \"project-model\"\n", "utf8");
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "bootstrap-trusted-config", "session.bootstrap", { protocol_version: 1 });
+	const trusted = await waitFor(() => response(secondMessages, "bootstrap-trusted-config"));
+	assert.equal(resultValue(trusted, "model"), "project-model");
+	writeRequest(second, "shutdown-trusted-config", "shutdown", {});
 	assert.equal(await second.completion, 0);
 });
 

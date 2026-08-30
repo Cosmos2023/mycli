@@ -102,6 +102,7 @@ export interface CreateRuntimeIntegrationCompositionOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: Readonly<NodeJS.ProcessEnv>;
+	readonly projectConfigurationEnabled?: boolean;
 	readonly parentSessionId: string;
 	readonly parentTurnId: () => string;
 	readonly parentTools: () => readonly string[];
@@ -254,6 +255,7 @@ export async function createRuntimeIntegrationComposition(
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
 		env: options.env,
+		includeRepository: options.projectConfigurationEnabled !== false,
 	});
 	options.onStartupStage?.("hooks_ready");
 	let skillRegistry: SkillRegistry | undefined;
@@ -267,8 +269,10 @@ export async function createRuntimeIntegrationComposition(
 					skillRegistry = await SkillRegistry.discover({
 						builtinRoot: builtinSkillRoot(),
 						userRoot: join(options.homeDir, ".mycli", "skills"),
-						sharedRepoRoot: join(options.workspaceRoot, ".agents", "skills"),
-						repoRoot: join(options.workspaceRoot, ".mycli", "skills"),
+						...(options.projectConfigurationEnabled === false ? {} : {
+							sharedRepoRoot: join(options.workspaceRoot, ".agents", "skills"),
+							repoRoot: join(options.workspaceRoot, ".mycli", "skills"),
+						}),
 					});
 					options.onStartupStage?.("skills_ready");
 					return {
@@ -282,10 +286,11 @@ export async function createRuntimeIntegrationComposition(
 					id: "mcp",
 					start: async (signal) => {
 						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal]);
-						const config = await discoverMcpConfig({
+					const config = await discoverMcpConfig({
 						workspaceRoot: options.workspaceRoot,
 						homeDir: options.homeDir,
 						env: options.env,
+						includeRepository: options.projectConfigurationEnabled !== false,
 					});
 					const manager = new McpManager({
 						configs: config.servers,
@@ -330,6 +335,7 @@ export async function createRuntimeIntegrationComposition(
 						workspaceRoot: options.workspaceRoot,
 						homeDir: options.homeDir,
 						env: options.env,
+						includeRepository: options.projectConfigurationEnabled !== false,
 						sandboxProfile: pluginSandboxProfile,
 					}, signal);
 					options.onStartupStage?.("plugins_ready");
