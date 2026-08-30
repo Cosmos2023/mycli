@@ -48,6 +48,13 @@ When the TUI is idle, `Shift+Tab` cycles between Default and Plan mode. The foot
 shortcut while Plan mode is active and the terminal has enough room; overlays, selectors, and
 running turns keep ownership of the key.
 
+Bare `/resume` opens the shared session selector. The selector displays model, effort, mode,
+permission, lifecycle, owner lock, fork relation, and cwd without per-row storage scans. Selecting
+a blocked session first opens a provider-free repair preview; Enter applies only the selected repair
+at the previewed metadata revision, while Esc cancels without changing the source. Direct
+`/resume <session-id>` uses the same backend transition. See [sessions.md](sessions.md) for the
+provider-free management commands and recovery matrix.
+
 Prefix aliases can inject a canonical subcommand. `/hooks`, `/toolsets`, `/extensions`, and
 `/plugin` enter the matching `/tools` view. `/tasks agents`, `/jobs subagents`, `/subagents`, and
 `/agents runs` resolve to `/agents`; `/tasks kill-agents`, `/jobs kill-subagents`, and

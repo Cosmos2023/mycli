@@ -1228,7 +1228,7 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 
 - State row: `session_state(session_id, state_key='session_preferences', payload_json, updated_at)`.
 - Payload v1: `{state_version, provider, protocol, model, api_base_url, auth_ref,
-  reasoning_effort, collaboration_mode}`.
+  reasoning_effort, collaboration_mode, permission_profile?}`.
 - Store APIs: `loadState`, `saveState`, and both `forkSession` implementations.
 
 ### 3. Contracts
@@ -1239,6 +1239,8 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
   before any field influences provider or gateway state.
 - `api_base_url` and `auth_ref` are endpoint identity, not credentials. API keys, auth records,
   request headers, and environment secrets must not enter this payload.
+- `permission_profile` is optional for backward compatibility and, when present, must be exactly
+  `read-only`, `workspace`, or `full-access`.
 - Fork performs one transactional copy of the source `session_preferences` row when present. It must
   not bulk-copy other `session_state` rows because queue, approval, continuation, and recovery state
   belong to the source execution.
@@ -1251,13 +1253,14 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 | --- | --- |
 | No row | Return `undefined`; runtime applies its default-config fallback |
 | Valid v1 object | Return the complete typed preference |
-| Invalid JSON/non-object/version/field/URL/provider pair | Surface `session_state_invalid` |
+| Invalid JSON/non-object/version/field/URL/provider pair/permission profile | Surface `session_state_invalid` |
 | Fork source has a preference | Copy it byte-equivalently into the target transaction |
 | Fork source has other runtime state | Leave that state only on the source |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: a fork inherits model identity and mode while starting with empty queue/continuation state.
+- Good: a fork inherits model identity, mode, and permission while starting with empty
+  queue/continuation state.
 - Base: an old session has no row and resumes through the runtime fallback.
 - Bad: add model columns to `sessions` while retaining a competing JSON state authority.
 - Bad: `INSERT ... SELECT` every state key during fork or place a raw API key in `payload_json`.
@@ -1266,7 +1269,8 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 
 - Both legacy conversation and normalized transcript repositories copy only the preference row on
   fork and leave `input_queue` absent on the target.
-- Runtime integration persists two distinct session payloads, restarts, and verifies exact recovery.
+- Runtime integration persists two distinct model/effort/mode/permission payloads, restarts, and
+  verifies exact recovery.
 - Corruption tests cover invalid versions, identities, provider/protocol pairs, efforts, modes, and
   credential-bearing or non-HTTP(S) URLs.
 - Serialized-payload assertions search for fixture secrets and require no match.
@@ -1287,4 +1291,93 @@ INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
 SELECT ?, state_key, payload_json, ?
 FROM session_state
 WHERE session_id = ? AND state_key = 'session_preferences';
+```
+
+## Scenario: Versioned Session Metadata And Operational Summary
+
+### 1. Scope / Trigger
+
+- Trigger: changing session list filters, title/archive/delete metadata, session summary fields,
+  owner lease inspection, pending-state discovery, or management mutations.
+
+### 2. Signatures
+
+- Metadata row: `session_state(session_id, state_key='session_metadata', payload_json, updated_at)`.
+- Payload v1: `{state_version: 1, revision, title?, archived, deleted}`.
+- Reads: `listSessions(query)`, `loadSession(sessionId)`,
+  `loadStates(sessionIds, keys)`, and `loadSessionMetadata(sessionId)`.
+- Mutation: `updateSessionMetadata({sessionId, expectedRevision, title?, archived?, deleted?})`.
+- Summary states: lease `unlocked | owned | active | stale`; pending
+  `none | approval | clarification | interrupted`.
+
+### 3. Contracts
+
+- Metadata is an additive versioned state row; it does not require a schema version bump or add a
+  competing sessions-table authority. Missing metadata means revision `0`, no title, and active
+  visibility.
+- Every metadata mutation runs in the store write transaction, compares `expectedRevision`, writes
+  the complete next payload, increments the revision once, and touches the existing session.
+- List filtering for workspace, title/id/cwd search, archive visibility, and delete visibility is
+  bounded and deterministic. Ordering remains `last_active_at DESC, session_id DESC`.
+- One batched operational-state query projects metadata, root/agent lease, pending decision,
+  suspended turn, and latest turn status for all listed rows. Callers must not perform per-row state
+  scans or receive raw SQLite rows and owner process ids.
+- A root lease owned by this store is `owned`; another live root or agent owner is `active`; a dead
+  owner remains `stale` until explicit atomic acquisition replaces it. Preview and management reads
+  never delete the lease.
+- Pending precedence is approval, clarification, interrupted, then none. Summary flags contain no
+  approval question, tool arguments/output, provider payload, or transcript text.
+- Delete is a logical tombstone. Archive is independently reversible. Canonical transcript and
+  lineage rows remain unchanged.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing metadata row | Return the revision-0 active default |
+| Malformed or unsupported metadata | Preserve the row; expose bounded metadata issue and fail direct metadata load |
+| Stale expected revision | Throw `SessionMetadataConflictError`; change nothing |
+| Missing session on mutation | Fail without creating metadata |
+| Invalid/oversized title, search, ids, keys, limit, or offset | Reject before query/write with bounded diagnostics |
+| Another live owner exists | Project `active`; do not expose or replace its pid/owner id |
+| Dead owner exists | Project `stale`; replace only inside explicit lease acquisition |
+| Pending approval and interrupted turn both exist | Project `approval` once |
+
+### 5. Good/Base/Bad Cases
+
+- Good: list 100 sessions with one overview query and one batched operational query, then render the
+  same ordered rows in CLI and TUI.
+- Good: preview a stale owner without mutation, confirm takeover, and let coordinator acquisition
+  atomically replace the lease.
+- Base: a pre-feature session has no metadata and appears active with revision zero.
+- Bad: delete stale leases during list/preview, physically delete transcript rows for
+  `session delete`, or query `session_state` once per displayed row.
+
+### 6. Tests Required
+
+- Storage tests cover metadata defaults, CAS/no-op behavior, title/archive/delete visibility,
+  bounded search, malformed payloads, and stable ordering.
+- Two-store lease tests cover owned/active/stale projection, no pid exposure, retained stale state,
+  atomic takeover, and conditional release.
+- Summary tests cover approval, clarification, interrupted precedence and batched `loadStates`.
+- App management and gateway/TUI tests assert identical filtered ordering and complete summary
+  fields without provider startup.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+for (const session of sessions) {
+	session.metadata = store.loadState(session.id, "session_metadata");
+	session.lease = inspectAndDeleteStaleLease(session.id);
+}
+```
+
+#### Correct
+
+```ts
+const sessions = store.listSessions(query);
+const state = store.loadStates(sessions.map((item) => item.sessionId), ["session_preferences"]);
+// listSessions already projects metadata, lease, and pending state in one bounded batch.
 ```

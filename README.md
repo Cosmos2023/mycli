@@ -312,9 +312,14 @@ npm run mycli -- sandbox status --json
 npm run mycli -- hooks list --json
 npm run mycli -- plugins list --json
 npm run mycli -- mcp list --json
+npm run mycli -- session list --last
+npm run mycli -- session list --all --json
+npm run mycli -- session export <session-id> --json
 ```
 
 Invalid usage exits `2`, a failed operation exits `1`, and setup cancellation exits `130`.
+Session resume, repair, archive, delete, export, locking, and session-scoped preference behavior are
+documented in [docs/sessions.md](docs/sessions.md).
 
 ## Extensions
 

@@ -195,6 +195,21 @@ value, auth-store record, file source, or absolute workspace/home path. Session 
 model changes must re-resolve readiness rather than carrying a boolean from the prior active
 session.
 
+### Session snapshot fallback
+
+The config package resolves provider, protocol, model, endpoint identity, credential reference, and
+reasoning values for the authoritative session workspace. The app runtime combines those values
+with collaboration mode and the selected permission profile in the versioned
+`session_preferences` snapshot. Permission selection is not a TOML config fallback and must not be
+added to `ResolveConfigOptions` merely to persist a session choice.
+
+An existing valid session snapshot wins over environment, project, user, and built-in defaults for
+every field it pins. Current resolved defaults may fill only a missing legacy snapshot or an
+optional field absent from that snapshot. Activating a session without stored preferences must
+rebuild the complete fallback from current config and the runtime permission default; it must not
+reuse values left in memory by the previously active session. Restoring a snapshot changes active
+runtime state only and never writes `~/.mycli/config.toml`.
+
 ### Metadata
 
 `ConfigLayerStack.version` and every `ConfigLayerMetadata.version` equal
@@ -317,6 +332,9 @@ sanitized response.
 | A lower-priority layer supplies the same key | Keep it in `origin.overridden`; do not select its value |
 | Metadata is serialized for diagnostics | Expose source and key names only; never expose values or secrets |
 | Resumed session workspace differs from launch workspace | Re-resolve trust and configuration using persisted `workspace_root` |
+| Valid session snapshot pins a value that differs from current config | Restore the snapshot in memory; do not rewrite user config |
+| Legacy snapshot omits `permission_profile` | Use the runtime permission fallback without changing the stored payload |
+| Session snapshot is malformed | Fail the transition before publishing target status; do not treat it as missing |
 | `config validate` resolves with warnings | Return `ok=true`, keep diagnostics, and exit `0` |
 | `config validate` or `show` catches `ConfigError` | Return one typed diagnostic, `ok=false`, and exit `1` without exception text |
 | `config` action is missing/unknown, has extra args, or repeats `--json` | Exit `2` before management/backend construction |
@@ -344,6 +362,8 @@ sanitized response.
   unknown tables, and reports `effectiveSource=environment` when `MYCLI_MEMORY_ENABLED` still wins.
 - Good: setting `model.name` over a legacy root `model = "..."` replaces the scalar collision with
   canonical `[model].name` without changing unrelated TOML.
+- Good: resume A with `full-access`, resume B with `read-only`, restart on A, and keep both user TOML
+  and B's stored snapshot unchanged.
 - Good: setup, user-scoped `model.select`, `config set`, and `settings.save` race on one user file;
   each completed batch observes the prior committed bytes under the same lock, so unrelated model,
   memory, and TUI settings all survive.
@@ -360,6 +380,8 @@ sanitized response.
   crosses the security boundary and can surface project-controlled failures.
 - Bad: resume uses `process.cwd()` for trust while loading the session from another workspace. This
   can expose the wrong project's integrations and omit the session project's user decision.
+- Bad: resume a legacy session by spreading the previous active session's model or permission into
+  the fallback snapshot.
 - Bad: doctor catches `Error` and displays its message. Provider/profile helpers may include a raw
   configured value, while TOML errors may include source code and private paths.
 - Bad: `config show` returns `{...resolved.config}` or serializes `ConfigLayerMetadata.source`,
@@ -391,6 +413,8 @@ sanitized response.
   persisted.
 - Resume integration tests seed a session whose `workspace_root` differs from the launch directory
   and assert trust status and discovered resources belong only to the persisted workspace.
+- Session integration tests persist different model/effort/mode/permission snapshots, switch both
+  directions, restart, and assert status restores the target snapshot without a user-config write.
 - Management and doctor tests assert their repository visibility uses the same trust state as
   runtime composition.
 - Doctor tests assert warnings and fatal `ConfigError` values map to one bounded row containing only

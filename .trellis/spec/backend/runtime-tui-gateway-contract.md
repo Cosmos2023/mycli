@@ -2010,7 +2010,7 @@ const reservation = runtime.reserve(submission);
 
 - Persisted state key: `session_state.state_key = 'session_preferences'`.
 - Payload v1: `{state_version: 1, provider, protocol, model, api_base_url, auth_ref,
-  reasoning_effort, collaboration_mode}`.
+  reasoning_effort, collaboration_mode, permission_profile?}`.
 - Runtime helpers: `loadSessionPreferences`, `saveSessionPreferences`,
   `sessionPreferencesFromConfig`, and `sameSessionPreferences`.
 - Config resolution: `resolveConfig({overrides: {provider, protocol, model, apiBaseUrl, authRef,
@@ -2039,6 +2039,9 @@ const reservation = runtime.reserve(submission);
   restores with `thinkingEnabled=true`.
 - `auth_ref` identifies the credential lookup. API keys remain in the auth store or process
   environment and must never be serialized into `session_state`, gateway status, or diagnostics.
+- `permission_profile`, when present, is the session-selected `read-only`, `workspace`, or
+  `full-access` preset. Legacy snapshots may omit it and then use the current runtime fallback.
+  Changing permissions persists the active-session preference before reconfiguring the next turn.
 - A child agent inherits the parent session preference used for the spawn. A fork copies only
   `session_preferences`; it does not copy queues, approvals, suspended turns, or continuation state.
 
@@ -2055,8 +2058,9 @@ const reservation = runtime.reserve(submission);
 
 ### 5. Good/Base/Bad Cases
 
-- Good: session A resumes `model-a/high/plan`, session B resumes `model-b/none/default`, and a new
-  session uses the current user default without changing either stored snapshot.
+- Good: session A resumes `model-a/high/plan/full-access`, session B resumes
+  `model-b/none/default/read-only`, and a new session uses current defaults without changing either
+  stored snapshot.
 - Base: a pre-feature session has no preference and receives a snapshot on its next accepted action.
 - Bad: keep model/mode only in Gateway fields, or let resuming A change the fallback later used by
   an unrelated new session.
@@ -2066,8 +2070,9 @@ const reservation = runtime.reserve(submission);
 
 - Config tests prove a complete session override beats environment/user values and that `none` plus
   disabled thinking restores successfully.
-- Runtime/gateway integration creates two sessions with different model/effort/mode values, resumes
-  each, restarts the backend, and asserts status plus subsequent submission use the target snapshot.
+- Runtime/gateway integration creates two sessions with different model/effort/mode/permission
+  values, resumes each, restarts the backend, and asserts status plus subsequent submission use the
+  target snapshot.
 - A new or legacy session activated after a stored session must use the current default config,
   not the source session preference.
 - Invalid persisted payload tests assert `session_state_invalid`, no target `session.changed` or
@@ -6004,4 +6009,101 @@ await send("settings.save", {
 	value: selectedValue,
 });
 openExistingDomainSelector(item.action);
+```
+
+## Scenario: Unified Session Discovery And Explicit Recovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing provider-free `session` management commands, `session.list`,
+  `session.resume.preview`, `session.resume`, `/resume`, session selector rows, or status ownership
+  projection.
+
+### 2. Signatures
+
+- Shared service: `SessionService.list`, `inspect`, `resolve`, `rename`, `archive`, `delete`,
+  `fork`, `export`, `previewResume`, and `applyResumeRepair`.
+- Management: `mycli session list|resume|fork|rename|archive|unarchive|delete|export`.
+- Gateway: `session.list(query)`, `session.resume.preview({session_id})`, and
+  `session.resume({session_id, repair_action?, metadata_revision?})`.
+- Repair actions: `unarchive | fork_with_current_settings | takeover_stale_owner`.
+- TUI boundary: `sessionSummaryFromUnknown`, `sessionResumePreviewFromUnknown`, and the focused
+  `SessionRepairSelectorComponent`.
+
+### 3. Contracts
+
+- CLI and TUI use one app-owned session service for bounded filters, ordering, visibility, metadata,
+  preference projection, and repair decisions. The TUI must not inspect SQLite or session files.
+- A summary includes stable id/title/cwd/timestamps, model/provider/effort/mode/permission,
+  lifecycle/storage status, message/summary counts, metadata revision, lease/pending states, and
+  optional parent/fork relation. It excludes credentials, process ids, raw storage, and transcript
+  bodies.
+- Resume preview is provider-free and non-mutating. It distinguishes deleted/archived sessions,
+  schema incompatibility, missing workspace/credential, unsupported model, permission conflict,
+  active/stale ownership, and recoverable pending interaction.
+- A ready preview resumes directly. A blocking issue with an action requires both the selected action
+  and the previewed metadata revision. Preference/workspace repairs fork using current settings and
+  never rewrite the source. Stale-owner confirmation leaves replacement to coordinator acquisition.
+- Active owners and incompatible state without a safe action remain blocked. Expected repair errors
+  do not become transcript notices. Esc cancels the TUI selector without mutation.
+- Direct resume may fall through to coordinator only when the shared service reports
+  `session_not_found`, preserving import of a legacy readable snapshot. Explicit preview remains
+  strict and missing ordinary targets still fail in coordinator preparation.
+- Successful transition publishes `session.changed`, then one complete `status.changed`, then any
+  persisted approval or clarification request. Transcript reload remains canonical-event-derived.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Invalid filters/action/revision | `invalid_params`; do not mutate or switch |
+| Ambiguous title | `session_ambiguous`; choose nothing |
+| Blocking preview without action/revision | `session_repair_required` with bounded preview |
+| Preview revision changed | `session_changed`; require a fresh preview |
+| Selected action no longer available | `repair_not_available`; preserve source and active session |
+| Active owner | Preview `active_owner`; no takeover action |
+| Stale owner | Offer `takeover_stale_owner`; coordinator still performs atomic acquire |
+| Legacy readable snapshot absent from SQLite | Direct resume delegates to coordinator import path |
+| Repair or target preparation fails | Emit no target session/status events |
+
+### 5. Good/Base/Bad Cases
+
+- Good: select an archived session, confirm unarchive, resume its exact id, and reload one canonical
+  transcript.
+- Good: saved model disappeared, so create a child with current settings while source preferences
+  and transcript remain byte-equivalent.
+- Base: a ready session resumes without showing the repair selector.
+- Bad: mutate during preview, let the TUI invent repair policy, silently displace a live owner, or
+  treat `session_not_found` from every boundary as proof that a legacy snapshot exists.
+
+### 6. Tests Required
+
+- Storage/service tests cover every issue/action, metadata CAS, source immutability, redacted export,
+  title ambiguity, archive/delete visibility, and provider-free execution.
+- Gateway tests assert enriched list filters, strict preview, action/revision application, stale
+  takeover handoff, legacy direct-resume fallback, event order, and source preservation on failure.
+- Backend restart tests assert model/effort/mode/permission restoration and pending
+  approval/clarification recovery.
+- TUI parser/render tests cover malformed payloads, compact rows at narrow/CJK/Windows widths,
+  keyboard repair selection, Esc cancellation, and actual repaired/forked target id.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const selected = await tui.readSessionFiles(sessionId);
+await gateway.send("session.resume", { session_id: selected.id, repair: "auto" });
+```
+
+#### Correct
+
+```ts
+const preview = await gateway.send("session.resume.preview", { session_id: sessionId });
+if (preview.ready) return gateway.send("session.resume", { session_id: sessionId });
+return gateway.send("session.resume", {
+	session_id: sessionId,
+	repair_action: selectedAction,
+	metadata_revision: preview.session.metadata_revision,
+});
 ```
