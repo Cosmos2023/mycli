@@ -156,6 +156,9 @@ function parseSettingValue(
 	if (setting.valueKind === "string") {
 		const value = raw.trim();
 		if (!value) throw invalidValue(setting.key);
+		if (setting.allowedValues && !setting.allowedValues.includes(value)) {
+			throw invalidValue(setting.key);
+		}
 		return value;
 	}
 	if (setting.valueKind === "boolean") {

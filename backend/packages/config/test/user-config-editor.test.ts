@@ -156,6 +156,45 @@ test("user config mutation validates the candidate with enabled higher layers", 
 	assert.equal(await readFile(path, "utf8"), before);
 });
 
+test("user config mutation supports allowlisted visual settings and validates enum values", async (t) => {
+	const root = await temporaryRoot(t);
+	const path = await writeConfig(root.homeDir, [
+		"# preserve visual config comment",
+		'custom = "keep"',
+		'theme = "dark"',
+		"hideThinking = true",
+		"",
+	].join("\n"));
+
+	assert.deepEqual(await mutate(root, "set", "tui.theme", "light"), {
+		key: "tui.theme",
+		changed: true,
+	});
+	assert.deepEqual(await mutate(root, "set", "tui.hide_thinking", "false"), {
+		key: "tui.hide_thinking",
+		changed: true,
+	});
+	const raw = await readFile(path, "utf8");
+	assert.match(raw, /# preserve visual config comment/u);
+	assert.deepEqual(parse(raw), { custom: "keep", tui_theme: "light", tui_hide_thinking: false });
+
+	await assert.rejects(
+		() => mutate(root, "set", "tui.theme", "private-purple-sentinel"),
+		(error: unknown) => {
+			assert.equal(isConfigError(error), true);
+			assert.doesNotMatch(JSON.stringify(error), /private-purple-sentinel/u);
+			return true;
+		},
+	);
+	assert.equal(await readFile(path, "utf8"), raw);
+
+	assert.deepEqual(await mutate(root, "unset", "tui.theme"), {
+		key: "tui.theme",
+		changed: true,
+	});
+	assert.deepEqual(parse(await readFile(path, "utf8")), { custom: "keep", tui_hide_thinking: false });
+});
+
 test("concurrent user config mutations serialize without losing either update", async (t) => {
 	const root = await temporaryRoot(t);
 

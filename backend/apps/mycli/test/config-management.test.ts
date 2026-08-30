@@ -31,6 +31,12 @@ test("config show reports bounded defaults without creating user files", async (
 	assert.deepEqual(response.credentials, { apiKey: "missing" });
 	assert.equal(setting(response, "model.provider").source, "default");
 	assert.equal(setting(response, "model.provider").value, "openai");
+	assert.deepEqual(setting(response, "tui.theme"), {
+		key: "tui.theme",
+		value: "dark",
+		source: "default",
+		overridden: [],
+	});
 	assert.deepEqual(response.layers.find((layer) => layer.id === "project"), {
 		id: "project",
 		scope: "project",
@@ -229,6 +235,41 @@ test("config mutation failures are typed and omit submitted values", async (t) =
 	assert.equal(renderManagementResponse({ ...command, key: unknownKey, json: false }, unknownResponse)
 		.includes(sentinel), false);
 	await assert.rejects(access(join(homeDir, ".mycli", "config.toml")));
+});
+
+test("config management exposes visual settings through the stable allowlist", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-config-visual-settings-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const service = new ConfigManagementService({
+		homeDir,
+		workspaceRoot,
+		env: {},
+		workspaceTrust: "untrusted",
+	});
+
+	const updated = await service.set("tui.statusbar_mode", "compact", new AbortController().signal);
+	assert.deepEqual({
+		key: updated.key,
+		changed: updated.changed,
+		effectiveSource: updated.effectiveSource,
+	}, {
+		key: "tui.statusbar_mode",
+		changed: true,
+		effectiveSource: "user",
+	});
+	assert.deepEqual(
+		(await service.get("tui.statusbar_mode", new AbortController().signal)).setting,
+		{ key: "tui.statusbar_mode", value: "compact", source: "user", overridden: [] },
+	);
+	assert.deepEqual(parseToml(await readFile(join(homeDir, ".mycli", "config.toml"), "utf8")), {
+		tui_statusbar_mode: "compact",
+	});
+
+	const removed = await service.unset("tui.statusbar_mode", new AbortController().signal);
+	assert.equal(removed.effectiveSource, "default");
+	assert.equal((await service.get("tui.statusbar_mode", new AbortController().signal)).setting.value, "full");
 });
 
 test("config management does not read malformed untrusted project config", async (t) => {

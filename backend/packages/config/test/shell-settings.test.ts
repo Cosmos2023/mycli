@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { parse } from "smol-toml";
-import { loadShellSettings, saveShellSettings } from "../src/index.ts";
+import {
+	loadShellSettings,
+	loadShellSettingsState,
+	SHELL_SETTING_DESCRIPTORS,
+	saveShellSetting,
+	saveShellSettings,
+} from "../src/index.ts";
 
 test("shell settings load defaults and persist normalized visual settings", async (t) => {
 	const homeDir = await temporaryDirectory(t);
@@ -60,6 +66,51 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 	assert.deepEqual(payload.model, { provider: "openai", name: "gpt-test" });
 	assert.equal(payload.tui_statusbar_mode, "compact");
 	assert.equal(payload.view_mode, "verbose");
+});
+
+test("shell setting descriptors are complete and report per-setting user sources", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const directory = join(homeDir, ".mycli");
+	await mkdir(directory, { recursive: true });
+	await writeFile(join(directory, "config.toml"), [
+		'tui_theme = "light"',
+		'hideThinking = false',
+		"",
+	].join("\n"), "utf8");
+
+	assert.equal(SHELL_SETTING_DESCRIPTORS.length, 9);
+	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.key)).size, 9);
+	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.clientKey)).size, 9);
+	const loaded = await loadShellSettingsState({ homeDir });
+	assert.equal(loaded.settings.theme, "light");
+	assert.equal(loaded.settings.hide_thinking, false);
+	assert.equal(loaded.sources.theme, "user");
+	assert.equal(loaded.sources.hide_thinking, "user");
+	assert.equal(loaded.sources.statusbar_mode, "default");
+});
+
+test("single shell setting persistence does not claim unrelated defaults", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const directory = join(homeDir, ".mycli");
+	const path = join(directory, "config.toml");
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, 'custom = "keep"\n', "utf8");
+
+	const loaded = await saveShellSetting({
+		homeDir,
+		key: "tui.theme",
+		value: "light",
+	});
+
+	assert.equal(loaded.settings.theme, "light");
+	assert.equal(loaded.sources.theme, "user");
+	for (const item of SHELL_SETTING_DESCRIPTORS) {
+		if (item.settingKey !== "theme") assert.equal(loaded.sources[item.settingKey], "default");
+	}
+	assert.deepEqual(parse(await readFile(path, "utf8")), {
+		custom: "keep",
+		tui_theme: "light",
+	});
 });
 
 test("shell settings reject invalid values without replacing the current config", async (t) => {

@@ -1,4 +1,8 @@
 import type { NodeRuntimeConfig } from "./settings.ts";
+import {
+	shellSettingDescriptor,
+	SHELL_SETTING_DESCRIPTORS,
+} from "./shell-setting-catalog.ts";
 
 export type RuntimeSettingValue =
 	| string
@@ -23,6 +27,7 @@ export interface WritableRuntimeSetting {
 	readonly path: readonly string[];
 	readonly legacyPaths: readonly (readonly string[])[];
 	readonly valueKind: UserConfigValueKind;
+	readonly allowedValues?: readonly string[];
 }
 
 interface RuntimeSettingDefinition {
@@ -185,12 +190,22 @@ export function runtimeSettingSnapshots(
 
 export function writableRuntimeSetting(key: string): WritableRuntimeSetting | undefined {
 	const definition = BY_KEY.get(key);
-	if (!definition?.write) return undefined;
-	return Object.freeze({ key: definition.key, ...definition.write });
+	if (definition?.write) return Object.freeze({ key: definition.key, ...definition.write });
+	const shell = shellSettingDescriptor(key);
+	if (!shell) return undefined;
+	return Object.freeze({
+		key: shell.key,
+		path: shell.path,
+		legacyPaths: shell.legacyPaths,
+		valueKind: shell.valueKind,
+		...(shell.valueKind === "string"
+			? { allowedValues: Object.freeze(shell.allowedValues.filter((value): value is string => typeof value === "string")) }
+			: {}),
+	});
 }
 
 export function hasRuntimeSetting(key: string): boolean {
-	return BY_KEY.has(key);
+	return BY_KEY.has(key) || SHELL_SETTING_DESCRIPTORS.some((item) => item.key === key);
 }
 
 function writable(

@@ -1,14 +1,17 @@
 import {
 	configDiagnostic,
 	isConfigError,
+	loadShellSettingsState,
 	mutateUserConfigSetting,
 	resolveConfigWithMetadata,
 	runtimeSettingSnapshots,
+	SHELL_SETTING_DESCRIPTORS,
 	type ConfigDiagnostic,
 	type ConfigLayerDisabledReason,
 	type ConfigLayerId,
 	type ConfigLayerScope,
 	type ConfigLayerStack,
+	type LoadedShellSettings,
 	type WorkspaceTrustState,
 } from "@mycli/config";
 import { redactDoctorText } from "./doctor/redaction.ts";
@@ -117,7 +120,7 @@ export class ConfigManagementService {
 	}
 
 	async show(signal: AbortSignal): Promise<ConfigShowResponse> {
-		const resolved = await this.#resolve(signal);
+		const { resolved, shell } = await this.#snapshot(signal);
 		return Object.freeze({
 			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
 			ok: true,
@@ -126,19 +129,19 @@ export class ConfigManagementService {
 			workspaceTrust: this.#options.workspaceTrust,
 			credentials: Object.freeze({ apiKey: resolved.config.apiKey ? "present" : "missing" }),
 			layers: projectLayers(resolved.layers),
-			settings: projectSettings(resolved.config, resolved.layers),
+			settings: projectSettings(resolved.config, resolved.layers, shell),
 			diagnostics: Object.freeze([...resolved.diagnostics]),
 		});
 	}
 
 	async get(key: string, signal: AbortSignal): Promise<ConfigGetResponse> {
-		const resolved = await this.#resolve(signal);
+		const { resolved, shell } = await this.#snapshot(signal);
 		return Object.freeze({
 			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
 			ok: true,
 			action: "get",
 			message: "effective configuration setting",
-			setting: requireSettingRow(key, resolved.config, resolved.layers),
+			setting: requireSettingRow(key, resolved.config, resolved.layers, shell),
 			diagnostics: Object.freeze([...resolved.diagnostics]),
 		});
 	}
@@ -170,8 +173,8 @@ export class ConfigManagementService {
 			if (!isConfigError(error)) throw error;
 			throw new ConfigManagementError(error.diagnostic);
 		}
-		const resolved = await this.#resolve(signal);
-		const setting = requireSettingRow(mutation.key, resolved.config, resolved.layers);
+		const { resolved, shell } = await this.#snapshot(signal);
+		const setting = requireSettingRow(mutation.key, resolved.config, resolved.layers, shell);
 		return Object.freeze({
 			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
 			ok: true,
@@ -198,6 +201,18 @@ export class ConfigManagementService {
 			if (!isConfigError(error)) throw error;
 			throw new ConfigManagementError(error.diagnostic);
 		}
+	}
+
+	async #snapshot(signal: AbortSignal): Promise<{
+		readonly resolved: Awaited<ReturnType<typeof resolveConfigWithMetadata>>;
+		readonly shell: LoadedShellSettings;
+	}> {
+		const [resolved, shell] = await Promise.all([
+			this.#resolve(signal),
+			loadShellSettingsState({ homeDir: this.#options.homeDir }),
+		]);
+		signal.throwIfAborted();
+		return Object.freeze({ resolved, shell });
 	}
 }
 
@@ -240,8 +255,9 @@ function projectLayers(layers: ConfigLayerStack): readonly ConfigLayerRow[] {
 function projectSettings(
 	config: Awaited<ReturnType<typeof resolveConfigWithMetadata>>["config"],
 	layers: ConfigLayerStack,
+	shell: LoadedShellSettings,
 ): readonly ConfigSettingRow[] {
-	return Object.freeze(runtimeSettingSnapshots(config).map((snapshot) => {
+	const runtimeRows = runtimeSettingSnapshots(config).map((snapshot) => {
 		const origin = snapshot.originKeys
 			.map((key) => layers.origins[key])
 			.find((candidate) => candidate !== undefined);
@@ -259,15 +275,23 @@ function projectSettings(
 			overridden: Object.freeze(origin?.overridden.map((layer) => layer.id) ?? []),
 			...(truncated ? { truncated: true } : {}),
 		});
+	});
+	const shellRows = SHELL_SETTING_DESCRIPTORS.map((item) => Object.freeze({
+		key: item.key,
+		value: shell.settings[item.settingKey],
+		source: shell.sources[item.settingKey],
+		overridden: Object.freeze([]),
 	}));
+	return Object.freeze([...runtimeRows, ...shellRows].sort((left, right) => compareText(left.key, right.key)));
 }
 
 function requireSettingRow(
 	key: string,
 	config: Awaited<ReturnType<typeof resolveConfigWithMetadata>>["config"],
 	layers: ConfigLayerStack,
+	shell: LoadedShellSettings,
 ): ConfigSettingRow {
-	const setting = projectSettings(config, layers).find((candidate) => candidate.key === key);
+	const setting = projectSettings(config, layers, shell).find((candidate) => candidate.key === key);
 	if (setting) return setting;
 	throw new ConfigManagementError(configDiagnostic({
 		code: "invalid_value",

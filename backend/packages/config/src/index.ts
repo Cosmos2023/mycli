@@ -60,8 +60,28 @@ export type {
 export { resolveModelRuntimeConfig } from "./model-runtime-config.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";
-export { loadShellSettings, saveShellSettings } from "./shell-settings.ts";
-export type { ShellSettings } from "./shell-settings.ts";
+export {
+	loadShellSettings,
+	loadShellSettingsState,
+	saveShellSetting,
+	saveShellSettings,
+} from "./shell-settings.ts";
+export type {
+	LoadedShellSettings,
+	SaveShellSettingOptions,
+	ShellSettingSource,
+} from "./shell-settings.ts";
+export {
+	DEFAULT_SHELL_SETTINGS,
+	SHELL_SETTING_DESCRIPTORS,
+	shellSettingDescriptor,
+} from "./shell-setting-catalog.ts";
+export type {
+	ShellSettingClientKey,
+	ShellSettingDescriptor,
+	ShellSettingName,
+	ShellSettings,
+} from "./shell-setting-catalog.ts";
 export {
 	BUILTIN_MODEL_CATALOG,
 	findModelCatalogEntry,
