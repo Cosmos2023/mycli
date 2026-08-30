@@ -442,3 +442,37 @@ Added provider-free config get/set/unset commands with a shared typed setting ca
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Unified setup and TUI settings persistence
+
+**Date**: 2026-08-30
+**Task**: Unified setup and TUI settings persistence
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added one lossless ordered user-config batch editor, migrated provider/model and shell settings writers onto it, passed active workspace trust context from the Node runtime, added no-op/CRLF/concurrency/failure regressions, and documented the cross-layer persistence contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b503c018` | (see git log) |
+| `fa8857e8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
