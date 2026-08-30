@@ -16,6 +16,11 @@ import type {
 	ManagementResponse,
 } from "./types.ts";
 import {
+	ConfigManagementError,
+	ConfigManagementService,
+	configFailureResponse,
+} from "./config.ts";
+import {
 	doctorResponseFromReport,
 	runDoctor,
 } from "./doctor/runner.ts";
@@ -45,7 +50,13 @@ export interface McpManagementContract {
 	inspect(serverId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
+export interface ConfigManagementContract {
+	validate(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	show(signal: AbortSignal): MaybePromise<ManagementResponse>;
+}
+
 export interface ManagementServicesOptions {
+	readonly config: ConfigManagementContract;
 	readonly hooks: HookManagementContract;
 	readonly plugins: PluginManagementContract;
 	readonly mcp: McpManagementContract;
@@ -74,6 +85,9 @@ export class ManagementServices implements ManagementExecutor {
 		try {
 			return await this.#dispatch(command, signal);
 		} catch (error) {
+			if (command.kind === "config" && error instanceof ConfigManagementError) {
+				return configFailureResponse(command.action, error);
+			}
 			if (signal.aborted || isAbortError(error)) {
 				return failure(commandAction(command), "management command interrupted", "interrupted");
 			}
@@ -84,6 +98,11 @@ export class ManagementServices implements ManagementExecutor {
 	#dispatch(command: ManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse> {
 		if (command.kind === "doctor") return this.#services.doctor(signal);
 		if (command.kind === "setup") return this.#services.setup(signal);
+		if (command.kind === "config") {
+			return command.action === "validate"
+				? this.#services.config.validate(signal)
+				: this.#services.config.show(signal);
+		}
 		if (command.kind === "hooks") {
 			if (command.action === "list") return this.#services.hooks.list();
 			if (command.action === "inspect") return this.#services.hooks.inspect(command.identity);
@@ -118,6 +137,12 @@ export async function createDefaultManagementServices(
 		homeDir: options.homeDir,
 	}).load(options.workspaceRoot);
 	const includeRepository = workspaceTrust === "trusted";
+	const config = new ConfigManagementService({
+		workspaceRoot: options.workspaceRoot,
+		homeDir: options.homeDir,
+		env: options.env,
+		workspaceTrust,
+	});
 	const hooks = new HookManagementService({ ...options, includeRepository });
 	const plugins = new PluginManagementService({
 		runtimeOptions: {
@@ -140,6 +165,7 @@ export async function createDefaultManagementServices(
 		}),
 	});
 	return new ManagementServices({
+		config,
 		hooks,
 		plugins,
 		mcp,

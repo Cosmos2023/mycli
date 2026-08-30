@@ -1,12 +1,13 @@
 import type {
 	CliMode,
+	ConfigManagementCommand,
 	HooksManagementCommand,
 	ManagementCommand,
 	McpManagementCommand,
 	PluginsManagementCommand,
 } from "./types.ts";
 
-const MANAGEMENT_COMMANDS = new Set(["doctor", "setup", "hooks", "plugins", "mcp"]);
+const MANAGEMENT_COMMANDS = new Set(["config", "doctor", "setup", "hooks", "plugins", "mcp"]);
 
 export function parseCliMode(argv: readonly string[]): CliMode {
 	const root = argv[0];
@@ -27,9 +28,18 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 		if (args.length > 0) throw usage("doctor [--json]");
 		return Object.freeze({ kind: "doctor", json });
 	}
+	if (root === "config") return parseConfig(args, json);
 	if (root === "hooks") return parseHooks(args, json);
 	if (root === "plugins") return parsePlugins(args, json);
 	return parseMcp(args, json);
+}
+
+function parseConfig(args: readonly string[], json: boolean): ConfigManagementCommand {
+	const action = args[0];
+	if ((action === "validate" || action === "show") && args.length === 1) {
+		return Object.freeze({ kind: "config", action, json });
+	}
+	throw usage("config validate|show [--json]");
 }
 
 function parseHooks(args: readonly string[], json: boolean): HooksManagementCommand {

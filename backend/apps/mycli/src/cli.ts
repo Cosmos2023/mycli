@@ -31,6 +31,7 @@ const HELP = `Usage: mycli [options]
 
 Commands:
   setup                             Configure provider credentials
+  config validate|show [--json]     Validate or inspect effective configuration
   doctor [--json]                   Check local runtime health
   hooks list|inspect|approve|revoke Manage configured hooks
   plugins list|inspect|run          Manage local plugins

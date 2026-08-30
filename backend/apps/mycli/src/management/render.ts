@@ -1,4 +1,5 @@
 import type { ManagementCommand, ManagementResponse } from "./types.ts";
+import type { ConfigManagementResponse, ConfigSettingValue } from "./config.ts";
 import { redactDoctorText } from "./doctor/redaction.ts";
 
 export function renderManagementResponse(
@@ -7,10 +8,61 @@ export function renderManagementResponse(
 ): string {
 	if (command.json) return `${JSON.stringify(response)}\n`;
 	if (command.kind === "doctor") return renderDoctor(response);
+	if (command.kind === "config") {
+		return renderConfig(response as ConfigManagementResponse);
+	}
 	const lines = [response.message ?? `mycli ${command.kind} ${response.ok ? "complete" : "failed"}`];
 	for (const row of responseRows(command, response)) lines.push(row);
 	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
 	return `${lines.join("\n")}\n`;
+}
+
+function renderConfig(response: ConfigManagementResponse): string {
+	const lines = [`mycli config ${response.action}`];
+	if (response.action === "show" && response.ok) {
+		lines.push(`workspace_trust=${response.workspaceTrust}`);
+		lines.push(`api_key=${response.credentials.apiKey}`);
+		for (const layer of response.layers) {
+			lines.push([
+				"layer",
+				`id=${layer.id}`,
+				`scope=${layer.scope}`,
+				`enabled=${layer.enabled}`,
+				...(layer.disabledReason ? [`reason=${layer.disabledReason}`] : []),
+			].join(" "));
+		}
+		for (const setting of response.settings) {
+			lines.push([
+				"setting",
+				`${setting.key}=${configValue(setting.value)}`,
+				`source=${setting.source}`,
+				`overridden=${setting.overridden.join(",") || "none"}`,
+				...(setting.truncated ? ["truncated=true"] : []),
+			].join(" "));
+		}
+	} else {
+		lines.push(response.message ?? (response.ok ? "configuration valid" : "configuration invalid"));
+	}
+	for (const diagnostic of response.diagnostics) {
+		const context = [
+			diagnostic.layer ? `layer=${diagnostic.layer}` : undefined,
+			diagnostic.keyPath ? `key=${diagnostic.keyPath}` : undefined,
+			diagnostic.line ? `line=${diagnostic.line}` : undefined,
+			diagnostic.column ? `column=${diagnostic.column}` : undefined,
+		].filter((value): value is string => value !== undefined).join(" ");
+		lines.push(
+			`[${diagnostic.severity === "warning" ? "WARN" : "FAIL"}] ${diagnostic.code}`
+			+ `${context ? ` ${context}` : ""}: ${diagnostic.message}`,
+		);
+		if (diagnostic.remediation) lines.push(`  remedy: ${diagnostic.remediation}`);
+	}
+	return `${lines.join("\n")}\n`;
+}
+
+function configValue(value: ConfigSettingValue): string {
+	if (value === null) return "unset";
+	if (typeof value === "object") return JSON.stringify(value);
+	return String(value);
 }
 
 function renderDoctor(response: ManagementResponse): string {

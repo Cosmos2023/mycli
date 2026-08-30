@@ -102,6 +102,20 @@ remains readable with a migration warning; move it to `~/.mycli/auth.json` and r
 Diagnostic output never includes the configured value, TOML source text, an exception stack, or an
 absolute configuration path.
 
+Use the provider-free configuration commands to check configuration before starting an agent:
+
+```bash
+mycli config validate
+mycli config show
+mycli config show --json
+```
+
+`config validate` exits `0` for valid configuration, including unknown-key and migration warnings,
+and exits `1` for fatal syntax or value errors. `config show` lists effective non-secret settings,
+their winning layer, and lower-priority overridden layers. It reports only `present` or `missing`
+for the API key and never prints credential values, raw TOML, environment values, or absolute
+configuration paths. Project configuration remains disabled until the workspace is trusted.
+
 `sessions.db` is authoritative. The Node runtime repairs derivable session files during session
 preparation; deleting or corrupting a projection does not make it a provider-recovery source.
 
@@ -259,11 +273,12 @@ with unknown names and malformed known commands fail locally.
 Provider-free management commands:
 
 ```bash
+npm run mycli -- config validate --json
+npm run mycli -- config show --json
 npm run mycli -- doctor --json
 npm run mycli -- hooks list --json
 npm run mycli -- plugins list --json
 npm run mycli -- mcp list --json
-npm run mycli -- subagents list --json
 ```
 
 Invalid usage exits `2`, a failed operation exits `1`, and setup cancellation exits `130`.

@@ -33,9 +33,16 @@ export type McpManagementCommand =
 		readonly json: boolean;
 	};
 
+export type ConfigManagementCommand = {
+	readonly kind: "config";
+	readonly action: "validate" | "show";
+	readonly json: boolean;
+};
+
 export type ManagementCommand =
 	| { readonly kind: "doctor"; readonly json: boolean }
 	| { readonly kind: "setup"; readonly json: boolean }
+	| ConfigManagementCommand
 	| HooksManagementCommand
 	| PluginsManagementCommand
 	| McpManagementCommand;

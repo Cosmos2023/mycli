@@ -12,6 +12,7 @@ import {
 } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
+import type { ManagementCommand } from "../src/management/types.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { MYCLI_VERSION, parseAppVersion } from "../src/version.ts";
 
@@ -104,7 +105,7 @@ test("help advertises the provider-free management surface", async () => {
 	const harness = cliHarness({ argv: ["--help"] });
 
 	assert.equal(await runCli(harness.options), 0);
-	for (const command of ["setup", "doctor", "hooks", "plugins", "mcp"]) {
+	for (const command of ["setup", "config", "doctor", "hooks", "plugins", "mcp"]) {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
 	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);
@@ -166,6 +167,36 @@ test("JSON management commands run without TTY, backend, provider, or TUI startu
 
 	assert.equal(await runCli(harness.options), 0);
 	assert.deepEqual(JSON.parse(harness.stdout.join("")), expected);
+	assert.equal(managementCalls, 1);
+	assert.equal(nodeStarts, 0);
+	assert.equal(tuiImports, 0);
+});
+
+test("configuration management runs without TTY, backend, provider, or TUI startup", async () => {
+	let nodeStarts = 0;
+	let tuiImports = 0;
+	let managementCalls = 0;
+	const harness = cliHarness({
+		argv: ["config", "show", "--json"],
+		stdin: { isTTY: false },
+		stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+		startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
+		importTui: async () => { tuiImports += 1; },
+		management: {
+			execute: async (command: ManagementCommand) => {
+				managementCalls += 1;
+				assert.deepEqual(command, { kind: "config", action: "show", json: true });
+				return { ok: true, action: "show", message: "effective configuration" };
+			},
+		},
+	});
+
+	assert.equal(await runCli(harness.options), 0);
+	assert.deepEqual(JSON.parse(harness.stdout.join("")), {
+		ok: true,
+		action: "show",
+		message: "effective configuration",
+	});
 	assert.equal(managementCalls, 1);
 	assert.equal(nodeStarts, 0);
 	assert.equal(tuiImports, 0);

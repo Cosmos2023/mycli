@@ -49,6 +49,10 @@ test("management facade dispatches every extension command to its provider-free 
 	const calls: string[] = [];
 	const result = (action: string) => ({ ok: true, action, message: action });
 	const services = new ManagementServices({
+		config: {
+			validate: async () => { calls.push("config:validate"); return result("validate"); },
+			show: async () => { calls.push("config:show"); return result("show"); },
+		},
 		hooks: {
 			list: async () => { calls.push("hooks:list"); return result("list"); },
 			inspect: async (id) => { calls.push(`hooks:inspect:${id}`); return result("inspect"); },
@@ -73,6 +77,8 @@ test("management facade dispatches every extension command to its provider-free 
 	const signal = new AbortController().signal;
 
 	for (const command of [
+		{ kind: "config", action: "validate", json: false },
+		{ kind: "config", action: "show", json: false },
 		{ kind: "hooks", action: "list", json: false },
 		{ kind: "hooks", action: "inspect", identity: "hook", json: false },
 		{ kind: "hooks", action: "approve", identity: "hook", json: false },
@@ -96,6 +102,8 @@ test("management facade dispatches every extension command to its provider-free 
 	}
 
 	assert.deepEqual(calls, [
+		"config:validate",
+		"config:show",
 		"hooks:list",
 		"hooks:inspect:hook",
 		"hooks:approve:hook",
@@ -112,6 +120,7 @@ test("management facade dispatches every extension command to its provider-free 
 
 test("management facade converts service exceptions to one redacted failure", async () => {
 	const services = new ManagementServices({
+		config: unusedService(),
 		hooks: {
 			list: async () => { throw new Error("sk-private-secret-value"); },
 			inspect: async () => { throw new Error("unused"); },

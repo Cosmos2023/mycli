@@ -11,6 +11,14 @@ test("parser recognizes provider-free management commands before interactive fla
 		kind: "management",
 		command: { kind: "setup", json: false },
 	});
+	assert.deepEqual(parseCliMode(["config", "validate", "--json"]), {
+		kind: "management",
+		command: { kind: "config", action: "validate", json: true },
+	});
+	assert.deepEqual(parseCliMode(["config", "show"]), {
+		kind: "management",
+		command: { kind: "config", action: "show", json: false },
+	});
 	assert.deepEqual(parseCliMode(["hooks", "approve", "repo:audit:post_tool_use", "--json"]), {
 		kind: "management",
 		command: {
@@ -61,6 +69,10 @@ test("parser retains validated interactive arguments", () => {
 
 test("parser rejects invalid management usage and JSON arguments", () => {
 	for (const argv of [
+		["config"],
+		["config", "unknown"],
+		["config", "show", "extra"],
+		["config", "validate", "--json", "--json"],
 		["hooks", "inspect"],
 		["hooks", "list", "extra"],
 		["plugins", "run", "demo", "status", "--json-args", "[]"],
