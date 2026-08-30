@@ -40,7 +40,7 @@
   "slash_commands": {
     "command_count": 35,
 	"prefixed_alias_count": 13,
-	"sha256": "7fca7755d759266fbbfedd4aece5f8459e82e55353d65f7df85ed83d024b15a3"
+	"sha256": "ab575598a8093462000ea23142d44f45c965d3ed18c261ebd4c85b071224326c"
   },
   "tools": {
     "retained": [

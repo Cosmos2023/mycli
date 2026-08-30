@@ -2,6 +2,13 @@ export type SlashCommandSurface = "cli" | "tui";
 export type SlashArgumentPolicy = "none" | "optional" | "required";
 export type SlashCommandOwner = "backend" | "tui";
 export type SlashCommandPresentation = "none" | "overlay" | "transcript";
+export type SlashCommandCategory =
+	| "diagnostics"
+	| "interface"
+	| "model"
+	| "safety"
+	| "session"
+	| "tools";
 
 export interface SlashCommandManifestItem {
 	readonly id: string;
@@ -10,6 +17,9 @@ export interface SlashCommandManifestItem {
 	readonly argument_hint?: string;
 	readonly argument_policy: SlashArgumentPolicy;
 	readonly available_during_turn: boolean;
+	readonly aliases: readonly `/${string}`[];
+	readonly category: SlashCommandCategory;
+	readonly search_only: boolean;
 }
 
 export interface ResolvedSlashCommand {
@@ -28,7 +38,7 @@ type SlashDispatchPolicy = {
 	readonly inlineClientAction?: string;
 };
 
-type SlashCommandSpec = SlashCommandManifestItem & {
+type SlashCommandSpec = Omit<SlashCommandManifestItem, "aliases" | "category" | "search_only"> & {
 	readonly aliases: readonly `/${string}`[];
 	readonly dispatch: Readonly<Partial<Record<SlashCommandSurface, SlashDispatchPolicy>>>;
 	readonly presentation: SlashCommandPresentation;
@@ -156,7 +166,6 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		tuiPolicy: tuiPolicy("open_settings"),
 		surfaces: TUI_SURFACE,
 		presentation: "none",
-		visible: false,
 	}),
 	spec("new", "/new", "Start a new session", {
 		surfaces: TUI_SURFACE,
@@ -355,14 +364,13 @@ function checkSurface(command: SlashCommandSpec, surface: SlashCommandSurface): 
 export function commandManifest(surface: SlashCommandSurface): SlashCommandManifestItem[] {
 	return BUILTIN_SLASH_COMMANDS
 		.filter((command) => command.visible && command.surfaces.includes(surface))
-		.map((command) => ({
-			id: command.id,
-			name: command.name,
-			description: command.description,
-			...(command.argument_hint ? { argument_hint: command.argument_hint } : {}),
-			argument_policy: command.argument_policy,
-			available_during_turn: command.available_during_turn,
-		}));
+		.map((command) => commandManifestItem(command));
+}
+
+export function commandDiscoveryManifest(surface: SlashCommandSurface): SlashCommandManifestItem[] {
+	return BUILTIN_SLASH_COMMANDS
+		.filter((command) => command.surfaces.includes(surface))
+		.map((command) => commandManifestItem(command));
 }
 
 export function builtinCommandNames(): ReadonlySet<string> {
@@ -392,6 +400,8 @@ export function slashCommandParityMatrix(): Readonly<Record<string, unknown>> {
 			})),
 			presentation: command.presentation,
 			available_during_turn: command.available_during_turn,
+			category: commandCategory(command.id),
+			search_only: !command.visible,
 			surfaces: [...command.surfaces].sort(),
 			visible: command.visible,
 		})),
@@ -401,6 +411,36 @@ export function slashCommandParityMatrix(): Readonly<Record<string, unknown>> {
 			args_prefix: alias.argsPrefix ?? "",
 		})),
 	});
+}
+
+function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestItem {
+	return Object.freeze({
+		id: command.id,
+		name: command.name,
+		description: command.description,
+		...(command.argument_hint ? { argument_hint: command.argument_hint } : {}),
+		argument_policy: command.argument_policy,
+		available_during_turn: command.available_during_turn,
+		aliases: Object.freeze([
+			...command.aliases,
+			...PREFIXED_ALIASES.filter((alias) => alias.commandId === command.id).map((alias) => alias.prefix),
+		]),
+		category: commandCategory(command.id),
+		search_only: !command.visible,
+	});
+}
+
+function commandCategory(id: string): SlashCommandCategory {
+	if (["model", "mode", "plan"].includes(id)) return "model";
+	if (["permissions", "sandbox", "trust"].includes(id)) return "safety";
+	if (["new", "resume", "fork", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
+		return "session";
+	}
+	if (["skills", "tools", "resources", "memory", "agents", "ps", "stop", "changes", "undo"].includes(id)) {
+		return "tools";
+	}
+	if (["status", "usage", "context", "stats", "trace"].includes(id)) return "diagnostics";
+	return "interface";
 }
 
 export function resolveSlashCommand(input: {

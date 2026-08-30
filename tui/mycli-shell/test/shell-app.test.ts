@@ -174,6 +174,76 @@ function slashCommand(
 	};
 }
 
+function settingsCatalogFixture(): NonNullable<MycliShellState["settingsCatalog"]> {
+	const categories = [
+		["model", "Model and reasoning"],
+		["providers", "Providers and credentials"],
+		["permissions", "Permissions and sandbox"],
+		["appearance", "外观和无障碍"],
+		["sessions", "Sessions and context"],
+		["integrations", "Integrations"],
+		["diagnostics", "Updates and diagnostics"],
+	] as const;
+	return {
+		version: 1,
+		categories: categories.map(([id, label]) => ({ id, label, description: `${label} settings` })),
+		items: [
+			settingsAction("model.selection", "model", "Model", "deepseek / deepseek-v4-flash", "open_model_selector", "/model"),
+			settingsAction("providers.credentials", "providers", "Credentials", "Configured", "open_login", "/login"),
+			settingsAction("permissions.profile", "permissions", "Permission profile", "workspace", "open_permissions", "/permissions"),
+			{
+				id: "tui.theme",
+				category: "appearance",
+				kind: "choice",
+				label: "主题",
+				description: "Select the terminal color theme",
+				value: "dark",
+				source: "default",
+				scope: "default",
+				allowedValues: ["dark", "light"],
+				clientKey: "theme",
+				configKey: "tui.theme",
+				locked: false,
+				restartRequired: false,
+				searchTerms: ["color", "appearance"],
+			},
+			settingsAction("sessions.saved", "sessions", "Saved sessions", "C:\\Users\\cosmos\\workspace", "open_session_selector", "/resume"),
+			settingsAction("integrations.resources", "integrations", "Runtime resources", "Available", "open_resources", "/resources"),
+			{
+				...settingsAction("diagnostics.updates", "diagnostics", "Updates", "Manual", "run_command", "/status"),
+				locked: true,
+				lockReason: "Use the package manager to update mycli",
+			},
+		],
+	};
+}
+
+function settingsAction(
+	id: string,
+	category: NonNullable<MycliShellState["settingsCatalog"]>["categories"][number]["id"],
+	label: string,
+	value: string,
+	action: string,
+	command: string,
+): NonNullable<MycliShellState["settingsCatalog"]>["items"][number] {
+	return {
+		id,
+		category,
+		kind: "action",
+		label,
+		description: `Open ${label}`,
+		value,
+		source: "runtime",
+		scope: "session",
+		allowedValues: [],
+		action,
+		command,
+		locked: false,
+		restartRequired: false,
+		searchTerms: [label, value],
+	};
+}
+
 test("session selector search supports phrase regex scope sort and named filters", () => {
 	const sessions = sampleState().sessions ?? [];
 
@@ -5034,15 +5104,15 @@ test("mycli shell model selector opens from app model keybinding", async () => {
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
 });
 
-test("mycli shell settings selector persists visual settings through runtime callback", async () => {
+test("mycli shell settings selector previews session changes without persistence", async () => {
 	const terminal = new TestTerminal();
-	const savedSettings: MycliShellState["settings"][] = [];
+	const savedSettings: Array<{ settingId: string; value: string | boolean }> = [];
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
-		onSettingsChange: async (settings) => {
-			savedSettings.push(settings);
-			return { ...settings, statusbarMode: "compact" };
+		onSettingsChange: async (change) => {
+			savedSettings.push(change);
+			return { ...sampleState().settings, statusbarMode: "compact" };
 		},
 	});
 
@@ -5056,11 +5126,159 @@ test("mycli shell settings selector persists visual settings through runtime cal
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\x1b[B");
-	terminal.input?.(" ");
+	terminal.input?.("\r");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /true\s+->\s+false/);
+	terminal.input?.("\r");
 	await setTimeout(25);
-	assert.equal(savedSettings.at(-1)?.hideThinking, false);
+	assert.equal(savedSettings.length, 0);
+	assert.equal(runtime.getState().settings?.hideThinking, false);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Settings/);
+});
+
+test("mycli shell settings selector persists only after explicit user-default scope", async () => {
+	const terminal = new TestTerminal();
+	const savedSettings: Array<{ settingId: string; value: string | boolean }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSettingsChange: async (change) => {
+			savedSettings.push(change);
+			return {
+				...sampleState().settings,
+				hideThinking: change.value === false ? false : true,
+				statusbarMode: "compact",
+			};
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await runtime.handleClientAction("open_settings", "");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.deepEqual(savedSettings.at(-1), { settingId: "tui.hide_thinking", value: false });
 	assert.equal(runtime.getState().settings?.hideThinking, false);
 	assert.equal(runtime.getState().settings?.statusbarMode, "compact");
+});
+
+test("mycli shell settings selector rolls back failed user persistence in place", async () => {
+	const terminal = new TestTerminal();
+	const initial = sampleState();
+	const initialMessageCount = initial.messages.length;
+	const runtime = new MycliShellRuntime({
+		initialState: initial,
+		terminal,
+		onSettingsChange: async () => {
+			throw new Error("Config write failed.");
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("preserve this draft");
+	await runtime.handleClientAction("open_settings", "");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Review setting change/);
+	assert.match(output, /Config write failed/);
+	assert.equal(runtime.getState().settings?.hideThinking, true);
+	assert.equal(runtime.getState().messages.length, initialMessageCount);
+	terminal.input?.("\x1b");
+	terminal.input?.("\x1b");
+	terminal.input?.("\x1b");
+	assert.equal(runtime.editor.getText(), "preserve this draft");
+});
+
+test("settings actions use nested selectors and Esc preserves the composer draft", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), settingsCatalog: settingsCatalogFixture() },
+		terminal,
+	});
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("draft stays here");
+	await runtime.handleClientAction("open_settings", "");
+	terminal.input?.("\r");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Select model/);
+	terminal.input?.("\x1b");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Settings/);
+	terminal.input?.("\x1b");
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	assert.equal(runtime.editor.getText(), "draft stays here");
+});
+
+test("settings catalog renders seven categories width-safe with CJK and Windows values", async () => {
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), settingsCatalog: settingsCatalogFixture() },
+		terminal: new TestTerminal(),
+	});
+	await runtime.handleClientAction("open_settings", "");
+	for (const width of [60, 80, 100, 140]) {
+		const lines = runtime.ui.render(width).map(stripAnsi);
+		assert.equal(lines.every((line) => visibleWidth(line) <= width), true, `width ${width}`);
+		const output = lines.join("\n");
+		for (const label of ["Model and reasoning", "Providers and credentials", "Permissions and sandbox", "外观和无障碍", "Sessions and context", "Integrations", "Updates and diagnostics"]) {
+			assert.match(output, new RegExp(label));
+		}
+	}
+});
+
+test("command palette searches aliases and setting values while blocking unavailable rows", async () => {
+	const terminal = new TestTerminal();
+	const submitted: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), settingsCatalog: settingsCatalogFixture() },
+		terminal,
+		commands: [
+			{ ...slashCommand("status", "/status", "Show status"), category: "diagnostics" },
+			{ ...slashCommand("settings", "/settings", "Open settings"), category: "interface", searchOnly: true },
+			{
+				...slashCommand("trace", "/trace", "Inspect trace"),
+				aliases: ["/logs"],
+				category: "diagnostics",
+				searchOnly: true,
+				available: false,
+				unavailableReason: "Runtime trace export is unavailable",
+			},
+		],
+		onCommandSubmit: (command) => { submitted.push(command); },
+	});
+	runtime.start();
+	await setTimeout(25);
+	runtime.showCommandPalette();
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /\/status/);
+	assert.doesNotMatch(output, /\/settings|\/trace/);
+	terminal.input?.("主题");
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /\/settings/);
+	terminal.input?.("\x1b");
+	runtime.showCommandPalette();
+	terminal.input?.("logs");
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /\/trace/);
+	assert.match(output, /Runtime trace export is unavailable/);
+	terminal.input?.("\r");
+	assert.deepEqual(submitted, []);
 });
 
 test("mycli shell applies runtime-backed visual settings to active rendering", async () => {

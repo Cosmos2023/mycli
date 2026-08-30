@@ -43,6 +43,7 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/model",
 	"/plan",
 	"/permissions",
+	"/settings",
 	"/new",
 	"/resume",
 	"/fork",
@@ -283,6 +284,10 @@ function gatewayHarness(options: {
 	const selectedModels: Array<Readonly<Record<string, unknown>>> = [];
 	let visualSettings: Readonly<Record<string, unknown>> = {
 		statusbar_mode: "full",
+		view_mode: "default",
+	};
+	let visualSettingSources: Readonly<Record<string, "default" | "user">> = {
+		statusbar_mode: "default",
 		view_mode: "default",
 	};
 	const queue = options.queue
@@ -615,10 +620,28 @@ function gatewayHarness(options: {
 						selectedModels.push({ ...input });
 						return { ...input, name: String(input.model), current: true };
 					},
-					loadSettings: async () => ({ ...visualSettings }),
+					loadSettings: async () => ({
+						settings: { ...visualSettings },
+						sources: { ...visualSettingSources },
+					}),
+					saveSetting: async (settingId: string, value: string | boolean) => {
+						const key = settingId.startsWith("tui.") ? settingId.slice(4) : settingId;
+						visualSettings = { ...visualSettings, [key]: value };
+						visualSettingSources = { ...visualSettingSources, [key]: "user" };
+						return {
+							settings: { ...visualSettings },
+							sources: { ...visualSettingSources },
+						};
+					},
 					saveSettings: async (settings: Readonly<Record<string, unknown>>) => {
 						visualSettings = { ...settings };
-						return { ...visualSettings };
+						visualSettingSources = Object.fromEntries(
+							Object.keys(visualSettings).map((key) => [key, "user" as const]),
+						);
+						return {
+							settings: { ...visualSettings },
+							sources: { ...visualSettingSources },
+						};
 					},
 					completePath: async (prefix: string) => [{ value: `${prefix}README.md`, kind: "file" }],
 				},
@@ -1109,16 +1132,49 @@ test("canonical control RPCs use injected Node services and update active state"
 
 	const loadedSettings = await harness.send("settings.load");
 	assert.equal("result" in loadedSettings ? loadedSettings.result.settings.view_mode : null, "default");
+	assert.equal("result" in loadedSettings ? loadedSettings.result.catalog.version : null, 1);
+	assert.equal(
+		"result" in loadedSettings
+			? loadedSettings.result.catalog.items.filter((item: { category: string }) => item.category === "appearance").length
+			: 0,
+		9,
+	);
 	const savedSettings = await harness.send("settings.save", {
-		settings: { view_mode: "verbose", statusbar_mode: "compact" },
+		setting_id: "tui.view_mode",
+		value: "verbose",
 	});
 	assert.equal("result" in savedSettings ? savedSettings.result.settings.view_mode : null, "verbose");
+	assert.equal("result" in savedSettings ? savedSettings.result.sources.view_mode : null, "user");
+	assert.equal("result" in savedSettings ? savedSettings.result.sources.statusbar_mode : null, "default");
+	assert.equal(
+		"result" in savedSettings
+			? savedSettings.result.catalog.items.find((item: { id: string }) => item.id === "tui.view_mode")?.source
+			: null,
+		"user",
+	);
+	const rejectedSetting = await harness.send("settings.save", {
+		setting_id: "model.name",
+		value: "private-model-sentinel",
+	});
+	assert.equal("error" in rejectedSetting ? rejectedSetting.error.code : null, "invalid_params");
+	assert.equal(JSON.stringify(rejectedSetting).includes("private-model-sentinel"), false);
 
 	const slash = await harness.send("completion.slash", { prefix: "/sta", surface: "tui" });
 	assert.deepEqual("result" in slash ? slash.result.items : [], [{
 		value: "/status",
 		description: "Show runtime status",
 	}]);
+	const discoveredCommands = await harness.send("command.list", { surface: "tui" });
+	const discoveredRows = "result" in discoveredCommands ? discoveredCommands.result.commands : [];
+	const statusCommand = discoveredRows.find((command: { id?: string }) => command.id === "status");
+	const statsCommand = discoveredRows.find((command: { id?: string }) => command.id === "stats");
+	assert.deepEqual(statusCommand?.aliases, ["/session show"]);
+	assert.equal(statusCommand?.category, "diagnostics");
+	assert.equal(statusCommand?.search_only, false);
+	assert.equal(statusCommand?.available, true);
+	assert.equal(statsCommand?.search_only, true);
+	assert.equal(statsCommand?.available, true);
+	assert.equal(statsCommand?.unavailable_reason, undefined);
 	const path = await harness.send("completion.path", { prefix: "@src/" });
 	assert.deepEqual("result" in path ? path.result.items : [], [{ value: "@src/README.md", kind: "file" }]);
 
@@ -1346,7 +1402,9 @@ test("shell command routes expose ps and stop through the active owner manager",
 	const listed = await harness.send("command.list", { surface: "tui" });
 	assert.deepEqual(
 		"result" in listed
-			? listed.result.commands.map((command: { name: string }) => command.name)
+			? listed.result.commands
+				.filter((command: { search_only?: boolean }) => command.search_only !== true)
+				.map((command: { name: string }) => command.name)
 			: [],
 		TUI_BUILTIN_COMMAND_NAMES,
 	);
@@ -1436,7 +1494,9 @@ test("integration commands are additive and cannot override built-in names or al
 	const listed = await harness.send("command.list", { surface: "tui" });
 	assert.deepEqual(
 		"result" in listed
-			? listed.result.commands.map((command: { name: string }) => command.name)
+			? listed.result.commands
+				.filter((command: { search_only?: boolean }) => command.search_only !== true)
+				.map((command: { name: string }) => command.name)
 			: [],
 		[...TUI_BUILTIN_COMMAND_NAMES, "/plugin:demo:status"],
 	);
@@ -2085,7 +2145,9 @@ test("gateway exposes bounded integration manifests resources commands and subag
 	const commands = await harness.send("command.list", { surface: "tui" });
 	assert.deepEqual(
 		"result" in commands
-			? commands.result.commands.map((command: { name: string }) => command.name)
+			? commands.result.commands
+				.filter((command: { search_only?: boolean }) => command.search_only !== true)
+				.map((command: { name: string }) => command.name)
 			: [],
 		[...TUI_BUILTIN_COMMAND_NAMES, "/plugin:demo:status"],
 	);

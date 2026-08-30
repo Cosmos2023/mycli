@@ -7,13 +7,14 @@ import {
 	truncateToWidth,
 	type TUI,
 } from "../tui-core/index.ts";
-import type { MycliShellCommandSpec } from "../model.ts";
+import type { MycliShellCommandSpec, MycliShellSettingsCatalog } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 
 export type CommandPaletteOptions = {
 	readonly tui: TUI;
 	readonly commands: readonly MycliShellCommandSpec[];
 	readonly turnRunning: boolean;
+	readonly settingsCatalog?: MycliShellSettingsCatalog;
 	readonly onSelect: (command: MycliShellCommandSpec) => void;
 	readonly onCancel: () => void;
 };
@@ -22,9 +23,11 @@ export class CommandPaletteComponent extends Container implements Focusable {
 	private readonly searchInput = new Input();
 	private readonly tui: TUI;
 	private readonly commands: MycliShellCommandSpec[];
+	private readonly defaultCommands: MycliShellCommandSpec[];
 	private filteredCommands: MycliShellCommandSpec[];
 	private selectedIndex = 0;
 	private readonly turnRunning: boolean;
+	private readonly settingsCatalog?: MycliShellSettingsCatalog;
 	private readonly onSelectCallback: (command: MycliShellCommandSpec) => void;
 	private readonly onCancelCallback: () => void;
 	private _focused = false;
@@ -42,8 +45,10 @@ export class CommandPaletteComponent extends Container implements Focusable {
 		super();
 		this.tui = options.tui;
 		this.commands = [...options.commands];
-		this.filteredCommands = this.commands;
+		this.defaultCommands = this.commands.filter((command) => command.searchOnly !== true && command.available !== false);
+		this.filteredCommands = this.defaultCommands;
 		this.turnRunning = options.turnRunning;
+		this.settingsCatalog = options.settingsCatalog;
 		this.onSelectCallback = options.onSelect;
 		this.onCancelCallback = options.onCancel;
 		this.searchInput.onSubmit = () => this.confirm();
@@ -86,17 +91,15 @@ export class CommandPaletteComponent extends Container implements Focusable {
 	}
 
 	private filter(query: string): void {
-		this.filteredCommands = fuzzyFilter(
-			this.commands,
-			query,
-			(command) => `${command.name} ${command.argumentHint ?? ""} ${command.description}`,
-		);
+		this.filteredCommands = query.trim()
+			? fuzzyFilter(this.commands, query, (command) => this.searchText(command))
+			: this.defaultCommands;
 		this.selectedIndex = 0;
 	}
 
 	private confirm(): void {
 		const command = this.filteredCommands[this.selectedIndex];
-		if (!command || (this.turnRunning && !command.availableDuringTurn)) return;
+		if (!command || this.disabledReason(command)) return;
 		this.onSelectCallback(command);
 	}
 
@@ -113,9 +116,10 @@ export class CommandPaletteComponent extends Container implements Focusable {
 		const rows = this.filteredCommands.slice(start, end).map((command, offset) => {
 			const index = start + offset;
 			const selected = index === this.selectedIndex;
-			const disabled = this.turnRunning && !command.availableDuringTurn;
+			const disabledReason = this.disabledReason(command);
+			const disabled = disabledReason !== undefined;
 			const commandText = `${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
-			const status = disabled ? "  unavailable while running" : `  ${command.description}`;
+			const status = disabled ? `  ${disabledReason}` : `  ${command.description}`;
 			const prefix = selected ? "› " : "  ";
 			if (disabled) return theme.fg("dim", `${prefix}${commandText}${status}`);
 			return selected
@@ -127,10 +131,31 @@ export class CommandPaletteComponent extends Container implements Focusable {
 
 	private resultCount(): string {
 		const position = this.filteredCommands.length === 0 ? 0 : this.selectedIndex + 1;
-		if (this.filteredCommands.length === this.commands.length) {
-			return `${position}/${this.commands.length}`;
+		if (!this.searchInput.getValue().trim()) {
+			return `${position}/${this.defaultCommands.length}`;
 		}
 		return `${position}/${this.filteredCommands.length} · ${this.filteredCommands.length}/${this.commands.length} matches`;
+	}
+
+	private disabledReason(command: MycliShellCommandSpec): string | undefined {
+		if (command.available === false) return command.unavailableReason ?? "unavailable in this runtime";
+		if (this.turnRunning && !command.availableDuringTurn) return "unavailable while running";
+		return undefined;
+	}
+
+	private searchText(command: MycliShellCommandSpec): string {
+		const settings = this.settingsCatalog?.items.filter((item) =>
+			item.command === command.name || (command.id === "settings" && item.kind === "choice")) ?? [];
+		return [
+			command.name,
+			...(command.aliases ?? []),
+			command.argumentHint,
+			command.description,
+			command.category,
+			...settings.flatMap((item) => [
+				item.label, item.description, item.value, item.source, item.scope, ...item.searchTerms,
+			]),
+		].filter(Boolean).join(" ");
 	}
 }
 

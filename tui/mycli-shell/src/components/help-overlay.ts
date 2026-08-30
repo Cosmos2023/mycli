@@ -24,11 +24,14 @@ const SHORTCUTS: readonly [AppKeybinding, string][] = [
 	["app.message.dequeue", "Restore last queued message"],
 ];
 
-const COMMAND_GROUPS: readonly [string, ReadonlySet<string>][] = [
-	["Session", new Set(["new", "resume", "fork", "status", "usage", "compact"])],
-	["Model", new Set(["model", "plan", "permissions"])],
-	["Tools", new Set(["skills", "tools", "agents", "ps", "changes"])],
-];
+const CATEGORY_LABELS: Readonly<Record<NonNullable<MycliShellCommandSpec["category"]>, string>> = {
+	diagnostics: "Diagnostics",
+	interface: "Interface",
+	model: "Model",
+	safety: "Safety",
+	session: "Session",
+	tools: "Tools",
+};
 
 export class HelpOverlayComponent implements Component, Focusable {
 	focused = false;
@@ -66,16 +69,13 @@ export class HelpOverlayComponent implements Component, Focusable {
 	}
 
 	private commandLines(width: number): string[] {
-		const assigned = new Set<string>();
 		const lines: string[] = [];
-		for (const [title, ids] of COMMAND_GROUPS) {
-			const commands = this.options.commands.filter((command) => ids.has(command.id));
+		const visible = this.options.commands.filter((command) => command.searchOnly !== true && command.available !== false);
+		for (const [category, title] of Object.entries(CATEGORY_LABELS)) {
+			const commands = visible.filter((command) => (command.category ?? "tools") === category);
 			if (commands.length === 0) continue;
-			commands.forEach((command) => assigned.add(command.id));
 			lines.push(commandGroupLine(title, commands, width));
 		}
-		const other = this.options.commands.filter((command) => !assigned.has(command.id));
-		if (other.length > 0) lines.push(commandGroupLine("Other", other, width));
 		return lines;
 	}
 }

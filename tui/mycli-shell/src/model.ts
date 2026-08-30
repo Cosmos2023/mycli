@@ -381,6 +381,58 @@ export type MycliShellVisualSettings = {
 	subagentDensity?: "compact" | "normal" | "detailed";
 };
 
+export type MycliShellSettingsCategoryId =
+	| "appearance"
+	| "diagnostics"
+	| "integrations"
+	| "model"
+	| "permissions"
+	| "providers"
+	| "sessions";
+
+export type MycliShellSettingsCategory = {
+	id: MycliShellSettingsCategoryId;
+	label: string;
+	description: string;
+};
+
+export type MycliShellSettingsItem = {
+	id: string;
+	category: MycliShellSettingsCategoryId;
+	kind: "action" | "choice" | "status";
+	label: string;
+	description: string;
+	value: string;
+	source: string;
+	scope: string;
+	allowedValues: string[];
+	clientKey?: keyof MycliShellVisualSettings;
+	configKey?: string;
+	action?: string;
+	actionArgs?: string;
+	command?: string;
+	locked: boolean;
+	lockReason?: string;
+	restartRequired: boolean;
+	searchTerms: string[];
+};
+
+export type MycliShellSettingsCatalog = {
+	version: 1;
+	categories: MycliShellSettingsCategory[];
+	items: MycliShellSettingsItem[];
+};
+
+export type MycliShellSettingsSnapshot = {
+	settings: MycliShellVisualSettings;
+	catalog?: MycliShellSettingsCatalog;
+};
+
+export type MycliShellSettingChange = {
+	settingId: string;
+	value: string | boolean;
+};
+
 export type MycliShellSession = {
 	id: string;
 	title?: string;
@@ -551,6 +603,7 @@ export type MycliShellState = {
 	authReadiness?: MycliShellCredentialReadiness;
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;
+	settingsCatalog?: MycliShellSettingsCatalog;
 	sessions?: MycliShellSession[];
 	resources?: MycliShellResource[];
 	permissions?: MycliShellPermissionState;
@@ -563,6 +616,11 @@ export type MycliShellCommandSpec = {
 	argumentHint?: string;
 	argumentPolicy: "none" | "optional" | "required";
 	availableDuringTurn: boolean;
+	aliases?: string[];
+	category?: "diagnostics" | "interface" | "model" | "safety" | "session" | "tools";
+	searchOnly?: boolean;
+	available?: boolean;
+	unavailableReason?: string;
 };
 
 export type MycliShellClientAction = {

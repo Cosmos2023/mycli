@@ -27,6 +27,10 @@ import type {
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
 	MycliShellResource,
+	MycliShellSettingsCatalog,
+	MycliShellSettingChange,
+	MycliShellSettingsItem,
+	MycliShellSettingsSnapshot,
 	MycliShellSessionTree,
 	MycliShellSessionTreeNode,
 	MycliShellState,
@@ -63,7 +67,10 @@ import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { ResourceSelectorComponent } from "./components/resource-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
-import { SettingsSelectorComponent } from "./components/settings-selector.ts";
+import {
+	SettingsSelectorComponent,
+	type SettingsChangeScope,
+} from "./components/settings-selector.ts";
 import { BackgroundSubagentDialogComponent, isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import {
@@ -124,7 +131,10 @@ export type MycliShellRuntimeOptions = {
 	onSessionSelect?: (sessionId: string) => void | Promise<void>;
 	onSessionTreeLoad?: () => MycliShellSessionTree | Promise<MycliShellSessionTree>;
 	onSessionTreeSelect?: (node: MycliShellSessionTreeNode) => void | Promise<void>;
-	onSettingsChange?: (settings: MycliShellVisualSettings) => MycliShellVisualSettings | Promise<MycliShellVisualSettings>;
+	onSettingsLoad?: () => MycliShellSettingsSnapshot | undefined | Promise<MycliShellSettingsSnapshot | undefined>;
+	onSettingsChange?: (
+		change: MycliShellSettingChange,
+	) => MycliShellVisualSettings | MycliShellSettingsSnapshot | Promise<MycliShellVisualSettings | MycliShellSettingsSnapshot>;
 	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
 	onTranscriptOutputLoad?: (
 		request: MycliShellTranscriptOutputRequest,
@@ -207,6 +217,11 @@ type ActiveTranscriptViewer = {
 	readonly loadedSignatures: Map<string, string>;
 	loadingHistory: boolean;
 	blocksSource: readonly MycliShellTranscriptBlock[];
+};
+
+type SelectorEntry = {
+	readonly component: Component;
+	readonly focus: Component;
 };
 
 const NATIVE_RESIZE_REFLOW_DEBOUNCE_MS = 75;
@@ -1153,6 +1168,7 @@ export class MycliShellRuntime {
 	private turnStartedAtMs: number | null = null;
 	private completedDurationMs: number | null = null;
 	private selectorActive = false;
+	private selectorStack: SelectorEntry[] = [];
 	private sessionTransitionDepth = 0;
 	private approvalSurfaceDecisionId: string | null = null;
 	private clarificationSurfaceRequestId: string | null = null;
@@ -1481,19 +1497,25 @@ export class MycliShellRuntime {
 	}
 
 	showTrustGate(): void {
+		const startupGate = !this.mainMounted;
 		this.ensureSelectorHostMounted();
 		this.showSelector((done) => {
 			let selectionPending = false;
 			const selector = new TrustSelectorComponent({
 				cwd: this.state.footer.cwd,
-				savedDecision: this.options.trustSavedDecision ?? null,
-				projectTrusted: this.options.projectTrusted ?? false,
+				savedDecision: trustDecision(this.state.footer.trust) ?? this.options.trustSavedDecision ?? null,
+				projectTrusted: this.state.footer.trust === "trusted" || this.options.projectTrusted === true,
 				onSelect: (trusted) => {
 					if (selectionPending) return;
 					selectionPending = true;
 					selector.setError();
 					void Promise.resolve(this.options.onTrustSelect?.(trusted))
 						.then(() => {
+							if (!startupGate) {
+								done();
+								this.patchFooter({ trust: trusted ? "trusted" : "untrusted" });
+								return;
+							}
 							if (trusted) {
 								done();
 								this.mountMain();
@@ -1514,7 +1536,8 @@ export class MycliShellRuntime {
 						});
 				},
 				onCancel: () => {
-					void this.shutdown();
+					if (startupGate) void this.shutdown();
+					else done();
 				},
 			});
 			return { component: selector, focus: selector };
@@ -1528,6 +1551,7 @@ export class MycliShellRuntime {
 				tui: this.ui,
 				commands,
 				turnRunning: this.isTurnRunning(),
+				settingsCatalog: this.state.settingsCatalog,
 				onSelect: (command) => {
 					done();
 					void this.submitCommand(command.name);
@@ -1691,11 +1715,24 @@ export class MycliShellRuntime {
 		this.showLoginFlow(readiness?.providerId, readiness?.authRef, true);
 	}
 
-	showSettingsSelector(): void {
+	async showSettingsSelector(): Promise<void> {
+		const loaded = await this.options.onSettingsLoad?.();
+		if (loaded) {
+			const loadedState = this.ensureToolsVisible({
+				...this.state,
+				settings: loaded.settings,
+				settingsCatalog: loaded.catalog ?? this.state.settingsCatalog,
+			});
+			this.setState(loadedState);
+		}
 		this.showSelector((done) => {
-			const selector = new SettingsSelectorComponent(this.state.settings, {
-				onChange: (settings) => {
-					void this.applySettingsChange(settings);
+			const selector = new SettingsSelectorComponent({
+				tui: this.ui,
+				settings: this.state.settings,
+				catalog: this.state.settingsCatalog,
+				onAction: (item) => this.openSettingsAction(item),
+				onChange: (item, value, scope, activeSelector) => {
+					void this.applySettingsChange(item, value, scope, activeSelector);
 				},
 				onCancel: () => done(),
 			});
@@ -1891,19 +1928,35 @@ export class MycliShellRuntime {
 	}
 
 	private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
-		const done = () => {
-			this.restoreEditor();
-		};
-		const { component, focus } = create(done);
+		let entry: SelectorEntry | undefined;
+		const done = () => this.closeSelector(entry);
+		entry = create(done);
+		this.selectorStack.push(entry);
+		this.mountSelector(entry);
+	}
+
+	private closeSelector(entry: SelectorEntry | undefined): void {
+		if (!entry || this.selectorStack.at(-1) !== entry) return;
+		this.selectorStack.pop();
+		const previous = this.selectorStack.at(-1);
+		if (previous) {
+			this.mountSelector(previous);
+			return;
+		}
+		this.restoreEditor();
+	}
+
+	private mountSelector(entry: SelectorEntry): void {
 		this.selectorActive = true;
 		this.editorContainer.clear();
-		this.editorContainer.addChild(component);
-		this.ui.setFocus(focus);
+		this.editorContainer.addChild(entry.component);
+		this.ui.setFocus(entry.focus);
 		this.ui.requestRender();
 	}
 
 	private restoreEditor(): void {
 		this.selectorActive = false;
+		this.selectorStack = [];
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
@@ -3010,7 +3063,9 @@ export class MycliShellRuntime {
 	}
 
 	private refreshAutocompleteProvider(): void {
-		const slashCommands: SlashCommand[] = this.commands().map((command) => ({
+		const slashCommands: SlashCommand[] = this.commands()
+			.filter((command) => command.searchOnly !== true && command.available !== false)
+			.map((command) => ({
 			name: command.name.replace(/^\//, ""),
 			description: command.description,
 			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
@@ -3222,32 +3277,86 @@ export class MycliShellRuntime {
 		this.setState({ ...this.state, footer: { ...this.state.footer, ...footerPatch } });
 	}
 
-	private async applySettingsChange(settings: MycliShellVisualSettings): Promise<void> {
-		const previousSettings = this.state.settings;
-		const optimisticState = this.ensureToolsVisible({ ...this.state, settings });
+	private openSettingsAction(item: MycliShellSettingsItem): void {
+		const action = item.action ?? (item.command ? "run_command" : undefined);
+		switch (action) {
+			case "open_model_selector":
+				this.showModelSelector();
+				return;
+			case "open_login":
+				this.showLoginFlow();
+				return;
+			case "open_permissions":
+				this.showPermissionSelector();
+				return;
+			case "open_trust":
+				this.showTrustGate();
+				return;
+			case "open_session_selector":
+				this.showSessionSelector();
+				return;
+			case "open_resources":
+				void this.showResourceSelector();
+				return;
+			case "run_command": {
+				const command = item.actionArgs ?? item.command;
+				if (command) void this.submitCommand(command);
+				return;
+			}
+		}
+	}
+
+	private async applySettingsChange(
+		item: MycliShellSettingsItem,
+		value: string,
+		scope: SettingsChangeScope,
+		selector: SettingsSelectorComponent,
+	): Promise<void> {
+		const previousState = this.state;
+		const settings = visualSettingsWithChoice(this.state.settings, item, value);
+		if (!settings) {
+			selector.setError("Gateway returned an unsupported visual setting.");
+			return;
+		}
+		const optimisticCatalog = settingsCatalogWithChoice(this.state.settingsCatalog, item, value, scope);
+		const optimisticState = this.ensureToolsVisible({
+			...this.state,
+			settings,
+			settingsCatalog: optimisticCatalog,
+		});
 		this.setState({
 			...optimisticState,
 			footer: {
 				...optimisticState.footer,
-				liveState: "Settings",
+				liveState: scope === "session" ? "Session setting" : "Saving settings",
 			},
 		});
+		if (scope === "session") {
+			selector.commit(value, scope, optimisticCatalog);
+			return;
+		}
 		try {
-			const savedSettings = await this.options.onSettingsChange?.(settings);
-			if (savedSettings) {
-				const savedState = this.ensureToolsVisible({ ...this.state, settings: savedSettings });
-				this.setState({
-					...savedState,
-					footer: {
-						...savedState.footer,
-						liveState: "Settings saved",
-					},
-				});
-			}
+			const persistedValue = visualSettingValue(settings, item);
+			if (persistedValue === null) throw new Error("The selected setting value is unavailable.");
+			const result = await this.options.onSettingsChange?.({
+				settingId: item.configKey ?? item.id,
+				value: persistedValue,
+			});
+			if (!result) throw new Error("Persistent settings are unavailable in this runtime.");
+			const snapshot = settingsSnapshot(result);
+			const savedState = this.ensureToolsVisible({
+				...this.state,
+				settings: snapshot.settings,
+				settingsCatalog: snapshot.catalog ?? optimisticCatalog,
+			});
+			this.setState({
+				...savedState,
+				footer: { ...savedState.footer, liveState: "Settings saved" },
+			});
+			selector.commit(value, scope, snapshot.catalog ?? optimisticCatalog);
 		} catch (error) {
-			const restoredState = this.ensureToolsVisible({ ...this.state, settings: previousSettings });
-			this.setState(restoredState);
-			this.addSystemNotice(safeErrorMessage(error, "Failed to save settings."));
+			this.setState(previousState);
+			selector.setError(safeErrorMessage(error, "Failed to save settings."));
 		}
 	}
 
@@ -3302,10 +3411,9 @@ export class MycliShellRuntime {
 			this.setState(nextState);
 			this.mountMain();
 			const providerModels = this.modelsForProvider(providerId);
+			done();
 			if (providerModels.length > 0) {
 				this.showModelSelector(providerId);
-			} else {
-				done();
 			}
 		} catch (error) {
 			selector.setError(safeErrorMessage(error, "Failed to save API key."));
@@ -3405,6 +3513,88 @@ export class MycliShellRuntime {
 		}
 		await this.options.onCommandSubmit?.(command);
 	}
+}
+
+function trustDecision(value: string | undefined): ProjectTrustDecision {
+	if (value === "trusted") return true;
+	if (value === "untrusted") return false;
+	return null;
+}
+
+function settingsSnapshot(
+	value: MycliShellVisualSettings | MycliShellSettingsSnapshot,
+): MycliShellSettingsSnapshot {
+	return "settings" in value ? value : { settings: value };
+}
+
+function visualSettingsWithChoice(
+	settings: MycliShellVisualSettings | undefined,
+	item: MycliShellSettingsItem,
+	value: string,
+): MycliShellVisualSettings | null {
+	switch (item.clientKey) {
+		case "statusbarMode":
+			return ["off", "compact", "full"].includes(value)
+				? { ...settings, statusbarMode: value as NonNullable<MycliShellVisualSettings["statusbarMode"]> }
+				: null;
+		case "viewMode":
+			return ["default", "verbose", "focus"].includes(value)
+				? { ...settings, viewMode: value as NonNullable<MycliShellVisualSettings["viewMode"]> }
+				: null;
+		case "theme":
+			return value ? { ...settings, theme: value } : null;
+		case "hideThinking":
+			return booleanSetting(settings, "hideThinking", value);
+		case "toolDetailsDefault":
+			return ["collapsed", "expanded"].includes(value)
+				? { ...settings, toolDetailsDefault: value as NonNullable<MycliShellVisualSettings["toolDetailsDefault"]> }
+				: null;
+		case "hardwareCursor":
+			return booleanSetting(settings, "hardwareCursor", value);
+		case "clearOnShrink":
+			return booleanSetting(settings, "clearOnShrink", value);
+		case "terminalProgress":
+			return booleanSetting(settings, "terminalProgress", value);
+		case "subagentDensity":
+			return ["compact", "normal", "detailed"].includes(value)
+				? { ...settings, subagentDensity: value as NonNullable<MycliShellVisualSettings["subagentDensity"]> }
+				: null;
+		default:
+			return null;
+	}
+}
+
+function booleanSetting(
+	settings: MycliShellVisualSettings | undefined,
+	key: "hideThinking" | "hardwareCursor" | "clearOnShrink" | "terminalProgress",
+	value: string,
+): MycliShellVisualSettings | null {
+	if (value !== "true" && value !== "false") return null;
+	return { ...settings, [key]: value === "true" };
+}
+
+function visualSettingValue(
+	settings: MycliShellVisualSettings,
+	item: MycliShellSettingsItem,
+): string | boolean | null {
+	if (!item.clientKey) return null;
+	const value = settings[item.clientKey];
+	return typeof value === "string" || typeof value === "boolean" ? value : null;
+}
+
+function settingsCatalogWithChoice(
+	catalog: MycliShellSettingsCatalog | undefined,
+	selected: MycliShellSettingsItem,
+	value: string,
+	scope: SettingsChangeScope,
+): MycliShellSettingsCatalog | undefined {
+	if (!catalog) return undefined;
+	return {
+		...catalog,
+		items: catalog.items.map((item) => item.id === selected.id
+			? { ...item, value, source: scope === "user" ? "user" : "session", scope }
+			: item),
+	};
 }
 
 function authRecoveryFromError(error: unknown): {

@@ -26,6 +26,22 @@ function commandFromUnknown(value: unknown): MycliShellCommandSpec | null {
 	const argumentHint = typeof record.argument_hint === "string" && record.argument_hint.trim()
 		? record.argument_hint.trim()
 		: undefined;
+	const categories: readonly MycliShellCommandSpec["category"][] = [
+		"diagnostics", "interface", "model", "safety", "session", "tools",
+	];
+	const category = categories.includes(record.category as MycliShellCommandSpec["category"])
+		? record.category as MycliShellCommandSpec["category"]
+		: "tools";
+	const aliases = Array.isArray(record.aliases)
+		? [...new Set(record.aliases.flatMap((alias) => {
+			if (typeof alias !== "string") return [];
+			const normalized = alias.trim();
+			return normalized.startsWith("/") ? [normalized] : [];
+		}))]
+		: [];
+	const unavailableReason = typeof record.unavailable_reason === "string" && record.unavailable_reason.trim()
+		? record.unavailable_reason.trim().slice(0, 256)
+		: undefined;
 	return {
 		id,
 		name,
@@ -33,6 +49,11 @@ function commandFromUnknown(value: unknown): MycliShellCommandSpec | null {
 		...(argumentHint ? { argumentHint } : {}),
 		argumentPolicy: argumentPolicy as MycliShellCommandSpec["argumentPolicy"],
 		availableDuringTurn: record.available_during_turn,
+		aliases,
+		category,
+		searchOnly: record.search_only === true,
+		available: record.available !== false,
+		...(unavailableReason ? { unavailableReason } : {}),
 	};
 }
 

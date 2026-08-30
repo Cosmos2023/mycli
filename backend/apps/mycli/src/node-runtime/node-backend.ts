@@ -23,12 +23,13 @@ import {
 	listProviderProfiles,
 	loadModelCatalog,
 	loadManagedExecutionPolicy,
-	loadShellSettings,
+	loadShellSettingsState,
 	modelCatalogEntryPayload,
 	parseProtocol,
 	readApiKey,
 	resolveModelRuntimeConfig,
 	resolveProviderProfile,
+	saveShellSetting,
 	saveShellSettings,
 	writeApiKey,
 	writeUserProviderConfig,
@@ -1826,17 +1827,41 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							return preferences
 								?? sessionPreferencesFromConfig(controlConfig, "default");
 						},
-						loadSettings: async () => ({ ...await loadShellSettings({ homeDir }) }),
+						loadSettings: async () => {
+							const loaded = await loadShellSettingsState({ homeDir });
+							return {
+								settings: { ...loaded.settings },
+								sources: { ...loaded.sources },
+							};
+						},
+						saveSetting: async (settingId, value) => {
+							const active = sessionCoordinator.snapshot();
+							const loaded = await saveShellSetting({
+								homeDir,
+								key: settingId,
+								value,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+							});
+							return {
+								settings: { ...loaded.settings },
+								sources: { ...loaded.sources },
+							};
+						},
 						saveSettings: async (settings) => {
 							const active = sessionCoordinator.snapshot();
+							await saveShellSettings({
+								homeDir,
+								settings,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+							});
+							const loaded = await loadShellSettingsState({ homeDir });
 							return {
-								...await saveShellSettings({
-									homeDir,
-									settings,
-									workspaceRoot: active.workspaceRoot,
-									env: options.env,
-									workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
-								}),
+								settings: { ...loaded.settings },
+								sources: { ...loaded.sources },
 							};
 						},
 						completePath: (prefix) => pathCompletionCandidates(

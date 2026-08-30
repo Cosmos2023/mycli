@@ -4785,10 +4785,19 @@ test("Node backend persists canonical TUI control state without exposing credent
 	);
 
 	writeRequest(first, "settings", "settings.save", {
-		settings: { viewMode: "verbose", statusbarMode: "compact", hideThinking: false },
+		setting_id: "tui.view_mode",
+		value: "verbose",
 	});
 	const settings = await waitFor(() => response(firstMessages, "settings"));
 	assert.equal((resultValue(settings, "settings") as Record<string, unknown>).view_mode, "verbose");
+	const settingsSources = resultValue(settings, "sources") as Record<string, unknown>;
+	assert.equal(settingsSources.view_mode, "user");
+	assert.equal(settingsSources.statusbar_mode, "default");
+	writeRequest(first, "settings-statusbar", "settings.save", {
+		setting_id: "tui.statusbar_mode",
+		value: "compact",
+	});
+	await waitFor(() => response(firstMessages, "settings-statusbar"));
 
 	writeRequest(first, "path", "completion.path", { prefix: "@src/" });
 	const completion = await waitFor(() => response(firstMessages, "path"));

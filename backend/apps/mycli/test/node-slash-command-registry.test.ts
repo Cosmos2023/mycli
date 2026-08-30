@@ -26,11 +26,31 @@ test("Node slash registry matches the frozen final cross-backend command matrix"
 		"[--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]",
 	);
 	assert.equal(maintenance?.available_during_turn, false);
-	assert.equal(fixture.schema_version, 1);
+	assert.equal(fixture.schema_version, 2);
 	assert.equal(matrix.commands.length, fixture.command_count);
 	assert.equal(matrix.prefixed_aliases.length, fixture.prefixed_alias_count);
 	assert.equal(
 		createHash("sha256").update(JSON.stringify(matrix)).digest("hex"),
 		fixture.sha256,
 	);
+});
+
+test("documented commands and aliases stay aligned with the canonical slash registry", () => {
+	const docs = readFileSync(new URL("../../../../docs/commands.md", import.meta.url), "utf8");
+	const matrix = slashCommandParityMatrix();
+	assert.ok(Array.isArray(matrix.commands));
+	assert.ok(Array.isArray(matrix.prefixed_aliases));
+	for (const value of matrix.commands) {
+		assert.equal(typeof value, "object");
+		assert.ok(value !== null);
+		const command = value as { readonly name: string; readonly aliases: readonly string[] };
+		assert.ok(docs.includes(`| \`${command.name}\` |`), command.name);
+		for (const alias of command.aliases) assert.ok(docs.includes(`\`${alias}\``), alias);
+	}
+	for (const value of matrix.prefixed_aliases) {
+		assert.equal(typeof value, "object");
+		assert.ok(value !== null);
+		const alias = (value as { readonly prefix: string }).prefix;
+		assert.ok(docs.includes(`\`${alias}\``), alias);
+	}
 });

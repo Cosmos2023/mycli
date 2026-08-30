@@ -10,7 +10,10 @@ import {
 	runtimeRetryStatusText,
 	sanitizeRuntimeErrorDetail,
 } from "@mycli/contracts";
-import type { WorkspaceTrustState } from "@mycli/config";
+import {
+	shellSettingDescriptor,
+	type WorkspaceTrustState,
+} from "@mycli/config";
 import type {
 	ModelSelectionScope,
 	RuntimeErrorCode,
@@ -61,11 +64,13 @@ import {
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import {
 	builtinCommandNames,
+	commandDiscoveryManifest,
 	commandManifest,
 	resolveSlashCommand,
 	SlashCommandError,
 	type SlashCommandSurface,
 } from "./node-slash-command-registry.ts";
+import { buildNodeSettingsCatalog } from "./node-settings-catalog.ts";
 import {
 	diagnosticCommandResult,
 	errorCommandResult,
@@ -233,6 +238,7 @@ export interface NodeGatewayControlCommands {
 		preferences: SessionPreferences | undefined,
 	): Promise<SessionPreferences>;
 	loadSettings(): Promise<JsonObject>;
+	saveSetting?(settingId: string, value: string | boolean): Promise<JsonObject>;
 	saveSettings(settings: JsonObject): Promise<JsonObject>;
 	completePath(prefix: string): Promise<readonly JsonObject[]>;
 }
@@ -788,8 +794,15 @@ class InProcessNodeGateway implements NodeGateway {
 			.filter((command) =>
 				typeof command.name === "string" && !builtInNames.has(command.name.trim()));
 		const commands = [
-				...commandManifest(surface),
-				...integrationCommands,
+			...commandDiscoveryManifest(surface).map((command) => {
+				const unavailableReason = this.#commandUnavailableReason(command.id);
+				return {
+					...command,
+					available: unavailableReason === undefined,
+					...(unavailableReason ? { unavailable_reason: unavailableReason } : {}),
+				};
+			}),
+			...integrationCommands,
 			];
 		return {
 			commands,
@@ -801,13 +814,40 @@ class InProcessNodeGateway implements NodeGateway {
 		};
 	}
 
+	#commandUnavailableReason(id: string): string | undefined {
+		if (["login", "model", "settings"].includes(id) && !this.#options.controlCommands) {
+			return "Runtime configuration controls are unavailable";
+		}
+		if (id === "memory" && !this.#options.memoryCommands) return "Session memory is unavailable";
+		if (["fork", "resume", "session_maintenance", "session_search"].includes(id)
+			&& !this.#options.sessionCommands) {
+			return "Session storage controls are unavailable";
+		}
+		if (id === "trace" && !this.#options.traceCommands) return "Runtime trace export is unavailable";
+		if (["changes", "undo"].includes(id) && !this.#options.fileHistoryCommands) {
+			return "File history is unavailable";
+		}
+		if (["ps", "stop"].includes(id) && !this.#options.shellManager) {
+			return "Background terminals are unavailable";
+		}
+		if (id === "resources" && !this.#options.integrations?.listResources) {
+			return "Integration resources are unavailable";
+		}
+		return undefined;
+	}
+
 	#completeSlash(params: JsonObject): JsonObject {
 		const prefix = optionalString(params.prefix) ?? "/";
 		const surface = params.surface === undefined ? "tui" : slashCommandSurface(params.surface);
 		const commands = this.#commandList({ surface }).commands;
 		return {
 			items: Array.isArray(commands) ? commands.flatMap((value) => {
-				if (!isObject(value) || typeof value.name !== "string" || !value.name.startsWith(prefix)) {
+				if (
+					!isObject(value)
+					|| value.search_only === true
+					|| typeof value.name !== "string"
+					|| !value.name.startsWith(prefix)
+				) {
 					return [];
 				}
 				return [{
@@ -902,24 +942,58 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #loadSettings(): Promise<JsonObject> {
-		const settings = await this.#options.controlCommands?.loadSettings();
-		return settings
-			? { settings, source: "user_config" }
-			: { settings: {}, source: "defaults" };
+		const loaded = await this.#options.controlCommands?.loadSettings();
+		const snapshot = settingsSnapshot(loaded);
+		return this.#settingsPayload(snapshot.settings, snapshot.sources);
 	}
 
 	async #saveSettings(params: JsonObject): Promise<JsonObject> {
+		const commands = this.#options.controlCommands;
+		if (!commands) throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
+		if ("setting_id" in params || "value" in params) {
+			const mutation = shellSettingMutation(params);
+			if (!commands.saveSetting) {
+				throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
+			}
+			const saved = settingsSnapshot(await commands.saveSetting(mutation.settingId, mutation.value));
+			return {
+				ok: true,
+				message: "Saved TUI setting.",
+				...await this.#settingsPayload(saved.settings, authoritativeSettingsSources(saved)),
+			};
+		}
 		if (!isObject(params.settings)) {
 			throw new GatewayFailure("invalid_params", "settings is required.");
 		}
-		const commands = this.#options.controlCommands;
-		if (!commands) throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
 		const settings = await commands.saveSettings(params.settings);
+		const saved = settingsSnapshot(settings);
 		return {
 			ok: true,
-			settings,
-			source: "user_config",
 			message: "Saved TUI settings.",
+			...await this.#settingsPayload(saved.settings, authoritativeSettingsSources(saved)),
+		};
+	}
+
+	async #settingsPayload(settings: JsonObject, sources: JsonObject): Promise<JsonObject> {
+		const credential = await this.#credentialReadiness();
+		return {
+			settings,
+			sources,
+			source: Object.values(sources).some((value) => value === "user") ? "user_config" : "defaults",
+			catalog: buildNodeSettingsCatalog({
+				settings,
+				sources: settingsSources(sources),
+				provider: this.#provider,
+				model: this.#model,
+				...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
+				...(credential ? {
+					credential: { ready: credential.ready, source: credential.source },
+				} : {}),
+				permissions: this.#permissions(),
+				trust: this.#trustStatus(),
+				context: this.#contextWindow(),
+				integrationsAvailable: this.#options.integrations?.listResources !== undefined,
+			}),
 		};
 	}
 
@@ -4086,6 +4160,58 @@ function boundedResource(value: JsonObject): JsonObject {
 	}
 	if (typeof value.enabled === "boolean") resource.enabled = value.enabled;
 	return resource;
+}
+
+function settingsSnapshot(value: JsonObject | undefined): {
+	readonly settings: JsonObject;
+	readonly sources: JsonObject;
+} {
+	if (!value) return { settings: {}, sources: {} };
+	if (isObject(value.settings)) {
+		return {
+			settings: { ...value.settings },
+			sources: isObject(value.sources) ? { ...value.sources } : {},
+		};
+	}
+	return { settings: { ...value }, sources: {} };
+}
+
+function userSettingsSources(settings: JsonObject): JsonObject {
+	return Object.freeze(Object.fromEntries(Object.keys(settings).map((key) => [key, "user"])));
+}
+
+function authoritativeSettingsSources(snapshot: {
+	readonly settings: JsonObject;
+	readonly sources: JsonObject;
+}): JsonObject {
+	return Object.keys(snapshot.sources).length > 0
+		? snapshot.sources
+		: userSettingsSources(snapshot.settings);
+}
+
+function shellSettingMutation(params: JsonObject): {
+	readonly settingId: string;
+	readonly value: string | boolean;
+} {
+	const settingId = typeof params.setting_id === "string" ? params.setting_id.trim() : "";
+	const item = shellSettingDescriptor(settingId);
+	if (!item) {
+		throw new GatewayFailure("invalid_params", "A supported TUI setting is required.");
+	}
+	let value = params.value;
+	if (item.valueKind === "boolean" && typeof value === "string") {
+		value = value === "true" ? true : value === "false" ? false : value;
+	}
+	if ((typeof value !== "string" && typeof value !== "boolean")
+		|| !item.allowedValues.includes(value)) {
+		throw new GatewayFailure("invalid_params", "A supported TUI setting value is required.");
+	}
+	return { settingId: item.key, value };
+}
+
+function settingsSources(value: JsonObject): Record<string, "default" | "user"> {
+	return Object.fromEntries(Object.entries(value).flatMap(([key, source]) =>
+		source === "user" || source === "default" ? [[key, source]] : []));
 }
 
 function boundedSubagent(

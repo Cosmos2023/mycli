@@ -10,7 +10,7 @@ import {
 	runtimeStateFromOlderTranscriptPage,
 	runtimeStateAfterSessionResume,
 	runtimeStateAfterCommandResult,
-	runtimeStateWithSettings,
+	runtimeStateWithSettingsSnapshot,
 	runtimeStateWithCredentialReadiness,
 	runtimeStateWithModelCatalog,
 	runtimeStateWithPendingSteer,
@@ -27,7 +27,7 @@ import {
 	permissionStateFromUnknown,
 	sessionsFromResult,
 	sessionTreeFromResult,
-	settingsFromResult,
+	settingsSnapshotFromResult,
 	legacyQueueMigrationToken,
 	runtimeStateWithLegacyQueueMigration,
 	type RuntimeShellState,
@@ -41,6 +41,8 @@ import type {
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
 	MycliShellSession,
+	MycliShellSettingsSnapshot,
+	MycliShellSettingChange,
 	MycliShellState,
 	MycliShellVisualSettings,
 } from "./model.ts";
@@ -302,12 +304,15 @@ async function bootstrap(): Promise<void> {
 	bootstrapped = true;
 }
 
-async function loadSettings(): Promise<void> {
+async function loadSettings(): Promise<MycliShellSettingsSnapshot | undefined> {
 	try {
 		const result = await send("settings.load", {}, { recordErrors: false });
-		setRuntimeState(runtimeStateWithSettings(runtimeState, settingsFromResult(result)));
+		const snapshot = settingsSnapshotFromResult(result);
+		setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, snapshot));
+		return snapshot;
 	} catch {
 		// Keep built-in defaults when the gateway does not support persistent settings.
+		return undefined;
 	}
 }
 
@@ -912,11 +917,14 @@ async function loadResources() {
 	return resources;
 }
 
-async function saveSettings(settings: MycliShellVisualSettings): Promise<MycliShellVisualSettings> {
-	const result = await send("settings.save", { settings });
-	const savedSettings = settingsFromResult(result);
-	setRuntimeState(runtimeStateWithSettings(runtimeState, savedSettings));
-	return savedSettings;
+async function saveSettings(change: MycliShellSettingChange): Promise<MycliShellSettingsSnapshot> {
+	const result = await send("settings.save", {
+		setting_id: change.settingId,
+		value: change.value,
+	});
+	const snapshot = settingsSnapshotFromResult(result);
+	setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, snapshot));
+	return snapshot;
 }
 
 async function selectPermission(profile: MycliShellPermissionProfile): Promise<MycliShellPermissionState> {
@@ -1060,6 +1068,7 @@ async function main(): Promise<void> {
 		onPermissionClearAllowances: clearPermissionAllowances,
 		onSessionSelect: selectSession,
 		onSessionTreeLoad: loadSessionTree,
+		onSettingsLoad: loadSettings,
 		onSettingsChange: saveSettings,
 		onResourceLoad: loadResources,
 		onTranscriptOutputLoad: (request) => loadFullShellOutput(send, request),

@@ -30,6 +30,7 @@ import {
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
+	settingsSnapshotFromResult,
 	runtimeStateWithSettings,
 	runtimeInputDisposition,
 	resolveLocalInterruptInputs,
@@ -867,6 +868,51 @@ test("runtime adapter projects runtime-backed visual settings", () => {
 		clearOnShrink: false,
 		terminalProgress: false,
 		subagentDensity: "detailed",
+	});
+});
+
+test("runtime adapter validates and projects the versioned settings catalog", () => {
+	const snapshot = settingsSnapshotFromResult({
+		settings: { theme: "light" },
+		catalog: {
+			version: 1,
+			categories: [{ id: "appearance", label: "外观", description: "Terminal appearance" }],
+			items: [{
+				id: "tui.theme",
+				category: "appearance",
+				kind: "choice",
+				label: "Theme",
+				description: "Select terminal theme",
+				value: "light",
+				source: "user",
+				scope: "user",
+				allowed_values: ["dark", "light"],
+				client_key: "theme",
+				config_key: "tui.theme",
+				locked: false,
+				restart_required: false,
+				search_terms: ["color", "C:\\Users\\demo"],
+			}],
+		},
+	});
+
+	assert.equal(snapshot.settings.theme, "light");
+	assert.equal(snapshot.catalog?.categories[0]?.label, "外观");
+	assert.deepEqual(snapshot.catalog?.items[0], {
+		id: "tui.theme",
+		category: "appearance",
+		kind: "choice",
+		label: "Theme",
+		description: "Select terminal theme",
+		value: "light",
+		source: "user",
+		scope: "user",
+		allowedValues: ["dark", "light"],
+		clientKey: "theme",
+		configKey: "tui.theme",
+		locked: false,
+		restartRequired: false,
+		searchTerms: ["color", "C:\\Users\\demo"],
 	});
 });
 

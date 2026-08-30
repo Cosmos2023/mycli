@@ -31,6 +31,11 @@ import type {
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
 	MycliShellResource,
+	MycliShellSettingsCatalog,
+	MycliShellSettingsCategory,
+	MycliShellSettingsCategoryId,
+	MycliShellSettingsItem,
+	MycliShellSettingsSnapshot,
 	MycliShellPlanUpdate,
 	MycliShellPlanStep,
 	MycliShellSession,
@@ -150,6 +155,7 @@ export type RuntimeShellState = {
 	viewMode: "default" | "verbose" | "focus";
 	statusbarMode: "off" | "compact" | "full";
 	settings: MycliShellVisualSettings;
+	settingsCatalog: MycliShellSettingsCatalog | null;
 	pendingApproval: Record<string, unknown> | null;
 	pendingClarification: Record<string, unknown> | null;
 	taskProgress: { completed: number; total: number } | null;
@@ -196,6 +202,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		viewMode: "default",
 		statusbarMode: "full",
 		settings: defaultVisualSettings(),
+		settingsCatalog: null,
 		pendingApproval: null,
 		pendingClarification: null,
 		taskProgress: null,
@@ -728,6 +735,7 @@ function projectRuntimeShellState(
 			viewMode: state.viewMode,
 			statusbarMode: state.statusbarMode,
 		},
+		settingsCatalog: state.settingsCatalog ?? undefined,
 		sessions,
 		resources: state.resources,
 		permissions: state.permissions ?? undefined,
@@ -744,9 +752,133 @@ export function runtimeStateWithSettings(state: RuntimeShellState, settings: Myc
 	};
 }
 
+export function runtimeStateWithSettingsSnapshot(
+	state: RuntimeShellState,
+	snapshot: MycliShellSettingsSnapshot,
+): RuntimeShellState {
+	return {
+		...runtimeStateWithSettings(state, snapshot.settings),
+		settingsCatalog: snapshot.catalog ?? state.settingsCatalog,
+	};
+}
+
 export function settingsFromResult(payload: Record<string, unknown>): MycliShellVisualSettings {
 	const settings = recordValue(payload.settings);
 	return normalizeVisualSettings(Object.keys(settings).length > 0 ? settings : payload);
+}
+
+export function settingsSnapshotFromResult(payload: Record<string, unknown>): MycliShellSettingsSnapshot {
+	const catalog = settingsCatalogFromUnknown(payload.catalog);
+	return {
+		settings: settingsFromResult(payload),
+		...(catalog ? { catalog } : {}),
+	};
+}
+
+function settingsCatalogFromUnknown(value: unknown): MycliShellSettingsCatalog | null {
+	const catalog = recordValue(value);
+	if (catalog.version !== 1 || !Array.isArray(catalog.categories) || !Array.isArray(catalog.items)) {
+		return null;
+	}
+	const categories = catalog.categories
+		.map(settingsCategoryFromUnknown)
+		.filter((item): item is MycliShellSettingsCategory => item !== null);
+	const categoryIds = new Set(categories.map((category) => category.id));
+	const items = catalog.items
+		.map((item) => settingsItemFromUnknown(item, categoryIds))
+		.filter((item): item is MycliShellSettingsItem => item !== null);
+	if (categories.length === 0 || categories.length !== catalog.categories.length || items.length !== catalog.items.length) {
+		return null;
+	}
+	return { version: 1, categories, items };
+}
+
+function settingsCategoryFromUnknown(value: unknown): MycliShellSettingsCategory | null {
+	const item = recordValue(value);
+	const id = settingsCategoryId(item.id);
+	const label = boundedCatalogText(item.label, 96);
+	const description = boundedCatalogText(item.description, 256);
+	return id && label && description ? { id, label, description } : null;
+}
+
+function settingsItemFromUnknown(
+	value: unknown,
+	categories: ReadonlySet<MycliShellSettingsCategoryId>,
+): MycliShellSettingsItem | null {
+	const item = recordValue(value);
+	const id = boundedCatalogText(item.id, 128);
+	const category = settingsCategoryId(item.category);
+	const kind = item.kind;
+	const label = boundedCatalogText(item.label, 96);
+	const description = boundedCatalogText(item.description, 256);
+	const currentValue = boundedCatalogText(item.value, 256);
+	const source = boundedCatalogText(item.source, 64);
+	const scope = boundedCatalogText(item.scope, 64);
+	if (
+		!id || !category || !categories.has(category)
+		|| !(["action", "choice", "status"] as unknown[]).includes(kind)
+		|| !label || !description || !currentValue || !source || !scope
+		|| typeof item.locked !== "boolean" || typeof item.restart_required !== "boolean"
+	) return null;
+	const allowedValues = stringArray(item.allowed_values, 32, 96);
+	const searchTerms = stringArray(item.search_terms, 32, 128);
+	const clientKey = shellSettingClientKey(item.client_key);
+	const lockReason = boundedCatalogText(item.lock_reason, 256);
+	const action = boundedCatalogText(item.action, 96);
+	const actionArgs = boundedCatalogText(item.action_args, 256);
+	const command = slashCatalogText(item.command);
+	const configKey = boundedCatalogText(item.config_key, 128);
+	return {
+		id,
+		category,
+		kind: kind as MycliShellSettingsItem["kind"],
+		label,
+		description,
+		value: currentValue,
+		source,
+		scope,
+		allowedValues,
+		...(clientKey ? { clientKey } : {}),
+		...(configKey ? { configKey } : {}),
+		...(action ? { action } : {}),
+		...(actionArgs ? { actionArgs } : {}),
+		...(command ? { command } : {}),
+		locked: item.locked,
+		...(lockReason ? { lockReason } : {}),
+		restartRequired: item.restart_required,
+		searchTerms,
+	};
+}
+
+function settingsCategoryId(value: unknown): MycliShellSettingsCategoryId | null {
+	return (["appearance", "diagnostics", "integrations", "model", "permissions", "providers", "sessions"] as unknown[])
+		.includes(value) ? value as MycliShellSettingsCategoryId : null;
+}
+
+function shellSettingClientKey(value: unknown): keyof MycliShellVisualSettings | null {
+	return ([
+		"statusbarMode", "viewMode", "theme", "hideThinking", "toolDetailsDefault",
+		"hardwareCursor", "clearOnShrink", "terminalProgress", "subagentDensity",
+	] as unknown[]).includes(value) ? value as keyof MycliShellVisualSettings : null;
+}
+
+function stringArray(value: unknown, limit: number, itemLimit: number): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.slice(0, limit).flatMap((entry) => {
+		const text = boundedCatalogText(entry, itemLimit);
+		return text ? [text] : [];
+	});
+}
+
+function boundedCatalogText(value: unknown, limit: number): string | null {
+	if (typeof value !== "string") return null;
+	const text = value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+	return text ? text.slice(0, limit) : null;
+}
+
+function slashCatalogText(value: unknown): string | null {
+	const text = boundedCatalogText(value, 256);
+	return text?.startsWith("/") ? text : null;
 }
 
 export function resourcesFromResult(payload: Record<string, unknown>): MycliShellResource[] {
