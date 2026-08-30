@@ -579,3 +579,38 @@ Added canonical sandbox readiness inspection, projected effective execution poli
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Phase 5 settings and command discovery
+
+**Date**: 2026-08-30
+**Task**: Phase 5 settings and command discovery
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Implemented the unified settings center, config provenance and single-setting persistence, plus canonical command discovery across the Node gateway and TUI; documented and verified the behavior.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b8b49589` | (see git log) |
+| `c0788749` | (see git log) |
+| `e45cc999` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
