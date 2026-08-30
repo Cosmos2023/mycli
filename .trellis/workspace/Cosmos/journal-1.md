@@ -407,3 +407,38 @@ Added provider-free config validate/show commands with secret-safe provenance, f
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Safe configuration mutation CLI
+
+**Date**: 2026-08-30
+**Task**: Safe configuration mutation CLI
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added provider-free config get/set/unset commands with a shared typed setting catalog, lossless user-only TOML mutation, lock-scoped candidate validation, atomic writes, provenance reporting, redaction tests, CLI documentation, and executable configuration contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4524e6fc` | (see git log) |
+| `bbb503d6` | (see git log) |
+| `68e00929` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
