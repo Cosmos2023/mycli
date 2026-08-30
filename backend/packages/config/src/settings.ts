@@ -210,6 +210,21 @@ export async function resolveConfigWithMetadata(
 	options: ResolveConfigOptions,
 ): Promise<ResolvedConfig> {
 	const loaded = await loadConfigLayers(options);
+	return resolveLoadedConfig(options, loaded);
+}
+
+export async function resolveConfigWithUserConfigText(
+	options: ResolveConfigOptions,
+	userConfigText: string,
+): Promise<ResolvedConfig> {
+	const loaded = await loadConfigLayers(options, parseTomlDocument(userConfigText, "user"));
+	return resolveLoadedConfig(options, loaded);
+}
+
+async function resolveLoadedConfig(
+	options: ResolveConfigOptions,
+	loaded: Awaited<ReturnType<typeof loadConfigLayers>>,
+): Promise<ResolvedConfig> {
 	const config = await resolveConfigFromSources(options, loaded.sources);
 	return Object.freeze({ config, layers: loaded.stack, diagnostics: loaded.diagnostics });
 }
@@ -587,7 +602,10 @@ async function resolveConfigFromSources(
 	};
 }
 
-async function loadConfigLayers(options: ResolveConfigOptions): Promise<{
+async function loadConfigLayers(
+	options: ResolveConfigOptions,
+	userDocumentOverride?: ValidatedConfigDocument,
+): Promise<{
 	readonly sources: readonly ConfigMap[];
 	readonly stack: ConfigLayerStack;
 	readonly diagnostics: readonly ConfigDiagnostic[];
@@ -598,7 +616,7 @@ async function loadConfigLayers(options: ResolveConfigOptions): Promise<{
 	const projectEnabled = options.workspaceTrust === undefined
 		|| options.workspaceTrust === "trusted";
 	const [userDocument, projectDocument, legacyDocument] = await Promise.all([
-		readToml(userPath, "user"),
+		userDocumentOverride ?? readToml(userPath, "user"),
 		projectEnabled ? readToml(projectPath, "project") : Promise.resolve(emptyConfigDocument()),
 		readToml(legacyPath, "legacy_user"),
 	]);
@@ -710,6 +728,10 @@ async function readToml(
 			remediation: "Check that the config file is readable and try again.",
 		});
 	}
+	return parseTomlDocument(raw, layer);
+}
+
+function parseTomlDocument(raw: string, layer: ConfigFileLayerId): ValidatedConfigDocument {
 	try {
 		const parsed: unknown = parse(raw);
 		if (!isRecord(parsed)) {

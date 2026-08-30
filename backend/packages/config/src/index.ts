@@ -18,6 +18,23 @@ export type {
 	ResolvedConfig,
 	ResolveConfigOptions,
 } from "./settings.ts";
+export {
+	hasRuntimeSetting,
+	runtimeSettingSnapshots,
+	writableRuntimeSetting,
+} from "./runtime-setting-catalog.ts";
+export type {
+	RuntimeSettingSnapshot,
+	RuntimeSettingValue,
+	UserConfigScalar,
+	UserConfigValueKind,
+	WritableRuntimeSetting,
+} from "./runtime-setting-catalog.ts";
+export { mutateUserConfigSetting } from "./user-config-editor.ts";
+export type {
+	UserConfigMutationOptions,
+	UserConfigMutationResult,
+} from "./user-config-editor.ts";
 export { CONFIG_LAYER_STACK_VERSION } from "./config-layers.ts";
 export type {
 	ConfigLayer,
@@ -31,6 +48,7 @@ export type {
 export {
 	CONFIG_DIAGNOSTIC_VERSION,
 	ConfigError,
+	configDiagnostic,
 	isConfigError,
 } from "./config-diagnostics.ts";
 export type {

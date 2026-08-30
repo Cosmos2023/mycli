@@ -8,6 +8,7 @@ export type ConfigDiagnosticSeverity = "warning" | "error";
 
 export type ConfigDiagnosticCode =
 	| "config_read_failed"
+	| "config_write_failed"
 	| "deprecated_inline_secret"
 	| "forbidden_inline_secret"
 	| "invalid_toml"

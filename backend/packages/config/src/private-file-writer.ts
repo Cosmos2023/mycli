@@ -15,13 +15,15 @@ const LOCK_RETRY_MS = 10;
 export interface AtomicPrivateFileUpdateOptions {
 	readonly directory: string;
 	readonly fileName: string;
-	readonly buildContent: (current: string | undefined) => string;
+	readonly buildContent: (
+		current: string | undefined,
+	) => string | undefined | Promise<string | undefined>;
 	readonly failpoint?: (name: string) => void;
 }
 
 export async function atomicPrivateFileUpdate(
 	options: AtomicPrivateFileUpdateOptions,
-): Promise<void> {
+): Promise<boolean> {
 	await mkdir(options.directory, { recursive: true, mode: 0o700 });
 	await harden(options.directory, 0o700);
 	const lockPath = join(options.directory, `.${options.fileName}.lock`);
@@ -37,7 +39,8 @@ export async function atomicPrivateFileUpdate(
 		await lock.writeFile(`${process.pid}\n`, "utf8");
 		await lock.sync();
 		const current = await readOptional(targetPath);
-		const content = options.buildContent(current);
+		const content = await options.buildContent(current);
+		if (content === undefined || content === current) return false;
 		temporary = await open(temporaryPath, "wx", 0o600);
 		await temporary.writeFile(content, "utf8");
 		await temporary.sync();
@@ -47,6 +50,7 @@ export async function atomicPrivateFileUpdate(
 		await rename(temporaryPath, targetPath);
 		await harden(targetPath, 0o600);
 		await syncDirectory(options.directory);
+		return true;
 	} finally {
 		await temporary?.close().catch(() => undefined);
 		await rm(temporaryPath, { force: true }).catch(() => undefined);

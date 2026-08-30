@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@decimalturn/toml-patch": "^3.0.5",
     "@mycli/core": "0.1.0",
     "smol-toml": "^1.7.1"
   },
