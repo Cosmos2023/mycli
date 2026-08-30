@@ -1,4 +1,4 @@
-import { Container, getKeybindings, Input, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
+import { Container, getKeybindings, Input, Spacer, Text, TruncatedText, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
 import type { MycliShellSession } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -23,6 +23,7 @@ export class SessionSelectorComponent extends Container {
 	private sortMode: SessionSortMode = "recent";
 	private nameFilter: SessionNameFilter = "all";
 	private showPath = true;
+	private error: string | null = null;
 	private readonly currentWorkspace?: string;
 	private readonly onSelectCallback: (session: MycliShellSession) => void;
 	private readonly onCancelCallback: () => void;
@@ -52,6 +53,11 @@ export class SessionSelectorComponent extends Container {
 		this.addChild(this.listContainer);
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
+		this.updateList();
+	}
+
+	setError(message: string): void {
+		this.error = message.trim() || "Unable to resume this session.";
 		this.updateList();
 	}
 
@@ -90,6 +96,7 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	private filter(query: string): void {
+		this.error = null;
 		this.filteredSessions = this.applyFilters(query);
 		this.selectedIndex = 0;
 		this.updateList();
@@ -130,6 +137,10 @@ export class SessionSelectorComponent extends Container {
 
 	private updateList(): void {
 		this.listContainer.clear();
+		if (this.error) {
+			this.listContainer.addChild(new Text(theme.fg("error", `  ${this.error}`), 0, 0));
+			this.listContainer.addChild(new Spacer(1));
+		}
 		if (this.sessions.length === 0) {
 			this.listContainer.addChild(new Text(theme.fg("muted", "  No sessions available"), 0, 0));
 			this.listContainer.addChild(new Text(theme.fg("dim", "  mycli runtime did not provide a session list."), 0, 0));
@@ -141,7 +152,7 @@ export class SessionSelectorComponent extends Container {
 			return;
 		}
 
-		const maxVisible = 10;
+		const maxVisible = 7;
 		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredSessions.length - maxVisible));
 		const endIndex = Math.min(startIndex + maxVisible, this.filteredSessions.length);
 		for (let index = startIndex; index < endIndex; index += 1) {
@@ -151,15 +162,37 @@ export class SessionSelectorComponent extends Container {
 			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
 			const titleText = sessionDisplayTitle(session);
 			const title = selected ? theme.fg("accent", titleText) : titleText;
+			const current = session.current ? "current" : undefined;
 			const count = session.messageCount === undefined ? undefined : `${session.messageCount} msg`;
+			const activity = session.modified ?? session.lastActive;
+			const primaryMeta = [current, sessionStatusLabel(session), activity, count].filter(Boolean).join(" · ");
+			const primary = primaryMeta ? `${prefix}${title} ${theme.fg("muted", primaryMeta)}` : `${prefix}${title}`;
+			this.listContainer.addChild(new TruncatedText(primary, 0, 0));
 			const id = session.title || session.firstMessage ? session.id : undefined;
 			const path = this.showPath ? (session.cwd ?? session.workspace) : undefined;
-			const meta = [id, path, session.modified ?? session.lastActive, count].filter(Boolean).join(" · ");
-			const line = meta ? `${prefix}${title} ${theme.fg("muted", truncateToWidth(meta, 60, "..."))}` : `${prefix}${title}`;
-			this.listContainer.addChild(new Text(line, 0, 0));
+			const model = session.model
+				? `${session.model}${session.reasoningEffort ? `/${session.reasoningEffort}` : ""}`
+				: undefined;
+			const relation = session.parentSessionId ? `fork of ${session.parentSessionId}` : undefined;
+			const lock = session.lockState && session.lockState !== "unlocked"
+				? `${session.lockState} lock`
+				: undefined;
+			const detail = [model, session.collaborationMode, session.permissionProfile, lock, relation, path, id]
+				.filter(Boolean)
+				.join(" · ");
+			if (detail) this.listContainer.addChild(new TruncatedText(theme.fg("muted", `    ${detail}`), 0, 0));
 		}
 		if (this.filteredSessions.length > maxVisible) {
 			this.listContainer.addChild(new Text(theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredSessions.length})`), 0, 0));
 		}
 	}
+}
+
+function sessionStatusLabel(session: MycliShellSession): string | undefined {
+	if (session.lifecycleStatus === "waiting_approval") return "approval pending";
+	if (session.lifecycleStatus === "waiting_clarification") return "question pending";
+	if (session.lifecycleStatus === "interrupted") return "interrupted";
+	if (session.lifecycleStatus === "archived") return "archived";
+	if (session.lifecycleStatus === "deleted") return "deleted";
+	return undefined;
 }

@@ -447,8 +447,42 @@ export type MycliShellSession = {
 	allMessagesText?: string;
 	parentSessionId?: string;
 	parentSessionPath?: string;
+	model?: string;
+	provider?: string;
+	reasoningEffort?: string;
+	collaborationMode?: "default" | "plan";
+	permissionProfile?: "read-only" | "workspace" | "full-access";
+	lifecycleStatus?: "active" | "archived" | "deleted" | "waiting_approval" | "waiting_clarification" | "interrupted";
+	storageStatus?: string;
+	lockState?: "unlocked" | "owned" | "active" | "stale";
+	pendingState?: "none" | "approval" | "clarification" | "interrupted";
+	metadataRevision?: number;
+	forkPoint?: number;
+	preferenceIssue?: string;
+	metadataIssue?: string;
 	named?: boolean;
 	current?: boolean;
+};
+
+export type MycliShellResumeRepairAction =
+	| "takeover_stale_owner"
+	| "unarchive"
+	| "fork_with_current_settings";
+
+export type MycliShellResumeRepairIssue = {
+	code: string;
+	blocking: boolean;
+	message: string;
+	action?: MycliShellResumeRepairAction;
+};
+
+export type MycliShellResumeRepairPreview = {
+	version: 1;
+	session: MycliShellSession;
+	ready: boolean;
+	requiresConfirmation: boolean;
+	issues: MycliShellResumeRepairIssue[];
+	actions: MycliShellResumeRepairAction[];
 };
 
 type MycliShellSessionTreeNodeKind = "session" | "message";

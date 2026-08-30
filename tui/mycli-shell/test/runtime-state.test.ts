@@ -27,6 +27,7 @@ import {
 	runtimeStateAcknowledgeQueuedInput,
 	popLastLocalFollowUp,
 	nextLocalUserInput,
+	sessionResumePreviewFromResult,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
@@ -4201,6 +4202,17 @@ test("runtime adapter handles command results and session lists", () => {
 					first_message: "Fix the TUI",
 					all_messages_text: "Fix the TUI session picker",
 					parent_session_id: "root",
+					fork_point: 3,
+					model: "gpt-5.6-sol",
+					provider: "openai",
+					reasoning_effort: "high",
+					collaboration_mode: "plan",
+					permission_profile: "full-access",
+					status: "waiting_approval",
+					storage_status: "active",
+					lock_state: "stale",
+					pending_state: "approval",
+					metadata_revision: 4,
 					named: true,
 					current: false,
 				},
@@ -4217,8 +4229,83 @@ test("runtime adapter handles command results and session lists", () => {
 	assert.equal(shell.sessions?.[0]?.firstMessage, "Fix the TUI");
 	assert.equal(shell.sessions?.[0]?.allMessagesText, "Fix the TUI session picker");
 	assert.equal(shell.sessions?.[0]?.parentSessionId, "root");
+	assert.equal(shell.sessions?.[0]?.forkPoint, 3);
+	assert.equal(shell.sessions?.[0]?.model, "gpt-5.6-sol");
+	assert.equal(shell.sessions?.[0]?.provider, "openai");
+	assert.equal(shell.sessions?.[0]?.reasoningEffort, "high");
+	assert.equal(shell.sessions?.[0]?.collaborationMode, "plan");
+	assert.equal(shell.sessions?.[0]?.permissionProfile, "full-access");
+	assert.equal(shell.sessions?.[0]?.lifecycleStatus, "waiting_approval");
+	assert.equal(shell.sessions?.[0]?.storageStatus, "active");
+	assert.equal(shell.sessions?.[0]?.lockState, "stale");
+	assert.equal(shell.sessions?.[0]?.pendingState, "approval");
+	assert.equal(shell.sessions?.[0]?.metadataRevision, 4);
 	assert.equal(shell.sessions?.[0]?.named, true);
 	assert.equal(shell.sessions?.[0]?.current, false);
+});
+
+test("runtime adapter parses bounded session recovery previews", () => {
+	const preview = sessionResumePreviewFromResult({
+		version: 1,
+		session: {
+			id: "session-a",
+			title: "Session A",
+			cwd: "/repo",
+			metadata_revision: 7,
+		},
+		ready: false,
+		requires_confirmation: true,
+		issues: [{
+			code: "stale_owner",
+			blocking: true,
+			message: "The previous session owner is no longer running.",
+			action: "takeover_stale_owner",
+		}],
+		actions: ["takeover_stale_owner", "unknown_action"],
+	});
+
+	assert.deepEqual(preview, {
+		version: 1,
+		session: {
+			id: "session-a",
+			title: "Session A",
+			cwd: "/repo",
+			workspace: undefined,
+			modified: undefined,
+			created: undefined,
+			updated: undefined,
+			lastActive: undefined,
+			messageCount: undefined,
+			firstMessage: undefined,
+			allMessagesText: undefined,
+			parentSessionId: undefined,
+			parentSessionPath: undefined,
+			model: undefined,
+			provider: undefined,
+			reasoningEffort: undefined,
+			collaborationMode: undefined,
+			permissionProfile: undefined,
+			lifecycleStatus: undefined,
+			storageStatus: undefined,
+			lockState: undefined,
+			pendingState: undefined,
+			metadataRevision: 7,
+			forkPoint: undefined,
+			preferenceIssue: undefined,
+			metadataIssue: undefined,
+			named: undefined,
+			current: undefined,
+		},
+		ready: false,
+		requiresConfirmation: true,
+		issues: [{
+			code: "stale_owner",
+			blocking: true,
+			message: "The previous session owner is no longer running.",
+			action: "takeover_stale_owner",
+		}],
+		actions: ["takeover_stale_owner"],
+	});
 });
 
 test("runtime adapter upserts structured command results by stable id", () => {

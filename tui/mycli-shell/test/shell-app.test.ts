@@ -5384,6 +5384,77 @@ test("mycli shell session selector handles empty state and selection", async () 
 	assert.equal(runtime.getState().footer.sessionName, "session-b");
 });
 
+test("mycli shell previews session repair, supports escape, and applies the selected action", async () => {
+	const terminal = new TestTerminal();
+	let repair: Readonly<Record<string, unknown>> | undefined;
+	const state = sampleState();
+	state.sessions = state.sessions?.map((session) => session.id === "session-a"
+		? {
+			...session,
+			model: "gpt-5.6-sol",
+			reasoningEffort: "high",
+			collaborationMode: "plan",
+			permissionProfile: "full-access",
+			lifecycleStatus: "interrupted",
+			lockState: "stale",
+			parentSessionId: "session-root",
+			metadataRevision: 7,
+		}
+		: session);
+	const preview = {
+		version: 1 as const,
+		session: state.sessions![0]!,
+		ready: false,
+		requiresConfirmation: true,
+		issues: [{
+			code: "stale_owner",
+			blocking: true,
+			message: "The previous session owner is no longer running.",
+			action: "takeover_stale_owner" as const,
+		}],
+		actions: ["takeover_stale_owner" as const],
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: state,
+		terminal,
+		onSessionResumePreview: async () => preview,
+		onSessionSelect: async (_sessionId, selectedRepair) => {
+			repair = selectedRepair;
+			return "session-recovered";
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	runtime.showSessionSelector();
+	let rendered = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(rendered, /gpt-5\.6-sol\/high/);
+	assert.match(rendered, /plan · full-access · stale lock · fork of session-root/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	rendered = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(rendered, /Repair Session/);
+	assert.match(rendered, /The previous session owner is no longer running/);
+	assert.match(rendered, /Take over stale session/);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /Repair Session/);
+	assert.equal(repair, undefined);
+
+	runtime.showSessionSelector();
+	terminal.input?.("\r");
+	await setTimeout(25);
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.deepEqual(repair, {
+		action: "takeover_stale_owner",
+		metadataRevision: 7,
+	});
+	assert.equal(runtime.getState().footer.sessionName, "session-recovered");
+	await runtime.shutdown();
+});
+
 test("mycli shell session selection replaces native scrollback with loaded history once", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;

@@ -25,6 +25,9 @@ export type {
 	MycliShellQueuedInputPreview,
 	MycliShellState,
 	MycliShellSession,
+	MycliShellResumeRepairAction,
+	MycliShellResumeRepairIssue,
+	MycliShellResumeRepairPreview,
 	MycliShellSessionTree,
 	MycliShellSessionTreeNode,
 	MycliShellResource,
@@ -59,6 +62,7 @@ export { PendingInputPreviewComponent } from "./components/pending-input-preview
 export { ProposedPlanComponent } from "./components/proposed-plan.ts";
 export { ResourceSelectorComponent } from "./components/resource-selector.ts";
 export { SessionSelectorComponent } from "./components/session-selector.ts";
+export { SessionRepairSelectorComponent } from "./components/session-repair-selector.ts";
 export { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 export { SettingsSelectorComponent } from "./components/settings-selector.ts";
 export { SetupWizardComponent } from "./components/setup-wizard.ts";

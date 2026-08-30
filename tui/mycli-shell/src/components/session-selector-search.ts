@@ -40,6 +40,15 @@ function sessionSearchText(session: MycliShellSession): string {
 		session.firstMessage,
 		session.allMessagesText,
 		session.messageCount?.toString(),
+		session.model,
+		session.provider,
+		session.reasoningEffort,
+		session.collaborationMode,
+		session.permissionProfile,
+		session.lifecycleStatus,
+		session.lockState,
+		session.pendingState,
+		session.parentSessionId,
 	].filter(Boolean).join(" ");
 }
 

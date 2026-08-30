@@ -27,10 +27,13 @@ import type {
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
 	MycliShellResource,
+	MycliShellResumeRepairAction,
+	MycliShellResumeRepairPreview,
 	MycliShellSettingsCatalog,
 	MycliShellSettingChange,
 	MycliShellSettingsItem,
 	MycliShellSettingsSnapshot,
+	MycliShellSession,
 	MycliShellSessionTree,
 	MycliShellSessionTreeNode,
 	MycliShellState,
@@ -66,6 +69,7 @@ import { PlanImplementationSelectorComponent } from "./components/plan-implement
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { ResourceSelectorComponent } from "./components/resource-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
+import { SessionRepairSelectorComponent } from "./components/session-repair-selector.ts";
 import { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 import {
 	SettingsSelectorComponent,
@@ -128,7 +132,17 @@ export type MycliShellRuntimeOptions = {
 		apiKey: string,
 		authRef?: string,
 	) => void | { message?: string } | Promise<void | { message?: string }>;
-	onSessionSelect?: (sessionId: string) => void | Promise<void>;
+	onSessionResumePreview?: (
+		sessionId: string,
+	) => MycliShellResumeRepairPreview | Promise<MycliShellResumeRepairPreview>;
+	onSessionSelect?: (
+		sessionId: string,
+		repair?: {
+			readonly action: MycliShellResumeRepairAction;
+			readonly metadataRevision: number;
+		},
+	) => void | string | MycliShellResumeRepairPreview
+		| Promise<void | string | MycliShellResumeRepairPreview>;
 	onSessionTreeLoad?: () => MycliShellSessionTree | Promise<MycliShellSessionTree>;
 	onSessionTreeSelect?: (node: MycliShellSessionTreeNode) => void | Promise<void>;
 	onSettingsLoad?: () => MycliShellSettingsSnapshot | undefined | Promise<MycliShellSettingsSnapshot | undefined>;
@@ -1747,13 +1761,58 @@ export class MycliShellRuntime {
 				sessions: this.state.sessions ?? [],
 				currentWorkspace: this.state.footer.cwd,
 				onSelect: (session) => {
-					void this.selectSession(session.id).then(
-						() => {
-							done();
-							this.queueNativeTranscriptHistory(true);
-						},
-						() => done(),
-					);
+					void this.prepareSessionResume(session, selector, done);
+				},
+				onCancel: () => done(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private async prepareSessionResume(
+		session: MycliShellSession,
+		selector: SessionSelectorComponent,
+		done: () => void,
+	): Promise<void> {
+		try {
+			const preview = await this.options.onSessionResumePreview?.(session.id);
+			if (preview && !preview.ready) {
+				if (preview.actions.length === 0) {
+					selector.setError(resumeBlockedMessage(preview));
+					return;
+				}
+				done();
+				this.showSessionRepairSelector(preview);
+				return;
+			}
+			const remaining = await this.selectSession(session.id);
+			if (remaining && !remaining.ready) {
+				done();
+				this.showSessionRepairSelector(remaining);
+				return;
+			}
+			done();
+			this.queueNativeTranscriptHistory(true);
+		} catch (error) {
+			selector.setError(safeErrorMessage(error, "Unable to resume this session."));
+		}
+	}
+
+	private showSessionRepairSelector(preview: MycliShellResumeRepairPreview): void {
+		this.showSelector((done) => {
+			const selector = new SessionRepairSelectorComponent({
+				preview,
+				onSelect: async (action) => {
+					const remaining = await this.selectSession(preview.session.id, {
+						action,
+						metadataRevision: preview.session.metadataRevision ?? 0,
+					});
+					done();
+					if (remaining && !remaining.ready) {
+						this.showSessionRepairSelector(remaining);
+						return;
+					}
+					this.queueNativeTranscriptHistory(true);
 				},
 				onCancel: () => done(),
 			});
@@ -3494,15 +3553,24 @@ export class MycliShellRuntime {
 		}
 	}
 
-	private async selectSession(sessionId: string): Promise<void> {
+	private async selectSession(
+		sessionId: string,
+		repair?: {
+			readonly action: MycliShellResumeRepairAction;
+			readonly metadataRevision: number;
+		},
+	): Promise<MycliShellResumeRepairPreview | null> {
+		const result = await this.options.onSessionSelect?.(sessionId, repair);
+		if (result && typeof result === "object") return result;
+		const selectedSessionId = typeof result === "string" ? result : sessionId;
 		this.setState({
 			...this.state,
 			footer: {
 				...this.state.footer,
-				sessionName: sessionId,
+				sessionName: selectedSessionId,
 			},
 		});
-		await this.options.onSessionSelect?.(sessionId);
+		return null;
 	}
 
 	private async inspectResource(resource: MycliShellResource): Promise<void> {
@@ -3513,6 +3581,11 @@ export class MycliShellRuntime {
 		}
 		await this.options.onCommandSubmit?.(command);
 	}
+}
+
+function resumeBlockedMessage(preview: MycliShellResumeRepairPreview): string {
+	return preview.issues.find((issue) => issue.blocking)?.message
+		?? "This session cannot be resumed automatically.";
 }
 
 function trustDecision(value: string | undefined): ProjectTrustDecision {

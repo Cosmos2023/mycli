@@ -25,6 +25,7 @@ import {
 	runtimeStateAcknowledgeQueuedInput,
 	resourcesFromResult,
 	permissionStateFromUnknown,
+	sessionResumePreviewFromResult,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsSnapshotFromResult,
@@ -40,6 +41,8 @@ import type {
 	MycliShellPendingClarification,
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
+	MycliShellResumeRepairAction,
+	MycliShellResumeRepairPreview,
 	MycliShellSession,
 	MycliShellSettingsSnapshot,
 	MycliShellSettingChange,
@@ -324,6 +327,17 @@ async function loadSessions(): Promise<void> {
 	} catch {
 		sessions = [];
 	}
+}
+
+async function previewSessionResume(sessionId: string): Promise<MycliShellResumeRepairPreview> {
+	const result = await send(
+		"session.resume.preview",
+		{ session_id: sessionId },
+		{ recordErrors: false },
+	);
+	const preview = sessionResumePreviewFromResult(result);
+	if (!preview) throw new Error("Gateway returned an invalid session recovery preview.");
+	return preview;
 }
 
 async function acknowledgeLegacyQueueMigration(
@@ -871,23 +885,51 @@ async function runCommand(command: string): Promise<void> {
 	}
 }
 
-async function selectSession(sessionId: string): Promise<void> {
-	const result = await send("session.resume", { session_id: sessionId });
+async function selectSession(
+	sessionId: string,
+	repair?: {
+		readonly action: MycliShellResumeRepairAction;
+		readonly metadataRevision: number;
+	},
+): Promise<string | MycliShellResumeRepairPreview> {
+	let result: Record<string, unknown>;
+	try {
+		result = await send("session.resume", {
+			session_id: sessionId,
+			...(repair ? {
+				repair_action: repair.action,
+				metadata_revision: repair.metadataRevision,
+			} : {}),
+		}, { recordErrors: false });
+	} catch (error) {
+		if (error instanceof GatewayRequestError && error.code === "session_repair_required") {
+			const preview = sessionResumePreviewFromResult(
+				typeof error.data.preview === "object" && error.data.preview !== null
+					? error.data.preview as Record<string, unknown>
+					: {},
+			);
+			if (preview) return preview;
+		}
+		throw error;
+	}
 	const session = sessions.find((candidate) => candidate.id === sessionId);
+	const resumedSessionId = String(result.session_id ?? sessionId);
 	runtimeState = runtimeStateAfterSessionResume(
 		runtimeState,
-		sessionId,
+		resumedSessionId,
 		session?.title ?? sessionId,
 		result,
 	);
 	setRuntimeState(runtimeState);
 	await acknowledgeLegacyQueueMigration(result);
 	const transcriptPayload = await send("transcript.load", {
-		session_id: String(result.session_id ?? sessionId),
+		session_id: resumedSessionId,
 		before: null,
 		limit: TRANSCRIPT_PAGE_LIMIT,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
+	await loadSessions();
+	return resumedSessionId;
 }
 
 async function loadOlderTranscriptHistory(before: string): Promise<void> {
@@ -1066,6 +1108,7 @@ async function main(): Promise<void> {
 		},
 		onPermissionSelect: selectPermission,
 		onPermissionClearAllowances: clearPermissionAllowances,
+		onSessionResumePreview: previewSessionResume,
 		onSessionSelect: selectSession,
 		onSessionTreeLoad: loadSessionTree,
 		onSettingsLoad: loadSettings,

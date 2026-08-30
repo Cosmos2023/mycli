@@ -38,6 +38,9 @@ import type {
 	MycliShellSettingsSnapshot,
 	MycliShellPlanUpdate,
 	MycliShellPlanStep,
+	MycliShellResumeRepairAction,
+	MycliShellResumeRepairIssue,
+	MycliShellResumeRepairPreview,
 	MycliShellSession,
 	MycliShellSessionTree,
 	MycliShellSessionTreeNode,
@@ -2642,6 +2645,33 @@ export function sessionsFromResult(result: Record<string, unknown>): MycliShellS
 	return raw.map(sessionFromUnknown).filter((session): session is MycliShellSession => session !== null);
 }
 
+export function sessionResumePreviewFromResult(
+	result: Record<string, unknown>,
+): MycliShellResumeRepairPreview | null {
+	const session = sessionFromUnknown(result.session);
+	const ready = booleanValue(result.ready);
+	const requiresConfirmation = booleanValue(result.requires_confirmation ?? result.requiresConfirmation);
+	if (!session || ready === null || requiresConfirmation === null) return null;
+	const issues = Array.isArray(result.issues)
+		? result.issues.map(resumeRepairIssueFromUnknown).filter(
+			(issue): issue is MycliShellResumeRepairIssue => issue !== null,
+		)
+		: [];
+	const actions = Array.isArray(result.actions)
+		? result.actions.map(resumeRepairActionFromUnknown).filter(
+			(action): action is MycliShellResumeRepairAction => action !== null,
+		)
+		: [];
+	return {
+		version: 1,
+		session,
+		ready,
+		requiresConfirmation,
+		issues,
+		actions,
+	};
+}
+
 export function sessionTreeFromResult(result: Record<string, unknown>): MycliShellSessionTree {
 	const rawNodes = Array.isArray(result.nodes) ? result.nodes : [];
 	return {
@@ -2669,9 +2699,61 @@ function sessionFromUnknown(value: unknown): MycliShellSession | null {
 		allMessagesText: stringValue(record.all_messages_text) ?? stringValue(record.allMessagesText) ?? undefined,
 		parentSessionId: stringValue(record.parent_session_id) ?? stringValue(record.parentSessionId) ?? undefined,
 		parentSessionPath: stringValue(record.parent_session_path) ?? stringValue(record.parentSessionPath) ?? undefined,
+		model: stringValue(record.model) ?? undefined,
+		provider: stringValue(record.provider) ?? undefined,
+		reasoningEffort: stringValue(record.reasoning_effort) ?? stringValue(record.reasoningEffort) ?? undefined,
+		collaborationMode: collaborationModeValue(record.collaboration_mode ?? record.collaborationMode) ?? undefined,
+		permissionProfile: permissionProfileValue(record.permission_profile ?? record.permissionProfile),
+		lifecycleStatus: sessionLifecycleStatusValue(record.status ?? record.lifecycle_status ?? record.lifecycleStatus),
+		storageStatus: stringValue(record.storage_status) ?? stringValue(record.storageStatus) ?? undefined,
+		lockState: sessionLockStateValue(record.lock_state ?? record.lockState),
+		pendingState: sessionPendingStateValue(record.pending_state ?? record.pendingState),
+		metadataRevision: numberValue(record.metadata_revision) ?? numberValue(record.metadataRevision) ?? undefined,
+		forkPoint: numberValue(record.fork_point) ?? numberValue(record.forkPoint) ?? undefined,
+		preferenceIssue: stringValue(record.preference_issue) ?? stringValue(record.preferenceIssue) ?? undefined,
+		metadataIssue: stringValue(record.metadata_issue) ?? stringValue(record.metadataIssue) ?? undefined,
 		named: booleanValue(record.named) ?? undefined,
 		current: booleanValue(record.current) ?? undefined,
 	};
+}
+
+function resumeRepairIssueFromUnknown(value: unknown): MycliShellResumeRepairIssue | null {
+	const record = recordValue(value);
+	const code = stringValue(record.code);
+	const blocking = booleanValue(record.blocking);
+	const message = stringValue(record.message);
+	if (!code || blocking === null || !message) return null;
+	const action = resumeRepairActionFromUnknown(record.action);
+	return { code, blocking, message, ...(action ? { action } : {}) };
+}
+
+function resumeRepairActionFromUnknown(value: unknown): MycliShellResumeRepairAction | null {
+	return value === "takeover_stale_owner" || value === "unarchive" || value === "fork_with_current_settings"
+		? value
+		: null;
+}
+
+function permissionProfileValue(value: unknown): "read-only" | "workspace" | "full-access" | undefined {
+	return value === "read-only" || value === "workspace" || value === "full-access" ? value : undefined;
+}
+
+function sessionLifecycleStatusValue(value: unknown): MycliShellSession["lifecycleStatus"] {
+	return value === "active" || value === "archived" || value === "deleted"
+		|| value === "waiting_approval" || value === "waiting_clarification" || value === "interrupted"
+		? value
+		: undefined;
+}
+
+function sessionLockStateValue(value: unknown): MycliShellSession["lockState"] {
+	return value === "unlocked" || value === "owned" || value === "active" || value === "stale"
+		? value
+		: undefined;
+}
+
+function sessionPendingStateValue(value: unknown): MycliShellSession["pendingState"] {
+	return value === "none" || value === "approval" || value === "clarification" || value === "interrupted"
+		? value
+		: undefined;
 }
 
 function sessionTreeNodeFromUnknown(value: unknown): MycliShellSessionTreeNode | null {
