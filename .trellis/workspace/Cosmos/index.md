@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-08-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~546 | Active |
+| `journal-1.md` | ~581 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-08-30 | Permission and sandbox status UX | `77e2748c`, `196adb55`, `d6312c8b` | `feature/mycli-agent-worker-pool` |
 | 14 | 2026-08-30 | Phase 3 startup credential readiness | `e759ec6d`, `52c977f6` | `feature/mycli-agent-worker-pool` |
 | 13 | 2026-08-30 | Session-scoped model selection | `2d630270`, `138a9ac9` | `feature/mycli-agent-worker-pool` |
 | 12 | 2026-08-30 | Unified setup and TUI settings persistence | `b503c018`, `fa8857e8` | `feature/mycli-agent-worker-pool` |

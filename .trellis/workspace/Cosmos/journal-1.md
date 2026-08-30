@@ -544,3 +544,38 @@ Added provider credential readiness to bootstrap, startup, model/session transit
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Permission and sandbox status UX
+
+**Date**: 2026-08-30
+**Task**: Permission and sandbox status UX
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added canonical sandbox readiness inspection, projected effective execution policy consistently through gateway and TUI surfaces, introduced provider-free sandbox status reporting, aligned doctor, and documented the permission/readiness contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `77e2748c` | (see git log) |
+| `196adb55` | (see git log) |
+| `d6312c8b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
