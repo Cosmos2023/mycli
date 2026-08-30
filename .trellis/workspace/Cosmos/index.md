@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-08-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~329 | Active |
+| `journal-1.md` | ~363 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-08-30 | Configuration schema diagnostics | `73ffc27c`, `33bd7c61` | `feature/mycli-agent-worker-pool` |
 | 8 | 2026-08-30 | Configuration trust foundation | `8ceca308`, `d44bb4c4` | `feature/mycli-agent-worker-pool` |
 | 7 | 2026-08-11 | Enable safe parallel tool batches | `c6f9a0cf` | `feature/mycli-node-runtime-rewrite` |
 | 6 | 2026-08-11 | Codex-style transcript viewer | `7d889886` | `feature/mycli-node-runtime-rewrite` |

@@ -121,7 +121,13 @@ Completed M7 parity fixtures, no-Python extension smoke, packed and cross-platfo
 
 ### Main Changes
 
-(Add details)
+- Added a versioned `ConfigDiagnostic` and `ConfigError` contract owned by `@mycli/config`.
+- Centralized the supported TOML vocabulary and emitted deterministic unknown-key/table warnings.
+- Rejected project and table-scoped inline credentials while retaining a migration warning for
+  legacy user root `api_key` values.
+- Preserved TOML line/column metadata and converted provider/protocol failures into value-free
+  diagnostics.
+- Projected bounded diagnostics through `mycli doctor` and documented the trust/schema boundary.
 
 ### Git Commits
 
@@ -310,6 +316,45 @@ Added typed configuration layers and provenance, gated project configuration and
 |------|---------|
 | `8ceca308` | feat(config): gate project configuration on workspace trust |
 | `d44bb4c4` | docs(config): document trust and provenance contract |
+
+### Testing
+
+- [OK] `npm test`
+- [OK] `npm run test:release`
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] `npm run contracts:check`
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 9: Configuration schema diagnostics
+
+**Date**: 2026-08-30
+**Task**: Configuration schema diagnostics
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added typed value-free configuration schema diagnostics, project credential enforcement, bounded doctor projection, provider/protocol redaction, regression coverage, and user-facing configuration contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `73ffc27c` | feat(config): add typed schema diagnostics |
+| `33bd7c61` | docs(config): document schema diagnostic contract |
 
 ### Testing
 
