@@ -136,6 +136,7 @@ export class PermissionSelectorComponent extends Container {
 
 	private renderProfiles(): void {
 		this.addChild(new Text(theme.bold("  Update Model Permissions"), 0, 0));
+		this.renderEffectivePolicy();
 		this.addChild(new Spacer(1));
 		this.permissions.profiles.forEach((profile, index) => {
 			const current = profile.current ? " (current)" : "";
@@ -143,12 +144,40 @@ export class PermissionSelectorComponent extends Container {
 			const label = `${profile.label}${current}`;
 			this.addChild(new Text(`${prefix}${index === this.selectedIndex ? theme.fg("accent", theme.bold(label)) : theme.bold(label)}`, 0, 0));
 			this.addChild(new Text(theme.fg(profile.disabledReason ? "warning" : "muted", `    ${profile.disabledReason ?? profile.description}`), 0, 0));
+			const effects = permissionEffects(profile);
+			if (effects) this.addChild(new Text(theme.fg("muted", `    ${effects}`), 0, 0));
 		});
 		this.addChild(new Spacer(1));
 		const allowanceIndex = this.permissions.profiles.length;
 		const prefix = allowanceIndex === this.selectedIndex ? theme.fg("accent", "› ") : "  ";
 		this.addChild(new Text(`${prefix}${theme.bold("Command allowances...")}`, 0, 0));
 		this.addChild(new Text(theme.fg("muted", `    ${this.permissions.commandAllowanceCount} active for this session`), 0, 0));
+	}
+
+	private renderEffectivePolicy(): void {
+		const effective = this.permissions.effective;
+		const readiness = this.permissions.sandboxReadiness;
+		if (!effective && !readiness) return;
+		this.addChild(new Spacer(1));
+		if (effective) {
+			this.addChild(new Text(theme.fg(
+				effective.constrained ? "warning" : "muted",
+				`  Effective: ${filesystemLabel(effective.filesystem)} · network ${effective.network} · ${approvalLabel(effective.approvalBehavior)}`,
+			), 0, 0));
+			const constraint = effective.constrained
+				? ` · constrained by ${effective.constraintsSource ?? "runtime"}`
+				: "";
+			this.addChild(new Text(theme.fg("muted", `  Policy: ${effective.source}${constraint}`), 0, 0));
+		}
+		if (readiness) {
+			const color = readiness.state === "ready" || readiness.state === "not_required"
+				? "muted"
+				: "warning";
+			this.addChild(new Text(theme.fg(
+				color,
+				`  Sandbox: ${readinessLabel(readiness.state)} · ${isolationLabel(readiness.isolation)}`,
+			), 0, 0));
+		}
 	}
 
 	private renderConfirmation(): void {
@@ -176,4 +205,32 @@ export class PermissionSelectorComponent extends Container {
 		const value = disabled ? theme.fg("muted", label) : index === this.selectedIndex ? theme.fg("accent", label) : label;
 		this.addChild(new Text(`${prefix}${value}`, 0, 0));
 	}
+}
+
+function permissionEffects(profile: MycliShellPermissionProfile): string | null {
+	if (!profile.filesystem || !profile.network || !profile.approvalBehavior) return null;
+	return `${filesystemLabel(profile.filesystem)} · network ${profile.network} · ${approvalLabel(profile.approvalBehavior)}`;
+}
+
+function filesystemLabel(value: NonNullable<MycliShellPermissionProfile["filesystem"]>): string {
+	if (value === "read_only") return "read only";
+	if (value === "workspace_write") return "workspace write";
+	return "unrestricted files";
+}
+
+function approvalLabel(value: NonNullable<MycliShellPermissionProfile["approvalBehavior"]>): string {
+	return value === "never" ? "no routine prompts" : "asks when needed";
+}
+
+function readinessLabel(value: NonNullable<MycliShellPermissionState["sandboxReadiness"]>["state"]): string {
+	if (value === "setup_required") return "setup required";
+	if (value === "not_required") return "not required";
+	return value;
+}
+
+function isolationLabel(value: NonNullable<MycliShellPermissionState["sandboxReadiness"]>["isolation"]): string {
+	if (value === "macos_seatbelt") return "macOS Seatbelt";
+	if (value === "linux_bubblewrap") return "Linux bubblewrap";
+	if (value === "windows_restricted_token") return "Windows restricted token";
+	return "no process isolation";
 }

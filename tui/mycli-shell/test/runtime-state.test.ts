@@ -271,12 +271,38 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 		permissions: {
 			active: "workspace",
 			command_allowance_count: 2,
+			effective: {
+				trusted: true,
+				valid: true,
+				sandbox_mode: "workspace-write",
+				filesystem: "workspace_write",
+				network: "disabled",
+				approval_behavior: "on-request",
+				source: "session",
+				constrained: true,
+				constraints_source: "managed",
+				readable_roots: 1,
+				writable_roots: 1,
+				network_domains: 0,
+				session_grant: false,
+				turn_grant: false,
+			},
+			sandbox_readiness: {
+				state: "ready",
+				code: "ready",
+				platform: "darwin",
+				isolation: "macos_seatbelt",
+			},
 			profiles: [
 				{
 					id: "workspace",
 					label: "Ask for approval",
 					description: "Workspace access with approval.",
 					current: true,
+					sandbox_mode: "workspace-write",
+					filesystem: "workspace_write",
+					network: "disabled",
+					approval_behavior: "on-request",
 				},
 			],
 		},
@@ -306,6 +332,29 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.permissions?.active, "workspace");
 	assert.equal(shell.permissions?.commandAllowanceCount, 2);
 	assert.equal(shell.permissions?.profiles[0]?.current, true);
+	assert.deepEqual(shell.permissions?.effective, {
+		trusted: true,
+		valid: true,
+		sandboxMode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "disabled",
+		approvalBehavior: "on-request",
+		source: "session",
+		constrained: true,
+		constraintsSource: "managed",
+		readableRoots: 1,
+		writableRoots: 1,
+		networkDomains: 0,
+		sessionGrant: false,
+		turnGrant: false,
+	});
+	assert.deepEqual(shell.permissions?.sandboxReadiness, {
+		state: "ready",
+		code: "ready",
+		platform: "darwin",
+		isolation: "macos_seatbelt",
+	});
+	assert.equal(shell.permissions?.profiles[0]?.approvalBehavior, "on-request");
 	assert.deepEqual(shell.authReadiness, {
 		ready: false,
 		providerId: "deepseek",

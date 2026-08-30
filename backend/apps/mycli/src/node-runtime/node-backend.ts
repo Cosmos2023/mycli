@@ -128,6 +128,7 @@ import {
 	FileHistoryStore,
 	FileMutationRuntime,
 	FileSnapshotStore,
+	inspectSandboxReadiness,
 	PatchTool,
 	planToolExposure,
 	parseShellCommand,
@@ -248,6 +249,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
 	const homeDir = runtimeHome(options.env);
 	const managedExecutionPolicy = await loadManagedExecutionPolicy({ homeDir });
+	const sandboxReadinessPromise = inspectSandboxReadiness();
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const resolveWorkspaceModelRuntimeConfig = async (
 		input: ResolveConfigOptions,
@@ -1547,6 +1549,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				: "none",
 			toolNames: allToolExposure.map((tool) => tool.name),
 			maxPromptTokens: () => controlConfig.maxPromptTokens,
+			sandboxReadiness: await sandboxReadinessPromise,
 			runtime: initial.binding,
 			agentInteractiveRequests,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),

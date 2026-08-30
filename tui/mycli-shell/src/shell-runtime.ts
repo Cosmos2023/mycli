@@ -3433,21 +3433,9 @@ function defaultPermissionState(): MycliShellPermissionState {
 		profiles: [
 			{
 				id: "workspace",
-				label: "Ask for approval",
-				description: "Read and edit the current workspace; ask before network or outside access.",
+				label: "Current permissions",
+				description: "Permission details are unavailable until the gateway responds.",
 				current: true,
-			},
-			{
-				id: "full-access",
-				label: "Full Access",
-				description: "Access files and network without approval.",
-				current: false,
-			},
-			{
-				id: "read-only",
-				label: "Read Only",
-				description: "Read workspace files; ask before edits or network.",
-				current: false,
 			},
 		],
 	};

@@ -11,24 +11,55 @@ function stripAnsi(text: string): string {
 const permissions: MycliShellPermissionState = {
 	active: "workspace",
 	commandAllowanceCount: 2,
+	effective: {
+		trusted: true,
+		valid: true,
+		sandboxMode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "disabled",
+		approvalBehavior: "on-request",
+		source: "session",
+		constrained: true,
+		constraintsSource: "managed",
+		readableRoots: 1,
+		writableRoots: 1,
+		networkDomains: 0,
+		sessionGrant: false,
+		turnGrant: false,
+	},
+	sandboxReadiness: {
+		state: "setup_required",
+		code: "setup_incomplete",
+		platform: "win32",
+		isolation: "windows_restricted_token",
+	},
 	profiles: [
 		{
 			id: "workspace",
 			label: "Ask for approval",
 			description: "Read and edit this workspace; ask before network or outside access.",
 			current: true,
+			filesystem: "workspace_write",
+			network: "disabled",
+			approvalBehavior: "on-request",
 		},
 		{
 			id: "full-access",
 			label: "Full Access",
 			description: "Access files and network without approval.",
 			current: false,
+			filesystem: "unrestricted",
+			network: "enabled",
+			approvalBehavior: "never",
 		},
 		{
 			id: "read-only",
 			label: "Read Only",
 			description: "Read workspace files; ask before edits or network.",
 			current: false,
+			filesystem: "read_only",
+			network: "disabled",
+			approvalBehavior: "on-request",
 		},
 	],
 };
@@ -47,6 +78,10 @@ test("permission selector renders Codex-style profiles and stays width safe", ()
 	assert.match(output, /Full Access/);
 	assert.match(output, /Read Only/);
 	assert.match(output, /Command allowances/);
+	assert.match(output, /Effective: workspace write · network disabled · asks when needed/);
+	assert.match(output, /Policy: session · constrained by managed/);
+	assert.match(output, /Sandbox: setup required · Windows restricted token/);
+	assert.match(output, /unrestricted files · network enabled · no routine prompts/);
 
 	for (const width of [32, 48, 80]) {
 		for (const line of selector.render(width)) {

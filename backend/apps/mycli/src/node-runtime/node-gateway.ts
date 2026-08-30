@@ -53,7 +53,9 @@ import type {
 } from "@mycli/storage";
 import {
 	permissionRequestJson,
+	sandboxNotRequired,
 	type PermissionProfile,
+	type SandboxReadiness,
 	type ShellSessionSnapshot,
 } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
@@ -243,6 +245,7 @@ export interface CreateNodeGatewayOptions {
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly toolNames?: readonly string[];
 	readonly maxPromptTokens?: number | (() => number);
+	readonly sandboxReadiness?: SandboxReadiness;
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
 	readonly loadTranscript?: (sessionId: string) => readonly TranscriptItem[];
@@ -990,6 +993,11 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		if (invocation.commandId === "status") {
 			const status = this.#status();
+			const permissions = isObject(status.permissions) ? status.permissions : {};
+			const effective = isObject(permissions.effective) ? permissions.effective : {};
+			const sandboxReadiness = isObject(permissions.sandbox_readiness)
+				? permissions.sandbox_readiness
+				: {};
 			const contextWindow = isObject(status.context_window) ? status.context_window : {};
 			const usedTokens = typeof contextWindow.used_tokens === "number" ? contextWindow.used_tokens : 0;
 			const maxTokens = typeof contextWindow.max_tokens === "number" ? contextWindow.max_tokens : 0;
@@ -1006,6 +1014,13 @@ class InProcessNodeGateway implements NodeGateway {
 				},
 				{ label: "Pending", value: status.pending_decision ? "yes" : "no" },
 				{ label: "Suspended", value: status.suspended_turn ? "yes" : "no" },
+				{ label: "Permissions", value: String(permissions.active ?? this.#permissionProfile) },
+				{ label: "Sandbox", value: String(effective.sandbox_mode ?? "unknown") },
+				{ label: "Filesystem", value: String(effective.filesystem ?? "unknown") },
+				{ label: "Network", value: String(effective.network ?? "unknown") },
+				{ label: "Approval", value: String(effective.approval_behavior ?? "unknown") },
+				{ label: "Policy source", value: String(effective.source ?? "unknown") },
+				{ label: "Sandbox readiness", value: String(sandboxReadiness.state ?? "unknown") },
 				{ label: "State", value: String(status.state ?? "idle") },
 			]);
 		}
@@ -1502,6 +1517,11 @@ class InProcessNodeGateway implements NodeGateway {
 			const runtime = this.#runtime();
 			if (!invocation.args) {
 				const allowances = runtime.listCommandAllowances?.() ?? [];
+				const permissions = this.#permissions();
+				const effective = isObject(permissions.effective) ? permissions.effective : {};
+				const readiness = isObject(permissions.sandbox_readiness)
+					? permissions.sandbox_readiness
+					: {};
 				return listCommandResult(invocation, "Permissions", [
 					{
 						key: "permissions:profile",
@@ -1511,7 +1531,27 @@ class InProcessNodeGateway implements NodeGateway {
 					{
 						key: "permissions:sandbox",
 						label: "Sandbox",
-						values: [sandboxForPermission(this.#permissionProfile)],
+						values: [String(effective.sandbox_mode ?? sandboxForPermission(this.#permissionProfile))],
+					},
+					{
+						key: "permissions:filesystem",
+						label: "Filesystem",
+						values: [String(effective.filesystem ?? "unknown")],
+					},
+					{
+						key: "permissions:network",
+						label: "Network",
+						values: [String(effective.network ?? "unknown")],
+					},
+					{
+						key: "permissions:source",
+						label: "Policy source",
+						values: [String(effective.source ?? "unknown")],
+					},
+					{
+						key: "permissions:readiness",
+						label: "Sandbox readiness",
+						values: [String(readiness.state ?? "unknown")],
 					},
 					{
 						key: "permissions:allowances",
@@ -3069,6 +3109,8 @@ class InProcessNodeGateway implements NodeGateway {
 		return permissionPayload(
 			this.#permissionProfile,
 			this.#runtime().listCommandAllowances?.().length ?? 0,
+			this.#runtime().executionPolicySnapshot?.(),
+			this.#options.sandboxReadiness,
 		);
 	}
 
@@ -3905,31 +3947,102 @@ function permissionProfile(value: unknown): PermissionProfile {
 	throw new GatewayFailure("invalid_params", "Unsupported permission profile.");
 }
 
-function permissionPayload(active: PermissionProfile, commandAllowanceCount = 0): JsonObject {
+function permissionPayload(
+	active: PermissionProfile,
+	commandAllowanceCount = 0,
+	snapshot?: ExecutionPolicySnapshot,
+	readiness?: SandboxReadiness,
+): JsonObject {
+	const profile = snapshot?.profile ?? nominalExecutionPolicy(active);
+	const resolution = snapshot?.resolution;
+	const sandboxReadiness = processSandboxRequired(profile)
+		? readiness
+		: sandboxNotRequired(readiness?.platform);
 	return {
 		active,
 		command_allowance_count: commandAllowanceCount,
+		effective: {
+			trusted: snapshot?.trusted ?? false,
+			valid: snapshot?.valid ?? false,
+			sandbox_mode: profile.mode,
+			filesystem: profile.filesystem,
+			network: profile.network,
+			approval_behavior: profile.filesystem === "unrestricted" ? "never" : "on-request",
+			source: resolution?.configurationSource ?? "session",
+			constrained: resolution?.constraintsSource !== undefined,
+			...(resolution?.constraintsSource ? {
+				constraints_source: resolution.constraintsSource,
+			} : {}),
+			readable_roots: profile.readableRoots?.length ?? 0,
+			writable_roots: profile.writableRoots.length,
+			network_domains: profile.networkDomains?.length ?? 0,
+			session_grant: resolution?.sessionGrant !== undefined,
+			turn_grant: resolution?.turnGrant !== undefined,
+		},
+		...(sandboxReadiness ? {
+			sandbox_readiness: {
+				state: sandboxReadiness.state,
+				code: sandboxReadiness.code,
+				platform: sandboxReadiness.platform,
+				isolation: sandboxReadiness.isolation,
+			},
+		} : {}),
 		profiles: [
-			{
-				id: "workspace",
-				label: "Ask for approval",
-				description: "Read and edit the current workspace; ask before network or outside access.",
-				current: active === "workspace",
-			},
-			{
-				id: "full-access",
-				label: "Full Access",
-				description: "Access files and network without approval.",
-				current: active === "full-access",
-			},
-			{
-				id: "read-only",
-				label: "Read Only",
-				description: "Read workspace files; ask before edits or network.",
-				current: active === "read-only",
-			},
+			permissionProfileRow(
+				"workspace",
+				"Ask for approval",
+				"Read and edit the current workspace; ask before network or outside access.",
+				active,
+			),
+			permissionProfileRow(
+				"full-access",
+				"Full Access",
+				"Access files and network without approval.",
+				active,
+			),
+			permissionProfileRow(
+				"read-only",
+				"Read Only",
+				"Read workspace files; ask before edits or network.",
+				active,
+			),
 		],
 	};
+}
+
+function permissionProfileRow(
+	id: PermissionProfile,
+	label: string,
+	description: string,
+	active: PermissionProfile,
+): JsonObject {
+	const policy = nominalExecutionPolicy(id);
+	return {
+		id,
+		label,
+		description,
+		current: active === id,
+		sandbox_mode: policy.mode,
+		filesystem: policy.filesystem,
+		network: policy.network,
+		approval_behavior: policy.filesystem === "unrestricted" ? "never" : "on-request",
+	};
+}
+
+function nominalExecutionPolicy(active: PermissionProfile): ExecutionPolicySnapshot["profile"] {
+	if (active === "read-only") {
+		return { mode: "read-only", filesystem: "read_only", network: "disabled", writableRoots: [] };
+	}
+	if (active === "workspace") {
+		return { mode: "workspace-write", filesystem: "workspace_write", network: "disabled", writableRoots: [] };
+	}
+	return { mode: "danger-full-access", filesystem: "unrestricted", network: "enabled", writableRoots: [] };
+}
+
+function processSandboxRequired(profile: ExecutionPolicySnapshot["profile"]): boolean {
+	return profile.mode !== "danger-full-access"
+		|| profile.network !== "enabled"
+		|| profile.networkDomains !== undefined;
 }
 
 function extensionManifest(toolNames: readonly string[], toolManifest?: JsonObject): JsonObject {

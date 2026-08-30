@@ -13,6 +13,7 @@ import {
 import {
 	QueueCoordinator,
 	SessionCoordinator,
+	type ExecutionPolicySnapshot,
 	type PendingApprovalChoice,
 	type PreparedSession,
 	type QueueCoordinatorStore,
@@ -25,7 +26,7 @@ import type {
 	ShellOutputPage,
 	TranscriptItem,
 } from "@mycli/storage";
-import type { ShellSessionSnapshot } from "@mycli/tools";
+import type { SandboxReadiness, ShellSessionSnapshot } from "@mycli/tools";
 import {
 	createNodeGateway,
 	type NodeGatewayCredentialReadiness,
@@ -57,28 +58,108 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/quit",
 ] as const;
 
-function permissionPayload(active: "read-only" | "workspace" | "full-access") {
+const READY_SANDBOX: SandboxReadiness = Object.freeze({
+	state: "ready",
+	code: "ready",
+	platform: "darwin",
+	isolation: "macos_seatbelt",
+});
+
+type GatewayPolicyConfiguration = Readonly<{
+	trust: "trusted" | "untrusted" | "unknown";
+	permission: "read-only" | "workspace" | "full-access";
+}>;
+
+function testExecutionPolicySnapshot(
+	configuration: GatewayPolicyConfiguration,
+): ExecutionPolicySnapshot {
+	const profile = configuration.permission === "read-only"
+		? { mode: "read-only" as const, filesystem: "read_only" as const, network: "disabled" as const, writableRoots: [] }
+		: configuration.permission === "workspace"
+			? { mode: "workspace-write" as const, filesystem: "workspace_write" as const, network: "disabled" as const, writableRoots: ["/repo"] }
+			: { mode: "danger-full-access" as const, filesystem: "unrestricted" as const, network: "enabled" as const, writableRoots: ["/repo"] };
+	return {
+		trusted: configuration.trust === "trusted",
+		valid: true,
+		profile,
+		resolution: { configurationSource: "session" },
+	};
+}
+
+function permissionPayload(
+	active: "read-only" | "workspace" | "full-access",
+	options: {
+		readonly trust?: GatewayPolicyConfiguration["trust"];
+		readonly snapshot?: ExecutionPolicySnapshot;
+	} = {},
+) {
+	const snapshot = options.snapshot ?? testExecutionPolicySnapshot({
+		trust: options.trust ?? "unknown",
+		permission: active,
+	});
+	const constrained = snapshot.resolution?.constraintsSource !== undefined;
+	const requiresSandbox = snapshot.profile.mode !== "danger-full-access"
+		|| snapshot.profile.network !== "enabled"
+		|| snapshot.profile.networkDomains !== undefined;
 	return {
 		active,
 		command_allowance_count: 0,
+		effective: {
+			trusted: snapshot.trusted,
+			valid: snapshot.valid,
+			sandbox_mode: snapshot.profile.mode,
+			filesystem: snapshot.profile.filesystem,
+			network: snapshot.profile.network,
+			approval_behavior: snapshot.profile.filesystem === "unrestricted" ? "never" : "on-request",
+			source: snapshot.resolution?.configurationSource ?? "session",
+			constrained,
+			...(snapshot.resolution?.constraintsSource ? {
+				constraints_source: snapshot.resolution.constraintsSource,
+			} : {}),
+			readable_roots: snapshot.profile.readableRoots?.length ?? 0,
+			writable_roots: snapshot.profile.writableRoots.length,
+			network_domains: snapshot.profile.networkDomains?.length ?? 0,
+			session_grant: snapshot.resolution?.sessionGrant !== undefined,
+			turn_grant: snapshot.resolution?.turnGrant !== undefined,
+		},
+		sandbox_readiness: requiresSandbox
+			? READY_SANDBOX
+			: {
+				state: "not_required",
+				code: "not_required",
+				platform: "darwin",
+				isolation: "none",
+			},
 		profiles: [
 			{
 				id: "workspace",
 				label: "Ask for approval",
 				description: "Read and edit the current workspace; ask before network or outside access.",
 				current: active === "workspace",
+				sandbox_mode: "workspace-write",
+				filesystem: "workspace_write",
+				network: "disabled",
+				approval_behavior: "on-request",
 			},
 			{
 				id: "full-access",
 				label: "Full Access",
 				description: "Access files and network without approval.",
 				current: active === "full-access",
+				sandbox_mode: "danger-full-access",
+				filesystem: "unrestricted",
+				network: "enabled",
+				approval_behavior: "never",
 			},
 			{
 				id: "read-only",
 				label: "Read Only",
 				description: "Read workspace files; ask before edits or network.",
 				current: active === "read-only",
+				sandbox_mode: "read-only",
+				filesystem: "read_only",
+				network: "disabled",
+				approval_behavior: "on-request",
 			},
 		],
 	};
@@ -136,6 +217,9 @@ function gatewayHarness(options: {
 	cooperativeInterrupt?: boolean;
 	loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
 	credentialReadiness?: NodeGatewayCredentialReadiness;
+	executionPolicySnapshot?: (
+		configuration: GatewayPolicyConfiguration,
+	) => ExecutionPolicySnapshot;
 } = {}) {
 	let emitRuntime: ((event: RuntimeEvent) => void) | null = null;
 	let signal: AbortSignal | null = null;
@@ -178,6 +262,10 @@ function gatewayHarness(options: {
 		readonly trust: "trusted" | "untrusted" | "unknown";
 		readonly permission: "read-only" | "workspace" | "full-access";
 	}> = [];
+	let executionPolicyConfiguration: GatewayPolicyConfiguration = {
+		trust: "unknown",
+		permission: "workspace",
+	};
 	const runtimeContexts: Array<{
 		readonly collaborationMode: string;
 		readonly turnId?: string;
@@ -290,7 +378,11 @@ function gatewayHarness(options: {
 		},
 		configureExecutionPolicy: (input: typeof policyConfigurations[number]) => {
 			policyConfigurations.push(input);
+			executionPolicyConfiguration = input;
 		},
+		executionPolicySnapshot: () => options.executionPolicySnapshot?.(
+			executionPolicyConfiguration,
+		) ?? testExecutionPolicySnapshot(executionPolicyConfiguration),
 		configureRuntimeContext: (input: typeof runtimeContexts[number]) => {
 			runtimeContexts.push(input);
 		},
@@ -377,6 +469,7 @@ function gatewayHarness(options: {
 		model: "gpt-test",
 		...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
 		toolNames: ["Read"],
+		sandboxReadiness: READY_SANDBOX,
 			maxPromptTokens: options.maxPromptTokens,
 			runtime,
 			...(options.agentInteractiveRequests ? {
@@ -1147,7 +1240,12 @@ test("gateway owns permission selection and reconfigures runtime trust policy", 
 	assert.ok("result" in updated);
 	assert.deepEqual(
 		"result" in updated ? updated.result.permissions : {},
-		permissionPayload("full-access"),
+		permissionPayload("full-access", { trust: "trusted" }),
+	);
+	const status = await harness.send("status.inspect");
+	assert.deepEqual(
+		"result" in status ? status.result.permissions : {},
+		"result" in updated ? updated.result.permissions : {},
 	);
 	assert.deepEqual(harness.policyConfigurations.slice(-2), [
 		{ trust: "trusted", permission: "workspace" },
@@ -1159,6 +1257,51 @@ test("gateway owns permission selection and reconfigures runtime trust policy", 
 	assert.deepEqual(harness.policyConfigurations.at(-1), {
 		trust: "trusted",
 		permission: "full-access",
+	});
+	await harness.gateway.close();
+});
+
+test("gateway projects managed effective policy consistently across status and permission surfaces", async () => {
+	const constrainedSnapshot: ExecutionPolicySnapshot = {
+		trusted: true,
+		valid: true,
+		profile: {
+			mode: "workspace-write",
+			filesystem: "workspace_write",
+			network: "disabled",
+			networkDomains: ["api.example.com"],
+			readableRoots: ["/repo"],
+			writableRoots: ["/repo/generated"],
+		},
+		resolution: {
+			configurationSource: "session",
+			constraintsSource: "managed",
+			sessionGrant: { network: { enabled: true } },
+		},
+	};
+	const harness = gatewayHarness({
+		executionPolicySnapshot: () => constrainedSnapshot,
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const listed = await harness.send("permissions.list");
+	const status = await harness.send("status.inspect");
+	const expected = permissionPayload("workspace", { snapshot: constrainedSnapshot });
+	assert.deepEqual("result" in listed ? listed.result : {}, expected);
+	assert.deepEqual("result" in status ? status.result.permissions : {}, expected);
+
+	const slash = await harness.send("command.run", { command: "/permissions", surface: "cli" });
+	const rows = "result" in slash
+		? (slash.result.display as { rows: readonly { label: string; values: readonly string[] }[] }).rows
+		: [];
+	assert.deepEqual(Object.fromEntries(rows.map((row) => [row.label, row.values[0]])), {
+		Profile: "workspace",
+		Sandbox: "workspace-write",
+		Filesystem: "workspace_write",
+		Network: "disabled",
+		"Policy source": "session",
+		"Sandbox readiness": "ready",
+		"Session allowances": "0",
 	});
 	await harness.gateway.close();
 });

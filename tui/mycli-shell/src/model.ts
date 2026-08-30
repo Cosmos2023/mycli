@@ -494,12 +494,43 @@ export type MycliShellPermissionProfile = {
 	description: string;
 	current: boolean;
 	disabledReason?: string;
+	sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+	filesystem?: "read_only" | "workspace_write" | "unrestricted";
+	network?: "disabled" | "enabled";
+	approvalBehavior?: "on-request" | "never";
+};
+
+export type MycliShellEffectivePermission = {
+	trusted: boolean;
+	valid: boolean;
+	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+	filesystem: "read_only" | "workspace_write" | "unrestricted";
+	network: "disabled" | "enabled";
+	approvalBehavior: "on-request" | "never";
+	source: "default" | "user" | "project" | "session" | "managed";
+	constrained: boolean;
+	constraintsSource?: "managed" | "runtime";
+	readableRoots: number;
+	writableRoots: number;
+	networkDomains: number;
+	sessionGrant: boolean;
+	turnGrant: boolean;
+};
+
+export type MycliShellSandboxReadiness = {
+	state: "ready" | "setup_required" | "unavailable" | "not_required";
+	code: "ready" | "setup_incomplete" | "helper_missing" | "handshake_failed"
+		| "enforcement_unavailable" | "unsupported_platform" | "not_required";
+	platform: string;
+	isolation: "macos_seatbelt" | "linux_bubblewrap" | "windows_restricted_token" | "none";
 };
 
 export type MycliShellPermissionState = {
 	active: MycliShellPermissionProfile["id"];
 	profiles: MycliShellPermissionProfile[];
 	commandAllowanceCount: number;
+	effective?: MycliShellEffectivePermission;
+	sandboxReadiness?: MycliShellSandboxReadiness;
 };
 
 export type MycliShellState = {
