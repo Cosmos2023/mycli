@@ -21,6 +21,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
 | [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
 | [Context Management Contract](./context-management-contract.md) | Project context files, cache classes, fencing, and context diagnostics | Active |
+| [Configuration Trust Contract](./configuration-trust-contract.md) | Config precedence, provenance, project trust gating, and resume workspace ownership | Active |
 | [Tool Manifest Contract](./tool-manifest-contract.md) | Built-in local tool registry and manifest metadata | Active |
 | [Shell Execution Policy Contract](./shell-execution-policy-contract.md) | Sandbox-first Shell classification, approval, escalation, and recovery | Active |
 | [Permission Grant Contract](./permission-grant-contract.md) | Runtime-owned permission grants, managed upper bounds, and domain enforcement | Active |

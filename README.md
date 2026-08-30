@@ -88,6 +88,12 @@ Setup writes user state under `~/.mycli`:
 - `logs/`: bounded redacted operational diagnostics.
 - `vendor/ripgrep/`: the verified user-level `rg` fallback prepared by setup when needed.
 
+Effective runtime configuration uses this precedence, from highest to lowest: session/CLI
+overrides, environment variables, trusted project config at `<workspace>/.mycli/config.toml`, user
+config at `~/.mycli/config.toml`, legacy user config at `~/.config/mycli/config.toml`, and built-in
+defaults. Project configuration is not read until the canonical workspace has a persisted `trusted`
+decision. Credentials belong in `auth.json` or the environment, never in project configuration.
+
 `sessions.db` is authoritative. The Node runtime repairs derivable session files during session
 preparation; deleting or corrupting a projection does not make it a provider-recovery source.
 

@@ -5,6 +5,7 @@ This directory is split by document purpose.
 ## Current Architecture
 
 - [architecture.md](./architecture.md): Node workspace and runtime ownership boundaries.
+- [architecture/configuration-trust-and-provenance.md](./architecture/configuration-trust-and-provenance.md): configuration precedence, workspace trust, provenance, and secret boundaries.
 - [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
 - [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.
 - [troubleshooting.md](./troubleshooting.md): provider-free diagnosis and common recovery paths.

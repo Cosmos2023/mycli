@@ -13,6 +13,12 @@ but do not construct a provider or start the interactive runtime.
 | Plugins | `~/.mycli/plugins/<id>/` | `<workspace>/.mycli/plugins/<id>/` | User plugin ids replace repository ids; disabled wins |
 | Skills | `~/.mycli/skills/` | `<workspace>/.agents/skills/`, then `<workspace>/.mycli/skills/` | Later sources replace earlier skill names |
 
+Repository paths are excluded from discovery while workspace trust is `unknown` or `untrusted`.
+This includes repository hooks, MCP servers, plugins, skills, plugin enablement in project
+`config.toml`, and project execution rules. User-scoped integrations remain available. After
+granting trust in an already-running session, restart mycli once so startup discovery can include
+the newly trusted repository sources.
+
 Every parser bounds file size, item count, names, and diagnostic output. A malformed entry remains
 visible as a diagnostic and does not prevent unrelated entries from loading.
 
