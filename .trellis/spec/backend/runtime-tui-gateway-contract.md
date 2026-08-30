@@ -1899,6 +1899,103 @@ try {
 }
 ```
 
+## Scenario: Credential Readiness And Recovery
+
+### 1. Scope / Trigger
+
+- Trigger: changing interactive bootstrap, workspace trust completion, credential storage,
+  session new/resume, model selection, `turn.submit`, login selectors, or gateway request errors.
+- Credential readiness is startup guidance plus a backend acceptance invariant. A TUI-only check
+  is stale and bypassable; a backend-only check leaves the first composer apparently usable.
+
+### 2. Signatures
+
+- Backend control:
+  `credentialReadiness() -> Promise<{ready, providerId, authRef, source}>`.
+- Source: `environment | stored | legacy_config | missing`.
+- Bootstrap and session-transition payload:
+  `auth_status {ready, provider_id, auth_ref, source}` plus `auth_providers[]`.
+- Credential write:
+  `auth.api_key.save {provider_id, api_key, auth_ref?}`.
+- Rejection:
+  JSON-RPC `auth_required` with bounded `auth_status` data.
+- TUI state: `authReadiness {ready, providerId, authRef, source}`.
+
+### 3. Contracts
+
+- Bootstrap resolves readiness without constructing or calling a Provider. The TUI sequences
+  unresolved workspace trust before authentication and focuses the composer only after both gates
+  are complete.
+- Readiness is recomputed immediately before `turn.submit` accepts work. A missing credential must
+  reject before session-preference persistence, turn reservation, user-item lifecycle publication,
+  transcript mutation, runtime submission, or Provider IO.
+- `auth_required` is a recoverable request error. It returns one JSON-RPC failure and must not also
+  publish `gateway.error` or terminalize a turn.
+- The TUI removes its optimistic local user item, restores exactly one draft, opens login directly
+  on `provider_id`/`auth_ref`, and does not render a generic submission-failure notice.
+- Startup login cancellation exits. Recovery cancellation returns to the composer with the draft.
+  Successful recovery stores the credential and keeps the draft for deliberate resubmission; it
+  never automatically sends the retained text.
+- API-key input remains masked. Responses may expose the bounded provider id, auth reference, and
+  source only; they never expose a key, submitted prompt, provider body, stack, or absolute path.
+- A caller-provided custom `auth_ref` is accepted only when it equals the current resolved
+  credential identity for that provider. A provider-default reference remains backward compatible.
+- Model selection and session new/resume refresh the same readiness projection. They do not invent
+  independent configured booleans.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Active credential source is missing | Reject `turn.submit` with `auth_required` and bounded readiness data |
+| Environment, stored, or supported legacy credential exists | Permit normal acceptance and report its source without the value |
+| `auth_ref` is blank, over 512 characters, or contains a line/NUL control | Reject `auth.api_key.save` with `invalid_params` before storage |
+| Non-default `auth_ref` does not match the active provider identity | Reject with `invalid_params`; do not echo the reference or key |
+| Credential save fails | Keep login mounted, display one sanitized selector error, and preserve the draft |
+| Startup login is canceled | Exit without config/auth writes |
+| Later recovery is canceled | Restore editor focus and retain one unsent draft |
+
+### 5. Good / Base / Bad Cases
+
+- Good: bootstrap reports a missing custom reference, trust completes, login stores that reference,
+  and the user deliberately submits the retained draft once.
+- Good: a credential is deleted while the TUI is open; `turn.submit` rejects before reservation and
+  recovery opens without a transcript error.
+- Base: `MYCLI_API_KEY` is present; startup remains offline and reaches the composer without login.
+- Bad: reserve a turn, persist the user prompt, then discover the missing key during Provider
+  construction.
+- Bad: save recovery credentials under the provider id when the active catalog/session uses a
+  different `auth_ref`.
+
+### 6. Tests Required
+
+- Gateway tests assert bootstrap projection, pre-reservation rejection, zero runtime submissions,
+  zero user lifecycle events, no `gateway.error`, and normal acceptance when ready.
+- Backend integration uses a temporary HOME/config/auth store and asserts `missing`, `stored`,
+  `environment`, and `legacy_config` sources, custom-reference saving, unrelated-reference
+  rejection, empty transcript after rejection, and sentinel redaction.
+- TUI tests assert trust-to-login ordering, startup cancellation, masked input, visible save errors,
+  custom-reference forwarding, one restored draft, no generic error notice, no automatic resend,
+  and a fully mounted composer after success.
+- Session transition and model-selection tests assert refreshed `auth_status` reaches the adapter.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const reservation = runtime.reserve(submission);
+await runtime.submit(submission); // Provider construction discovers the missing key later.
+```
+
+#### Correct
+
+```typescript
+const readiness = await credentialReadiness();
+if (!readiness.ready) throw new GatewayFailure("auth_required", PUBLIC_MESSAGE, readinessPayload);
+const reservation = runtime.reserve(submission);
+```
+
 ## Scenario: Session-Scoped Runtime Preferences
 
 ### 1. Scope / Trigger

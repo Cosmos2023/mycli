@@ -34,7 +34,7 @@ palette normally shows the common subset; hidden commands below remain supported
 | `/hotkeys` | none | opens keyboard help | yes | - |
 | `/copy` | none | copies the last assistant response | yes | - |
 | `/clear` | none | clears the local transcript view | no | - |
-| `/login` | none | opens provider setup | yes | - |
+| `/login` | none | opens masked provider credential setup | yes | - |
 | `/trust` | none | opens workspace trust | yes | - |
 | `/help` | none | opens unified shortcut and command help | yes | - |
 | `/quit` | none | exits mycli | yes | - |
@@ -121,6 +121,13 @@ ceiling. Without an explicit `max_prompt_tokens`, mycli uses their difference as
 An explicit prompt budget remains a lower operator cap and is clamped to the model limit. Legacy
 catalogs with a top-level `models` array remain readable. API keys belong only in
 `~/.mycli/auth.json`; catalog `options` are validated request settings, not credential storage.
+
+At interactive startup, mycli checks the active provider/model credential locally after workspace
+trust and opens the same `/login` flow when it is missing. `MYCLI_API_KEY` takes precedence over a
+stored key; a stored key is resolved through the active `auth_ref`. The backend repeats the check
+before accepting a turn, so deleting a credential while the TUI is open restores the unsent draft
+and reopens login instead of creating a failed turn. Successful recovery keeps the draft in the
+composer and never resends it automatically.
 
 ## Error Contract
 

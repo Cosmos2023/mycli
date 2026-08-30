@@ -180,6 +180,21 @@ remains runtime-readable and emits `deprecated_inline_secret`; credentials insid
 `model.api_key`, are forbidden in every file layer. Environment credentials and the credential
 store remain valid and warning-free.
 
+### Credential readiness
+
+Interactive readiness resolves the complete active session identity, including provider and
+`auth_ref`, against the authoritative session workspace and persisted trust state. Its source is
+classified in the same precedence used by runtime config: nonblank `MYCLI_API_KEY` is
+`environment`, an `auth.json` record for the resolved `auth_ref` is `stored`, a supported user or
+legacy-user root `api_key` is `legacy_config`, and absence is `missing`. Project credentials never
+participate because they are rejected by the config boundary.
+
+Readiness projection contains only `ready`, bounded provider/auth-reference identities, and the
+closed source value. It is provider-free and never serializes the resolved `apiKey`, environment
+value, auth-store record, file source, or absolute workspace/home path. Session new/resume and
+model changes must re-resolve readiness rather than carrying a boolean from the prior active
+session.
+
 ### Metadata
 
 `ConfigLayerStack.version` and every `ConfigLayerMetadata.version` equal
