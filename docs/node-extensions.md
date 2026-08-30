@@ -42,6 +42,8 @@ These commands work without a TTY and before backend/provider/TUI startup:
 ```bash
 mycli doctor
 mycli doctor --json
+mycli sandbox status
+mycli sandbox status --json
 mycli hooks list --json
 mycli hooks inspect <identity> --json
 mycli hooks approve <identity>
@@ -188,12 +190,19 @@ gateway contracts, the built-in tool manifest, sandbox/process support, every ex
 Python-plugin migration state. It never calls a model provider. SQLite opens read-only and doctor
 does not create, migrate, repair, delete, or vacuum local state.
 
+`mycli sandbox status [--json]` runs the same side-effect-free sandbox readiness classifier without
+loading extensions, starting the interactive backend/TUI, calling a provider, requesting elevation,
+or running setup. Its state is `ready`, `setup_required`, `unavailable`, or `not_required`; the
+stable code distinguishes missing helpers, incomplete setup, handshake failure, unavailable
+enforcement, and unsupported platforms.
+
 Common remediation:
 
 - `config=failed`: fix TOML syntax or provider/protocol compatibility, then rerun doctor.
 - `sessions_db=failed`: preserve the file and inspect schema/recovery diagnostics; doctor will not
   repair it.
-- `process_sandbox=failed`: install the platform sandbox prerequisite documented in
+- `process_sandbox=failed`: run `mycli sandbox status` for the stable readiness code and remediation,
+  then install or repair the platform prerequisite documented in
   [node-runtime-rollout.md](node-runtime-rollout.md).
 - `hooks=warning`: inspect and approve the current hook identity/digest.
 - `plugins=failed`: build the declared ESM entry and verify manifest declarations match runtime

@@ -5781,3 +5781,111 @@ const commandPreview = metadata.command_preview ?? metadata.command ?? display.t
 if (successfulPoll && !matchingShell) continue;
 // Failed polling calls remain visible; append-only history remains unchanged.
 ```
+
+## Scenario: Effective Permission And Sandbox Readiness Projection
+
+### 1. Scope / Trigger
+
+- Trigger: changing permission presets, managed/runtime execution-policy constraints, sandbox
+  platform probes, `permissions.*` or status payloads, the permission selector, doctor process
+  checks, or the provider-free sandbox management command.
+
+### 2. Signatures
+
+- Runtime truth: `ExecutionPolicyCoordinator.snapshot() -> ExecutionPolicySnapshot`.
+- Read-only platform probe:
+  `inspectSandboxReadiness(probes?, signal?) -> Promise<SandboxReadiness>`.
+- Management command: `mycli sandbox status [--json]`.
+- Gateway queries: `permissions.list({})`, `status.inspect({})`, and `session.bootstrap(...)`.
+- TUI projection:
+  `permissionStateFromUnknown(value) -> MycliShellPermissionState | null`.
+
+### 3. Contracts
+
+- `permissions.active` is the selected `read-only`, `workspace`, or `full-access` preset. It is not
+  proof of effective access.
+- `permissions.effective` is derived from the runtime snapshot and contains only bounded structural
+  values: `trusted`, `valid`, `sandbox_mode`, `filesystem`, `network`, `approval_behavior`,
+  `source`, `constrained`, optional `constraints_source`, root/domain counts, and grant booleans.
+- Managed/runtime constraints and active grants are never recomputed by the gateway or TUI.
+  `ExecutionPolicySnapshot.profile` is the authoritative effective filesystem/network boundary.
+- Every profile row carries nominal `sandbox_mode`, `filesystem`, `network`, and
+  `approval_behavior` effects. The TUI consumes those fields and does not maintain a second copy of
+  preset semantics.
+- `sandbox_readiness` uses the closed states `ready`, `setup_required`, `unavailable`, and
+  `not_required`, plus the closed codes `ready`, `setup_incomplete`, `helper_missing`,
+  `handshake_failed`, `enforcement_unavailable`, `unsupported_platform`, and `not_required`.
+- Full Access maps readiness to `not_required` only when the effective profile needs no process
+  isolation. A managed network/root/domain restriction keeps platform readiness relevant.
+- macOS checks the fixed Seatbelt executable; Linux checks the fixed bubblewrap candidates.
+  Windows checks the packaged helper and runs only a bounded `--handshake`: two-second timeout,
+  16-KiB output cap, exact helper identity/protocol, and boolean setup/readiness fields.
+- Readiness inspection never runs setup, elevation, repair, provider IO, TUI startup, or an
+  interactive backend. Raw helper output, exceptions, paths, credentials, and tool arguments never
+  enter the result.
+- Backend startup caches one readiness result for gateway projections. `mycli sandbox status` uses
+  a dedicated lazy management path; doctor calls the same classifier through its bounded collector.
+- `/permissions`, `/status`, bootstrap, `permissions.list`, and `permissions.update` project the
+  same effective policy. Selecting a broader preset cannot remove managed/runtime constraints.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| macOS Seatbelt or Linux bubblewrap exists | `ready/ready` with the matching isolation |
+| Required fixed executable is missing | `unavailable/helper_missing` |
+| Windows helper reports setup incomplete | `setup_required/setup_incomplete`; do not elevate |
+| Windows handshake fails, times out, overflows, or is malformed | `unavailable/handshake_failed`; omit raw output |
+| Windows setup exists but enforcement is unavailable | `unavailable/enforcement_unavailable` |
+| Unsupported platform | `unavailable/unsupported_platform` with `isolation=none` |
+| Effective profile is unrestricted filesystem and network | `not_required/not_required` |
+| Selected Full Access is constrained by managed policy | Report the constrained effective profile and retained readiness |
+| Gateway receives an invalid preset | `invalid_params`; keep the previous selected/effective state |
+| TUI receives an older permission payload | Keep the preset rows; omit unknown effective/readiness facts |
+
+### 5. Good/Base/Bad Cases
+
+- Good: selected Full Access plus a managed writable-root cap renders `active=full-access`, the
+  constrained effective filesystem, `constraints_source=managed`, and the platform readiness.
+- Good: `mycli sandbox status --json` returns one bounded readiness object without loading config,
+  extensions, a provider, the backend, or the TUI.
+- Base: an older gateway supplies only `active/profiles`; the selector remains usable without the
+  TUI inventing effective-policy values.
+- Bad: display `approval_behavior=never` merely because `active=full-access` after the runtime
+  snapshot has constrained filesystem access.
+- Bad: call the Windows setup helper, request UAC, or expose stderr while rendering status.
+
+### 6. Tests Required
+
+- Tools tests cover macOS/Linux ready and missing helpers, unsupported platforms, every Windows
+  handshake state, malformed identity, missing helper, and exception redaction.
+- Gateway tests track trust/profile reconfiguration and assert bootstrap/status/permission payload
+  equality, effective approval behavior, managed constraint source, and `not_required` Full Access.
+- CLI tests assert parsing, human/JSON rendering, stable exit codes, no backend/provider/TUI start,
+  and no helper path in incomplete-setup output.
+- Doctor tests assert the process check uses the same readiness state/code and remains bounded.
+- TUI reducer and selector tests assert typed projection, managed/readiness labels, old-payload
+  fallback, and width-safe rendering.
+- Full app, tools, TUI, lint, typecheck, and contract-drift suites remain green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const approvalBehavior = selectedProfile === "full-access" ? "never" : "on-request";
+const readiness = await runWindowsSetup();
+```
+
+#### Correct
+
+```typescript
+const snapshot = runtime.executionPolicySnapshot();
+const approvalBehavior = snapshot.profile.filesystem === "unrestricted"
+	? "never"
+	: "on-request";
+const readiness = await inspectSandboxReadiness();
+```
+
+The snapshot supplies effective authority; the readiness classifier observes platform capability
+without mutating it.

@@ -300,6 +300,7 @@ npm run mycli -- config get model.name --json
 npm run mycli -- config set memory.enabled true --json
 npm run mycli -- config unset memory.enabled --json
 npm run mycli -- doctor --json
+npm run mycli -- sandbox status --json
 npm run mycli -- hooks list --json
 npm run mycli -- plugins list --json
 npm run mycli -- mcp list --json
