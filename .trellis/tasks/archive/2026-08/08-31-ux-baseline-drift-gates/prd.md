@@ -24,11 +24,11 @@ cross-surface drift checks before the remaining UX work changes behavior.
 
 ## Acceptance Criteria
 
-- [ ] Every listed journey has a deterministic provider-free test or scripted smoke.
-- [ ] Baseline artifacts are sanitized, stable across machines, and reviewable in CI.
-- [ ] A command or setting added to one canonical registry cannot silently drift from help/docs/TUI.
-- [ ] Startup and first-paint measurements fail only on an explicit, documented budget regression.
-- [ ] macOS, Linux, and Windows path/terminal variants are represented without host-specific writes.
+- [x] Every listed journey has a deterministic provider-free test or scripted smoke.
+- [x] Baseline artifacts are sanitized, stable across machines, and reviewable in CI.
+- [x] A command or setting added to one canonical registry cannot silently drift from help/docs/TUI.
+- [x] Startup and first-paint measurements fail only on an explicit, documented budget regression.
+- [x] macOS, Linux, and Windows path/terminal variants are represented without host-specific writes.
 
 ## Technical Approach
 
