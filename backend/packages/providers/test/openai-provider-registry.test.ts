@@ -256,6 +256,7 @@ function config(protocol: "responses" | "chat_completions"): NodeRuntimeConfig {
 		webSearchMode: "disabled",
 		promptCacheKeyEnabled: true,
 		requestPermissionsToolEnabled: false,
+		updatesCheckOnStartup: true,
 	};
 }
 

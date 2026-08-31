@@ -472,8 +472,151 @@ export interface Gateway {
     [k: string]: any;
   };
   detail?: string;
+  category?:
+    | "auth"
+    | "config"
+    | "extension"
+    | "migration"
+    | "provider"
+    | "runtime"
+    | "sandbox"
+    | "storage"
+    | "terminal"
+    | "update";
   message: string;
   method?: string;
+  occurrence_id?: string;
+  /**
+   * @maxItems 4
+   */
+  recovery_actions?:
+    | []
+    | [
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "start_new_session"
+        | "wait_and_retry"
+      ]
+    | [
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        ),
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        )
+      ]
+    | [
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        ),
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        ),
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        )
+      ]
+    | [
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        ),
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        ),
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        ),
+        (
+          | "check_billing"
+          | "check_for_updates"
+          | "compact_session"
+          | "configure_credentials"
+          | "inspect_configuration"
+          | "review_access"
+          | "retry"
+          | "run_doctor"
+          | "start_new_session"
+          | "wait_and_retry"
+        )
+      ];
   [k: string]: any;
 }
 export interface Item {

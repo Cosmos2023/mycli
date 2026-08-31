@@ -8,25 +8,49 @@ import { redactDoctorText } from "./doctor/redaction.ts";
 import type { SandboxStatusManagementResponse } from "./sandbox.ts";
 import type { SessionManagementResponse } from "./session.ts";
 import type { SessionSummary } from "../node-runtime/session-service.ts";
+import type { UpdateManagementResponse } from "./update.ts";
 
 export function renderManagementResponse(
 	command: ManagementCommand,
 	response: ManagementResponse,
 ): string {
 	if (command.json) return `${JSON.stringify(response)}\n`;
-	if (command.kind === "doctor") return renderDoctor(response);
+	if (command.kind === "doctor") return renderDoctor(response, command.verbose);
 	if (command.kind === "sandbox") {
 		return renderSandbox(response as SandboxStatusManagementResponse);
 	}
 	if (command.kind === "config") {
 		return renderConfig(response as ConfigManagementResponse);
 	}
+	if (command.kind === "update") return renderUpdate(response as UpdateManagementResponse);
 	if (command.kind === "session") {
 		return renderSession(response as SessionManagementResponse);
 	}
 	const lines = [response.message ?? `mycli ${command.kind} ${response.ok ? "complete" : "failed"}`];
 	for (const row of responseRows(command, response)) lines.push(row);
 	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
+	return `${lines.join("\n")}\n`;
+}
+
+function renderUpdate(response: UpdateManagementResponse): string {
+	const status = response.status;
+	const lines = [
+		`mycli update ${response.action}`,
+		`status=${status.availability}`,
+		`current=${status.currentVersion}`,
+		`latest=${status.latestVersion ?? "unknown"}`,
+		`cache=${status.cacheState}`,
+		`startup_check=${status.checkOnStartup ? "enabled" : "disabled"}`,
+		`install_method=${status.install.method}`,
+		`install_command=${status.install.command}`,
+	];
+	if (status.install.fallback) lines.push("install_command_is_fallback=true");
+	if (response.refreshOutcome) lines.push(`refresh=${response.refreshOutcome}`);
+	if (response.dismissedVersion) lines.push(`dismissed=${response.dismissedVersion}`);
+	if (!response.ok) {
+		lines.push(response.message ?? "update command failed");
+		for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
+	}
 	return `${lines.join("\n")}\n`;
 }
 
@@ -128,7 +152,7 @@ function configValue(value: ConfigSettingValue): string {
 	return String(value);
 }
 
-function renderDoctor(response: ManagementResponse): string {
+function renderDoctor(response: ManagementResponse, verbose: boolean): string {
 	const checks = Array.isArray(Reflect.get(response, "checks"))
 		? (Reflect.get(response, "checks") as readonly unknown[]).flatMap((value) => {
 			const row = record(value);
@@ -139,9 +163,15 @@ function renderDoctor(response: ManagementResponse): string {
 				|| row.status === "failed"
 				? row.status
 				: "failed";
-			const message = typeof row.message === "string" ? row.message : "diagnostic failed";
-			const detail = typeof row.detail === "string" ? row.detail : undefined;
-			return [{ name, status, message, ...(detail ? { detail } : {}) }];
+			const message = typeof row.summary === "string"
+				? row.summary
+				: typeof row.message === "string" ? row.message : "diagnostic failed";
+			const details = Array.isArray(row.details)
+				? row.details.filter((value): value is string => typeof value === "string").slice(0, 8)
+				: typeof row.detail === "string" ? [row.detail] : [];
+			const remediation = typeof row.remediation === "string" ? row.remediation : undefined;
+			const durationMs = typeof row.durationMs === "number" ? row.durationMs : 0;
+			return [{ name, status, message, details, remediation, durationMs }];
 		})
 		: [];
 	const marker = { ok: "[OK]", warning: "[WARN]", failed: "[FAIL]" } as const;
@@ -150,10 +180,12 @@ function renderDoctor(response: ManagementResponse): string {
 	}
 	const lines = ["mycli doctor"];
 	for (const check of checks) {
-		const detail = check.detail ? ` (${redactDoctorText(check.detail)})` : "";
-		lines.push(
-			`${marker[check.status]} ${redactDoctorText(check.name)}: ${redactDoctorText(check.message)}${detail}`,
-		);
+		lines.push(`${marker[check.status]} ${redactDoctorText(check.name)}: ${redactDoctorText(check.message)}`);
+		if (verbose) {
+			for (const detail of check.details) lines.push(`  detail: ${redactDoctorText(detail)}`);
+			if (check.remediation) lines.push(`  remedy: ${redactDoctorText(check.remediation)}`);
+			lines.push(`  duration_ms: ${Math.max(0, Math.round(check.durationMs))}`);
+		}
 	}
 	lines.push(
 		`Summary: ${countValue(response, "okCount")} ok, `

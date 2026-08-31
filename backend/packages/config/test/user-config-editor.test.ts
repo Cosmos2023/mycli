@@ -218,6 +218,25 @@ test("concurrent user config mutations serialize without losing either update", 
 	assert.equal(resolved.config.cacheControlEnabled, true);
 });
 
+test("user config mutation persists the canonical startup update opt-out", async (t) => {
+	const root = await temporaryRoot(t);
+	const path = await writeConfig(root.homeDir, "# update preference\n");
+
+	assert.deepEqual(await mutate(root, "set", "updates.check_on_startup", "false"), {
+		key: "updates.check_on_startup",
+		changed: true,
+	});
+	assert.deepEqual(parse(await readFile(path, "utf8")), {
+		updates: { check_on_startup: false },
+	});
+	const resolved = await resolveConfigWithMetadata({
+		...root,
+		env: {},
+		workspaceTrust: "untrusted",
+	});
+	assert.equal(resolved.config.updatesCheckOnStartup, false);
+});
+
 test("provider CLI and shell config mutations serialize without losing completed updates", async (t) => {
 	const root = await temporaryRoot(t);
 	await Promise.all([

@@ -5,6 +5,7 @@ import {
 	PluginManagementService,
 } from "@mycli/integrations";
 import {
+	CachedUpdateService,
 	loadManagedExecutionPolicy,
 	loadModelCatalog,
 	readApiKey,
@@ -35,6 +36,8 @@ import { inspectSandboxStatus } from "./sandbox.ts";
 import { SessionManagementService } from "./session.ts";
 import { SessionService } from "../node-runtime/session-service.ts";
 import type { SessionManagementCommand } from "./types.ts";
+import { UpdateManagementService } from "./update.ts";
+import { MYCLI_PACKAGE_NAME, MYCLI_VERSION } from "../version.ts";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -73,6 +76,12 @@ export interface SessionManagementContract {
 	execute(command: SessionManagementCommand): MaybePromise<ManagementResponse>;
 }
 
+export interface UpdateManagementContract {
+	status(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	check(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	dismiss(version: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+}
+
 export interface ManagementServicesOptions {
 	readonly config: ConfigManagementContract;
 	readonly hooks: HookManagementContract;
@@ -81,6 +90,7 @@ export interface ManagementServicesOptions {
 	readonly doctor: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 	readonly sandbox: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 	readonly setup: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly update: UpdateManagementContract;
 	readonly session?: SessionManagementContract;
 }
 
@@ -119,6 +129,13 @@ export class ManagementServices implements ManagementExecutor {
 		if (command.kind === "doctor") return this.#services.doctor(signal);
 		if (command.kind === "sandbox") return this.#services.sandbox(signal);
 		if (command.kind === "setup") return this.#services.setup(signal);
+		if (command.kind === "update") {
+			if (command.action === "status") return this.#services.update.status(signal);
+			if (command.action === "check") return this.#services.update.check(signal);
+			if (command.action === "dismiss") {
+				return this.#services.update.dismiss(command.version, signal);
+			}
+		}
 		if (command.kind === "config") {
 			if (command.action === "validate") return this.#services.config.validate(signal);
 			if (command.action === "show") return this.#services.config.show(signal);
@@ -193,6 +210,29 @@ export async function createDefaultManagementServices(
 			sandboxProfile: workspaceSandboxProfile(options.workspaceRoot),
 		}),
 	});
+	const updateCache = new CachedUpdateService({
+		homeDir: options.homeDir,
+		packageName: MYCLI_PACKAGE_NAME,
+		currentVersion: MYCLI_VERSION,
+		env: options.env,
+		executablePath: process.argv[1],
+	});
+	const updateCheckOnStartup = async (): Promise<boolean> => {
+		try {
+			return (await resolveConfig({
+				homeDir: options.homeDir,
+				workspaceRoot: options.workspaceRoot,
+				env: options.env,
+				workspaceTrust,
+			})).updatesCheckOnStartup;
+		} catch {
+			return true;
+		}
+	};
+	const update = new UpdateManagementService({
+		cache: updateCache,
+		checkOnStartup: updateCheckOnStartup,
+	});
 	return new ManagementServices({
 		config,
 		hooks,
@@ -202,6 +242,7 @@ export async function createDefaultManagementServices(
 			...options,
 			workspaceTrust,
 			includeRepository,
+			updateStatus: () => update.readStatus(signal),
 		}, signal)),
 		sandbox: (signal) => inspectSandboxStatus({}, signal),
 		setup: options.setup ?? (async () => failure(
@@ -209,6 +250,7 @@ export async function createDefaultManagementServices(
 			"setup is not available in this M7 batch",
 			"setup_not_implemented",
 		)),
+		update,
 		session: {
 			execute: async (command) => {
 				const currentConfig = await resolveConfig({

@@ -507,6 +507,7 @@ test("loads compaction defaults with memory disabled", async (t) => {
 
 	assert.equal(resolved.memoryEnabled, false);
 	assert.equal(resolved.requestPermissionsToolEnabled, false);
+	assert.equal(resolved.updatesCheckOnStartup, true);
 	assert.equal(resolved.compressionThresholdTokens, 8_000);
 	assert.equal(resolved.compactionTokenLimit, 9_600);
 	assert.equal(resolved.compactionReservedOutputTokens, 13_000);
@@ -522,6 +523,18 @@ test("loads compaction defaults with memory disabled", async (t) => {
 	assert.equal(resolved.compactionRehydrationFileMaxTotalTokens, 50_000);
 	assert.equal(resolved.compactionRehydrationFileMaxItemTokens, 5_000);
 	assert.equal(resolved.compactionRehydrationMaxFiles, 5);
+});
+
+test("loads the canonical startup update opt-out", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[updates]",
+		"check_on_startup = false",
+	]);
+
+	const resolved = await resolveConfig({ homeDir, workspaceRoot, env: {} });
+
+	assert.equal(resolved.updatesCheckOnStartup, false);
 });
 
 test("loads the experimental request_permissions feature only when explicitly enabled", async (t) => {

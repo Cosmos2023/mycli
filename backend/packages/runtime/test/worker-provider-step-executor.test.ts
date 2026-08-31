@@ -402,6 +402,7 @@ function config(apiBaseUrl: string): NodeRuntimeConfig {
 		cacheControlEnabled: false,
 		memoryEnabled: false,
 		requestPermissionsToolEnabled: false,
+		updatesCheckOnStartup: true,
 		compressionThresholdTokens: 8_000,
 		compactionTokenLimit: 9_600,
 		compactionReservedOutputTokens: 13_000,

@@ -109,28 +109,76 @@ test("doctor bounds a collector, aborts its cleanup, and continues", { timeout: 
 	assert.doesNotMatch(JSON.stringify(report), /private-output/u);
 });
 
+test("doctor contains malformed collector rows at the sanitization boundary", async () => {
+	const report = await runDoctorCollectors([{
+		name: "malformed",
+		collect: () => ({
+			name: 7,
+			status: "unknown",
+			message: null,
+			details: ["safe detail", 9, "Authorization: Bearer collector-secret"],
+			remediation: { private: true },
+			recoveryActions: [null, { id: "run_doctor", label: "untrusted label" }],
+		}) as never,
+	}]);
+
+	assert.deepEqual(report.checks.map((check) => ({
+		name: check.name,
+		status: check.status,
+		message: check.message,
+		details: check.details,
+		recoveryActionIds: check.recoveryActions.map((action) => action.id),
+	})), [{
+		name: "malformed",
+		status: "failed",
+		message: "check completed",
+		details: ["safe detail", "[REDACTED]"],
+		recoveryActionIds: ["run_doctor"],
+	}]);
+	assert.doesNotMatch(JSON.stringify(report), /collector-secret|untrusted label/u);
+});
+
 test("doctor human and JSON output consume one report and share exit semantics", async () => {
 	const warningReport = await runDoctorCollectors([{
 		name: "config",
-		collect: () => ({ name: "config", status: "warning", message: "api key missing" }),
+		collect: () => ({
+			name: "config",
+			status: "warning",
+			message: "api key missing",
+			details: ["layer=user", "Authorization: Bearer private-doctor-token"],
+			remediation: "Run mycli config validate.",
+		}),
 	}]);
 	const warningResponse = doctorResponseFromReport(warningReport);
 	const human = renderManagementResponse(
-		{ kind: "doctor", json: false },
+		{ kind: "doctor", json: false, verbose: false },
+		warningResponse,
+	);
+	const verbose = renderManagementResponse(
+		{ kind: "doctor", json: false, verbose: true },
 		warningResponse,
 	);
 	const json = JSON.parse(renderManagementResponse(
-		{ kind: "doctor", json: true },
+		{ kind: "doctor", json: true, verbose: false },
 		warningResponse,
 	)) as Readonly<Record<string, unknown>>;
 
 	assert.equal(warningResponse.ok, true);
 	assert.equal(warningResponse.exitCode, 0);
 	assert.deepEqual(json.checks, warningReport.checks);
+	assert.deepEqual(json.support, warningReport.support);
 	assert.equal(json.warningCount, warningReport.warningCount);
 	assert.match(human, /^mycli doctor\n/u);
 	assert.match(human, /\[WARN\] config: api key missing/u);
 	assert.match(human, /Summary: 0 ok, 1 warning, 0 failed/u);
+	assert.doesNotMatch(human, /layer=user|private-doctor-token|duration_ms/u);
+	assert.match(verbose, /detail: layer=user/u);
+	assert.match(verbose, /detail: \[REDACTED\]/u);
+	assert.match(verbose, /remedy: Run mycli config validate\./u);
+	assert.match(verbose, /duration_ms: \d+/u);
+	assert.doesNotMatch(verbose, /private-doctor-token/u);
+	assert.deepEqual(warningReport.support.diagnosticCodes, ["config"]);
+	assert.equal(warningReport.support.logReferences.length, 0);
 
 	const failedReport = await runDoctorCollectors([{
 		name: "storage",

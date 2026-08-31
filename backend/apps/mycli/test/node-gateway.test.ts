@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
 import test from "node:test";
+import {
+	CachedUpdateError,
+	isStableSemanticVersion,
+	type CachedUpdateStatus,
+} from "@mycli/config";
 import { parseGatewayEvent, parseJsonRpcMessage } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
@@ -55,6 +60,7 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/resume",
 	"/fork",
 	"/status",
+	"/update",
 	"/usage",
 	"/compact",
 	"/skills",
@@ -203,6 +209,7 @@ function gatewayHarness(options: {
 	memory?: boolean;
 	backgroundTasks?: boolean;
 	control?: boolean;
+	update?: boolean;
 	reasoningEffort?: ReasoningEffort;
 	maxPromptTokens?: number;
 	turnRollouts?: readonly Readonly<Record<string, unknown>>[];
@@ -304,6 +311,22 @@ function gatewayHarness(options: {
 	let visualSettingSources: Readonly<Record<string, "default" | "user">> = {
 		statusbar_mode: "default",
 		view_mode: "default",
+	};
+	let updateChecks = 0;
+	let updateStatus: CachedUpdateStatus = {
+		schemaVersion: 1,
+		packageName: "@mycli/app",
+		currentVersion: "0.1.0",
+		checkOnStartup: true,
+		availability: "available",
+		cacheState: "fresh",
+		latestVersion: "0.2.0",
+		lastCheckedAt: "2026-08-30T00:00:00.000Z",
+		install: {
+			method: "npm",
+			command: "npm install -g @mycli/app@latest",
+			fallback: false,
+		},
 	};
 	const queue = options.queue
 		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
@@ -616,6 +639,30 @@ function gatewayHarness(options: {
 			},
 		} : {}),
 			...(integrations ? { integrations } : {}),
+			...(options.update ? {
+				updateStatus,
+				updateCommands: {
+					status: async () => updateStatus,
+					check: async () => {
+						updateChecks += 1;
+						return { outcome: "not_needed" as const, status: updateStatus };
+					},
+					dismiss: async (version: string) => {
+						if (!isStableSemanticVersion(version)) {
+							throw new CachedUpdateError("invalid_update_version");
+						}
+						if (version !== updateStatus.latestVersion) {
+							throw new CachedUpdateError("update_version_unavailable");
+						}
+						updateStatus = {
+							...updateStatus,
+							availability: "dismissed",
+							dismissedVersion: version,
+						};
+						return updateStatus;
+					},
+				},
+			} : {}),
 			...(options.control ? {
 				controlCommands: {
 					authProviders: async () => [{
@@ -724,6 +771,7 @@ function gatewayHarness(options: {
 		sessionCommandCalls,
 		savedApiKeys,
 		selectedModels,
+		updateChecks: () => updateChecks,
 		traceAppends,
 	};
 }
@@ -1225,6 +1273,47 @@ test("canonical control RPCs use injected Node services and update active state"
 	await harness.gateway.close();
 });
 
+test("cached update RPCs, slash commands, bootstrap, and settings share one bounded status", async () => {
+	const harness = gatewayHarness({ control: true, update: true });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
+	assert.equal("result" in bootstrap ? bootstrap.result.update.latest_version : null, "0.2.0");
+	assert.equal("result" in bootstrap ? bootstrap.result.update.availability : null, "available");
+
+	const settings = await harness.send("settings.load");
+	const updateSetting = "result" in settings
+		? settings.result.catalog.items.find((item: { id?: string }) => item.id === "diagnostics.updates")
+		: undefined;
+	assert.equal(updateSetting?.value, "0.2.0 available");
+	assert.equal(updateSetting?.action_args, "/update");
+	assert.equal(updateSetting?.locked, false);
+
+	const checked = await harness.send("command.run", { command: "/update check", surface: "tui" });
+	assert.equal("result" in checked ? checked.result.display.title : null, "Updates");
+	assert.equal(harness.updateChecks(), 1);
+
+	const invalid = await harness.send("update.dismiss", { version: "v0.2.0" });
+	assert.equal("error" in invalid ? invalid.error.code : null, "invalid_params");
+	const dismissed = await harness.send("update.dismiss", { version: "0.2.0" });
+	assert.equal("result" in dismissed ? dismissed.result.update.availability : null, "dismissed");
+	assert.equal("result" in dismissed ? dismissed.result.dismissed_version : null, "0.2.0");
+
+	const status = await harness.send("update.status");
+	assert.equal("result" in status ? status.result.update.dismissed_version : null, "0.2.0");
+	const slashDismissed = await harness.send("command.run", {
+		command: "/update dismiss 0.2.0",
+		surface: "tui",
+	});
+	assert.equal(
+		"result" in slashDismissed ? slashDismissed.result.dismissed_update_version : null,
+		"0.2.0",
+	);
+	assert.equal("result" in slashDismissed ? slashDismissed.result.update_status.availability : null, "dismissed");
+
+	await harness.gateway.close();
+});
+
 test("credential readiness is projected at bootstrap and blocks turn acceptance without side effects", async () => {
 	const harness = gatewayHarness({
 		control: true,
@@ -1251,12 +1340,17 @@ test("credential readiness is projected at bootstrap and blocks turn acceptance 
 		client_user_message_id: "missing-auth-message",
 	});
 	assert.equal("error" in rejected ? rejected.error.code : null, "auth_required");
-	assert.deepEqual("error" in rejected ? rejected.error.data : null, {
+	const rejectedData = "error" in rejected ? rejected.error.data : null;
+	assert.deepEqual({ ...rejectedData, occurrence_id: undefined }, {
 		ready: false,
 		provider_id: "openai",
 		auth_ref: "catalog-account",
 		source: "missing",
+		category: "auth",
+		recovery_actions: ["configure_credentials"],
+		occurrence_id: undefined,
 	});
+	assert.match(String(rejectedData?.occurrence_id), /^rpc:[a-f0-9]{64}$/u);
 	assert.deepEqual(harness.reservedClientTurnIds, []);
 	assert.deepEqual(harness.submissions, []);
 	assert.equal(notification(harness.messages, "gateway.error"), undefined);
@@ -3341,10 +3435,18 @@ test("queue storage failures return sanitized errors without publishing", async 
 		client_turn_id: "follow-secret",
 	});
 
-	assert.deepEqual("error" in response ? response.error : null, {
+	const failure = "error" in response ? response.error : null;
+	assert.deepEqual(failure && { ...failure, data: undefined }, {
 		code: "persistence_error",
 		message: "Session persistence failed.",
+		data: undefined,
 	});
+	assert.deepEqual(failure?.data && { ...failure.data, occurrence_id: undefined }, {
+		category: "storage",
+		recovery_actions: ["run_doctor"],
+		occurrence_id: undefined,
+	});
+	assert.match(String(failure?.data?.occurrence_id), /^rpc:[a-f0-9]{64}$/u);
 	assert.equal(notificationCount(harness.messages, "turn.queue.updated"), before);
 	assert.equal(JSON.stringify(harness.messages).includes("private sqlite path"), false);
 	await harness.gateway.close();
@@ -4352,9 +4454,13 @@ test("turn interrupt fences stale turn ids and returns the active id", async () 
 
 	const mismatch = await harness.send("turn.interrupt", { turn_id: "stale-turn" });
 	assert.equal("error" in mismatch ? mismatch.error.code : null, "turn_id_mismatch");
-	assert.deepEqual("error" in mismatch ? mismatch.error.data : null, {
+	const mismatchData = "error" in mismatch ? mismatch.error.data : null;
+	assert.deepEqual(mismatchData && { ...mismatchData, occurrence_id: undefined }, {
 		actual_turn_id: "turn-node",
+		category: "runtime",
+		occurrence_id: undefined,
 	});
+	assert.match(String(mismatchData?.occurrence_id), /^rpc:[a-f0-9]{64}$/u);
 	assert.equal(harness.signal()?.aborted, false);
 
 	const interrupted = await harness.send("turn.interrupt", { turn_id: "turn-node" });
@@ -4396,11 +4502,14 @@ test("unsupported methods return a stable error and observable gateway event", a
 	parseGatewayEvent(event);
 	parseGatewayEvent(mirror);
 	assert.ok(harness.messages.indexOf(event) < harness.messages.indexOf(mirror));
-	assert.deepEqual(event.params, {
+	assert.deepEqual({ ...event.params, occurrence_id: undefined }, {
 		code: "method_not_found",
 		message: "Unknown gateway method.",
 		method: "missing.method",
+		category: "runtime",
+		occurrence_id: undefined,
 	});
+	assert.match(String(event.params.occurrence_id), /^rpc:[a-f0-9]{64}$/u);
 	await harness.gateway.close();
 });
 

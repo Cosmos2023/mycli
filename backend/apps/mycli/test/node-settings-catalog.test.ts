@@ -18,6 +18,20 @@ test("settings catalog projects seven bounded categories and canonical visual de
 		trust: { state: "trusted", source: "user_store" },
 		context: { used_tokens: 1200, max_tokens: 10000, source: "provider" },
 		integrationsAvailable: true,
+		update: {
+			schemaVersion: 1,
+			packageName: "@mycli/app",
+			currentVersion: "0.1.0",
+			checkOnStartup: true,
+			availability: "available",
+			cacheState: "fresh",
+			latestVersion: "0.2.0",
+			install: {
+				method: "npm",
+				command: "npm install -g @mycli/app@latest",
+				fallback: false,
+			},
+		},
 	});
 	const categories = catalog.categories as Array<Record<string, unknown>>;
 	const items = catalog.items as Array<Record<string, unknown>>;
@@ -51,6 +65,22 @@ test("settings catalog projects seven bounded categories and canonical visual de
 	});
 	assert.equal(items.find((item) => item.id === "permissions.profile")?.source, "managed");
 	assert.equal(items.find((item) => item.id === "sessions.context")?.value, "1,200 / 10,000 tokens");
+	assert.deepEqual(items.find((item) => item.id === "diagnostics.updates"), {
+		id: "diagnostics.updates",
+		category: "diagnostics",
+		kind: "action",
+		label: "Updates",
+		description: "Inspect cached update status and manual installation guidance",
+		value: "0.2.0 available",
+		source: "update_cache",
+		scope: "user",
+		action: "run_command",
+		action_args: "/update",
+		command: "/update",
+		locked: false,
+		restart_required: false,
+		search_terms: ["upgrade", "version", "npm"],
+	});
 });
 
 test("settings catalog keeps unavailable actions and private values bounded", () => {
@@ -67,9 +97,12 @@ test("settings catalog keeps unavailable actions and private values bounded", ()
 	const serialized = JSON.stringify(catalog);
 	const items = catalog.items as Array<Record<string, unknown>>;
 	const integrations = items.find((item) => item.id === "integrations.resources");
+	const updates = items.find((item) => item.id === "diagnostics.updates");
 
 	assert.equal(integrations?.locked, true);
 	assert.equal(integrations?.lock_reason, "No integration resource service is configured");
+	assert.equal(updates?.locked, true);
+	assert.equal(updates?.lock_reason, "Update status is unavailable");
 	assert.equal(serialized.includes("\n"), false);
 	assert.ok(serialized.length < 12_000);
 });

@@ -1,3 +1,8 @@
+import { randomBytes } from "node:crypto";
+import {
+	type DiagnosticCategory,
+	type DiagnosticRecoveryActionId,
+} from "@mycli/contracts";
 import { StorageFailure } from "@mycli/storage";
 import { SlashCommandError } from "./node-slash-command-registry.ts";
 import { SessionServiceError } from "./session-service.ts";
@@ -13,6 +18,21 @@ export class GatewayFailure extends Error {
 		super(message);
 		this.name = "GatewayFailure";
 	}
+}
+
+export interface GatewayFailureDiagnostic {
+	readonly category: DiagnosticCategory;
+	readonly recoveryActions: readonly DiagnosticRecoveryActionId[];
+}
+
+export function gatewayFailureDiagnostic(code: string): GatewayFailureDiagnostic {
+	const category = gatewayFailureCategory(code);
+	const recoveryActions = gatewayFailureRecoveryActionIds(code);
+	return Object.freeze({ category, recoveryActions });
+}
+
+export function gatewayRequestOccurrenceId(): string {
+	return `rpc:${randomBytes(32).toString("hex")}`;
 }
 
 export function gatewayFailure(error: unknown): GatewayFailure {
@@ -123,4 +143,24 @@ function sessionServiceFailure(error: SessionServiceError): GatewayFailure {
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function gatewayFailureCategory(code: string): DiagnosticCategory {
+	if (code === "auth_required") return "auth";
+	if (code === "model_catalog_error") return "config";
+	if (code === "unavailable_platform") return "sandbox";
+	if (code === "persistence_error" || code.startsWith("session_")
+		|| code.startsWith("repair_")) return "storage";
+	return "runtime";
+}
+
+function gatewayFailureRecoveryActionIds(code: string): readonly DiagnosticRecoveryActionId[] {
+	let ids: readonly DiagnosticRecoveryActionId[];
+	if (code === "auth_required") ids = ["configure_credentials"];
+	else if (code === "model_catalog_error") ids = ["inspect_configuration"];
+	else if (code === "persistence_error" || code === "internal_error"
+		|| code === "session_state_invalid" || code === "session_state_version_unsupported"
+		|| code === "repair_failed") ids = ["run_doctor"];
+	else ids = [];
+	return Object.freeze([...ids]);
 }

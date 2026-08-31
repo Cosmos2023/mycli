@@ -92,6 +92,55 @@ test("runtime state projector reuses transcript snapshots for non-transcript upd
 	assert.equal(updated.footer.liveState, "Idle");
 });
 
+test("bootstrap renders one cached update notice and dismissal removes it", () => {
+	const payload = {
+		session_id: "session-update",
+		workspace: "/repo",
+		update: {
+			schema_version: 1,
+			package_name: "@mycli/app",
+			current_version: "0.1.0",
+			check_on_startup: true,
+			availability: "available",
+			cache_state: "fresh",
+			latest_version: "0.2.0",
+			install: {
+				method: "unknown",
+				command: "npm install -g @mycli/app@latest",
+				fallback: true,
+			},
+		},
+	};
+	let state = runtimeStateFromBootstrap(initialRuntimeState(), payload);
+	state = runtimeStateFromBootstrap(state, payload);
+	const notices = state.transcript.filter((item) => item.metadata?.update_notice === true);
+	assert.equal(notices.length, 1);
+	assert.match(notices[0]?.text ?? "", /mycli 0\.2\.0 is available\./u);
+	assert.match(notices[0]?.text ?? "", /Manual fallback: npm install -g @mycli\/app@latest/u);
+	assert.match(notices[0]?.text ?? "", /\/update dismiss 0\.2\.0/u);
+
+	state = runtimeStateWithCommandResult(state, "/update dismiss 0.2.0", {
+		presentation: "none",
+		dismissed_update_version: "0.2.0",
+	});
+	assert.equal(state.transcript.some((item) => item.metadata?.update_notice === true), false);
+});
+
+test("bootstrap does not render disabled, dismissed, or unknown update states", () => {
+	for (const availability of ["disabled", "dismissed", "unknown"]) {
+		const state = runtimeStateFromBootstrap(initialRuntimeState(), {
+			session_id: "session-update",
+			update: {
+				schema_version: 1,
+				availability,
+				latest_version: "0.2.0",
+				install: { command: "npm install -g @mycli/app@latest", fallback: false },
+			},
+		});
+		assert.equal(state.transcript.some((item) => item.metadata?.update_notice === true), false);
+	}
+});
+
 test("runtime state projector reads only a bounded suffix for a 10000-item tail update", () => {
 	const projector = new RuntimeStateProjector();
 	const transcript: RuntimeShellState["transcript"] = Array.from(
@@ -3203,6 +3252,8 @@ test("runtime adapter lets turn.failed own the terminal error projection", () =>
 			source: "runtime",
 			code: "provider_error",
 			details: "Invalid schema api_key=[REDACTED] (status 400)",
+			category: "provider",
+			recoveryActions: [{ id: "retry", label: "Retry the request." }],
 		},
 	}]);
 	assert.equal(JSON.stringify(shell).includes("private-upstream-value"), false);
@@ -3246,6 +3297,12 @@ test("runtime adapter keeps one specific provider failure without a terminal sta
 			source: "runtime",
 			code: "auth_error",
 			details: "(status 401, request id: request-safe)",
+			category: "auth",
+			recoveryActions: [{
+				id: "configure_credentials",
+				label: "Check the configured provider credentials.",
+				command: "/login",
+			}],
 		},
 	}]);
 	assert.equal(shell.footer.liveState, "Idle");
@@ -3271,6 +3328,80 @@ test("runtime adapter keeps one specific provider failure without a terminal sta
 		projectRuntimeState(resumed).messages.filter((message) => message.role === "error"),
 		shell.messages.filter((message) => message.role === "error"),
 	);
+});
+
+test("runtime adapter renders one actionable diagnostic for representative root failures", () => {
+	const cases = [
+		{
+			code: "auth_error",
+			category: "auth",
+			actions: [{
+				id: "configure_credentials",
+				label: "Check the configured provider credentials.",
+				command: "/login",
+			}],
+		},
+		{
+			code: "provider_error",
+			category: "provider",
+			actions: [{ id: "retry", label: "Retry the request." }],
+		},
+		{
+			code: "persistence_error",
+			category: "storage",
+			actions: [{
+				id: "run_doctor",
+				label: "Run mycli doctor for local recovery guidance.",
+				command: "mycli doctor",
+			}],
+		},
+		{
+			code: "config_error",
+			category: "config",
+			actions: [{
+				id: "inspect_configuration",
+				label: "Update the provider configuration, then retry.",
+				command: "mycli config validate",
+			}],
+		},
+	] as const;
+
+	for (const rootFailure of cases) {
+		const turnId = `turn-${rootFailure.code}`;
+		let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+			turn_id: turnId,
+			client_turn_id: `client-${rootFailure.code}`,
+		});
+		state = reduceRuntimeEvent(state, "turn.failed", {
+			turn_id: turnId,
+			client_turn_id: `client-${rootFailure.code}`,
+			code: rootFailure.code,
+			message: rootFailure.code,
+		});
+		state = reduceRuntimeEvent(state, "turn.status", {
+			turn_id: turnId,
+			client_turn_id: `client-${rootFailure.code}`,
+			state: "failed",
+			kind: "failed",
+			text: "Failed",
+			terminal: true,
+		});
+		state = reduceRuntimeEvent(state, "status.update", {
+			client_turn_id: `client-${rootFailure.code}`,
+			state: "failed",
+			kind: "failed",
+			text: "Failed",
+		});
+
+		const errors = projectRuntimeState(state).messages.filter((message) => message.role === "error");
+		assert.equal(errors.length, 1, rootFailure.code);
+		const error = errors[0];
+		assert.ok(error?.role === "error");
+		assert.equal(error.id, turnFailedNoticeId(turnId));
+		assert.equal(error.diagnostic?.code, rootFailure.code);
+		assert.equal(error.diagnostic?.category, rootFailure.category);
+		assert.deepEqual(error.diagnostic?.recoveryActions, rootFailure.actions);
+	}
 });
 
 test("runtime adapter reapplies the shared error-detail sanitizer", () => {
@@ -3337,6 +3468,11 @@ test("runtime adapter keeps overload recovery transient and renders one terminal
 			source: "runtime",
 			code: "server_overloaded",
 			details: "model capacity reached (status 529)",
+			category: "provider",
+			recoveryActions: [{
+				id: "wait_and_retry",
+				label: "Wait for the cooldown, then retry.",
+			}],
 		},
 	});
 	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
@@ -3421,6 +3557,45 @@ test("runtime adapter does not merge distinct gateway errors with matching text"
 		projectRuntimeState(state).messages
 			.flatMap((message) => message.role === "error" ? [message.diagnostic?.method] : []),
 		["command.one", "command.two"],
+	);
+});
+
+test("runtime adapter deduplicates one request failure across response and event lanes", () => {
+	let state = initialRuntimeState();
+	const failure = {
+		code: "internal_error",
+		method: "settings.load",
+		message: "Gateway request failed.",
+		occurrence_id: "rpc:one-request",
+		category: "storage",
+		recovery_actions: ["run_doctor"],
+	};
+	state = reduceRuntimeEvent(state, "gateway.error", failure);
+	state = reduceRuntimeEvent(state, "gateway.error", failure);
+
+	const errors = projectRuntimeState(state).messages.filter((message) => message.role === "error");
+	assert.equal(errors.length, 1);
+	const error = errors[0];
+	assert.ok(error && error.role === "error");
+	assert.deepEqual(error.diagnostic, {
+		method: "settings.load",
+		code: "internal_error",
+		category: "storage",
+		recoveryActions: [{
+			id: "run_doctor",
+			label: "Run mycli doctor for local recovery guidance.",
+			command: "mycli doctor",
+		}],
+		occurrenceId: "rpc:one-request",
+	});
+
+	state = reduceRuntimeEvent(state, "gateway.error", {
+		...failure,
+		occurrence_id: "rpc:second-request",
+	});
+	assert.equal(
+		projectRuntimeState(state).messages.filter((message) => message.role === "error").length,
+		2,
 	);
 });
 

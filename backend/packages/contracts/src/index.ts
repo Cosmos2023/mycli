@@ -1,4 +1,20 @@
 export { gatewayContractCatalog } from "./catalog.ts";
+export {
+	diagnosticRecoveryAction,
+	DIAGNOSTIC_CATEGORIES,
+	DIAGNOSTIC_RECOVERY_ACTION_IDS,
+	isDiagnosticCategory,
+	isDiagnosticRecoveryActionId,
+	requestFailureNoticeId,
+	runtimeErrorCategory,
+	runtimeErrorRecoveryActions,
+} from "./diagnostics.ts";
+export type {
+	DiagnosticCategory,
+	DiagnosticRecoveryAction,
+	DiagnosticRecoveryActionId,
+	DiagnosticSeverity,
+} from "./diagnostics.ts";
 export { parsePackageVersion } from "./package-version.ts";
 export type { PackageVersionManifest } from "./package-version.ts";
 export {

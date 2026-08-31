@@ -4432,6 +4432,7 @@ function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 		...overrides,
 		webSearchMode: overrides.webSearchMode ?? "live",
 		requestPermissionsToolEnabled: overrides.requestPermissionsToolEnabled ?? false,
+		updatesCheckOnStartup: overrides.updatesCheckOnStartup ?? true,
 	};
 }
 

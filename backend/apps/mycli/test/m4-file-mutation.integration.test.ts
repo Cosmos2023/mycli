@@ -8,7 +8,8 @@ import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
-import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
+import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 
 type Protocol = "responses" | "chat_completions";
 type JsonObject = Record<string, unknown>;

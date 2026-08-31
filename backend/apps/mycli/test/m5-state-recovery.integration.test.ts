@@ -12,7 +12,8 @@ import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
 import { fingerprintSubmission } from "@mycli/core";
 import { MemoryStore } from "@mycli/runtime";
 import { openRuntimeSessionStore, type RuntimeSessionStore } from "@mycli/storage";
-import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
+import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 
 type Protocol = "responses" | "chat_completions";
 type JsonObject = Record<string, unknown>;

@@ -840,6 +840,7 @@ function runtimeConfig(): NodeRuntimeConfig {
 		webSearchMode: "live",
 		promptCacheKeyEnabled: false,
 		requestPermissionsToolEnabled: false,
+		updatesCheckOnStartup: true,
 	});
 }
 

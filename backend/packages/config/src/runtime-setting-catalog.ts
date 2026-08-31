@@ -173,6 +173,12 @@ const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
 		"integer",
 		(config) => config.streamMaxRetries,
 	),
+	writable(
+		"updates.check_on_startup",
+		"updates_check_on_startup",
+		"boolean",
+		(config) => config.updatesCheckOnStartup,
+	),
 ].sort((left, right) => compareText(left.key, right.key)));
 
 const BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));

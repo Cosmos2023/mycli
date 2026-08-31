@@ -1,6 +1,26 @@
 export { readApiKey, writeApiKey } from "./auth-store.ts";
 export type { ReadApiKeyOptions, WriteApiKeyOptions } from "./auth-store.ts";
 export {
+	CachedUpdateError,
+	CachedUpdateService,
+	compareStableSemanticVersions,
+	isStableSemanticVersion,
+	UPDATE_CACHE_TTL_MS,
+	updateInstallGuidance,
+} from "./update-cache.ts";
+export type {
+	CachedUpdateErrorCode,
+	CachedUpdateServiceOptions,
+	CachedUpdateStatus,
+	UpdateAvailability,
+	UpdateCacheRecord,
+	UpdateCacheState,
+	UpdateInstallGuidance,
+	UpdateInstallMethod,
+	UpdateRefreshOutcome,
+	UpdateRefreshResult,
+} from "./update-cache.ts";
+export {
 	inferProviderFromBaseUrl,
 	listProviderProfiles,
 	parseProtocol,

@@ -1,3 +1,8 @@
+import type {
+	DiagnosticCategory,
+	DiagnosticRecoveryAction,
+} from "@mycli/contracts";
+
 export type DoctorStatus = "ok" | "warning" | "failed";
 
 export interface DoctorCheck {
@@ -5,13 +10,40 @@ export interface DoctorCheck {
 	readonly status: DoctorStatus;
 	readonly message: string;
 	readonly detail?: string;
+	readonly category?: DiagnosticCategory;
+	readonly code?: string;
+	readonly summary?: string;
+	readonly details?: readonly string[];
+	readonly remediation?: string;
+	readonly recoveryActions?: readonly DiagnosticRecoveryAction[];
+}
+
+export interface DoctorDiagnosticCheck extends DoctorCheck {
+	readonly category: DiagnosticCategory;
+	readonly code: string;
+	readonly summary: string;
+	readonly details: readonly string[];
+	readonly recoveryActions: readonly DiagnosticRecoveryAction[];
+	readonly durationMs: number;
+}
+
+export interface DoctorSupportManifest {
+	readonly schemaVersion: 1;
+	readonly mycliVersion: string;
+	readonly nodeVersion: string;
+	readonly platform: NodeJS.Platform;
+	readonly architecture: string;
+	readonly diagnosticCodes: readonly string[];
+	readonly logReferences: readonly string[];
 }
 
 export interface DoctorReport {
-	readonly checks: readonly DoctorCheck[];
+	readonly schemaVersion: 1;
+	readonly checks: readonly DoctorDiagnosticCheck[];
 	readonly okCount: number;
 	readonly warningCount: number;
 	readonly failedCount: number;
+	readonly support: DoctorSupportManifest;
 }
 
 export type DoctorCollectorResult = DoctorCheck | readonly DoctorCheck[];

@@ -1,3 +1,19 @@
+import type {
+	DiagnosticCategory,
+	DiagnosticRecoveryAction,
+} from "@mycli/contracts";
+
+export type MycliShellNoticeDiagnostic = {
+	hint?: string;
+	source?: string;
+	method?: string;
+	code?: string;
+	details?: string;
+	category?: DiagnosticCategory;
+	recoveryActions?: readonly DiagnosticRecoveryAction[];
+	occurrenceId?: string;
+};
+
 export type MycliShellMessage =
 	| { id: string; role: "user"; text: string }
 	| { id: string; role: "assistant"; text: string; thinking?: string; thinkingHidden?: boolean }
@@ -5,7 +21,7 @@ export type MycliShellMessage =
 		id: string;
 		role: "system" | "error" | "warning";
 		text: string;
-		diagnostic?: { hint?: string; source?: string; method?: string; code?: string; details?: string };
+		diagnostic?: MycliShellNoticeDiagnostic;
 	};
 
 export type MycliShellPlan = {

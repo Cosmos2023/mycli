@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "command_count": 35,
+	"command_count": 36,
 	"prefixed_alias_count": 13,
-	"sha256": "ab575598a8093462000ea23142d44f45c965d3ed18c261ebd4c85b071224326c"
+	"sha256": "e21b28b12b8837b44348c55f52525b3c53d24ce93f2fceeaf506f5d8dabcf403"
 }

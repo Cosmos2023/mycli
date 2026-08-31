@@ -264,6 +264,7 @@ async function send(
 					code: gatewayError.code,
 					message: gatewayError.message,
 					method: gatewayError.method || method,
+					...requestDiagnosticFields(gatewayError.data),
 				}),
 			);
 		}
@@ -454,6 +455,9 @@ async function submitTurn(
 				code: error instanceof GatewayRequestError ? error.code : "request_failed",
 				message: safeErrorMessage(error, "Request failed."),
 				method: "turn.submit",
+				...(error instanceof GatewayRequestError
+					? requestDiagnosticFields(error.data)
+					: {}),
 			}),
 		);
 		backendTurnBusy = false;
@@ -1160,4 +1164,25 @@ function stringField(value: unknown): string | undefined {
 
 function integerField(value: unknown): number | undefined {
 	return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
+}
+
+function requestDiagnosticFields(data: Readonly<Record<string, unknown>>): Record<string, unknown> {
+	const occurrenceId = boundedStringField(data.occurrence_id, 96);
+	const category = boundedStringField(data.category, 32);
+	const recoveryActions = Array.isArray(data.recovery_actions)
+		? data.recovery_actions.flatMap((value) => {
+			const id = boundedStringField(value, 64);
+			return id ? [id] : [];
+		}).slice(0, 4)
+		: [];
+	return {
+		...(occurrenceId ? { occurrence_id: occurrenceId } : {}),
+		...(category ? { category } : {}),
+		...(recoveryActions.length > 0 ? { recovery_actions: recoveryActions } : {}),
+	};
+}
+
+function boundedStringField(value: unknown, maxLength: number): string | undefined {
+	const field = stringField(value);
+	return field && field.length <= maxLength ? field : undefined;
 }

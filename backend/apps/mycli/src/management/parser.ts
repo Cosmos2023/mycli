@@ -17,6 +17,7 @@ const MANAGEMENT_COMMANDS = new Set([
 	"plugins",
 	"mcp",
 	"session",
+	"update",
 ]);
 
 export function parseCliMode(argv: readonly string[]): CliMode {
@@ -42,8 +43,9 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	}
 	const { args, json } = extractFlag(rawArgs, "--json");
 	if (root === "doctor") {
-		if (args.length > 0) throw usage("doctor [--json]");
-		return Object.freeze({ kind: "doctor", json });
+		const verboseFlag = extractFlag(args, "--verbose");
+		if (verboseFlag.args.length > 0) throw usage("doctor [--json] [--verbose]");
+		return Object.freeze({ kind: "doctor", json, verbose: verboseFlag.json });
 	}
 	if (root === "sandbox") {
 		if (args.length !== 1 || args[0] !== "status") {
@@ -51,11 +53,25 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 		}
 		return Object.freeze({ kind: "sandbox", action: "status", json });
 	}
+	if (root === "update") return parseUpdate(args, json);
 	if (root === "config") return parseConfig(args, json);
 	if (root === "hooks") return parseHooks(args, json);
 	if (root === "plugins") return parsePlugins(args, json);
 	if (root === "mcp") return parseMcp(args, json);
 	return parseSession(args, json);
+}
+
+function parseUpdate(args: readonly string[], json: boolean): ManagementCommand {
+	if (args.length === 0 || (args.length === 1 && args[0] === "status")) {
+		return Object.freeze({ kind: "update", action: "status", json });
+	}
+	if (args.length === 1 && args[0] === "check") {
+		return Object.freeze({ kind: "update", action: "check", json });
+	}
+	if (args.length === 2 && args[0] === "dismiss") {
+		return Object.freeze({ kind: "update", action: "dismiss", version: nonEmpty(args[1]), json });
+	}
+	throw usage("update [status|check|dismiss <version>] [--json]");
 }
 
 function parseSession(args: readonly string[], json: boolean): SessionManagementCommand {

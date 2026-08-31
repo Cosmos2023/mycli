@@ -468,11 +468,49 @@
         "detail": {
           "type": "string"
         },
+        "category": {
+          "enum": [
+            "auth",
+            "config",
+            "extension",
+            "migration",
+            "provider",
+            "runtime",
+            "sandbox",
+            "storage",
+            "terminal",
+            "update"
+          ],
+          "type": "string"
+        },
         "message": {
           "type": "string"
         },
         "method": {
           "type": "string"
+        },
+        "occurrence_id": {
+          "maxLength": 96,
+          "type": "string"
+        },
+        "recovery_actions": {
+          "items": {
+            "enum": [
+              "check_billing",
+              "check_for_updates",
+              "compact_session",
+              "configure_credentials",
+              "inspect_configuration",
+              "review_access",
+              "retry",
+              "run_doctor",
+              "start_new_session",
+              "wait_and_retry"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "type": "array"
         }
       },
       "required": [

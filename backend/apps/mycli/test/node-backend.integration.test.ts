@@ -26,7 +26,7 @@ import {
 	projectRuntimeState,
 	reduceRuntimeEvent,
 } from "../../../../tui/mycli-shell/src/adapters/runtime-state.ts";
-import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 
 function finalMessageCount(messages: readonly Record<string, unknown>[]): number {
 	return messages.filter((message) => {
@@ -113,6 +113,124 @@ test("Node backend becomes ready before an uncached MCP discovery completes", as
 
 	writeRequest(backend, "shutdown-background-mcp", "shutdown", {});
 	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend does not await update refresh and closes only after aborted work settles", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-background-update-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	let requestStarted!: () => void;
+	const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+	let releaseCleanup!: () => void;
+	const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+	let aborted = false;
+	const updateFetch = (async (_input, init) => {
+		requestStarted();
+		return await new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener("abort", () => {
+				aborted = true;
+				void cleanup.then(() => reject(new DOMException("aborted", "AbortError")));
+			}, { once: true });
+		});
+	}) as typeof fetch;
+
+	const backend = await Promise.race([
+		startNodeBackend({
+			cwd: workspace,
+			args: ["--session", "background-update-session"],
+			env: { HOME: home },
+			updateFetch,
+		}),
+		new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error("backend startup waited for update refresh")), 1_000);
+		}),
+	]);
+	await started;
+
+	let closeSettled = false;
+	const closing = backend.close().then(() => { closeSettled = true; });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(aborted, true);
+	assert.equal(closeSettled, false);
+	releaseCleanup();
+	await closing;
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend startup update opt-out performs no network request", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-update-opt-out-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(join(home, ".mycli"), { recursive: true }), mkdir(workspace)]);
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		"[updates]",
+		"check_on_startup = false",
+	].join("\n"), "utf8");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let requests = 0;
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "update-opt-out-session"],
+		env: { HOME: home },
+		updateFetch: (async () => {
+			requests += 1;
+			return new Response(JSON.stringify({ version: "0.2.0" }));
+		}) as typeof fetch,
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(requests, 0);
+	await backend.close();
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend advertises a refreshed update only on the next startup", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-update-next-startup-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let requests = 0;
+	const updateFetch = (async () => {
+		requests += 1;
+		return new Response(JSON.stringify({ version: "0.2.0" }), {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+	}) as typeof fetch;
+	const options = {
+		cwd: workspace,
+		args: ["--session", "update-next-startup-session"],
+		env: { HOME: home },
+		updateFetch,
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => existsSync(join(home, ".mycli", "version.json")));
+	writeRequest(first, "bootstrap-update-first", "session.bootstrap", { protocol_version: 1 });
+	const firstBootstrap = await waitFor(() => response(firstMessages, "bootstrap-update-first"));
+	const firstUpdate = resultValue(firstBootstrap, "update") as Readonly<Record<string, unknown>>;
+	assert.equal(firstUpdate.availability, "unknown");
+	await first.close();
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	writeRequest(second, "bootstrap-update-second", "session.bootstrap", { protocol_version: 1 });
+	const secondBootstrap = await waitFor(() => response(secondMessages, "bootstrap-update-second"));
+	const secondUpdate = resultValue(secondBootstrap, "update") as Readonly<Record<string, unknown>>;
+	assert.equal(secondUpdate.availability, "available");
+	assert.equal(secondUpdate.latest_version, "0.2.0");
+	assert.equal(requests, 1);
+	await second.close();
 });
 
 test("fresh schema-v12 bootstrap loads the virtual session transcript without persisting it", async (t) => {

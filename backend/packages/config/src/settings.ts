@@ -60,6 +60,7 @@ export interface NodeRuntimeConfig {
 	readonly cacheControlEnabled: boolean;
 	readonly memoryEnabled: boolean;
 	readonly requestPermissionsToolEnabled: boolean;
+	readonly updatesCheckOnStartup: boolean;
 	readonly compressionThresholdTokens: number;
 	readonly compactionTokenLimit: number;
 	readonly compactionReservedOutputTokens: number;
@@ -363,6 +364,11 @@ async function resolveConfigFromSources(
 		false,
 		"features.request_permissions_tool",
 	);
+	const updatesCheckOnStartup = booleanSetting(
+		firstDefined(...sources.map((source) => source.updates_check_on_startup)),
+		true,
+		"updates.check_on_startup",
+	);
 	const compressionThresholdTokens = positiveSafeIntegerSetting(
 		setting(
 			options.env,
@@ -581,6 +587,7 @@ async function resolveConfigFromSources(
 		cacheControlEnabled: cacheControlOverride ?? profile.cacheControlEnabled,
 		memoryEnabled,
 		requestPermissionsToolEnabled,
+		updatesCheckOnStartup,
 		compressionThresholdTokens,
 		compactionTokenLimit,
 		compactionReservedOutputTokens,
@@ -787,6 +794,10 @@ function setting(
 
 function firstTruthy(...values: readonly unknown[]): unknown {
 	return values.find((value) => Boolean(value));
+}
+
+function firstDefined(...values: readonly unknown[]): unknown {
+	return values.find((value) => value !== undefined && value !== null);
 }
 
 function stringValue(value: unknown): string | undefined {

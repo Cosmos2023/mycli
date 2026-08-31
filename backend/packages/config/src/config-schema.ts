@@ -39,6 +39,9 @@ export const CONFIG_SECTION_KEYS: Readonly<Record<string, Readonly<Record<string
 	features: {
 		request_permissions_tool: "request_permissions_tool",
 	},
+	updates: {
+		check_on_startup: "updates_check_on_startup",
+	},
 	context: {
 		compression_threshold_tokens: "compression_threshold_tokens",
 		compaction_token_limit: "compaction_token_limit",

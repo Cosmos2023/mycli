@@ -8,7 +8,7 @@ import { createInterface } from "node:readline";
 import test from "node:test";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
-import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 
 test("Worker-backed root replays a Responses Read continuation and persists it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m3-read-"));

@@ -1,6 +1,13 @@
 import {
+	diagnosticRecoveryAction,
+	type DiagnosticRecoveryActionId,
+	isDiagnosticCategory,
+	isDiagnosticRecoveryActionId,
 	isRuntimeErrorCode,
+	requestFailureNoticeId,
+	runtimeErrorCategory,
 	runtimeErrorNoticeSeverity,
+	runtimeErrorRecoveryActions,
 	runtimeErrorRecoveryHint,
 	sanitizeRuntimeErrorDetail,
 	TURN_INTERRUPTED_NOTICE,
@@ -24,6 +31,7 @@ import type {
 	MycliShellFileChange,
 	MycliShellFileChangeEntry,
 	MycliShellMessage,
+	MycliShellNoticeDiagnostic,
 	MycliShellLocalImageAttachment,
 	MycliShellModel,
 	MycliShellPendingApproval,
@@ -70,6 +78,8 @@ const SEMANTIC_TOOL_ROW_NAMES = new Set([
 	"updateplan",
 	"waitagent",
 ]);
+
+const STARTUP_UPDATE_NOTICE_ID = "startup-update-notice";
 
 type RuntimeTranscriptItem = {
 	id: string;
@@ -948,13 +958,14 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 			{ id: "welcome", type: "system_notice", text: welcomeText, folded: false, metadata: welcome },
 		],
 	};
+	const updateState = runtimeStateWithStartupUpdate(bootstrapState, payload.update);
 	const nextState = hasLegacyMigration
-		? runtimeStateWithMessageQueues(bootstrapState, {
+		? runtimeStateWithMessageQueues(updateState, {
 			pendingSteers: [],
 			rejectedSteers: [],
 			followUps: [],
 		})
-		: applyQueuePayload(bootstrapState, status, "status");
+		: applyQueuePayload(updateState, status, "status");
 	return applyShellBootstrap(
 		runtimeStateWithLegacyQueueMigration(nextState, payload),
 		Array.isArray(payload.background_shells) ? payload.background_shells : status.background_shells,
@@ -1664,10 +1675,16 @@ export function reduceRuntimeEvent(
 				? state.liveStatus
 				: null;
 		if (method === "gateway.error") {
+			const occurrenceId = stringValue(params.occurrence_id);
 			return {
 				...state,
 				liveStatus: previousWaitingStatus ?? state.liveStatus,
-				transcript: appendErrorNotice(state.transcript, params, message),
+				transcript: appendErrorNotice(
+					state.transcript,
+					params,
+					message,
+					occurrenceId ? requestFailureNoticeId(occurrenceId) : undefined,
+				),
 			};
 		}
 		return {
@@ -2244,10 +2261,20 @@ function appendErrorNotice(
 
 function errorNoticeMetadata(params: Record<string, unknown>): Record<string, unknown> {
 	const metadata: Record<string, unknown> = {};
-	for (const key of ["source", "method", "code", "event_kind", "status"] as const) {
+	for (const key of [
+		"source",
+		"method",
+		"code",
+		"event_kind",
+		"status",
+		"category",
+		"occurrence_id",
+	] as const) {
 		const value = stringValue(params[key]);
 		if (value) metadata[key] = value;
 	}
+	const recoveryActions = recoveryActionIds(params.recovery_actions);
+	if (recoveryActions.length > 0) metadata.recovery_actions = recoveryActions;
 	for (const key of ["turn_id", "client_turn_id"] as const) {
 		const value = stringValue(params[key]);
 		if (value) metadata[key] = value;
@@ -2320,14 +2347,22 @@ function finalizeFailedTools(
 
 function noticeDiagnostic(
 	value: Record<string, unknown> | undefined,
-): { diagnostic?: { hint?: string; source?: string; method?: string; code?: string; details?: string } } {
+): { diagnostic?: MycliShellNoticeDiagnostic } {
 	const metadata = recordValue(value);
 	const source = stringValue(metadata.source);
 	const method = stringValue(metadata.method);
 	const code = stringValue(metadata.code);
 	const details = sanitizeRuntimeErrorDetail(metadata.additional_details);
-	const hint = code && isRuntimeErrorCode(code) ? runtimeErrorRecoveryHint(code) : undefined;
-	return hint || source || method || code || details
+	const runtimeCode = code && isRuntimeErrorCode(code) ? code : undefined;
+	const hint = runtimeCode ? runtimeErrorRecoveryHint(runtimeCode) : undefined;
+	const category = runtimeCode
+		? runtimeErrorCategory(runtimeCode)
+		: isDiagnosticCategory(metadata.category) ? metadata.category : undefined;
+	const recoveryActions = runtimeCode
+		? runtimeErrorRecoveryActions(runtimeCode)
+		: recoveryActionIds(metadata.recovery_actions).map(diagnosticRecoveryAction);
+	const occurrenceId = stringValue(metadata.occurrence_id);
+	return hint || source || method || code || details || category || recoveryActions.length > 0
 		? {
 			diagnostic: {
 				...(hint ? { hint } : {}),
@@ -2335,9 +2370,24 @@ function noticeDiagnostic(
 				...(method ? { method } : {}),
 				...(code ? { code } : {}),
 				...(details ? { details } : {}),
+				...(category ? { category } : {}),
+				...(recoveryActions.length > 0 ? { recoveryActions } : {}),
+				...(occurrenceId ? { occurrenceId } : {}),
 			},
 		}
 		: {};
+}
+
+function recoveryActionIds(value: unknown): DiagnosticRecoveryActionId[] {
+	if (!Array.isArray(value)) return [];
+	return value.slice(0, 4).flatMap((item) => {
+		const id = recoveryActionId(item);
+		return id ? [id] : [];
+	});
+}
+
+function recoveryActionId(value: unknown): DiagnosticRecoveryActionId | undefined {
+	return isDiagnosticRecoveryActionId(value) ? value : undefined;
 }
 
 function rollbackOutputFreeUserTurn(
@@ -2441,7 +2491,18 @@ function isInternalTaskNotification(text: string): boolean {
 		|| trimmed.startsWith("<agent-mailbox ");
 }
 
-export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
+export function runtimeStateWithCommandResult(
+	state: RuntimeShellState,
+	command: string,
+	result: Record<string, unknown>,
+): RuntimeShellState {
+	const projected = projectRuntimeStateWithCommandResult(state, command, result);
+	return stringValue(result.dismissed_update_version)
+		? withoutStartupUpdateNotice(projected)
+		: projected;
+}
+
+function projectRuntimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
 	const lines = Array.isArray(result.lines) ? result.lines.map((line) => String(line)) : [String(result.message ?? "Done")];
 	const collaborationMode = collaborationModeValue(result.collaboration_mode);
 	if (result.presentation === "overlay" || result.presentation === "none") {
@@ -2494,6 +2555,49 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 		collaborationMode: collaborationMode ?? state.collaborationMode,
 		transcript: upsertTranscriptItem(state.transcript, item),
 	};
+}
+
+function runtimeStateWithStartupUpdate(
+	state: RuntimeShellState,
+	value: unknown,
+): RuntimeShellState {
+	const update = recordValue(value);
+	const install = recordValue(update.install);
+	const availability = boundedCatalogText(update.availability, 32);
+	const latestVersion = boundedCatalogText(update.latest_version, 64);
+	const installCommand = boundedCatalogText(install.command, 512);
+	const withoutNotice = withoutStartupUpdateNotice(state);
+	if (update.schema_version !== 1
+		|| availability !== "available"
+		|| !latestVersion
+		|| !installCommand) {
+		return withoutNotice;
+	}
+	const fallback = install.fallback === true;
+	const text = [
+		`mycli ${latestVersion} is available.`,
+		`${fallback ? "Manual fallback" : "Install"}: ${installCommand}`,
+		`Dismiss this version: /update dismiss ${latestVersion}`,
+	].join("\n");
+	return {
+		...withoutNotice,
+		transcript: upsertTranscriptItem(withoutNotice.transcript, {
+			id: STARTUP_UPDATE_NOTICE_ID,
+			type: "system_notice",
+			text,
+			folded: false,
+			metadata: {
+				transient: true,
+				update_notice: true,
+				latest_version: latestVersion,
+			},
+		}),
+	};
+}
+
+function withoutStartupUpdateNotice(state: RuntimeShellState): RuntimeShellState {
+	const transcript = state.transcript.filter((item) => item.id !== STARTUP_UPDATE_NOTICE_ID);
+	return transcript.length === state.transcript.length ? state : { ...state, transcript };
 }
 
 export async function runtimeStateAfterCommandResult(

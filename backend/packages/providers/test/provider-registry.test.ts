@@ -62,6 +62,7 @@ function config(): NodeRuntimeConfig {
 		promptCacheKeyEnabled: false,
 		cacheControlEnabled: true,
 		requestPermissionsToolEnabled: false,
+		updatesCheckOnStartup: true,
 	};
 }
 

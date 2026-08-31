@@ -11,7 +11,10 @@ import {
 	sanitizeRuntimeErrorDetail,
 } from "@mycli/contracts";
 import {
+	CachedUpdateError,
 	shellSettingDescriptor,
+	type CachedUpdateStatus,
+	type UpdateRefreshResult,
 	type WorkspaceTrustState,
 } from "@mycli/config";
 import type {
@@ -92,6 +95,8 @@ import {
 import {
 	GatewayFailure,
 	gatewayFailure,
+	gatewayFailureDiagnostic,
+	gatewayRequestOccurrenceId,
 } from "./node-gateway-errors.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
 import type {
@@ -256,6 +261,12 @@ export interface NodeGatewayControlCommands {
 	completePath(prefix: string): Promise<readonly JsonObject[]>;
 }
 
+export interface NodeGatewayUpdateCommands {
+	status(): Promise<CachedUpdateStatus>;
+	check(): Promise<UpdateRefreshResult>;
+	dismiss(version: string): Promise<CachedUpdateStatus>;
+}
+
 export interface CreateNodeGatewayOptions {
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
@@ -284,6 +295,8 @@ export interface CreateNodeGatewayOptions {
 	readonly traceCommands?: NodeGatewayTraceCommands;
 	readonly fileHistoryCommands?: NodeGatewayFileHistoryCommands;
 	readonly controlCommands?: NodeGatewayControlCommands;
+	readonly updateStatus?: CachedUpdateStatus;
+	readonly updateCommands?: NodeGatewayUpdateCommands;
 	readonly sessionCoordinator?: SessionCoordinator<NodeGatewayRuntime>;
 	readonly shellManager?: {
 		list(ownerSessionId: string): readonly ShellSessionSnapshot[];
@@ -397,6 +410,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#provider: string;
 	#model: string;
 	#reasoningEffort: ReasoningEffort | undefined;
+	#visibleUpdateStatus: CachedUpdateStatus | undefined;
 	#collaborationMode: "default" | "plan" = "default";
 	readonly #collaborationModeByTurn = new Map<string, "default" | "plan">();
 
@@ -407,6 +421,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#provider = options.provider;
 		this.#model = options.model;
 		this.#reasoningEffort = options.reasoningEffort;
+		this.#visibleUpdateStatus = options.updateStatus;
 		this.#applySessionPreferences(options.runtime.sessionPreferences?.(), options.runtime);
 		this.#configureExecutionPolicy();
 		let resolveCompletion!: (code: number) => void;
@@ -577,6 +592,10 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#loadSettings();
 			case "settings.save":
 				return this.#saveSettings(request.params);
+			case "update.status":
+				return this.#updateStatus();
+			case "update.dismiss":
+				return this.#updateDismiss(request.params);
 			case "trace.export":
 				return this.#traceExport(request.params);
 			case "session.list":
@@ -632,12 +651,27 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#failRequest(request: RpcRequest, error: unknown): void {
 		const failure = gatewayFailure(error);
-		this.#writeError(request.id, failure.code, failure.message, failure.data);
+		const occurrenceId = gatewayRequestOccurrenceId();
+		const diagnostic = gatewayFailureDiagnostic(failure.code);
+		const data = {
+			...failure.data,
+			occurrence_id: occurrenceId,
+			category: diagnostic.category,
+			...(diagnostic.recoveryActions.length > 0
+				? { recovery_actions: diagnostic.recoveryActions }
+				: {}),
+		};
+		this.#writeError(request.id, failure.code, failure.message, data);
 		if (failure.code === "auth_required") return;
 		this.#emitRuntime("gateway.error", {
 			code: failure.code === "persistence_error" ? "internal_error" : failure.code,
 			message: failure.message,
 			method: request.method,
+			occurrence_id: occurrenceId,
+			category: diagnostic.category,
+			...(diagnostic.recoveryActions.length > 0
+				? { recovery_actions: diagnostic.recoveryActions }
+				: {}),
 		});
 	}
 
@@ -663,6 +697,9 @@ class InProcessNodeGateway implements NodeGateway {
 			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
 			models,
 			permissions: this.#permissions(),
+			...(this.#visibleUpdateStatus ? {
+				update: cachedUpdateStatusPayload(this.#visibleUpdateStatus),
+			} : {}),
 			welcome: {
 				startup_mark: { text: "mycli" },
 				workspace: this.#workspaceRoot(),
@@ -839,6 +876,7 @@ class InProcessNodeGateway implements NodeGateway {
 			return "Session storage controls are unavailable";
 		}
 		if (id === "trace" && !this.#options.traceCommands) return "Runtime trace export is unavailable";
+		if (id === "update" && !this.#options.updateCommands) return "Update status is unavailable";
 		if (["changes", "undo"].includes(id) && !this.#options.fileHistoryCommands) {
 			return "File history is unavailable";
 		}
@@ -1008,8 +1046,85 @@ class InProcessNodeGateway implements NodeGateway {
 				trust: this.#trustStatus(),
 				context: this.#contextWindow(),
 				integrationsAvailable: this.#options.integrations?.listResources !== undefined,
+				...(this.#visibleUpdateStatus ? { update: this.#visibleUpdateStatus } : {}),
 			}),
 		};
+	}
+
+	async #updateStatus(): Promise<JsonObject> {
+		const commands = this.#requiredUpdateCommands();
+		this.#visibleUpdateStatus = await commands.status();
+		return { update: cachedUpdateStatusPayload(this.#visibleUpdateStatus) };
+	}
+
+	async #updateDismiss(params: JsonObject): Promise<JsonObject> {
+		const version = requiredString(params.version, "version").trim();
+		try {
+			this.#visibleUpdateStatus = await this.#requiredUpdateCommands().dismiss(version);
+		} catch (error) {
+			throw updateGatewayFailure(error);
+		}
+		return {
+			ok: true,
+			dismissed_version: version,
+			update: cachedUpdateStatusPayload(this.#visibleUpdateStatus),
+		};
+	}
+
+	async #updateCommand(
+		invocation: ReturnType<typeof resolveSlashCommand>,
+	): Promise<JsonObject> {
+		const commands = this.#requiredUpdateCommands();
+		const args = invocation.args.trim();
+		if (!args || args === "status") {
+			this.#visibleUpdateStatus = await commands.status();
+			return diagnosticCommandResult(
+				invocation,
+				"Updates",
+				updateCommandFields(this.#visibleUpdateStatus),
+			);
+		}
+		if (args === "check") {
+			const checked = await commands.check();
+			this.#visibleUpdateStatus = checked.status;
+			return diagnosticCommandResult(invocation, "Updates", [
+				{ label: "Check", value: checked.outcome },
+				...updateCommandFields(checked.status),
+			]);
+		}
+		const dismissMatch = /^dismiss\s+(\S+)$/u.exec(args);
+		if (dismissMatch) {
+			const version = dismissMatch[1]!;
+			try {
+				this.#visibleUpdateStatus = await commands.dismiss(version);
+			} catch (error) {
+				if (error instanceof CachedUpdateError) {
+					return errorCommandResult(
+						invocation,
+						updateErrorMessage(error.code),
+						"/update dismiss <version>",
+					);
+				}
+				throw error;
+			}
+			return noticeCommandResult(invocation, "Updates", `Dismissed update ${version}.`, {
+				extra: {
+					dismissed_update_version: version,
+					update_status: cachedUpdateStatusPayload(this.#visibleUpdateStatus),
+				},
+			});
+		}
+		return errorCommandResult(
+			invocation,
+			"Unsupported update action",
+			"/update [check|dismiss <version>]",
+		);
+	}
+
+	#requiredUpdateCommands(): NodeGatewayUpdateCommands {
+		const commands = this.#options.updateCommands;
+		if (!commands) throw new GatewayFailure("unavailable_feature", "Update status is unavailable.");
+		return commands;
 	}
 
 	#traceExport(params: JsonObject): JsonObject {
@@ -1115,6 +1230,9 @@ class InProcessNodeGateway implements NodeGateway {
 				{ label: "Sandbox readiness", value: String(sandboxReadiness.state ?? "unknown") },
 				{ label: "State", value: String(status.state ?? "idle") },
 			]);
+		}
+		if (invocation.commandId === "update") {
+			return this.#updateCommand(invocation);
 		}
 		if (invocation.commandId === "usage") {
 			const usage = aggregateUsage(this.#options.loadTurnRollouts?.(this.#sessionId()) ?? []);
@@ -3590,6 +3708,52 @@ function compactionCommandPresentation(
 				severity: "warning",
 			};
 	}
+}
+
+function cachedUpdateStatusPayload(status: CachedUpdateStatus): JsonObject {
+	return {
+		schema_version: status.schemaVersion,
+		package_name: status.packageName,
+		current_version: status.currentVersion,
+		check_on_startup: status.checkOnStartup,
+		availability: status.availability,
+		cache_state: status.cacheState,
+		install: {
+			method: status.install.method,
+			command: status.install.command,
+			fallback: status.install.fallback,
+		},
+		...(status.latestVersion ? { latest_version: status.latestVersion } : {}),
+		...(status.lastCheckedAt ? { last_checked_at: status.lastCheckedAt } : {}),
+		...(status.dismissedVersion ? { dismissed_version: status.dismissedVersion } : {}),
+	};
+}
+
+function updateCommandFields(status: CachedUpdateStatus): readonly {
+	readonly label: string;
+	readonly value: string;
+}[] {
+	return [
+		{ label: "Current", value: status.currentVersion },
+		{ label: "Latest", value: status.latestVersion ?? "unknown" },
+		{ label: "Status", value: status.availability },
+		{ label: "Cache", value: status.cacheState },
+		{ label: "Install", value: status.install.command },
+	];
+}
+
+function updateGatewayFailure(error: unknown): GatewayFailure {
+	if (!(error instanceof CachedUpdateError)) {
+		return new GatewayFailure("internal_error", "Update operation failed.");
+	}
+	const code = error.code === "update_cache_write_failed" ? "internal_error" : "invalid_params";
+	return new GatewayFailure(code, updateErrorMessage(error.code));
+}
+
+function updateErrorMessage(code: CachedUpdateError["code"]): string {
+	if (code === "invalid_update_version") return "Update version must be a stable semantic version.";
+	if (code === "update_version_unavailable") return "That update version is not currently advertised.";
+	return "Update dismissal could not be saved.";
 }
 
 export function createNodeGateway(options: CreateNodeGatewayOptions): NodeGateway {

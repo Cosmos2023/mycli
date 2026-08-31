@@ -1,5 +1,6 @@
 import {
 	SHELL_SETTING_DESCRIPTORS,
+	type CachedUpdateStatus,
 	type ShellSettingSource,
 } from "@mycli/config";
 
@@ -30,6 +31,7 @@ export interface BuildNodeSettingsCatalogInput {
 	readonly trust: Readonly<JsonObject>;
 	readonly context: Readonly<JsonObject>;
 	readonly integrationsAvailable: boolean;
+	readonly update?: CachedUpdateStatus;
 }
 
 interface SettingsCategory {
@@ -212,16 +214,19 @@ export function buildNodeSettingsCatalog(input: BuildNodeSettingsCatalogInput): 
 			command: "/status",
 			searchTerms: ["doctor", "health", "debug"],
 		}),
-		statusItem({
+		actionItem({
 			id: "diagnostics.updates",
 			category: "diagnostics",
 			label: "Updates",
-			description: "Automatic update management is not available in this build",
-			value: "Manual",
-			source: "package",
+			description: "Inspect cached update status and manual installation guidance",
+			value: updateCatalogValue(input.update),
+			source: "update_cache",
 			scope: "user",
-			locked: true,
-			lockReason: "Use the package manager to update mycli",
+			action: "run_command",
+			actionArgs: "/update",
+			command: "/update",
+			locked: input.update === undefined,
+			lockReason: input.update ? undefined : "Update status is unavailable",
 			searchTerms: ["upgrade", "version", "npm"],
 		}),
 	];
@@ -230,6 +235,15 @@ export function buildNodeSettingsCatalog(input: BuildNodeSettingsCatalogInput): 
 		categories: CATEGORIES,
 		items: Object.freeze(items),
 	});
+}
+
+function updateCatalogValue(status: CachedUpdateStatus | undefined): string {
+	if (!status) return "Unavailable";
+	if (status.availability === "available") return `${status.latestVersion ?? "Update"} available`;
+	if (status.availability === "dismissed") return `${status.latestVersion ?? "Update"} dismissed`;
+	if (status.availability === "current") return "Up to date";
+	if (status.availability === "disabled") return "Checks disabled";
+	return "Not checked";
 }
 
 function visualItems(

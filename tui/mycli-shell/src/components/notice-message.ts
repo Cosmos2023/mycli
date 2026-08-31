@@ -26,9 +26,19 @@ export class NoticeMessageComponent extends Container {
 
 function diagnosticText(message: NoticeMessage): string | undefined {
 	const diagnostic = message.diagnostic;
+	const recovery = diagnostic?.recoveryActions?.[0];
+	const recoveryText = recovery
+		? `${recovery.label}${recovery.command ? ` (${recovery.command})` : ""}`
+		: undefined;
 	const values = diagnostic?.hint
 		? [diagnostic.hint, diagnostic.details]
-		: [diagnostic?.details, diagnostic?.code, diagnostic?.method, diagnostic?.source];
+		: [
+			diagnostic?.details,
+			recoveryText,
+			diagnostic?.code,
+			diagnostic?.method,
+			diagnostic?.source,
+		];
 	const visibleValues = values.filter((value): value is string => Boolean(value));
 	return visibleValues.length > 0 ? visibleValues.join(" · ") : undefined;
 }

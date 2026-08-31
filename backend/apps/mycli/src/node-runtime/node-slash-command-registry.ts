@@ -186,6 +186,10 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		availableDuringTurn: false,
 	}),
 	spec("status", "/status", "Show runtime status", { aliases: ["/session show"] }),
+	spec("update", "/update", "Inspect cached updates or dismiss a version", {
+		argumentHint: "[check|dismiss <version>]",
+		argumentPolicy: "optional",
+	}),
 	spec("usage", "/usage", "Show token usage", { aliases: ["/status usage"] }),
 	spec("context", "/context", "Show context-window diagnostics", {
 		aliases: ["/status context"],

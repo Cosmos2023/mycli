@@ -32,7 +32,9 @@ const HELP = `Usage: mycli [options]
 Commands:
   setup                             Configure provider credentials
   config validate|show|get|set|unset Validate, inspect, or update user configuration
-  doctor [--json]                   Check local runtime health
+  doctor [--json] [--verbose]       Check local runtime health
+  update [status|check|dismiss <version>] [--json]
+                                    Inspect or dismiss cached update notices
   sandbox status [--json]           Inspect platform sandbox readiness
   hooks list|inspect|approve|revoke Manage configured hooks
   plugins list|inspect|run          Manage local plugins

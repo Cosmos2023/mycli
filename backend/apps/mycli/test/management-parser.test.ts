@@ -5,7 +5,11 @@ import { parseCliMode } from "../src/management/parser.ts";
 test("parser recognizes provider-free management commands before interactive flags", () => {
 	assert.deepEqual(parseCliMode(["doctor", "--json"]), {
 		kind: "management",
-		command: { kind: "doctor", json: true },
+		command: { kind: "doctor", json: true, verbose: false },
+	});
+	assert.deepEqual(parseCliMode(["doctor", "--verbose"]), {
+		kind: "management",
+		command: { kind: "doctor", json: false, verbose: true },
 	});
 	assert.deepEqual(parseCliMode(["setup"]), {
 		kind: "management",
@@ -53,6 +57,18 @@ test("parser recognizes provider-free management commands before interactive fla
 	assert.deepEqual(parseCliMode(["mcp", "inspect", "files"]), {
 		kind: "management",
 		command: { kind: "mcp", action: "inspect", serverId: "files", json: false },
+	});
+	assert.deepEqual(parseCliMode(["update", "--json"]), {
+		kind: "management",
+		command: { kind: "update", action: "status", json: true },
+	});
+	assert.deepEqual(parseCliMode(["update", "check"]), {
+		kind: "management",
+		command: { kind: "update", action: "check", json: false },
+	});
+	assert.deepEqual(parseCliMode(["update", "dismiss", "1.2.3"]), {
+		kind: "management",
+		command: { kind: "update", action: "dismiss", version: "1.2.3", json: false },
 	});
 });
 
@@ -165,7 +181,9 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["setup", "--json"],
 		["sandbox"],
 		["sandbox", "setup"],
-		["sandbox", "status", "extra"],
+			["sandbox", "status", "extra"],
+			["update", "dismiss"],
+			["update", "unknown"],
 		["session", "resume"],
 		["session", "list", "--mode", "broken"],
 		["session", "list", "--limit", "many"],

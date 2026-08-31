@@ -15,6 +15,7 @@ const LOCK_RETRY_MS = 10;
 export interface AtomicPrivateFileUpdateOptions {
 	readonly directory: string;
 	readonly fileName: string;
+	readonly maxCurrentBytes?: number;
 	readonly buildContent: (
 		current: string | undefined,
 	) => string | undefined | Promise<string | undefined>;
@@ -24,6 +25,10 @@ export interface AtomicPrivateFileUpdateOptions {
 export async function atomicPrivateFileUpdate(
 	options: AtomicPrivateFileUpdateOptions,
 ): Promise<boolean> {
+	if (options.maxCurrentBytes !== undefined
+		&& (!Number.isSafeInteger(options.maxCurrentBytes) || options.maxCurrentBytes <= 0)) {
+		throw new RangeError("invalid_private_file_read_limit");
+	}
 	await mkdir(options.directory, { recursive: true, mode: 0o700 });
 	await harden(options.directory, 0o700);
 	const lockPath = join(options.directory, `.${options.fileName}.lock`);
@@ -38,7 +43,7 @@ export async function atomicPrivateFileUpdate(
 		lock = await acquireLock(lockPath);
 		await lock.writeFile(`${process.pid}\n`, "utf8");
 		await lock.sync();
-		const current = await readOptional(targetPath);
+		const current = await readOptional(targetPath, options.maxCurrentBytes);
 		const content = await options.buildContent(current);
 		if (content === undefined || content === current) return false;
 		temporary = await open(temporaryPath, "wx", 0o600);
@@ -71,12 +76,33 @@ async function acquireLock(path: string): Promise<Awaited<ReturnType<typeof open
 	}
 }
 
-async function readOptional(path: string): Promise<string | undefined> {
+async function readOptional(path: string, maxBytes: number | undefined): Promise<string | undefined> {
+	if (maxBytes === undefined) {
+		try {
+			return await readFile(path, "utf8");
+		} catch (error) {
+			if (isNodeError(error, "ENOENT")) return undefined;
+			throw error;
+		}
+	}
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		return await readFile(path, "utf8");
+		handle = await open(path, "r");
+		const stats = await handle.stat();
+		if (!stats.isFile() || stats.size > maxBytes) return undefined;
+		const content = Buffer.alloc(stats.size);
+		let offset = 0;
+		while (offset < content.length) {
+			const { bytesRead } = await handle.read(content, offset, content.length - offset, offset);
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		return content.subarray(0, offset).toString("utf8");
 	} catch (error) {
 		if (isNodeError(error, "ENOENT")) return undefined;
 		throw error;
+	} finally {
+		await handle?.close().catch(() => undefined);
 	}
 }
 

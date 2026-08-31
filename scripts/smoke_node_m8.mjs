@@ -10,7 +10,7 @@ import { parseJsonRpcMessage } from "@mycli/contracts";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const DEADLINE_MS = 15_000;
-const EXPECTED_VISIBLE_COMMANDS = 16;
+const EXPECTED_VISIBLE_COMMANDS = 36;
 
 async function main() {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m8-smoke-"));
@@ -24,6 +24,9 @@ async function main() {
 		backend = await startNodeBackend({
 			cwd: workspaceRoot,
 			args: ["--session", "m8-provider-free-smoke"],
+			updateFetch: async () => {
+				throw new TypeError("update registry is offline during smoke tests");
+			},
 			env: {
 				...process.env,
 				HOME: homeDir,

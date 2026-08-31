@@ -18,6 +18,7 @@ import {
 	type RuntimeTurnRecord,
 } from "@mycli/contracts";
 import {
+	CachedUpdateService,
 	ExecPolicyStore,
 	findModelCatalogEntry,
 	listProviderProfiles,
@@ -204,6 +205,7 @@ import {
 	type SessionPreferences,
 } from "./session-preferences.ts";
 import { SessionService } from "./session-service.ts";
+import { MYCLI_PACKAGE_NAME, MYCLI_VERSION } from "../version.ts";
 
 export interface NodeBackend {
 	readonly transport: NodeGateway["transport"];
@@ -228,6 +230,7 @@ export interface StartNodeBackendOptions {
 	readonly sessionOwnerId?: string;
 	readonly maxOutputTokens?: number;
 	readonly recoverInterruptedTurns?: readonly RecoverInterruptedTurnOptions[];
+	readonly updateFetch?: typeof fetch;
 }
 
 type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
@@ -317,6 +320,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		"default",
 		DEFAULT_PERMISSION_PROFILE,
 	);
+	const updateCache = new CachedUpdateService({
+		homeDir,
+		packageName: MYCLI_PACKAGE_NAME,
+		currentVersion: MYCLI_VERSION,
+		env: options.env,
+		executablePath: process.argv[1],
+		...(options.updateFetch ? { fetch: options.updateFetch } : {}),
+	});
+	const startupUpdateStatus = await updateCache.status(config.updatesCheckOnStartup);
 	startupProfiler.mark("config_ready");
 	startupProfiler.mark("storage_ready");
 	const productSystemPrompt = packagedSystemPrompt();
@@ -1547,21 +1559,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				closeRuntimeResourcesPromise ??= (async () => {
 					unsubscribeRuntimeExtensions();
 					try {
-						await integrationComposition.close();
+						await updateCache.close();
 					} finally {
 						try {
-							await agentWorkerPool?.close();
+							await integrationComposition.close();
 						} finally {
 							try {
-								await shellManager.close();
+								await agentWorkerPool?.close();
 							} finally {
 								try {
-									await shellLifecycle.drain();
+									await shellManager.close();
 								} finally {
 									try {
-										await artifactQueue.drain();
+										await shellLifecycle.drain();
 									} finally {
-										store.close();
+										try {
+											await artifactQueue.drain();
+										} finally {
+											store.close();
+										}
 									}
 								}
 							}
@@ -1702,6 +1718,17 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							.map((row) => JSON.stringify(row)),
 						logs: () => nodeLogRows(homeDir),
 						append: (sessionId, event) => appendNodeTrace(homeDir, sessionId, event),
+					},
+					updateStatus: startupUpdateStatus,
+					updateCommands: {
+						status: () => updateCache.status(controlConfig.updatesCheckOnStartup),
+						check: () => updateCache.refreshNow(
+							controlConfig.updatesCheckOnStartup,
+						),
+						dismiss: (version) => updateCache.dismiss(
+							version,
+							controlConfig.updatesCheckOnStartup,
+						),
 					},
 					fileHistoryCommands: {
 						list: (sessionId) => activeFileHistory().listSnapshots({ sessionId }),
@@ -1926,6 +1953,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			}
 			startupProfiler.mark("gateway_ready");
+			updateCache.startBackgroundRefresh(config.updatesCheckOnStartup);
 			return Object.freeze({
 				transport: gateway.transport,
 				completion: gateway.completion,
@@ -1936,21 +1964,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 	} catch (error) {
 		try {
-			await integrationComposition.close().catch(() => undefined);
+			await updateCache.close().catch(() => undefined);
 		} finally {
 			try {
-				await agentWorkerPool?.close().catch(() => undefined);
+				await integrationComposition?.close().catch(() => undefined);
 			} finally {
 				try {
-					await shellManager.close().catch(() => undefined);
+					await agentWorkerPool?.close().catch(() => undefined);
 				} finally {
 					try {
-						await shellLifecycle.drain();
+						await shellManager.close().catch(() => undefined);
 					} finally {
 						try {
-							await artifactQueue.drain();
+							await shellLifecycle.drain();
 						} finally {
-							store.close();
+							try {
+								await artifactQueue.drain();
+							} finally {
+								store.close();
+							}
 						}
 					}
 				}

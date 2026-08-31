@@ -59,6 +59,15 @@ export type SandboxManagementCommand = {
 	readonly json: boolean;
 };
 
+export type UpdateManagementCommand =
+	| { readonly kind: "update"; readonly action: "status" | "check"; readonly json: boolean }
+	| {
+		readonly kind: "update";
+		readonly action: "dismiss";
+		readonly version: string;
+		readonly json: boolean;
+	};
+
 export type SessionManagementCommand =
 	| {
 		readonly kind: "session";
@@ -110,9 +119,10 @@ export type SessionManagementCommand =
 	};
 
 export type ManagementCommand =
-	| { readonly kind: "doctor"; readonly json: boolean }
+	| { readonly kind: "doctor"; readonly json: boolean; readonly verbose: boolean }
 	| { readonly kind: "setup"; readonly json: boolean }
 	| SandboxManagementCommand
+	| UpdateManagementCommand
 	| ConfigManagementCommand
 	| HooksManagementCommand
 	| PluginsManagementCommand
