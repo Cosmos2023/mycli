@@ -4,7 +4,8 @@
 
 This contract applies whenever backend code resolves runtime configuration, selects a launch
 profile, reads machine defaults, discovers repository-owned integrations, runs management
-diagnostics, or resumes a persisted session.
+diagnostics, locates configuration files, generates configuration references, performs an explicit
+user-config migration, or resumes a persisted session.
 
 The trust decision is a prerequisite for reading project-controlled files. An `unknown` or
 `untrusted` workspace must not influence model/provider settings, execution rules, hooks, MCP,
@@ -65,12 +66,16 @@ export const CONFIG_DIAGNOSTIC_VERSION = 1 as const;
 export type ConfigDiagnosticCode =
 	| "config_read_failed"
 	| "config_write_failed"
+	| "deprecated_config_file"
 	| "deprecated_inline_secret"
+	| "deprecated_key"
 	| "forbidden_inline_secret"
 	| "invalid_toml"
 	| "invalid_value"
+	| "migration_backup_invalid"
 	| "unknown_key"
-	| "unknown_table";
+	| "unknown_table"
+	| "version_conflict";
 
 export interface ConfigDiagnostic {
 	readonly version: typeof CONFIG_DIAGNOSTIC_VERSION;
@@ -102,7 +107,20 @@ export function resolveConfigWithUserConfigText(
 ): Promise<ResolvedConfig>;
 
 export type ConfigManagementCommand =
-	| { readonly kind: "config"; readonly action: "validate" | "show"; readonly json: boolean }
+	| {
+		readonly kind: "config";
+		readonly action: "validate";
+		readonly strict?: boolean;
+		readonly json: boolean;
+	}
+	| { readonly kind: "config"; readonly action: "show"; readonly json: boolean }
+	| {
+		readonly kind: "config";
+		readonly action: "path";
+		readonly scope: ConfigPathScope;
+		readonly profile?: string;
+		readonly json: boolean;
+	}
 	| {
 		readonly kind: "config";
 		readonly action: "get" | "unset";
@@ -114,6 +132,26 @@ export type ConfigManagementCommand =
 		readonly action: "set";
 		readonly key: string;
 		readonly value: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "migrate";
+		readonly operation: "preview";
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "migrate";
+		readonly operation: "apply";
+		readonly expectedVersion: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "migrate";
+		readonly operation: "rollback";
+		readonly backupId: string;
 		readonly json: boolean;
 	};
 
@@ -155,6 +193,35 @@ export interface ConfigSettingRow {
 	readonly overridden: readonly ConfigLayerId[];
 	readonly truncated?: boolean;
 }
+
+export const CONFIG_PATH_SCOPES = [
+	"user", "project", "profile", "system", "legacy_user",
+] as const;
+export type ConfigPathScope = typeof CONFIG_PATH_SCOPES[number];
+
+export function resolveConfigPath(options: ResolveConfigPathOptions): {
+	readonly scope: ConfigPathScope;
+	readonly path: string;
+	readonly writable: boolean;
+};
+
+export const CONFIG_MIGRATION_VERSION = 1 as const;
+
+export function previewConfigMigration(
+	options: ConfigMigrationOptions,
+): Promise<ConfigMigrationPreview>;
+export function applyConfigMigration(
+	options: ConfigMigrationOptions & { readonly expectedVersion: string },
+): Promise<ConfigMigrationApplyResult>;
+export function rollbackConfigMigration(
+	options: ConfigMigrationOptions & { readonly backupId: string },
+): Promise<ConfigMigrationRollbackResult>;
+
+export const CONFIG_REFERENCE_VERSION = 1 as const;
+export function buildConfigReference(config: NodeRuntimeConfig): ConfigReferenceDocument;
+export function renderConfigReferenceJson(config: NodeRuntimeConfig): string;
+export function renderConfigReferenceMarkdown(config: NodeRuntimeConfig): string;
+export function renderConfigExampleToml(config: NodeRuntimeConfig): string;
 ```
 
 Repository integration adapters accept an `includeRepository?: boolean` option. Runtime and
@@ -298,11 +365,20 @@ restart before repository hooks, MCP, plugins, and skills become visible.
 
 ### Provider-free configuration management
 
-`mycli config validate [--json]`, `show [--json]`, and `get <key> [--json]` are read-only management
-commands. `mycli config set <key> <value> [--json]` and `unset <key> [--json]` mutate only
-`~/.mycli/config.toml`. Default management composition loads `WorkspaceTrustStore` before
-constructing `ConfigManagementService`. Every action runs before TTY validation and never
-constructs a model provider, turn runtime, gateway, or TUI.
+`mycli config validate [--strict] [--json]`, `show [--json]`, `get <key> [--json]`, and
+`path [scope] [--profile <name>] [--json]` are read-only management commands. `scope` defaults to
+`user` and is closed to `user | project | profile | system | legacy_user`; profile scope requires
+exactly one validated `--profile`, and other scopes reject it. The path result contains only the
+requested scope, deterministic path, and `writable=true` for the user scope. Path discovery is an
+explicit user-facing operation, so returning the requested absolute path is intentional; path
+values remain forbidden in diagnostics and unrelated management responses.
+
+`mycli config set <key> <value> [--json]` and `unset <key> [--json]` mutate only
+`~/.mycli/config.toml`. `mycli config migrate --dry-run`,
+`migrate --apply --expected-version <version>`, and `migrate --rollback <backup-id>` form the only
+migration workflow. Default management composition loads `WorkspaceTrustStore` before constructing
+`ConfigManagementService`. Every action runs before TTY validation and never constructs a model
+provider, turn runtime, gateway, or TUI.
 
 The CLI profile selector remains runtime-only, matching Codex profile-v2 semantics; it does not
 turn `config set` into a profile writer. The system layer still participates in default management
@@ -310,12 +386,14 @@ resolution. A `ConfigManagementService` explicitly composed with a validated pro
 that effective stack, but its mutation methods continue to target only the base user file.
 
 All configuration-management responses use `version=1`, their exact action, and bounded config
-diagnostics.
-`validate` adds no raw configuration fields. Successful `show` adds `workspaceTrust`, credential
-status, stable layer rows, and a deterministic allowlist of `ConfigSettingRow` values. Layer rows
-contain only `id`, `scope`, `enabled`, and optional `disabledReason`; internal source paths and key
-values do not cross the management boundary. Setting origins expose only stable layer ids or
-`default`, and overridden origins expose stable ids in precedence order.
+diagnostics. `validate` adds no raw configuration fields. Non-strict validation succeeds with
+warnings and exits `0`; strict validation turns any warning into a bounded failure with
+`issues=["strict_validation_failed"]` and exit `1`, while preserving the diagnostics that explain
+the warning. Successful `show` adds `workspaceTrust`, credential status, stable layer rows, and a
+deterministic allowlist of `ConfigSettingRow` values. Layer rows contain only `id`, `scope`,
+`enabled`, and optional `disabledReason`; internal source paths and key values do not cross the
+management boundary. Setting origins expose only stable layer ids or `default`, and overridden
+origins expose stable ids in precedence order.
 
 The configuration package owns one deterministic setting catalog used by both `show` projection
 and mutation lookup. `get` accepts every catalog key, including read-only rows. `set` and `unset`
@@ -373,6 +451,46 @@ HTTP(S) origin/path after removing user info, query, and fragment. The bounded m
 reports `truncated=true` when more than 64 rows exist. Human and JSON renderers consume the same
 sanitized response.
 
+### Explicit migration transaction
+
+Migration is opt-in and user-scope only. Preview reads but never creates, replaces, renames, or
+deletes the user file, legacy file, backup directory, or credential store. It normalizes writable
+aliases already present in the user file and imports a writable legacy-file setting only when the
+user file has neither its canonical path nor a compatible alias. The legacy file remains read-only
+and is never deleted automatically.
+
+Every preview validates the current user document, builds a candidate through the lossless edit
+kernel, validates the isolated candidate and complete effective stack, and returns at most 64
+deterministically ordered change rows. Rows contain only canonical key, `import | normalize`,
+`user | legacy_user` source, effective source, and overridden layer ids. They never contain TOML,
+values, file paths, credentials, or backup content. `truncated=true` reports a bounded tail.
+
+`currentVersion` and `legacyVersion` are SHA-256 content identities that distinguish an absent file
+from an empty file. `expectedVersion` binds the migration version and both source versions. Apply
+rebuilds the plan while holding the user-file lock and requires an exact expected-version match
+before committing. A no-op apply returns `applied=false` and creates no backup. A changing apply
+first writes a timestamped, UUID-suffixed backup under `~/.mycli/backups/config`, with private
+directory/file modes where the platform supports them, then atomically replaces the user file.
+
+A backup records whether the user file existed, its exact prior UTF-8 bytes, prior and applied
+content versions, and the migration-plan version. Rollback accepts only the closed backup-id shape,
+validates the record and decoded bytes, requires the current user file to equal the recorded
+post-apply version, revalidates the restored candidate, and then restores the prior bytes exactly
+or restores prior absence by deleting the user file. Apply and rollback never read or write
+`auth.json`; rollback does not mutate or delete the legacy file or backup record.
+
+### Generated configuration reference
+
+`configSettingDescriptors()` is the canonical source for the public setting key, description,
+scalar type, writability, canonical TOML path, compatibility aliases, allowed values, and restart
+requirement. The versioned JSON and Markdown references and the commented TOML example are rendered
+from that catalog plus canonical defaults. Credentials are excluded from the catalog and example.
+
+`npm run config:generate` owns `docs/reference/configuration.md`,
+`docs/reference/configuration-reference.json`, and `docs/reference/config.example.toml`.
+`npm run config:check` renders the same artifacts without writing and fails on missing or byte-drifted
+output. Hand edits to generated artifacts are invalid; descriptor changes must regenerate all three.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Required behavior |
@@ -388,6 +506,8 @@ sanitized response.
 | A profile name is invalid or repeated | Exit `2` before backend/TUI startup; do not echo the value or construct a path |
 | Windows ProgramData is blank, relative, or unavailable | Resolve the system path from `C:\ProgramData` |
 | A root key, table, or key inside a known table is unsupported | Return a deterministic `unknown_key` or `unknown_table` warning with layer and dotted key path; ignore the value |
+| The legacy user config file contributes configuration | Return `deprecated_config_file` with `layer=legacy_user`; keep it readable until an explicit migration |
+| A supported compatibility alias is present | Return `deprecated_key` with its owning layer and canonical-key remediation; keep the value readable |
 | A project, profile, or system config contains an inline credential field | Throw `forbidden_inline_secret` with layer and key path; do not include the value |
 | A user or legacy-user config contains root `api_key` | Keep it readable and return `deprecated_inline_secret` with migration remediation |
 | Any file config contains a credential field inside a table | Throw `forbidden_inline_secret`; `[model].api_key` is not a compatibility field |
@@ -398,9 +518,13 @@ sanitized response.
 | Valid session snapshot pins a value that differs from current config | Restore the snapshot in memory; do not rewrite user config |
 | Legacy snapshot omits `permission_profile` | Use the runtime permission fallback without changing the stored payload |
 | Session snapshot is malformed | Fail the transition before publishing target status; do not treat it as missing |
-| `config validate` resolves with warnings | Return `ok=true`, keep diagnostics, and exit `0` |
+| Non-strict `config validate` resolves with warnings | Return `ok=true`, keep diagnostics, and exit `0` |
+| `config validate --strict` resolves with one or more warnings | Return `ok=false`, preserve the bounded diagnostics, report `strict_validation_failed`, and exit `1` |
 | `config validate` or `show` catches `ConfigError` | Return one typed diagnostic, `ok=false`, and exit `1` without exception text |
 | `config` action is missing/unknown, has extra args, or repeats `--json` | Exit `2` before management/backend construction |
+| `config path` omits scope | Resolve the user path and mark it writable |
+| `config path profile` omits `--profile`, or another scope receives it | Exit `2` before management composition |
+| A path scope or profile reaches the public helper invalid at runtime | Return bounded `invalid_value`; do not construct an unsafe profile path |
 | `config show` resolves a credential | Report only `apiKey=present`; never include its value or credential source payload |
 | `config get` receives an unknown key | Return value-free `invalid_value`; do not echo the submitted key |
 | `config set` or `unset` receives a read-only, structured, credential-like, or unknown key | Return value-free `invalid_value` before creating or replacing the user config |
@@ -410,6 +534,14 @@ sanitized response.
 | A provider or shell batch fails validation, locking, or replacement | Preserve the original bytes and map to the existing bounded domain write error without paths, source, stacks, or values |
 | A mutation changes no TOML bytes | Return `changed=false`; do not create a temporary file or replace the target |
 | A provider batch changes no bytes and skipped current-document validation for cleanup compatibility | Validate the byte-identical final candidate before returning no-op |
+| Migration preview finds no compatible alias or legacy value | Return `needed=false` with stable versions; create no user file or backup directory |
+| Migration preview finds more than 64 changes | Return the first 64 deterministic value-free rows and `truncated=true` |
+| Apply receives a stale expected version or either source changes before the locked rebuild | Throw `version_conflict`; preserve current bytes and create no backup |
+| Apply receives the current expected version but migration is no longer needed | Return `applied=false`; create no backup and do not replace the user file |
+| Apply fails during backup, validation, locking, or pre-rename persistence | Return `config_write_failed`; preserve prior user bytes and redact source values and paths |
+| Rollback backup id, JSON, base64, id binding, timestamp, or content version is invalid | Throw `migration_backup_invalid`; do not touch the user file |
+| User config changed after the backed-up apply | Throw `version_conflict`; preserve the concurrent bytes |
+| Valid rollback represents a previously absent user file | Atomically restore absence rather than writing an empty file |
 | Lossless patching, locking, or atomic replacement fails unexpectedly | Return `config_write_failed` without an absolute path, source text, stack, or submitted value |
 | An unexpected configuration-management exception occurs | Return stable `management_command_failed`; omit stack and raw message |
 
@@ -436,6 +568,17 @@ sanitized response.
   memory, and TUI settings all survive.
 - Good: provider selection removes legacy inline API keys while preserving CRLF, comments, plugin
   tables, and unknown extension keys inside `[model]` and `[request]`.
+- Good: `config path profile --profile work --json` returns the validated profile path and
+  `writable=false` without reading that file or starting the provider/TUI.
+- Good: strict validation turns a `deprecated_key` warning into exit `1` while returning exactly the
+  same redacted diagnostic as non-strict validation.
+- Good: preview normalizes `model = "..."` and imports an otherwise-unset legacy memory setting;
+  apply recomputes the same plan under lock, records one private backup, and rollback restores the
+  exact comments, CRLF bytes, or prior file absence.
+- Good: a trusted project or environment setting remains effective after user migration; each
+  change row reports that stable source and lower-layer provenance without returning either value.
+- Good: changing a canonical descriptor and running `npm run config:generate` updates the Markdown,
+  JSON, and commented TOML artifacts together; `npm run config:check` then passes byte-for-byte.
 - Base: no project trust record exists; user configuration and defaults load normally, and the
   project layer reports `workspace_not_trusted`.
 - Base: no profile is selected and no system file exists; public effective values match the prior
@@ -447,6 +590,9 @@ sanitized response.
   does not replace the file.
 - Base: a legacy user root `api_key` still resolves but produces one migration warning; the same key
   under `[model]` is rejected.
+- Base: migration preview on a fresh home reports `needed=false`, distinguishes absent from empty in
+  its content version, and leaves both `.mycli` and the backup directory absent.
+- Base: applying a current no-op plan reports `applied=false` and no `backupId`.
 - Bad: startup parses `.mycli/config.toml`, then checks trust and discards the result. Parsing alone
   crosses the security boundary and can surface project-controlled failures.
 - Bad: resume uses `process.cwd()` for trust while loading the session from another workspace. This
@@ -468,6 +614,12 @@ sanitized response.
   provider states can become visible and TUI-only aliases would leak into the public catalog.
 - Bad: a mutation response includes `value`, a raw parser error, or the target path. Submitted
   values and private paths must not cross the management boundary even on failure.
+- Bad: apply a previously previewed candidate without rebuilding it under the lock. Either the user
+  or legacy source may have changed, so this silently overwrites a concurrent decision.
+- Bad: migrate automatically during ordinary config resolution, delete the legacy file, or move
+  credentials into TOML. Migration requires an explicit command and never owns credential storage.
+- Bad: hand-edit one generated reference artifact. This creates three conflicting descriptions of
+  the same setting catalog and must fail the drift gate.
 
 ## 6. Tests Required
 
@@ -507,8 +659,9 @@ sanitized response.
   runtime composition.
 - Doctor tests assert warnings and fatal `ConfigError` values map to one bounded row containing only
   layer, key, line, column, public message, and remediation; doctor must not start a provider.
-- Configuration-management parser tests cover all five actions, JSON placement, blank/missing
-  keys and values, extra arguments, and duplicate flags.
+- Configuration-management parser tests cover validate/strict, show, get/set/unset, every path
+  scope and profile constraint, all three migrate forms, JSON placement, blank/missing operands,
+  extra arguments, reordered apply operands, and duplicate flags.
 - Configuration-management tests cover a fresh home, trusted environment/project/user provenance,
   an unread malformed untrusted project file, warning-only unknown keys, fatal TOML/value errors,
   and human/JSON sentinel redaction.
@@ -525,8 +678,18 @@ sanitized response.
   same home and asserts every independently owned path survives.
 - Every mutation redaction test places a submitted sentinel in the value or unknown key and asserts
   it is absent from human output, JSON output, serialized diagnostics, and exception messages.
-- CLI tests run `config show/get/set/unset --json` under non-TTY streams and assert zero
-  backend/provider/TUI starts.
+- Path tests assert the default user path, project/profile/system/legacy paths, Windows ProgramData
+  fallback, runtime scope validation, and that only user scope is writable.
+- Migration tests assert preview performs no write; versions distinguish absent and empty sources;
+  changes are bounded and value-free; apply creates one private backup; stale apply and rollback
+  preserve concurrent bytes; rollback restores exact bytes or absence; legacy and auth files remain
+  untouched; and validation/persistence errors redact sentinels.
+- Generated-reference tests assert every canonical descriptor has a nonblank description and path,
+  keys are unique and ordered, credentials/private paths are absent, and all three committed files
+  equal their renderers byte-for-byte.
+- CLI tests run `config validate/path/show/get/set/unset/migrate --json` under non-TTY streams and
+  assert zero backend/provider/TUI starts, stable exit codes, and equivalent sanitized text/JSON
+  projections.
 
 ## 7. Wrong vs Correct
 
@@ -694,6 +857,55 @@ await writeUserProviderConfig({
 Domain writers compile a complete ordered batch internally. Callers never construct arbitrary
 paths, and a grouped provider or TUI update has one lock scope, one final validation, and at most one
 rename.
+
+### Configuration migration
+
+Wrong:
+
+```ts
+const preview = await previewConfigMigration(options);
+await writeFile(userConfigPath, preview.candidate);
+await rm(legacyConfigPath);
+```
+
+Correct:
+
+```ts
+const preview = await previewConfigMigration(options);
+const applied = await applyConfigMigration({
+	...options,
+	expectedVersion: preview.expectedVersion,
+});
+
+if (applied.backupId) {
+	await rollbackConfigMigration({
+		...options,
+		backupId: applied.backupId,
+	});
+}
+```
+
+The preview does not expose a candidate by design. Apply rebuilds it under the lock, binds both
+source files through `expectedVersion`, and owns private backup creation and atomic replacement.
+Rollback verifies the post-apply version before restoring exact prior state. Callers never edit the
+legacy file or credential store.
+
+### Generated reference ownership
+
+Wrong:
+
+```ts
+// Add a setting to docs/reference/configuration.md only.
+```
+
+Correct:
+
+```ts
+// Add the typed canonical descriptor, then regenerate and verify all artifacts.
+configSettingDescriptors();
+// npm run config:generate
+// npm run config:check
+```
 
 ## Scenario: Single Visual Setting Persistence And Provenance
 

@@ -99,11 +99,35 @@ metadata use `resolveConfigWithMetadata`. Omitting `workspaceTrust` preserves le
 behavior for compatibility tests and controlled adapters; interactive runtime and default
 management callers must always pass the persisted state.
 
-Legacy flat keys remain readable. Reads do not rewrite TOML. Profile and system layers are additive:
-installations without either retain their prior effective values. This batch deliberately does not
-add profile management commands, a persisted active profile, profile-scoped mutation, automatic
-migrations, strict unknown-key enforcement, exact source ranges for schema findings, or a complete
-generated schema service.
+Legacy flat keys remain readable and emit bounded `deprecated_key` diagnostics. A present legacy
+user file emits `deprecated_config_file`; reads never rewrite it. Profile and system layers are
+additive, so installations without either retain their prior effective values. There are still no
+profile management commands, persisted active profile, profile-scoped mutation, automatic
+migration, or synthetic source ranges for schema findings.
+
+The canonical setting catalog now owns descriptions, value kinds, canonical paths, compatibility
+aliases, allowed values, mutability, and restart metadata. Checked-in Markdown, JSON, and commented
+TOML references are generated from that catalog and verified for drift. `config validate --strict`
+turns any remaining warning into a command failure without changing normal runtime resolution.
+
+## Migration And Mutation Boundary
+
+`config path` resolves user, project, selected-profile, system, and legacy-user paths through the
+same platform helpers used by runtime loading. It is metadata-only; only the base user scope is
+writable through configuration management.
+
+Migration is never automatic. `config migrate --dry-run` builds a redacted plan from the exact user
+and legacy-user bytes and returns a composite SHA-256 expected version. Apply reacquires the shared
+user-config lock, rebuilds the plan, rejects stale user or legacy versions, validates the isolated
+target and complete effective stack, writes a private timestamped backup, and performs one atomic
+user-file replacement. The legacy file remains unchanged because a two-file rewrite would not be
+atomic.
+
+Rollback accepts only a bounded backup id, verifies backup integrity and the current applied user
+version, revalidates the restored candidate, and restores the prior bytes or prior file absence.
+Neither apply nor rollback accesses `auth.json`. Preview and response projections expose keys,
+change kinds, stable layer ids, hashes, and truncation state, but never configured values, source
+TOML, credential content, or backup payloads.
 
 ## Operational Consequences
 
@@ -114,4 +138,5 @@ move the trust decision before normal runtime composition and remove this visibl
 first-run journey.
 
 All future configuration editors, doctor output, onboarding, and migration commands must derive
-effective values and explanations from the canonical layer stack.
+effective values and explanations from the canonical layer stack. Changes to setting descriptors
+must regenerate the reference artifacts and pass `npm run config:check`.

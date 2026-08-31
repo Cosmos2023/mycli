@@ -26,15 +26,15 @@ preview-migrate, apply, and roll back configuration through typed, redacted, ato
 
 ## Acceptance Criteria
 
-- [ ] `config path`, strict validation, migration preview/apply/rollback, text output, and JSON output
+- [x] `config path`, strict validation, migration preview/apply/rollback, text output, and JSON output
   have parser and provider-free integration coverage.
-- [ ] Preview performs no write; apply creates a private backup; rollback restores the exact prior
+- [x] Preview performs no write; apply creates a private backup; rollback restores the exact prior
   bytes and never touches `auth.json`.
-- [ ] Concurrent mutation returns a version conflict rather than overwriting a completed writer.
-- [ ] Unknown/deprecated keys, invalid values, and syntax errors identify a bounded layer/key/range
+- [x] Concurrent mutation returns a version conflict rather than overwriting a completed writer.
+- [x] Unknown/deprecated keys, invalid values, and syntax errors identify a bounded layer/key/range
   and safe remediation.
-- [ ] Generated schema/reference/docs pass a drift check.
-- [ ] User, trusted project, launch profile, system, legacy, environment, and session precedence stays
+- [x] Generated schema/reference/docs pass a drift check.
+- [x] User, trusted project, launch profile, system, legacy, environment, and session precedence stays
   consistent with the canonical resolver.
 
 ## Technical Approach

@@ -6,6 +6,8 @@ This directory is split by document purpose.
 
 - [architecture.md](./architecture.md): Node workspace and runtime ownership boundaries.
 - [architecture/configuration-trust-and-provenance.md](./architecture/configuration-trust-and-provenance.md): configuration precedence, workspace trust, provenance, and secret boundaries.
+- [reference/configuration.md](./reference/configuration.md): generated configuration keys, defaults, canonical paths, and compatibility aliases.
+- [reference/config.example.toml](./reference/config.example.toml): generated commented configuration example.
 - [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
 - [parity/configuration-ux-baseline.md](./parity/configuration-ux-baseline.md): provider-free UX journeys, budgets, privacy rules, and drift gates.
 - [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.

@@ -9,7 +9,7 @@ available in non-interactive shells where noted. `update check` may contact the 
 | Command | Purpose | Execution behavior |
 | --- | --- | --- |
 | `mycli setup` | Configure one provider, model, endpoint, and credential reference | Uses a TUI on a terminal and a plain prompt otherwise; cancellation writes nothing |
-| `mycli config <action> [arguments]` | Validate, inspect, or update allowlisted user configuration | Supports `validate`, `show`, `get`, `set`, and `unset`; structured actions accept `--json` |
+| `mycli config <action> [arguments]` | Validate, inspect, locate, migrate, or update configuration | Supports `validate`, `show`, `get`, `set`, `unset`, `path`, and `migrate`; every action accepts `--json` |
 | `mycli doctor [--json] [--verbose]` | Inspect local configuration, storage, integrations, and runtime health | Read-only and provider-free; failures use a bounded exit code and diagnostic |
 | `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
 | `mycli sandbox status [--json]` | Inspect platform sandbox readiness | Read-only; reports bounded setup or helper remediation without elevating privileges |
@@ -21,6 +21,45 @@ available in non-interactive shells where noted. `update check` may contact the 
 The command names above are checked against the management parser and root `mycli --help` output by
 the UX contract gate. Adding a management command requires updating all three surfaces in the same
 change.
+
+### Configuration Management
+
+Configuration management is provider-free and works without a TTY. `config validate` treats
+unknown and deprecated settings as warnings; `config validate --strict` returns exit code `1` when
+any warning remains. Fatal syntax, credential-placement, and known-value errors return `1` in both
+modes. Diagnostics contain only bounded layer, key, and source-position metadata.
+
+```bash
+mycli config path [user|project|profile|system|legacy_user] [--json]
+mycli config path profile --profile <name> [--json]
+mycli config show [--json]
+mycli config get <key> [--json]
+mycli config set <key> <value> [--json]
+mycli config unset <key> [--json]
+```
+
+`path` defaults to the user file and marks only that scope writable. `show` and `get` report the
+effective value plus its winning and overridden layers. `set` and `unset` accept only canonical
+allowlisted scalar settings and atomically update the base user file; profile, project, system, and
+legacy-user files remain read-only through these commands.
+
+Use migration as a version-bound transaction:
+
+```bash
+mycli config migrate --dry-run [--json]
+mycli config migrate --apply --expected-version <version> [--json]
+mycli config migrate --rollback <backup-id> [--json]
+```
+
+The preview is value-free and performs no write. Apply rechecks the preview version under the
+user-config lock, validates the final effective stack, creates a private backup, and performs at
+most one atomic replacement. Rollback succeeds only while the applied user version is still
+current, restores exact prior bytes or prior file absence, and never touches credential storage.
+The legacy file remains a read-only migration source. A version conflict requires a new preview.
+
+The canonical setting list and commented TOML example are generated in
+[`reference/configuration.md`](reference/configuration.md) and
+[`reference/config.example.toml`](reference/config.example.toml).
 
 ## Slash Command Reference
 

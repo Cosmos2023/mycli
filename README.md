@@ -129,17 +129,23 @@ Use the provider-free configuration commands to check configuration before start
 
 ```bash
 mycli config validate
+mycli config validate --strict
 mycli config show
 mycli config get model.name
 mycli config set memory.enabled true
 mycli config set tui.theme light
 mycli config set tui.hide_thinking false
 mycli config unset context.compaction_l4_summarizer_model
+mycli config path
+mycli config path project
+mycli config path profile --profile work
+mycli config migrate --dry-run
 mycli config show --json
 ```
 
 `config validate` exits `0` for valid configuration, including unknown-key and migration warnings,
-and exits `1` for fatal syntax or value errors. `config show` lists effective non-secret settings,
+and exits `1` for fatal syntax or value errors. Add `--strict` to make any warning return exit `1`,
+which is useful for CI and migration cleanup. `config show` lists effective non-secret settings,
 their winning layer, and lower-priority overridden layers. It reports only `present` or `missing`
 for the API key and never prints credential values, raw TOML, environment values, or absolute
 configuration paths. Project configuration remains disabled until the workspace is trusted.
@@ -150,6 +156,32 @@ settings, preserve comments and unrelated TOML, validate the complete candidate 
 write, and report when an environment or trusted project setting still wins. Credentials,
 arbitrary TOML paths, structured settings, and project-file mutation are intentionally rejected;
 use `mycli setup` or `/login` for credentials.
+
+`config path [user|project|profile|system|legacy_user]` prints a deterministic path and whether that
+scope is writable. The default scope is `user`; profile lookup requires
+`config path profile --profile <name>`. Only the user scope is writable through provider-free
+configuration commands.
+
+Migration is an explicit preview/apply/rollback transaction:
+
+```bash
+mycli config migrate --dry-run --json
+mycli config migrate --apply --expected-version <expectedVersion>
+mycli config migrate --rollback <backup-id>
+```
+
+Preview does not write. Apply normalizes supported aliases and imports supported values from the
+read-only legacy file into `~/.mycli/config.toml`, after validating both the target document and the
+complete effective configuration. It creates a private backup under
+`~/.mycli/backups/config/`. A concurrent user or legacy-file edit returns `version_conflict`; run a
+new preview instead of overwriting it. Rollback restores the exact prior user-config bytes, or the
+prior absence of that file, and never reads or writes `auth.json`. The legacy file is retained so
+users can remove it deliberately after verifying the migrated configuration.
+
+The generated [configuration reference](docs/reference/configuration.md),
+[machine-readable descriptor](docs/reference/configuration-reference.json), and
+[commented example](docs/reference/config.example.toml) come from the same canonical setting
+catalog used by runtime resolution and `config show`.
 
 Profile files are created and edited directly in this release. There is intentionally no persisted
 active profile and no `profile create`, `profile use`, or profile-scoped mutation command. Start
@@ -319,10 +351,13 @@ Provider-free management commands:
 
 ```bash
 npm run mycli -- config validate --json
+npm run mycli -- config validate --strict --json
 npm run mycli -- config show --json
 npm run mycli -- config get model.name --json
 npm run mycli -- config set memory.enabled true --json
 npm run mycli -- config unset memory.enabled --json
+npm run mycli -- config path profile --profile work --json
+npm run mycli -- config migrate --dry-run --json
 npm run mycli -- doctor --json
 npm run mycli -- sandbox status --json
 npm run mycli -- hooks list --json
