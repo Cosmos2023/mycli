@@ -200,7 +200,11 @@ Added secure bounded web_fetch, durable turn-local tool_search activation for MC
 
 ### Main Changes
 
-(Add details)
+- Added launch-scoped `--profile` / `-p` selection without persisted active-profile state.
+- Added canonical managed, system, profile, project, user, environment, CLI, and session precedence
+  with source/override provenance.
+- Propagated the selected profile through session startup and Worker-backed agent execution.
+- Documented profile discovery, trust behavior, precedence, and validation failures.
 
 ### Git Commits
 
@@ -247,7 +251,8 @@ Added Ctrl+T alternate-screen transcript viewing with on-demand append-only Shel
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] Focused configuration, CLI, session, and Worker profile tests
+- [OK] `npm run lint`, `npm run typecheck`, and `npm run contracts:check`
 
 ### Status
 
@@ -255,7 +260,7 @@ Added Ctrl+T alternate-screen transcript viewing with on-demand append-only Shel
 
 ### Next Steps
 
-- None - task complete
+- Continue the remaining Codex-aligned configuration and UX roadmap.
 
 
 ## Session 7: Enable safe parallel tool batches
@@ -270,7 +275,12 @@ Enabled manifest-gated concurrent execution for safe Node tool phases while pres
 
 ### Main Changes
 
-(Add details)
+- Added a versioned manifest for nine provider-free configuration and terminal UX journeys across
+  macOS, Linux, and Windows evidence.
+- Exported canonical management command/help surfaces and added drift checks for management docs,
+  slash commands, shell settings, and gateway contracts.
+- Added explicit first-paint, error, selector, width, cancellation, draft, privacy, and PTY budgets.
+- Added the focused `npm run test:ux-contracts` gate, baseline report, and long-term quality spec.
 
 ### Git Commits
 
@@ -403,7 +413,10 @@ Added provider-free config validate/show commands with secret-safe provenance, f
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] All manifest-referenced provider-free journey and budget regressions
+- [OK] `npm run test:ux-contracts` (4 passed)
+- [OK] `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and `npm run build`
+- [OK] Packed CLI smoke with `--app-only`; platform ripgrep download excluded from this task
 
 ### Status
 
@@ -411,7 +424,7 @@ Added provider-free config validate/show commands with secret-safe provenance, f
 
 ### Next Steps
 
-- None - task complete
+- Continue with configuration migration and generated reference completion.
 
 
 ## Session 11: Safe configuration mutation CLI
@@ -693,3 +706,71 @@ Added structured recovery diagnostics, provider-free doctor reporting, non-block
 ### Next Steps
 
 - Continue the configuration and UX roadmap with the remaining Phase 0-2 gaps and Phase 8.
+
+
+## Session 19: Codex-style configuration profiles and system layers
+
+**Date**: 2026-08-31
+**Task**: Codex-style configuration profiles and system layers
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added launch-scoped profile selection, canonical system/profile configuration layers, deterministic precedence and provenance, session/Worker propagation, validation, tests, and documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f2a93046` | (see git log) |
+| `ea7df894` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 20: UX baseline and contract drift gates
+
+**Date**: 2026-08-31
+**Task**: UX baseline and contract drift gates
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added a versioned provider-free UX journey manifest, canonical management help and documentation checks, slash/settings/gateway drift gates, explicit UX and privacy budgets, focused tests, and the long-term maintenance contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2c2b96f2` | (see git log) |
+| `70c52d02` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
