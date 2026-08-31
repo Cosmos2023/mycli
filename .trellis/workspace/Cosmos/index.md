@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 17
-- **Last Active**: 2026-08-30
+- **Total Sessions**: 18
+- **Last Active**: 2026-08-31
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~652 | Active |
+| `journal-1.md` | ~686 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 18 | 2026-08-31 | Phase 7 diagnostics and cached updates | `0b555204`, `62c312bb` | `feature/mycli-agent-worker-pool` |
 | 17 | 2026-08-30 | Phase 6 session continuity and recovery | `b3dabadd`, `93bfb3fc`, `f2e48cf4`, `f45c53b7` | `feature/mycli-agent-worker-pool` |
 | 16 | 2026-08-30 | Phase 5 settings and command discovery | `b8b49589`, `c0788749`, `e45cc999` | `feature/mycli-agent-worker-pool` |
 | 15 | 2026-08-30 | Permission and sandbox status UX | `77e2748c`, `196adb55`, `d6312c8b` | `feature/mycli-agent-worker-pool` |

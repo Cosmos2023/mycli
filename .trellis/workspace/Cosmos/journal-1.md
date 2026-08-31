@@ -160,7 +160,12 @@ Closed Node TUI and slash-command parity, promoted npm startup to Node-only, ret
 
 ### Main Changes
 
-(Add details)
+- Added canonical diagnostic categories and recovery actions, fresh per-request occurrence
+  identities, and TUI deduplication across response and notification lanes.
+- Expanded provider-free doctor output with bounded structured rows, terminal/update collectors,
+  redaction, durations, and a safe support manifest.
+- Added a private 20-hour update cache, non-blocking startup refresh, exact-version dismissal,
+  CLI/gateway/TUI projections, documentation, and regression coverage.
 
 ### Git Commits
 
@@ -650,3 +655,41 @@ Unified CLI and TUI session discovery through one backend service, added operati
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Phase 7 diagnostics and cached updates
+
+**Date**: 2026-08-31
+**Task**: Phase 7 diagnostics and cached updates
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added structured recovery diagnostics, provider-free doctor reporting, non-blocking cached update checks, gateway/TUI deduplication, regression coverage, and executable documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0b555204` | feat(diagnostics): add recovery diagnostics and cached updates |
+| `62c312bb` | docs(diagnostics): document recovery and update behavior |
+
+### Testing
+
+- [OK] 356 focused Phase 7 contract, config, app/gateway, lifecycle, and TUI tests
+- [OK] `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and `npm run build`
+- [OK] `npm run smoke:m8` and `npm run smoke:package -- --app-only`
+- [NOTE] The full app workspace run retains the pre-existing late Worker-pool RSS/lease timing
+  cascade; representative failures pass in isolation and Worker behavior was outside Phase 7.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Continue the configuration and UX roadmap with the remaining Phase 0-2 gaps and Phase 8.
