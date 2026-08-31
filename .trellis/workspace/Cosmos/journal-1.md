@@ -774,3 +774,45 @@ Added a versioned provider-free UX journey manifest, canonical management help a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Configuration migration and generated reference
+
+**Date**: 2026-09-01
+**Task**: Configuration migration and generated reference
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added provider-free config path and strict validation commands, transactional migration preview/apply/rollback with private backups and optimistic versions, generated configuration references and drift checks, redacted diagnostics, tests, and executable documentation.
+
+### Main Changes
+
+- Added provider-free `config path`, strict validation, and typed text/JSON management responses.
+- Added value-free migration preview, expected-version apply, private backups, exact rollback, and
+  concurrent-edit protection without reading or writing `auth.json`.
+- Generated the Markdown, JSON, and commented TOML references from canonical setting descriptors,
+  with a drift gate and executable configuration trust contract.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `336f69c2` | (see git log) |
+| `452e06ce` | (see git log) |
+
+### Testing
+
+- [OK] `npm run lint`, `npm run typecheck`, `npm run contracts:check`, `npm run config:check`,
+  `npm run test:ux-contracts`, `npm run build`, and `git diff --check`
+- [OK] 11 focused config migration/path/reference tests, 63 management/CLI tests, and 5 M7 tests
+- [NOTE] The full Node backend integration file retained 9 existing Worker timing failures; a
+  representative failing case passed when run alone, and Worker behavior was outside this task.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Continue the roadmap with unified onboarding and auth management.

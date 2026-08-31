@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
-- **Last Active**: 2026-08-31
+- **Total Sessions**: 21
+- **Last Active**: 2026-09-01
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~763 | Active |
+| `journal-1.md` | ~810 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-09-01 | Configuration migration and generated reference | `336f69c2`, `452e06ce` | `feature/mycli-agent-worker-pool` |
 | 20 | 2026-08-31 | UX baseline and contract drift gates | `2c2b96f2`, `70c52d02` | `feature/mycli-agent-worker-pool` |
 | 19 | 2026-08-31 | Codex-style configuration profiles and system layers | `f2a93046`, `ea7df894` | `feature/mycli-agent-worker-pool` |
 | 18 | 2026-08-31 | Phase 7 diagnostics and cached updates | `0b555204`, `62c312bb` | `feature/mycli-agent-worker-pool` |
