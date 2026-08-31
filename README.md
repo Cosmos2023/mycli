@@ -393,7 +393,9 @@ root remains private; users install the published CLI with `npm install -g @mycl
 ## Troubleshooting And Rollback
 
 Run `mycli doctor` first, then use [docs/troubleshooting.md](docs/troubleshooting.md) for TTY,
-provider, native PTY, sandbox, session, extension, and recovery failures.
+provider, native PTY, sandbox, session, extension, and recovery failures. The structured diagnostic
+contract and non-blocking cached update flow are documented in
+[docs/diagnostics-and-updates.md](docs/diagnostics-and-updates.md).
 
 M8 rollback means installing the previous release. There is no backend switch in the current
 build. Before rolling back, finish or interrupt the active turn, resolve pending input, stop owned

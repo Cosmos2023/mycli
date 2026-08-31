@@ -9,6 +9,7 @@ This directory is split by document purpose.
 - [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
 - [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.
 - [troubleshooting.md](./troubleshooting.md): provider-free diagnosis and common recovery paths.
+- [diagnostics-and-updates.md](./diagnostics-and-updates.md): structured doctor output, privacy boundaries, cached update checks, and dismissal.
 - [node-extensions.md](./node-extensions.md): extension discovery, configuration, approvals, management, and doctor.
 - [node-agent-runtime.md](./node-agent-runtime.md): durable agent threads, coordination tools, permissions, artifacts, recovery, and TUI projection.
 - [plugin-api-v2.md](./plugin-api-v2.md): process-isolated compiled ESM plugin author contract.

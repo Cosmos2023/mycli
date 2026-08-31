@@ -18,6 +18,7 @@ hidden or unavailable commands are shown with their reason, but unavailable rows
 | `/resume` | optional `[session-id]` | picker when bare; backend when inline | no | `/session`, `/session list`, `/sessions`, `/session resume` |
 | `/fork` | optional `[source] [new-session] [message-index]` | backend | no | `/session fork` |
 | `/status` | none | backend | yes | `/session show` |
+| `/update` | optional `[check\|dismiss <version>]` | cached status, explicit registry check, or exact-version dismissal | yes | - |
 | `/usage` | none | backend | yes | `/status usage` |
 | `/context` | none | backend | yes | `/status context` |
 | `/compact` | none | backend | no | - |
@@ -74,6 +75,11 @@ Appearance changes show `old -> new` before applying. `Use for this session` upd
 without writing configuration. `Make user default` uses the atomic user-config writer and rolls the
 active value back if persistence fails. The settings center displays each effective value and its
 source/scope; managed or unavailable rows stay locked with a bounded explanation.
+
+`/update` reads cached npm status and prints manual package-manager guidance; it never runs an
+installer or requests elevated permissions. `/update check` is the only interactive form that
+contacts the registry. `/update dismiss <version>` suppresses that exact advertised version while
+leaving later releases eligible for a future startup notice.
 
 Every appearance setting is also available through the provider-free config CLI:
 
