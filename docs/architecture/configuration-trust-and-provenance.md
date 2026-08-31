@@ -4,7 +4,7 @@ Status: accepted for the v0.2 configuration foundation and diagnostics.
 
 ## Context
 
-mycli reads user, project, legacy, environment, and session/CLI configuration. Previously the Node
+mycli reads system, user, profile, project, legacy, environment, and session/CLI configuration. Previously the Node
 backend parsed project `.mycli/config.toml` before loading workspace trust, user configuration
 silently outranked project configuration, and the resolver discarded the source of each selected
 key. Repository hooks, MCP servers, plugins, skills, and execution rules could also be discovered
@@ -20,9 +20,12 @@ Configuration layers use this precedence, highest first:
 1. session and CLI overrides;
 2. environment variables;
 3. trusted project configuration;
-4. user configuration at `~/.mycli/config.toml`;
-5. legacy user configuration at `~/.config/mycli/config.toml`;
-6. built-in and provider defaults.
+4. the launch-selected profile at `~/.mycli/<name>.config.toml`;
+5. user configuration at `~/.mycli/config.toml`;
+6. system configuration at `/etc/mycli/config.toml` on Unix or
+   `%ProgramData%\mycli\config.toml` on Windows;
+7. legacy user configuration at `~/.config/mycli/config.toml`;
+8. built-in and provider defaults.
 
 The initial layer-stack contract has version `1`. Each layer records its stable id, scope, source,
 version, enabled state, disabled reason, and declared keys. Per-key provenance records the winning
@@ -51,12 +54,20 @@ configuration is durable only for its trusted workspace. Ordinary `/model` selec
 session scope and persists only active-session preferences; an explicit `Make user default` choice
 uses the typed user-config writer before applying the same preferences to the active session.
 
+`--profile <name>` and `-p <name>` are external loader inputs rather than configuration keys. Names
+use the portable `[A-Za-z0-9_-]+` grammar before path construction. The base user file always loads,
+then the selected sparse profile loads above it; a missing profile is an enabled empty layer.
+Selection is process-scoped and is neither persisted in the user file nor copied into session
+preferences. The system layer is always read-only to ordinary mycli commands and uses
+`C:\ProgramData` when the Windows ProgramData directory cannot be resolved.
+
 ## Secret Boundary
 
 API keys and tokens belong in `~/.mycli/auth.json` or the process environment. Project
-configuration must not contain credentials. Provenance and diagnostics may expose key names and
-source categories, but never raw values. The existing `resolveConfig` result remains an internal
-runtime object and must not be serialized directly to the TUI or logs.
+configuration, selected profiles, and system configuration must not contain credentials.
+Provenance and diagnostics may expose key names and source categories, but never raw values. The
+existing `resolveConfig` result remains an internal runtime object and must not be serialized
+directly to the TUI or logs.
 
 ## Diagnostic Boundary
 
@@ -88,9 +99,11 @@ metadata use `resolveConfigWithMetadata`. Omitting `workspaceTrust` preserves le
 behavior for compatibility tests and controlled adapters; interactive runtime and default
 management callers must always pass the persisted state.
 
-Legacy flat keys remain readable. Reads do not rewrite TOML. The v0.2 foundation does not yet add
-profiles, system configuration, automatic migrations, strict unknown-key enforcement, exact source
-ranges for schema findings, or a complete generated schema service.
+Legacy flat keys remain readable. Reads do not rewrite TOML. Profile and system layers are additive:
+installations without either retain their prior effective values. This batch deliberately does not
+add profile management commands, a persisted active profile, profile-scoped mutation, automatic
+migrations, strict unknown-key enforcement, exact source ranges for schema findings, or a complete
+generated schema service.
 
 ## Operational Consequences
 

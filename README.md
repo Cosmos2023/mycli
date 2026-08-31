@@ -65,7 +65,14 @@ Common startup forms:
 npm run mycli
 npm run mycli -- --session demo
 npm run mycli -- --model gpt-5.5
+npm run mycli -- --profile work
 ```
+
+`-p <name>` is the short form of `--profile <name>`. Like Codex, the selector applies only to the
+current launch and is not written to user configuration or session state. A profile name may contain
+only ASCII letters, digits, `_`, and `-`; its sparse overrides are read from
+`~/.mycli/<name>.config.toml` after the base user file. A missing selected profile is an empty layer,
+so this is also valid when preparing a profile incrementally.
 
 Interactive startup resolves workspace trust before authentication. When the active provider/model
 has no credential in `MYCLI_API_KEY`, `~/.mycli/auth.json`, or the supported legacy user setting,
@@ -99,11 +106,16 @@ Setup writes user state under `~/.mycli`:
 - `logs/`: bounded redacted operational diagnostics.
 - `vendor/ripgrep/`: the verified user-level `rg` fallback prepared by setup when needed.
 
+Administrators may provide read-only machine defaults at `/etc/mycli/config.toml` on Unix or
+`%ProgramData%\mycli\config.toml` on Windows. Ordinary mycli configuration commands never write the
+system file.
+
 Effective runtime configuration uses this precedence, from highest to lowest: session/CLI
-overrides, environment variables, trusted project config at `<workspace>/.mycli/config.toml`, user
-config at `~/.mycli/config.toml`, legacy user config at `~/.config/mycli/config.toml`, and built-in
-defaults. Project configuration is not read until the canonical workspace has a persisted `trusted`
-decision. Credentials belong in `auth.json` or the environment, never in project configuration.
+overrides, environment variables, trusted project config at `<workspace>/.mycli/config.toml`, the
+launch-selected profile, user config at `~/.mycli/config.toml`, system config, legacy user config at
+`~/.config/mycli/config.toml`, and built-in defaults. Project configuration is not read until the
+canonical workspace has a persisted `trusted` decision. Credentials belong in `auth.json` or the
+environment, never in project, profile, or system configuration.
 
 Configuration validation is value-free: `mycli doctor` reports the owning layer and dotted key path
 for unknown keys or tables, and reports parser-provided line and column numbers for invalid TOML.
@@ -138,6 +150,10 @@ settings, preserve comments and unrelated TOML, validate the complete candidate 
 write, and report when an environment or trusted project setting still wins. Credentials,
 arbitrary TOML paths, structured settings, and project-file mutation are intentionally rejected;
 use `mycli setup` or `/login` for credentials.
+
+Profile files are created and edited directly in this release. There is intentionally no persisted
+active profile and no `profile create`, `profile use`, or profile-scoped mutation command. Start
+both new and resumed sessions with `--profile <name>` whenever those overrides should participate.
 
 Inside the TUI, `/settings` provides the same visual allowlist together with model, credential,
 permission, session, integration, and diagnostic navigation. Visual changes are previewed before

@@ -2,8 +2,9 @@
 
 ## 1. Scope / Trigger
 
-This contract applies whenever backend code resolves runtime configuration, discovers
-repository-owned integrations, runs management diagnostics, or resumes a persisted session.
+This contract applies whenever backend code resolves runtime configuration, selects a launch
+profile, reads machine defaults, discovers repository-owned integrations, runs management
+diagnostics, or resumes a persisted session.
 
 The trust decision is a prerequisite for reading project-controlled files. An `unknown` or
 `untrusted` workspace must not influence model/provider settings, execution rules, hooks, MCP,
@@ -15,6 +16,19 @@ The configuration package exposes these compatibility and metadata entry points:
 
 ```ts
 export type WorkspaceTrustState = "trusted" | "untrusted" | "unknown";
+
+declare const CONFIG_PROFILE_NAME: unique symbol;
+export type ConfigProfileName = string & { readonly [CONFIG_PROFILE_NAME]: true };
+
+export function parseConfigProfileName(value: string): ConfigProfileName;
+export function resolveConfigProfilePath(
+	homeDir: string,
+	profile: ConfigProfileName,
+): string;
+export function resolveSystemConfigPath(options?: {
+	readonly platform?: NodeJS.Platform;
+	readonly programDataDir?: string;
+}): string;
 
 export interface ResolveConfigOptions {
 	readonly homeDir: string;
@@ -30,14 +44,21 @@ export interface ResolveConfigOptions {
 		readonly thinkingEnabled?: boolean;
 		readonly session?: string;
 	};
+	readonly configProfile?: ConfigProfileName;
+	readonly systemConfigPath?: string;
 	readonly workspaceTrust?: WorkspaceTrustState;
 }
 
 export interface ResolvedConfig {
 	readonly config: NodeRuntimeConfig;
 	readonly layers: ConfigLayerStack;
+	readonly shellSettings: LoadedShellSettings;
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }
+
+export function resolveShellSettingsState(
+	options: ResolveConfigOptions,
+): Promise<LoadedShellSettings>;
 
 export const CONFIG_DIAGNOSTIC_VERSION = 1 as const;
 
@@ -149,12 +170,34 @@ Layers are passed to the pure resolver in descending precedence:
 1. `session` - CLI and active-session overrides;
 2. `environment` - `MYCLI_*` process variables;
 3. `project` - `<workspace>/.mycli/config.toml`, only when trusted;
-4. `user` - `~/.mycli/config.toml`;
-5. `legacy_user` - `~/.config/mycli/config.toml`;
-6. provider and built-in defaults, applied after layer resolution.
+4. `profile` - `~/.mycli/<name>.config.toml`, only when selected for this launch;
+5. `user` - `~/.mycli/config.toml`;
+6. `system` - `/etc/mycli/config.toml` on Unix or `%ProgramData%\mycli\config.toml` on Windows;
+7. `legacy_user` - `~/.config/mycli/config.toml`;
+8. provider and built-in defaults, applied after layer resolution.
 
 `resolveConfig` remains the compatibility facade. New diagnostics and settings surfaces use
 `resolveConfigWithMetadata` instead of reconstructing precedence.
+
+### Launch profile and system defaults
+
+`mycli -p <name>` and `mycli --profile <name>` are runtime selectors, not configuration keys or
+profile-management commands. Names must match `[A-Za-z0-9_-]+` before any path is constructed. The
+path helper repeats that validation at its public JavaScript boundary. Duplicate selectors,
+missing values, separators, dots, whitespace, non-ASCII text, and traversal fail before backend or
+TUI startup without echoing the submitted value.
+
+The base user file always loads. A selected profile is a sparse layer above it; a missing selected
+profile remains present as an enabled empty layer. With no selector, the profile layer is absent.
+The selected name is launch-scoped and must not be written to user TOML or `session_preferences`.
+New and resumed sessions use the same launch selector, and a supervisor Worker restart must retain
+the original canonical `--profile <name>` argument.
+
+The system layer is always present and becomes an enabled empty layer when the file is absent.
+Windows uses an absolute `%ProgramData%` value and falls back to `C:\ProgramData`; relative or blank
+values cannot redirect the system layer. `systemConfigPath` is an embedder/test seam for
+deterministic resolution, not a CLI, model-tool, or management mutation argument. Ordinary mycli
+commands never write profile or system files.
 
 ### Diagnostic ownership
 
@@ -173,12 +216,15 @@ Syntax diagnostics copy only the numeric `TomlError.line` and `TomlError.column`
 use a bounded dotted `keyPath`; the parser does not retain ordinary key ranges. Diagnostic fields
 must not include raw values, TOML source/code blocks, exception stacks, request data, credentials,
 or absolute paths. Unsupported provider/protocol settings are converted at the settings boundary
-to value-free `invalid_value` diagnostics rather than exposing the helper exception message.
+to value-free `invalid_value` diagnostics rather than exposing the helper exception message. When
+effective-value validation fails after layer composition, the config package maps the canonical
+setting key back to `ConfigLayerStack.origins` and adds the stable winning layer id; callers must
+not infer ownership by rereading files.
 
-Project credential fields are forbidden. Only a root-level `api_key` in `user` or `legacy_user`
-remains runtime-readable and emits `deprecated_inline_secret`; credentials inside tables, including
-`model.api_key`, are forbidden in every file layer. Environment credentials and the credential
-store remain valid and warning-free.
+Project, profile, and system credential fields are forbidden. Only a root-level `api_key` in
+`user` or `legacy_user` remains runtime-readable and emits `deprecated_inline_secret`; credentials
+inside tables, including `model.api_key`, are forbidden in every file layer. Environment
+credentials and the credential store remain valid and warning-free.
 
 ### Credential readiness
 
@@ -203,12 +249,13 @@ with collaboration mode and the selected permission profile in the versioned
 `session_preferences` snapshot. Permission selection is not a TOML config fallback and must not be
 added to `ResolveConfigOptions` merely to persist a session choice.
 
-An existing valid session snapshot wins over environment, project, user, and built-in defaults for
-every field it pins. Current resolved defaults may fill only a missing legacy snapshot or an
-optional field absent from that snapshot. Activating a session without stored preferences must
-rebuild the complete fallback from current config and the runtime permission default; it must not
-reuse values left in memory by the previously active session. Restoring a snapshot changes active
-runtime state only and never writes `~/.mycli/config.toml`.
+An existing valid session snapshot wins over environment, project, profile, user, system, legacy,
+and built-in defaults for every field it pins. Current resolved defaults may fill only a missing
+legacy snapshot or an optional field absent from that snapshot. Activating a session without
+stored preferences must rebuild the complete fallback from current config and the runtime
+permission default; it must not reuse values left in memory by the previously active session.
+Restoring a snapshot changes active runtime state only and never writes `~/.mycli/config.toml` or
+persists the selected profile name.
 
 ### Metadata
 
@@ -219,6 +266,11 @@ Each layer reports `id`, `scope`, `source`, `enabled`, optional `disabledReason`
 names. Each `ConfigOrigin` reports the winning layer and enabled lower-priority layers that were
 overridden. Metadata must never include raw values, API keys, tokens, request headers, or provider
 payloads.
+
+`ResolvedConfig.shellSettings` is derived from the same ordered `ConfigLayerInput[]` as runtime
+values and metadata. Every visual setting reports its stable winning layer or `default` plus
+enabled overridden layer ids. Runtime, `/settings`, and configuration projections must not call the
+legacy user-only shell loader when canonical layer provenance is required.
 
 ### Trust gate
 
@@ -251,6 +303,11 @@ commands. `mycli config set <key> <value> [--json]` and `unset <key> [--json]` m
 `~/.mycli/config.toml`. Default management composition loads `WorkspaceTrustStore` before
 constructing `ConfigManagementService`. Every action runs before TTY validation and never
 constructs a model provider, turn runtime, gateway, or TUI.
+
+The CLI profile selector remains runtime-only, matching Codex profile-v2 semantics; it does not
+turn `config set` into a profile writer. The system layer still participates in default management
+resolution. A `ConfigManagementService` explicitly composed with a validated profile may inspect
+that effective stack, but its mutation methods continue to target only the base user file.
 
 All configuration-management responses use `version=1`, their exact action, and bounded config
 diagnostics.
@@ -290,11 +347,13 @@ must still validate, including on a byte-identical no-op. The shell compiler acc
 camelCase and snake_case input aliases, clears their legacy root aliases, and writes the canonical
 root TUI compatibility keys in one batch. Both preserve existing bounded domain errors.
 
-Runtime callers pass the active session workspace, environment, and persisted trust state into
-provider and shell persistence so higher-layer validation uses the same ownership context as the
-active session. Provider-free setup uses an untrusted, environment-free validation context rooted
-at the user home. Credentials remain in `auth.json`; setup retains separate atomic config/auth
-writes and its existing partial-success ordering.
+Runtime callers pass the active session workspace, environment, selected launch profile, and
+persisted trust state into provider and shell persistence so candidate validation uses the same
+complete layer stack as the active session. After a visual write, runtime reloads shell settings
+from that canonical stack, so a profile may remain the effective source even though the base user
+file changed. Provider-free setup uses an untrusted, environment-free validation context rooted at
+the user home. Credentials remain in `auth.json`; setup retains separate atomic config/auth writes
+and its existing partial-success ordering.
 
 Ordinary `model.select` requests use the closed `session | user` scope contract and default a
 missing scope to `session`. Session scope validates the complete catalog selection and credential,
@@ -324,11 +383,15 @@ sanitized response.
 | Trust is `trusted` and project TOML is malformed | Throw `ConfigError` with `invalid_toml`, `layer=project`, and parser-provided line/column only |
 | A config file cannot be read for a non-`ENOENT` reason | Throw `ConfigError` with `config_read_failed` and the file layer, without its absolute path |
 | Any config file is missing (`ENOENT`) | Treat that layer as empty |
+| No profile is selected | Omit the profile layer and preserve existing behavior |
+| A selected profile file is missing | Keep an enabled empty `profile` layer; do not fall back to another profile |
+| A profile name is invalid or repeated | Exit `2` before backend/TUI startup; do not echo the value or construct a path |
+| Windows ProgramData is blank, relative, or unavailable | Resolve the system path from `C:\ProgramData` |
 | A root key, table, or key inside a known table is unsupported | Return a deterministic `unknown_key` or `unknown_table` warning with layer and dotted key path; ignore the value |
-| A project config contains an inline credential field | Throw `forbidden_inline_secret` with layer and key path; do not include the value |
+| A project, profile, or system config contains an inline credential field | Throw `forbidden_inline_secret` with layer and key path; do not include the value |
 | A user or legacy-user config contains root `api_key` | Keep it readable and return `deprecated_inline_secret` with migration remediation |
 | Any file config contains a credential field inside a table | Throw `forbidden_inline_secret`; `[model].api_key` is not a compatibility field |
-| A known value, provider, or protocol is invalid | Throw `invalid_value` with the canonical key path and value-free remediation |
+| A known effective value, provider, or protocol is invalid | Throw `invalid_value` with the canonical key path, stable winning layer id when available, and value-free remediation |
 | A lower-priority layer supplies the same key | Keep it in `origin.overridden`; do not select its value |
 | Metadata is serialized for diagnostics | Expose source and key names only; never expose values or secrets |
 | Resumed session workspace differs from launch workspace | Re-resolve trust and configuration using persisted `workspace_root` |
@@ -354,6 +417,10 @@ sanitized response.
 
 - Good: a trusted project model overrides the user model; an environment model overrides both;
   provenance reports environment as the source and project/user as overridden.
+- Good: launch with `--profile work`; trusted project values remain higher priority, user/system
+  values remain lower priority, and visual-setting provenance reports the same order.
+- Good: resume a session using `--profile work`; config is resolved against the persisted session
+  workspace while the launch profile remains active, including after a supervisor Worker restart.
 - Good: `model.nmae` produces one `unknown_key` warning naming the owning layer and key path while
   the configured value remains absent from the diagnostic and runtime configuration.
 - Good: `config show --json` reports an environment model over project/user models as
@@ -371,6 +438,10 @@ sanitized response.
   tables, and unknown extension keys inside `[model]` and `[request]`.
 - Base: no project trust record exists; user configuration and defaults load normally, and the
   project layer reports `workspace_not_trusted`.
+- Base: no profile is selected and no system file exists; public effective values match the prior
+  user/legacy/default behavior, with only an enabled empty system metadata row added.
+- Base: `--profile draft` selects a file that does not exist yet; the empty profile layer is valid
+  and selection is not persisted.
 - Base: a fresh home returns defaults and `apiKey=missing` without creating `.mycli`.
 - Base: unsetting an absent writable key returns `changed=false`; a repeated set with identical TOML
   does not replace the file.
@@ -384,6 +455,11 @@ sanitized response.
   the fallback snapshot.
 - Bad: doctor catches `Error` and displays its message. Provider/profile helpers may include a raw
   configured value, while TOML errors may include source code and private paths.
+- Bad: accept a profile as a raw string in `ResolveConfigOptions`, construct
+  `join(homeDir, ".mycli", profile)`, or persist an `active_profile` key. This permits traversal or
+  silently changes future launches.
+- Bad: load visual settings from only `~/.mycli/config.toml` after runtime selected a profile. The
+  TUI would display a different effective value and source than the model runtime.
 - Bad: `config show` returns `{...resolved.config}` or serializes `ConfigLayerMetadata.source`,
   exposing credentials, generated ids, or absolute paths.
 - Bad: mutation parses with `smol-toml`, stringifies the complete object, and writes after releasing
@@ -396,6 +472,11 @@ sanitized response.
 ## 6. Tests Required
 
 - Config unit tests assert exact layer order and the winning/overridden provenance ids.
+- Profile unit tests assert the ASCII name grammar, public path-helper revalidation, Unix system
+  path, absolute Windows ProgramData path, and `C:\ProgramData` fallback.
+- Config unit tests cover selected/missing/unselected profiles, missing system config, full
+  `session > environment > project > profile > user > system > legacy_user` precedence, and
+  profile/system visual-setting provenance.
 - Config unit tests place malformed project TOML in an unknown and untrusted workspace and assert
   resolution succeeds without reading it.
 - Config unit tests cover trusted project, user-only, legacy fallback, environment override, CLI
@@ -403,14 +484,21 @@ sanitized response.
 - Config unit tests assert diagnostic version, code, severity, deterministic order, owning file
   layer, dotted key path, and parser-provided line/column where applicable.
 - Config tests cover unknown roots/tables/known-table keys, accepted legacy/TUI/plugin vocabulary,
-  project credential rejection, legacy root `api_key` migration, table credential rejection, and
-  unsupported provider/protocol redaction.
+  project/profile/system credential rejection, legacy root `api_key` migration, table credential
+  rejection, and unsupported provider/protocol redaction.
+- Config tests place sentinels in profile/system unknown keys and invalid effective values, then
+  assert stable layer ids while excluding values and absolute home paths from diagnostics.
 - Every redaction test places a sentinel in the configured value and asserts it is absent from both
   `ConfigError.message` and the serialized diagnostic.
 - Integration adapter tests make repository hook/MCP/plugin files unreadable or malformed and
   assert `includeRepository: false` neither reads nor reports them.
 - Backend integration tests assert project configuration becomes active only after trust is
   persisted.
+- CLI tests assert split/equal and short/long profile forms canonicalize to `--profile <name>`, and
+  invalid or duplicate selectors start neither backend nor TUI.
+- Backend integration tests launch and resume the same session with and without a profile and
+  assert launch-scoped settings; supervisor tests assert the canonical profile argument survives a
+  hard Worker restart.
 - Resume integration tests seed a session whose `workspace_root` differs from the launch directory
   and assert trust status and discovered resources belong only to the persisted workspace.
 - Session integration tests persist different model/effort/mode/permission snapshots, switch both
@@ -470,6 +558,32 @@ const integrations = await discoverIntegrations({
 ```
 
 On resume, assign `workspaceRoot` from the stored session before repeating this sequence.
+
+### Profile selection
+
+Wrong:
+
+```ts
+const profilePath = join(homeDir, ".mycli", `${argv.profile}.config.toml`);
+session.preferences.activeProfile = argv.profile;
+```
+
+Correct:
+
+```ts
+const configProfile = parseConfigProfileName(rawProfile);
+const config = await resolveConfig({
+	homeDir,
+	workspaceRoot: authoritativeWorkspaceRoot,
+	env,
+	workspaceTrust,
+	configProfile,
+});
+```
+
+Validation precedes path construction, and only the typed launch selector enters the resolver. The
+selector is passed again after resume workspace resolution and Worker restart but is never written
+to TOML or session state.
 
 ### Diagnostic projection
 
@@ -599,11 +713,14 @@ export interface SaveShellSettingOptions extends LoadShellSettingsOptions {
 	readonly workspaceRoot?: string;
 	readonly env?: NodeJS.ProcessEnv;
 	readonly workspaceTrust?: WorkspaceTrustState;
+	readonly configProfile?: ConfigProfileName;
+	readonly systemConfigPath?: string;
 }
 
 export interface LoadedShellSettings {
 	readonly settings: ShellSettings;
-	readonly sources: Readonly<Record<ShellSettingName, "default" | "user">>;
+	readonly sources: Readonly<Record<ShellSettingName, ConfigLayerId | "default">>;
+	readonly overridden: Readonly<Record<ShellSettingName, readonly ConfigLayerId[]>>;
 }
 
 export function saveShellSetting(
@@ -620,8 +737,8 @@ export function saveShellSetting(
   replacement under the shared user-config lock.
 - `tui.statusbar_mode` additionally maintains the existing `statusline_enabled` compatibility key;
   changing another descriptor leaves that key untouched.
-- After the write, the config package reloads the complete shell snapshot. `sources` is derived
-  from keys actually present in user TOML, not from the values submitted by the caller.
+- After the write, runtime reloads the complete canonical shell snapshot. `sources` and
+  `overridden` derive from the ordered active layers, not from values submitted by the caller.
 - `saveShellSettings` remains the compatibility grouped writer. New interactive single-row changes
   use `saveShellSetting` so defaults not owned by the change remain absent.
 
@@ -633,12 +750,15 @@ export function saveShellSetting(
 | Value is outside descriptor values or has the wrong scalar type | Reject before persistence; do not echo the value |
 | Current config, candidate validation, locking, or rename fails | Preserve prior bytes and return bounded `shell_settings_write_failed` |
 | Selected value already matches canonical user config | Return the authoritative snapshot without replacing the file |
+| A profile or trusted project still owns the setting after a user write | Return that winning source and the user layer as overridden |
 | Another visual setting is still a built-in default | Return its source as `default` and leave its path absent |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: save `tui.theme=light`; only `tui_theme` is added, `sources.theme=user`, and all other fresh
   settings remain `default`.
+- Good: save `tui.theme=dark` while a selected profile says `light`; write only the base user file,
+  then return `light`, `sources.theme=profile`, and `overridden.theme=[user,...]`.
 - Base: a legacy alias owns the selected setting; saving migrates only that setting to its canonical
   path while preserving unrelated comments, tables, and newline style.
 - Bad: receive a full effective settings object from the TUI and rewrite all nine descriptors,
@@ -648,6 +768,8 @@ export function saveShellSetting(
 
 - Config unit tests persist one descriptor and assert exact TOML, selected source `user`, and every
   untouched descriptor source `default`.
+- Layered shell tests assert project/profile/user/system winners and overridden ids use the same
+  order as runtime configuration.
 - Gateway/backend integration tests save one stable id, reload the snapshot, and assert untouched
   sources do not change.
 - Existing grouped-writer tests retain comment, CRLF, validation, no-op, redaction, and concurrency
