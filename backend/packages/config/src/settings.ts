@@ -11,9 +11,15 @@ import { parse, TomlError } from "smol-toml";
 import { readApiKey } from "./auth-store.ts";
 import {
 	configError,
+	isConfigError,
 	type ConfigDiagnostic,
 	type ConfigFileLayerId,
 } from "./config-diagnostics.ts";
+import {
+	resolveConfigProfilePath,
+	resolveSystemConfigPath,
+	type ConfigProfileName,
+} from "./config-profile.ts";
 import {
 	CONFIG_LAYER_STACK_VERSION,
 	resolveConfigLayers,
@@ -31,6 +37,11 @@ import {
 	parseProtocol,
 	resolveProviderProfile,
 } from "./provider-profiles.ts";
+import {
+	resolveShellSettingsFromLayers,
+	type LoadedShellSettings,
+} from "./shell-setting-catalog.ts";
+import { runtimeSettingOriginKeysForDiagnostic } from "./runtime-setting-catalog.ts";
 import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
 
 type ConfigMap = Record<string, unknown>;
@@ -139,6 +150,10 @@ export interface ResolveConfigOptions {
 	readonly createSessionId?: () => string;
 	readonly defaultMaxPromptTokens?: number;
 	readonly maxPromptTokensCeiling?: number;
+	/** Launch-scoped sparse user profile selected by the CLI. */
+	readonly configProfile?: ConfigProfileName;
+	/** Loader override for embedders and deterministic system-layer tests. */
+	readonly systemConfigPath?: string;
 	/**
 	 * Omit only for compatibility callers that intentionally load project configuration without a
 	 * runtime trust decision. Runtime callers must pass the persisted workspace trust state.
@@ -149,6 +164,7 @@ export interface ResolveConfigOptions {
 export interface ResolvedConfig {
 	readonly config: NodeRuntimeConfig;
 	readonly layers: ConfigLayerStack;
+	readonly shellSettings: LoadedShellSettings;
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }
 
@@ -222,12 +238,50 @@ export async function resolveConfigWithUserConfigText(
 	return resolveLoadedConfig(options, loaded);
 }
 
+export async function resolveShellSettingsState(
+	options: ResolveConfigOptions,
+): Promise<LoadedShellSettings> {
+	return (await loadConfigLayers(options)).shellSettings;
+}
+
 async function resolveLoadedConfig(
 	options: ResolveConfigOptions,
 	loaded: Awaited<ReturnType<typeof loadConfigLayers>>,
 ): Promise<ResolvedConfig> {
-	const config = await resolveConfigFromSources(options, loaded.sources);
-	return Object.freeze({ config, layers: loaded.stack, diagnostics: loaded.diagnostics });
+	let config: NodeRuntimeConfig;
+	try {
+		config = await resolveConfigFromSources(options, loaded.sources);
+	} catch (error) {
+		throw configErrorWithResolvedLayer(error, loaded.stack);
+	}
+	return Object.freeze({
+		config,
+		layers: loaded.stack,
+		shellSettings: loaded.shellSettings,
+		diagnostics: loaded.diagnostics,
+	});
+}
+
+function configErrorWithResolvedLayer(error: unknown, stack: ConfigLayerStack): unknown {
+	if (!isConfigError(error) || error.diagnostic.layer || !error.diagnostic.keyPath) {
+		return error;
+	}
+	const origin = runtimeSettingOriginKeysForDiagnostic(error.diagnostic.keyPath)
+		.map((key) => stack.origins[key])
+		.find((candidate) => candidate !== undefined);
+	if (!origin) return error;
+	return configError({
+		code: error.diagnostic.code,
+		severity: "error",
+		layer: origin.source.id,
+		keyPath: error.diagnostic.keyPath,
+		...(error.diagnostic.line === undefined ? {} : { line: error.diagnostic.line }),
+		...(error.diagnostic.column === undefined ? {} : { column: error.diagnostic.column }),
+		message: error.diagnostic.message,
+		...(error.diagnostic.remediation === undefined
+			? {}
+			: { remediation: error.diagnostic.remediation }),
+	});
 }
 
 async function resolveConfigFromSources(
@@ -615,20 +669,31 @@ async function loadConfigLayers(
 ): Promise<{
 	readonly sources: readonly ConfigMap[];
 	readonly stack: ConfigLayerStack;
+	readonly shellSettings: LoadedShellSettings;
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }> {
 	const userPath = join(options.homeDir, ".mycli", "config.toml");
 	const projectPath = join(options.workspaceRoot, ".mycli", "config.toml");
+	const profilePath = options.configProfile
+		? resolveConfigProfilePath(options.homeDir, options.configProfile)
+		: undefined;
+	const systemPath = options.systemConfigPath ?? resolveSystemConfigPath({
+		programDataDir: options.env.ProgramData,
+	});
 	const legacyPath = join(options.homeDir, ".config", "mycli", "config.toml");
 	const projectEnabled = options.workspaceTrust === undefined
 		|| options.workspaceTrust === "trusted";
-	const [userDocument, projectDocument, legacyDocument] = await Promise.all([
+	const [userDocument, profileDocument, projectDocument, systemDocument, legacyDocument] = await Promise.all([
 		userDocumentOverride ?? readToml(userPath, "user"),
+		profilePath ? readToml(profilePath, "profile") : Promise.resolve(emptyConfigDocument()),
 		projectEnabled ? readToml(projectPath, "project") : Promise.resolve(emptyConfigDocument()),
+		readToml(systemPath, "system"),
 		readToml(legacyPath, "legacy_user"),
 	]);
 	const userConfig = userDocument.values;
+	const profileConfig = profileDocument.values;
 	const projectConfig = projectDocument.values;
+	const systemConfig = systemDocument.values;
 	const legacyConfig = legacyDocument.values;
 	const inputs: readonly ConfigLayerInput[] = [
 		configLayer(
@@ -650,20 +715,29 @@ async function loadConfigLayers(
 			projectConfig,
 			projectEnabled,
 		),
+		...(profilePath
+			? [configLayer("profile", "profile", profilePath, profileConfig)]
+			: []),
 		configLayer("user", "user", userPath, userConfig),
+		configLayer("system", "system", systemPath, systemConfig),
 		configLayer("legacy_user", "user", legacyPath, legacyConfig),
 	];
 	const resolution = resolveConfigLayers(inputs);
 	return Object.freeze({
-		sources: Object.freeze([
-			...(projectEnabled ? [projectConfig] : []),
-			userConfig,
-			legacyConfig,
-		]),
+		sources: Object.freeze(inputs.flatMap((input) => (
+			input.metadata.enabled
+				&& input.metadata.id !== "session"
+				&& input.metadata.id !== "environment"
+				? [input.values]
+				: []
+		))),
 		stack: resolution.stack,
+		shellSettings: resolveShellSettingsFromLayers(inputs),
 		diagnostics: Object.freeze([
 			...(projectEnabled ? projectDocument.diagnostics : []),
+			...profileDocument.diagnostics,
 			...userDocument.diagnostics,
+			...systemDocument.diagnostics,
 			...legacyDocument.diagnostics,
 		]),
 	});

@@ -2,6 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 
 const { generation, options } = workerData;
 const sessionId = flagValue(options.args, "--session") ?? "supervisor-session";
+const configProfile = flagValue(options.args, "--profile");
 const recovery = options.recoverInterruptedTurns?.[0];
 let input = "";
 
@@ -13,7 +14,11 @@ function send(message) {
 	});
 }
 
-send({ jsonrpc: "2.0", method: "runtime.ready", params: { session_id: sessionId } });
+send({
+	jsonrpc: "2.0",
+	method: "runtime.ready",
+	params: { session_id: sessionId, config_profile: configProfile },
+});
 if (recovery) {
 	send({
 		jsonrpc: "2.0",

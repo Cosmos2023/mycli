@@ -24,19 +24,24 @@ import {
 	listProviderProfiles,
 	loadModelCatalog,
 	loadManagedExecutionPolicy,
-	loadShellSettingsState,
 	modelCatalogEntryPayload,
+	parseConfigProfileName,
 	parseProtocol,
 	readApiKey,
 	resolveModelRuntimeConfig,
 	resolveProviderProfile,
+	resolveShellSettingsState,
 	saveShellSetting,
 	saveShellSettings,
 	writeApiKey,
 	writeUserProviderConfig,
 	WorkspaceTrustStore,
 } from "@mycli/config";
-import type { NodeRuntimeConfig, ResolveConfigOptions } from "@mycli/config";
+import type {
+	ConfigProfileName,
+	NodeRuntimeConfig,
+	ResolveConfigOptions,
+} from "@mycli/config";
 import type {
 	AgentBudget,
 	AgentBudgetExhaustionKind,
@@ -251,7 +256,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		origin: 0,
 	});
 	startupProfiler.mark("runtime_entered");
-	const overrides = parseOverrides(options.args);
+	const runtimeArguments = parseRuntimeArguments(options.args);
+	const overrides = runtimeArguments.overrides;
+	const profileInput = runtimeArguments.configProfile
+		? { configProfile: runtimeArguments.configProfile }
+		: {};
 	const agentExecutionAdapters = resolveAgentExecutionAdapters(options.env);
 	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
 	const homeDir = runtimeHome(options.env);
@@ -262,14 +271,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		input: ResolveConfigOptions,
 	): Promise<NodeRuntimeConfig> => resolveModelRuntimeConfig({
 		...input,
+		...profileInput,
 		workspaceTrust: await workspaceTrustStore.load(input.workspaceRoot),
 	});
+	const resolveWorkspaceShellSettings = async (workspaceRoot: string) => (
+		resolveShellSettingsState({
+			homeDir,
+			workspaceRoot,
+			env: options.env,
+			...profileInput,
+			workspaceTrust: await workspaceTrustStore.load(workspaceRoot),
+		})
+	);
 	let startupTrustState = await workspaceTrustStore.load(options.cwd);
 	let config = await resolveModelRuntimeConfig({
 		homeDir,
 		workspaceRoot: options.cwd,
 		env: options.env,
 		overrides,
+		...profileInput,
 		workspaceTrust: startupTrustState,
 	});
 	for (const recovery of options.recoverInterruptedTurns ?? []) {
@@ -295,6 +315,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				workspaceRoot: persisted.workspaceRoot,
 				env: options.env,
 				overrides,
+				...profileInput,
 				workspaceTrust: startupTrustState,
 			});
 		}
@@ -1842,6 +1863,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									workspaceRoot: active.workspaceRoot,
 									env: options.env,
 									workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+									...profileInput,
 									provider: entry.provider,
 									protocol,
 									model,
@@ -1895,7 +1917,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								);
 						},
 						loadSettings: async () => {
-							const loaded = await loadShellSettingsState({ homeDir });
+							const loaded = await resolveWorkspaceShellSettings(
+								sessionCoordinator.snapshot().workspaceRoot,
+							);
 							return {
 								settings: { ...loaded.settings },
 								sources: { ...loaded.sources },
@@ -1903,14 +1927,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						},
 						saveSetting: async (settingId, value) => {
 							const active = sessionCoordinator.snapshot();
-							const loaded = await saveShellSetting({
+							await saveShellSetting({
 								homeDir,
 								key: settingId,
 								value,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
 								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								...profileInput,
 							});
+							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
 							return {
 								settings: { ...loaded.settings },
 								sources: { ...loaded.sources },
@@ -1924,8 +1950,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
 								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								...profileInput,
 							});
-							const loaded = await loadShellSettingsState({ homeDir });
+							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
 							return {
 								settings: { ...loaded.settings },
 								sources: { ...loaded.sources },
@@ -3633,18 +3660,32 @@ function subagentDeveloperContext(
 	].join("\n");
 }
 
-function parseOverrides(args: readonly string[]): { model?: string; session?: string } {
+interface ParsedRuntimeArguments {
+	readonly overrides: { readonly model?: string; readonly session?: string };
+	readonly configProfile?: ConfigProfileName;
+}
+
+function parseRuntimeArguments(args: readonly string[]): ParsedRuntimeArguments {
 	const overrides: { model?: string; session?: string } = {};
+	let configProfile: ConfigProfileName | undefined;
 	for (let index = 0; index < args.length; index += 2) {
 		const flag = args[index];
 		const value = args[index + 1];
-		if ((flag !== "--model" && flag !== "--session") || value === undefined) {
+		if ((flag !== "--model" && flag !== "--session" && flag !== "--profile")
+			|| value === undefined) {
 			throw new Error("invalid_arguments: invalid Node runtime arguments");
 		}
 		if (flag === "--model") overrides.model = value;
 		if (flag === "--session") overrides.session = value;
+		if (flag === "--profile") {
+			if (configProfile) throw new Error("invalid_arguments: duplicate --profile");
+			configProfile = parseConfigProfileName(value);
+		}
 	}
-	return overrides;
+	return Object.freeze({
+		overrides: Object.freeze(overrides),
+		...(configProfile ? { configProfile } : {}),
+	});
 }
 
 function runtimeHome(env: NodeJS.ProcessEnv): string {

@@ -5,6 +5,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { parseConfigProfileName } from "@mycli/config/profile";
 import { initializeRipgrepEnvironment } from "@mycli/tools/ripgrep-runtime";
 import {
 	configureGatewayTransport,
@@ -44,6 +45,7 @@ Commands:
 Options:
   --session <id>                    Resume or create a session
   --model <model>                   Override the configured model
+  -p, --profile <name>              Select a launch-scoped configuration profile
   -h, --help                        Show help
   -V, --version                     Show version
 `;
@@ -289,30 +291,57 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 
 function parseRuntimeArguments(argv: readonly string[]): readonly string[] {
 	const runtimeArgs: string[] = [];
+	let profileSeen = false;
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
-		if (argument === "--session" || argument === "--model") {
+		if (argument === "--session" || argument === "--model"
+			|| argument === "--profile" || argument === "-p") {
 			const value = argv[index + 1];
 			if (value === undefined) {
 				throw new Error(`invalid_arguments: ${argument} requires a value`);
 			}
-			runtimeArgs.push(argument, value);
+			if (argument === "--profile" || argument === "-p") {
+				if (profileSeen) throw new Error("invalid_arguments: duplicate --profile");
+				profileSeen = true;
+				runtimeArgs.push("--profile", validatedProfileName(value));
+			} else {
+				runtimeArgs.push(argument, value);
+			}
 			index += 1;
 			continue;
 		}
-		if (argument?.startsWith("--session=") || argument?.startsWith("--model=")) {
+		if (argument?.startsWith("--session=")
+			|| argument?.startsWith("--model=")
+			|| argument?.startsWith("--profile=")
+			|| argument?.startsWith("-p=")) {
 			const separator = argument.indexOf("=");
 			const flag = argument.slice(0, separator);
 			const value = argument.slice(separator + 1);
 			if (!value) {
 				throw new Error(`invalid_arguments: ${flag} requires a value`);
 			}
-			runtimeArgs.push(flag, value);
+			if (flag === "--profile" || flag === "-p") {
+				if (profileSeen) throw new Error("invalid_arguments: duplicate --profile");
+				profileSeen = true;
+				runtimeArgs.push("--profile", validatedProfileName(value));
+			} else {
+				runtimeArgs.push(flag, value);
+			}
 			continue;
 		}
 		throw new Error("invalid_arguments: unsupported command or option");
 	}
 	return runtimeArgs;
+}
+
+function validatedProfileName(value: string): string {
+	try {
+		return parseConfigProfileName(value);
+	} catch {
+		throw new Error(
+			"invalid_arguments: profile name may contain only ASCII letters, digits, '_' or '-'",
+		);
+	}
 }
 
 function stableMessage(error: unknown, fallback: string): string {

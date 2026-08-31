@@ -109,6 +109,7 @@ test("help advertises the provider-free management surface", async () => {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
 	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);
+	assert.match(harness.stdout.join(""), /-p, --profile <name>/u);
 });
 
 test("CLI startup prepends vendored ripgrep before handling local commands", async (t) => {
@@ -347,7 +348,7 @@ test("interactive startup configures transport before importing the TUI", async 
 	const fake = fakeBackend();
 	let configured: GatewayTransport | null = null;
 	const harness = cliHarness({
-		argv: ["--session", "demo", "--model", "gpt-test"],
+		argv: ["--session", "demo", "--model", "gpt-test", "-p", "work"],
 		startNodeBackend: (options: { args: readonly string[] }) => {
 			order.push(`start:${options.args.join(" ")}`);
 			return fake.backend;
@@ -365,11 +366,69 @@ test("interactive startup configures transport before importing the TUI", async 
 
 	assert.equal(await runCli(harness.options), 0);
 	assert.deepEqual(order, [
-		"start:--session demo --model gpt-test",
+		"start:--session demo --model gpt-test --profile work",
 		"configure",
 		"import",
 	]);
 	assert.equal(fake.closeCalls(), 1);
+});
+
+test("CLI canonicalizes every supported profile selector form", async (t) => {
+	for (const argv of [
+		["--profile", "work"],
+		["--profile=work"],
+		["-p", "work"],
+		["-p=work"],
+	]) {
+		await t.test(argv.join(" "), async () => {
+			const fake = fakeBackend();
+			let backendArgs: readonly string[] = [];
+			let transport: GatewayTransport | undefined;
+			const harness = cliHarness({
+				argv,
+				startNodeBackend: (options: { args: readonly string[] }) => {
+					backendArgs = options.args;
+					return fake.backend;
+				},
+				configureTransport: (configured: GatewayTransport) => { transport = configured; },
+				importTui: async () => {
+					await transport?.close?.();
+					fake.completion.resolve(0);
+				},
+			});
+
+			assert.equal(await runCli(harness.options), 0);
+			assert.deepEqual(backendArgs, ["--profile", "work"]);
+		});
+	}
+});
+
+test("CLI rejects invalid profile names before backend or TUI startup", async () => {
+	let backendStarts = 0;
+	let tuiImports = 0;
+	const harness = cliHarness({
+		argv: ["--profile=../private"],
+		startNodeBackend: () => { backendStarts += 1; return fakeBackend().backend; },
+		importTui: async () => { tuiImports += 1; },
+	});
+
+	assert.equal(await runCli(harness.options), 2);
+	assert.equal(backendStarts, 0);
+	assert.equal(tuiImports, 0);
+	assert.match(harness.stderr.join(""), /invalid_arguments: profile name/u);
+	assert.doesNotMatch(harness.stderr.join(""), /\.\.\/private/u);
+});
+
+test("CLI rejects duplicate profile selectors before backend startup", async () => {
+	let backendStarts = 0;
+	const harness = cliHarness({
+		argv: ["-p", "work", "--profile=review"],
+		startNodeBackend: () => { backendStarts += 1; return fakeBackend().backend; },
+	});
+
+	assert.equal(await runCli(harness.options), 2);
+	assert.equal(backendStarts, 0);
+	assert.match(harness.stderr.join(""), /invalid_arguments: duplicate --profile/u);
 });
 
 test("interactive startup imports the TUI while the Node backend is still starting", async () => {

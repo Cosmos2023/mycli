@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { ProtocolId, ProviderId, ReasoningEffort } from "@mycli/core";
+import type { ConfigProfileName } from "./config-profile.ts";
 import { resolveProviderProfile } from "./provider-profiles.ts";
 import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
 import {
@@ -21,6 +22,8 @@ export interface UserProviderConfigInput {
 	readonly workspaceRoot?: string;
 	readonly env?: NodeJS.ProcessEnv;
 	readonly workspaceTrust?: WorkspaceTrustState;
+	readonly configProfile?: ConfigProfileName;
+	readonly systemConfigPath?: string;
 	readonly failpoint?: (name: string) => void;
 }
 
@@ -53,6 +56,8 @@ export async function writeUserProviderConfig(
 			workspaceRoot: input.workspaceRoot ?? input.homeDir,
 			env: input.env ?? {},
 			workspaceTrust: input.workspaceTrust ?? "untrusted",
+			...(input.configProfile ? { configProfile: input.configProfile } : {}),
+			...(input.systemConfigPath ? { systemConfigPath: input.systemConfigPath } : {}),
 			edits: providerConfigEdits(input),
 			validateCurrent: false,
 			...(input.failpoint ? { failpoint: input.failpoint } : {}),

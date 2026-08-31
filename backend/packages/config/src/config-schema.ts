@@ -145,7 +145,10 @@ export function validateConfigDocument(
 			values[key] = value;
 			continue;
 		}
-		if (SHELL_SETTING_KEYS.has(key)) continue;
+		if (SHELL_SETTING_KEYS.has(key)) {
+			values[key] = value;
+			continue;
+		}
 		diagnostics.push(unknownDiagnostic(layer, key, isRecord(value)));
 	}
 
@@ -210,7 +213,7 @@ function handleInlineSecret(
 	diagnostics: ConfigDiagnostic[],
 	root: boolean,
 ): void {
-	if (layer === "project" || keyPath !== "api_key") {
+	if ((layer !== "user" && layer !== "legacy_user") || keyPath !== "api_key") {
 		throw configError({
 			code: "forbidden_inline_secret",
 			severity: "error",

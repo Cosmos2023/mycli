@@ -99,9 +99,15 @@ test("parser retains validated interactive arguments", () => {
 		"--session",
 		"demo",
 		"--model=gpt-5",
+		"-p",
+		"work",
 	]), {
 		kind: "interactive",
-		runtimeArgs: ["--session", "demo", "--model=gpt-5"],
+		runtimeArgs: ["--session", "demo", "--model=gpt-5", "-p", "work"],
+	});
+	assert.deepEqual(parseCliMode(["--profile=review"]), {
+		kind: "interactive",
+		runtimeArgs: ["--profile=review"],
 	});
 	assert.deepEqual(parseCliMode(["session", "resume", "release-session"]), {
 		kind: "interactive",

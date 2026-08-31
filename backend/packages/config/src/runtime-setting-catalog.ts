@@ -194,6 +194,19 @@ export function runtimeSettingSnapshots(
 	})));
 }
 
+export function runtimeSettingOriginKeysForDiagnostic(
+	keyPath: string,
+): readonly string[] {
+	const direct = BY_KEY.get(keyPath);
+	if (direct) return direct.originKeys;
+	const byOrigin = DEFINITIONS.find((definition) => definition.originKeys.includes(keyPath));
+	if (byOrigin) return byOrigin.originKeys;
+	const ratioKey = "compaction_l4_trigger_ratios_by_model";
+	return Object.freeze([
+		keyPath.startsWith(`${ratioKey}.`) ? ratioKey : keyPath,
+	]);
+}
+
 export function writableRuntimeSetting(key: string): WritableRuntimeSetting | undefined {
 	const definition = BY_KEY.get(key);
 	if (definition?.write) return Object.freeze({ key: definition.key, ...definition.write });

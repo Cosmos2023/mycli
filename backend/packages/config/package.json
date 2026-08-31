@@ -10,6 +10,11 @@
       "mycli-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./profile": {
+      "mycli-source": "./src/config-profile.ts",
+      "types": "./dist/config-profile.d.ts",
+      "import": "./dist/config-profile.js"
     }
   },
   "scripts": {

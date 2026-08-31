@@ -2,7 +2,10 @@ import type { ConfigLayerId } from "./config-layers.ts";
 
 export const CONFIG_DIAGNOSTIC_VERSION = 1 as const;
 
-export type ConfigFileLayerId = Extract<ConfigLayerId, "project" | "user" | "legacy_user">;
+export type ConfigFileLayerId = Extract<
+	ConfigLayerId,
+	"project" | "profile" | "user" | "system" | "legacy_user"
+>;
 
 export type ConfigDiagnosticSeverity = "warning" | "error";
 

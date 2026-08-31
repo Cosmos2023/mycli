@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { WorkspaceTrustStore } from "@mycli/config";
+import { ConfigError, WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
 import { fingerprintSubmission, rootAgentPath } from "@mycli/core";
 import {
@@ -4000,6 +4000,77 @@ test("Node backend loads project configuration only after workspace trust is per
 	assert.equal(resultValue(trusted, "model"), "project-model");
 	writeRequest(second, "shutdown-trusted-config", "shutdown", {});
 	assert.equal(await second.completion, 0);
+});
+
+test("Node backend applies a launch profile to new and resumed sessions without persisting selection", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-config-profile-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const profilePath = join(home, ".mycli", "work.config.toml");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(workspace, { recursive: true }),
+	]);
+	await writeFile(join(home, ".mycli", "config.toml"), "[model]\nname = \"user-model\"\n", "utf8");
+	await writeFile(
+		profilePath,
+		'tui_theme = "light"\n[model]\nname = "profile-model"\n',
+		"utf8",
+	);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const options = {
+		cwd: workspace,
+		args: ["--session", "profile-runtime-session", "--profile", "work"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_MEMORY_ENABLED: "false",
+		},
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "bootstrap-profile-new", "session.bootstrap", { protocol_version: 1 });
+	const bootstrap = await waitFor(() => response(firstMessages, "bootstrap-profile-new"));
+	assert.equal(resultValue(bootstrap, "model"), "profile-model");
+	writeRequest(first, "settings-profile-new", "settings.load", {});
+	const settings = await waitFor(() => response(firstMessages, "settings-profile-new"));
+	assert.equal((resultValue(settings, "settings") as Record<string, unknown>).theme, "light");
+	assert.equal((resultValue(settings, "sources") as Record<string, unknown>).theme, "profile");
+	writeRequest(first, "shutdown-profile-new", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	await writeFile(profilePath, "[broken", "utf8");
+	await assert.rejects(
+		startNodeBackend(options),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_toml"
+			&& error.diagnostic.layer === "profile",
+	);
+
+	const resumed = await startNodeBackend({
+		...options,
+		args: ["--session", "profile-runtime-session"],
+	});
+	const resumedMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: resumed.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		resumedMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(resumedMessages, "runtime.ready"));
+	writeRequest(resumed, "settings-profile-resumed", "settings.load", {});
+	const resumedSettings = await waitFor(() => response(resumedMessages, "settings-profile-resumed"));
+	assert.equal((resultValue(resumedSettings, "settings") as Record<string, unknown>).theme, "dark");
+	assert.equal((resultValue(resumedSettings, "sources") as Record<string, unknown>).theme, "default");
+	writeRequest(resumed, "shutdown-profile-resumed", "shutdown", {});
+	assert.equal(await resumed.completion, 0);
 });
 
 test("Worker-backed root atomically resumes complete persisted session state", async (t) => {

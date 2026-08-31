@@ -4,13 +4,17 @@ export type ConfigLayerId =
 	| "session"
 	| "environment"
 	| "project"
+	| "profile"
 	| "user"
+	| "system"
 	| "legacy_user";
 
 export type ConfigLayerScope =
 	| "session"
 	| "environment"
 	| "project"
+	| "profile"
+	| "system"
 	| "user";
 
 export type ConfigLayerDisabledReason = "workspace_not_trusted";

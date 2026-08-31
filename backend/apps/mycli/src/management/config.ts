@@ -1,7 +1,6 @@
 import {
 	configDiagnostic,
 	isConfigError,
-	loadShellSettingsState,
 	mutateUserConfigSetting,
 	resolveConfigWithMetadata,
 	runtimeSettingSnapshots,
@@ -11,6 +10,7 @@ import {
 	type ConfigLayerId,
 	type ConfigLayerScope,
 	type ConfigLayerStack,
+	type ConfigProfileName,
 	type LoadedShellSettings,
 	type WorkspaceTrustState,
 } from "@mycli/config";
@@ -95,6 +95,8 @@ export interface ConfigManagementServiceOptions {
 	readonly homeDir: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly workspaceTrust: WorkspaceTrustState;
+	readonly configProfile?: ConfigProfileName;
+	readonly systemConfigPath?: string;
 }
 
 const MAX_RATIO_ROWS = 64;
@@ -207,12 +209,9 @@ export class ConfigManagementService {
 		readonly resolved: Awaited<ReturnType<typeof resolveConfigWithMetadata>>;
 		readonly shell: LoadedShellSettings;
 	}> {
-		const [resolved, shell] = await Promise.all([
-			this.#resolve(signal),
-			loadShellSettingsState({ homeDir: this.#options.homeDir }),
-		]);
+		const resolved = await this.#resolve(signal);
 		signal.throwIfAborted();
-		return Object.freeze({ resolved, shell });
+		return Object.freeze({ resolved, shell: resolved.shellSettings });
 	}
 }
 
@@ -280,7 +279,7 @@ function projectSettings(
 		key: item.key,
 		value: shell.settings[item.settingKey],
 		source: shell.sources[item.settingKey],
-		overridden: Object.freeze([]),
+		overridden: shell.overridden[item.settingKey],
 	}));
 	return Object.freeze([...runtimeRows, ...shellRows].sort((left, right) => compareText(left.key, right.key)));
 }

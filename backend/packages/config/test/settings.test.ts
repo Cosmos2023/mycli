@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
 	ConfigError,
+	parseConfigProfileName,
 	resolveConfig,
 	resolveConfigWithMetadata,
 } from "../src/index.ts";
@@ -37,6 +38,7 @@ test("resolves trusted project precedence with source provenance", async (t) => 
 		"environment",
 		"project",
 		"user",
+		"system",
 		"legacy_user",
 	]);
 	assert.equal(resolved.layers.origins.model?.source.id, "project");
@@ -44,6 +46,96 @@ test("resolves trusted project precedence with source provenance", async (t) => 
 		resolved.layers.origins.model?.overridden.map((source) => source.id),
 		["user", "legacy_user"],
 	);
+});
+
+test("resolves the complete Codex-style profile and system layer precedence", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const systemConfigPath = join(homeDir, "machine", "config.toml");
+	await writeToml(join(homeDir, ".config", "mycli", "config.toml"), [
+		'tui_theme = "dark"',
+		"[model]",
+		'name = "legacy-model"',
+	]);
+	await writeToml(systemConfigPath, [
+		'tui_theme = "dark"',
+		"[model]",
+		'name = "system-model"',
+	]);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		'tui_theme = "dark"',
+		"[model]",
+		'name = "user-model"',
+	]);
+	await writeToml(join(homeDir, ".mycli", "work.config.toml"), [
+		'tui_theme = "dark"',
+		"[model]",
+		'name = "profile-model"',
+	]);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), [
+		'tui_theme = "light"',
+		"[model]",
+		'name = "project-model"',
+	]);
+
+	const resolved = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_MODEL: "environment-model" },
+		overrides: { model: "session-model" },
+		configProfile: parseConfigProfileName("work"),
+		systemConfigPath,
+		workspaceTrust: "trusted",
+	});
+
+	assert.equal(resolved.config.model, "session-model");
+	assert.deepEqual(resolved.layers.layers.map((layer) => layer.metadata.id), [
+		"session",
+		"environment",
+		"project",
+		"profile",
+		"user",
+		"system",
+		"legacy_user",
+	]);
+	assert.equal(resolved.layers.origins.model?.source.id, "session");
+	assert.deepEqual(
+		resolved.layers.origins.model?.overridden.map((source) => source.id),
+		["environment", "project", "profile", "user", "system", "legacy_user"],
+	);
+	assert.equal(resolved.shellSettings.settings.theme, "light");
+	assert.equal(resolved.shellSettings.sources.theme, "project");
+	assert.deepEqual(
+		resolved.shellSettings.overridden.theme,
+		["profile", "user", "system", "legacy_user"],
+	);
+});
+
+test("selected profiles stay above untrusted project config and may be empty", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		'tui_theme = "light"',
+		"[model]",
+		'name = "user-model"',
+	]);
+	await writeToml(join(workspaceRoot, ".mycli", "config.toml"), ["[broken"]);
+
+	const resolved = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: {},
+		configProfile: parseConfigProfileName("missing"),
+		systemConfigPath: join(homeDir, "missing-system.toml"),
+		workspaceTrust: "untrusted",
+	});
+
+	assert.equal(resolved.config.model, "user-model");
+	const profile = resolved.layers.layers.find((layer) => layer.metadata.id === "profile");
+	assert.equal(profile?.metadata.enabled, true);
+	assert.deepEqual(profile?.keys, []);
+	assert.equal(resolved.layers.origins.model?.source.id, "user");
+	assert.equal(resolved.shellSettings.sources.theme, "user");
+	assert.equal(resolved.shellSettings.settings.theme, "light");
+	assert.deepEqual(resolved.diagnostics, []);
 });
 
 test("keeps untrusted project configuration disabled without reading it", async (t) => {
@@ -225,6 +317,118 @@ test("rejects project inline credentials with a value-free typed error", async (
 			&& error.diagnostic.keyPath === "model.api_key"
 			&& !JSON.stringify(error.diagnostic).includes("must-not-leak"),
 	);
+});
+
+test("rejects root inline credentials in profile and system layers", async (t) => {
+	for (const layer of ["profile", "system"] as const) {
+		const { homeDir, workspaceRoot } = await configTree(t);
+		const systemConfigPath = join(homeDir, "machine", "config.toml");
+		const options = {
+			homeDir,
+			workspaceRoot,
+			env: {},
+			systemConfigPath,
+			...(layer === "profile" ? { configProfile: parseConfigProfileName("work") } : {}),
+		};
+		const path = layer === "profile"
+			? join(homeDir, ".mycli", "work.config.toml")
+			: systemConfigPath;
+		await writeToml(path, ['api_key = "must-not-leak"']);
+
+		await assert.rejects(
+			() => resolveConfig(options),
+			(error: unknown) => error instanceof ConfigError
+				&& error.diagnostic.code === "forbidden_inline_secret"
+				&& error.diagnostic.layer === layer
+				&& error.diagnostic.keyPath === "api_key"
+				&& !JSON.stringify(error.diagnostic).includes("must-not-leak")
+				&& !error.message.includes("must-not-leak"),
+		);
+	}
+});
+
+test("rejects invalid profile visual settings with value-free diagnostics", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "work.config.toml"), [
+		'tui_theme = "private-purple-sentinel"',
+	]);
+
+	await assert.rejects(
+		() => resolveConfigWithMetadata({
+			homeDir,
+			workspaceRoot,
+			env: {},
+			configProfile: parseConfigProfileName("work"),
+			systemConfigPath: join(homeDir, "missing-system.toml"),
+			workspaceTrust: "untrusted",
+		}),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_value"
+			&& error.diagnostic.layer === "profile"
+			&& error.diagnostic.keyPath === "tui.theme"
+			&& !JSON.stringify(error.diagnostic).includes("private-purple-sentinel"),
+	);
+});
+
+test("attributes effective profile and system value failures without exposing values or paths", async (t) => {
+	for (const layer of ["profile", "system"] as const) {
+		const { homeDir, workspaceRoot } = await configTree(t);
+		const systemConfigPath = join(homeDir, "machine", "config.toml");
+		const profilePath = join(homeDir, ".mycli", "work.config.toml");
+		const path = layer === "profile" ? profilePath : systemConfigPath;
+		await writeToml(path, [
+			"[request]",
+			'max_prompt_tokens = "private-invalid-sentinel"',
+		]);
+
+		await assert.rejects(
+			() => resolveConfigWithMetadata({
+				homeDir,
+				workspaceRoot,
+				env: {},
+				...(layer === "profile" ? { configProfile: parseConfigProfileName("work") } : {}),
+				systemConfigPath,
+				workspaceTrust: "untrusted",
+			}),
+			(error: unknown) => error instanceof ConfigError
+				&& error.diagnostic.code === "invalid_value"
+				&& error.diagnostic.layer === layer
+				&& error.diagnostic.keyPath === "max_prompt_tokens"
+				&& !JSON.stringify(error.diagnostic).includes("private-invalid-sentinel")
+				&& !JSON.stringify(error.diagnostic).includes(homeDir),
+		);
+	}
+});
+
+test("reports profile and system unknown keys using stable layer ids only", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const systemConfigPath = join(homeDir, "machine", "config.toml");
+	await writeToml(join(homeDir, ".mycli", "work.config.toml"), [
+		'private_profile_marker = "profile-value-sentinel"',
+	]);
+	await writeToml(systemConfigPath, [
+		'private_system_marker = "system-value-sentinel"',
+	]);
+
+	const resolved = await resolveConfigWithMetadata({
+		homeDir,
+		workspaceRoot,
+		env: {},
+		configProfile: parseConfigProfileName("work"),
+		systemConfigPath,
+		workspaceTrust: "untrusted",
+	});
+	assert.deepEqual(
+		resolved.diagnostics.map((diagnostic) => [diagnostic.layer, diagnostic.keyPath]),
+		[
+			["profile", "private_profile_marker"],
+			["system", "private_system_marker"],
+		],
+	);
+	const serialized = JSON.stringify(resolved.diagnostics);
+	assert.equal(serialized.includes("profile-value-sentinel"), false);
+	assert.equal(serialized.includes("system-value-sentinel"), false);
+	assert.equal(serialized.includes(homeDir), false);
 });
 
 test("rejects table credentials in user config instead of treating them as legacy", async (t) => {

@@ -1,3 +1,6 @@
+import type { ConfigLayerId, ConfigLayerInput } from "./config-layers.ts";
+import { configError } from "./config-diagnostics.ts";
+
 export interface ShellSettings {
 	readonly statusbar_mode: "off" | "compact" | "full";
 	readonly view_mode: "default" | "verbose" | "focus";
@@ -11,6 +14,14 @@ export interface ShellSettings {
 }
 
 export type ShellSettingName = keyof ShellSettings;
+export type ShellSettingSource = ConfigLayerId | "default";
+
+export interface LoadedShellSettings {
+	readonly settings: ShellSettings;
+	readonly sources: Readonly<Record<ShellSettingName, ShellSettingSource>>;
+	readonly overridden: Readonly<Record<ShellSettingName, readonly ConfigLayerId[]>>;
+}
+
 export type ShellSettingClientKey =
 	| "statusbarMode"
 	| "viewMode"
@@ -157,6 +168,69 @@ const DESCRIPTOR_BY_KEY: ReadonlyMap<string, ShellSettingDescriptor> = new Map(
 
 export function shellSettingDescriptor(key: string): ShellSettingDescriptor | undefined {
 	return DESCRIPTOR_BY_KEY.get(key);
+}
+
+export function resolveShellSettingsFromLayers(
+	layers: readonly ConfigLayerInput[],
+): LoadedShellSettings {
+	const settings = {} as Record<ShellSettingName, ShellSettings[ShellSettingName]>;
+	const sources = {} as Record<ShellSettingName, ShellSettingSource>;
+	const overridden = {} as Record<ShellSettingName, readonly ConfigLayerId[]>;
+	for (const item of SHELL_SETTING_DESCRIPTORS) {
+		const candidates = layers.flatMap((layer) => {
+			if (!layer.metadata.enabled) return [];
+			const value = shellSettingLayerValue(layer.values, item);
+			return value === undefined ? [] : [{ layer: layer.metadata.id, value }];
+		});
+		const winner = candidates[0];
+		settings[item.settingKey] = winner
+			? parseShellSettingValue(item, winner.value, winner.layer)
+			: DEFAULT_SHELL_SETTINGS[item.settingKey];
+		sources[item.settingKey] = winner?.layer ?? "default";
+		overridden[item.settingKey] = Object.freeze(candidates.slice(1).map((entry) => entry.layer));
+	}
+	return Object.freeze({
+		settings: Object.freeze(settings) as ShellSettings,
+		sources: Object.freeze(sources),
+		overridden: Object.freeze(overridden),
+	});
+}
+
+function shellSettingLayerValue(
+	values: Readonly<Record<string, unknown>>,
+	item: ShellSettingDescriptor,
+): unknown {
+	for (const key of item.inputKeys) {
+		if (values[key] !== undefined) return values[key];
+	}
+	if (item.settingKey === "statusbar_mode" && values.statusline_enabled !== undefined) {
+		if (values.statusline_enabled === true) return "full";
+		if (values.statusline_enabled === false) return "off";
+		return values.statusline_enabled;
+	}
+	return undefined;
+}
+
+function parseShellSettingValue(
+	item: ShellSettingDescriptor,
+	value: unknown,
+	layer: ConfigLayerId,
+): ShellSettings[ShellSettingName] {
+	if (item.valueKind === "boolean" && typeof value === "boolean") return value;
+	if (typeof value === "string") {
+		const normalized = value.toLowerCase();
+		if (item.allowedValues.includes(normalized)) {
+			return normalized as ShellSettings[ShellSettingName];
+		}
+	}
+	throw configError({
+		code: "invalid_value",
+		severity: "error",
+		layer,
+		keyPath: item.key,
+		message: "configuration setting has an invalid value",
+		remediation: `Use a supported value for '${item.key}' or remove the setting.`,
+	});
 }
 
 function descriptor(input: Omit<ShellSettingDescriptor, "defaultValue" | "restartRequired" | "valueKind">): ShellSettingDescriptor {

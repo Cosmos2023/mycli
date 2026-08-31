@@ -1,13 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "smol-toml";
+import type { ConfigProfileName } from "./config-profile.ts";
 import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
 import {
 	DEFAULT_SHELL_SETTINGS,
 	SHELL_SETTING_DESCRIPTORS,
 	shellSettingDescriptor,
+	type LoadedShellSettings,
 	type ShellSettingDescriptor,
 	type ShellSettingName,
+	type ShellSettingSource,
 	type ShellSettings,
 } from "./shell-setting-catalog.ts";
 import {
@@ -16,6 +19,7 @@ import {
 } from "./user-config-editor.ts";
 
 export type { ShellSettings } from "./shell-setting-catalog.ts";
+export type { LoadedShellSettings, ShellSettingSource } from "./shell-setting-catalog.ts";
 
 export interface LoadShellSettingsOptions {
 	readonly homeDir: string;
@@ -26,6 +30,8 @@ export interface SaveShellSettingsOptions extends LoadShellSettingsOptions {
 	readonly workspaceRoot?: string;
 	readonly env?: NodeJS.ProcessEnv;
 	readonly workspaceTrust?: WorkspaceTrustState;
+	readonly configProfile?: ConfigProfileName;
+	readonly systemConfigPath?: string;
 	readonly failpoint?: (name: string) => void;
 }
 
@@ -35,14 +41,9 @@ export interface SaveShellSettingOptions extends LoadShellSettingsOptions {
 	readonly workspaceRoot?: string;
 	readonly env?: NodeJS.ProcessEnv;
 	readonly workspaceTrust?: WorkspaceTrustState;
+	readonly configProfile?: ConfigProfileName;
+	readonly systemConfigPath?: string;
 	readonly failpoint?: (name: string) => void;
-}
-
-export type ShellSettingSource = "default" | "user";
-
-export interface LoadedShellSettings {
-	readonly settings: ShellSettings;
-	readonly sources: Readonly<Record<ShellSettingName, ShellSettingSource>>;
 }
 
 export async function loadShellSettings(options: LoadShellSettingsOptions): Promise<ShellSettings> {
@@ -93,6 +94,8 @@ async function persistShellSettings(
 			workspaceRoot: options.workspaceRoot ?? options.homeDir,
 			env: options.env ?? {},
 			workspaceTrust: options.workspaceTrust ?? "untrusted",
+			...(options.configProfile ? { configProfile: options.configProfile } : {}),
+			...(options.systemConfigPath ? { systemConfigPath: options.systemConfigPath } : {}),
 			edits: shellSettingEdits(settings, items),
 			validateCurrent: true,
 			...(options.failpoint ? { failpoint: options.failpoint } : {}),
@@ -223,9 +226,14 @@ function loadedShellSettings(
 			? "user"
 			: "default",
 	])) as Record<ShellSettingName, ShellSettingSource>;
+	const overridden = Object.fromEntries(SHELL_SETTING_DESCRIPTORS.map((item) => [
+		item.settingKey,
+		Object.freeze([]),
+	])) as Record<ShellSettingName, readonly []>;
 	return Object.freeze({
 		settings: Object.freeze({ ...settings }),
 		sources: Object.freeze(sources),
+		overridden: Object.freeze(overridden),
 	});
 }
 

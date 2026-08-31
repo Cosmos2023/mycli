@@ -50,7 +50,7 @@ test("hard interruption terminates a blocked Worker and publishes terminal state
 	const backend = await startSupervisedNodeBackend({
 		cwd: process.cwd(),
 		env: {},
-		args: ["--session", "supervisor-session"],
+		args: ["--session", "supervisor-session", "--profile", "work"],
 		hardInterruptTimeoutMs: 30,
 		workerUrl: new URL("./fixtures/node-backend-blocking-worker.mjs", import.meta.url),
 	});
@@ -59,7 +59,8 @@ test("hard interruption terminates a blocked Worker and publishes terminal state
 	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		messages.push(JSON.parse(line) as JsonObject);
 	});
-	await waitFor(() => messages.find((message) => message.method === "runtime.ready"));
+	const firstReady = await waitFor(() => messages.find((message) => message.method === "runtime.ready"));
+	assert.equal(objectValue(firstReady.params)?.config_profile, "work");
 
 	writeRequest(backend, "submit", "turn.submit", {
 		message: "block",
@@ -85,6 +86,9 @@ test("hard interruption terminates a blocked Worker and publishes terminal state
 		input_rolled_back: false,
 	});
 	assert.equal(messages.filter((message) => message.method === "runtime.ready").length, 2);
+	for (const ready of messages.filter((message) => message.method === "runtime.ready")) {
+		assert.equal(objectValue(ready.params)?.config_profile, "work");
+	}
 });
 
 function writeRequest(

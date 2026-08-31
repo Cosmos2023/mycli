@@ -320,13 +320,16 @@ function extractOption(
 function validateInteractiveArguments(argv: readonly string[]): void {
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
-		if (argument === "--session" || argument === "--model") {
+		if (argument === "--session" || argument === "--model"
+			|| argument === "--profile" || argument === "-p") {
 			if (!argv[index + 1]) throw new Error(`invalid_arguments: ${argument} requires a value`);
 			index += 1;
 			continue;
 		}
 		if (argument?.startsWith("--session=")
-			|| argument?.startsWith("--model=")) {
+			|| argument?.startsWith("--model=")
+			|| argument?.startsWith("--profile=")
+			|| argument?.startsWith("-p=")) {
 			if (!argument.slice(argument.indexOf("=") + 1)) {
 				throw new Error(`invalid_arguments: ${argument.slice(0, argument.indexOf("="))} requires a value`);
 			}

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
+import { parseConfigProfileName } from "@mycli/config";
 import {
 	ConfigManagementService,
 	type ConfigShowResponse,
@@ -106,6 +107,42 @@ test("config show reports winners and overridden layers without credential value
 	}
 	assert.match(rendered, /setting model\.name=environment-model source=environment overridden=project,user/u);
 	assert.equal(serialized.includes('"source":"/'), false);
+});
+
+test("config show reports profile and system provenance for visual settings", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-config-profile-visual-settings-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	const systemConfigPath = join(root, "machine", "config.toml");
+	await Promise.all([
+		mkdir(join(homeDir, ".mycli"), { recursive: true }),
+		mkdir(workspaceRoot, { recursive: true }),
+		mkdir(join(root, "machine"), { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(join(homeDir, ".mycli", "config.toml"), 'tui_theme = "dark"\n', "utf8"),
+		writeFile(join(homeDir, ".mycli", "work.config.toml"), 'tui_theme = "light"\n', "utf8"),
+		writeFile(systemConfigPath, 'tui_theme = "dark"\n', "utf8"),
+	]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const service = new ConfigManagementService({
+		homeDir,
+		workspaceRoot,
+		env: {},
+		workspaceTrust: "untrusted",
+		configProfile: parseConfigProfileName("work"),
+		systemConfigPath,
+	});
+
+	assert.deepEqual(
+		setting(await service.show(new AbortController().signal), "tui.theme"),
+		{
+			key: "tui.theme",
+			value: "light",
+			source: "profile",
+			overridden: ["user", "system"],
+		},
+	);
 });
 
 test("config validate keeps unknown keys as value-free warnings", async (t) => {

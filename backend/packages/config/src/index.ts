@@ -29,9 +29,20 @@ export {
 export type { ProviderProfile } from "./provider-profiles.ts";
 export { redactValue } from "./redaction.ts";
 export {
+	ConfigProfileNameError,
+	parseConfigProfileName,
+	resolveConfigProfilePath,
+	resolveSystemConfigPath,
+} from "./config-profile.ts";
+export type {
+	ConfigProfileName,
+	ResolveSystemConfigPathOptions,
+} from "./config-profile.ts";
+export {
 	NODE_RUNTIME_CONTEXT_DEFAULTS,
 	resolveConfig,
 	resolveConfigWithMetadata,
+	resolveShellSettingsState,
 } from "./settings.ts";
 export type {
 	NodeRuntimeConfig,
