@@ -8,17 +8,19 @@ import type {
 	SessionManagementCommand,
 } from "./types.ts";
 
-const MANAGEMENT_COMMANDS = new Set([
+export const MANAGEMENT_COMMAND_NAMES = Object.freeze([
+	"setup",
 	"config",
 	"doctor",
-	"setup",
+	"update",
 	"sandbox",
 	"hooks",
 	"plugins",
 	"mcp",
 	"session",
-	"update",
-]);
+] as const);
+
+const MANAGEMENT_COMMANDS: ReadonlySet<string> = new Set(MANAGEMENT_COMMAND_NAMES);
 
 export function parseCliMode(argv: readonly string[]): CliMode {
 	const root = argv[0];

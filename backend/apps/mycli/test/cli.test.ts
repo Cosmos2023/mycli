@@ -12,6 +12,7 @@ import {
 } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
+import { MANAGEMENT_COMMAND_NAMES } from "../src/management/parser.ts";
 import type { ManagementCommand } from "../src/management/types.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { MYCLI_VERSION, parseAppVersion } from "../src/version.ts";
@@ -105,7 +106,7 @@ test("help advertises the provider-free management surface", async () => {
 	const harness = cliHarness({ argv: ["--help"] });
 
 	assert.equal(await runCli(harness.options), 0);
-	for (const command of ["setup", "config", "doctor", "sandbox", "hooks", "plugins", "mcp"]) {
+	for (const command of MANAGEMENT_COMMAND_NAMES) {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
 	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);

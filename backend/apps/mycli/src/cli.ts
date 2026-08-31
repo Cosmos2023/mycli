@@ -27,7 +27,7 @@ import {
 } from "./node-runtime/startup-profile.ts";
 import { MYCLI_VERSION } from "./version.ts";
 
-const HELP = `Usage: mycli [options]
+export const ROOT_HELP = `Usage: mycli [options]
        mycli <command> [arguments]
 
 Commands:
@@ -90,7 +90,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	const stderr = options.stderr ?? process.stderr;
 
 	if (argv.includes("--help") || argv.includes("-h")) {
-		stdout.write(HELP);
+		stdout.write(ROOT_HELP);
 		return 0;
 	}
 	if (argv.includes("--version") || argv.includes("-V")) {

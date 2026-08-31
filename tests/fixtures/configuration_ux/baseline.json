@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "supported_platforms": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "journeys": [
+    {
+      "id": "fresh_install",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/setup.test.ts",
+          "test": "setup builds all provider rows, persists a successful result, and never returns the key"
+        },
+        {
+          "file": "tui/mycli-shell/test/setup-wizard.test.ts",
+          "test": "setup wizard collects provider endpoint model and api key"
+        },
+        {
+          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "test": "mycli shell runtime enters main UI only after trust selection"
+        }
+      ]
+    },
+    {
+      "id": "missing_credential",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/node-gateway.test.ts",
+          "test": "credential readiness is projected at bootstrap and blocks turn acceptance without side effects"
+        },
+        {
+          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "test": "submit-time auth recovery preserves one draft and custom credential reference"
+        }
+      ]
+    },
+    {
+      "id": "malformed_user_config",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/packages/config/test/settings.test.ts",
+          "test": "malformed TOML raises a bounded config error"
+        },
+        {
+          "file": "backend/apps/mycli/test/config-management.test.ts",
+          "test": "default config management maps fatal diagnostics to exit one"
+        }
+      ]
+    },
+    {
+      "id": "untrusted_project_config",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/config-management.test.ts",
+          "test": "config management does not read malformed untrusted project config"
+        }
+      ]
+    },
+    {
+      "id": "session_model_scope",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/node-backend.integration.test.ts",
+          "test": "Node backend separates session model choices from user defaults"
+        }
+      ]
+    },
+    {
+      "id": "permission_switch",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/node-gateway.test.ts",
+          "test": "gateway owns permission selection and reconfigures runtime trust policy"
+        },
+        {
+          "file": "tui/mycli-shell/test/permission-selector.test.ts",
+          "test": "permission selector confirms Full Access before applying"
+        }
+      ]
+    },
+    {
+      "id": "resume_repair",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/node-gateway.test.ts",
+          "test": "session resume exposes a provider-free preview and requires an explicit repair"
+        },
+        {
+          "file": "backend/apps/mycli/test/session-service.test.ts",
+          "test": "resume repair requires the preview revision and reports pending interaction once"
+        }
+      ]
+    },
+    {
+      "id": "narrow_cjk_ime",
+      "platforms": ["darwin", "linux", "win32"],
+      "evidence": [
+        {
+          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "test": "settings catalog renders seven categories width-safe with CJK and Windows values"
+        },
+        {
+          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "test": "slash autocomplete keeps the hardware cursor anchored to the editor for IME"
+        }
+      ]
+    },
+    {
+      "id": "windows_sandbox_readiness",
+      "platforms": ["win32"],
+      "evidence": [
+        {
+          "file": "backend/apps/mycli/test/sandbox-management.test.ts",
+          "test": "sandbox status maps incomplete Windows setup to bounded actionable state"
+        },
+        {
+          "file": "backend/packages/tools/test/process-sandbox.test.ts",
+          "test": "Windows sandbox readiness validates bounded handshake states"
+        }
+      ]
+    }
+  ],
+  "measurements": {
+    "first_paint": {
+      "awaited_network_operations": 0,
+      "wall_clock_mode": "local_opt_in",
+      "wall_clock_ci_asserted": false
+    },
+    "ready_composer": {
+      "configured_trusted_confirmation_steps": 0,
+      "fresh_install_confirmation_steps": 7,
+      "credential_text_entries": 1
+    }
+  },
+  "budgets": {
+    "awaited_network_operations_before_first_paint": 0,
+    "primary_diagnostics_per_root_failure": 1,
+    "selector_filter_response_ms": 100,
+    "minimum_terminal_columns": 60,
+    "destructive_action_default": "cancel",
+    "pending_selector_escape": "required",
+    "composer_draft_on_cancel": "preserve",
+    "pty_readiness_ms": 5000
+  },
+  "drift_evidence": [
+    {
+      "id": "management_help_docs",
+      "file": "backend/apps/mycli/test/cli.test.ts",
+      "test": "help advertises the provider-free management surface"
+    },
+    {
+      "id": "slash_registry_docs",
+      "file": "backend/apps/mycli/test/node-slash-command-registry.test.ts",
+      "test": "documented commands and aliases stay aligned with the canonical slash registry"
+    },
+    {
+      "id": "settings_catalog",
+      "file": "backend/apps/mycli/test/node-settings-catalog.test.ts",
+      "test": "settings catalog projects seven bounded categories and canonical visual descriptors"
+    },
+    {
+      "id": "gateway_contracts",
+      "file": "backend/apps/mycli/test/node-runtime-m8-capability-audit.test.ts",
+      "test": "M8 retained capability audit has no unresolved rows and freezes the final parity corpus"
+    }
+  ],
+  "privacy": {
+    "recorded_fields": [
+      "journey_id",
+      "platform",
+      "relative_test_file",
+      "test_name",
+      "stage_name",
+      "elapsed_milliseconds",
+      "interaction_steps"
+    ],
+    "excluded_content": [
+      "credentials",
+      "prompts",
+      "tool content",
+      "provider output",
+      "absolute user paths"
+    ],
+    "absolute_paths_allowed": false,
+    "secret_like_values_allowed": false
+  },
+  "report": "docs/parity/configuration-ux-baseline.md"
+}

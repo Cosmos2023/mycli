@@ -1,4 +1,28 @@
-# Slash Command Reference
+# Command Reference
+
+## Provider-Free Management CLI
+
+These commands run without starting a model turn or making a model-provider request. They remain
+available in non-interactive shells where noted. `update check` may contact the npm registry, and
+`setup` may prepare the packaged ripgrep helper, but neither sends content to a model provider.
+
+| Command | Purpose | Execution behavior |
+| --- | --- | --- |
+| `mycli setup` | Configure one provider, model, endpoint, and credential reference | Uses a TUI on a terminal and a plain prompt otherwise; cancellation writes nothing |
+| `mycli config <action> [arguments]` | Validate, inspect, or update allowlisted user configuration | Supports `validate`, `show`, `get`, `set`, and `unset`; structured actions accept `--json` |
+| `mycli doctor [--json] [--verbose]` | Inspect local configuration, storage, integrations, and runtime health | Read-only and provider-free; failures use a bounded exit code and diagnostic |
+| `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
+| `mycli sandbox status [--json]` | Inspect platform sandbox readiness | Read-only; reports bounded setup or helper remediation without elevating privileges |
+| `mycli hooks <action> [identity]` | List, inspect, approve, or revoke configured hooks | Operates on local hook metadata and supports `--json` |
+| `mycli plugins <action> [arguments]` | List, inspect, or run a declared local plugin command | Validates declared commands and JSON arguments before execution |
+| `mycli mcp <action> [server-id]` | List or inspect configured MCP servers | Reads local configuration without starting an MCP server or model turn |
+| `mycli session <action> [arguments]` | List, resume, fork, rename, archive, restore, delete, or export sessions | Management actions are provider-free; `session resume <id>` enters the interactive TUI |
+
+The command names above are checked against the management parser and root `mycli --help` output by
+the UX contract gate. Adding a management command requires updating all three surfaces in the same
+change.
+
+## Slash Command Reference
 
 The Node runtime owns one canonical registry for parsing, discovery, dispatch, and errors. The TUI
 palette normally shows the common subset; hidden commands below remain supported and test-covered.
