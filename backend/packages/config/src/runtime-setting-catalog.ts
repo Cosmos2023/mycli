@@ -15,6 +15,8 @@ export type UserConfigScalar = string | number | boolean;
 
 export type UserConfigValueKind = "boolean" | "integer" | "number" | "string";
 
+export type ConfigSettingValueKind = UserConfigValueKind | "number_map";
+
 export interface RuntimeSettingSnapshot {
 	readonly key: string;
 	readonly originKeys: readonly string[];
@@ -30,11 +32,23 @@ export interface WritableRuntimeSetting {
 	readonly allowedValues?: readonly string[];
 }
 
+export interface ConfigSettingDescriptor {
+	readonly key: string;
+	readonly description: string;
+	readonly path: readonly string[];
+	readonly legacyPaths: readonly (readonly string[])[];
+	readonly valueKind: ConfigSettingValueKind;
+	readonly writable: boolean;
+	readonly allowedValues?: readonly (boolean | string)[];
+	readonly restartRequired: boolean;
+}
+
 interface RuntimeSettingDefinition {
 	readonly key: string;
 	readonly originKeys: readonly string[];
 	readonly value: (config: NodeRuntimeConfig) => RuntimeSettingValue;
 	readonly write?: Omit<WritableRuntimeSetting, "key">;
+	readonly readOnlyValueKind?: ConfigSettingValueKind;
 }
 
 const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
@@ -86,6 +100,7 @@ const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
 	readOnly(
 		"context.compaction_l4_trigger_ratios_by_model",
 		"compaction_l4_trigger_ratios_by_model",
+		"number_map",
 		(config) => config.compactionTriggerRatiosByModel,
 	),
 	writable(
@@ -140,7 +155,7 @@ const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
 	writable("model.protocol", "protocol", "string", (config) => config.protocol),
 	writable("model.provider", "provider", "string", (config) => config.provider),
 	writable("model.supports_images", "supports_images", "boolean", (config) => config.supportsImages),
-	readOnly("model.web_search_mode", "web_search_mode", (config) => config.webSearchMode),
+	readOnly("model.web_search_mode", "web_search_mode", "string", (config) => config.webSearchMode),
 	writable(
 		"reasoning.effort",
 		["thinking_effort", "reasoning_effort"],
@@ -183,6 +198,50 @@ const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
 
 const BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));
 
+const RUNTIME_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
+	"context.compaction_l4_buffer_tokens": "Keeps this many prompt tokens free when deciding whether automatic compaction should run.",
+	"context.compaction_l4_carry_cost_per_1k": "Estimates the cost per thousand tokens retained after compaction for savings decisions.",
+	"context.compaction_l4_carry_turns": "Keeps this many recent conversation turns in addition to the generated compaction summary.",
+	"context.compaction_l4_expected_summary_tokens": "Estimates the summary size used by the compaction savings calculation.",
+	"context.compaction_l4_input_cost_per_1k": "Estimates the input cost per thousand tokens used by compaction economics.",
+	"context.compaction_l4_min_savings_ratio": "Requires this minimum estimated savings ratio before optional compaction is accepted.",
+	"context.compaction_l4_output_cost_per_1k": "Estimates the output cost per thousand summary tokens used by compaction economics.",
+	"context.compaction_l4_summarizer_model": "Selects an optional model override for compaction summaries.",
+	"context.compaction_l4_trigger_ratio": "Starts automatic compaction when estimated prompt use reaches this fraction of the active context window.",
+	"context.compaction_l4_trigger_ratios_by_model": "Reports per-model compaction trigger overrides; this structured setting is read-only through config commands.",
+	"context.compaction_rehydration_file_max_item_tokens": "Limits tokens restored from any single recently used file after compaction.",
+	"context.compaction_rehydration_file_max_total_tokens": "Limits total file-context tokens restored after compaction.",
+	"context.compaction_rehydration_max_files": "Limits how many recently used files are restored after compaction.",
+	"context.compaction_reserved_output_tokens": "Reserves context capacity for the next model response during compaction budgeting.",
+	"context.compaction_tail_max_tokens": "Caps the token budget for recent turns retained verbatim after compaction.",
+	"context.compaction_tail_turns": "Keeps this many recent turns verbatim after compaction.",
+	"context.compaction_token_limit": "Sets the prompt-token ceiling used to trigger compaction.",
+	"context.compression_threshold_tokens": "Sets the size threshold at which oversized tool results are compressed before replay.",
+	"features.request_permissions_tool": "Exposes the structured permission-request tool when the active runtime supports it.",
+	"memory.enabled": "Enables durable memory discovery and injection for the active agent runtime.",
+	"model.api_base_url": "Sets the HTTP(S) API endpoint used by the configured provider.",
+	"model.auth_ref": "Selects the credential-store reference without placing a credential in TOML.",
+	"model.name": "Selects the provider model used for new runtime requests.",
+	"model.protocol": "Selects the provider wire protocol used for model requests.",
+	"model.provider": "Selects the configured provider profile.",
+	"model.supports_images": "Overrides whether the selected compatible endpoint accepts image inputs.",
+	"model.web_search_mode": "Reports the web-search mode derived from provider capabilities; this setting is read-only.",
+	"reasoning.effort": "Selects the reasoning effort requested from models that support effort controls.",
+	"reasoning.enabled": "Enables or disables model reasoning for providers that expose this capability.",
+	"request.cache_control_enabled": "Enables provider cache-control metadata for protocols that support it.",
+	"request.max_prompt_tokens": "Caps the prompt tokens assembled for each model request.",
+	"request.prompt_cache_key_enabled": "Enables stable prompt-cache keys for providers that support them.",
+	"request.request_max_retries": "Limits retries for failures that occur before model output begins.",
+	"request.stream_max_retries": "Limits retries for interrupted model response streams.",
+	"updates.check_on_startup": "Enables the background cached update check after interactive startup.",
+});
+
+const RUNTIME_ALLOWED_VALUES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+	"model.provider": Object.freeze(["openai", "codex", "deepseek", "qwen", "anthropic", "compatible"]),
+	"model.protocol": Object.freeze(["responses", "chat_completions", "anthropic_messages"]),
+	"reasoning.effort": Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),
+});
+
 export function runtimeSettingSnapshots(
 	config: NodeRuntimeConfig,
 ): readonly RuntimeSettingSnapshot[] {
@@ -223,6 +282,54 @@ export function writableRuntimeSetting(key: string): WritableRuntimeSetting | un
 	});
 }
 
+export function writableRuntimeSettings(): readonly WritableRuntimeSetting[] {
+	return Object.freeze(configSettingDescriptors().flatMap((descriptor) => (
+		descriptor.writable
+			? [Object.freeze({
+				key: descriptor.key,
+				path: descriptor.path,
+				legacyPaths: descriptor.legacyPaths,
+				valueKind: descriptor.valueKind as UserConfigValueKind,
+				...(descriptor.allowedValues && descriptor.valueKind === "string"
+					? { allowedValues: Object.freeze(descriptor.allowedValues.filter(
+						(value): value is string => typeof value === "string",
+					)) }
+					: {}),
+			})]
+			: []
+	)));
+}
+
+export function configSettingDescriptors(): readonly ConfigSettingDescriptor[] {
+	const runtime = DEFINITIONS.map((definition): ConfigSettingDescriptor => {
+		const description = RUNTIME_SETTING_DESCRIPTIONS[definition.key];
+		if (!description) throw new Error(`missing_config_setting_description:${definition.key}`);
+		return Object.freeze({
+			key: definition.key,
+			description,
+			path: definition.write?.path ?? Object.freeze(definition.key.split(".")),
+			legacyPaths: definition.write?.legacyPaths ?? Object.freeze([]),
+			valueKind: definition.write?.valueKind ?? definition.readOnlyValueKind ?? "string",
+			writable: definition.write !== undefined,
+			...(RUNTIME_ALLOWED_VALUES[definition.key]
+				? { allowedValues: RUNTIME_ALLOWED_VALUES[definition.key] }
+				: {}),
+			restartRequired: false,
+		});
+	});
+	const shell = SHELL_SETTING_DESCRIPTORS.map((definition): ConfigSettingDescriptor => Object.freeze({
+		key: definition.key,
+		description: definition.description,
+		path: definition.path,
+		legacyPaths: definition.legacyPaths,
+		valueKind: definition.valueKind,
+		writable: true,
+		allowedValues: definition.allowedValues,
+		restartRequired: definition.restartRequired,
+	}));
+	return Object.freeze([...runtime, ...shell].sort((left, right) => compareText(left.key, right.key)));
+}
+
 export function hasRuntimeSetting(key: string): boolean {
 	return BY_KEY.has(key) || SHELL_SETTING_DESCRIPTORS.some((item) => item.key === key);
 }
@@ -251,9 +358,15 @@ function writable(
 function readOnly(
 	key: string,
 	originKeys: string | readonly string[],
+	valueKind: ConfigSettingValueKind,
 	value: (config: NodeRuntimeConfig) => RuntimeSettingValue,
 ): RuntimeSettingDefinition {
-	return Object.freeze({ key, originKeys: stringList(originKeys), value });
+	return Object.freeze({
+		key,
+		originKeys: stringList(originKeys),
+		value,
+		readOnlyValueKind: valueKind,
+	});
 }
 
 function stringList(value: string | readonly string[]): readonly string[] {

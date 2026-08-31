@@ -4,6 +4,7 @@ import {
 	type ConfigDiagnostic,
 	type ConfigFileLayerId,
 } from "./config-diagnostics.ts";
+import { configSettingDescriptors } from "./runtime-setting-catalog.ts";
 
 type ConfigMap = Record<string, unknown>;
 
@@ -110,7 +111,15 @@ export function validateConfigDocument(
 	layer: ConfigFileLayerId,
 ): ValidatedConfigDocument {
 	const values: ConfigMap = {};
-	const diagnostics: ConfigDiagnostic[] = [];
+	const diagnostics: ConfigDiagnostic[] = layer === "legacy_user"
+		? [configDiagnostic({
+			code: "deprecated_config_file",
+			severity: "warning",
+			layer,
+			message: "legacy user configuration is still in use",
+			remediation: "Run 'mycli config migrate --dry-run' to preview importing supported settings.",
+		})]
+		: [];
 
 	for (const key of Object.keys(payload).sort(compareText)) {
 		const value = payload[key];
@@ -151,11 +160,36 @@ export function validateConfigDocument(
 		}
 		diagnostics.push(unknownDiagnostic(layer, key, isRecord(value)));
 	}
+	diagnostics.push(...deprecatedAliasDiagnostics(payload, layer));
 
 	return Object.freeze({
 		values: Object.freeze(values),
 		diagnostics: Object.freeze(diagnostics),
 	});
+}
+
+function deprecatedAliasDiagnostics(
+	payload: ConfigMap,
+	layer: ConfigFileLayerId,
+): readonly ConfigDiagnostic[] {
+	const paths = new Set<string>();
+	for (const setting of configSettingDescriptors()) {
+		for (const legacyPath of setting.legacyPaths) {
+			if (samePath(legacyPath, setting.path)) continue;
+			const value = valueAtPath(payload, legacyPath);
+			if (value === undefined) continue;
+			if (isPathPrefix(legacyPath, setting.path) && isRecord(value)) continue;
+			paths.add(legacyPath.join("."));
+		}
+	}
+	return Object.freeze([...paths].sort(compareText).map((keyPath) => configDiagnostic({
+		code: "deprecated_key",
+		severity: "warning",
+		layer,
+		keyPath,
+		message: `${layerLabel(layer)} config uses a deprecated setting alias`,
+		remediation: "Run 'mycli config migrate --dry-run' to preview the canonical replacement.",
+	})));
 }
 
 function validateRuntimeSection(
@@ -259,4 +293,21 @@ function compareText(left: string, right: string): number {
 
 function isRecord(value: unknown): value is ConfigMap {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function valueAtPath(payload: ConfigMap, path: readonly string[]): unknown {
+	let value: unknown = payload;
+	for (const segment of path) {
+		if (!isRecord(value)) return undefined;
+		value = value[segment];
+	}
+	return value;
+}
+
+function samePath(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+function isPathPrefix(prefix: readonly string[], path: readonly string[]): boolean {
+	return prefix.length < path.length && prefix.every((segment, index) => segment === path[index]);
 }

@@ -176,12 +176,34 @@ test("JSON management commands run without TTY, backend, provider, or TUI startu
 
 test("configuration management runs without TTY, backend, provider, or TUI startup", async (t) => {
 	for (const expected of [
-		{ argv: ["config", "show", "--json"], command: { kind: "config", action: "show", json: true } },
 		{
+			name: "validate-strict",
+			argv: ["config", "validate", "--strict", "--json"],
+			command: { kind: "config", action: "validate", strict: true, json: true },
+		},
+		{
+			name: "show",
+			argv: ["config", "show", "--json"],
+			command: { kind: "config", action: "show", json: true },
+		},
+		{
+			name: "path",
+			argv: ["config", "path", "profile", "--profile", "work", "--json"],
+			command: {
+				kind: "config",
+				action: "path",
+				scope: "profile",
+				profile: "work",
+				json: true,
+			},
+		},
+		{
+			name: "get",
 			argv: ["config", "get", "model.name", "--json"],
 			command: { kind: "config", action: "get", key: "model.name", json: true },
 		},
 		{
+			name: "set",
 			argv: ["config", "set", "memory.enabled", "true", "--json"],
 			command: {
 				kind: "config",
@@ -192,11 +214,46 @@ test("configuration management runs without TTY, backend, provider, or TUI start
 			},
 		},
 		{
+			name: "unset",
 			argv: ["config", "unset", "model.name", "--json"],
 			command: { kind: "config", action: "unset", key: "model.name", json: true },
 		},
+		{
+			name: "migrate-preview",
+			argv: ["config", "migrate", "--dry-run", "--json"],
+			command: { kind: "config", action: "migrate", operation: "preview", json: true },
+		},
+		{
+			name: "migrate-apply",
+			argv: [
+				"config",
+				"migrate",
+				"--apply",
+				"--expected-version",
+				"migration-v1-example",
+				"--json",
+			],
+			command: {
+				kind: "config",
+				action: "migrate",
+				operation: "apply",
+				expectedVersion: "migration-v1-example",
+				json: true,
+			},
+		},
+		{
+			name: "migrate-rollback",
+			argv: ["config", "migrate", "--rollback", "backup-example", "--json"],
+			command: {
+				kind: "config",
+				action: "migrate",
+				operation: "rollback",
+				backupId: "backup-example",
+				json: true,
+			},
+		},
 	] as const) {
-		await t.test(expected.command.action, async () => {
+		await t.test(expected.name, async () => {
 			let nodeStarts = 0;
 			let tuiImports = 0;
 			let managementCalls = 0;
@@ -222,6 +279,42 @@ test("configuration management runs without TTY, backend, provider, or TUI start
 			assert.equal(tuiImports, 0);
 		});
 	}
+});
+
+test("strict configuration validation exits one without starting runtime services", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-cli-config-strict-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(homeDir, ".mycli"), { recursive: true }),
+		mkdir(workspaceRoot, { recursive: true }),
+	]);
+	await writeFile(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'nmae = "private-warning-sentinel"',
+		"",
+	].join("\n"), "utf8");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let nodeStarts = 0;
+	let tuiImports = 0;
+	const harness = cliHarness({
+		argv: ["config", "validate", "--strict", "--json"],
+		homeDir,
+		cwd: workspaceRoot,
+		stdin: { isTTY: false },
+		stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+		startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
+		importTui: async () => { tuiImports += 1; },
+	});
+
+	assert.equal(await runCli(harness.options), 1);
+	const response = JSON.parse(harness.stdout.join("")) as Record<string, unknown>;
+	assert.equal(response.ok, false);
+	assert.equal(response.action, "validate");
+	assert.deepEqual(response.issues, ["strict_validation_failed"]);
+	assert.equal(JSON.stringify(response).includes("private-warning-sentinel"), false);
+	assert.equal(nodeStarts, 0);
+	assert.equal(tuiImports, 0);
 });
 
 test("doctor and setup route before backend selection", async (t) => {

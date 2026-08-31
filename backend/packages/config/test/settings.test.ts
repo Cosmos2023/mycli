@@ -273,7 +273,13 @@ test("accepts existing legacy runtime shell and plugin config vocabulary", async
 	const resolved = await resolveConfigWithMetadata({ homeDir, workspaceRoot, env: {} });
 
 	assert.equal(resolved.config.model, "legacy-model");
-	assert.deepEqual(resolved.diagnostics, []);
+	assert.deepEqual(
+		resolved.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.keyPath]),
+		[
+			["deprecated_key", "model"],
+			["deprecated_key", "request_max_retries"],
+		],
+	);
 });
 
 test("warns for user and legacy-user root API keys without exposing them", async (t) => {
@@ -289,6 +295,12 @@ test("warns for user and legacy-user root API keys without exposing them", async
 		const resolved = await resolveConfigWithMetadata({ homeDir, workspaceRoot, env: {} });
 
 		assert.equal(resolved.config.apiKey, "must-not-leak");
+		const expected = layer === "legacy_user"
+			? [
+				["deprecated_config_file", "warning", "legacy_user", undefined],
+				["deprecated_inline_secret", "warning", "legacy_user", "api_key"],
+			]
+			: [["deprecated_inline_secret", "warning", "user", "api_key"]];
 		assert.deepEqual(
 			resolved.diagnostics.map((diagnostic) => [
 				diagnostic.code,
@@ -296,7 +308,7 @@ test("warns for user and legacy-user root API keys without exposing them", async
 				diagnostic.layer,
 				diagnostic.keyPath,
 			]),
-			[["deprecated_inline_secret", "warning", layer, "api_key"]],
+			expected,
 		);
 		assert.equal(JSON.stringify(resolved.diagnostics).includes("must-not-leak"), false);
 	}

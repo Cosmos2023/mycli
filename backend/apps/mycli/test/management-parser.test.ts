@@ -23,9 +23,31 @@ test("parser recognizes provider-free management commands before interactive fla
 		kind: "management",
 		command: { kind: "config", action: "validate", json: true },
 	});
+	assert.deepEqual(parseCliMode(["config", "validate", "--strict", "--json"]), {
+		kind: "management",
+		command: { kind: "config", action: "validate", strict: true, json: true },
+	});
 	assert.deepEqual(parseCliMode(["config", "show"]), {
 		kind: "management",
 		command: { kind: "config", action: "show", json: false },
+	});
+	assert.deepEqual(parseCliMode(["config", "path"]), {
+		kind: "management",
+		command: { kind: "config", action: "path", scope: "user", json: false },
+	});
+	assert.deepEqual(parseCliMode(["config", "path", "project", "--json"]), {
+		kind: "management",
+		command: { kind: "config", action: "path", scope: "project", json: true },
+	});
+	assert.deepEqual(parseCliMode(["config", "path", "profile", "--profile", "work"]), {
+		kind: "management",
+		command: {
+			kind: "config",
+			action: "path",
+			scope: "profile",
+			profile: "work",
+			json: false,
+		},
 	});
 	assert.deepEqual(parseCliMode(["config", "get", "model.name", "--json"]), {
 		kind: "management",
@@ -44,6 +66,36 @@ test("parser recognizes provider-free management commands before interactive fla
 	assert.deepEqual(parseCliMode(["config", "unset", "model.name"]), {
 		kind: "management",
 		command: { kind: "config", action: "unset", key: "model.name", json: false },
+	});
+	assert.deepEqual(parseCliMode(["config", "migrate", "--dry-run", "--json"]), {
+		kind: "management",
+		command: { kind: "config", action: "migrate", operation: "preview", json: true },
+	});
+	assert.deepEqual(parseCliMode([
+		"config",
+		"migrate",
+		"--apply",
+		"--expected-version",
+		"migration-v1-example",
+	]), {
+		kind: "management",
+		command: {
+			kind: "config",
+			action: "migrate",
+			operation: "apply",
+			expectedVersion: "migration-v1-example",
+			json: false,
+		},
+	});
+	assert.deepEqual(parseCliMode(["config", "migrate", "--rollback", "backup-example"]), {
+		kind: "management",
+		command: {
+			kind: "config",
+			action: "migrate",
+			operation: "rollback",
+			backupId: "backup-example",
+			json: false,
+		},
 	});
 	assert.deepEqual(parseCliMode(["hooks", "approve", "repo:audit:post_tool_use", "--json"]), {
 		kind: "management",
@@ -177,7 +229,20 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["config", "unset"],
 		["config", "unset", "model.name", "extra"],
 		["config", "get", ""],
+		["config", "validate", "--strict", "--strict"],
 		["config", "validate", "--json", "--json"],
+		["config", "path", "unknown"],
+		["config", "path", "profile"],
+		["config", "path", "profile", "--profile"],
+		["config", "path", "profile", "--profile", "work", "--profile", "other"],
+		["config", "path", "user", "--profile", "work"],
+		["config", "path", "user", "project"],
+		["config", "migrate"],
+		["config", "migrate", "--apply"],
+		["config", "migrate", "--apply", "--expected-version"],
+		["config", "migrate", "--expected-version", "version", "--apply"],
+		["config", "migrate", "--rollback"],
+		["config", "migrate", "--dry-run", "extra"],
 		["hooks", "inspect"],
 		["hooks", "list", "extra"],
 		["plugins", "run", "demo", "status", "--json-args", "[]"],

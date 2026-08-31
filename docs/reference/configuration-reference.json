@@ -1,0 +1,602 @@
+{
+  "version": 1,
+  "settings": [
+    {
+      "key": "context.compaction_l4_buffer_tokens",
+      "description": "Keeps this many prompt tokens free when deciding whether automatic compaction should run.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_buffer_tokens",
+      "legacyPaths": [
+        "compaction_l4_buffer_tokens"
+      ],
+      "defaultValue": 13000,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_carry_cost_per_1k",
+      "description": "Estimates the cost per thousand tokens retained after compaction for savings decisions.",
+      "valueKind": "number",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_carry_cost_per_1k",
+      "legacyPaths": [
+        "compaction_l4_carry_cost_per_1k"
+      ],
+      "defaultValue": 0,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_carry_turns",
+      "description": "Keeps this many recent conversation turns in addition to the generated compaction summary.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_carry_turns",
+      "legacyPaths": [
+        "compaction_l4_carry_turns"
+      ],
+      "defaultValue": 1,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_expected_summary_tokens",
+      "description": "Estimates the summary size used by the compaction savings calculation.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_expected_summary_tokens",
+      "legacyPaths": [
+        "compaction_l4_expected_summary_tokens"
+      ],
+      "defaultValue": 500,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_input_cost_per_1k",
+      "description": "Estimates the input cost per thousand tokens used by compaction economics.",
+      "valueKind": "number",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_input_cost_per_1k",
+      "legacyPaths": [
+        "compaction_l4_input_cost_per_1k"
+      ],
+      "defaultValue": 0,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_min_savings_ratio",
+      "description": "Requires this minimum estimated savings ratio before optional compaction is accepted.",
+      "valueKind": "number",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_min_savings_ratio",
+      "legacyPaths": [
+        "compaction_l4_min_savings_ratio"
+      ],
+      "defaultValue": null,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_output_cost_per_1k",
+      "description": "Estimates the output cost per thousand summary tokens used by compaction economics.",
+      "valueKind": "number",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_output_cost_per_1k",
+      "legacyPaths": [
+        "compaction_l4_output_cost_per_1k"
+      ],
+      "defaultValue": 0,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_summarizer_model",
+      "description": "Selects an optional model override for compaction summaries.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_summarizer_model",
+      "legacyPaths": [
+        "compaction_l4_summarizer_model"
+      ],
+      "defaultValue": null,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_trigger_ratio",
+      "description": "Starts automatic compaction when estimated prompt use reaches this fraction of the active context window.",
+      "valueKind": "number",
+      "writable": true,
+      "canonicalPath": "context.compaction_l4_trigger_ratio",
+      "legacyPaths": [
+        "compaction_l4_trigger_ratio"
+      ],
+      "defaultValue": 0.9,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_l4_trigger_ratios_by_model",
+      "description": "Reports per-model compaction trigger overrides; this structured setting is read-only through config commands.",
+      "valueKind": "number_map",
+      "writable": false,
+      "canonicalPath": "context.compaction_l4_trigger_ratios_by_model",
+      "legacyPaths": [],
+      "defaultValue": {},
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_rehydration_file_max_item_tokens",
+      "description": "Limits tokens restored from any single recently used file after compaction.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_rehydration_file_max_item_tokens",
+      "legacyPaths": [
+        "compaction_rehydration_file_max_item_tokens"
+      ],
+      "defaultValue": 5000,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_rehydration_file_max_total_tokens",
+      "description": "Limits total file-context tokens restored after compaction.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_rehydration_file_max_total_tokens",
+      "legacyPaths": [
+        "compaction_rehydration_file_max_total_tokens"
+      ],
+      "defaultValue": 50000,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_rehydration_max_files",
+      "description": "Limits how many recently used files are restored after compaction.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_rehydration_max_files",
+      "legacyPaths": [
+        "compaction_rehydration_max_files"
+      ],
+      "defaultValue": 5,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_reserved_output_tokens",
+      "description": "Reserves context capacity for the next model response during compaction budgeting.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_reserved_output_tokens",
+      "legacyPaths": [
+        "compaction_reserved_output_tokens"
+      ],
+      "defaultValue": 13000,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_tail_max_tokens",
+      "description": "Caps the token budget for recent turns retained verbatim after compaction.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_tail_max_tokens",
+      "legacyPaths": [
+        "compaction_tail_max_tokens"
+      ],
+      "defaultValue": 8000,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_tail_turns",
+      "description": "Keeps this many recent turns verbatim after compaction.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_tail_turns",
+      "legacyPaths": [
+        "compaction_tail_turns"
+      ],
+      "defaultValue": 2,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compaction_token_limit",
+      "description": "Sets the prompt-token ceiling used to trigger compaction.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compaction_token_limit",
+      "legacyPaths": [
+        "compaction_token_limit"
+      ],
+      "defaultValue": 9600,
+      "restartRequired": false
+    },
+    {
+      "key": "context.compression_threshold_tokens",
+      "description": "Sets the size threshold at which oversized tool results are compressed before replay.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "context.compression_threshold_tokens",
+      "legacyPaths": [
+        "compression_threshold_tokens"
+      ],
+      "defaultValue": 8000,
+      "restartRequired": false
+    },
+    {
+      "key": "features.request_permissions_tool",
+      "description": "Exposes the structured permission-request tool when the active runtime supports it.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "features.request_permissions_tool",
+      "legacyPaths": [
+        "request_permissions_tool"
+      ],
+      "defaultValue": false,
+      "restartRequired": false
+    },
+    {
+      "key": "memory.enabled",
+      "description": "Enables durable memory discovery and injection for the active agent runtime.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "memory.enabled",
+      "legacyPaths": [
+        "memory_enabled"
+      ],
+      "defaultValue": false,
+      "restartRequired": false
+    },
+    {
+      "key": "model.api_base_url",
+      "description": "Sets the HTTP(S) API endpoint used by the configured provider.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "model.api_base_url",
+      "legacyPaths": [
+        "api_base_url"
+      ],
+      "defaultValue": "https://api.openai.com/v1",
+      "restartRequired": false
+    },
+    {
+      "key": "model.auth_ref",
+      "description": "Selects the credential-store reference without placing a credential in TOML.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "model.auth_ref",
+      "legacyPaths": [
+        "auth_ref"
+      ],
+      "defaultValue": "openai",
+      "restartRequired": false
+    },
+    {
+      "key": "model.name",
+      "description": "Selects the provider model used for new runtime requests.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "model.name",
+      "legacyPaths": [
+        "model"
+      ],
+      "defaultValue": "gpt-5",
+      "restartRequired": false
+    },
+    {
+      "key": "model.protocol",
+      "description": "Selects the provider wire protocol used for model requests.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "model.protocol",
+      "legacyPaths": [
+        "protocol"
+      ],
+      "defaultValue": "responses",
+      "allowedValues": [
+        "responses",
+        "chat_completions",
+        "anthropic_messages"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "model.provider",
+      "description": "Selects the configured provider profile.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "model.provider",
+      "legacyPaths": [
+        "provider"
+      ],
+      "defaultValue": "openai",
+      "allowedValues": [
+        "openai",
+        "codex",
+        "deepseek",
+        "qwen",
+        "anthropic",
+        "compatible"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "model.supports_images",
+      "description": "Overrides whether the selected compatible endpoint accepts image inputs.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "model.supports_images",
+      "legacyPaths": [
+        "supports_images"
+      ],
+      "defaultValue": true,
+      "restartRequired": false
+    },
+    {
+      "key": "model.web_search_mode",
+      "description": "Reports the web-search mode derived from provider capabilities; this setting is read-only.",
+      "valueKind": "string",
+      "writable": false,
+      "canonicalPath": "model.web_search_mode",
+      "legacyPaths": [],
+      "defaultValue": "live",
+      "restartRequired": false
+    },
+    {
+      "key": "reasoning.effort",
+      "description": "Selects the reasoning effort requested from models that support effort controls.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "reasoning.effort",
+      "legacyPaths": [
+        "thinking_effort",
+        "reasoning_effort",
+        "reasoning.reasoning_effort"
+      ],
+      "defaultValue": "medium",
+      "allowedValues": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "reasoning.enabled",
+      "description": "Enables or disables model reasoning for providers that expose this capability.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "reasoning.enabled",
+      "legacyPaths": [
+        "thinking_enabled"
+      ],
+      "defaultValue": true,
+      "restartRequired": false
+    },
+    {
+      "key": "request.cache_control_enabled",
+      "description": "Enables provider cache-control metadata for protocols that support it.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "request.cache_control_enabled",
+      "legacyPaths": [
+        "cache_control_enabled"
+      ],
+      "defaultValue": false,
+      "restartRequired": false
+    },
+    {
+      "key": "request.max_prompt_tokens",
+      "description": "Caps the prompt tokens assembled for each model request.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "request.max_prompt_tokens",
+      "legacyPaths": [
+        "max_prompt_tokens"
+      ],
+      "defaultValue": 12000,
+      "restartRequired": false
+    },
+    {
+      "key": "request.prompt_cache_key_enabled",
+      "description": "Enables stable prompt-cache keys for providers that support them.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "request.prompt_cache_key_enabled",
+      "legacyPaths": [
+        "prompt_cache_key_enabled"
+      ],
+      "defaultValue": true,
+      "restartRequired": false
+    },
+    {
+      "key": "request.request_max_retries",
+      "description": "Limits retries for failures that occur before model output begins.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "request.request_max_retries",
+      "legacyPaths": [
+        "request_max_retries"
+      ],
+      "defaultValue": 4,
+      "restartRequired": false
+    },
+    {
+      "key": "request.stream_max_retries",
+      "description": "Limits retries for interrupted model response streams.",
+      "valueKind": "integer",
+      "writable": true,
+      "canonicalPath": "request.stream_max_retries",
+      "legacyPaths": [
+        "stream_max_retries",
+        "transport_retry_limit"
+      ],
+      "defaultValue": 5,
+      "restartRequired": false
+    },
+    {
+      "key": "tui.clear_on_shrink",
+      "description": "Clears stale terminal cells after the viewport becomes smaller",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_clear_on_shrink",
+      "legacyPaths": [
+        "clearOnShrink",
+        "clear_on_shrink"
+      ],
+      "defaultValue": true,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.hardware_cursor",
+      "description": "Uses the terminal cursor for IME placement when supported",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_hardware_cursor",
+      "legacyPaths": [
+        "hardwareCursor",
+        "hardware_cursor"
+      ],
+      "defaultValue": false,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.hide_thinking",
+      "description": "Hides reasoning blocks in assistant responses",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_hide_thinking",
+      "legacyPaths": [
+        "hideThinking",
+        "hide_thinking"
+      ],
+      "defaultValue": true,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.statusbar_mode",
+      "description": "Controls how much session and model status is shown in the footer",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "tui_statusbar_mode",
+      "legacyPaths": [
+        "statusbarMode",
+        "statusbar_mode",
+        "statusline_enabled"
+      ],
+      "defaultValue": "full",
+      "allowedValues": [
+        "off",
+        "compact",
+        "full"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.subagent_density",
+      "description": "Controls the density of subagent task summaries",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "tui_subagent_density",
+      "legacyPaths": [
+        "subagentDensity",
+        "subagent_density"
+      ],
+      "defaultValue": "normal",
+      "allowedValues": [
+        "compact",
+        "normal",
+        "detailed"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.terminal_progress",
+      "description": "Shows compact progress while an agent turn is running",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_terminal_progress",
+      "legacyPaths": [
+        "terminalProgress",
+        "terminal_progress"
+      ],
+      "defaultValue": true,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.theme",
+      "description": "Selects the terminal color theme",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "tui_theme",
+      "legacyPaths": [
+        "theme"
+      ],
+      "defaultValue": "dark",
+      "allowedValues": [
+        "dark",
+        "light"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.tool_details_default",
+      "description": "Controls whether completed tool details start collapsed or expanded",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "tui_tool_details_default",
+      "legacyPaths": [
+        "toolDetailsDefault",
+        "tool_details_default"
+      ],
+      "defaultValue": "collapsed",
+      "allowedValues": [
+        "collapsed",
+        "expanded"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.view_mode",
+      "description": "Controls transcript detail density while keeping tool activity visible",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "view_mode",
+      "legacyPaths": [
+        "viewMode"
+      ],
+      "defaultValue": "default",
+      "allowedValues": [
+        "default",
+        "verbose",
+        "focus"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "updates.check_on_startup",
+      "description": "Enables the background cached update check after interactive startup.",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "updates.check_on_startup",
+      "legacyPaths": [
+        "updates_check_on_startup"
+      ],
+      "defaultValue": true,
+      "restartRequired": false
+    }
+  ]
+}

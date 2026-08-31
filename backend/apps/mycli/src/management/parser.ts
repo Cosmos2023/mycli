@@ -1,3 +1,4 @@
+import { CONFIG_PATH_SCOPES, type ConfigPathScope } from "@mycli/config/paths";
 import type {
 	CliMode,
 	ConfigManagementCommand,
@@ -204,8 +205,21 @@ function isSessionStatus(value: string): value is NonNullable<Extract<
 
 function parseConfig(args: readonly string[], json: boolean): ConfigManagementCommand {
 	const action = args[0];
-	if ((action === "validate" || action === "show") && args.length === 1) {
+	if (action === "validate") {
+		const strict = extractFlag(args.slice(1), "--strict");
+		if (strict.args.length !== 0) throw configUsage();
+		return Object.freeze({
+			kind: "config",
+			action,
+			...(strict.json ? { strict: true } : {}),
+			json,
+		});
+	}
+	if (action === "show" && args.length === 1) {
 		return Object.freeze({ kind: "config", action, json });
+	}
+	if (action === "path") {
+		return parseConfigPath(args.slice(1), json);
 	}
 	if ((action === "get" || action === "unset") && args.length === 2) {
 		return Object.freeze({ kind: "config", action, key: nonEmpty(args[1]), json });
@@ -219,7 +233,57 @@ function parseConfig(args: readonly string[], json: boolean): ConfigManagementCo
 			json,
 		});
 	}
+	if (action === "migrate") {
+		if (args.length === 2 && args[1] === "--dry-run") {
+			return Object.freeze({ kind: "config", action, operation: "preview", json });
+		}
+		if (args.length === 4 && args[1] === "--apply" && args[2] === "--expected-version") {
+			return Object.freeze({
+				kind: "config",
+				action,
+				operation: "apply",
+				expectedVersion: nonEmpty(args[3]),
+				json,
+			});
+		}
+		if (args.length === 3 && args[1] === "--rollback") {
+			return Object.freeze({
+				kind: "config",
+				action,
+				operation: "rollback",
+				backupId: nonEmpty(args[2]),
+				json,
+			});
+		}
+	}
 	throw configUsage();
+}
+
+function parseConfigPath(args: readonly string[], json: boolean): ConfigManagementCommand {
+	let profile: string | undefined;
+	const positional: string[] = [];
+	for (let index = 0; index < args.length; index += 1) {
+		const argument = args[index];
+		if (argument !== "--profile") {
+			positional.push(argument!);
+			continue;
+		}
+		if (profile !== undefined || !args[index + 1]) throw configUsage();
+		profile = nonEmpty(args[index + 1]);
+		index += 1;
+	}
+	if (positional.length > 1) throw configUsage();
+	const scopeValue = positional[0] ?? "user";
+	if (!CONFIG_PATH_SCOPES.includes(scopeValue as ConfigPathScope)) throw configUsage();
+	const scope = scopeValue as ConfigPathScope;
+	if ((scope === "profile") !== (profile !== undefined)) throw configUsage();
+	return Object.freeze({
+		kind: "config",
+		action: "path",
+		scope,
+		...(profile ? { profile } : {}),
+		json,
+	});
 }
 
 function parseHooks(args: readonly string[], json: boolean): HooksManagementCommand {
@@ -351,7 +415,9 @@ function pluginUsage(): Error {
 }
 
 function configUsage(): Error {
-	return usage("config validate|show|get|set|unset [key] [value] [--json]");
+	return usage(
+		"config validate|show|get|set|unset|path|migrate [arguments] [--json]",
+	);
 }
 
 function sessionUsage(): Error {

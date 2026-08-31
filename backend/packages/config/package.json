@@ -15,6 +15,11 @@
       "mycli-source": "./src/config-profile.ts",
       "types": "./dist/config-profile.d.ts",
       "import": "./dist/config-profile.js"
+    },
+    "./paths": {
+      "mycli-source": "./src/config-paths.ts",
+      "types": "./dist/config-paths.d.ts",
+      "import": "./dist/config-paths.js"
     }
   },
   "scripts": {

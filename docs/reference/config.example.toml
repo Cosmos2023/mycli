@@ -1,0 +1,148 @@
+# mycli configuration example (reference version 1)
+# All settings are commented out so built-in/provider defaults remain authoritative.
+# Credentials must be stored in ~/.mycli/auth.json or supplied through the environment.
+
+# Clears stale terminal cells after the viewport becomes smaller
+# Allowed: true, false
+# tui_clear_on_shrink = true
+
+# Uses the terminal cursor for IME placement when supported
+# Allowed: true, false
+# tui_hardware_cursor = false
+
+# Hides reasoning blocks in assistant responses
+# Allowed: true, false
+# tui_hide_thinking = true
+
+# Controls how much session and model status is shown in the footer
+# Allowed: "off", "compact", "full"
+# tui_statusbar_mode = "full"
+
+# Controls the density of subagent task summaries
+# Allowed: "compact", "normal", "detailed"
+# tui_subagent_density = "normal"
+
+# Shows compact progress while an agent turn is running
+# Allowed: true, false
+# tui_terminal_progress = true
+
+# Selects the terminal color theme
+# Allowed: "dark", "light"
+# tui_theme = "dark"
+
+# Controls whether completed tool details start collapsed or expanded
+# Allowed: "collapsed", "expanded"
+# tui_tool_details_default = "collapsed"
+
+# Controls transcript detail density while keeping tool activity visible
+# Allowed: "default", "verbose", "focus"
+# view_mode = "default"
+
+[context]
+# Keeps this many prompt tokens free when deciding whether automatic compaction should run.
+# compaction_l4_buffer_tokens = 13000
+
+# Estimates the cost per thousand tokens retained after compaction for savings decisions.
+# compaction_l4_carry_cost_per_1k = 0
+
+# Keeps this many recent conversation turns in addition to the generated compaction summary.
+# compaction_l4_carry_turns = 1
+
+# Estimates the summary size used by the compaction savings calculation.
+# compaction_l4_expected_summary_tokens = 500
+
+# Estimates the input cost per thousand tokens used by compaction economics.
+# compaction_l4_input_cost_per_1k = 0
+
+# Requires this minimum estimated savings ratio before optional compaction is accepted.
+# compaction_l4_min_savings_ratio = 0
+
+# Estimates the output cost per thousand summary tokens used by compaction economics.
+# compaction_l4_output_cost_per_1k = 0
+
+# Selects an optional model override for compaction summaries.
+# compaction_l4_summarizer_model = "replace-me"
+
+# Starts automatic compaction when estimated prompt use reaches this fraction of the active context window.
+# compaction_l4_trigger_ratio = 0.9
+
+# Limits tokens restored from any single recently used file after compaction.
+# compaction_rehydration_file_max_item_tokens = 5000
+
+# Limits total file-context tokens restored after compaction.
+# compaction_rehydration_file_max_total_tokens = 50000
+
+# Limits how many recently used files are restored after compaction.
+# compaction_rehydration_max_files = 5
+
+# Reserves context capacity for the next model response during compaction budgeting.
+# compaction_reserved_output_tokens = 13000
+
+# Caps the token budget for recent turns retained verbatim after compaction.
+# compaction_tail_max_tokens = 8000
+
+# Keeps this many recent turns verbatim after compaction.
+# compaction_tail_turns = 2
+
+# Sets the prompt-token ceiling used to trigger compaction.
+# compaction_token_limit = 9600
+
+# Sets the size threshold at which oversized tool results are compressed before replay.
+# compression_threshold_tokens = 8000
+
+[features]
+# Exposes the structured permission-request tool when the active runtime supports it.
+# request_permissions_tool = false
+
+[memory]
+# Enables durable memory discovery and injection for the active agent runtime.
+# enabled = false
+
+[model]
+# Sets the HTTP(S) API endpoint used by the configured provider.
+# api_base_url = "https://api.openai.com/v1"
+
+# Selects the credential-store reference without placing a credential in TOML.
+# auth_ref = "openai"
+
+# Selects the provider model used for new runtime requests.
+# name = "gpt-5"
+
+# Selects the provider wire protocol used for model requests.
+# Allowed: "responses", "chat_completions", "anthropic_messages"
+# protocol = "responses"
+
+# Selects the configured provider profile.
+# Allowed: "openai", "codex", "deepseek", "qwen", "anthropic", "compatible"
+# provider = "openai"
+
+# Overrides whether the selected compatible endpoint accepts image inputs.
+# supports_images = true
+
+[reasoning]
+# Selects the reasoning effort requested from models that support effort controls.
+# Allowed: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"
+# effort = "medium"
+
+# Enables or disables model reasoning for providers that expose this capability.
+# enabled = true
+
+[request]
+# Enables provider cache-control metadata for protocols that support it.
+# cache_control_enabled = false
+
+# Caps the prompt tokens assembled for each model request.
+# max_prompt_tokens = 12000
+
+# Enables stable prompt-cache keys for providers that support them.
+# prompt_cache_key_enabled = true
+
+# Limits retries for failures that occur before model output begins.
+# request_max_retries = 4
+
+# Limits retries for interrupted model response streams.
+# stream_max_retries = 5
+
+[updates]
+# Enables the background cached update check after interactive startup.
+# check_on_startup = true

@@ -72,25 +72,17 @@ export async function applyUserConfigEdits(
 			fileName: "config.toml",
 			buildContent: async (current) => {
 				const source = current ?? "";
-				if (options.validateCurrent !== false) await validateCandidate(options, source);
-				const document = parseDocument(source);
-				const payload = mutableRecord(document.toJsObject);
-				for (const edit of options.edits) {
-					if (edit.action === "set") {
-						setPath(payload, edit.path, edit.value);
-					} else {
-						if (!edit.onlyIfScalar || !isRecord(valueAtPath(payload, edit.path))) {
-							deletePath(payload, edit.path);
-						}
-					}
+				if (options.validateCurrent !== false) {
+					await validateUserConfigCandidate(options, source);
 				}
-				document.patch(payload);
-				const candidate = document.toTomlString;
+				const candidate = buildUserConfigCandidate(source, options.edits);
 				if (candidate === source) {
-					if (options.validateCurrent === false) await validateCandidate(options, candidate);
+					if (options.validateCurrent === false) {
+						await validateUserConfigCandidate(options, candidate);
+					}
 					return undefined;
 				}
-				await validateCandidate(options, candidate);
+				await validateUserConfigCandidate(options, candidate);
 				return candidate;
 			},
 			...(options.failpoint ? { failpoint: options.failpoint } : {}),
@@ -105,6 +97,23 @@ export async function applyUserConfigEdits(
 			remediation: "Check that the user configuration directory is writable and try again.",
 		});
 	}
+}
+
+export function buildUserConfigCandidate(
+	source: string,
+	edits: readonly UserConfigEdit[],
+): string {
+	const document = parseDocument(source);
+	const payload = mutableRecord(document.toJsObject);
+	for (const edit of edits) {
+		if (edit.action === "set") {
+			setPath(payload, edit.path, edit.value);
+		} else if (!edit.onlyIfScalar || !isRecord(valueAtPath(payload, edit.path))) {
+			deletePath(payload, edit.path);
+		}
+	}
+	document.patch(payload);
+	return document.toTomlString;
 }
 
 function settingEdits(
@@ -198,7 +207,7 @@ function invalidValue(key: string): Error {
 	});
 }
 
-async function validateCandidate(
+export async function validateUserConfigCandidate(
 	options: ResolveConfigOptions,
 	candidate: string,
 ): Promise<void> {

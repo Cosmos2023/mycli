@@ -51,21 +51,62 @@ export type {
 } from "./settings.ts";
 export {
 	hasRuntimeSetting,
+	configSettingDescriptors,
 	runtimeSettingSnapshots,
 	writableRuntimeSetting,
+	writableRuntimeSettings,
 } from "./runtime-setting-catalog.ts";
 export type {
+	ConfigSettingDescriptor,
+	ConfigSettingValueKind,
 	RuntimeSettingSnapshot,
 	RuntimeSettingValue,
 	UserConfigScalar,
 	UserConfigValueKind,
 	WritableRuntimeSetting,
 } from "./runtime-setting-catalog.ts";
+export {
+	CONFIG_PATH_SCOPES,
+	resolveConfigPath,
+} from "./config-paths.ts";
+export type {
+	ConfigPathScope,
+	ResolvedConfigPath,
+	ResolveConfigPathOptions,
+} from "./config-paths.ts";
 export { mutateUserConfigSetting } from "./user-config-editor.ts";
 export type {
 	UserConfigMutationOptions,
 	UserConfigMutationResult,
 } from "./user-config-editor.ts";
+export {
+	applyConfigMigration,
+	CONFIG_MIGRATION_VERSION,
+	configContentVersion,
+	previewConfigMigration,
+	rollbackConfigMigration,
+} from "./config-migration.ts";
+export {
+	buildConfigReference,
+	CONFIG_REFERENCE_VERSION,
+	renderConfigExampleToml,
+	renderConfigReferenceJson,
+	renderConfigReferenceMarkdown,
+} from "./config-reference.ts";
+export type {
+	ConfigReferenceDocument,
+	ConfigReferenceSetting,
+} from "./config-reference.ts";
+export type {
+	ApplyConfigMigrationOptions,
+	ConfigMigrationApplyResult,
+	ConfigMigrationChange,
+	ConfigMigrationChangeKind,
+	ConfigMigrationOptions,
+	ConfigMigrationPreview,
+	ConfigMigrationRollbackResult,
+	RollbackConfigMigrationOptions,
+} from "./config-migration.ts";
 export { CONFIG_LAYER_STACK_VERSION } from "./config-layers.ts";
 export type {
 	ConfigLayer,

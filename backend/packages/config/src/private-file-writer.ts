@@ -18,7 +18,11 @@ export interface AtomicPrivateFileUpdateOptions {
 	readonly maxCurrentBytes?: number;
 	readonly buildContent: (
 		current: string | undefined,
-	) => string | undefined | Promise<string | undefined>;
+	) => string | null | undefined | Promise<string | null | undefined>;
+	readonly prepareCommit?: (input: {
+		readonly current: string | undefined;
+		readonly content: string | null;
+	}) => void | Promise<void>;
 	readonly failpoint?: (name: string) => void;
 }
 
@@ -46,11 +50,20 @@ export async function atomicPrivateFileUpdate(
 		const current = await readOptional(targetPath, options.maxCurrentBytes);
 		const content = await options.buildContent(current);
 		if (content === undefined || content === current) return false;
+		if (content === null) {
+			if (current === undefined) return false;
+			await options.prepareCommit?.({ current, content });
+			options.failpoint?.("before_rename");
+			await rm(targetPath);
+			await syncDirectory(options.directory);
+			return true;
+		}
 		temporary = await open(temporaryPath, "wx", 0o600);
 		await temporary.writeFile(content, "utf8");
 		await temporary.sync();
 		await temporary.close();
 		temporary = undefined;
+		await options.prepareCommit?.({ current, content });
 		options.failpoint?.("before_rename");
 		await rename(temporaryPath, targetPath);
 		await harden(targetPath, 0o600);

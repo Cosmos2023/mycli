@@ -32,7 +32,8 @@ export const ROOT_HELP = `Usage: mycli [options]
 
 Commands:
   setup                             Configure provider credentials
-  config validate|show|get|set|unset Validate, inspect, or update user configuration
+  config validate|show|get|set|unset|path|migrate
+                                    Validate, inspect, migrate, or locate configuration
   doctor [--json] [--verbose]       Check local runtime health
   update [status|check|dismiss <version>] [--json]
                                     Inspect or dismiss cached update notices

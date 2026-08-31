@@ -1,8 +1,13 @@
 import {
+	applyConfigMigration,
 	configDiagnostic,
 	isConfigError,
 	mutateUserConfigSetting,
+	parseConfigProfileName,
+	previewConfigMigration,
+	resolveConfigPath,
 	resolveConfigWithMetadata,
+	rollbackConfigMigration,
 	runtimeSettingSnapshots,
 	SHELL_SETTING_DESCRIPTORS,
 	type ConfigDiagnostic,
@@ -10,6 +15,8 @@ import {
 	type ConfigLayerId,
 	type ConfigLayerScope,
 	type ConfigLayerStack,
+	type ConfigMigrationChange,
+	type ConfigPathScope,
 	type ConfigProfileName,
 	type LoadedShellSettings,
 	type WorkspaceTrustState,
@@ -19,7 +26,7 @@ import type { ManagementResponse } from "./types.ts";
 
 export const CONFIG_MANAGEMENT_RESPONSE_VERSION = 1 as const;
 
-export type ConfigManagementAction = "get" | "set" | "show" | "unset" | "validate";
+export type ConfigManagementAction = "get" | "migrate" | "path" | "set" | "show" | "unset" | "validate";
 
 export type ConfigSettingSource = ConfigLayerId | "default";
 export type ConfigSettingValue = string | number | boolean | null | Readonly<Record<string, number>>;
@@ -52,6 +59,7 @@ interface ConfigManagementResponseBase extends ManagementResponse {
 export interface ConfigValidateResponse extends ConfigManagementResponseBase {
 	readonly ok: true;
 	readonly action: "validate";
+	readonly strict: boolean;
 }
 
 export interface ConfigShowResponse extends ConfigManagementResponseBase {
@@ -69,6 +77,14 @@ export interface ConfigGetResponse extends ConfigManagementResponseBase {
 	readonly setting: ConfigSettingRow;
 }
 
+export interface ConfigPathResponse extends ConfigManagementResponseBase {
+	readonly ok: true;
+	readonly action: "path";
+	readonly scope: ConfigPathScope;
+	readonly path: string;
+	readonly writable: boolean;
+}
+
 export interface ConfigMutationResponse extends ConfigManagementResponseBase {
 	readonly ok: true;
 	readonly action: "set" | "unset";
@@ -76,6 +92,22 @@ export interface ConfigMutationResponse extends ConfigManagementResponseBase {
 	readonly changed: boolean;
 	readonly effectiveSource: ConfigSettingSource;
 	readonly overridden: readonly ConfigLayerId[];
+}
+
+export interface ConfigMigrationResponse extends ConfigManagementResponseBase {
+	readonly ok: true;
+	readonly action: "migrate";
+	readonly operation: "apply" | "preview" | "rollback";
+	readonly needed?: boolean;
+	readonly applied?: boolean;
+	readonly restored?: boolean;
+	readonly expectedVersion?: string;
+	readonly currentVersion: string;
+	readonly legacyVersion?: string;
+	readonly resultingVersion?: string;
+	readonly backupId?: string;
+	readonly changes?: readonly ConfigMigrationChange[];
+	readonly truncated?: boolean;
 }
 
 export interface ConfigFailureResponse extends ConfigManagementResponseBase {
@@ -87,7 +119,9 @@ export type ConfigManagementResponse =
 	| ConfigValidateResponse
 	| ConfigShowResponse
 	| ConfigGetResponse
+	| ConfigPathResponse
 	| ConfigMutationResponse
+	| ConfigMigrationResponse
 	| ConfigFailureResponse;
 
 export interface ConfigManagementServiceOptions {
@@ -108,16 +142,77 @@ export class ConfigManagementService {
 		this.#options = options;
 	}
 
-	async validate(signal: AbortSignal): Promise<ConfigValidateResponse> {
+	async validate(signal: AbortSignal): Promise<ConfigValidateResponse | ConfigFailureResponse>;
+	async validate(
+		strict: boolean,
+		signal: AbortSignal,
+	): Promise<ConfigValidateResponse | ConfigFailureResponse>;
+	async validate(
+		strictOrSignal: boolean | AbortSignal,
+		maybeSignal?: AbortSignal,
+	): Promise<ConfigValidateResponse | ConfigFailureResponse> {
+		const strict = typeof strictOrSignal === "boolean" ? strictOrSignal : false;
+		const signal = typeof strictOrSignal === "boolean" ? maybeSignal! : strictOrSignal;
 		const resolved = await this.#resolve(signal);
+		if (strict && resolved.diagnostics.length > 0) {
+			return Object.freeze({
+				version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+				ok: false,
+				action: "validate",
+				message: "configuration failed strict validation",
+				issues: Object.freeze(["strict_validation_failed"]),
+				exitCode: 1,
+				diagnostics: Object.freeze([...resolved.diagnostics]),
+			});
+		}
 		return Object.freeze({
 			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
 			ok: true,
 			action: "validate",
+			strict,
 			message: resolved.diagnostics.length > 0
 				? "configuration valid with warnings"
 				: "configuration valid",
 			diagnostics: Object.freeze([...resolved.diagnostics]),
+		});
+	}
+
+	async path(
+		scope: ConfigPathScope,
+		profile: string | undefined,
+		signal: AbortSignal,
+	): Promise<ConfigPathResponse> {
+		signal.throwIfAborted();
+		let configProfile = this.#options.configProfile;
+		let resolved: ReturnType<typeof resolveConfigPath>;
+		try {
+			if (profile !== undefined) configProfile = parseConfigProfileName(profile);
+			resolved = resolveConfigPath({
+				scope,
+				homeDir: this.#options.homeDir,
+				workspaceRoot: this.#options.workspaceRoot,
+				...(configProfile ? { configProfile } : {}),
+				programDataDir: this.#options.env.ProgramData,
+				...(this.#options.systemConfigPath
+					? { systemConfigPath: this.#options.systemConfigPath }
+					: {}),
+			});
+		} catch {
+			throw new ConfigManagementError(configDiagnostic({
+				code: "invalid_value",
+				severity: "error",
+				message: "configuration path selection is invalid",
+				remediation: "Use a supported scope and a plain profile name.",
+			}));
+		}
+		signal.throwIfAborted();
+		return Object.freeze({
+			version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+			ok: true,
+			action: "path",
+			message: "configuration path",
+			...resolved,
+			diagnostics: Object.freeze([]),
 		});
 	}
 
@@ -154,6 +249,106 @@ export class ConfigManagementService {
 
 	async unset(key: string, signal: AbortSignal): Promise<ConfigMutationResponse> {
 		return this.#mutate("unset", key, undefined, signal);
+	}
+
+	async previewMigration(signal: AbortSignal): Promise<ConfigMigrationResponse> {
+		return this.#runMigration("preview", undefined, signal);
+	}
+
+	async applyMigration(
+		expectedVersion: string,
+		signal: AbortSignal,
+	): Promise<ConfigMigrationResponse> {
+		return this.#runMigration("apply", expectedVersion, signal);
+	}
+
+	async rollbackMigration(
+		backupId: string,
+		signal: AbortSignal,
+	): Promise<ConfigMigrationResponse> {
+		return this.#runMigration("rollback", backupId, signal);
+	}
+
+	async #runMigration(
+		operation: "apply" | "preview" | "rollback",
+		argument: string | undefined,
+		signal: AbortSignal,
+	): Promise<ConfigMigrationResponse> {
+		signal.throwIfAborted();
+		try {
+			const options = {
+				...this.#options,
+				createSessionId: () => "config-migration",
+			};
+			if (operation === "rollback") {
+				const result = await rollbackConfigMigration({
+					...options,
+					backupId: argument ?? "",
+				});
+				signal.throwIfAborted();
+				return Object.freeze({
+					version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+					ok: true,
+					action: "migrate",
+					operation,
+					message: result.restored
+						? "user configuration restored"
+						: "user configuration already matched the backup",
+					restored: result.restored,
+					backupId: result.backupId,
+					currentVersion: result.currentVersion,
+					diagnostics: result.diagnostics,
+				});
+			}
+			if (operation === "apply") {
+				const result = await applyConfigMigration({
+					...options,
+					expectedVersion: argument ?? "",
+				});
+				signal.throwIfAborted();
+				return Object.freeze({
+					version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+					ok: true,
+					action: "migrate",
+					operation,
+					message: result.applied
+						? "configuration migration applied"
+						: "configuration migration not needed",
+					needed: result.needed,
+					applied: result.applied,
+					expectedVersion: result.expectedVersion,
+					currentVersion: result.currentVersion,
+					legacyVersion: result.legacyVersion,
+					resultingVersion: result.resultingVersion,
+					...(result.backupId ? { backupId: result.backupId } : {}),
+					changes: result.changes,
+					truncated: result.truncated,
+					diagnostics: result.diagnostics,
+				});
+			}
+			const result = await previewConfigMigration(options);
+			signal.throwIfAborted();
+			return Object.freeze({
+				version: CONFIG_MANAGEMENT_RESPONSE_VERSION,
+				ok: true,
+				action: "migrate",
+				operation,
+				message: result.needed
+					? "configuration migration available"
+					: "configuration migration not needed",
+				needed: result.needed,
+				expectedVersion: result.expectedVersion,
+				currentVersion: result.currentVersion,
+				legacyVersion: result.legacyVersion,
+				resultingVersion: result.resultingVersion,
+				changes: result.changes,
+				truncated: result.truncated,
+				diagnostics: result.diagnostics,
+			});
+		} catch (error) {
+			if (!isConfigError(error)) throw error;
+			throw new ConfigManagementError(error.diagnostic);
+		}
 	}
 
 	async #mutate(

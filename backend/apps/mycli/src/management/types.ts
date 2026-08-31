@@ -1,3 +1,5 @@
+import type { ConfigPathScope } from "@mycli/config/paths";
+
 export type HooksManagementCommand =
 	| { readonly kind: "hooks"; readonly action: "list"; readonly json: boolean }
 	| {
@@ -36,7 +38,20 @@ export type McpManagementCommand =
 export type ConfigManagementCommand =
 	| {
 		readonly kind: "config";
-		readonly action: "validate" | "show";
+		readonly action: "validate";
+		readonly strict?: boolean;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "show";
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "path";
+		readonly scope: ConfigPathScope;
+		readonly profile?: string;
 		readonly json: boolean;
 	}
 	| {
@@ -50,6 +65,26 @@ export type ConfigManagementCommand =
 		readonly action: "set";
 		readonly key: string;
 		readonly value: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "migrate";
+		readonly operation: "preview";
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "migrate";
+		readonly operation: "apply";
+		readonly expectedVersion: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "config";
+		readonly action: "migrate";
+		readonly operation: "rollback";
+		readonly backupId: string;
 		readonly json: boolean;
 	};
 

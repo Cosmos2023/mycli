@@ -7,6 +7,8 @@ import { parse as parseToml } from "smol-toml";
 import { parseConfigProfileName } from "@mycli/config";
 import {
 	ConfigManagementService,
+	type ConfigMigrationResponse,
+	type ConfigPathResponse,
 	type ConfigShowResponse,
 } from "../src/management/config.ts";
 import { renderManagementResponse } from "../src/management/render.ts";
@@ -180,6 +182,138 @@ test("config validate keeps unknown keys as value-free warnings", async (t) => {
 		keyPath: "model.nmae",
 	}]);
 	assert.equal(JSON.stringify(response).includes(sentinel), false);
+
+	const strict = await service.validate(true, new AbortController().signal);
+	assert.equal(strict.ok, false);
+	assert.equal(strict.exitCode, 1);
+	assert.deepEqual(strict.issues, ["strict_validation_failed"]);
+	assert.equal(JSON.stringify(strict).includes(sentinel), false);
+});
+
+test("config path resolves every supported scope and renders text and JSON", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-config-path-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	const systemConfigPath = join(root, "machine", "config.toml");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const service = new ConfigManagementService({
+		homeDir,
+		workspaceRoot,
+		env: {},
+		workspaceTrust: "unknown",
+		systemConfigPath,
+	});
+	const signal = new AbortController().signal;
+	const scenarios = [
+		["user", undefined, join(homeDir, ".mycli", "config.toml"), true],
+		["project", undefined, join(workspaceRoot, ".mycli", "config.toml"), false],
+		["profile", "work", join(homeDir, ".mycli", "work.config.toml"), false],
+		["system", undefined, systemConfigPath, false],
+		["legacy_user", undefined, join(homeDir, ".config", "mycli", "config.toml"), false],
+	] as const;
+
+	for (const [scope, profile, expectedPath, writable] of scenarios) {
+		const response = await service.path(scope, profile, signal);
+		assert.deepEqual({
+			scope: response.scope,
+			path: response.path,
+			writable: response.writable,
+		}, { scope, path: expectedPath, writable });
+	}
+	const profile = await service.path("profile", "work", signal);
+	const command = {
+		kind: "config",
+		action: "path",
+		scope: "profile",
+		profile: "work",
+		json: false,
+	} as const;
+	assert.match(
+		renderManagementResponse(command, profile),
+		new RegExp(`mycli config path\\nscope=profile\\npath=${escapeRegExp(JSON.stringify(profile.path))}`),
+	);
+	assert.deepEqual(
+		JSON.parse(renderManagementResponse({ ...command, json: true }, profile)) as ConfigPathResponse,
+		profile,
+	);
+	await assert.rejects(
+		() => service.path("profile", "../private-profile-sentinel", signal),
+		/ configuration invalid/u,
+	);
+});
+
+test("config migration completes provider-free preview apply and rollback with redacted output", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-config-management-migration-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	const userDirectory = join(homeDir, ".mycli");
+	const legacyDirectory = join(homeDir, ".config", "mycli");
+	const userPath = join(userDirectory, "config.toml");
+	const legacyPath = join(legacyDirectory, "config.toml");
+	const authPath = join(userDirectory, "auth.json");
+	const before = '# preserve\r\nmodel = "private-model-sentinel"\r\n';
+	const legacy = "memory_enabled = true\n";
+	const auth = '{"openai":"private-auth-sentinel"}\n';
+	await Promise.all([
+		mkdir(userDirectory, { recursive: true }),
+		mkdir(legacyDirectory, { recursive: true }),
+		mkdir(workspaceRoot, { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(userPath, before, "utf8"),
+		writeFile(legacyPath, legacy, "utf8"),
+		writeFile(authPath, auth, "utf8"),
+	]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const services = await createDefaultManagementServices({ homeDir, workspaceRoot, env: {} });
+
+	const previewCommand = {
+		kind: "config",
+		action: "migrate",
+		operation: "preview",
+		json: false,
+	} as const;
+	const preview = await services.execute(previewCommand) as ConfigMigrationResponse;
+	assert.equal(preview.ok, true);
+	assert.equal(preview.needed, true);
+	assert.ok(preview.expectedVersion);
+	assert.equal(await readFile(userPath, "utf8"), before);
+	const previewText = renderManagementResponse(previewCommand, preview);
+	assert.match(previewText, /operation=preview\nneeded=true/u);
+	assert.match(previewText, /change kind=(?:import|normalize) key=/u);
+	assert.doesNotMatch(previewText, /private-(?:model|auth)-sentinel/u);
+
+	const applyCommand = {
+		kind: "config",
+		action: "migrate",
+		operation: "apply",
+		expectedVersion: preview.expectedVersion,
+		json: true,
+	} as const;
+	const applied = await services.execute(applyCommand) as ConfigMigrationResponse;
+	assert.equal(applied.ok, true);
+	assert.equal(applied.applied, true);
+	assert.ok(applied.backupId);
+	assert.deepEqual(parseToml(await readFile(userPath, "utf8")), {
+		memory: { enabled: true },
+		model: { name: "private-model-sentinel" },
+	});
+	assert.doesNotMatch(renderManagementResponse(applyCommand, applied), /private-(?:model|auth)-sentinel/u);
+
+	const rollbackCommand = {
+		kind: "config",
+		action: "migrate",
+		operation: "rollback",
+		backupId: applied.backupId,
+		json: false,
+	} as const;
+	const rollback = await services.execute(rollbackCommand) as ConfigMigrationResponse;
+	assert.equal(rollback.ok, true);
+	assert.equal(rollback.restored, true);
+	assert.match(renderManagementResponse(rollbackCommand, rollback), /operation=rollback\nrestored=true/u);
+	assert.equal(await readFile(userPath, "utf8"), before);
+	assert.equal(await readFile(legacyPath, "utf8"), legacy);
+	assert.equal(await readFile(authPath, "utf8"), auth);
 });
 
 test("config get set and unset report effective precedence without echoing submitted values", async (t) => {
@@ -381,4 +515,8 @@ function setting(response: ConfigShowResponse, key: string) {
 	const row = response.settings.find((candidate) => candidate.key === key);
 	assert.ok(row, `missing config setting: ${key}`);
 	return row;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

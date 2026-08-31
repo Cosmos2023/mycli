@@ -842,7 +842,10 @@ function parseTomlDocument(raw: string, layer: ConfigFileLayerId): ValidatedConf
 }
 
 function emptyConfigDocument(): ValidatedConfigDocument {
-	return Object.freeze({ values: Object.freeze({}), diagnostics: Object.freeze([]) });
+	return Object.freeze({
+		values: Object.freeze({}),
+		diagnostics: Object.freeze([]),
+	});
 }
 
 function configLayerLabel(layer: ConfigFileLayerId): string {

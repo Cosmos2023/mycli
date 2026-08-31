@@ -112,15 +112,40 @@ function renderConfig(response: ConfigManagementResponse): string {
 		for (const setting of response.settings) lines.push(renderConfigSetting(setting));
 	} else if (response.action === "get" && response.ok) {
 		lines.push(renderConfigSetting(response.setting));
+	} else if (response.action === "path" && response.ok) {
+		lines.push(`scope=${response.scope}`);
+		lines.push(`path=${JSON.stringify(response.path)}`);
+		lines.push(`writable=${response.writable}`);
 	} else if ((response.action === "set" || response.action === "unset") && response.ok) {
 		lines.push(`key=${response.key}`);
 		lines.push(`changed=${response.changed}`);
 		lines.push(`effective_source=${response.effectiveSource}`);
 		lines.push(`overridden=${response.overridden.join(",") || "none"}`);
+	} else if (response.action === "migrate" && response.ok) {
+		lines.push(`operation=${response.operation}`);
+		if (response.needed !== undefined) lines.push(`needed=${response.needed}`);
+		if (response.applied !== undefined) lines.push(`applied=${response.applied}`);
+		if (response.restored !== undefined) lines.push(`restored=${response.restored}`);
+		if (response.expectedVersion) lines.push(`expected_version=${response.expectedVersion}`);
+		lines.push(`current_version=${response.currentVersion}`);
+		if (response.legacyVersion) lines.push(`legacy_version=${response.legacyVersion}`);
+		if (response.resultingVersion) lines.push(`resulting_version=${response.resultingVersion}`);
+		if (response.backupId) lines.push(`backup_id=${response.backupId}`);
+		for (const change of response.changes ?? []) {
+			lines.push([
+				"change",
+				`kind=${change.kind}`,
+				`key=${change.key}`,
+				`source=${change.source}`,
+				`effective_source=${change.effectiveSource}`,
+				`overridden=${change.overridden.join(",") || "none"}`,
+			].join(" "));
+		}
+		if (response.truncated) lines.push("changes_truncated=true");
 	} else {
 		lines.push(response.message ?? (response.ok ? "configuration valid" : "configuration invalid"));
 	}
-	for (const diagnostic of response.diagnostics) {
+	for (const diagnostic of response.diagnostics ?? []) {
 		const context = [
 			diagnostic.layer ? `layer=${diagnostic.layer}` : undefined,
 			diagnostic.keyPath ? `key=${diagnostic.keyPath}` : undefined,

@@ -12,12 +12,16 @@ export type ConfigDiagnosticSeverity = "warning" | "error";
 export type ConfigDiagnosticCode =
 	| "config_read_failed"
 	| "config_write_failed"
+	| "deprecated_config_file"
 	| "deprecated_inline_secret"
+	| "deprecated_key"
 	| "forbidden_inline_secret"
 	| "invalid_toml"
 	| "invalid_value"
+	| "migration_backup_invalid"
 	| "unknown_key"
-	| "unknown_table";
+	| "unknown_table"
+	| "version_conflict";
 
 export interface ConfigDiagnostic {
 	readonly version: typeof CONFIG_DIAGNOSTIC_VERSION;

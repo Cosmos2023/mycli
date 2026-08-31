@@ -23,6 +23,7 @@ import type {
 	ManagementExecutor,
 	ManagementResponse,
 } from "./types.ts";
+import type { ConfigPathScope } from "@mycli/config/paths";
 import {
 	ConfigManagementError,
 	ConfigManagementService,
@@ -65,11 +66,19 @@ export interface McpManagementContract {
 }
 
 export interface ConfigManagementContract {
-	validate(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	validate(strict: boolean, signal: AbortSignal): MaybePromise<ManagementResponse>;
 	show(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	path(
+		scope: ConfigPathScope,
+		profile: string | undefined,
+		signal: AbortSignal,
+	): MaybePromise<ManagementResponse>;
 	get(key: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 	set(key: string, value: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 	unset(key: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	previewMigration(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	applyMigration(expectedVersion: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	rollbackMigration(backupId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
 export interface SessionManagementContract {
@@ -137,13 +146,28 @@ export class ManagementServices implements ManagementExecutor {
 			}
 		}
 		if (command.kind === "config") {
-			if (command.action === "validate") return this.#services.config.validate(signal);
+			if (command.action === "validate") {
+				return this.#services.config.validate(command.strict === true, signal);
+			}
 			if (command.action === "show") return this.#services.config.show(signal);
+			if (command.action === "path") {
+				return this.#services.config.path(command.scope, command.profile, signal);
+			}
 			if (command.action === "get") return this.#services.config.get(command.key, signal);
 			if (command.action === "set") {
 				return this.#services.config.set(command.key, command.value, signal);
 			}
 			if (command.action === "unset") return this.#services.config.unset(command.key, signal);
+			if (command.action !== "migrate") {
+				return failure(command.action, "configuration command is unavailable", "config_unavailable");
+			}
+			if (command.operation === "preview") {
+				return this.#services.config.previewMigration(signal);
+			}
+			if (command.operation === "apply") {
+				return this.#services.config.applyMigration(command.expectedVersion, signal);
+			}
+			return this.#services.config.rollbackMigration(command.backupId, signal);
 		}
 		if (command.kind === "hooks") {
 			if (command.action === "list") return this.#services.hooks.list();

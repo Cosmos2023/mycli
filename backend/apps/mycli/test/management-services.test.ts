@@ -50,14 +50,27 @@ test("management facade dispatches every extension command to its provider-free 
 	const result = (action: string) => ({ ok: true, action, message: action });
 	const services = new ManagementServices({
 		config: {
-			validate: async () => { calls.push("config:validate"); return result("validate"); },
+			validate: async (strict) => { calls.push(`config:validate:${strict}`); return result("validate"); },
 			show: async () => { calls.push("config:show"); return result("show"); },
+			path: async (scope, profile) => {
+				calls.push(`config:path:${scope}:${profile ?? "none"}`);
+				return result("path");
+			},
 			get: async (key) => { calls.push(`config:get:${key}`); return result("get"); },
 			set: async (key, value) => {
 				calls.push(`config:set:${key}:${value}`);
 				return result("set");
 			},
 			unset: async (key) => { calls.push(`config:unset:${key}`); return result("unset"); },
+			previewMigration: async () => { calls.push("config:migrate:preview"); return result("migrate"); },
+			applyMigration: async (version) => {
+				calls.push(`config:migrate:apply:${version}`);
+				return result("migrate");
+			},
+			rollbackMigration: async (backupId) => {
+				calls.push(`config:migrate:rollback:${backupId}`);
+				return result("migrate");
+			},
 		},
 		hooks: {
 			list: async () => { calls.push("hooks:list"); return result("list"); },
@@ -89,11 +102,27 @@ test("management facade dispatches every extension command to its provider-free 
 	const signal = new AbortController().signal;
 
 	for (const command of [
-		{ kind: "config", action: "validate", json: false },
+		{ kind: "config", action: "validate", strict: true, json: false },
 		{ kind: "config", action: "show", json: false },
+		{ kind: "config", action: "path", scope: "profile", profile: "work", json: false },
 		{ kind: "config", action: "get", key: "model.name", json: false },
 		{ kind: "config", action: "set", key: "memory.enabled", value: "true", json: false },
 		{ kind: "config", action: "unset", key: "model.name", json: false },
+		{ kind: "config", action: "migrate", operation: "preview", json: false },
+		{
+			kind: "config",
+			action: "migrate",
+			operation: "apply",
+			expectedVersion: "migration-v1-test",
+			json: false,
+		},
+		{
+			kind: "config",
+			action: "migrate",
+			operation: "rollback",
+			backupId: "backup",
+			json: false,
+		},
 		{ kind: "hooks", action: "list", json: false },
 		{ kind: "hooks", action: "inspect", identity: "hook", json: false },
 		{ kind: "hooks", action: "approve", identity: "hook", json: false },
@@ -121,11 +150,15 @@ test("management facade dispatches every extension command to its provider-free 
 	}
 
 	assert.deepEqual(calls, [
-		"config:validate",
+		"config:validate:true",
 		"config:show",
+		"config:path:profile:work",
 		"config:get:model.name",
 		"config:set:memory.enabled:true",
 		"config:unset:model.name",
+		"config:migrate:preview",
+		"config:migrate:apply:migration-v1-test",
+		"config:migrate:rollback:backup",
 		"hooks:list",
 		"hooks:inspect:hook",
 		"hooks:approve:hook",
