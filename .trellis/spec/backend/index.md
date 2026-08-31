@@ -18,7 +18,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Database Guidelines](./database-guidelines.md) | SQLite query, migration, and session-storage contracts | Active |
 | [Error Handling](./error-handling.md) | Error taxonomy, boundary mapping, retry, terminalization, and UI projection | Active |
 | [Diagnostics And Cached Updates](./diagnostics-update-contract.md) | Provider-free doctor, update cache, lifecycle, gateway, and TUI notice contract | Active |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
+| [Quality Guidelines](./quality-guidelines.md) | Code standards, test gates, and cross-surface drift contracts | Active |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
 | [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
 | [Context Management Contract](./context-management-contract.md) | Project context files, cache classes, fencing, and context diagnostics | Active |

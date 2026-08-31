@@ -654,6 +654,90 @@ await assertProcessStops(pid);
 
 ---
 
+### Scenario: Configuration And UX Baseline Drift Gate
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing a provider-free management command, slash command, shell setting,
+  gateway contract, startup gate, or configuration/TUI journey covered by the UX baseline.
+- The gate keeps parser, help, docs, TUI descriptors, generated gateway contracts, and distributed
+  provider-free tests discoverable without adding another end-to-end framework.
+
+#### 2. Signatures
+- Manifest: `tests/fixtures/configuration_ux/baseline.json` with `schema_version: 1`.
+- Canonical management names: `MANAGEMENT_COMMAND_NAMES` in
+  `backend/apps/mycli/src/management/parser.ts`.
+- Canonical help: `ROOT_HELP` in `backend/apps/mycli/src/cli.ts`.
+- Focused command: `npm run test:ux-contracts`.
+- Report: `docs/parity/configuration-ux-baseline.md`.
+
+#### 3. Contracts
+- The manifest keeps the required journey IDs in stable order and links each journey to at least one
+  repository-relative file plus an exact `test("...")` declaration.
+- Journey evidence is provider-free and covers `darwin`, `linux`, and `win32`; platform-specific
+  behavior may use a narrower platform list.
+- Checked-in measurements are deterministic structural values. Machine-dependent wall-clock
+  startup profiling remains explicit opt-in through `MYCLI_STARTUP_PROFILE=1`.
+- UX budgets explicitly cover first-paint network blocking, root-failure diagnostic count, selector
+  response, minimum terminal width, destructive defaults, Esc cancellation, draft preservation,
+  and PTY readiness.
+- The manifest and report contain no captured credentials, prompts, provider output, tool content,
+  secret-shaped values, or user-specific absolute paths.
+- Management parser membership is derived from `MANAGEMENT_COMMAND_NAMES`. Root help and the
+  management table use the same order. Slash commands, aliases, and shell setting keys are generated
+  or checked from their canonical registries rather than copied into another production registry.
+- Gateway drift checks compare the generated contract catalog with the frozen M8 gateway evidence.
+
+#### 4. Validation & Error Matrix
+- Missing or reordered required journey -> focused gate fails with the manifest mismatch.
+- Absolute evidence path, path traversal, missing file, or stale test name -> focused gate fails
+  before accepting the baseline.
+- Secret-shaped manifest/report value or common user-home absolute path -> privacy assertion fails.
+- Management command added only to parser/help/docs -> normalized command-list comparison fails on
+  the other surfaces.
+- Slash command or alias omitted from docs -> canonical matrix comparison fails.
+- `SHELL_SETTING_DESCRIPTORS` key omitted from docs -> descriptor comparison fails.
+- Gateway method/event drift without updated frozen evidence -> count or required-surface assertion
+  fails.
+- Local startup timing varies while structural budgets remain unchanged -> no CI failure; investigate
+  with the opt-in stage profile and update a numeric release budget only through an explicit change.
+
+#### 5. Good/Base/Bad Cases
+- Good: add one management command to `MANAGEMENT_COMMAND_NAMES`, parser behavior, `ROOT_HELP`, the
+  management table, tests, and baseline evidence in one change.
+- Good: add a shell setting descriptor and document its canonical `tui.*` key.
+- Base: improve one journey's existing provider-free test and update only its exact evidence name.
+- Bad: add a second hand-maintained production command list solely for a drift test.
+- Bad: check in a startup profile containing a local home path, session ID, prompt, or provider data.
+- Bad: assert shared-runner wall-clock milliseconds without a documented performance budget.
+
+#### 6. Tests Required
+- Run `npm run test:ux-contracts` for manifest schema/order, evidence, privacy, and cross-surface drift.
+- Run every added or renamed evidence test, not only the declaration-link check.
+- Run `npm run lint`, `npm run typecheck`, and `npm run contracts:check`.
+- Run the packed CLI smoke when root help, command composition, or a published entry changes. If a
+  platform archive download is unavailable, record the external failure and still run the
+  provider-independent `--app-only` packed smoke.
+- Keep sixty-column CJK/IME, Esc/draft, one-root-failure/one-diagnostic, background-update, and native
+  PTY readiness regressions represented by provider-free tests.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+const managementCommands = ["setup", "doctor"]; // Test-only copy that can silently drift.
+```
+
+Correct:
+```typescript
+import { MANAGEMENT_COMMAND_NAMES } from "../src/management/parser.ts";
+
+for (const command of MANAGEMENT_COMMAND_NAMES) {
+	assert.match(ROOT_HELP, new RegExp(`\\b${command}\\b`, "u"));
+}
+```
+
+---
+
 ## Code Review Checklist
 
 <!-- What reviewers should check -->
