@@ -816,3 +816,38 @@ Added provider-free config path and strict validation commands, transactional mi
 ### Next Steps
 
 - Continue the roadmap with unified onboarding and auth management.
+
+
+## Session 22: Complete unified onboarding and auth management
+
+**Date**: 2026-09-01
+**Task**: Complete unified onboarding and auth management
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added provider-free credential commands and rollback-safe setup, unified the first-run TUI journey, enabled transactional trust-driven runtime reloads, stabilized Worker integration tests, and documented the resulting contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `677514f3` | (see git log) |
+| `332191e3` | (see git log) |
+| `7b89be02` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
