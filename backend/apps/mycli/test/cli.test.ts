@@ -12,7 +12,10 @@ import {
 } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
-import { MANAGEMENT_COMMAND_NAMES } from "../src/management/parser.ts";
+import {
+	CLI_COMMAND_NAMES,
+	COMPLETION_SHELLS,
+} from "../src/management/cli-command-catalog.ts";
 import type { ManagementCommand } from "../src/management/types.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { MYCLI_VERSION, parseAppVersion } from "../src/version.ts";
@@ -106,11 +109,44 @@ test("help advertises the provider-free management surface", async () => {
 	const harness = cliHarness({ argv: ["--help"] });
 
 	assert.equal(await runCli(harness.options), 0);
-	for (const command of MANAGEMENT_COMMAND_NAMES) {
+	for (const command of CLI_COMMAND_NAMES) {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
 	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);
 	assert.match(harness.stdout.join(""), /-p, --profile <name>/u);
+});
+
+test("shell completion runs without TTY, management, backend, provider, or TUI startup", async (t) => {
+	for (const shell of COMPLETION_SHELLS) {
+		await t.test(shell, async () => {
+			let managementCalls = 0;
+			let backendStarts = 0;
+			let tuiImports = 0;
+			const harness = cliHarness({
+				argv: ["completion", shell],
+				stdin: { isTTY: false },
+				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+				management: {
+					execute: async () => {
+						managementCalls += 1;
+						return { ok: true, action: "unexpected" };
+					},
+				},
+				startNodeBackend: () => {
+					backendStarts += 1;
+					return fakeBackend().backend;
+				},
+				importTui: async () => { tuiImports += 1; },
+			});
+
+			assert.equal(await runCli(harness.options), 0);
+			assert.match(harness.stdout.join(""), /mycli/u);
+			assert.equal(harness.stderr.join(""), "");
+			assert.equal(managementCalls, 0);
+			assert.equal(backendStarts, 0);
+			assert.equal(tuiImports, 0);
+		});
+	}
 });
 
 test("CLI startup prepends vendored ripgrep before handling local commands", async (t) => {

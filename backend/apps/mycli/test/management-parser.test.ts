@@ -209,6 +209,15 @@ test("parser recognizes provider-free management commands before interactive fla
 	});
 });
 
+test("parser recognizes every supported local completion shell", () => {
+	for (const shell of ["bash", "zsh", "fish", "powershell"] as const) {
+		assert.deepEqual(parseCliMode(["completion", shell]), {
+			kind: "completion",
+			shell,
+		});
+	}
+});
+
 test("parser decodes plugin command arguments as one JSON object", () => {
 	assert.deepEqual(parseCliMode([
 		"plugins",
@@ -357,6 +366,9 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["session", "list", "--mode", "broken"],
 		["session", "list", "--limit", "many"],
 		["session", "delete", "id", "--force", "--force"],
+		["completion"],
+		["completion", "unknown"],
+		["completion", "bash", "extra"],
 		["--runtime-backend=node"],
 	] as const) {
 		assert.throws(

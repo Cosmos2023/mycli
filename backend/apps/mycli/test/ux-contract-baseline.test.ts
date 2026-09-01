@@ -6,7 +6,11 @@ import test from "node:test";
 import { SHELL_SETTING_DESCRIPTORS } from "@mycli/config";
 import { gatewayContractCatalog } from "@mycli/contracts";
 import { ROOT_HELP } from "../src/cli.ts";
-import { MANAGEMENT_COMMAND_NAMES } from "../src/management/parser.ts";
+import {
+	CLI_COMMAND_CATALOG,
+	CLI_COMMAND_NAMES,
+	MANAGEMENT_COMMAND_NAMES,
+} from "../src/management/cli-command-catalog.ts";
 import { slashCommandParityMatrix } from "../src/node-runtime/node-slash-command-registry.ts";
 
 type SupportedPlatform = "darwin" | "linux" | "win32";
@@ -174,12 +178,18 @@ test("UX baseline evidence resolves to exact provider-free test declarations", (
 test("management parser, root help, and command documentation stay aligned", () => {
 	const helpCommands = [...commandSection(ROOT_HELP).matchAll(/^ {2}([a-z][a-z-]*)\b/gmu)]
 		.map((match) => match[1]);
-	assert.deepEqual(helpCommands, [...MANAGEMENT_COMMAND_NAMES]);
+	assert.deepEqual(helpCommands, [...CLI_COMMAND_NAMES]);
+	assert.deepEqual(
+		MANAGEMENT_COMMAND_NAMES,
+		CLI_COMMAND_CATALOG
+			.filter((command) => command.execution === "management")
+			.map((command) => command.name),
+	);
 
 	const docs = readFileSync(repositoryPath("docs/commands.md"), "utf8");
 	const documented = [...docs.matchAll(/^\| `mycli ([a-z][a-z-]*)(?: [^`]*)?` \|/gmu)]
 		.map((match) => match[1]);
-	assert.deepEqual(documented, [...MANAGEMENT_COMMAND_NAMES]);
+	assert.deepEqual(documented, [...CLI_COMMAND_NAMES]);
 });
 
 test("slash commands, settings, and gateway evidence stay aligned", () => {

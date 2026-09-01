@@ -1,6 +1,6 @@
 # Command Reference
 
-## Provider-Free Management CLI
+## Provider-Free CLI Commands
 
 These commands run without starting a model turn or making a model-provider request. They remain
 available in non-interactive shells where noted. `update check` may contact the npm registry, and
@@ -19,16 +19,42 @@ available in non-interactive shells where noted. `update check` may contact the 
 | `mycli plugins <action> [arguments]` | List, inspect, or run a declared local plugin command | Validates declared commands and JSON arguments before execution |
 | `mycli mcp <action> [server-id]` | List or inspect configured MCP servers | Reads local configuration without starting an MCP server or model turn |
 | `mycli session <action> [arguments]` | List, resume, fork, rename, archive, restore, delete, or export sessions | Management actions are provider-free; `session resume <id>` enters the interactive TUI |
+| `mycli completion <bash\|zsh\|fish\|powershell>` | Generate completion for one supported shell | Writes a static script to stdout without loading management services, a provider, the backend, or the TUI |
 
-The command names above are checked against the management parser and root `mycli --help` output by
-the UX contract gate. Adding a management command requires updating all three surfaces in the same
-change.
+The canonical CLI catalog owns the command names, actions, options, help summaries, and fixed-value
+candidates above. The UX contract gate checks the catalog against parser recognition, root
+`mycli --help`, this table, and all four generated completion scripts.
 
 `mycli login --with-api-key` accepts the API key only from non-TTY stdin. Optional
 `--provider <id>` and `--auth-ref <ref>` select its destination; no supported command accepts a
 secret value in argv. `mycli setup --non-interactive --provider <id> --with-api-key` uses the same
 stdin-only boundary and requires explicit provider options, so an incomplete invocation exits with
 an actionable usage error instead of starting the TUI.
+
+### Shell Completion
+
+Load completion for the current shell session with one of these commands:
+
+```bash
+source <(mycli completion bash)
+```
+
+```zsh
+autoload -Uz compinit && compinit
+source <(mycli completion zsh)
+```
+
+```fish
+mycli completion fish | source
+```
+
+```powershell
+mycli completion powershell | Out-String | Invoke-Expression
+```
+
+Add the matching command to the shell startup file to enable it for future sessions. Generated
+scripts contain only the static command catalog; generation works with piped stdout and does not
+read credentials, start a model provider, or emit terminal control sequences.
 
 Doctor repair and support operations are explicit management commands:
 
@@ -198,8 +224,9 @@ mycli config unset tui.statusbar_mode
 
 The allowlisted keys are `tui.statusbar_mode`, `tui.view_mode`, `tui.theme`,
 `tui.hide_thinking`, `tui.tool_details_default`, `tui.hardware_cursor`,
-`tui.clear_on_shrink`, `tui.terminal_progress`, and `tui.subagent_density`. These commands do not
-accept arbitrary TOML paths.
+`tui.clear_on_shrink`, `tui.terminal_progress`, `tui.subagent_density`, `tui.color_mode`,
+`tui.reduced_motion`, `tui.glyph_mode`, and `tui.high_contrast`. These commands do not accept
+arbitrary TOML paths.
 
 `/session maintenance` is a dry-run report. `--apply-payloads` compacts eligible legacy terminal
 rollouts and removes inactive legacy continuation snapshots without deleting canonical transcript,

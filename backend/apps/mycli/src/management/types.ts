@@ -1,4 +1,5 @@
 import type { ConfigPathScope } from "@mycli/config/paths";
+import type { CompletionShell } from "./cli-command-catalog.ts";
 
 export type HooksManagementCommand =
 	| { readonly kind: "hooks"; readonly action: "list"; readonly json: boolean }
@@ -221,6 +222,7 @@ export type ManagementCommand =
 
 export type CliMode =
 	| { readonly kind: "interactive"; readonly runtimeArgs: readonly string[] }
+	| { readonly kind: "completion"; readonly shell: CompletionShell }
 	| { readonly kind: "management"; readonly command: ManagementCommand };
 
 export interface ManagementResponse {

@@ -1,4 +1,10 @@
 import { CONFIG_PATH_SCOPES, type ConfigPathScope } from "@mycli/config/paths";
+import {
+	COMPLETION_SHELLS,
+	findCliCommand,
+	MANAGEMENT_COMMAND_NAMES as CATALOG_MANAGEMENT_COMMAND_NAMES,
+	type CompletionShell,
+} from "./cli-command-catalog.ts";
 import type {
 	AuthManagementCommand,
 	CliMode,
@@ -13,25 +19,17 @@ import type {
 	SetupManagementCommand,
 } from "./types.ts";
 
-export const MANAGEMENT_COMMAND_NAMES = Object.freeze([
-	"setup",
-	"login",
-	"logout",
-	"config",
-	"doctor",
-	"update",
-	"sandbox",
-	"hooks",
-	"plugins",
-	"mcp",
-	"session",
-] as const);
+export { MANAGEMENT_COMMAND_NAMES } from "./cli-command-catalog.ts";
 
-const MANAGEMENT_COMMANDS: ReadonlySet<string> = new Set(MANAGEMENT_COMMAND_NAMES);
+const MANAGEMENT_COMMANDS: ReadonlySet<string> = new Set(CATALOG_MANAGEMENT_COMMAND_NAMES);
 const DOCTOR_PLAN_ID = /^doctor-plan-v1-[a-f0-9]{64}$/u;
 
 export function parseCliMode(argv: readonly string[]): CliMode {
 	const root = argv[0];
+	const descriptor = findCliCommand(root);
+	if (descriptor?.execution === "completion") {
+		return Object.freeze({ kind: "completion", shell: parseCompletionShell(argv.slice(1)) });
+	}
 	if (root === "session" && argv[1] === "resume") {
 		if (argv.length !== 3) throw usage("session resume <session_id>");
 		return Object.freeze({
@@ -39,11 +37,23 @@ export function parseCliMode(argv: readonly string[]): CliMode {
 			runtimeArgs: Object.freeze(["--session", nonEmpty(argv[2])]),
 		});
 	}
-	if (!root || !MANAGEMENT_COMMANDS.has(root)) {
+	if (!root || !descriptor || !MANAGEMENT_COMMANDS.has(root)) {
 		validateInteractiveArguments(argv);
 		return Object.freeze({ kind: "interactive", runtimeArgs: Object.freeze([...argv]) });
 	}
 	return Object.freeze({ kind: "management", command: parseManagementCommand(root, argv.slice(1)) });
+}
+
+function parseCompletionShell(args: readonly string[]): CompletionShell {
+	const shell = args[0];
+	if (args.length !== 1 || !isCompletionShell(shell)) {
+		throw usage("completion <bash|zsh|fish|powershell>");
+	}
+	return shell;
+}
+
+function isCompletionShell(value: string | undefined): value is CompletionShell {
+	return COMPLETION_SHELLS.includes(value as CompletionShell);
 }
 
 function parseManagementCommand(root: string, rawArgs: readonly string[]): ManagementCommand {

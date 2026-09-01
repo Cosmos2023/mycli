@@ -11,6 +11,8 @@ import {
 	configureGatewayTransport,
 	type GatewayTransport,
 } from "mycli-shell-tui/gateway-transport";
+import { renderRootHelp } from "./management/cli-command-catalog.ts";
+import { renderShellCompletion } from "./management/completion.ts";
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
 import type { SetupInputStream, SetupOutputStream } from "./management/setup.ts";
@@ -28,35 +30,7 @@ import {
 } from "./node-runtime/startup-profile.ts";
 import { MYCLI_VERSION } from "./version.ts";
 
-export const ROOT_HELP = `Usage: mycli [options]
-       mycli <command> [arguments]
-
-Commands:
-  setup [--non-interactive --provider <id> --with-api-key]
-                                    Configure provider settings and credentials
-  login status [--json] | --with-api-key
-                                    Inspect credentials or store an API key from stdin
-  logout [--json]                   Remove a locally stored API key
-  config validate|show|get|set|unset|path|migrate
-                                    Validate, inspect, migrate, or locate configuration
-  doctor [--json] [--verbose] [--fix [--confirm <plan-id>] | --support-bundle]
-                                    Check health, preview repairs, or export support data
-  update [status|check|dismiss <version>] [--json]
-                                    Inspect or dismiss cached update notices
-  sandbox status|setup|reset [--confirm] [--json]
-                                    Inspect or recover platform sandbox readiness
-  hooks list|inspect|approve|revoke Manage configured hooks
-  plugins list|inspect|run          Manage local plugins
-  mcp list|inspect                  Inspect MCP servers
-  session list|resume|fork|rename|archive|unarchive|delete|export
-                                    Discover and manage local sessions
-Options:
-  --session <id>                    Resume or create a session
-  --model <model>                   Override the configured model
-  -p, --profile <name>              Select a launch-scoped configuration profile
-  -h, --help                        Show help
-  -V, --version                     Show version
-`;
+export const ROOT_HELP = renderRootHelp();
 
 type InputStream = { isTTY?: boolean };
 type OutputStream = { isTTY?: boolean; write(value: string): unknown };
@@ -112,6 +86,10 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	} catch (error) {
 		stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
 		return 2;
+	}
+	if (mode.kind === "completion") {
+		stdout.write(renderShellCompletion(mode.shell));
+		return 0;
 	}
 	if (mode.kind === "management") {
 		try {
