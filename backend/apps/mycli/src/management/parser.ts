@@ -3,6 +3,7 @@ import type {
 	AuthManagementCommand,
 	CliMode,
 	ConfigManagementCommand,
+	DoctorManagementCommand,
 	HooksManagementCommand,
 	ManagementCommand,
 	McpManagementCommand,
@@ -27,6 +28,7 @@ export const MANAGEMENT_COMMAND_NAMES = Object.freeze([
 ] as const);
 
 const MANAGEMENT_COMMANDS: ReadonlySet<string> = new Set(MANAGEMENT_COMMAND_NAMES);
+const DOCTOR_PLAN_ID = /^doctor-plan-v1-[a-f0-9]{64}$/u;
 
 export function parseCliMode(argv: readonly string[]): CliMode {
 	const root = argv[0];
@@ -51,9 +53,7 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	const { args, json } = extractFlag(rawArgs, "--json");
 	if (root === "login" || root === "logout") return parseAuth(root, args, json);
 	if (root === "doctor") {
-		const verboseFlag = extractFlag(args, "--verbose");
-		if (verboseFlag.args.length > 0) throw usage("doctor [--json] [--verbose]");
-		return Object.freeze({ kind: "doctor", json, verbose: verboseFlag.json });
+		return parseDoctor(args, json);
 	}
 	if (root === "sandbox") {
 		return parseSandbox(args, json);
@@ -64,6 +64,64 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	if (root === "plugins") return parsePlugins(args, json);
 	if (root === "mcp") return parseMcp(args, json);
 	return parseSession(args, json);
+}
+
+function parseDoctor(args: readonly string[], json: boolean): DoctorManagementCommand {
+	const verbose = extractFlag(args, "--verbose");
+	const fix = extractFlag(verbose.args, "--fix");
+	const support = extractFlag(fix.args, "--support-bundle");
+	const confirmation = extractDoctorConfirmation(support.args);
+	if (confirmation.args.length > 0 || (fix.json && support.json)
+		|| (!fix.json && confirmation.value !== undefined)
+		|| (confirmation.value !== undefined && !DOCTOR_PLAN_ID.test(confirmation.value))) {
+		throw doctorUsage();
+	}
+	if (support.json) {
+		return Object.freeze({
+			kind: "doctor",
+			operation: "support",
+			json,
+			verbose: verbose.json,
+		});
+	}
+	if (fix.json) {
+		return Object.freeze({
+			kind: "doctor",
+			operation: "fix",
+			...(confirmation.value ? { expectedPlanId: confirmation.value } : {}),
+			json,
+			verbose: verbose.json,
+		});
+	}
+	return Object.freeze({
+		kind: "doctor",
+		operation: "check",
+		json,
+		verbose: verbose.json,
+	});
+}
+
+function extractDoctorConfirmation(
+	args: readonly string[],
+): { readonly args: readonly string[]; readonly value?: string } {
+	const remaining: string[] = [];
+	let value: string | undefined;
+	for (let index = 0; index < args.length; index += 1) {
+		const argument = args[index];
+		if (argument !== "--confirm") {
+			remaining.push(argument!);
+			continue;
+		}
+		if (value !== undefined || !args[index + 1] || args[index + 1]?.startsWith("--")) {
+			throw doctorUsage();
+		}
+		value = nonEmpty(args[index + 1]);
+		index += 1;
+	}
+	return Object.freeze({
+		args: Object.freeze(remaining),
+		...(value ? { value } : {}),
+	});
 }
 
 function parseSandbox(args: readonly string[], json: boolean): SandboxManagementCommand {
@@ -524,6 +582,12 @@ function pluginUsage(): Error {
 function configUsage(): Error {
 	return usage(
 		"config validate|show|get|set|unset|path|migrate [arguments] [--json]",
+	);
+}
+
+function doctorUsage(): Error {
+	return usage(
+		"doctor [--verbose] [--json] [--fix [--confirm <plan-id>] | --support-bundle]",
 	);
 }
 

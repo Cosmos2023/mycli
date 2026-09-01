@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 const LOCK_TIMEOUT_MS = 2_000;
 const LOCK_RETRY_MS = 10;
+const PRIVATE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 export interface AtomicPrivateFileUpdateOptions {
 	readonly directory: string;
@@ -29,6 +30,9 @@ export interface AtomicPrivateFileUpdateOptions {
 export async function atomicPrivateFileUpdate(
 	options: AtomicPrivateFileUpdateOptions,
 ): Promise<boolean> {
+	if (!PRIVATE_FILE_NAME.test(options.fileName)) {
+		throw new RangeError("invalid_private_file_name");
+	}
 	if (options.maxCurrentBytes !== undefined
 		&& (!Number.isSafeInteger(options.maxCurrentBytes) || options.maxCurrentBytes <= 0)) {
 		throw new RangeError("invalid_private_file_read_limit");

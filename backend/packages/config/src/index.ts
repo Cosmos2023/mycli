@@ -188,6 +188,8 @@ export type {
 	WorkspaceTrustState,
 	WorkspaceTrustStoreOptions,
 } from "./workspace-trust-store.ts";
+export { atomicPrivateFileUpdate } from "./private-file-writer.ts";
+export type { AtomicPrivateFileUpdateOptions } from "./private-file-writer.ts";
 export {
 	ExecPolicyStore,
 	ExecPolicyStoreError,

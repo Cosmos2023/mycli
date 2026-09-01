@@ -186,8 +186,29 @@ export interface SetupManagementCommand {
 	readonly withApiKey?: boolean;
 }
 
+export type DoctorManagementCommand =
+	| {
+		readonly kind: "doctor";
+		readonly operation: "check";
+		readonly json: boolean;
+		readonly verbose: boolean;
+	}
+	| {
+		readonly kind: "doctor";
+		readonly operation: "fix";
+		readonly expectedPlanId?: string;
+		readonly json: boolean;
+		readonly verbose: boolean;
+	}
+	| {
+		readonly kind: "doctor";
+		readonly operation: "support";
+		readonly json: boolean;
+		readonly verbose: boolean;
+	};
+
 export type ManagementCommand =
-	| { readonly kind: "doctor"; readonly json: boolean; readonly verbose: boolean }
+	| DoctorManagementCommand
 	| SetupManagementCommand
 	| AuthManagementCommand
 	| SandboxManagementCommand

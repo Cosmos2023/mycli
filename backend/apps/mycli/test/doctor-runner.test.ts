@@ -151,15 +151,15 @@ test("doctor human and JSON output consume one report and share exit semantics",
 	}]);
 	const warningResponse = doctorResponseFromReport(warningReport);
 	const human = renderManagementResponse(
-		{ kind: "doctor", json: false, verbose: false },
+		{ kind: "doctor", operation: "check", json: false, verbose: false },
 		warningResponse,
 	);
 	const verbose = renderManagementResponse(
-		{ kind: "doctor", json: false, verbose: true },
+		{ kind: "doctor", operation: "check", json: false, verbose: true },
 		warningResponse,
 	);
 	const json = JSON.parse(renderManagementResponse(
-		{ kind: "doctor", json: true, verbose: false },
+		{ kind: "doctor", operation: "check", json: true, verbose: false },
 		warningResponse,
 	)) as Readonly<Record<string, unknown>>;
 
@@ -178,7 +178,13 @@ test("doctor human and JSON output consume one report and share exit semantics",
 	assert.match(verbose, /duration_ms: \d+/u);
 	assert.doesNotMatch(verbose, /private-doctor-token/u);
 	assert.deepEqual(warningReport.support.diagnosticCodes, ["config"]);
-	assert.equal(warningReport.support.logReferences.length, 0);
+	assert.deepEqual(warningReport.support.logReferences, [
+		"logs/agent.log",
+		"logs/errors.log",
+		"logs/model-events.jsonl",
+		"logs/model-raw/",
+		"traces/",
+	]);
 
 	const failedReport = await runDoctorCollectors([{
 		name: "storage",

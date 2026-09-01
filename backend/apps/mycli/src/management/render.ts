@@ -262,12 +262,81 @@ function renderDoctor(response: ManagementResponse, verbose: boolean): string {
 		+ `${countValue(response, "warningCount")} warning, `
 		+ `${countValue(response, "failedCount")} failed`,
 	);
+	const repair = record(Reflect.get(response, "repair"));
+	if (repair) lines.push(...renderDoctorRepair(repair, verbose));
+	const bundle = record(Reflect.get(response, "bundle"));
+	if (bundle) {
+		const location = typeof bundle.location === "string"
+			? redactDoctorText(bundle.location).slice(0, 128)
+			: ".mycli/support/diagnostic-support.json";
+		lines.push(
+			`Support bundle: ~/${location}`,
+			`  bytes=${countRecordValue(bundle, "bytes")}`,
+			`  sha256=${safeIdentifier(bundle.sha256, "unavailable", 64)}`,
+		);
+	}
+	for (const issue of response.issues ?? []) lines.push(`issue=${redactDoctorText(issue)}`);
 	return `${lines.join("\n")}\n`;
+}
+
+function renderDoctorRepair(
+	repair: Readonly<Record<string, unknown>>,
+	verbose: boolean,
+): readonly string[] {
+	const status = safeIdentifier(repair.status, "failed", 64);
+	const code = safeIdentifier(repair.code, "repair_failed", 64);
+	const plan = record(repair.plan);
+	const planId = safeIdentifier(plan?.planId, "unavailable", 96);
+	const actions = Array.isArray(plan?.actions)
+		? plan.actions.flatMap((value) => record(value) ? [record(value)!] : [])
+		: [];
+	const lines = [
+		`Repair: ${status}`,
+		`  code=${code}`,
+		`  plan_id=${planId}`,
+		`  actions=${actions.length}`,
+	];
+	for (const action of actions) {
+		const changes = Array.isArray(action.changes) ? action.changes.length : 0;
+		lines.push(
+			`  action=${safeIdentifier(action.id, "repair", 64)} changes=${changes}`,
+		);
+		if (!verbose) continue;
+		for (const effect of Array.isArray(action.effects) ? action.effects.slice(0, 8) : []) {
+			if (typeof effect === "string") lines.push(`    effect: ${redactDoctorText(effect)}`);
+		}
+	}
+	for (const value of Array.isArray(repair.results) ? repair.results : []) {
+		const result = record(value);
+		if (!result) continue;
+		lines.push([
+			"  result",
+			`id=${safeIdentifier(result.id, "repair", 64)}`,
+			`status=${safeIdentifier(result.status, "failed", 64)}`,
+			`code=${safeIdentifier(result.code, "repair_failed", 64)}`,
+			`changed=${result.changed === true}`,
+		].join(" "));
+	}
+	if (status === "preview" && actions.length > 0 && planId !== "unavailable") {
+		lines.push(`  apply=mycli doctor --fix --confirm ${planId}`);
+	}
+	return lines;
 }
 
 function countValue(response: ManagementResponse, key: string): number {
 	const value = Reflect.get(response, key);
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function countRecordValue(row: Readonly<Record<string, unknown>>, key: string): number {
+	const value = row[key];
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function safeIdentifier(value: unknown, fallback: string, limit: number): string {
+	return typeof value === "string" && /^[A-Za-z0-9:_-]+$/u.test(value)
+		? value.slice(0, limit)
+		: fallback;
 }
 
 function responseRows(

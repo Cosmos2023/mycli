@@ -39,7 +39,8 @@ Commands:
   logout [--json]                   Remove a locally stored API key
   config validate|show|get|set|unset|path|migrate
                                     Validate, inspect, migrate, or locate configuration
-  doctor [--json] [--verbose]       Check local runtime health
+  doctor [--json] [--verbose] [--fix [--confirm <plan-id>] | --support-bundle]
+                                    Check health, preview repairs, or export support data
   update [status|check|dismiss <version>] [--json]
                                     Inspect or dismiss cached update notices
   sandbox status|setup|reset [--confirm] [--json]

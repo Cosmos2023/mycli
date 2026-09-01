@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -381,6 +381,8 @@ test("default management composition lists local extensions without backend star
 	let starts = 0;
 	for (const argv of [
 		["doctor", "--json"],
+		["doctor", "--fix", "--json"],
+		["doctor", "--support-bundle", "--json"],
 		["sandbox", "status", "--json"],
 		["hooks", "list", "--json"],
 		["plugins", "list", "--json"],
@@ -399,6 +401,10 @@ test("default management composition lists local extensions without backend star
 		assert.equal(JSON.parse(harness.stdout.join("")).ok, true);
 	}
 	assert.equal(starts, 0);
+	assert.equal(
+		(await stat(join(root, "home", ".mycli", "support", "diagnostic-support.json"))).isFile(),
+		true,
+	);
 });
 
 test("default non-TTY setup persists through Node without backend or secret output", async (t) => {

@@ -24,6 +24,11 @@ import type {
 	DoctorReport,
 	DoctorStatus,
 } from "./types.ts";
+import type {
+	DoctorRepairExecution,
+	DoctorSupportBundleReceipt,
+} from "./types.ts";
+import { DOCTOR_SAFE_LOG_REFERENCES } from "./support-bundle.ts";
 
 const CHECK_NAME = /^[a-z][a-z0-9_]{0,63}$/u;
 const MAX_MESSAGE_CHARS = 320;
@@ -184,12 +189,27 @@ export function reportFromChecks(checks: readonly DoctorCheck[]): DoctorReport {
 	});
 }
 
-export function doctorResponseFromReport(report: DoctorReport): DoctorManagementResponse {
+export interface DoctorResponseOptions {
+	readonly operation?: DoctorManagementResponse["operation"];
+	readonly repair?: DoctorRepairExecution;
+	readonly bundle?: DoctorSupportBundleReceipt;
+	readonly issue?: string;
+}
+
+export function doctorResponseFromReport(
+	report: DoctorReport,
+	options: DoctorResponseOptions = {},
+): DoctorManagementResponse {
 	const normalized = reportFromChecks(report.checks);
-	const failed = normalized.failedCount > 0;
+	const operationFailed = options.issue !== undefined
+		|| options.repair?.status === "failed"
+		|| options.repair?.status === "partial_failure"
+		|| options.repair?.status === "version_conflict";
+	const failed = normalized.failedCount > 0 || operationFailed;
 	return Object.freeze({
 		ok: !failed,
 		action: "doctor",
+		operation: options.operation ?? "check",
 		message: "mycli doctor",
 		schemaVersion: normalized.schemaVersion,
 		checks: normalized.checks,
@@ -197,6 +217,9 @@ export function doctorResponseFromReport(report: DoctorReport): DoctorManagement
 		warningCount: normalized.warningCount,
 		failedCount: normalized.failedCount,
 		support: normalized.support,
+		...(options.repair ? { repair: options.repair } : {}),
+		...(options.bundle ? { bundle: options.bundle } : {}),
+		...(options.issue ? { issues: Object.freeze([options.issue]) } : {}),
 		exitCode: failed ? 1 : 0,
 	});
 }
@@ -291,7 +314,7 @@ function supportManifest(checks: readonly DoctorDiagnosticCheck[]): DoctorReport
 			.filter((check) => check.status !== "ok")
 			.map((check) => check.code)
 			.slice(0, 64)),
-		logReferences: Object.freeze([]),
+		logReferences: DOCTOR_SAFE_LOG_REFERENCES,
 	});
 }
 

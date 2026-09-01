@@ -95,7 +95,9 @@ test("management facade dispatches every extension command to its provider-free 
 			check: async () => { calls.push("update:check"); return result("check"); },
 			dismiss: async (version) => { calls.push(`update:dismiss:${version}`); return result("dismiss"); },
 		},
-		doctor: async () => { calls.push("doctor"); return result("doctor"); },
+		doctor: {
+			execute: async () => { calls.push("doctor"); return result("doctor"); },
+		},
 		sandbox: {
 			execute: async (command) => {
 				calls.push(`sandbox:${command.action}`);
@@ -153,7 +155,7 @@ test("management facade dispatches every extension command to its provider-free 
 		{ kind: "update", action: "status", json: false },
 		{ kind: "update", action: "check", json: false },
 		{ kind: "update", action: "dismiss", version: "1.2.3", json: false },
-		{ kind: "doctor", json: false, verbose: false },
+		{ kind: "doctor", operation: "check", json: false, verbose: false },
 		{ kind: "sandbox", action: "status", json: false },
 		{ kind: "sandbox", action: "setup", confirmed: false, json: false },
 		{ kind: "sandbox", action: "reset", confirmed: true, json: false },
@@ -210,7 +212,7 @@ test("management facade converts service exceptions to one redacted failure", as
 		plugins: unusedService(),
 		mcp: unusedService(),
 		update: unusedService(),
-		doctor: async () => never(),
+		doctor: { execute: async () => never() },
 		sandbox: { execute: async () => never() },
 		setup: async () => never(),
 	});

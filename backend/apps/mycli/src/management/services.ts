@@ -20,6 +20,7 @@ import {
 } from "../node-runtime/integration-sandbox.ts";
 import type {
 	AuthManagementCommand,
+	DoctorManagementCommand,
 	ManagementCommand,
 	ManagementExecutor,
 	ManagementResponse,
@@ -33,10 +34,8 @@ import {
 	ConfigManagementService,
 	configFailureResponse,
 } from "./config.ts";
-import {
-	doctorResponseFromReport,
-	runDoctor,
-} from "./doctor/runner.ts";
+import { runDoctor } from "./doctor/runner.ts";
+import { DoctorManagementService } from "./doctor/service.ts";
 import { SandboxManagementService } from "./sandbox.ts";
 import { SessionManagementService } from "./session.ts";
 import { SessionService } from "../node-runtime/session-service.ts";
@@ -108,7 +107,12 @@ export interface ManagementServicesOptions {
 	readonly hooks: HookManagementContract;
 	readonly plugins: PluginManagementContract;
 	readonly mcp: McpManagementContract;
-	readonly doctor: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly doctor: Readonly<{
+		execute(
+			command: DoctorManagementCommand,
+			signal: AbortSignal,
+		): MaybePromise<ManagementResponse>;
+	}>;
 	readonly sandbox: SandboxManagementContract;
 	readonly setup: (
 		command: SetupManagementCommand,
@@ -155,7 +159,7 @@ export class ManagementServices implements ManagementExecutor {
 	}
 
 	#dispatch(command: ManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse> {
-		if (command.kind === "doctor") return this.#services.doctor(signal);
+		if (command.kind === "doctor") return this.#services.doctor.execute(command, signal);
 		if (command.kind === "sandbox") return this.#services.sandbox.execute(command, signal);
 		if (command.kind === "setup") return this.#services.setup(command, signal);
 		if (command.kind === "login" || command.kind === "logout") {
@@ -287,17 +291,24 @@ export async function createDefaultManagementServices(
 		...(options.readApiKeyInput ? { readApiKeyInput: options.readApiKeyInput } : {}),
 	});
 	const sandbox = new SandboxManagementService();
+	const doctor = new DoctorManagementService({
+		homeDir: options.homeDir,
+		workspaceTrust,
+		config,
+		sandbox,
+		runReport: (signal) => runDoctor({
+			...options,
+			workspaceTrust,
+			includeRepository,
+			updateStatus: () => update.readStatus(signal),
+		}, signal),
+	});
 	return new ManagementServices({
 		config,
 		hooks,
 		plugins,
 		mcp,
-		doctor: async (signal) => doctorResponseFromReport(await runDoctor({
-			...options,
-			workspaceTrust,
-			includeRepository,
-			updateStatus: () => update.readStatus(signal),
-		}, signal)),
+		doctor,
 		sandbox,
 		setup: options.setup ?? (async () => failure(
 			"setup",
