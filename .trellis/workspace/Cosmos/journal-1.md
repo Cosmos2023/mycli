@@ -364,7 +364,13 @@ Added typed value-free configuration schema diagnostics, project credential enfo
 
 ### Main Changes
 
-(Add details)
+- Added layered terminal capability detection, semantic appearance settings, and validated TUI
+  keymap contracts with reset support.
+- Projected effective keymaps and bounded terminal capabilities through the Node gateway and
+  applied accessible color, glyph, motion, and contrast tokens throughout the TUI.
+- Added one canonical CLI catalog plus provider-free Bash, Zsh, Fish, and PowerShell completion.
+- Added non-TTY, CJK/IME, paste, resize, width, accessibility, drift, and packed-artifact coverage,
+  with matching user and code-spec documentation.
 
 ### Git Commits
 
@@ -453,7 +459,14 @@ Added provider-free config get/set/unset commands with a shared typed setting ca
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run lint`
+- [OK] `npm run typecheck`
+- [OK] `npm run contracts:check`
+- [OK] `npm run config:check`
+- [OK] `npm run test:ux-contracts`
+- [OK] `npm test`
+- [OK] `npm run smoke:package -- --app-only`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -927,6 +940,42 @@ Implemented provider-free Doctor repair preview and confirmation, deterministic 
 - [OK] `npm run build`, full `npm test`, `npm run test:ux-contracts`, and `npm run smoke:package`
 - [OK] App 383/383, TUI 636/636, config 117/117, and focused Doctor 10/10 tests
 - [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 25: Terminal accessibility and shell completion
+
+**Date**: 2026-09-01
+**Task**: Terminal accessibility and shell completion
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added layered terminal capability and keymap contracts, semantic accessible TUI rendering, catalog-driven shell completions, non-TTY isolation, regression coverage, and user documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `44a0ff5f` | (see git log) |
+| `645a51bb` | (see git log) |
+| `70a4166d` | (see git log) |
+| `25c5a2f7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
 
 ### Status
 
