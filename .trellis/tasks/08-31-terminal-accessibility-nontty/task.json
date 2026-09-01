@@ -3,7 +3,7 @@
   "name": "terminal-accessibility-nontty",
   "title": "Terminal accessibility completions and non-TTY UX",
   "description": "Complete OMX Phase 8 terminal adaptation, accessibility, completions, and non-TTY behavior.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

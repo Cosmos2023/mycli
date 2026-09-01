@@ -783,9 +783,16 @@ must continue to observe the actual process.
 
 #### 2. Signatures
 - Manifest: `tests/fixtures/configuration_ux/baseline.json` with `schema_version: 1`.
-- Canonical management names: `MANAGEMENT_COMMAND_NAMES` in
-  `backend/apps/mycli/src/management/parser.ts`.
-- Canonical help: `ROOT_HELP` in `backend/apps/mycli/src/cli.ts`.
+- Canonical CLI metadata: `CLI_COMMAND_CATALOG`, `ROOT_CLI_OPTIONS`, and `COMPLETION_SHELLS` in
+  `backend/apps/mycli/src/management/cli-command-catalog.ts`.
+- Derived CLI surfaces: `CLI_COMMAND_NAMES`, `MANAGEMENT_COMMAND_NAMES`, and `renderRootHelp()` from
+  the same catalog module.
+- Completion command: `mycli completion <bash|zsh|fish|powershell>`.
+- Completion renderer: `renderShellCompletion(shell: CompletionShell) -> string`.
+- Keymap catalog: `TUI_KEYMAP_ACTIONS` and `tui.keymap.<context>.<config-key>` paths in
+  `backend/packages/contracts/src/tui-keymap.ts`.
+- Settings RPCs: `settings.load`, `settings.save`, and `settings.keymap.reset`.
+- Settings snapshot fields: `settings`, `sources`, `keymap`, `terminal_capabilities`, and `catalog`.
 - Focused command: `npm run test:ux-contracts`.
 - Report: `docs/parity/configuration-ux-baseline.md`.
 
@@ -801,9 +808,33 @@ must continue to observe the actual process.
   and PTY readiness.
 - The manifest and report contain no captured credentials, prompts, provider output, tool content,
   secret-shaped values, or user-specific absolute paths.
-- Management parser membership is derived from `MANAGEMENT_COMMAND_NAMES`. Root help and the
-  management table use the same order. Slash commands, aliases, and shell setting keys are generated
-  or checked from their canonical registries rather than copied into another production registry.
+- `CLI_COMMAND_CATALOG` is the only production registry for root command names, execution lanes,
+  usage, descriptions, actions, options, and fixed candidate values. Parser membership, root help,
+  and all four completion renderers derive from it; shell-specific code may format metadata but must
+  not carry a second command list.
+- Completion is a distinct `CliMode`, writes plain text directly to stdout, and returns before
+  management composition, backend/provider construction, or TUI import. Missing, extra, or unknown
+  shell arguments return the ordinary bounded argument error with exit code `2`.
+- Interactive mode requires terminal stdin and stdout and returns one `tty_required` line otherwise.
+  Provider-free management and completion commands remain valid under non-TTY streams and never
+  emit TUI control sequences.
+- Effective keymaps derive from `TUI_KEYMAP_ACTIONS` plus layered config. Key names are normalized,
+  lists are bounded to eight unique entries, required actions cannot be unbound, and two actions in
+  one input context cannot claim the same key. A validation or persistence failure leaves the prior
+  effective keymap active.
+- `settings.keymap.reset` clears only the user `[tui.keymap]` table, re-resolves every layer, and
+  returns the same complete settings snapshot as load/save. The searchable settings catalog exposes
+  each effective binding, its source, overridden layers, and the reset action without private values.
+- Terminal capabilities are detected once per backend launch from bounded environment signals and
+  combined with `tui.color_mode`, `tui.glyph_mode`, `tui.reduced_motion`,
+  `tui.terminal_progress`, and `tui.high_contrast`. `NO_COLOR`, `MYCLI_TUI_COLOR=never`, and
+  `TERM=dumb` force no-color output; `TERM=dumb` also forces ASCII glyphs. The gateway projects only
+  the resolved enum/boolean state and at most two bounded guidance strings.
+- TUI chrome consumes semantic color and glyph tokens. `none` emits no ANSI color sequences, ASCII
+  mode removes product-owned non-ASCII chrome, and reduced motion uses a static progress indicator
+  without changing transcript meaning or layout dimensions.
+- Slash commands, aliases, and shell setting keys are generated or checked from their canonical
+  registries rather than copied into another production registry.
 - Gateway drift checks compare the generated contract catalog with the frozen M8 gateway evidence.
 
 #### 4. Validation & Error Matrix
@@ -811,8 +842,18 @@ must continue to observe the actual process.
 - Absolute evidence path, path traversal, missing file, or stale test name -> focused gate fails
   before accepting the baseline.
 - Secret-shaped manifest/report value or common user-home absolute path -> privacy assertion fails.
-- Management command added only to parser/help/docs -> normalized command-list comparison fails on
-  the other surfaces.
+- Root command/action/option added outside `CLI_COMMAND_CATALOG` -> help/completion/parser drift test
+  fails; move the metadata into the catalog instead of copying it to the missing surfaces.
+- Completion shell missing a catalog token, registration line, trailing newline, or plain-text
+  output guarantee -> completion unit or CLI isolation test fails.
+- Completion or management command starts the backend/provider/TUI under non-TTY streams -> CLI
+  isolation test fails.
+- Malformed key name, more than eight keys, an empty required action, or a same-context conflict ->
+  typed `invalid_value`; do not apply a partial map.
+- Keymap reset write/re-resolution failure -> retain the previous TUI state and show one bounded
+  selector error.
+- `NO_COLOR`, `MYCLI_TUI_COLOR=never`, or `TERM=dumb` paired with colored output -> capability/TUI
+  regression fails.
 - Slash command or alias omitted from docs -> canonical matrix comparison fails.
 - `SHELL_SETTING_DESCRIPTORS` key omitted from docs -> descriptor comparison fails.
 - Gateway method/event drift without updated frozen evidence -> count or required-surface assertion
@@ -821,17 +862,34 @@ must continue to observe the actual process.
   with the opt-in stage profile and update a numeric release budget only through an explicit change.
 
 #### 5. Good/Base/Bad Cases
-- Good: add one management command to `MANAGEMENT_COMMAND_NAMES`, parser behavior, `ROOT_HELP`, the
-  management table, tests, and baseline evidence in one change.
-- Good: add a shell setting descriptor and document its canonical `tui.*` key.
+- Good: add one command descriptor to `CLI_COMMAND_CATALOG`; parser, help, Bash, Zsh, Fish, and
+  PowerShell discover the same command through derived metadata.
+- Good: add a keymap action to `TUI_KEYMAP_ACTIONS`, consume its normalized effective binding in the
+  owning input context, and cover conflict/reset behavior.
+- Good: add a shell setting descriptor, document its canonical `tui.*` key, and map it through a
+  semantic TUI token rather than branching in every component.
 - Base: improve one journey's existing provider-free test and update only its exact evidence name.
-- Bad: add a second hand-maintained production command list solely for a drift test.
+- Bad: add a second hand-maintained production command list solely for help, completion, or a drift
+  test.
+- Bad: inspect environment capability variables inside individual TUI components after the backend
+  has already projected a resolved capability snapshot.
 - Bad: check in a startup profile containing a local home path, session ID, prompt, or provider data.
 - Bad: assert shared-runner wall-clock milliseconds without a documented performance budget.
 
 #### 6. Tests Required
 - Run `npm run test:ux-contracts` for manifest schema/order, evidence, privacy, and cross-surface drift.
 - Run every added or renamed evidence test, not only the declaration-link check.
+- Test catalog derivation, parser routing, every catalog token in all four completion outputs, one
+  registration statement per shell, no ANSI, and a final newline. Parse Bash/Zsh output with the
+  real shell when installed; keep deterministic token drift coverage for Fish/PowerShell where the
+  host shell is unavailable.
+- Test completion under non-TTY streams with zero management/backend/provider/TUI starts. Keep one
+  concise `tty_required` assertion for interactive non-TTY invocation.
+- Test layered keymap precedence, normalization, conflicts, required actions, reset success/failure,
+  searchable catalog projection, custom action dispatch, and default restoration.
+- Test capability detection/resolution plus TUI no-color, ASCII-only chrome, reduced-motion, and
+  high-contrast projection. Keep CJK/IME paste and layout cases at widths `60`, `80`, `100`, and
+  `140` with long Unix and Windows paths.
 - Run `npm run lint`, `npm run typecheck`, and `npm run contracts:check`.
 - Run the packed CLI smoke when root help, command composition, or a published entry changes. If a
   platform archive download is unavailable, record the external failure and still run the
@@ -843,16 +901,28 @@ must continue to observe the actual process.
 
 Wrong:
 ```typescript
-const managementCommands = ["setup", "doctor"]; // Test-only copy that can silently drift.
+const managementCommands = ["setup", "doctor"];
+const bashCommands = "setup doctor completion"; // A second registry can silently drift.
 ```
 
 Correct:
 ```typescript
-import { MANAGEMENT_COMMAND_NAMES } from "../src/management/parser.ts";
+import {
+	CLI_COMMAND_CATALOG,
+	MANAGEMENT_COMMAND_NAMES,
+	renderRootHelp,
+} from "../src/management/cli-command-catalog.ts";
+import { renderShellCompletion } from "../src/management/completion.ts";
 
-for (const command of MANAGEMENT_COMMAND_NAMES) {
-	assert.match(ROOT_HELP, new RegExp(`\\b${command}\\b`, "u"));
+for (const command of CLI_COMMAND_CATALOG) {
+	assert.ok(renderRootHelp().includes(command.usage));
+	assert.ok(renderShellCompletion("bash").includes(command.name));
 }
+assert.deepEqual(
+	MANAGEMENT_COMMAND_NAMES,
+	CLI_COMMAND_CATALOG.filter((command) => command.execution === "management")
+		.map((command) => command.name),
+);
 ```
 
 ---

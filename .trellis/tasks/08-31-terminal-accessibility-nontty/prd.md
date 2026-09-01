@@ -27,14 +27,14 @@ input, narrow layouts, automation shells, and environments without color or spec
 
 ## Acceptance Criteria
 
-- [ ] All primary TUI journeys are keyboard-complete and cancelable under default and custom keymaps.
-- [ ] Key conflicts fail safely and leave the prior effective keymap unchanged.
-- [ ] Semantic tokens remain legible in every supported color mode; no-color output contains no ANSI.
-- [ ] ASCII/reduced-motion modes remove unsupported glyph/animation assumptions without changing
+- [x] All primary TUI journeys are keyboard-complete and cancelable under default and custom keymaps.
+- [x] Key conflicts fail safely and leave the prior effective keymap unchanged.
+- [x] Semantic tokens remain legible in every supported color mode; no-color output contains no ANSI.
+- [x] ASCII/reduced-motion modes remove unsupported glyph/animation assumptions without changing
   transcript meaning or layout dimensions.
-- [ ] CJK IME, paste bursts, resize/shrink, long paths, and widths 60/80/100/140 pass regressions.
-- [ ] Generated completions match root help and management parser behavior through drift tests.
-- [ ] Non-TTY invocation never mixes TUI control sequences with ordinary stdout/stderr.
+- [x] CJK IME, paste bursts, resize/shrink, long paths, and widths 60/80/100/140 pass regressions.
+- [x] Generated completions match root help and management parser behavior through drift tests.
+- [x] Non-TTY invocation never mixes TUI control sequences with ordinary stdout/stderr.
 
 ## Technical Approach
 
@@ -64,3 +64,16 @@ IME, paste, selection, undo, and keymap conflicts remain stable under the new co
 - Parent: `08-31-codex-ux-roadmap-completion`.
 - This is the largest remaining implementation and may be decomposed into child batches during its
   own brainstorm without changing the parent roadmap.
+
+## Research References
+
+- [Terminal accessibility gap audit](./research/terminal-accessibility-gap-audit.md)
+
+## Implementation Batches
+
+1. Canonical keymap contracts, layered config validation, terminal appearance descriptors, and
+   generated configuration reference.
+2. Gateway/TUI effective-keymap projection, viewer/reset flow, live hints, and one-time terminal
+   capability adaptation.
+3. Canonical CLI metadata, bash/zsh/fish/PowerShell completion, and non-TTY drift coverage.
+4. Accessibility, width, IME/paste/resize regressions, documentation, and full quality gates.

@@ -9,6 +9,7 @@ This directory is split by document purpose.
 - [reference/configuration.md](./reference/configuration.md): generated configuration keys, defaults, canonical paths, and compatibility aliases.
 - [reference/config.example.toml](./reference/config.example.toml): generated commented configuration example.
 - [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
+- [terminal-accessibility.md](./terminal-accessibility.md): terminal capabilities, custom keymaps, CJK/IME, paste, resize, completion, and non-TTY behavior.
 - [parity/configuration-ux-baseline.md](./parity/configuration-ux-baseline.md): provider-free UX journeys, budgets, privacy rules, and drift gates.
 - [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.
 - [troubleshooting.md](./troubleshooting.md): provider-free diagnosis and common recovery paths.
