@@ -24,13 +24,13 @@ recovery operations on macOS, Linux, and Windows.
 
 ## Acceptance Criteria
 
-- [ ] `sandbox status/setup/reset` text and JSON output derive from the same redacted typed state.
-- [ ] Setup/reset cannot execute without explicit user intent and return one actionable result.
-- [ ] Windows UAC denial and incomplete setup expose no raw native stack or noisy duplicate errors.
-- [ ] macOS/Linux missing sandbox dependencies are detected before the first restricted command where
+- [x] `sandbox status/setup/reset` text and JSON output derive from the same redacted typed state.
+- [x] Setup/reset cannot execute without explicit user intent and return one actionable result.
+- [x] Windows UAC denial and incomplete setup expose no raw native stack or noisy duplicate errors.
+- [x] macOS/Linux missing sandbox dependencies are detected before the first restricted command where
   the host can determine readiness.
-- [ ] Managed restrictions remain authoritative across environment, config, session, CLI, and TUI.
-- [ ] Platform fixtures and packed artifacts cover every supported readiness transition.
+- [x] Managed restrictions remain authoritative across environment, config, session, CLI, and TUI.
+- [x] Platform fixtures and packed artifacts cover every supported readiness transition.
 
 ## Technical Approach
 
