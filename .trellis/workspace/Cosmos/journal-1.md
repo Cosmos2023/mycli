@@ -893,3 +893,45 @@ Added typed sandbox status, previewed setup/reset recovery, conservative Windows
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: Complete Doctor repair and support bundle
+
+**Date**: 2026-09-01
+**Task**: Complete Doctor repair and support bundle
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Implemented provider-free Doctor repair preview and confirmation, deterministic redacted support bundles, private atomic artifact writes, tests, and public/spec documentation.
+
+### Main Changes
+
+- Added provider-free `doctor --fix` preview and exact-plan confirmation with stale-plan conflict,
+  bounded per-action results, and configuration-owner transaction delegation.
+- Added deterministic, allowlisted support-bundle export with cross-platform redaction, private
+  atomic replacement, stable receipts, and no upload or raw-log collection.
+- Hardened the shared private-file writer, added focused and integration coverage, and documented
+  the repair, support, and trust contracts.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `75c89e82` | feat(doctor): add safe repair and support bundle |
+| `bec86575` | docs(doctor): document repair and support contracts |
+
+### Testing
+
+- [OK] `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and `npm run config:check`
+- [OK] `npm run build`, full `npm test`, `npm run test:ux-contracts`, and `npm run smoke:package`
+- [OK] App 383/383, TUI 636/636, config 117/117, and focused Doctor 10/10 tests
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
