@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "acl.hpp"
+#include "firewall.hpp"
 #include "identity.hpp"
 #include "process.hpp"
 #include "sandbox.hpp"
@@ -114,6 +115,29 @@ int RunTests(const std::filesystem::path& executable) {
     std::filesystem::create_directories(allowed);
     std::filesystem::create_directories(denied);
     std::filesystem::create_directories(allowed / L".git");
+
+    stage("setup-state-reset");
+    const auto setup_state = test_root / L"state";
+    std::filesystem::create_directories(setup_state);
+    {
+        std::ofstream credential{setup_state / L"offline.credential"};
+        std::ofstream temporary{setup_state / L"offline.credential.tmp"};
+        std::ofstream firewall_marker{setup_state / L"firewall.v1"};
+        credential << "credential";
+        temporary << "temporary";
+        firewall_marker << "marker";
+    }
+    mycli::sandbox::ResetOfflineIdentityCredentials(setup_state);
+    mycli::sandbox::ResetOfflineFirewallState(setup_state);
+    mycli::sandbox::ResetOfflineIdentityCredentials(setup_state);
+    mycli::sandbox::ResetOfflineFirewallState(setup_state);
+    if (std::filesystem::exists(setup_state / L"offline.credential") ||
+        std::filesystem::exists(setup_state / L"offline.credential.tmp") ||
+        std::filesystem::exists(setup_state / L"firewall.v1")) {
+        std::cerr << "sandbox setup state reset failed\n";
+        return 1;
+    }
+
     {
         std::ofstream secret{allowed / L".env"};
         secret << "secret";

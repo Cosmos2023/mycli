@@ -261,7 +261,7 @@ jobs:
           $helper = "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe"
           $setup = Start-Process `
             -FilePath $helper `
-            -ArgumentList "--setup" `
+            -ArgumentList "--ensure-setup" `
             -NoNewWindow `
             -Wait `
             -PassThru `
@@ -278,6 +278,16 @@ jobs:
           if ($handshake.protocol_version -ne 1) { throw "helper protocol mismatch" }
           if ($handshake.setup_complete -ne $true) { throw "helper setup is incomplete" }
           if ($handshake.sandbox_ready -ne $false) { throw "incomplete helper must fail closed" }
+
+          # Reset only mycli setup state, preserving the restricted account and firewall rules.
+          $resetOutput = & $helper --reset 2>&1
+          $resetExitCode = $LASTEXITCODE
+          $resetOutput | Tee-Object -FilePath windows-sandbox-setup.log -Append
+          if ($resetExitCode -ne 0) { throw "sandbox setup reset failed" }
+          $resetHandshake = & $helper --handshake | ConvertFrom-Json
+          if ($resetHandshake.setup_complete -ne $false) {
+            throw "sandbox setup reset failed"
+          }
       - name: Publish Windows sandbox setup failure
         if: failure() && github.event_name == 'push'
         shell: pwsh

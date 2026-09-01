@@ -50,11 +50,13 @@ set_tests_properties(protocol PROPERTIES TIMEOUT 30)
 add_executable(mycli-windows-sandbox-primitives-tests
     tests/windows_primitives_tests.cpp
     src/acl.cpp
+    src/firewall.cpp
     src/identity.cpp
     src/process.cpp
     src/sandbox.cpp
     src/sid.cpp
     src/token.cpp
+    src/wfp.cpp
 )
 mycli_configure_windows_target(mycli-windows-sandbox-primitives-tests)
 add_test(NAME windows_primitives COMMAND mycli-windows-sandbox-primitives-tests)

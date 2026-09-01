@@ -369,6 +369,15 @@ void SetupOfflineFirewall(
     if (!marker) throw std::runtime_error("failed to persist firewall setup marker");
 }
 
+void ResetOfflineFirewallState(
+    const std::filesystem::path& state_directory) {
+    std::error_code error;
+    std::filesystem::remove(MarkerPath(state_directory), error);
+    if (error) {
+        throw std::runtime_error("failed to clear sandbox firewall state");
+    }
+}
+
 bool OfflineFirewallSetupReady(
     const std::wstring& offline_sid,
     const std::filesystem::path& state_directory) {
