@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
+- **Total Sessions**: 23
 - **Last Active**: 2026-09-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~853 | Active |
+| `journal-1.md` | ~888 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-09-01 | Complete sandbox setup and recovery UX | `1ee60271`, `c92bb13b`, `84feeb7d` | `feature/mycli-agent-worker-pool` |
 | 22 | 2026-09-01 | Complete unified onboarding and auth management | `677514f3`, `332191e3`, `7b89be02` | `feature/mycli-agent-worker-pool` |
 | 21 | 2026-09-01 | Configuration migration and generated reference | `336f69c2`, `452e06ce` | `feature/mycli-agent-worker-pool` |
 | 20 | 2026-08-31 | UX baseline and contract drift gates | `2c2b96f2`, `70c52d02` | `feature/mycli-agent-worker-pool` |

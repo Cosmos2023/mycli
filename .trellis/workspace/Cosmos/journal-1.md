@@ -241,7 +241,9 @@ Added Ctrl+T alternate-screen transcript viewing with on-demand append-only Shel
 
 ### Main Changes
 
-(Add details)
+- Added typed sandbox readiness and recovery contracts with preview-first setup and reset commands.
+- Added conservative Windows helper reset behavior, stable UAC cancellation handling, and CI recovery coverage.
+- Documented management commands, platform-specific recovery guidance, and runtime/TUI gateway contracts.
 
 ### Git Commits
 
@@ -843,6 +845,46 @@ Added provider-free credential commands and rollback-safe setup, unified the fir
 ### Testing
 
 - [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 23: Complete sandbox setup and recovery UX
+
+**Date**: 2026-09-01
+**Task**: Complete sandbox setup and recovery UX
+**Branch**: `feature/mycli-agent-worker-pool`
+
+### Summary
+
+Added typed sandbox status, previewed setup/reset recovery, conservative Windows helper reset, CI coverage, and user-facing recovery documentation.
+
+### Main Changes
+
+- Added typed sandbox readiness and recovery contracts with preview-first setup and reset commands.
+- Added conservative Windows helper reset behavior, stable UAC cancellation handling, and CI recovery coverage.
+- Documented management commands, platform-specific recovery guidance, and runtime/TUI gateway contracts.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1ee60271` | feat(sandbox): add typed setup and reset recovery |
+| `c92bb13b` | feat(windows): add conservative sandbox state reset |
+| `84feeb7d` | docs(sandbox): document setup and recovery contracts |
+
+### Testing
+
+- [OK] `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and `npm run config:check`
+- [OK] `npm run build`, `npm test`, and `npm run smoke:package`
+- [OK] Local `sandbox status/setup/reset --json` smoke checks
+- Windows native helper compilation and primitive tests remain covered by Windows CI.
 
 ### Status
 
