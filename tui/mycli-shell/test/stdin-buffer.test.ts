@@ -26,3 +26,18 @@ test("stdin buffer completes bracketed paste split across chunks", () => {
 
 	assert.deepEqual(pastes, ["hello world"]);
 });
+
+test("stdin buffer preserves CJK paste when bracket markers arrive in bursts", () => {
+	const buffer = new StdinBuffer();
+	const pastes: string[] = [];
+	const data: string[] = [];
+	buffer.on("paste", (value) => pastes.push(value));
+	buffer.on("data", (value) => data.push(value));
+
+	for (const chunk of ["\x1b[20", "0~北京", "输入\n", "第二行\x1b[20", "1~", "x"]) {
+		buffer.process(chunk);
+	}
+
+	assert.deepEqual(pastes, ["北京输入\n第二行"]);
+	assert.equal(data.join(""), "x");
+});

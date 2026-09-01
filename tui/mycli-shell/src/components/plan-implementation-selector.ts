@@ -1,6 +1,7 @@
 import type { PlanImplementationChoice } from "../plan-implementation.ts";
 import { safeErrorMessage } from "../safe-ui-text.ts";
 import { Container, getKeybindings, Spacer, Text } from "../tui-core/index.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { ResponsiveDescriptionRow, SegmentedHintLine } from "./responsive-row.ts";
@@ -110,7 +111,7 @@ export class PlanImplementationSelectorComponent extends Container {
 		for (let index = 0; index < CHOICES.length; index += 1) {
 			const choice = CHOICES[index]!;
 			const active = index === this.selectedIndex;
-			const prefix = active ? theme.fg("accent", "› ") : "  ";
+			const prefix = active ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			const label = labels[index]!;
 			const descriptionText = choice.choice === "clear_context" && contextUsageLabel
 				? `Fresh thread. Context: ${contextUsageLabel}.`

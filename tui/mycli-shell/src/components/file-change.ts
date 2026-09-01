@@ -3,6 +3,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { Container, type Component } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellFileChange, MycliShellFileChangeEntry } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { renderUnifiedDiff } from "./diff-renderer.ts";
 import {
@@ -18,13 +19,6 @@ const VERBS = {
 	delete: "Deleted",
 	rename: "Renamed",
 } as const;
-
-type FileChangeGlyphs = {
-	bullet: string;
-	branch: string;
-	error: string;
-};
-
 
 export class FileChangeComponent extends Container {
 	private fileChange: MycliShellFileChange;
@@ -43,7 +37,7 @@ export class FileChangeComponent extends Container {
 	private rebuild(): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		const glyphs = glyphsForTerminal();
+		const glyphs = uiGlyphs();
 		if (this.fileChange.status === "error") {
 			this.addChild(new Text(
 				theme.fg("error", `${glyphs.error} ${errorSummary(this.fileChange.summary)}`),
@@ -171,12 +165,4 @@ function formatCounts(added: number, removed: number): string {
 function errorSummary(summary: string): string {
 	const normalized = summary.trim();
 	return normalized || "Failed to apply file change";
-}
-
-
-function glyphsForTerminal(): FileChangeGlyphs {
-	if (process.env.TERM?.toLowerCase() === "dumb") {
-		return { bullet: "*", branch: "\\", error: "x" };
-	}
-	return { bullet: "•", branch: "└", error: "×" };
 }

@@ -1,4 +1,5 @@
 import { Container, getKeybindings, Spacer, Text } from "../tui-core/index.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
@@ -21,7 +22,7 @@ export class WelcomeStepComponent extends Container {
 		this.addChild(new Text(theme.fg("accent", theme.bold("Welcome to mycli")), 1, 0));
 		this.addChild(new Text("Configure a provider, choose how the model runs, and review this workspace.", 1, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(`${theme.fg("accent", "› ")}${theme.bold("Continue")}`, 1, 0));
+		this.addChild(new Text(`${theme.fg("accent", `${uiGlyphs().selector} `)}${theme.bold("Continue")}`, 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(
 			`${keyHint("tui.select.confirm", "continue")}  ${keyHint("tui.select.cancel", "exit")}`,
@@ -118,7 +119,7 @@ export class ConnectivityStepComponent extends Container {
 		}
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(
-			`${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "exit")}`,
+			`${rawKeyHint(`${uiGlyphs().up}${uiGlyphs().down}`, "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "exit")}`,
 			1,
 			0,
 		));
@@ -128,7 +129,7 @@ export class ConnectivityStepComponent extends Container {
 
 	#addOption(index: number, label: string, description: string, disabled = false): void {
 		const selected = index === this.#selectedIndex;
-		const prefix = selected ? theme.fg("accent", "› ") : "  ";
+		const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 		const text = disabled
 			? theme.fg("muted", label)
 			: selected ? theme.fg("accent", theme.bold(label)) : label;
@@ -161,7 +162,7 @@ export class ReadyStepComponent extends Container {
 		if (options.permission) this.#addSummary("Permissions", options.permission);
 		this.#addSummary("Workspace", options.trusted ? "trusted" : "not trusted");
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(`${theme.fg("accent", "› ")}${theme.bold("Open composer")}`, 1, 0));
+		this.addChild(new Text(`${theme.fg("accent", `${uiGlyphs().selector} `)}${theme.bold("Open composer")}`, 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(
 			`${keyHint("tui.select.confirm", "start")}  ${keyHint("tui.select.cancel", "exit")}`,

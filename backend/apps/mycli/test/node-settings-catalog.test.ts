@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SHELL_SETTING_DESCRIPTORS } from "@mycli/config";
+import { TUI_KEYMAP_ACTIONS } from "@mycli/contracts";
 import { buildNodeSettingsCatalog } from "../src/node-runtime/node-settings-catalog.ts";
 
 test("settings catalog projects seven bounded categories and canonical visual descriptors", () => {
 	const catalog = buildNodeSettingsCatalog({
 		settings: { theme: "light", statusbar_mode: "compact" },
 		sources: { theme: "user", statusbar_mode: "user" },
+		keymap: {
+			bindings: { "app.help": ["ctrl+h"] },
+			sources: { "app.help": "user" },
+		},
+		terminalCapabilities: {
+			color_mode: "256",
+			glyph_mode: "ascii",
+			terminal_kind: "standard",
+			progress_visible: true,
+			progress_animated: false,
+			guidance: ["Unicode glyph support is unavailable; using ASCII indicators."],
+		},
 		provider: "openai",
 		model: "gpt-test",
 		reasoningEffort: "high",
@@ -46,7 +60,10 @@ test("settings catalog projects seven bounded categories and canonical visual de
 		"integrations",
 		"diagnostics",
 	]);
-	assert.equal(items.filter((item) => item.category === "appearance").length, 9);
+	assert.equal(
+		items.filter((item) => item.category === "appearance").length,
+		SHELL_SETTING_DESCRIPTORS.length + TUI_KEYMAP_ACTIONS.length + 2,
+	);
 	assert.deepEqual(items.find((item) => item.id === "tui.theme"), {
 		id: "tui.theme",
 		category: "appearance",
@@ -64,6 +81,22 @@ test("settings catalog projects seven bounded categories and canonical visual de
 		search_terms: ["theme", "theme", "tui.theme"],
 	});
 	assert.equal(items.find((item) => item.id === "permissions.profile")?.source, "managed");
+	assert.equal(items.find((item) => item.id === "keymap.app.help")?.value, "ctrl+h");
+	assert.equal(items.find((item) => item.id === "keymap.app.help")?.source, "user");
+	assert.equal(items.find((item) => item.id === "keymap.reset")?.action, "reset_keymap");
+	assert.deepEqual(items.find((item) => item.id === "terminal.capabilities"), {
+		id: "terminal.capabilities",
+		category: "appearance",
+		kind: "status",
+		label: "Terminal capabilities",
+		description: "Unicode glyph support is unavailable; using ASCII indicators.",
+		value: "256 / ascii / static progress",
+		source: "standard",
+		scope: "runtime",
+		locked: false,
+		restart_required: false,
+		search_terms: ["color", "unicode", "ascii", "motion", "contrast", "terminal"],
+	});
 	assert.equal(items.find((item) => item.id === "sessions.context")?.value, "1,200 / 10,000 tokens");
 	assert.deepEqual(items.find((item) => item.id === "diagnostics.updates"), {
 		id: "diagnostics.updates",
@@ -104,5 +137,5 @@ test("settings catalog keeps unavailable actions and private values bounded", ()
 	assert.equal(updates?.locked, true);
 	assert.equal(updates?.lock_reason, "Update status is unavailable");
 	assert.equal(serialized.includes("\n"), false);
-	assert.ok(serialized.length < 12_000);
+	assert.ok(serialized.length < 32_000);
 });

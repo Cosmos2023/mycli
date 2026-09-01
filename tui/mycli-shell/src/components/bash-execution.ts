@@ -3,6 +3,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import { sliceByColumn, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
 import type { MycliShellBash } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { presentationForBash } from "./tool-presentation.ts";
@@ -10,8 +11,6 @@ import { TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
 import { truncateToVisualLines, truncateVisualLinesBalanced } from "./visual-truncate.ts";
 
 const COMMAND_CONTINUATION_MAX_LINES = 2;
-const COMMAND_CONTINUATION_PREFIX = "  │ ";
-const COMMAND_OUTPUT_INITIAL_PREFIX = "  └ ";
 const COMMAND_OUTPUT_SUBSEQUENT_PREFIX = "    ";
 const SHELL_CELL_PADDING_X = TRANSCRIPT_HEADER_INDENT;
 
@@ -44,7 +43,7 @@ export class BashExecutionComponent extends Container {
 		}
 		const terminalDetail = this.terminalDetail();
 		if (terminalDetail) {
-			this.addChild(new Text(theme.fg("muted", `${COMMAND_OUTPUT_INITIAL_PREFIX}${terminalDetail}`), SHELL_CELL_PADDING_X, 0));
+			this.addChild(new Text(theme.fg("muted", `${commandOutputInitialPrefix()}${terminalDetail}`), SHELL_CELL_PADDING_X, 0));
 		}
 		if (this.bash.outputPreview) {
 			this.addChild(this.outputComponent());
@@ -88,7 +87,7 @@ export class BashExecutionComponent extends Container {
 								theme.fg("muted", this.indentedHiddenLinesText(Math.max(this.bash.hiddenLineCount ?? 0, skippedCount))),
 						);
 					cachedLines = result.visualLines;
-					const outputPrefix = `${" ".repeat(SHELL_CELL_PADDING_X)}${COMMAND_OUTPUT_INITIAL_PREFIX}`;
+					const outputPrefix = `${" ".repeat(SHELL_CELL_PADDING_X)}${commandOutputInitialPrefix()}`;
 					const outputPrefixWidth = visibleWidth(outputPrefix);
 					if (this.bash.status === "running" && result.skippedCount > 0 && cachedLines.length > 0 && width > outputPrefixWidth) {
 						cachedLines = [
@@ -132,12 +131,12 @@ export class BashExecutionComponent extends Container {
 			if (this.bash.background !== true && this.bash.yielded !== true) {
 				details.push("esc to interrupt");
 			}
-			const suffix = details.length > 0 ? ` (${details.join(" · ")})` : "";
-			const prefix = `${theme.fg("accent", theme.bold("•"))} ${theme.bold("Running")} `;
+			const suffix = details.length > 0 ? ` (${details.join(` ${uiGlyphs().separator} `)})` : "";
+			const prefix = `${theme.fg("accent", theme.bold(uiGlyphs().bullet))} ${theme.bold("Running")} `;
 			return commandDisplayLines(this.bash.command, prefix, suffix, width);
 		}
 		const color = this.bash.status === "success" ? "success" : "error";
-		const prefix = `${theme.fg(color, theme.bold("•"))} ${theme.bold("Ran")} `;
+		const prefix = `${theme.fg(color, theme.bold(uiGlyphs().bullet))} ${theme.bold("Ran")} `;
 		return commandDisplayLines(this.bash.command, prefix, "", width);
 	}
 
@@ -153,14 +152,14 @@ export class BashExecutionComponent extends Container {
 		if (this.bash.expanded) {
 			details.push(`Shell: ${shellDisplayName(this.bash)}`);
 		}
-		if (this.bash.status === "running") return details.join(" · ") || undefined;
+		if (this.bash.status === "running") return details.join(` ${uiGlyphs().separator} `) || undefined;
 		if (this.bash.exitCode !== undefined && this.bash.exitCode !== 0) {
 			details.push(`exit ${this.bash.exitCode}`);
 		}
 		if (this.bash.terminalState === "timed_out") details.push("timed out");
 		if (this.bash.terminalState === "interrupted") details.push("interrupted");
 		if (this.bash.terminalState === "killed") details.push("killed");
-		return details.join(" · ") || undefined;
+		return details.join(` ${uiGlyphs().separator} `) || undefined;
 	}
 
 	private connectedOutput(width: number): string {
@@ -173,7 +172,7 @@ export class BashExecutionComponent extends Container {
 				const segments = wrapTextWithAnsi(line, outputWidth);
 				return segments.map((segment, segmentIndex) => {
 					const prefix = index === 0 && segmentIndex === 0
-						? COMMAND_OUTPUT_INITIAL_PREFIX
+						? commandOutputInitialPrefix()
 						: COMMAND_OUTPUT_SUBSEQUENT_PREFIX;
 					return `${prefix}${segment}`;
 				});
@@ -184,7 +183,7 @@ export class BashExecutionComponent extends Container {
 	private commandDetail(): string {
 		const commandLines = this.bash.command.split(/\r?\n/);
 		return [
-			`${COMMAND_OUTPUT_INITIAL_PREFIX}Command:`,
+			`${commandOutputInitialPrefix()}Command:`,
 			...commandLines.map((line) => `${COMMAND_OUTPUT_SUBSEQUENT_PREFIX}${line}`),
 		].join("\n");
 	}
@@ -192,7 +191,7 @@ export class BashExecutionComponent extends Container {
 	private hiddenLinesText(hiddenCount: number): string {
 		return this.bash.expanded
 			? keyHint("app.tools.expand", "collapse")
-			: `… +${hiddenCount} lines (${keyHint("app.transcript.open", "to view transcript")})`;
+			: `${uiGlyphs().ellipsis} +${hiddenCount} lines (${keyHint("app.transcript.open", "to view transcript")})`;
 	}
 
 	private indentedHiddenLinesText(hiddenCount: number): string {
@@ -218,7 +217,8 @@ function commandDisplayLines(command: string, headerPrefix: string, suffix: stri
 	const headerWidth = visibleWidth(headerPrefix);
 	const firstWidth = Math.max(1, width - headerWidth);
 	const firstSegments = wrapTextWithAnsi(firstLine, firstWidth);
-	const continuationWidth = Math.max(1, width - visibleWidth(COMMAND_CONTINUATION_PREFIX));
+	const continuationPrefix = commandContinuationPrefix();
+	const continuationWidth = Math.max(1, width - visibleWidth(continuationPrefix));
 	const continuationSegments = [
 		...firstSegments.slice(1),
 		...remainingLines.flatMap((line) => wrapTextWithAnsi(line, continuationWidth)),
@@ -227,18 +227,26 @@ function commandDisplayLines(command: string, headerPrefix: string, suffix: stri
 	const omitted = continuationSegments.length - displayedContinuations.length;
 	const lines = [
 		`${headerPrefix}${firstSegments[0] ?? "command"}`,
-		...displayedContinuations.map((line) => `${theme.fg("muted", COMMAND_CONTINUATION_PREFIX)}${line}`),
+		...displayedContinuations.map((line) => `${theme.fg("muted", continuationPrefix)}${line}`),
 	];
 	if (omitted > 0) {
-		lines.push(theme.fg("muted", `${COMMAND_CONTINUATION_PREFIX}… +${omitted} lines`));
+		lines.push(theme.fg("muted", `${continuationPrefix}${uiGlyphs().ellipsis} +${omitted} lines`));
 	}
 	if (suffix) {
 		const styledSuffix = theme.fg("muted", suffix);
 		if (visibleWidth(`${lines[0]}${styledSuffix}`) <= width) {
 			lines[0] = `${lines[0]}${styledSuffix}`;
 		} else {
-			lines.push(`${theme.fg("muted", COMMAND_CONTINUATION_PREFIX)}${suffix.trim()}`);
+			lines.push(`${theme.fg("muted", continuationPrefix)}${suffix.trim()}`);
 		}
 	}
 	return lines;
+}
+
+function commandContinuationPrefix(): string {
+	return `  ${uiGlyphs().vertical} `;
+}
+
+function commandOutputInitialPrefix(): string {
+	return `  ${uiGlyphs().branch} `;
 }

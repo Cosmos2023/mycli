@@ -20,10 +20,12 @@ function visibleContentLines(lines: string[]): string[] {
 
 function renderColoredUserMessage(): string[] {
 	const fixture = fileURLToPath(new URL("./fixtures/render-user-message-theme.ts", import.meta.url));
+	const env = { ...process.env };
+	delete env.NO_COLOR;
 	const result = spawnSync(process.execPath, ["--import", "tsx", fixture], {
 		encoding: "utf8",
 		env: {
-			...process.env,
+			...env,
 			MYCLI_TUI_COLOR: "always",
 			COLORTERM: "truecolor",
 		},

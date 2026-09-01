@@ -1,6 +1,7 @@
 import { TruncatedText } from "../tui-core/components/truncated-text.ts";
 import { fuzzyFilter } from "../tui-core/fuzzy.ts";
 import { Container } from "../tui-core/tui.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 type ProviderItem = { id: string; name: string; configured?: boolean };
@@ -49,11 +50,11 @@ export class ProviderList<T extends ProviderItem> extends Container {
 			const provider = this.items[index];
 			if (!provider) continue;
 			const selected = index === this.selectedIndex;
-			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 			const name = theme.fg(selected ? "accent" : "text", provider.name);
 			const status = provider.configured
-				? theme.fg("success", " ✓ configured")
-				: theme.fg("muted", " • unconfigured");
+				? theme.fg("success", ` ${uiGlyphs().success} configured`)
+				: theme.fg("muted", ` ${uiGlyphs().bullet} unconfigured`);
 			this.addChild(new TruncatedText(prefix + name + status + (this.options.detail?.(provider) ?? ""), 1, 0));
 		}
 		if (this.options.showPosition && (start > 0 || end < this.items.length)) {

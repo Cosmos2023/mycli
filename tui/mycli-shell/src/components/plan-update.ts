@@ -1,6 +1,7 @@
 import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
 import type { MycliShellPlanStepStatus, MycliShellPlanUpdate } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 export class PlanUpdateComponent implements Component {
@@ -15,7 +16,7 @@ export class PlanUpdateComponent implements Component {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const title = this.update.title.trim() || "Updated Plan";
-		const lines = ["", this.fit(theme.fg("accent", theme.bold(`• ${title}`)), safeWidth)];
+		const lines = ["", this.fit(theme.fg("accent", theme.bold(`${uiGlyphs().bullet} ${title}`)), safeWidth)];
 		const explanation = this.update.explanation?.replace(/[\r\n\t]+/g, " ").trim();
 		if (explanation) {
 			for (const line of wrapTextWithAnsi(explanation, Math.max(1, safeWidth - 2))) {
@@ -27,7 +28,7 @@ export class PlanUpdateComponent implements Component {
 			return lines;
 		}
 		for (const step of this.update.steps) {
-			const marker = step.status === "completed" ? "✔" : "□";
+			const marker = step.status === "completed" ? uiGlyphs().completed : uiGlyphs().pending;
 			const text = step.text.replace(/[\r\n\t]+/g, " ").trim();
 			const wrapped = wrapTextWithAnsi(text, Math.max(1, safeWidth - 4));
 			for (const [index, line] of wrapped.entries()) {

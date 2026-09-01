@@ -8,6 +8,7 @@ import {
 } from "../tui-core/index.ts";
 import { getKeybindings } from "../tui-core/keybindings.ts";
 import type { MycliShellAuthProvider } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -211,11 +212,11 @@ export class LoginFlowComponent extends Container implements Focusable {
 	}
 
 	private maskedApiKey(): string {
-		return this.apiKey.length > 0 ? "•".repeat(this.apiKey.length) : theme.fg("dim", "API key");
+		return this.apiKey.length > 0 ? uiGlyphs().mask.repeat(this.apiKey.length) : theme.fg("dim", "API key");
 	}
 
 	private cursor(): string {
-		return this._focused ? theme.fg("accent", "▌") : "";
+		return this._focused ? theme.fg("accent", uiGlyphs().cursor) : "";
 	}
 }
 

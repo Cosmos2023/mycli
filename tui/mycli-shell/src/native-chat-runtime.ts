@@ -2,6 +2,7 @@ import { createInterface, type Interface } from "node:readline";
 import { isSlashCommandSubmission } from "./adapters/slash-commands.ts";
 import { renderMycliShell, renderTranscriptBlocks } from "./shell-app.ts";
 import type { MycliShellCommandSpec, MycliShellState } from "./model.ts";
+import { uiGlyphs } from "./theme/terminal-style.ts";
 
 type NativeChatStreams = {
 	input: NodeJS.ReadableStream;
@@ -167,7 +168,7 @@ export class NativeChatRuntime {
 
 	private promptText(): string {
 		const live = this.state.footer.liveState && this.state.footer.liveState !== "Idle" ? ` ${this.state.footer.liveState}` : "";
-		return `\n▸ Message mycli${live}  `;
+		return `\n${uiGlyphs().prompt} Message mycli${live}  `;
 	}
 
 	private writeLines(lines: string[]): void {

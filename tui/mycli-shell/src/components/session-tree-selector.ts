@@ -10,6 +10,7 @@ import {
 	visibleWidth,
 } from "../tui-core/index.ts";
 import type { MycliShellSessionTree, MycliShellSessionTreeNode } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -133,7 +134,7 @@ export class SessionTreeSelectorComponent extends Container {
 				keyHint("tui.select.confirm", "select"),
 				theme.fg("muted", "h/l fold"),
 				theme.fg("muted", "type to search"),
-			].join(theme.fg("muted", " · ")),
+			].join(theme.fg("muted", ` ${uiGlyphs().separator} `)),
 			width,
 			"...",
 		);
@@ -206,10 +207,16 @@ export class SessionTreeSelectorComponent extends Container {
 	}
 
 	private renderNodeLine(node: MycliShellSessionTreeNode, selected: boolean): string {
-		const prefix = selected ? theme.fg("accent", "→ ") : "  ";
+		const prefix = selected ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 		const indent = "  ".repeat(Math.max(0, node.depth));
-		const connector = node.kind === "session" ? (this.collapsed.has(node.id) ? "▶" : "▼") : "•";
-		const active = node.active ? theme.fg("success", "● ") : node.onActivePath ? theme.fg("accent", "│ ") : "  ";
+		const connector = node.kind === "session"
+			? (this.collapsed.has(node.id) ? uiGlyphs().collapsed : uiGlyphs().expanded)
+			: uiGlyphs().bullet;
+		const active = node.active
+			? theme.fg("success", `${uiGlyphs().active} `)
+			: node.onActivePath
+				? theme.fg("accent", `${uiGlyphs().vertical} `)
+				: "  ";
 		const label = node.label ? ` [${node.label}]` : "";
 		const count = node.messageCount === undefined ? "" : theme.fg("muted", ` ${node.messageCount} msg`);
 		const role = node.kind === "message" ? theme.fg("muted", `${node.role}: `) : "";

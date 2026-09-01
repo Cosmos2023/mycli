@@ -1,6 +1,7 @@
 import type {
 	DiagnosticCategory,
 	DiagnosticRecoveryAction,
+	TuiKeymapActionId,
 } from "@mycli/contracts";
 
 export type MycliShellNoticeDiagnostic = {
@@ -395,6 +396,30 @@ export type MycliShellVisualSettings = {
 	clearOnShrink?: boolean;
 	terminalProgress?: boolean;
 	subagentDensity?: "compact" | "normal" | "detailed";
+	colorMode?: "auto" | "truecolor" | "256" | "16" | "none";
+	reducedMotion?: boolean;
+	glyphMode?: "auto" | "unicode" | "ascii";
+	highContrast?: boolean;
+};
+
+export type MycliShellEffectiveKeymap = {
+	version: 1;
+	bindings: Record<TuiKeymapActionId, string[]>;
+	sources: Record<TuiKeymapActionId, string>;
+	overridden: Record<TuiKeymapActionId, string[]>;
+};
+
+export type MycliShellTerminalCapabilities = {
+	version: 1;
+	colorMode: "truecolor" | "256" | "16" | "none";
+	colorForcedOff: boolean;
+	glyphMode: "unicode" | "ascii";
+	terminalKind: "dumb" | "standard" | "windows_terminal";
+	progressVisible: boolean;
+	progressAnimated: boolean;
+	reducedMotion: boolean;
+	highContrast: boolean;
+	guidance: string[];
 };
 
 export type MycliShellSettingsCategoryId =
@@ -442,6 +467,8 @@ export type MycliShellSettingsCatalog = {
 export type MycliShellSettingsSnapshot = {
 	settings: MycliShellVisualSettings;
 	catalog?: MycliShellSettingsCatalog;
+	keymap?: MycliShellEffectiveKeymap;
+	terminalCapabilities?: MycliShellTerminalCapabilities;
 };
 
 export type MycliShellSettingChange = {
@@ -654,6 +681,8 @@ export type MycliShellState = {
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;
 	settingsCatalog?: MycliShellSettingsCatalog;
+	keymap?: MycliShellEffectiveKeymap;
+	terminalCapabilities?: MycliShellTerminalCapabilities;
 	sessions?: MycliShellSession[];
 	resources?: MycliShellResource[];
 	permissions?: MycliShellPermissionState;

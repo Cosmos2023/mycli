@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createMycliKeybindings } from "../src/keybindings.ts";
-import { formatKeyText } from "../src/components/keybinding-hints.ts";
+import { formatKeyText, keyHint } from "../src/components/keybinding-hints.ts";
+import { setKeybindings } from "../src/tui-core/keybindings.ts";
 
 test("default app and widget keybindings have no same-context conflicts", () => {
 	const keybindings = createMycliKeybindings();
@@ -26,4 +27,16 @@ test("macOS renders alt as option", () => {
 test("Linux and Windows keep alt labels", () => {
 	assert.equal(formatKeyText("alt+up", "linux"), "alt+up");
 	assert.equal(formatKeyText("alt+up", "win32"), "alt+up");
+});
+
+test("visible hints use the effective binding instead of a hard-coded default", () => {
+	const customized = createMycliKeybindings({
+		"app.help": ["ctrl+h"],
+	});
+	setKeybindings(customized);
+	try {
+		assert.match(keyHint("app.help", "help").replace(/\x1b\[[0-9;]*m/gu, ""), /^ctrl\+h help$/u);
+	} finally {
+		setKeybindings(createMycliKeybindings());
+	}
 });

@@ -1,5 +1,6 @@
 import { Container, getKeybindings, Input, Spacer, Text, TruncatedText, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
 import type { MycliShellSession } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -126,9 +127,9 @@ export class SessionSelectorComponent extends Container {
 		const second = truncateToWidth(
 			[
 				keyHint("tui.input.tab", "scope"),
-				theme.fg("muted", 'type to search · re:<pattern> regex · "phrase" exact'),
+				theme.fg("muted", `type to search ${uiGlyphs().separator} re:<pattern> regex ${uiGlyphs().separator} "phrase" exact`),
 				theme.fg("muted", `path ${pathState}`),
-			].join(theme.fg("muted", " · ")),
+			].join(theme.fg("muted", ` ${uiGlyphs().separator} `)),
 			width,
 			"...",
 		);
@@ -159,13 +160,13 @@ export class SessionSelectorComponent extends Container {
 			const session = this.filteredSessions[index];
 			if (!session) continue;
 			const selected = index === this.selectedIndex;
-			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 			const titleText = sessionDisplayTitle(session);
 			const title = selected ? theme.fg("accent", titleText) : titleText;
 			const current = session.current ? "current" : undefined;
 			const count = session.messageCount === undefined ? undefined : `${session.messageCount} msg`;
 			const activity = session.modified ?? session.lastActive;
-			const primaryMeta = [current, sessionStatusLabel(session), activity, count].filter(Boolean).join(" · ");
+			const primaryMeta = [current, sessionStatusLabel(session), activity, count].filter(Boolean).join(` ${uiGlyphs().separator} `);
 			const primary = primaryMeta ? `${prefix}${title} ${theme.fg("muted", primaryMeta)}` : `${prefix}${title}`;
 			this.listContainer.addChild(new TruncatedText(primary, 0, 0));
 			const id = session.title || session.firstMessage ? session.id : undefined;
@@ -179,7 +180,7 @@ export class SessionSelectorComponent extends Container {
 				: undefined;
 			const detail = [model, session.collaborationMode, session.permissionProfile, lock, relation, path, id]
 				.filter(Boolean)
-				.join(" · ");
+				.join(` ${uiGlyphs().separator} `);
 			if (detail) this.listContainer.addChild(new TruncatedText(theme.fg("muted", `    ${detail}`), 0, 0));
 		}
 		if (this.filteredSessions.length > maxVisible) {

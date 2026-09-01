@@ -1,5 +1,6 @@
 import { Markdown } from "../tui-core/components/markdown.ts";
 import { Container } from "../tui-core/tui.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
 import { applyBackgroundToLine } from "../tui-core/utils.ts";
@@ -34,7 +35,7 @@ export class UserMessageComponent extends Container {
 			? []
 			: [
 				" ".repeat(safeWidth),
-				...renderTranscriptMessageLines(content, safeWidth, theme.fg("accent", "› ")),
+				...renderTranscriptMessageLines(content, safeWidth, theme.fg("accent", `${uiGlyphs().selector} `)),
 				" ".repeat(safeWidth),
 			];
 		const backgroundLines = rawLines.map((line) =>

@@ -233,6 +233,11 @@ export interface EditorTheme {
 	borderColor: (str: string) => string;
 	imageMarker?: (str: string) => string;
 	selectList: SelectListTheme;
+	readonly glyphs?: {
+		readonly horizontal: string;
+		readonly up: string;
+		readonly down: string;
+	};
 }
 
 export interface EditorOptions {
@@ -513,7 +518,8 @@ export class Editor implements Component, Focusable {
 		// Store for cursor navigation (must match wrapping width)
 		this.lastWidth = layoutWidth;
 
-		const horizontal = this.borderColor("─");
+		const horizontalGlyph = this.theme.glyphs?.horizontal ?? "─";
+		const horizontal = this.borderColor(horizontalGlyph);
 
 		// Layout the text
 		const layoutLines = this.layoutText(layoutWidth);
@@ -546,10 +552,10 @@ export class Editor implements Component, Focusable {
 
 		// Render top border (with scroll indicator if scrolled down)
 		if (this.scrollOffset > 0) {
-			const indicator = `─── ↑ ${this.scrollOffset} more `;
+			const indicator = `${horizontalGlyph.repeat(3)} ${this.theme.glyphs?.up ?? "↑"} ${this.scrollOffset} more `;
 			const remaining = renderWidth - visibleWidth(indicator);
 			if (remaining >= 0) {
-				result.push(this.borderColor(indicator + "─".repeat(remaining)));
+				result.push(this.borderColor(indicator + horizontalGlyph.repeat(remaining)));
 			} else {
 				result.push(this.borderColor(truncateToWidth(indicator, renderWidth)));
 			}
@@ -607,9 +613,9 @@ export class Editor implements Component, Focusable {
 		// Render bottom border (with scroll indicator if more content below)
 		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
 		if (linesBelow > 0) {
-			const indicator = `─── ↓ ${linesBelow} more `;
+			const indicator = `${horizontalGlyph.repeat(3)} ${this.theme.glyphs?.down ?? "↓"} ${linesBelow} more `;
 			const remaining = renderWidth - visibleWidth(indicator);
-			result.push(this.borderColor(indicator + "─".repeat(Math.max(0, remaining))));
+			result.push(this.borderColor(indicator + horizontalGlyph.repeat(Math.max(0, remaining))));
 		} else {
 			result.push(horizontal.repeat(renderWidth));
 		}

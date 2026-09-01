@@ -1,5 +1,6 @@
 import { Container, getKeybindings, Input, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
 import type { MycliShellResource } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -100,7 +101,7 @@ export class ResourceSelectorComponent extends Container {
 		const gap = Math.max(1, width - visibleWidth(title) - visibleWidth(right));
 		return [
 			truncateToWidth(`${title}${" ".repeat(gap)}${right}`, width, ""),
-			truncateToWidth(`${keyHint("tui.input.tab", "type")} · type to search · Enter opens runtime inspect output`, width, "..."),
+			truncateToWidth(`${keyHint("tui.input.tab", "type")} ${uiGlyphs().separator} type to search ${uiGlyphs().separator} Enter opens runtime inspect output`, width, "..."),
 		];
 	}
 
@@ -133,13 +134,13 @@ export class ResourceSelectorComponent extends Container {
 	}
 
 	private resourceLine(resource: MycliShellResource, selected: boolean): string {
-		const prefix = selected ? theme.fg("selectorMatch", "→ ") : "  ";
+		const prefix = selected ? theme.fg("selectorMatch", `${uiGlyphs().arrow} `) : "  ";
 		const marker = resource.enabled === false ? "off" : resource.enabled === true ? "on" : resource.status ?? "info";
 		const labelColor = resourceTypeColor(resource.type);
 		const label = selected ? theme.fg("selectorMatch", resource.name) : theme.fg(labelColor, resource.name);
 		const statusColor = resourceStatusColor(resource);
 		const source = resource.source ? theme.fg("selectorMeta", resource.source) : undefined;
-		const meta = [theme.fg(labelColor, resource.type), source, theme.fg(statusColor, marker)].filter(Boolean).join(theme.fg("selectorMeta", " · "));
+		const meta = [theme.fg(labelColor, resource.type), source, theme.fg(statusColor, marker)].filter(Boolean).join(theme.fg("selectorMeta", ` ${uiGlyphs().separator} `));
 		return `${prefix}${label} ${truncateToWidth(meta, 72, "...")}`;
 	}
 }

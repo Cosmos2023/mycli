@@ -2,6 +2,7 @@ import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth } from "../tui-core/utils.ts";
 import type { MycliShellBackgroundTerminals } from "../model.ts";
 import { theme } from "../theme/theme.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 
 const PROCESS_LIMIT = 16;
 
@@ -23,9 +24,9 @@ export class BackgroundTerminalsComponent implements Component {
 		}
 
 		for (const process of visibleProcesses) {
-			lines.push(this.line(`${theme.fg("accent", "  •")} ${sanitizeLine(process.commandPreview) || "command"}`, width));
+			lines.push(this.line(`${theme.fg("accent", `  ${uiGlyphs().bullet}`)} ${sanitizeLine(process.commandPreview) || "command"}`, width));
 			for (const output of process.recentOutput) {
-				lines.push(this.line(theme.fg("muted", `    ↳ ${sanitizeLine(output)}`), width));
+				lines.push(this.line(theme.fg("muted", `    ${uiGlyphs().continuation} ${sanitizeLine(output)}`), width));
 			}
 		}
 		const hiddenCount = this.backgroundTerminals.processes.length - visibleProcesses.length;

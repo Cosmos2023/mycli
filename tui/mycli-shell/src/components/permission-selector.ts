@@ -1,5 +1,6 @@
 import { Container, getKeybindings, Spacer, Text } from "../tui-core/index.ts";
 import type { MycliShellPermissionProfile, MycliShellPermissionState } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 type PermissionStage = "profiles" | "confirm-full-access" | "allowances";
@@ -148,7 +149,7 @@ export class PermissionSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.permissions.profiles.forEach((profile, index) => {
 			const current = profile.current ? " (current)" : "";
-			const prefix = index === this.selectedIndex ? theme.fg("accent", "› ") : "  ";
+			const prefix = index === this.selectedIndex ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			const label = `${profile.label}${current}`;
 			this.addChild(new Text(`${prefix}${index === this.selectedIndex ? theme.fg("accent", theme.bold(label)) : theme.bold(label)}`, 0, 0));
 			this.addChild(new Text(theme.fg(profile.disabledReason ? "warning" : "muted", `    ${profile.disabledReason ?? profile.description}`), 0, 0));
@@ -158,7 +159,7 @@ export class PermissionSelectorComponent extends Container {
 		if (this.showAllowances) {
 			this.addChild(new Spacer(1));
 			const allowanceIndex = this.permissions.profiles.length;
-			const prefix = allowanceIndex === this.selectedIndex ? theme.fg("accent", "› ") : "  ";
+			const prefix = allowanceIndex === this.selectedIndex ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			this.addChild(new Text(`${prefix}${theme.bold("Command allowances...")}`, 0, 0));
 			this.addChild(new Text(theme.fg("muted", `    ${this.permissions.commandAllowanceCount} active for this session`), 0, 0));
 		}
@@ -172,10 +173,10 @@ export class PermissionSelectorComponent extends Container {
 		if (effective) {
 			this.addChild(new Text(theme.fg(
 				effective.constrained ? "warning" : "muted",
-				`  Effective: ${filesystemLabel(effective.filesystem)} · network ${effective.network} · ${approvalLabel(effective.approvalBehavior)}`,
+				`  Effective: ${filesystemLabel(effective.filesystem)} ${uiGlyphs().separator} network ${effective.network} ${uiGlyphs().separator} ${approvalLabel(effective.approvalBehavior)}`,
 			), 0, 0));
 			const constraint = effective.constrained
-				? ` · constrained by ${effective.constraintsSource ?? "runtime"}`
+				? ` ${uiGlyphs().separator} constrained by ${effective.constraintsSource ?? "runtime"}`
 				: "";
 			this.addChild(new Text(theme.fg("muted", `  Policy: ${effective.source}${constraint}`), 0, 0));
 		}
@@ -185,7 +186,7 @@ export class PermissionSelectorComponent extends Container {
 				: "warning";
 			this.addChild(new Text(theme.fg(
 				color,
-				`  Sandbox: ${readinessLabel(readiness.state)} · ${isolationLabel(readiness.isolation)}`,
+				`  Sandbox: ${readinessLabel(readiness.state)} ${uiGlyphs().separator} ${isolationLabel(readiness.isolation)}`,
 			), 0, 0));
 		}
 	}
@@ -211,7 +212,7 @@ export class PermissionSelectorComponent extends Container {
 	}
 
 	private renderSimpleOption(index: number, label: string, disabled = false): void {
-		const prefix = index === this.selectedIndex ? theme.fg("accent", "› ") : "  ";
+		const prefix = index === this.selectedIndex ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 		const value = disabled ? theme.fg("muted", label) : index === this.selectedIndex ? theme.fg("accent", label) : label;
 		this.addChild(new Text(`${prefix}${value}`, 0, 0));
 	}
@@ -219,7 +220,7 @@ export class PermissionSelectorComponent extends Container {
 
 function permissionEffects(profile: MycliShellPermissionProfile): string | null {
 	if (!profile.filesystem || !profile.network || !profile.approvalBehavior) return null;
-	return `${filesystemLabel(profile.filesystem)} · network ${profile.network} · ${approvalLabel(profile.approvalBehavior)}`;
+	return `${filesystemLabel(profile.filesystem)} ${uiGlyphs().separator} network ${profile.network} ${uiGlyphs().separator} ${approvalLabel(profile.approvalBehavior)}`;
 }
 
 function filesystemLabel(value: NonNullable<MycliShellPermissionProfile["filesystem"]>): string {

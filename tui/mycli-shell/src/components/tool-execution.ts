@@ -3,6 +3,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellTool } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -83,12 +84,12 @@ export class ToolExecutionComponent extends Container {
 			theme.fg(presentation.accent, theme.bold(target)),
 			duration ? theme.fg("dim", ` ${duration}`) : "",
 		].join("");
-		return truncateToWidth(line, width, theme.fg("dim", "…"), true);
+		return truncateToWidth(line, width, theme.fg("dim", uiGlyphs().ellipsis), true);
 	}
 
 	private resultText(): string {
 		const color = this.tool.status === "error" ? "error" : "muted";
-		return theme.fg(color, `⎿ ${this.resultSummary()}`);
+		return theme.fg(color, `${uiGlyphs().output} ${this.resultSummary()}`);
 	}
 
 	private resultSummary(): string {

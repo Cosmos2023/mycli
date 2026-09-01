@@ -4,9 +4,14 @@ import test from "node:test";
 import {
 	CachedUpdateError,
 	isStableSemanticVersion,
+	SHELL_SETTING_DESCRIPTORS,
 	type CachedUpdateStatus,
 } from "@mycli/config";
-import { parseGatewayEvent, parseJsonRpcMessage } from "@mycli/contracts";
+import {
+	parseGatewayEvent,
+	parseJsonRpcMessage,
+	TUI_KEYMAP_ACTIONS,
+} from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	fingerprintSubmission,
@@ -314,6 +319,41 @@ function gatewayHarness(options: {
 		statusbar_mode: "default",
 		view_mode: "default",
 	};
+	const defaultKeymapBindings = Object.freeze(Object.fromEntries(
+		TUI_KEYMAP_ACTIONS.map((action) => [action.id, [...action.defaultKeys]]),
+	));
+	let keymapBindings: Readonly<Record<string, readonly string[]>> = {
+		...defaultKeymapBindings,
+		"app.help": ["ctrl+h"],
+	};
+	let keymapSources: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
+		TUI_KEYMAP_ACTIONS.map((action) => [action.id, action.id === "app.help" ? "user" : "default"]),
+	));
+	let keymapResets = 0;
+	const controlSettingsSnapshot = (): Readonly<Record<string, unknown>> => ({
+		settings: { ...visualSettings },
+		sources: { ...visualSettingSources },
+		keymap: {
+			version: 1,
+			bindings: Object.fromEntries(
+				Object.entries(keymapBindings).map(([key, values]) => [key, [...values]]),
+			),
+			sources: { ...keymapSources },
+			overridden: Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [action.id, []])),
+		},
+		terminal_capabilities: {
+			version: 1,
+			color_mode: "256",
+			color_forced_off: false,
+			glyph_mode: "unicode",
+			terminal_kind: "standard",
+			progress_visible: true,
+			progress_animated: true,
+			reduced_motion: false,
+			high_contrast: false,
+			guidance: [],
+		},
+	});
 	let updateChecks = 0;
 	let updateStatus: CachedUpdateStatus = {
 		schemaVersion: 1,
@@ -704,28 +744,27 @@ function gatewayHarness(options: {
 						selectedModels.push({ ...input });
 						return { ...input, name: String(input.model), current: true };
 					},
-					loadSettings: async () => ({
-						settings: { ...visualSettings },
-						sources: { ...visualSettingSources },
-					}),
+					loadSettings: async () => controlSettingsSnapshot(),
+					resetKeymap: async () => {
+						keymapResets += 1;
+						keymapBindings = defaultKeymapBindings;
+						keymapSources = Object.freeze(Object.fromEntries(
+							TUI_KEYMAP_ACTIONS.map((action) => [action.id, "default"]),
+						));
+						return controlSettingsSnapshot();
+					},
 					saveSetting: async (settingId: string, value: string | boolean) => {
 						const key = settingId.startsWith("tui.") ? settingId.slice(4) : settingId;
 						visualSettings = { ...visualSettings, [key]: value };
 						visualSettingSources = { ...visualSettingSources, [key]: "user" };
-						return {
-							settings: { ...visualSettings },
-							sources: { ...visualSettingSources },
-						};
+						return controlSettingsSnapshot();
 					},
 					saveSettings: async (settings: Readonly<Record<string, unknown>>) => {
 						visualSettings = { ...settings };
 						visualSettingSources = Object.fromEntries(
 							Object.keys(visualSettings).map((key) => [key, "user" as const]),
 						);
-						return {
-							settings: { ...visualSettings },
-							sources: { ...visualSettingSources },
-						};
+						return controlSettingsSnapshot();
 					},
 					completePath: async (prefix: string) => [{ value: `${prefix}README.md`, kind: "file" }],
 				},
@@ -772,6 +811,7 @@ function gatewayHarness(options: {
 		sessionCommandCalls,
 		savedApiKeys,
 		selectedModels,
+		keymapResets: () => keymapResets,
 		updateChecks: () => updateChecks,
 		traceAppends,
 	};
@@ -1222,8 +1262,29 @@ test("canonical control RPCs use injected Node services and update active state"
 		"result" in loadedSettings
 			? loadedSettings.result.catalog.items.filter((item: { category: string }) => item.category === "appearance").length
 			: 0,
-		9,
+		SHELL_SETTING_DESCRIPTORS.length + TUI_KEYMAP_ACTIONS.length + 2,
 	);
+	assert.deepEqual(
+		"result" in loadedSettings
+			? loadedSettings.result.keymap.bindings["app.help"]
+			: null,
+		["ctrl+h"],
+	);
+	assert.equal(
+		"result" in loadedSettings
+			? loadedSettings.result.terminal_capabilities.color_mode
+			: null,
+		"256",
+	);
+	const resetKeymap = await harness.send("settings.keymap.reset");
+	assert.equal("result" in resetKeymap ? resetKeymap.result.ok : null, true);
+	assert.deepEqual(
+		"result" in resetKeymap
+			? resetKeymap.result.keymap.bindings["app.help"]
+			: null,
+		["?"],
+	);
+	assert.equal(harness.keymapResets(), 1);
 	const savedSettings = await harness.send("settings.save", {
 		setting_id: "tui.view_mode",
 		value: "verbose",

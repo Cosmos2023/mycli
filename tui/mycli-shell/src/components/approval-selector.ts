@@ -1,5 +1,6 @@
 import type { MycliShellPendingApproval } from "../model.ts";
 import { getKeybindings, Spacer, Text, Container, TruncatedText } from "../tui-core/index.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -49,7 +50,7 @@ export class ApprovalSelectorComponent extends Container {
 		this.addChild(new Text(this.titleText(), 1, 0));
 		this.addChild(new TruncatedText(this.commandPreview(), 3, 0));
 		if (this.approval.childSessionId) {
-			this.addChild(new TruncatedText(theme.fg("muted", `⎿ ${this.approval.childSessionId}`), 3, 0));
+			this.addChild(new TruncatedText(theme.fg("muted", `${uiGlyphs().output} ${this.approval.childSessionId}`), 3, 0));
 		}
 		if (this.approval.reason) {
 			this.addChild(new Text(theme.fg("muted", this.approval.reason), 3, 0));
@@ -161,7 +162,7 @@ export class ApprovalSelectorComponent extends Container {
 				continue;
 			}
 			const isSelected = index === this.selectedIndex;
-			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
+			const prefix = isSelected ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 			const shortcut = approvalShortcuts[option.choice];
 			const optionText = shortcut ? `${shortcut}. ${option.label}` : option.label;
 			const label = isSelected ? theme.fg("accent", optionText) : theme.fg("text", optionText);
@@ -179,7 +180,7 @@ export class ApprovalSelectorComponent extends Container {
 			.filter((hint): hint is string => hint !== undefined);
 		return [
 			...optionHints,
-			rawKeyHint("↑↓", "navigate"),
+			rawKeyHint(`${uiGlyphs().up}${uiGlyphs().down}`, "navigate"),
 			keyHint("tui.select.confirm", "confirm"),
 			keyHint("tui.select.cancel", "reject"),
 		];
@@ -205,19 +206,19 @@ export class ApprovalSelectorComponent extends Container {
 			this.approval.toolName,
 			this.approval.workerName ? `@${this.approval.workerName}` : undefined,
 		].filter((part): part is string => Boolean(part));
-		const suffix = parts.length ? theme.fg("muted", ` · ${parts.join(" · ")}`) : "";
+		const suffix = parts.length ? theme.fg("muted", ` ${uiGlyphs().separator} ${parts.join(` ${uiGlyphs().separator} `)}`) : "";
 		return `${theme.fg("warning", theme.bold("Permission required"))}${suffix}`;
 	}
 
 	private commandPreview(): string {
 		const preview = this.approval.preview.replace(/\s+/g, " ").trim();
-		return theme.fg("text", `⎿ ${preview}`);
+		return theme.fg("text", `${uiGlyphs().output} ${preview}`);
 	}
 
 	private riskText(): string {
 		return [this.approval.risk ? `risk: ${this.approval.risk}` : "", this.approval.riskReason]
 			.filter(Boolean)
-			.join(" · ");
+			.join(` ${uiGlyphs().separator} `);
 	}
 
 	private permissionRequestLines(): string[] {

@@ -1,6 +1,7 @@
 import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import type { MycliShellMessage } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 type NoticeMessage = Extract<
@@ -12,14 +13,13 @@ export class NoticeMessageComponent extends Container {
 	constructor(message: NoticeMessage) {
 		super();
 		const error = message.role === "error";
-		const glyph = process.env.TERM?.toLowerCase() === "dumb"
-			? error ? "x" : "!"
-			: error ? "■" : "⚠";
+		const glyphs = uiGlyphs();
+		const glyph = error ? glyphs.error : glyphs.warning;
 		const color = error ? "error" : "warning";
 		this.addChild(new Text(theme.fg(color, `${glyph} ${message.text}`), 1, 0));
 		const diagnostic = diagnosticText(message);
 		if (diagnostic) {
-			this.addChild(new Text(theme.fg("dim", `  └ ${diagnostic}`), 1, 0));
+			this.addChild(new Text(theme.fg("dim", `  ${glyphs.branch} ${diagnostic}`), 1, 0));
 		}
 	}
 }
@@ -40,5 +40,5 @@ function diagnosticText(message: NoticeMessage): string | undefined {
 			diagnostic?.source,
 		];
 	const visibleValues = values.filter((value): value is string => Boolean(value));
-	return visibleValues.length > 0 ? visibleValues.join(" · ") : undefined;
+	return visibleValues.length > 0 ? visibleValues.join(` ${uiGlyphs().separator} `) : undefined;
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { TUI_KEYMAP_ACTIONS } from "@mycli/contracts";
 import { setTimeout } from "node:timers/promises";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -17,6 +18,7 @@ import { completionDurationText } from "../src/components/turn-completed.ts";
 import { turnActivityHeaderText } from "../src/components/turn-activity-label.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
 import { GatewayRequestError } from "../src/adapters/gateway-client.ts";
+import { setUiGlyphMode, uiGlyphMode, uiGlyphs } from "../src/theme/terminal-style.ts";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
@@ -129,6 +131,24 @@ function sampleState(): MycliShellState {
 	};
 }
 
+function keymapFixture(
+	overrides: Readonly<Record<string, readonly string[]>> = {},
+): NonNullable<MycliShellState["keymap"]> {
+	const bindings = Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [
+		action.id,
+		[...(overrides[action.id] ?? action.defaultKeys)],
+	])) as NonNullable<MycliShellState["keymap"]>["bindings"];
+	const sources = Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [
+		action.id,
+		overrides[action.id] ? "user" : "default",
+	])) as NonNullable<MycliShellState["keymap"]>["sources"];
+	const overridden = Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [
+		action.id,
+		overrides[action.id] ? ["default"] : [],
+	])) as NonNullable<MycliShellState["keymap"]>["overridden"];
+	return { version: 1, bindings, sources, overridden };
+}
+
 function expandedToolDetailState(): MycliShellState {
 	const tool = {
 		id: "tool-detail",
@@ -207,6 +227,7 @@ function settingsCatalogFixture(): NonNullable<MycliShellState["settingsCatalog"
 				restartRequired: false,
 				searchTerms: ["color", "appearance"],
 			},
+			settingsAction("keymap.reset", "appearance", "Reset keymap", "Reset", "reset_keymap", ""),
 			settingsAction("sessions.saved", "sessions", "Saved sessions", "C:\\Users\\cosmos\\workspace", "open_session_selector", "/resume"),
 			settingsAction("integrations.resources", "integrations", "Runtime resources", "Available", "open_resources", "/resources"),
 			{
@@ -576,14 +597,15 @@ test("mycli shell renders semantic error and warning notices", () => {
 		],
 		pendingNotice: undefined,
 	}, 100).join("\n"));
+	const glyphs = uiGlyphs();
+	const outputLines = output.split("\n").map((line) => line.trimEnd());
 
-	assert.match(output, /^ [■x] Provider request failed\.\s*$/m);
-	assert.match(
-		output,
-		/^   └ Retry or choose another provider\. · Upstream closed the response stream before completion\.\s*$/m,
-	);
+	assert.ok(outputLines.includes(` ${glyphs.error} Provider request failed.`));
+	assert.ok(outputLines.includes(
+		`   ${glyphs.branch} Retry or choose another provider. · Upstream closed the response stream before completion.`,
+	));
 	assert.doesNotMatch(output, /provider_error|turn\.submit/u);
-	assert.match(output, /^ [⚠!] Conversation interrupted\.\s*$/m);
+	assert.ok(outputLines.includes(` ${glyphs.warning} Conversation interrupted.`));
 	for (const line of renderMycliShell({
 		...state,
 		messages: [],
@@ -1331,13 +1353,35 @@ test("mycli shell expands collapsed context tool groups into individual tools", 
 	assert.doesNotMatch(output, /Read 1 file, searched 1 pattern/);
 });
 
-test("mycli shell rendered lines stay width safe", () => {
-	const width = 72;
-	const lines = renderMycliShell(sampleState(), width);
-	for (const line of lines) {
-		assert.ok(visibleWidth(line) <= width, `line too wide: ${stripAnsi(line)}`);
+test("mycli shell stays width safe at supported accessibility widths", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [{
+			id: "cjk-width-user",
+			role: "user",
+			text: "请检查输入法、长路径和响应式布局 /workspace/packages/terminal-accessibility/src/really-long-component-name.ts",
+		}],
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		footer: {
+			...sampleState().footer,
+			cwd: "/workspace/packages/terminal-accessibility/a-very-long-project-directory",
+			sessionName: "终端兼容性验证",
+		},
+	};
+	for (const width of [60, 80, 100, 140]) {
+		const lines = renderMycliShell(state, width);
+		for (const line of lines) {
+			assert.ok(
+				visibleWidth(line) <= width,
+				`line too wide at ${width}: ${stripAnsi(line)}`,
+			);
+		}
+		const output = stripAnsi(lines.join("\n"));
+		assert.match(output, /输入法/u);
+		assert.doesNotMatch(output, /Message mycli/u);
 	}
-	assert.doesNotMatch(stripAnsi(lines.join("\n")), /Message mycli/);
 });
 
 test("footer renders one quiet idle row with status aligned right", () => {
@@ -3049,8 +3093,9 @@ test("mycli shell runtime keeps Codex-style working status at the transcript tai
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, liveState: "Running" } });
 	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	const workingLabel = turnActivityHeaderText({ text: "Running", variantKey: "10000" });
-	assert.ok(output.split("\n").some((line) => line.startsWith(`⠋ ${workingLabel} `)));
-	assert.ok(output.includes(`${workingLabel} (0s • esc to interrupt)`));
+	const glyphs = uiGlyphs();
+	assert.ok(output.split("\n").some((line) => line.startsWith(`${glyphs.spinnerFrames[0]} ${workingLabel} `)));
+	assert.ok(output.includes(`${workingLabel} (0s ${glyphs.bullet} esc to interrupt)`));
 	assert.equal(stripAnsi(runtime.statusContainer.render(100).join("\n")), "");
 	assert.doesNotMatch(stripAnsi(runtime.footerContainer.render(100).join("\n")), /Running/);
 	assert.ok(stripAnsi(runtime.chatContainer.children.at(-1)?.render(100).join("\n") ?? "").includes(workingLabel));
@@ -3066,7 +3111,7 @@ test("mycli shell runtime keeps Codex-style working status at the transcript tai
 	now = 12_400;
 	runtime.refreshTurnStatus();
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.ok(output.includes(`${workingLabel} (2s • esc to interrupt)`));
+	assert.ok(output.includes(`${workingLabel} (2s ${glyphs.bullet} esc to interrupt)`));
 
 	now = 13_100;
 	runtime.setState({
@@ -3114,7 +3159,7 @@ test("working status reuses stable animation frames and invalidates elapsed time
 	const elapsed = activity.render(100);
 	assert.notEqual(elapsed, first);
 	const workingLabel = turnActivityHeaderText({ text: "Running", variantKey: "10000" });
-	assert.ok(stripAnsi(elapsed.join("\n")).includes(`${workingLabel} (1s • esc to interrupt)`));
+	assert.ok(stripAnsi(elapsed.join("\n")).includes(`${workingLabel} (1s ${uiGlyphs().bullet} esc to interrupt)`));
 	assert.equal(activity.render(100), elapsed);
 
 	const resized = activity.render(80);
@@ -3242,7 +3287,7 @@ test("working elapsed continues while the active turn waits on a tool", () => {
 	});
 
 	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /Waiting for background terminal \(2s • esc to interrupt\)/);
+	assert.ok(output.includes(`Waiting for background terminal (2s ${uiGlyphs().bullet} esc to interrupt)`));
 	assert.match(output, /Waiting for background terminal/);
 
 	now = 15_100;
@@ -3337,7 +3382,7 @@ test("working status adopts Codex-style phase headers", () => {
 		kind: "thinking",
 		variantKey: "10000",
 	});
-	assert.ok(output.includes(`${thinkingLabel} (0s • esc to interrupt)`));
+	assert.ok(output.includes(`${thinkingLabel} (0s ${uiGlyphs().bullet} esc to interrupt)`));
 
 	now = 11_000;
 	runtime.setState({
@@ -3351,7 +3396,7 @@ test("working status adopts Codex-style phase headers", () => {
 		},
 	});
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
-	assert.match(output, /Compressing context \(1s • esc to interrupt\)/);
+	assert.ok(output.includes(`Compressing context (1s ${uiGlyphs().bullet} esc to interrupt)`));
 	assert.match(output, /Compaction in progress/);
 });
 
@@ -5317,6 +5362,49 @@ test("settings actions use nested selectors and Esc preserves the composer draft
 	assert.equal(runtime.editor.getText(), "draft stays here");
 });
 
+test("custom keymap actions execute and settings reset restores defaults", async () => {
+	const terminal = new TestTerminal();
+	const defaults = keymapFixture();
+	let resets = 0;
+	let runtime: MycliShellRuntime;
+	runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			keymap: keymapFixture({ "app.help": ["ctrl+y"] }),
+			settingsCatalog: settingsCatalogFixture(),
+		},
+		terminal,
+		onSettingsKeymapReset: () => {
+			resets += 1;
+			return {
+				settings: runtime.getState().settings ?? {},
+				catalog: settingsCatalogFixture(),
+				keymap: defaults,
+			};
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+
+	terminal.input?.("\x19");
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Keyboard shortcuts/u);
+	terminal.input?.("\x1b");
+
+	await runtime.handleClientAction("open_settings", "");
+	terminal.input?.("Reset keymap");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.equal(resets, 1);
+	assert.deepEqual(runtime.getState().keymap?.bindings["app.help"], ["?"]);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Reset keymap/u);
+	terminal.input?.("\x1b");
+	terminal.input?.("?");
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	await runtime.shutdown();
+});
+
 test("settings catalog renders seven categories width-safe with CJK and Windows values", async () => {
 	const runtime = new MycliShellRuntime({
 		initialState: { ...sampleState(), settingsCatalog: settingsCatalogFixture() },
@@ -5434,6 +5522,190 @@ test("mycli shell applies runtime-backed visual settings to active rendering", a
 	assert.doesNotMatch(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
 	assert.equal(runtime.footerContainer.render(80).length, 3);
 	await runtime.shutdown();
+});
+
+test("forced no-color wins while reduced motion follows the active session", async () => {
+	const state = sampleState();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...state,
+			footer: { ...state.footer, liveState: "Running", turnRunning: true },
+			settings: {
+				...state.settings,
+				colorMode: "truecolor",
+				reducedMotion: true,
+				terminalProgress: true,
+			},
+			terminalCapabilities: {
+				version: 1,
+				colorMode: "none",
+				colorForcedOff: true,
+				glyphMode: uiGlyphMode(),
+				terminalKind: "standard",
+				progressVisible: true,
+				progressAnimated: false,
+				reducedMotion: true,
+				highContrast: false,
+				guidance: ["Terminal color is unavailable; using no-color output."],
+			},
+		},
+		terminal: new TestTerminal(),
+		now: () => 10_000,
+	});
+
+	let activity = runtime.chatContainer.children.at(-1)?.render(100).join("\n") ?? "";
+	assert.equal(theme.colorMode(), "none");
+	assert.doesNotMatch(activity, /\x1b\[/u);
+	assert.ok(stripAnsi(activity).startsWith(`${uiGlyphs().staticProgress} `));
+
+	runtime.setState({
+		...runtime.getState(),
+		settings: { ...runtime.getState().settings, reducedMotion: false },
+	});
+	activity = stripAnsi(runtime.chatContainer.children.at(-1)?.render(100).join("\n") ?? "");
+	assert.ok(activity.startsWith(`${uiGlyphs().spinnerFrames[0]} `));
+	assert.equal(theme.colorMode(), "none");
+	await runtime.shutdown();
+});
+
+test("high contrast replaces the semantic accent token", async () => {
+	const state = sampleState();
+	const capabilities: NonNullable<MycliShellState["terminalCapabilities"]> = {
+		version: 1,
+		colorMode: "truecolor",
+		colorForcedOff: false,
+		glyphMode: uiGlyphMode(),
+		terminalKind: "standard",
+		progressVisible: true,
+		progressAnimated: true,
+		reducedMotion: false,
+		highContrast: true,
+		guidance: [],
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...state,
+			settings: { ...state.settings, colorMode: "truecolor", highContrast: true },
+			terminalCapabilities: capabilities,
+		},
+		terminal: new TestTerminal(),
+	});
+
+	assert.match(theme.fg("accent", "accent"), /\x1b\[38;2;0;255;255m/u);
+	runtime.setState({
+		...runtime.getState(),
+		settings: { ...runtime.getState().settings, highContrast: false },
+	});
+	assert.match(theme.fg("accent", "accent"), /\x1b\[38;2;138;190;183m/u);
+	await runtime.shutdown();
+});
+
+test("ASCII glyph mode keeps product-rendered TUI chrome ASCII-only", async () => {
+	const previousGlyphMode = uiGlyphMode();
+	const previousColorMode = theme.colorMode();
+	const base = expandedToolDetailState();
+	const assistant = {
+		id: "ascii-assistant",
+		role: "assistant" as const,
+		text: "## Summary\n\n> quoted text\n\n---\n\n| Name | Value |\n| --- | --- |\n| alpha | beta |",
+	};
+	const settingsCatalog = settingsCatalogFixture();
+	let runtime: MycliShellRuntime | undefined;
+	try {
+		runtime = new MycliShellRuntime({
+			initialState: {
+				...base,
+				messages: [assistant],
+				transcript: [
+					{ id: assistant.id, kind: "message", message: assistant },
+					...(base.transcript ?? []),
+					{
+						id: "ascii-plan",
+						kind: "plan_update",
+						planUpdate: {
+							id: "ascii-plan",
+							title: "Updated Plan",
+							explanation: "Implementation progress",
+							steps: [
+								{ id: "inspect", text: "Inspect files", status: "completed" },
+								{ id: "tests", text: "Run tests", status: "pending" },
+							],
+							completed: 1,
+							total: 2,
+						},
+					},
+					{
+						id: "ascii-search",
+						kind: "web_search",
+						webSearch: {
+							id: "ascii-search",
+							callId: "call-ascii-search",
+							status: "completed",
+							action: "search",
+							detail: "terminal compatibility",
+						},
+					},
+					{
+						id: "ascii-completed",
+						kind: "turn_completed",
+						turnCompleted: { id: "ascii-completed", durationMs: 1_250 },
+					},
+				],
+				footer: {
+					...base.footer,
+					cwd: "~/workspace/mycli",
+					gitBranch: "feature/ascii",
+					sessionName: "ascii-session",
+					extensionStatuses: ["terminal ready"],
+				},
+				settings: {
+					...base.settings,
+					colorMode: previousColorMode,
+					glyphMode: "ascii",
+				},
+				settingsCatalog: {
+					...settingsCatalog,
+					categories: settingsCatalog.categories.map((category) => ({
+						...category,
+						label: category.id,
+						description: `${category.id} settings`,
+					})),
+					items: settingsCatalog.items.map((item) => ({
+						...item,
+						label: item.id,
+						description: `Open ${item.id}`,
+						value: item.id,
+					})),
+				},
+				terminalCapabilities: {
+					version: 1,
+					colorMode: previousColorMode,
+					colorForcedOff: false,
+					glyphMode: "ascii",
+					terminalKind: "standard",
+					progressVisible: true,
+					progressAnimated: false,
+					reducedMotion: true,
+					highContrast: false,
+					guidance: [],
+				},
+			},
+			terminal: new TestTerminal(),
+			commands: [slashCommand("settings", "/settings", "Open settings")],
+		});
+
+		const frames = [runtime.ui.render(100).join("\n")];
+		runtime.showCommandPalette();
+		frames.push(runtime.ui.render(100).join("\n"));
+		await runtime.handleClientAction("open_settings", "");
+		frames.push(runtime.ui.render(100).join("\n"));
+
+		assert.doesNotMatch(stripAnsi(frames.join("\n")), /[^\x00-\x7F]/u);
+	} finally {
+		await runtime?.shutdown();
+		setUiGlyphMode(previousGlyphMode);
+		theme.setColorMode(previousColorMode);
+	}
 });
 
 test("mycli shell session selector handles empty state and selection", async () => {

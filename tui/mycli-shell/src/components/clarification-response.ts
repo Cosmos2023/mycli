@@ -1,6 +1,7 @@
 import type { MycliShellClarificationResponse } from "../model.ts";
 import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 export class ClarificationResponseComponent implements Component {
@@ -15,9 +16,9 @@ export class ClarificationResponseComponent implements Component {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const title = this.clarification.header?.trim() || "Question";
-		const lines = ["", this.fit(theme.fg("accent", theme.bold(`• ${title}`)), safeWidth)];
+		const lines = ["", this.fit(theme.fg("accent", theme.bold(`${uiGlyphs().bullet} ${title}`)), safeWidth)];
 		this.pushWrapped(lines, this.clarification.question, "  ", "text", safeWidth);
-		this.pushWrapped(lines, this.clarification.response, "  → ", "success", safeWidth);
+		this.pushWrapped(lines, this.clarification.response, `  ${uiGlyphs().arrow} `, "success", safeWidth);
 		return lines;
 	}
 
@@ -33,7 +34,7 @@ export class ClarificationResponseComponent implements Component {
 		const wrapped = wrapTextWithAnsi(text, Math.max(1, width - prefix.length));
 		for (const [index, line] of wrapped.entries()) {
 			const linePrefix = index === 0 ? prefix : continuation;
-			lines.push(this.fit(`${theme.fg(index === 0 && prefix.includes("→") ? "accent" : color, linePrefix)}${theme.fg(color, line)}`, width));
+			lines.push(this.fit(`${theme.fg(index === 0 && prefix.includes(uiGlyphs().arrow) ? "accent" : color, linePrefix)}${theme.fg(color, line)}`, width));
 		}
 	}
 

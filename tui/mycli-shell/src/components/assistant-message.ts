@@ -1,6 +1,7 @@
 import { Markdown } from "../tui-core/components/markdown.ts";
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Container, type TailRenderResult } from "../tui-core/tui.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
 import {
@@ -90,7 +91,7 @@ export class AssistantMessageComponent extends Container {
 		const lines = renderTranscriptMessageLines(
 			content.lines,
 			safeWidth,
-			contentTruncated ? "  " : theme.fg("text", "• "),
+			contentTruncated ? "  " : theme.fg("text", `${uiGlyphs().bullet} `),
 		);
 		if (includesLeadingBlank) lines.unshift(" ".repeat(safeWidth));
 		if (includesLeadingBlank) lines[0] = OSC133_ZONE_START + lines[0];
@@ -128,7 +129,7 @@ export class AssistantMessageComponent extends Container {
 			? []
 			: [
 				" ".repeat(safeWidth),
-				...renderTranscriptMessageLines(content, safeWidth, theme.fg("text", "• ")),
+				...renderTranscriptMessageLines(content, safeWidth, theme.fg("text", `${uiGlyphs().bullet} `)),
 			];
 		if (lines.length === 0) {
 			return lines;

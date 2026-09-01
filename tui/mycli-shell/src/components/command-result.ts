@@ -7,6 +7,7 @@ import type {
 	MycliShellCommandRow,
 } from "../model.ts";
 import type { ThemeColor } from "../theme/theme.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 const STATUS_MAX_WIDTH = 76;
@@ -63,7 +64,8 @@ export class CommandResultComponent extends Container implements Component {
 		const boxWidth = Math.min(STATUS_MAX_WIDTH, width);
 		const contentWidth = boxWidth - 6;
 		const borderWidth = boxWidth - 2;
-		const lines = [theme.fg("border", `╭${"─".repeat(borderWidth)}╮`)];
+		const glyphs = uiGlyphs();
+		const lines = [theme.fg("border", `${glyphs.topLeft}${glyphs.horizontal.repeat(borderWidth)}${glyphs.topRight}`)];
 		const cardTitle = this.result.display.summary
 			? `${title}  ${this.result.display.summary}`
 			: title;
@@ -84,7 +86,7 @@ export class CommandResultComponent extends Container implements Component {
 				);
 			}
 		}
-		lines.push(theme.fg("border", `╰${"─".repeat(borderWidth)}╯`));
+		lines.push(theme.fg("border", `${glyphs.bottomLeft}${glyphs.horizontal.repeat(borderWidth)}${glyphs.bottomRight}`));
 		return lines;
 	}
 
@@ -103,7 +105,7 @@ export class CommandResultComponent extends Container implements Component {
 
 	private statusLine(text: string, contentWidth: number): string {
 		const content = truncateToWidth(text, contentWidth, theme.fg("dim", "..."), true);
-		return `${theme.fg("border", "│")}  ${content}  ${theme.fg("border", "│")}`;
+		return `${theme.fg("border", uiGlyphs().vertical)}  ${content}  ${theme.fg("border", uiGlyphs().vertical)}`;
 	}
 
 	private renderList(width: number): string[] {
@@ -138,7 +140,7 @@ export class CommandResultComponent extends Container implements Component {
 
 	private renderNotice(width: number): string[] {
 		const display = this.result.display;
-		const marker = display.severity === "success" ? "✓" : display.severity === "info" ? "•" : "!";
+		const marker = display.severity === "success" ? uiGlyphs().success : display.severity === "info" ? uiGlyphs().bullet : "!";
 		const color: ThemeColor = display.severity === "success"
 			? "success"
 			: display.severity === "error"

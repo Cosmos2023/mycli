@@ -1,6 +1,7 @@
 import type { MycliShellPendingClarification } from "../model.ts";
 import { decodePrintableKey } from "../tui-core/keys.ts";
 import { Container, getKeybindings, matchesKey, Spacer, Text } from "../tui-core/index.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
@@ -199,7 +200,7 @@ export class ClarificationSelectorComponent extends Container {
 			const active = index === this.selectedIndex;
 			const checked = this.selectedLabels.has(option.label);
 			const marker = this.clarification.multiSelect ? (checked ? "[x] " : "[ ] ") : "";
-			const prefix = active ? theme.fg("accent", "→ ") : "  ";
+			const prefix = active ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 			const label = `${index + 1}. ${marker}${option.label}`;
 			this.listContainer.addChild(new ResponsiveDescriptionRow(
 				prefix,
@@ -208,7 +209,7 @@ export class ClarificationSelectorComponent extends Container {
 			));
 		}
 		const hints = [
-			rawKeyHint("↑↓", "navigate"),
+			rawKeyHint(`${uiGlyphs().up}${uiGlyphs().down}`, "navigate"),
 			...(this.clarification.multiSelect ? [rawKeyHint("space", "toggle")] : []),
 			keyHint("tui.select.confirm", this.clarification.multiSelect ? "submit" : "select"),
 			keyHint("tui.select.cancel", "interrupt"),

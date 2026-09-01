@@ -8,6 +8,7 @@ import {
 	type TUI,
 } from "../tui-core/index.ts";
 import { getKeybindings } from "../tui-core/keybindings.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
@@ -76,8 +77,8 @@ export class SetupWizardComponent extends Container implements Focusable {
 		this.providerList = new ProviderList(this.providers, {
 			emptyMessage: "No matching providers",
 			detail: (provider) => {
-				const model = provider.default_model ? theme.fg("muted", ` · ${provider.default_model}`) : "";
-				const protocol = provider.protocol ? theme.fg("muted", ` · ${provider.protocol}`) : "";
+				const model = provider.default_model ? theme.fg("muted", ` ${uiGlyphs().separator} ${provider.default_model}`) : "";
+				const protocol = provider.protocol ? theme.fg("muted", ` ${uiGlyphs().separator} ${provider.protocol}`) : "";
 				return model + protocol;
 			},
 		});
@@ -183,7 +184,7 @@ export class SetupWizardComponent extends Container implements Focusable {
 	private renderAuth(): void {
 		this.addChild(new Text(theme.fg("text", "Select authentication method:"), 1, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new TruncatedText(`${theme.fg("accent", "→ 1")}  Use an API key`, 1, 0));
+		this.addChild(new TruncatedText(`${theme.fg("accent", `${uiGlyphs().arrow} 1`)}  Use an API key`, 1, 0));
 		this.addChild(new Text(theme.fg("muted", "     Stored in ~/.mycli/auth.json"), 1, 0));
 		this.addHint(`${keyHint("tui.select.confirm", "continue")} ${keyHint("tui.select.cancel", "cancel")}`);
 	}
@@ -303,11 +304,11 @@ export class SetupWizardComponent extends Container implements Focusable {
 
 	private maskedApiKey(): string {
 		const length = this.apiKeyInput.getValue().length;
-		return length > 0 ? "•".repeat(length) : theme.fg("dim", "API key");
+		return length > 0 ? uiGlyphs().mask.repeat(length) : theme.fg("dim", "API key");
 	}
 
 	private cursor(): string {
-		return this._focused && this.step === "api_key" ? theme.fg("accent", "▌") : "";
+		return this._focused && this.step === "api_key" ? theme.fg("accent", uiGlyphs().cursor) : "";
 	}
 
 	private updateInputFocus(): void {

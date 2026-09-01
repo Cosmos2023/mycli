@@ -1,4 +1,5 @@
 import { getKeybindings, Spacer, Text, Container } from "../tui-core/index.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
@@ -70,7 +71,7 @@ export class TrustSelectorComponent extends Container {
 		this.addChild(this.errorContainer);
 		this.addChild(
 			new Text(
-				rawKeyHint("↑↓", "navigate") +
+				rawKeyHint(`${uiGlyphs().up}${uiGlyphs().down}`, "navigate") +
 					"  " +
 					keyHint("tui.select.confirm", "save") +
 					"  " +
@@ -119,8 +120,8 @@ export class TrustSelectorComponent extends Container {
 
 			const isSelected = index === this.selectedIndex;
 			const isCurrent = option.trusted === this.savedDecision;
-			const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
+			const checkmark = isCurrent ? theme.fg("success", ` ${uiGlyphs().success}`) : "";
+			const prefix = isSelected ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 			const label = isSelected ? theme.fg("accent", option.label) : theme.fg("text", option.label);
 			this.listContainer.addChild(new Text(`${prefix}${label}${checkmark}`, 1, 0));
 		}

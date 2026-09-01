@@ -6,6 +6,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { getKeybindings } from "../tui-core/keybindings.ts";
 import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth } from "../tui-core/utils.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { formatKeyText, rawKeyHint } from "./keybinding-hints.ts";
 
@@ -71,7 +72,7 @@ export class PendingInputPreviewComponent implements Component {
 			entries.push({ lines: [""], itemCount: 0 });
 		}
 		entries.push({
-			lines: [truncateToWidth(theme.bold(`• ${title}`), width, theme.fg("dim", "..."))],
+			lines: [truncateToWidth(theme.bold(`${uiGlyphs().bullet} ${title}`), width, theme.fg("dim", "..."))],
 			itemCount: 0,
 		});
 		if (hintBefore) {
@@ -126,11 +127,11 @@ export class PendingInputPreviewComponent implements Component {
 			wrapped.length > PREVIEW_LINE_LIMIT
 				? [
 					...wrapped.slice(0, PREVIEW_LINE_LIMIT - 1),
-					truncateToWidth(theme.fg("dim", "    …"), width, ""),
+					truncateToWidth(theme.fg("dim", `    ${uiGlyphs().ellipsis}`), width, ""),
 				]
 				: wrapped.slice(0, PREVIEW_LINE_LIMIT);
 		if (visible.length > 0) {
-			visible[0] = visible[0]!.replace(/^ {4}/, "  ↳ ");
+			visible[0] = visible[0]!.replace(/^ {4}/, `  ${uiGlyphs().continuation} `);
 		}
 		return visible;
 	}

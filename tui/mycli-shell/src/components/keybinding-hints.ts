@@ -1,3 +1,8 @@
+import { tuiKeymapAction } from "@mycli/contracts";
+import {
+	getKeybindings,
+	type Keybinding,
+} from "../tui-core/keybindings.ts";
 import { theme } from "../theme/theme.ts";
 
 export function formatKeyText(key: string, platform: NodeJS.Platform = process.platform): string {
@@ -17,32 +22,14 @@ export function rawKeyHint(key: string, description: string): string {
 }
 
 export function keyHint(action: string, description: string): string {
-	return rawKeyHint(defaultKeyForAction(action), description);
+	return rawKeyHint(keyForAction(action), description);
 }
 
-function defaultKeyForAction(action: string): string {
-	switch (action) {
-		case "app.interrupt":
-			return "esc";
-		case "app.exit":
-			return "ctrl+d";
-		case "app.tools.expand":
-			return "ctrl+o";
-		case "app.transcript.open":
-			return "ctrl+t";
-		case "app.model.select":
-			return "ctrl+l";
-		case "app.message.followUp":
-			return "tab";
-		case "app.message.dequeue":
-			return "alt+up";
-		case "tui.select.confirm":
-			return "enter";
-		case "tui.select.cancel":
-			return "esc";
-		case "tui.input.tab":
-			return "tab";
-		default:
-			return action;
-	}
+export function keyForAction(action: string): string {
+	const descriptor = tuiKeymapAction(action);
+	if (!descriptor) return action;
+	const key = getKeybindings().getKeys(descriptor.id as Keybinding)[0]
+		?? descriptor.defaultKeys[0]
+		?? action;
+	return key === "escape" ? "esc" : key;
 }

@@ -7,6 +7,7 @@ import { renderUnifiedDiff } from "../src/components/diff-renderer.ts";
 import { FileChangeComponent } from "../src/components/file-change.ts";
 import { highlightDiffCode } from "../src/components/syntax-highlight.ts";
 import type { MycliShellFileChange } from "../src/model.ts";
+import { setUiGlyphMode, uiGlyphMode } from "../src/theme/terminal-style.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
 
 
@@ -17,9 +18,14 @@ function stripAnsi(text: string): string {
 
 function renderThemeFixture(env: NodeJS.ProcessEnv): string {
 	const fixture = fileURLToPath(new URL("./fixtures/render-file-change-theme.ts", import.meta.url));
+	const childEnv = { ...process.env };
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) delete childEnv[key];
+		else childEnv[key] = value;
+	}
 	const result = spawnSync(process.execPath, ["--import", "tsx", fixture], {
 		encoding: "utf8",
-		env: { ...process.env, ...env },
+		env: childEnv,
 	});
 	assert.equal(result.status, 0, result.stderr);
 	return result.stdout;
@@ -59,13 +65,12 @@ function renderFileChange(
 	width = 100,
 	term = "xterm-256color",
 ): string[] {
-	const previousTerm = process.env.TERM;
-	process.env.TERM = term;
+	const previousGlyphMode = uiGlyphMode();
+	setUiGlyphMode(term === "dumb" ? "ascii" : "unicode");
 	try {
 		return new FileChangeComponent(fileChange).render(width);
 	} finally {
-		if (previousTerm === undefined) delete process.env.TERM;
-		else process.env.TERM = previousTerm;
+		setUiGlyphMode(previousGlyphMode);
 	}
 }
 
@@ -136,6 +141,7 @@ test("added and removed rows use distinct full-line backgrounds", () => {
 		MYCLI_TUI_THEME: "dark",
 		MYCLI_TUI_COLOR: "always",
 		COLORTERM: "truecolor",
+		NO_COLOR: undefined,
 	});
 	const removedLine = dark
 		.split("\n")
@@ -158,6 +164,7 @@ test("light theme keeps syntax and context code readable", () => {
 		MYCLI_TUI_THEME: "light",
 		MYCLI_TUI_COLOR: "always",
 		COLORTERM: "truecolor",
+		NO_COLOR: undefined,
 	});
 	const contextLine = light
 		.split("\n")
@@ -173,7 +180,7 @@ test("light theme keeps syntax and context code readable", () => {
 test("NO_COLOR preserves labels line numbers and diff signs", () => {
 	const plain = renderThemeFixture({
 		NO_COLOR: "1",
-		MYCLI_TUI_COLOR: "never",
+		MYCLI_TUI_COLOR: "always",
 		COLORTERM: "",
 	});
 
@@ -189,6 +196,7 @@ test("256-color and 16-color backgrounds avoid truecolor escapes", () => {
 		COLORTERM: "",
 		TERM: "xterm-256color",
 		MYCLI_TUI_COLOR: "always",
+		NO_COLOR: undefined,
 	});
 	assert.match(color256, /\x1b\[48;5;/);
 	assert.doesNotMatch(color256, /\x1b\[48;2;/);
@@ -197,6 +205,7 @@ test("256-color and 16-color backgrounds avoid truecolor escapes", () => {
 		COLORTERM: "",
 		TERM: "xterm",
 		MYCLI_TUI_COLOR: "always",
+		NO_COLOR: undefined,
 	});
 	assert.match(color16, /\x1b\[(?:4[0-7]|10[0-7])m/);
 	assert.doesNotMatch(color16, /\x1b\[(?:38|48);(?:2|5);/);

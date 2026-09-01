@@ -8,6 +8,7 @@ import {
 	type TUI,
 } from "../tui-core/index.ts";
 import type { MycliShellCommandSpec, MycliShellSettingsCatalog } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 export type CommandPaletteOptions = {
@@ -56,12 +57,12 @@ export class CommandPaletteComponent extends Container implements Focusable {
 
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const border = theme.fg("border", "─".repeat(safeWidth));
+		const border = theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth));
 		const lines = [
 			border,
 			"",
 			theme.bold("Commands"),
-			theme.fg("muted", "Type to search · Enter run · Esc close"),
+			theme.fg("muted", `Type to search ${uiGlyphs().separator} Enter run ${uiGlyphs().separator} Esc close`),
 			"",
 			...this.searchInput.render(safeWidth),
 			"",
@@ -120,7 +121,7 @@ export class CommandPaletteComponent extends Container implements Focusable {
 			const disabled = disabledReason !== undefined;
 			const commandText = `${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
 			const status = disabled ? `  ${disabledReason}` : `  ${command.description}`;
-			const prefix = selected ? "› " : "  ";
+			const prefix = selected ? `${uiGlyphs().selector} ` : "  ";
 			if (disabled) return theme.fg("dim", `${prefix}${commandText}${status}`);
 			return selected
 				? theme.fg("accent", `${prefix}${commandText}${status}`)
@@ -134,7 +135,7 @@ export class CommandPaletteComponent extends Container implements Focusable {
 		if (!this.searchInput.getValue().trim()) {
 			return `${position}/${this.defaultCommands.length}`;
 		}
-		return `${position}/${this.filteredCommands.length} · ${this.filteredCommands.length}/${this.commands.length} matches`;
+		return `${position}/${this.filteredCommands.length} ${uiGlyphs().separator} ${this.filteredCommands.length}/${this.commands.length} matches`;
 	}
 
 	private disabledReason(command: MycliShellCommandSpec): string | undefined {

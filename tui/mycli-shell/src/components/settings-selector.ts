@@ -14,7 +14,9 @@ import type {
 	MycliShellSettingsItem,
 	MycliShellVisualSettings,
 } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
+import { keyHint } from "./keybinding-hints.ts";
 
 type SettingsStage = "list" | "scope" | "value";
 export type SettingsChangeScope = "session" | "user";
@@ -23,7 +25,7 @@ export type SettingsSelectorOptions = {
 	readonly tui: TUI;
 	readonly settings?: MycliShellVisualSettings;
 	readonly catalog?: MycliShellSettingsCatalog;
-	readonly onAction: (item: MycliShellSettingsItem) => void;
+	readonly onAction: (item: MycliShellSettingsItem, selector: SettingsSelectorComponent) => void;
 	readonly onChange: (
 		item: MycliShellSettingsItem,
 		value: string,
@@ -104,9 +106,17 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 		this.options.tui.requestRender();
 	}
 
+	replaceCatalog(catalog: MycliShellSettingsCatalog): void {
+		this.catalog = catalog;
+		this.error = undefined;
+		this.submitting = false;
+		this.applyFilter();
+		this.options.tui.requestRender();
+	}
+
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const border = theme.fg("border", "─".repeat(safeWidth));
+		const border = theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth));
 		const lines = [border, ""];
 		if (this.stage === "value") {
 			lines.push(...this.renderValueStage(safeWidth));
@@ -204,7 +214,7 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 			this.searchInput.focused = false;
 			return;
 		}
-		if (item.action || item.command) this.options.onAction(item);
+		if (item.action || item.command) this.options.onAction(item, this);
 	}
 
 	private backToList(): void {
@@ -221,7 +231,7 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 			: this.catalog.categories.find((item) => item.id === category)?.label ?? category;
 		const lines = [
 			theme.bold("Settings"),
-			theme.fg("muted", `Category: ${categoryLabel} · Tab changes category · type to search`),
+			theme.fg("muted", `Category: ${categoryLabel} ${uiGlyphs().separator} Tab changes category ${uiGlyphs().separator} type to search`),
 			"",
 			...this.searchInput.render(width),
 			"",
@@ -247,10 +257,10 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 				selected.locked ? selected.lockReason ?? "locked" : undefined,
 				selected.restartRequired ? "restart required" : undefined,
 				selected.command,
-			].filter(Boolean).join(" · ");
+			].filter(Boolean).join(` ${uiGlyphs().separator} `);
 			if (flags) lines.push(theme.fg(selected.locked ? "warning" : "dim", `  ${flags}`));
 		}
-		lines.push("", theme.fg("muted", "  Enter opens · Esc closes"));
+		lines.push("", `  ${keyHint("tui.select.confirm", "opens")}  ${keyHint("tui.select.cancel", "closes")}`);
 		return lines;
 	}
 
@@ -266,9 +276,9 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 			const value = item.allowedValues[index] ?? "";
 			const selected = index === this.selectedValueIndex;
 			const current = value === item.value ? theme.fg("success", "  (current)") : "";
-			lines.push(truncateToWidth(`${selected ? theme.fg("accent", "› ") : "  "}${selected ? theme.fg("accent", value) : value}${current}`, width, "..."));
+			lines.push(truncateToWidth(`${selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  "}${selected ? theme.fg("accent", value) : value}${current}`, width, "..."));
 		}
-		lines.push("", theme.fg("muted", "  Enter continues · Esc returns to settings"));
+		lines.push("", `  ${keyHint("tui.select.confirm", "continues")}  ${keyHint("tui.select.cancel", "returns to settings")}`);
 		return lines;
 	}
 
@@ -284,23 +294,23 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 		];
 		SCOPE_OPTIONS.forEach((scope, index) => {
 			const selected = index === this.selectedScopeIndex;
-			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			const label = selected ? theme.fg("accent", scope.label) : scope.label;
 			lines.push(truncateToWidth(`${prefix}${label}  ${theme.fg("muted", scope.description)}`, width, "..."));
 		});
-		lines.push("", theme.fg("muted", "  Enter applies · Esc returns to values"));
+		lines.push("", `  ${keyHint("tui.select.confirm", "applies")}  ${keyHint("tui.select.cancel", "returns to values")}`);
 		return lines;
 	}
 
 	private itemLine(item: MycliShellSettingsItem, selected: boolean, width: number, showCategory: boolean): string {
-		const prefix = selected ? theme.fg("accent", "› ") : "  ";
+		const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 		const category = showCategory
 			? `[${this.catalog.categories.find((entry) => entry.id === item.category)?.label ?? item.category}] `
 			: "";
 		const label = `${category}${item.label}`;
 		const left = selected ? theme.fg("accent", label) : item.locked ? theme.fg("dim", label) : label;
-		const source = width >= 72 ? ` · ${item.source}/${item.scope}` : "";
-		const lock = item.locked ? " · locked" : "";
+		const source = width >= 72 ? ` ${uiGlyphs().separator} ${item.source}/${item.scope}` : "";
+		const lock = item.locked ? ` ${uiGlyphs().separator} locked` : "";
 		const meta = `${item.value}${source}${lock}`;
 		const gap = Math.max(2, width - visibleWidth(prefix) - visibleWidth(label) - visibleWidth(meta));
 		return truncateToWidth(`${prefix}${left}${" ".repeat(gap)}${theme.fg(item.locked ? "warning" : "muted", meta)}`, width, "...");
@@ -342,6 +352,10 @@ function fallbackSettingsCatalog(settings: MycliShellVisualSettings | undefined)
 		clearOnShrink: true,
 		terminalProgress: true,
 		subagentDensity: "normal",
+		colorMode: "auto",
+		reducedMotion: false,
+		glyphMode: "auto",
+		highContrast: false,
 		...settings,
 	};
 	const definitions: readonly [keyof MycliShellVisualSettings, string, string, string, readonly string[]][] = [
@@ -354,6 +368,10 @@ function fallbackSettingsCatalog(settings: MycliShellVisualSettings | undefined)
 		["clearOnShrink", "tui.clear_on_shrink", "Clear on shrink", "Clears stale cells when the viewport shrinks", ["true", "false"]],
 		["terminalProgress", "tui.terminal_progress", "Terminal progress", "Shows compact progress during a turn", ["true", "false"]],
 		["subagentDensity", "tui.subagent_density", "Subagent detail", "Controls subagent summary density", ["compact", "normal", "detailed"]],
+		["colorMode", "tui.color_mode", "Color mode", "Selects terminal color depth", ["auto", "truecolor", "256", "16", "none"]],
+		["reducedMotion", "tui.reduced_motion", "Reduced motion", "Uses static progress indicators", ["true", "false"]],
+		["glyphMode", "tui.glyph_mode", "Glyph mode", "Selects Unicode or ASCII interface glyphs", ["auto", "unicode", "ascii"]],
+		["highContrast", "tui.high_contrast", "High contrast", "Uses stronger semantic contrast", ["true", "false"]],
 	];
 	return {
 		version: 1,

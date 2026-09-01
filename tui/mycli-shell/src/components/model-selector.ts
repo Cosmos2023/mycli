@@ -9,6 +9,7 @@ import {
 } from "../tui-core/index.ts";
 import type { ModelSelectionScope } from "@mycli/contracts";
 import type { MycliShellModel } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 type SelectorStage = "model" | "reasoning" | "scope";
@@ -101,7 +102,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const border = theme.fg("border", "─".repeat(safeWidth));
+		const border = theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth));
 		const lines = [border, ""];
 		if (this.stage === "scope") {
 			lines.push(this.line(theme.bold("Choose where to apply"), safeWidth));
@@ -109,17 +110,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			lines.push("");
 			lines.push(...this.scopeRows(safeWidth));
 			lines.push("");
-			lines.push(this.line(theme.fg("muted", "Enter select · Esc back"), safeWidth));
+			lines.push(this.line(theme.fg("muted", `Enter select ${uiGlyphs().separator} Esc back`), safeWidth));
 		} else if (this.stage === "reasoning") {
 			lines.push(this.line(theme.bold("Select reasoning effort"), safeWidth));
 			lines.push(this.line(theme.fg("muted", this.selectedModel?.model ?? ""), safeWidth));
 			lines.push("");
 			lines.push(...this.reasoningRows(safeWidth));
 			lines.push("");
-			lines.push(this.line(theme.fg("muted", "Enter select · Esc back"), safeWidth));
+			lines.push(this.line(theme.fg("muted", `Enter select ${uiGlyphs().separator} Esc back`), safeWidth));
 		} else {
 			lines.push(this.line(theme.bold("Select model"), safeWidth));
-			lines.push(this.line(theme.fg("muted", "Type to search · Enter select · Esc close"), safeWidth));
+			lines.push(this.line(theme.fg("muted", `Type to search ${uiGlyphs().separator} Enter select ${uiGlyphs().separator} Esc close`), safeWidth));
 			lines.push("");
 			lines.push(...this.searchInput.render(safeWidth).map((line) => this.line(line, safeWidth)));
 			lines.push("");
@@ -253,7 +254,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const provider = showProvider ? theme.fg("muted", `  ${model.provider}`) : "";
 			const marker = markers ? theme.fg("success", `  (${markers})`) : "";
 			const description = showDescription && model.description ? theme.fg("dim", `  ${model.description}`) : "";
-			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			const name = selected ? theme.fg("accent", model.model) : model.model;
 			return this.line(`${prefix}${name}${provider}${marker}${description}`, width);
 		});
@@ -269,7 +270,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		return efforts.map((effort, index) => {
 			const selected = index === this.selectedEffortIndex;
 			const defaultMarker = effort === model?.defaultReasoningEffort ? theme.fg("muted", "  (default)") : "";
-			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			const label = selected ? theme.fg("accent", effort) : effort;
 			return this.line(`${prefix}${label}${defaultMarker}`, width);
 		});
@@ -278,7 +279,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private scopeRows(width: number): string[] {
 		return SCOPE_OPTIONS.map((option, index) => {
 			const selected = index === this.selectedScopeIndex;
-			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
 			const label = selected ? theme.fg("accent", option.label) : option.label;
 			const description = theme.fg("muted", `  ${option.description}`);
 			return this.line(`${prefix}${label}${description}`, width);

@@ -19,6 +19,7 @@ import {
 } from "@mycli/contracts";
 import {
 	CachedUpdateService,
+	detectTerminalCapabilities,
 	ExecPolicyStore,
 	findModelCatalogEntry,
 	listProviderProfiles,
@@ -31,6 +32,8 @@ import {
 	resolveModelRuntimeConfig,
 	resolveProviderProfile,
 	resolveShellSettingsState,
+	resolveTerminalCapabilities,
+	resetTuiKeymap,
 	saveShellSetting,
 	saveShellSettings,
 	writeApiKey,
@@ -39,6 +42,8 @@ import {
 } from "@mycli/config";
 import type {
 	ConfigProfileName,
+	DetectedTerminalCapabilities,
+	LoadedShellSettings,
 	NodeRuntimeConfig,
 	ResolveConfigOptions,
 	WorkspaceTrustState,
@@ -267,6 +272,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		: {};
 	const agentExecutionAdapters = resolveAgentExecutionAdapters(options.env);
 	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
+	const detectedTerminalCapabilities = detectTerminalCapabilities(options.env);
 	const homeDir = runtimeHome(options.env);
 	const managedExecutionPolicy = await loadManagedExecutionPolicy({ homeDir });
 	const sandboxReadinessPromise = inspectSandboxReadiness();
@@ -1930,10 +1936,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							const loaded = await resolveWorkspaceShellSettings(
 								sessionCoordinator.snapshot().workspaceRoot,
 							);
-							return {
-								settings: { ...loaded.settings },
-								sources: { ...loaded.sources },
-							};
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
 						},
 						saveSetting: async (settingId, value) => {
 							const active = sessionCoordinator.snapshot();
@@ -1947,10 +1950,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								...profileInput,
 							});
 							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
-							return {
-								settings: { ...loaded.settings },
-								sources: { ...loaded.sources },
-							};
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
 						},
 						saveSettings: async (settings) => {
 							const active = sessionCoordinator.snapshot();
@@ -1963,10 +1963,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								...profileInput,
 							});
 							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
-							return {
-								settings: { ...loaded.settings },
-								sources: { ...loaded.sources },
-							};
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
+						},
+						resetKeymap: async () => {
+							const active = sessionCoordinator.snapshot();
+							await resetTuiKeymap({
+								homeDir,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								...profileInput,
+							});
+							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
 						},
 						completePath: (prefix) => pathCompletionCandidates(
 							sessionCoordinator.snapshot().workspaceRoot,
@@ -3751,6 +3760,43 @@ function subagentDeveloperContext(
 		`Network policy: ${input.config.executionPolicy.network}`,
 		"Complete only the user task supplied by the parent and report the result clearly.",
 	].join("\n");
+}
+
+function shellSettingsGatewaySnapshot(
+	loaded: LoadedShellSettings,
+	detected: DetectedTerminalCapabilities,
+): Readonly<Record<string, unknown>> {
+	const capabilities = resolveTerminalCapabilities(loaded.settings, detected);
+	return Object.freeze({
+		settings: Object.freeze({ ...loaded.settings }),
+		sources: Object.freeze({ ...loaded.sources }),
+		keymap: Object.freeze({
+			version: 1,
+			bindings: cloneReadonlyLists(loaded.keymap.bindings),
+			sources: Object.freeze({ ...loaded.keymap.sources }),
+			overridden: cloneReadonlyLists(loaded.keymap.overridden),
+		}),
+		terminal_capabilities: Object.freeze({
+			version: capabilities.version,
+			color_mode: capabilities.colorMode,
+			color_forced_off: capabilities.colorForcedOff,
+			glyph_mode: capabilities.glyphMode,
+			terminal_kind: capabilities.terminalKind,
+			progress_visible: capabilities.progressVisible,
+			progress_animated: capabilities.progressAnimated,
+			reduced_motion: capabilities.reducedMotion,
+			high_contrast: capabilities.highContrast,
+			guidance: Object.freeze([...capabilities.guidance]),
+		}),
+	});
+}
+
+function cloneReadonlyLists(
+	values: Readonly<Record<string, readonly string[]>>,
+): Readonly<Record<string, readonly string[]>> {
+	return Object.freeze(Object.fromEntries(
+		Object.entries(values).map(([key, items]) => [key, Object.freeze([...items])]),
+	));
 }
 
 interface ParsedRuntimeArguments {

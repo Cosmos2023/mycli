@@ -10,12 +10,15 @@ import {
 	runtimeErrorRecoveryActions,
 	runtimeErrorRecoveryHint,
 	sanitizeRuntimeErrorDetail,
+	normalizeTuiKeySpec,
+	TUI_KEYMAP_ACTIONS,
 	TURN_INTERRUPTED_NOTICE,
 	turnCompletedDurationId,
 	turnFailedNoticeId,
 	turnFailureNotice,
 	turnInterruptedNoticeId,
 } from "@mycli/contracts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import type {
 	MycliShellAuthProvider,
 	MycliShellBackgroundProcess,
@@ -28,6 +31,7 @@ import type {
 	MycliShellCredentialSource,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
+	MycliShellEffectiveKeymap,
 	MycliShellFileChange,
 	MycliShellFileChangeEntry,
 	MycliShellMessage,
@@ -57,6 +61,7 @@ import type {
 	MycliShellTranscriptBlock,
 	MycliShellTool,
 	MycliShellToolStatus,
+	MycliShellTerminalCapabilities,
 	MycliShellVisualSettings,
 	MycliShellWebSearch,
 } from "../model.ts";
@@ -169,6 +174,8 @@ export type RuntimeShellState = {
 	statusbarMode: "off" | "compact" | "full";
 	settings: MycliShellVisualSettings;
 	settingsCatalog: MycliShellSettingsCatalog | null;
+	keymap: MycliShellEffectiveKeymap | null;
+	terminalCapabilities: MycliShellTerminalCapabilities | null;
 	pendingApproval: Record<string, unknown> | null;
 	pendingClarification: Record<string, unknown> | null;
 	taskProgress: { completed: number; total: number } | null;
@@ -216,6 +223,8 @@ export function initialRuntimeState(): RuntimeShellState {
 		statusbarMode: "full",
 		settings: defaultVisualSettings(),
 		settingsCatalog: null,
+		keymap: null,
+		terminalCapabilities: null,
 		pendingApproval: null,
 		pendingClarification: null,
 		taskProgress: null,
@@ -749,6 +758,8 @@ function projectRuntimeShellState(
 			statusbarMode: state.statusbarMode,
 		},
 		settingsCatalog: state.settingsCatalog ?? undefined,
+		keymap: state.keymap ?? undefined,
+		terminalCapabilities: state.terminalCapabilities ?? undefined,
 		sessions,
 		resources: state.resources,
 		permissions: state.permissions ?? undefined,
@@ -772,6 +783,8 @@ export function runtimeStateWithSettingsSnapshot(
 	return {
 		...runtimeStateWithSettings(state, snapshot.settings),
 		settingsCatalog: snapshot.catalog ?? state.settingsCatalog,
+		keymap: snapshot.keymap ?? state.keymap,
+		terminalCapabilities: snapshot.terminalCapabilities ?? state.terminalCapabilities,
 	};
 }
 
@@ -782,9 +795,66 @@ export function settingsFromResult(payload: Record<string, unknown>): MycliShell
 
 export function settingsSnapshotFromResult(payload: Record<string, unknown>): MycliShellSettingsSnapshot {
 	const catalog = settingsCatalogFromUnknown(payload.catalog);
+	const keymap = effectiveKeymapFromUnknown(payload.keymap);
+	const terminalCapabilities = terminalCapabilitiesFromUnknown(payload.terminal_capabilities);
 	return {
 		settings: settingsFromResult(payload),
 		...(catalog ? { catalog } : {}),
+		...(keymap ? { keymap } : {}),
+		...(terminalCapabilities ? { terminalCapabilities } : {}),
+	};
+}
+
+function effectiveKeymapFromUnknown(value: unknown): MycliShellEffectiveKeymap | null {
+	const keymap = recordValue(value);
+	if (keymap.version !== 1) return null;
+	const rawBindings = recordValue(keymap.bindings);
+	const rawSources = recordValue(keymap.sources);
+	const rawOverridden = recordValue(keymap.overridden);
+	const bindings = {} as MycliShellEffectiveKeymap["bindings"];
+	const sources = {} as MycliShellEffectiveKeymap["sources"];
+	const overridden = {} as MycliShellEffectiveKeymap["overridden"];
+	for (const action of TUI_KEYMAP_ACTIONS) {
+		const rawKeys = rawBindings[action.id];
+		if (!Array.isArray(rawKeys) || rawKeys.length > 8) return null;
+		const normalized = rawKeys.map((key) => typeof key === "string" ? normalizeTuiKeySpec(key) : undefined);
+		if (normalized.some((key) => key === undefined)) return null;
+		const keys = normalized.filter((key): key is string => key !== undefined);
+		if (action.required && keys.length === 0) return null;
+		bindings[action.id] = [...new Set(keys)];
+		sources[action.id] = boundedCatalogText(rawSources[action.id], 64) ?? "default";
+		overridden[action.id] = stringArray(rawOverridden[action.id], 8, 64);
+	}
+	return { version: 1, bindings, sources, overridden };
+}
+
+function terminalCapabilitiesFromUnknown(value: unknown): MycliShellTerminalCapabilities | null {
+	const capabilities = recordValue(value);
+	const colorMode = capabilities.color_mode;
+	const glyphMode = capabilities.glyph_mode;
+	const terminalKind = capabilities.terminal_kind;
+	if (
+		capabilities.version !== 1
+		|| !(colorMode === "truecolor" || colorMode === "256" || colorMode === "16" || colorMode === "none")
+		|| !(glyphMode === "unicode" || glyphMode === "ascii")
+		|| !(terminalKind === "dumb" || terminalKind === "standard" || terminalKind === "windows_terminal")
+		|| typeof capabilities.color_forced_off !== "boolean"
+		|| typeof capabilities.progress_visible !== "boolean"
+		|| typeof capabilities.progress_animated !== "boolean"
+		|| typeof capabilities.reduced_motion !== "boolean"
+		|| typeof capabilities.high_contrast !== "boolean"
+	) return null;
+	return {
+		version: 1,
+		colorMode,
+		colorForcedOff: capabilities.color_forced_off,
+		glyphMode,
+		terminalKind,
+		progressVisible: capabilities.progress_visible,
+		progressAnimated: capabilities.progress_animated,
+		reducedMotion: capabilities.reduced_motion,
+		highContrast: capabilities.high_contrast,
+		guidance: stringArray(capabilities.guidance, 2, 256),
 	};
 }
 
@@ -872,6 +942,7 @@ function shellSettingClientKey(value: unknown): keyof MycliShellVisualSettings |
 	return ([
 		"statusbarMode", "viewMode", "theme", "hideThinking", "toolDetailsDefault",
 		"hardwareCursor", "clearOnShrink", "terminalProgress", "subagentDensity",
+		"colorMode", "reducedMotion", "glyphMode", "highContrast",
 	] as unknown[]).includes(value) ? value as keyof MycliShellVisualSettings : null;
 }
 
@@ -4628,7 +4699,7 @@ function compactionSummary(method: string, params: Record<string, unknown>): str
 	const after = numberValue(params.after_tokens);
 	const duration = numberValue(params.duration_s);
 	if (method === "compaction.started") {
-		return before === null ? "Compressing context" : `Compressing context · ${formatTokens(before)} tokens`;
+		return before === null ? "Compressing context" : `Compressing context ${uiGlyphs().separator} ${formatTokens(before)} tokens`;
 	}
 	const durationText = duration === null ? "" : ` for ${formatSeconds(duration)}`;
 	if (stringValue(params.status) === "failed") {
@@ -4638,7 +4709,7 @@ function compactionSummary(method: string, params: Record<string, unknown>): str
 		return `Context compression skipped${durationText}`;
 	}
 	if (before !== null && after !== null) {
-		return `Context compressed${durationText} · ${formatTokens(before)} -> ${formatTokens(after)} tokens`;
+		return `Context compressed${durationText} ${uiGlyphs().separator} ${formatTokens(before)} -> ${formatTokens(after)} tokens`;
 	}
 	return `Context compressed${durationText}`;
 }
@@ -4667,10 +4738,10 @@ function lifecycleToolText(metadata: Record<string, unknown>): string {
 function reasoningText(params: Record<string, unknown>): string {
 	const format = stringValue(params.format) ?? stringValue(params.encoding);
 	if (format && ["encrypted", "opaque", "binary"].includes(format.toLowerCase())) {
-		const bytes = typeof params.bytes === "number" ? ` · ${params.bytes} bytes` : "";
-		return `reasoning · ${format.toLowerCase()}${bytes}`;
+		const bytes = typeof params.bytes === "number" ? ` ${uiGlyphs().separator} ${params.bytes} bytes` : "";
+		return `reasoning ${uiGlyphs().separator} ${format.toLowerCase()}${bytes}`;
 	}
-	return String(params.text ?? "reasoning · opaque");
+	return String(params.text ?? `reasoning ${uiGlyphs().separator} opaque`);
 }
 
 function trustFromPayload(payload: unknown, workspace: string): RuntimeShellState["trust"] {
@@ -5024,6 +5095,10 @@ function defaultVisualSettings(): Required<MycliShellVisualSettings> {
 		clearOnShrink: true,
 		terminalProgress: true,
 		subagentDensity: "normal",
+		colorMode: "auto",
+		reducedMotion: false,
+		glyphMode: "auto",
+		highContrast: false,
 	};
 }
 
@@ -5043,6 +5118,10 @@ function normalizeVisualSettings(
 		clearOnShrink: booleanValue(raw.clearOnShrink ?? raw.clear_on_shrink) ?? fallback.clearOnShrink ?? true,
 		terminalProgress: booleanValue(raw.terminalProgress ?? raw.terminal_progress) ?? fallback.terminalProgress ?? true,
 		subagentDensity: subagentDensityValue(raw.subagentDensity ?? raw.subagent_density) ?? fallback.subagentDensity ?? "normal",
+		colorMode: colorModeValue(raw.colorMode ?? raw.color_mode) ?? fallback.colorMode ?? "auto",
+		reducedMotion: booleanValue(raw.reducedMotion ?? raw.reduced_motion) ?? fallback.reducedMotion ?? false,
+		glyphMode: glyphModeValue(raw.glyphMode ?? raw.glyph_mode) ?? fallback.glyphMode ?? "auto",
+		highContrast: booleanValue(raw.highContrast ?? raw.high_contrast) ?? fallback.highContrast ?? false,
 	};
 }
 
@@ -5060,6 +5139,16 @@ function toolDetailsDefaultValue(value: unknown): MycliShellVisualSettings["tool
 
 function subagentDensityValue(value: unknown): MycliShellVisualSettings["subagentDensity"] | null {
 	return value === "compact" || value === "normal" || value === "detailed" ? value : null;
+}
+
+function colorModeValue(value: unknown): MycliShellVisualSettings["colorMode"] | null {
+	return value === "auto" || value === "truecolor" || value === "256" || value === "16" || value === "none"
+		? value
+		: null;
+}
+
+function glyphModeValue(value: unknown): MycliShellVisualSettings["glyphMode"] | null {
+	return value === "auto" || value === "unicode" || value === "ascii" ? value : null;
 }
 
 function resourceTypeValue(value: unknown): MycliShellResource["type"] | null {

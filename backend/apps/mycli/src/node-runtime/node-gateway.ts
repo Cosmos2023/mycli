@@ -257,6 +257,7 @@ export interface NodeGatewayControlCommands {
 		preferences: SessionPreferences | undefined,
 	): Promise<SessionPreferences>;
 	loadSettings(): Promise<JsonObject>;
+	resetKeymap?(): Promise<JsonObject>;
 	saveSetting?(settingId: string, value: string | boolean): Promise<JsonObject>;
 	saveSettings(settings: JsonObject): Promise<JsonObject>;
 	completePath(prefix: string): Promise<readonly JsonObject[]>;
@@ -597,6 +598,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#validateConnectivity();
 			case "settings.load":
 				return this.#loadSettings();
+			case "settings.keymap.reset":
+				return this.#resetKeymap();
 			case "settings.save":
 				return this.#saveSettings(request.params);
 			case "update.status":
@@ -1018,7 +1021,20 @@ class InProcessNodeGateway implements NodeGateway {
 	async #loadSettings(): Promise<JsonObject> {
 		const loaded = await this.#options.controlCommands?.loadSettings();
 		const snapshot = settingsSnapshot(loaded);
-		return this.#settingsPayload(snapshot.settings, snapshot.sources);
+		return this.#settingsPayload(snapshot);
+	}
+
+	async #resetKeymap(): Promise<JsonObject> {
+		const resetKeymap = this.#options.controlCommands?.resetKeymap;
+		if (!resetKeymap) {
+			throw new GatewayFailure("internal_error", "Keymap storage is unavailable.");
+		}
+		const snapshot = settingsSnapshot(await resetKeymap());
+		return {
+			ok: true,
+			message: "Reset TUI keymap.",
+			...await this.#settingsPayload(snapshot),
+		};
 	}
 
 	async #saveSettings(params: JsonObject): Promise<JsonObject> {
@@ -1033,7 +1049,10 @@ class InProcessNodeGateway implements NodeGateway {
 			return {
 				ok: true,
 				message: "Saved TUI setting.",
-				...await this.#settingsPayload(saved.settings, authoritativeSettingsSources(saved)),
+				...await this.#settingsPayload({
+					...saved,
+					sources: authoritativeSettingsSources(saved),
+				}),
 			};
 		}
 		if (!isObject(params.settings)) {
@@ -1044,19 +1063,28 @@ class InProcessNodeGateway implements NodeGateway {
 		return {
 			ok: true,
 			message: "Saved TUI settings.",
-			...await this.#settingsPayload(saved.settings, authoritativeSettingsSources(saved)),
+			...await this.#settingsPayload({
+				...saved,
+				sources: authoritativeSettingsSources(saved),
+			}),
 		};
 	}
 
-	async #settingsPayload(settings: JsonObject, sources: JsonObject): Promise<JsonObject> {
+	async #settingsPayload(snapshot: SettingsSnapshot): Promise<JsonObject> {
 		const credential = await this.#credentialReadiness();
 		return {
-			settings,
-			sources,
-			source: Object.values(sources).some((value) => value === "user") ? "user_config" : "defaults",
+			settings: snapshot.settings,
+			sources: snapshot.sources,
+			keymap: snapshot.keymap,
+			terminal_capabilities: snapshot.terminalCapabilities,
+			source: Object.values(snapshot.sources).some((value) => value === "user")
+				? "user_config"
+				: "defaults",
 			catalog: buildNodeSettingsCatalog({
-				settings,
-				sources: settingsSources(sources),
+				settings: snapshot.settings,
+				sources: settingsSources(snapshot.sources),
+				keymap: snapshot.keymap,
+				terminalCapabilities: snapshot.terminalCapabilities,
 				provider: this.#provider,
 				model: this.#model,
 				...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
@@ -4485,18 +4513,33 @@ function boundedResource(value: JsonObject): JsonObject {
 	return resource;
 }
 
-function settingsSnapshot(value: JsonObject | undefined): {
+interface SettingsSnapshot {
 	readonly settings: JsonObject;
 	readonly sources: JsonObject;
-} {
-	if (!value) return { settings: {}, sources: {} };
+	readonly keymap: JsonObject;
+	readonly terminalCapabilities: JsonObject;
+}
+
+function settingsSnapshot(value: JsonObject | undefined): SettingsSnapshot {
+	if (!value) {
+		return { settings: {}, sources: {}, keymap: {}, terminalCapabilities: {} };
+	}
 	if (isObject(value.settings)) {
 		return {
 			settings: { ...value.settings },
 			sources: isObject(value.sources) ? { ...value.sources } : {},
+			keymap: isObject(value.keymap) ? { ...value.keymap } : {},
+			terminalCapabilities: isObject(value.terminal_capabilities)
+				? { ...value.terminal_capabilities }
+				: {},
 		};
 	}
-	return { settings: { ...value }, sources: {} };
+	return {
+		settings: { ...value },
+		sources: {},
+		keymap: {},
+		terminalCapabilities: {},
+	};
 }
 
 function userSettingsSources(settings: JsonObject): JsonObject {

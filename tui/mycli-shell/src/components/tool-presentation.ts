@@ -1,4 +1,5 @@
 import type { MycliShellTool, MycliShellToolStatus } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { canonicalToolName, shortPreview } from "./tool-display.ts";
 
 export type ToolPresentation = {
@@ -11,9 +12,8 @@ export type ToolPresentation = {
 	alwaysShowDetails?: boolean;
 };
 
-const DEFAULT_PRESENTATION: ToolPresentation = {
+const DEFAULT_PRESENTATION: Omit<ToolPresentation, "icon"> = {
 	label: "Tool",
-	icon: "•",
 	accent: "accent",
 	previewLines: 12,
 	writePreviewLines: 10,
@@ -46,7 +46,7 @@ export function presentationForTool(
 ): ToolPresentation {
 	const semanticAccent: ToolPresentation["accent"] =
 		semantic === "shell" ? "bashMode" : semantic === "mutation" ? "warning" : semantic === "control" ? "muted" : "accent";
-	const base = { ...DEFAULT_PRESENTATION, label: canonicalToolName(name), accent: semanticAccent };
+	const base = { ...DEFAULT_PRESENTATION, icon: uiGlyphs().bullet, label: canonicalToolName(name), accent: semanticAccent };
 	const keyed = TOOL_PRESENTATIONS[name.trim().toLowerCase()] ?? {};
 	const presentation = { ...base, ...keyed };
 	if (status === "error") {
@@ -77,19 +77,19 @@ export function conciseToolResult(
 	const rawTarget = shortPreview(tool.args);
 	const target = options.includeTarget === false ? undefined : rawTarget;
 	if (tool.status === "running") {
-		return target ? `${target} · Running...` : "Running...";
+		return target ? `${target} ${uiGlyphs().separator} Running...` : "Running...";
 	}
 	if (tool.status === "cancelled") {
-		return target ? `${target} · Cancelled` : "Cancelled";
+		return target ? `${target} ${uiGlyphs().separator} Cancelled` : "Cancelled";
 	}
 	if (tool.status === "error") {
 		const failure = firstMeaningfulLine(tool.errorPreview ?? tool.outputPreview) ?? "Failed";
-		return target ? `${target} · ${failure}` : failure;
+		return target ? `${target} ${uiGlyphs().separator} ${failure}` : failure;
 	}
 	if (tool.contentPreview) {
 		const lineCount = tool.contentLineCount;
 		const summary = lineCount !== undefined ? `Wrote ${lineCount} ${lineCount === 1 ? "line" : "lines"}` : "Wrote file";
-		return target ? `${target} · ${summary}` : summary;
+		return target ? `${target} ${uiGlyphs().separator} ${summary}` : summary;
 	}
 	if (tool.diffPreview) {
 		return target ? `Updated ${target}` : "Updated file";
@@ -104,7 +104,7 @@ export function conciseToolResult(
 		}
 	}
 	if (target && summary !== target) {
-		return `${target} · ${summary}`;
+		return `${target} ${uiGlyphs().separator} ${summary}`;
 	}
 	return summary;
 }

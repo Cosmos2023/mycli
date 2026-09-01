@@ -1,4 +1,5 @@
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme } from "../tui-core/index.ts";
+import { uiGlyphs } from "./terminal-style.ts";
 
 export type ThemeColor =
 	| "accent"
@@ -74,7 +75,8 @@ type ThemeBg =
 	| "toolDiffRemovedBg";
 
 type ColorValue = string | number;
-type ColorMode = "truecolor" | "256color" | "16color";
+export type ThemeColorMode = "truecolor" | "256" | "16" | "none";
+type AnsiColorMode = Exclude<ThemeColorMode, "none">;
 export type ThemeName = "dark" | "light";
 
 const DARK_VARS: Record<string, ColorValue> = {
@@ -262,7 +264,43 @@ const LIGHT_COLORS: Record<ThemeColor | ThemeBg, ColorValue> = {
 	bashMode: "green",
 };
 
-const colorEnabled = process.env.MYCLI_TUI_COLOR === "always" ? true : process.env.MYCLI_TUI_COLOR === "never" ? false : !process.env.NO_COLOR;
+const DARK_HIGH_CONTRAST: Partial<Record<ThemeColor | ThemeBg, ColorValue>> = Object.freeze({
+	accent: "#00ffff",
+	border: "#87afff",
+	borderAccent: "#00ffff",
+	borderMuted: "#a8a8a8",
+	success: "#5fff87",
+	error: "#ff6b6b",
+	warning: "#ffff5f",
+	muted: "#c0c0c0",
+	dim: "#a8a8a8",
+	text: "#ffffff",
+	selectorMatch: "#00ffff",
+	selectedBg: "#4a4a5f",
+});
+
+const LIGHT_HIGH_CONTRAST: Partial<Record<ThemeColor | ThemeBg, ColorValue>> = Object.freeze({
+	accent: "#005f5f",
+	border: "#004f9e",
+	borderAccent: "#005f5f",
+	borderMuted: "#555555",
+	success: "#006b2e",
+	error: "#a00000",
+	warning: "#6b4b00",
+	muted: "#3f3f3f",
+	dim: "#4f4f4f",
+	text: "#000000",
+	selectorMatch: "#004f9e",
+	selectedBg: "#c2d8ef",
+});
+
+const initialColorMode: ThemeColorMode = process.env.MYCLI_TUI_COLOR === "never" || process.env.NO_COLOR !== undefined
+	? "none"
+	: process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit"
+		? "truecolor"
+		: process.env.TERM?.includes("256color")
+			? "256"
+			: "16";
 const initialThemeName: ThemeName = process.env.MYCLI_TUI_THEME === "light" ? "light" : "dark";
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -273,7 +311,7 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 	return { r, g, b };
 }
 
-function ansi(value: ColorValue, mode: ColorMode, bg = false): string {
+function ansi(value: ColorValue, mode: AnsiColorMode, bg = false): string {
 	if (typeof value === "number") {
 		return `\x1b[${bg ? 48 : 38};5;${value}m`;
 	}
@@ -284,7 +322,7 @@ function ansi(value: ColorValue, mode: ColorMode, bg = false): string {
 	if (mode === "truecolor") {
 		return `\x1b[${bg ? 48 : 38};2;${r};${g};${b}m`;
 	}
-	if (mode === "16color") {
+	if (mode === "16") {
 		return ansi16(r, g, b, bg);
 	}
 	return `\x1b[${bg ? 48 : 38};5;${rgbTo256(r, g, b)}m`;
@@ -338,40 +376,39 @@ class Theme {
 	private themeName: ThemeName = initialThemeName;
 	private vars = this.themeName === "light" ? LIGHT_VARS : DARK_VARS;
 	private colors = this.themeName === "light" ? LIGHT_COLORS : DARK_COLORS;
-	private readonly mode: ColorMode = process.env.COLORTERM === "truecolor"
-		? "truecolor"
-		: process.env.TERM?.includes("256color")
-			? "256color"
-			: "16color";
+	private mode: ThemeColorMode = initialColorMode;
+	private highContrast = false;
 
 	fg(color: ThemeColor, text: string): string {
-		if (!colorEnabled) return text;
-		return `${ansi(resolve(this.colors[color], this.vars), this.mode)}${text}\x1b[39m`;
+		const mode = this.mode;
+		if (mode === "none") return text;
+		return `${ansi(resolve(this.colorValue(color), this.vars), mode)}${text}\x1b[39m`;
 	}
 
 	bg(color: ThemeBg, text: string): string {
-		if (!colorEnabled) return text;
-		return `${ansi(resolve(this.colors[color], this.vars), this.mode, true)}${text}\x1b[49m`;
+		const mode = this.mode;
+		if (mode === "none") return text;
+		return `${ansi(resolve(this.colorValue(color), this.vars), mode, true)}${text}\x1b[49m`;
 	}
 
 	bold(text: string): string {
-		return colorEnabled ? `\x1b[1m${text}\x1b[22m` : text;
+		return this.isColorEnabled() ? `\x1b[1m${text}\x1b[22m` : text;
 	}
 
 	italic(text: string): string {
-		return colorEnabled ? `\x1b[3m${text}\x1b[23m` : text;
+		return this.isColorEnabled() ? `\x1b[3m${text}\x1b[23m` : text;
 	}
 
 	underline(text: string): string {
-		return colorEnabled ? `\x1b[4m${text}\x1b[24m` : text;
+		return this.isColorEnabled() ? `\x1b[4m${text}\x1b[24m` : text;
 	}
 
 	inverse(text: string): string {
-		return colorEnabled ? `\x1b[7m${text}\x1b[27m` : text;
+		return this.isColorEnabled() ? `\x1b[7m${text}\x1b[27m` : text;
 	}
 
 	isColorEnabled(): boolean {
-		return colorEnabled;
+		return this.mode !== "none";
 	}
 
 	name(): ThemeName {
@@ -385,8 +422,26 @@ class Theme {
 		this.colors = name === "light" ? LIGHT_COLORS : DARK_COLORS;
 	}
 
+	setColorMode(mode: ThemeColorMode): void {
+		this.mode = mode;
+	}
+
+	colorMode(): ThemeColorMode {
+		return this.mode;
+	}
+
+	setHighContrast(enabled: boolean): void {
+		this.highContrast = enabled;
+	}
+
 	strikethrough(text: string): string {
-		return colorEnabled ? `\x1b[9m${text}\x1b[29m` : text;
+		return this.isColorEnabled() ? `\x1b[9m${text}\x1b[29m` : text;
+	}
+
+	private colorValue(color: ThemeColor | ThemeBg): ColorValue {
+		if (!this.highContrast) return this.colors[color];
+		const overrides = this.themeName === "light" ? LIGHT_HIGH_CONTRAST : DARK_HIGH_CONTRAST;
+		return overrides[color] ?? this.colors[color];
 	}
 
 	getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"): (str: string) => string {
@@ -433,11 +488,25 @@ export function getMarkdownTheme(): MarkdownTheme {
 		italic: (text) => theme.italic(text),
 		underline: (text) => theme.underline(text),
 		strikethrough: (text) => theme.strikethrough(text),
+		glyphs: {
+			get vertical() { return uiGlyphs().vertical; },
+			get horizontal() { return uiGlyphs().horizontal; },
+			get teeLeft() { return uiGlyphs().teeLeft; },
+			get teeRight() { return uiGlyphs().teeRight; },
+			get teeTop() { return uiGlyphs().teeTop; },
+			get teeBottom() { return uiGlyphs().teeBottom; },
+			get cross() { return uiGlyphs().cross; },
+			get tableTopLeft() { return uiGlyphs().tableTopLeft; },
+			get tableTopRight() { return uiGlyphs().tableTopRight; },
+			get tableBottomLeft() { return uiGlyphs().tableBottomLeft; },
+			get tableBottomRight() { return uiGlyphs().tableBottomRight; },
+		},
 	};
 }
 
 export function getSelectListTheme(): SelectListTheme {
 	return {
+		get cursor() { return `${uiGlyphs().arrow} `; },
 		selectedPrefix: (text) => theme.fg("accent", text),
 		selectedText: (text) => theme.fg("accent", text),
 		description: (text) => theme.fg("muted", text),
@@ -451,6 +520,11 @@ export function getEditorTheme(): EditorTheme {
 		borderColor: (text) => theme.fg("borderMuted", text),
 		imageMarker: (text) => theme.bold(theme.fg("accent", text)),
 		selectList: getSelectListTheme(),
+		glyphs: {
+			get horizontal() { return uiGlyphs().horizontal; },
+			get up() { return uiGlyphs().up; },
+			get down() { return uiGlyphs().down; },
+		},
 	};
 }
 
@@ -459,7 +533,8 @@ export function getSettingsListTheme(): SettingsListTheme {
 		label: (text, selected) => (selected ? theme.fg("accent", text) : text),
 		value: (text, selected) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
 		description: (text) => theme.fg("dim", text),
-		cursor: theme.fg("accent", "→ "),
+		get cursor() { return theme.fg("accent", `${uiGlyphs().arrow} `); },
+		get separator() { return uiGlyphs().separator; },
 		hint: (text) => theme.fg("dim", text),
 	};
 }

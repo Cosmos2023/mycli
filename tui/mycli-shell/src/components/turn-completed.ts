@@ -1,6 +1,7 @@
 import { Text } from "../tui-core/components/text.ts";
 import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth } from "../tui-core/utils.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { stableVariantIndex } from "../stable-variant.ts";
 import { TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
@@ -38,7 +39,7 @@ export class TurnCompletedComponent implements Component {
 
 export function completionDurationText(durationMs: number, variantKey: string): string {
 	const phrase = COMPLETION_PHRASES[stableVariantIndex(variantKey, COMPLETION_PHRASES.length)]!;
-	return `✻ ${phrase} ${formatElapsedCompact(elapsedSecondsFor(durationMs))}`;
+	return `${uiGlyphs().completion} ${phrase} ${formatElapsedCompact(elapsedSecondsFor(durationMs))}`;
 }
 
 export function elapsedSecondsFor(durationMs: number): number {

@@ -24,6 +24,7 @@ export interface SettingsListTheme {
 	value: (text: string, selected: boolean) => string;
 	description: (text: string) => string;
 	cursor: string;
+	readonly separator?: string;
 	hint: (text: string) => string;
 }
 
@@ -235,13 +236,14 @@ export class SettingsList implements Component {
 	}
 
 	private addHintLine(lines: string[], width: number): void {
+		const separator = ` ${this.theme.separator ?? "·"} `;
 		lines.push("");
 		lines.push(
 			truncateToWidth(
 				this.theme.hint(
 					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
+						? `  Type to search${separator}Enter/Space to change${separator}Esc to cancel`
+						: `  Enter/Space to change${separator}Esc to cancel`,
 				),
 				width,
 			),

@@ -1,6 +1,7 @@
 import type { MycliShellSubagent, MycliShellVisualSettings } from "../model.ts";
 import { Container, getKeybindings, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
 import type { Component } from "../tui-core/tui.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { rawKeyHint } from "./keybinding-hints.ts";
@@ -34,8 +35,8 @@ export class SubagentTaskPanelComponent implements Component {
 			return [];
 		}
 		const density = this.options.density ?? "normal";
-		const hint = density === "compact" ? "" : ` ${theme.fg("muted", `· ${rawKeyHint("/tasks", "view")}`)}`;
-		const text = `${theme.fg("accent", "◇")} ${theme.fg("accent", pillLabel(this.options.agents))}${hint}`;
+		const hint = density === "compact" ? "" : ` ${theme.fg("muted", `${uiGlyphs().separator} ${rawKeyHint("/tasks", "view")}`)}`;
+		const text = `${theme.fg("accent", uiGlyphs().diamond)} ${theme.fg("accent", pillLabel(this.options.agents))}${hint}`;
 		const lines = [truncateToWidth(` ${text}`, width, theme.fg("muted", "..."))];
 		if (density !== "detailed") return lines;
 
@@ -256,7 +257,7 @@ export class BackgroundSubagentDialogComponent extends Container {
 			this.addChild(new Text(theme.fg("selectorMeta", "  Task is no longer available"), 0, 0));
 			return;
 		}
-		const title = theme.fg("selectorTitle", theme.bold(`${agent.role} › ${agent.description ?? "Async agent"}`));
+		const title = theme.fg("selectorTitle", theme.bold(`${agent.role} ${uiGlyphs().selector} ${agent.description ?? "Async agent"}`));
 		const subtitle = theme.fg("selectorMeta", agentSubtitle(agent));
 		this.addChild(renderLines((width) => [fitHeader(title, subtitle, width)]));
 		this.addChild(new Text(detailGuide(agent), 0, 0));
@@ -266,7 +267,7 @@ export class BackgroundSubagentDialogComponent extends Container {
 			this.addChild(new Text(theme.fg("selectorMeta", theme.bold("  Progress")), 0, 0));
 			for (const item of progress.slice(-8)) {
 				const detail = item.summary ?? item.toolName ?? item.kind;
-				this.addChild(new Text(theme.fg("muted", `  ${detail === progress.at(-1)?.summary ? "›" : " "} ${shortPreview(detail, 96) ?? ""}`), 0, 0));
+				this.addChild(new Text(theme.fg("muted", `  ${detail === progress.at(-1)?.summary ? uiGlyphs().selector : " "} ${shortPreview(detail, 96) ?? ""}`), 0, 0));
 			}
 			this.addChild(new Spacer(1));
 		}
@@ -314,30 +315,30 @@ function backgroundSummary(agents: MycliShellSubagent[]): string {
 	if (running > 0) parts.push(`${running} ${running === 1 ? "agent" : "agents"}`);
 	if (failed > 0) parts.push(`${failed} failed`);
 	if (done > 0) parts.push(`${done} done`);
-	return parts.join(" · ") || "No active agents";
+	return parts.join(` ${uiGlyphs().separator} `) || "No active agents";
 }
 
 function listGuide(agent: MycliShellSubagent | undefined): string {
 	const actions = [
-		rawKeyHint("↑/↓", "select"),
+		rawKeyHint(`${uiGlyphs().up}/${uiGlyphs().down}`, "select"),
 		rawKeyHint("Enter", "view"),
 		agent && !isResolved(agent) ? rawKeyHint("x", "stop") : undefined,
 		agent && isResolved(agent) ? rawKeyHint("x", "clear") : undefined,
 		agent && !isResolved(agent) ? rawKeyHint("f", "foreground") : undefined,
-		rawKeyHint("←/Esc", "close"),
+		rawKeyHint(`${uiGlyphs().left}/Esc`, "close"),
 	].filter(Boolean);
-	return truncateToWidth(` ${actions.join(theme.fg("muted", " · "))}`, 120, "...");
+	return truncateToWidth(` ${actions.join(theme.fg("muted", ` ${uiGlyphs().separator} `))}`, 120, "...");
 }
 
 function detailGuide(agent: MycliShellSubagent): string {
 	const actions = [
-		rawKeyHint("←", "go back"),
+		rawKeyHint(uiGlyphs().left, "go back"),
 		rawKeyHint("Esc/Enter/Space", "close"),
 		!isResolved(agent) ? rawKeyHint("x", "stop") : undefined,
 		!isResolved(agent) ? rawKeyHint("f", "foreground") : undefined,
 		isResolved(agent) ? rawKeyHint("x", "clear") : undefined,
 	].filter(Boolean);
-	return truncateToWidth(` ${actions.join(theme.fg("muted", " · "))}`, 120, "...");
+	return truncateToWidth(` ${actions.join(theme.fg("muted", ` ${uiGlyphs().separator} `))}`, 120, "...");
 }
 
 function agentListLine(
@@ -345,7 +346,7 @@ function agentListLine(
 	selected: boolean,
 	lastSibling: boolean,
 ): string {
-	const prefix = selected ? theme.fg("selectorMatch", "→ ") : "  ";
+	const prefix = selected ? theme.fg("selectorMatch", `${uiGlyphs().arrow} `) : "  ";
 	const tree = agentTreePrefix(agent, lastSibling);
 	const identity = agent.agentPath ?? agent.nickname ?? agent.taskName ?? agent.role;
 	const label = `${tree}${identity}: ${agent.description ?? "Async agent"}`;
@@ -357,7 +358,7 @@ function agentListLine(
 
 function agentTreePrefix(agent: MycliShellSubagent, lastSibling: boolean): string {
 	const depth = Math.max(0, (agent.agentPath?.split("/").filter(Boolean).length ?? 2) - 2);
-	return `${"  ".repeat(depth)}${lastSibling ? "└─" : "├─"} `;
+	return `${"  ".repeat(depth)}${lastSibling ? uiGlyphs().branch : uiGlyphs().teeLeft}${uiGlyphs().horizontal} `;
 }
 
 function isLastSibling(agents: readonly MycliShellSubagent[], index: number): boolean {
@@ -394,7 +395,7 @@ function agentSubtitle(agent: MycliShellSubagent): string {
 	if (agent.durationMs !== undefined) parts.push(formatDuration(agent.durationMs));
 	if (agent.tokens !== undefined) parts.push(`${formatNumber(agent.tokens)} tokens`);
 	if (agent.toolCalls !== undefined) parts.push(`${agent.toolCalls} ${agent.toolCalls === 1 ? "tool" : "tools"}`);
-	return parts.join(theme.fg("selectorMeta", " · "));
+	return parts.join(theme.fg("selectorMeta", ` ${uiGlyphs().separator} `));
 }
 
 function agentStats(agent: MycliShellSubagent): string {
@@ -408,7 +409,7 @@ function agentStats(agent: MycliShellSubagent): string {
 	if (agent.toolCalls !== undefined) {
 		parts.push(`${agent.toolCalls} ${agent.toolCalls === 1 ? "tool" : "tools"}`);
 	}
-	return parts.length > 0 ? `· ${parts.join(" · ")}` : "";
+	return parts.length > 0 ? `${uiGlyphs().separator} ${parts.join(` ${uiGlyphs().separator} `)}` : "";
 }
 
 function fitHeader(left: string, right: string, width: number): string {

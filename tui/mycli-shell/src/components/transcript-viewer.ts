@@ -7,6 +7,7 @@ import { renderTranscriptBlocks } from "../shell-app.ts";
 import { matchesKey } from "../tui-core/keys.ts";
 import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 const LEGACY_OUTPUT_NOTICE = "[Full output was not retained for this older session. Showing the saved tail.]";
@@ -203,7 +204,8 @@ export class TranscriptViewerComponent implements Component {
 			: this.loadingCount > 0
 				? theme.fg("muted", `Loading ${this.loadingCount} Shell output${this.loadingCount === 1 ? "" : "s"}...`)
 				: "";
-		const keys = theme.fg("dim", "up/down scroll · pgup/pgdn page · home/end jump · esc/q close");
+		const separator = ` ${uiGlyphs().separator} `;
+		const keys = theme.fg("dim", ["up/down scroll", "pgup/pgdn page", "home/end jump", "esc/q close"].join(separator));
 		return status ? `${status}  ${keys}` : keys;
 	}
 }

@@ -3,6 +3,7 @@ import {
 	type CachedUpdateStatus,
 	type ShellSettingSource,
 } from "@mycli/config";
+import { TUI_KEYMAP_ACTIONS } from "@mycli/contracts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -20,6 +21,8 @@ export type SettingsCategoryId =
 export interface BuildNodeSettingsCatalogInput {
 	readonly settings: Readonly<JsonObject>;
 	readonly sources?: Readonly<Record<string, ShellSettingSource>>;
+	readonly keymap?: Readonly<JsonObject>;
+	readonly terminalCapabilities?: Readonly<JsonObject>;
 	readonly provider: string;
 	readonly model: string;
 	readonly reasoningEffort?: string;
@@ -162,6 +165,19 @@ export function buildNodeSettingsCatalog(input: BuildNodeSettingsCatalogInput): 
 			searchTerms: ["project config", "repository"],
 		}),
 		...visualItems(input.settings, input.sources),
+		terminalCapabilityItem(input.terminalCapabilities),
+		...keymapItems(input.keymap),
+		actionItem({
+			id: "keymap.reset",
+			category: "appearance",
+			label: "Reset keymap",
+			description: "Remove user key overrides and restore the effective layered defaults",
+			value: "Reset",
+			source: "user_config",
+			scope: "user",
+			action: "reset_keymap",
+			searchTerms: ["keyboard", "shortcuts", "bindings", "defaults"],
+		}),
 		actionItem({
 			id: "sessions.saved",
 			category: "sessions",
@@ -268,6 +284,61 @@ function visualItems(
 	}));
 }
 
+function keymapItems(keymap: Readonly<JsonObject> | undefined): SettingsItem[] {
+	const bindings = recordValue(keymap?.bindings);
+	const sources = recordValue(keymap?.sources);
+	return TUI_KEYMAP_ACTIONS.map((action) => {
+		const configured = Array.isArray(bindings[action.id])
+			? (bindings[action.id] as unknown[])
+				.filter((value): value is string => typeof value === "string")
+				.slice(0, 8)
+			: undefined;
+		const keys = configured ?? [...action.defaultKeys];
+		return statusItem({
+			id: `keymap.${action.id}`,
+			category: "appearance",
+			label: action.description,
+			description: `Effective ${action.context} key binding for ${action.id}`,
+			value: keys.length > 0 ? keys.map((key) => boundedText(key, 64)).join(" / ") : "Unbound",
+			source: textValue(sources[action.id]) ?? "default",
+			scope: "effective",
+			searchTerms: [action.id, action.configKey, action.context, ...keys],
+		});
+	});
+}
+
+function terminalCapabilityItem(
+	capabilities: Readonly<JsonObject> | undefined,
+): SettingsItem {
+	const value = recordValue(capabilities);
+	const colorMode = textValue(value.color_mode) ?? "unknown color";
+	const glyphMode = textValue(value.glyph_mode) ?? "unknown glyphs";
+	const progress = value.progress_visible === false
+		? "progress hidden"
+		: value.progress_animated === false
+			? "static progress"
+			: "animated progress";
+	const guidance = Array.isArray(value.guidance)
+		? value.guidance
+			.filter((item): item is string => typeof item === "string")
+			.slice(0, 2)
+			.map((item) => boundedText(item, 256))
+			.filter(Boolean)
+		: [];
+	return statusItem({
+		id: "terminal.capabilities",
+		category: "appearance",
+		label: "Terminal capabilities",
+		description: guidance.length > 0
+			? guidance.join(" ")
+			: "Effective color, glyph, and progress behavior for this terminal",
+		value: `${colorMode} / ${glyphMode} / ${progress}`,
+		source: textValue(value.terminal_kind) ?? "runtime",
+		scope: "runtime",
+		searchTerms: ["color", "unicode", "ascii", "motion", "contrast", "terminal"],
+	});
+}
+
 function actionItem(input: {
 	readonly id: string;
 	readonly category: SettingsCategoryId;
@@ -278,7 +349,7 @@ function actionItem(input: {
 	readonly scope: string;
 	readonly action: string;
 	readonly actionArgs?: string;
-	readonly command: string;
+	readonly command?: string;
 	readonly locked?: boolean;
 	readonly lockReason?: string;
 	readonly searchTerms: readonly string[];
@@ -294,7 +365,7 @@ function actionItem(input: {
 		scope: boundedText(input.scope, 64),
 		action: input.action,
 		...(input.actionArgs ? { action_args: input.actionArgs } : {}),
-		command: input.command,
+		...(input.command ? { command: input.command } : {}),
 		locked: input.locked ?? false,
 		...(input.lockReason ? { lock_reason: boundedText(input.lockReason, 256) } : {}),
 		restart_required: false,

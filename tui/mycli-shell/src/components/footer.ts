@@ -2,6 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellFooterData } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 
 export type FooterInteractionState = {
@@ -123,12 +124,12 @@ export class FooterComponent implements Component {
 		const minimumContextWidth = Math.min(width, Math.max(16, Math.floor(width / 2)));
 
 		for (const id of dropOrder) {
-			const right = statuses.map((segment) => segment.text).join(" │ ");
+			const right = statuses.map((segment) => segment.text).join(` ${uiGlyphs().vertical} `);
 			if (minimumContextWidth + (right ? 2 : 0) + visibleWidth(right) <= width) break;
 			this.removeOptionalSegment(statuses, id);
 		}
 
-		const right = statuses.map((segment) => segment.text).join(theme.fg("muted", " │ "));
+		const right = statuses.map((segment) => segment.text).join(theme.fg("muted", ` ${uiGlyphs().vertical} `));
 		if (!right) return this.contextRow(width);
 		const leftWidth = Math.max(1, width - visibleWidth(right) - 2);
 		return alignedColumns(this.contextRow(leftWidth), right, width);
@@ -142,7 +143,7 @@ export class FooterComponent implements Component {
 		readonly fullLeft: string;
 	} {
 		const path = sanitizeStatusText(formatCwdForFooter(this.data.cwd));
-		const session = this.data.sessionName ? `• ${sanitizeStatusText(this.data.sessionName)}` : "";
+		const session = this.data.sessionName ? `${uiGlyphs().bullet} ${sanitizeStatusText(this.data.sessionName)}` : "";
 		const branch = this.data.gitBranch ? `(${sanitizeStatusText(this.data.gitBranch)})` : "";
 		const separator = path && session ? "  " : "";
 		return { path, session, branch, separator, fullLeft: `${path}${separator}${session}` };
@@ -192,7 +193,7 @@ export class FooterComponent implements Component {
 			segments.push({ id: "model", text: sanitizeStatusText(this.data.model), optional: true });
 		}
 		if (this.data.reasoningLevel) {
-			segments.push({ id: "reasoning", text: `• ${sanitizeStatusText(this.data.reasoningLevel)}`, optional: true });
+			segments.push({ id: "reasoning", text: `${uiGlyphs().bullet} ${sanitizeStatusText(this.data.reasoningLevel)}`, optional: true });
 		}
 		return segments;
 	}

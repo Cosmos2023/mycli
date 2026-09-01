@@ -1,10 +1,15 @@
 import {
+	TUI_KEYMAP_ACTIONS,
+	type TuiKeymapActionId,
+} from "@mycli/contracts";
+import {
 	type Keybinding,
 	type KeybindingDefinitions,
 	KeybindingsManager,
 	setKeybindings,
-	TUI_KEYBINDINGS,
 } from "./tui-core/index.ts";
+import type { KeybindingsConfig } from "./tui-core/keybindings.ts";
+import type { KeyId } from "./tui-core/keys.ts";
 
 declare module "./tui-core/keybindings.ts" {
 	interface Keybindings {
@@ -23,32 +28,41 @@ declare module "./tui-core/keybindings.ts" {
 
 export type AppKeybinding = Extract<Keybinding, `app.${string}`>;
 
-const APP_KEYBINDINGS = {
-	"app.interrupt": { defaultKeys: "escape", description: "Interrupt / cancel", context: "app" },
-	"app.exit": { defaultKeys: "ctrl+d", description: "Exit", context: "app" },
-	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output", context: "app" },
-	"app.transcript.open": { defaultKeys: "ctrl+t", description: "Open transcript", context: "app" },
-	"app.model.select": { defaultKeys: "ctrl+l", description: "Select model", context: "app" },
-	"app.commandPalette": { defaultKeys: "ctrl+p", description: "Open commands", context: "app" },
-	"app.help": { defaultKeys: "?", description: "Open help", context: "app" },
-	"app.permissions.open": { defaultKeys: "ctrl+x", description: "Open permissions", context: "app" },
-	"app.message.followUp": { defaultKeys: "tab", description: "Queue follow-up", context: "app" },
-	"app.message.dequeue": {
-		defaultKeys: ["alt+up", "shift+left"],
-		description: "Edit last queued follow-up",
-		context: "app",
-	},
-} as const satisfies KeybindingDefinitions;
+const MYCLI_KEYBINDINGS: KeybindingDefinitions = Object.freeze(Object.fromEntries(
+	TUI_KEYMAP_ACTIONS.map((action) => [action.id, Object.freeze({
+		defaultKeys: [...action.defaultKeys] as KeyId[],
+		description: action.description,
+		context: action.context,
+	})]),
+));
 
-export function createMycliKeybindings(): KeybindingsManager {
-	return new KeybindingsManager({
-		...TUI_KEYBINDINGS,
-		...APP_KEYBINDINGS,
-	});
+export function createMycliKeybindings(
+	bindings?: Readonly<Partial<Record<TuiKeymapActionId, readonly string[]>>>,
+): KeybindingsManager {
+	return new KeybindingsManager(MYCLI_KEYBINDINGS, keybindingsConfig(bindings));
 }
 
-export function installMycliKeybindings(): KeybindingsManager {
-	const keybindings = createMycliKeybindings();
+export function installMycliKeybindings(
+	bindings?: Readonly<Partial<Record<TuiKeymapActionId, readonly string[]>>>,
+): KeybindingsManager {
+	const keybindings = createMycliKeybindings(bindings);
 	setKeybindings(keybindings);
 	return keybindings;
+}
+
+export function applyMycliKeymap(
+	keybindings: KeybindingsManager,
+	bindings?: Readonly<Partial<Record<TuiKeymapActionId, readonly string[]>>>,
+): void {
+	keybindings.setUserBindings(keybindingsConfig(bindings));
+}
+
+function keybindingsConfig(
+	bindings?: Readonly<Partial<Record<TuiKeymapActionId, readonly string[]>>>,
+): KeybindingsConfig {
+	if (!bindings) return {};
+	return Object.fromEntries(TUI_KEYMAP_ACTIONS.flatMap((action) => {
+		const keys = bindings[action.id];
+		return keys === undefined ? [] : [[action.id, [...keys] as KeyId[]]];
+	}));
 }

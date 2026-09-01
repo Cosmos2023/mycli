@@ -3,6 +3,7 @@ import type { MycliShellCommandSpec } from "../model.ts";
 import { getKeybindings } from "../tui-core/index.ts";
 import type { Component, Focusable } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { formatKeyText } from "./keybinding-hints.ts";
 
@@ -43,7 +44,7 @@ export class HelpOverlayComponent implements Component, Focusable {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const lines = [
-			theme.fg("border", "─".repeat(safeWidth)),
+			theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth)),
 			"",
 			theme.bold("Help"),
 			theme.fg("muted", "Keyboard shortcuts and Slash commands"),
@@ -54,8 +55,8 @@ export class HelpOverlayComponent implements Component, Focusable {
 			theme.bold("Commands"),
 			...this.commandLines(safeWidth),
 			"",
-			theme.fg("muted", "Ctrl+P searches commands · Esc closes help"),
-			theme.fg("border", "─".repeat(safeWidth)),
+			theme.fg("muted", `Ctrl+P searches commands ${uiGlyphs().separator} Esc closes help`),
+			theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth)),
 		];
 		return lines.flatMap((line) =>
 			wrapTextWithAnsi(line, safeWidth).map((wrapped) => truncateToWidth(wrapped, safeWidth, "")));
@@ -93,5 +94,5 @@ function commandGroupLine(
 ): string {
 	const values = commands.map((command) =>
 		`${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`);
-	return truncateToWidth(`  ${theme.fg("muted", `${title}:`)} ${values.join(" · ")}`, width, "...");
+	return truncateToWidth(`  ${theme.fg("muted", `${title}:`)} ${values.join(` ${uiGlyphs().separator} `)}`, width, "...");
 }

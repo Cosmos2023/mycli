@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+	TUI_KEYMAP_ACTIONS,
 	TURN_INTERRUPTED_NOTICE,
 	turnCompletedDurationId,
 	turnFailedNoticeId,
@@ -902,6 +903,10 @@ test("runtime adapter projects runtime-backed visual settings", () => {
 			clear_on_shrink: false,
 			terminal_progress: false,
 			subagent_density: "detailed",
+			color_mode: "256",
+			reduced_motion: true,
+			glyph_mode: "ascii",
+			high_contrast: true,
 		},
 	});
 	state = runtimeStateWithSettings(state, settings);
@@ -918,12 +923,40 @@ test("runtime adapter projects runtime-backed visual settings", () => {
 		clearOnShrink: false,
 		terminalProgress: false,
 		subagentDensity: "detailed",
+		colorMode: "256",
+		reducedMotion: true,
+		glyphMode: "ascii",
+		highContrast: true,
 	});
 });
 
 test("runtime adapter validates and projects the versioned settings catalog", () => {
 	const snapshot = settingsSnapshotFromResult({
 		settings: { theme: "light" },
+		keymap: {
+			version: 1,
+			bindings: Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [
+				action.id,
+				action.id === "app.help" ? ["ctrl+h"] : action.defaultKeys,
+			])),
+			sources: Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [
+				action.id,
+				action.id === "app.help" ? "user" : "default",
+			])),
+			overridden: Object.fromEntries(TUI_KEYMAP_ACTIONS.map((action) => [action.id, []])),
+		},
+		terminal_capabilities: {
+			version: 1,
+			color_mode: "256",
+			color_forced_off: false,
+			glyph_mode: "ascii",
+			terminal_kind: "standard",
+			progress_visible: true,
+			progress_animated: false,
+			reduced_motion: true,
+			high_contrast: true,
+			guidance: ["Using ASCII indicators."],
+		},
 		catalog: {
 			version: 1,
 			categories: [{ id: "appearance", label: "外观", description: "Terminal appearance" }],
@@ -947,6 +980,20 @@ test("runtime adapter validates and projects the versioned settings catalog", ()
 	});
 
 	assert.equal(snapshot.settings.theme, "light");
+	assert.deepEqual(snapshot.keymap?.bindings["app.help"], ["ctrl+h"]);
+	assert.equal(snapshot.keymap?.sources["app.help"], "user");
+	assert.deepEqual(snapshot.terminalCapabilities, {
+		version: 1,
+		colorMode: "256",
+		colorForcedOff: false,
+		glyphMode: "ascii",
+		terminalKind: "standard",
+		progressVisible: true,
+		progressAnimated: false,
+		reducedMotion: true,
+		highContrast: true,
+		guidance: ["Using ASCII indicators."],
+	});
 	assert.equal(snapshot.catalog?.categories[0]?.label, "外观");
 	assert.deepEqual(snapshot.catalog?.items[0], {
 		id: "tui.theme",

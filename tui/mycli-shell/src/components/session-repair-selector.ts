@@ -4,6 +4,7 @@ import type {
 } from "../model.ts";
 import { safeErrorMessage } from "../safe-ui-text.ts";
 import { Container, getKeybindings, Spacer, Text, TruncatedText } from "../tui-core/index.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 
@@ -96,7 +97,7 @@ export class SessionRepairSelectorComponent extends Container {
 			const action = this.preview.actions[index];
 			if (!action) continue;
 			const selected = index === this.selectedIndex;
-			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
+			const prefix = selected ? theme.fg("accent", `${uiGlyphs().arrow} `) : "  ";
 			const label = repairActionLabel(action);
 			this.addChild(new Text(
 				`${prefix}${selected ? theme.fg("accent", theme.bold(label)) : theme.bold(label)}`,
@@ -117,7 +118,7 @@ export class SessionRepairSelectorComponent extends Container {
 			this.addChild(new Text(theme.fg("error", `  ${this.error}`), 0, 0));
 		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", "  Enter confirm · Esc cancel"), 0, 0));
+		this.addChild(new Text(theme.fg("muted", `  Enter confirm ${uiGlyphs().separator} Esc cancel`), 0, 0));
 		this.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
 	}
 }

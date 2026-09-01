@@ -3,6 +3,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellBash, MycliShellTool, MycliShellToolStatus } from "../model.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
@@ -72,7 +73,7 @@ export class CollapsedToolGroupComponent extends Container {
 		const color = status === "error" ? "error" : "accent";
 		const action = status === "running" ? presentSummary(this.group.items) : pastSummary(this.group.items);
 		const suffix = statusSuffix(status);
-		return `${theme.fg(color, theme.bold("•"))} ${theme.fg(color, theme.bold(`${action}${suffix}`))}`;
+		return `${theme.fg(color, theme.bold(uiGlyphs().bullet))} ${theme.fg(color, theme.bold(`${action}${suffix}`))}`;
 	}
 
 	private targets(): Array<{ text: string; path: boolean }> {
@@ -88,21 +89,21 @@ export class CollapsedToolGroupComponent extends Container {
 	private targetLines(width: number): string[] {
 		const targets = this.targets();
 		const available = Math.max(1, width - TRANSCRIPT_BRANCH_INDENT * 2);
-		const prefix = "⎿ ";
+		const prefix = `${uiGlyphs().output} `;
 		const contentWidth = Math.max(1, available - visibleWidth(prefix));
 		const previewCount = contentWidth >= 48 ? 3 : contentWidth >= 24 ? 2 : 1;
 		const displayed = targets.slice(0, previewCount);
 		const omitted = targets.length - displayed.length;
-		const omittedSuffix = omitted > 0 ? `, … +${omitted}` : "";
+		const omittedSuffix = omitted > 0 ? `, ${uiGlyphs().ellipsis} +${omitted}` : "";
 		const separatorWidth = Math.max(0, displayed.length - 1) * visibleWidth(", ");
 		const targetsWidth = Math.max(1, contentWidth - visibleWidth(omittedSuffix) - separatorWidth);
 		const targetWidth = Math.max(1, Math.floor(targetsWidth / Math.max(1, displayed.length)));
 		const preview = displayed
 			.map((target) => target.path
 				? compactPathPreview(target.text, targetWidth) ?? "file"
-				: truncateToWidth(target.text, targetWidth, "…"))
+				: truncateToWidth(target.text, targetWidth, uiGlyphs().ellipsis))
 			.join(", ");
-		const line = truncateToWidth(`${prefix}${preview}${omittedSuffix}`, available, theme.fg("dim", "…"));
+		const line = truncateToWidth(`${prefix}${preview}${omittedSuffix}`, available, theme.fg("dim", uiGlyphs().ellipsis));
 		return [`${" ".repeat(TRANSCRIPT_BRANCH_INDENT)}${theme.fg("muted", line)}`];
 	}
 }
@@ -165,11 +166,11 @@ function joinParts(parts: Array<string | undefined>): string {
 function statusSuffix(status: MycliShellToolStatus): string {
 	switch (status) {
 		case "running":
-			return " · Running";
+			return ` ${uiGlyphs().separator} Running`;
 		case "error":
-			return " · Failed";
+			return ` ${uiGlyphs().separator} Failed`;
 		case "cancelled":
-			return " · Cancelled";
+			return ` ${uiGlyphs().separator} Cancelled`;
 		case "success":
 			return "";
 	}

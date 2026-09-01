@@ -5118,12 +5118,22 @@ test("Node backend persists canonical TUI control state without exposing credent
 			},
 		},
 	}, null, 2)}\n`, "utf8");
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		'tui_color_mode = "256"',
+		'tui_glyph_mode = "ascii"',
+		"tui_reduced_motion = true",
+		"tui_high_contrast = true",
+		"",
+		"[tui.keymap.app]",
+		'help = "ctrl+h"',
+		"",
+	].join("\n"), "utf8");
 	await writeFile(join(workspace, "src", "README.md"), "control fixture\n", "utf8");
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 	const options = {
 		cwd: workspace,
 		args: ["--session", "control-session"],
-		env: { HOME: home },
+		env: { HOME: home, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
 	} as const;
 
 	const first = await startNodeBackend(options);
@@ -5169,6 +5179,20 @@ test("Node backend persists canonical TUI control state without exposing credent
 		(selectedStatus.context_window as Record<string, unknown>).max_tokens,
 		150_000,
 	);
+	writeRequest(first, "settings-initial", "settings.load", {});
+	const initialSettings = await waitFor(() => response(firstMessages, "settings-initial"));
+	const initialKeymap = resultValue(initialSettings, "keymap") as Record<string, unknown>;
+	assert.deepEqual((initialKeymap.bindings as Record<string, unknown>)["app.help"], ["ctrl+h"]);
+	const terminalCapabilities = resultValue(initialSettings, "terminal_capabilities") as Record<string, unknown>;
+	assert.equal(terminalCapabilities.color_mode, "256");
+	assert.equal(terminalCapabilities.color_forced_off, false);
+	assert.equal(terminalCapabilities.glyph_mode, "ascii");
+	assert.equal(terminalCapabilities.progress_animated, false);
+
+	writeRequest(first, "settings-keymap-reset", "settings.keymap.reset", {});
+	const resetKeymap = await waitFor(() => response(firstMessages, "settings-keymap-reset"));
+	const resetKeymapState = resultValue(resetKeymap, "keymap") as Record<string, unknown>;
+	assert.deepEqual((resetKeymapState.bindings as Record<string, unknown>)["app.help"], ["?"]);
 
 	writeRequest(first, "settings", "settings.save", {
 		setting_id: "tui.view_mode",
@@ -5195,6 +5219,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 	assert.equal(configRaw.includes("integration-control-secret"), false);
 	assert.equal(configRaw.includes("catalog-control-secret"), false);
 	assert.equal(configRaw.includes('auth_ref = "catalog-account"'), true);
+	assert.equal(configRaw.includes("[tui.keymap"), false);
 	const second = await startNodeBackend(options);
 	const secondMessages: Array<Record<string, unknown>> = [];
 	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
@@ -5212,6 +5237,8 @@ test("Node backend persists canonical TUI control state without exposing credent
 		(resultValue(restartedSettings, "settings") as Record<string, unknown>).statusbar_mode,
 		"compact",
 	);
+	const restartedKeymap = resultValue(restartedSettings, "keymap") as Record<string, unknown>;
+	assert.deepEqual((restartedKeymap.bindings as Record<string, unknown>)["app.help"], ["?"]);
 	writeRequest(second, "shutdown-controls-restarted", "shutdown", {});
 	assert.equal(await second.completion, 0);
 });

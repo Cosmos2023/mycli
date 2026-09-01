@@ -11,10 +11,11 @@ import {
 	type OverlayHandle,
 	type TUIScreenSnapshot,
 } from "./tui-core/tui.ts";
+import type { KeybindingsManager } from "./tui-core/keybindings.ts";
 import { matchesKey } from "./tui-core/keys.ts";
 import { truncateToWidth, visibleWidth } from "./tui-core/utils.ts";
 import { CombinedAutocompleteProvider, type SlashCommand } from "./tui-core/autocomplete.ts";
-import { installMycliKeybindings } from "./keybindings.ts";
+import { applyMycliKeymap, installMycliKeybindings } from "./keybindings.ts";
 import type {
 	MycliShellAuthProvider,
 	MycliShellBash,
@@ -58,7 +59,7 @@ import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { HelpOverlayComponent } from "./components/help-overlay.ts";
 import { FileChangeComponent } from "./components/file-change.ts";
-import { rawKeyHint } from "./components/keybinding-hints.ts";
+import { keyForAction, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginFlowComponent } from "./components/login-flow.ts";
 import { NoticeMessageComponent } from "./components/notice-message.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -83,6 +84,7 @@ import {
 	TurnCompletedComponent,
 } from "./components/turn-completed.ts";
 import { turnActivityHeaderText } from "./components/turn-activity-label.ts";
+import { setUiGlyphMode, uiGlyphs } from "./theme/terminal-style.ts";
 import { TRANSCRIPT_HEADER_INDENT } from "./components/transcript-gutter.ts";
 import { shellOutputKey, TranscriptViewerComponent } from "./components/transcript-viewer.ts";
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
@@ -162,6 +164,7 @@ export type MycliShellRuntimeOptions = {
 	onSettingsChange?: (
 		change: MycliShellSettingChange,
 	) => MycliShellVisualSettings | MycliShellSettingsSnapshot | Promise<MycliShellVisualSettings | MycliShellSettingsSnapshot>;
+	onSettingsKeymapReset?: () => MycliShellSettingsSnapshot | Promise<MycliShellSettingsSnapshot>;
 	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
 	onTranscriptOutputLoad?: (
 		request: MycliShellTranscriptOutputRequest,
@@ -269,7 +272,7 @@ type ChatBlockComponent =
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
 class TurnActivityComponent implements Component {
-	private readonly frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+	private readonly frames: readonly string[];
 	private frameIndex = 0;
 	private intervalId: NodeJS.Timeout | null = null;
 	private cachedWidth: number | null = null;
@@ -283,8 +286,11 @@ class TurnActivityComponent implements Component {
 		private readonly startedAtMs: number,
 		private readonly now: () => number,
 		private status: TurnActivityStatus,
+		private readonly animated: boolean,
 		private readonly onContentChange?: () => void,
 	) {
+		const glyphs = uiGlyphs();
+		this.frames = animated ? glyphs.spinnerFrames : [glyphs.staticProgress];
 		this.start();
 	}
 
@@ -331,14 +337,15 @@ class TurnActivityComponent implements Component {
 		) {
 			return this.cachedLines;
 		}
+		const glyphs = uiGlyphs();
 		const header = new Text(
-			`${theme.fg("accent", frame)} ${theme.fg("muted", `${this.headerText()} (${formatElapsedCompact(elapsedSeconds)} • esc to interrupt)`)}`,
+			`${theme.fg("accent", frame)} ${theme.fg("muted", `${this.headerText()} (${formatElapsedCompact(elapsedSeconds)} ${glyphs.bullet} ${keyForAction("app.interrupt")} to interrupt)`)}`,
 			TRANSCRIPT_HEADER_INDENT,
 			0,
 		).render(width);
 		const detail = this.detailText();
 		const lines = detail
-			? [...header, ...new Text(theme.fg("dim", `  └ ${detail}`), TRANSCRIPT_HEADER_INDENT, 0).render(width).slice(0, 2)]
+			? [...header, ...new Text(theme.fg("dim", `  ${glyphs.branch} ${detail}`), TRANSCRIPT_HEADER_INDENT, 0).render(width).slice(0, 2)]
 			: header;
 		this.cachedWidth = width;
 		this.cachedFrameIndex = this.frameIndex;
@@ -367,11 +374,11 @@ class TurnActivityComponent implements Component {
 			return;
 		}
 		this.intervalId = setInterval(() => {
-			this.frameIndex = (this.frameIndex + 1) % this.frames.length;
+			if (this.animated) this.frameIndex = (this.frameIndex + 1) % this.frames.length;
 			this.renderRevision += 1;
 			this.onContentChange?.();
 			this.ui.requestRender();
-		}, 100);
+		}, this.animated ? 100 : 1_000);
 		this.intervalId.unref?.();
 	}
 }
@@ -1183,6 +1190,7 @@ export class MycliShellRuntime {
 	readonly subagentTaskContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
 	readonly footerContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
 	readonly editor: CustomEditor;
+	private readonly keybindings: KeybindingsManager;
 
 	private state: MycliShellState;
 	private transcriptRenderRevision = 0;
@@ -1225,7 +1233,7 @@ export class MycliShellRuntime {
 		this.startupOnboarding = startupOnboarding.current() ? startupOnboarding : null;
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
-		this.applyVisualSettings(this.state.settings);
+		this.applyVisualSettings(this.state.settings, this.state.terminalCapabilities);
 		this.ui.onResize = () => this.handleTerminalResize();
 		this.ui.onSuspend = options.onSuspend;
 		this.ui.onFatalError = options.onFatalError;
@@ -1245,8 +1253,8 @@ export class MycliShellRuntime {
 				: configuredReplayMaxRows ?? resolveTranscriptReplayMaxRows(),
 			() => this.transcriptRenderRevision,
 		);
-		const keybindings = installMycliKeybindings();
-		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, {
+		this.keybindings = installMycliKeybindings(this.state.keymap?.bindings);
+		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: 1,
 			autocompleteMaxVisible: 8,
 			onDroppedImageFile: (path) => this.registerDroppedImageFile(path),
@@ -1329,7 +1337,10 @@ export class MycliShellRuntime {
 			this.userTurnPendingStart = false;
 		}
 		this.updateStatusTiming(previousState, effectiveState);
-		this.applyVisualSettings(effectiveState.settings);
+		if (settingsChanged) {
+			applyMycliKeymap(this.keybindings, effectiveState.keymap?.bindings);
+		}
+		this.applyVisualSettings(effectiveState.settings, effectiveState.terminalCapabilities);
 		this.state = effectiveState;
 		this.updateTranscriptViewer(effectiveState);
 		if (this.mainMounted) {
@@ -1437,15 +1448,15 @@ export class MycliShellRuntime {
 			this.runAsyncAction(() => this.handleCtrlC(), "Interrupt request failed");
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+t")) {
+		if (this.keybindings.matches(data, "app.transcript.open")) {
 			this.showTranscriptViewer();
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+o")) {
+		if (this.keybindings.matches(data, "app.tools.expand")) {
 			this.toggleToolDetails();
 			return { consume: true };
 		}
-		if (matchesKey(data, "escape") && this.isTurnRunning()) {
+		if (this.keybindings.matches(data, "app.interrupt") && this.isTurnRunning()) {
 			this.runAsyncAction(() => this.handleInterrupt(), "Interrupt request failed");
 			return { consume: true };
 		}
@@ -1942,6 +1953,8 @@ export class MycliShellRuntime {
 				...this.state,
 				settings: loaded.settings,
 				settingsCatalog: loaded.catalog ?? this.state.settingsCatalog,
+				keymap: loaded.keymap ?? this.state.keymap,
+				terminalCapabilities: loaded.terminalCapabilities ?? this.state.terminalCapabilities,
 			});
 			this.setState(loadedState);
 		}
@@ -1950,7 +1963,7 @@ export class MycliShellRuntime {
 				tui: this.ui,
 				settings: this.state.settings,
 				catalog: this.state.settingsCatalog,
-				onAction: (item) => this.openSettingsAction(item),
+				onAction: (item, activeSelector) => this.openSettingsAction(item, activeSelector),
 				onChange: (item, value, scope, activeSelector) => {
 					void this.applySettingsChange(item, value, scope, activeSelector);
 				},
@@ -2263,10 +2276,24 @@ export class MycliShellRuntime {
 		this.ui.invalidate();
 	}
 
-	private applyVisualSettings(settings: MycliShellVisualSettings | undefined): void {
+	private applyVisualSettings(
+		settings: MycliShellVisualSettings | undefined,
+		capabilities: MycliShellState["terminalCapabilities"],
+	): void {
 		if (settings?.theme === "dark" || settings?.theme === "light") {
 			theme.setName(settings.theme);
 		}
+		const colorMode = capabilities?.colorForcedOff
+			? "none"
+			: settings?.colorMode && settings.colorMode !== "auto"
+				? settings.colorMode
+				: capabilities?.colorMode;
+		if (colorMode) theme.setColorMode(colorMode);
+		theme.setHighContrast(settings?.highContrast ?? capabilities?.highContrast ?? false);
+		const glyphMode = settings?.glyphMode && settings.glyphMode !== "auto"
+			? settings.glyphMode
+			: capabilities?.glyphMode;
+		if (glyphMode) setUiGlyphMode(glyphMode);
 		if (settings?.hardwareCursor !== undefined) {
 			this.ui.setShowHardwareCursor(settings.hardwareCursor);
 		}
@@ -2276,7 +2303,11 @@ export class MycliShellRuntime {
 	}
 
 	private settingsSignature(state: MycliShellState): string {
-		return JSON.stringify(state.settings ?? {});
+		return JSON.stringify({
+			settings: state.settings ?? {},
+			keymap: state.keymap ?? null,
+			terminalCapabilities: state.terminalCapabilities ?? null,
+		});
 	}
 
 	private rebuildChangedSections(
@@ -2747,6 +2778,9 @@ export class MycliShellRuntime {
 				kind: this.state.footer.liveStateKind,
 				detail: this.state.footer.liveStateDetail,
 			},
+			!(this.state.settings?.reducedMotion
+				?? this.state.terminalCapabilities?.reducedMotion
+				?? false),
 			() => {
 				this.transcriptRenderRevision += 1;
 				this.transcriptViewport.markContentChanged();
@@ -3024,7 +3058,10 @@ export class MycliShellRuntime {
 	}
 
 	private isTurnActivityVisible(state: MycliShellState): boolean {
-		return state.settings?.terminalProgress !== false && this.isTurnActivityRunning(state);
+		return (state.settings?.terminalProgress
+			?? state.terminalCapabilities?.progressVisible
+			?? true)
+			&& this.isTurnActivityRunning(state);
 	}
 
 	private isCompletedLiveState(state: MycliShellState): boolean {
@@ -3334,7 +3371,9 @@ export class MycliShellRuntime {
 			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
 		}));
 		this.editor.setAutocompleteProvider(
-			new CombinedAutocompleteProvider(slashCommands, this.autocompleteBasePath()),
+			new CombinedAutocompleteProvider(slashCommands, this.autocompleteBasePath(), null, {
+				descriptionSeparator: () => uiGlyphs().descriptionSeparator,
+			}),
 		);
 	}
 
@@ -3540,7 +3579,10 @@ export class MycliShellRuntime {
 		this.setState({ ...this.state, footer: { ...this.state.footer, ...footerPatch } });
 	}
 
-	private openSettingsAction(item: MycliShellSettingsItem): void {
+	private openSettingsAction(
+		item: MycliShellSettingsItem,
+		selector: SettingsSelectorComponent,
+	): void {
 		const action = item.action ?? (item.command ? "run_command" : undefined);
 		switch (action) {
 			case "open_model_selector":
@@ -3561,11 +3603,38 @@ export class MycliShellRuntime {
 			case "open_resources":
 				void this.showResourceSelector();
 				return;
+			case "reset_keymap":
+				void this.resetSettingsKeymap(selector);
+				return;
 			case "run_command": {
 				const command = item.actionArgs ?? item.command;
 				if (command) void this.submitCommand(command);
 				return;
 			}
+		}
+	}
+
+	private async resetSettingsKeymap(selector: SettingsSelectorComponent): Promise<void> {
+		const previousState = this.state;
+		this.patchFooter({ liveState: "Resetting keymap" });
+		try {
+			const snapshot = await this.options.onSettingsKeymapReset?.();
+			if (!snapshot) throw new Error("Keymap reset is unavailable in this runtime.");
+			const nextState = {
+				...this.state,
+				settings: snapshot.settings,
+				settingsCatalog: snapshot.catalog ?? this.state.settingsCatalog,
+				keymap: snapshot.keymap ?? this.state.keymap,
+				terminalCapabilities: snapshot.terminalCapabilities ?? this.state.terminalCapabilities,
+			};
+			this.setState({
+				...nextState,
+				footer: { ...nextState.footer, liveState: "Keymap reset" },
+			});
+			if (snapshot.catalog) selector.replaceCatalog(snapshot.catalog);
+		} catch (error) {
+			this.setState(previousState);
+			selector.setError(safeErrorMessage(error, "Failed to reset keymap."));
 		}
 	}
 
@@ -3611,6 +3680,8 @@ export class MycliShellRuntime {
 				...this.state,
 				settings: snapshot.settings,
 				settingsCatalog: snapshot.catalog ?? optimisticCatalog,
+				keymap: snapshot.keymap ?? this.state.keymap,
+				terminalCapabilities: snapshot.terminalCapabilities ?? this.state.terminalCapabilities,
 			});
 			this.setState({
 				...savedState,
@@ -3847,6 +3918,18 @@ function visualSettingsWithChoice(
 			return ["compact", "normal", "detailed"].includes(value)
 				? { ...settings, subagentDensity: value as NonNullable<MycliShellVisualSettings["subagentDensity"]> }
 				: null;
+		case "colorMode":
+			return ["auto", "truecolor", "256", "16", "none"].includes(value)
+				? { ...settings, colorMode: value as NonNullable<MycliShellVisualSettings["colorMode"]> }
+				: null;
+		case "reducedMotion":
+			return booleanSetting(settings, "reducedMotion", value);
+		case "glyphMode":
+			return ["auto", "unicode", "ascii"].includes(value)
+				? { ...settings, glyphMode: value as NonNullable<MycliShellVisualSettings["glyphMode"]> }
+				: null;
+		case "highContrast":
+			return booleanSetting(settings, "highContrast", value);
 		default:
 			return null;
 	}
@@ -3854,7 +3937,8 @@ function visualSettingsWithChoice(
 
 function booleanSetting(
 	settings: MycliShellVisualSettings | undefined,
-	key: "hideThinking" | "hardwareCursor" | "clearOnShrink" | "terminalProgress",
+	key: "hideThinking" | "hardwareCursor" | "clearOnShrink" | "terminalProgress"
+		| "reducedMotion" | "highContrast",
 	value: string,
 ): MycliShellVisualSettings | null {
 	if (value !== "true" && value !== "false") return null;

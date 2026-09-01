@@ -981,6 +981,13 @@ async function saveSettings(change: MycliShellSettingChange): Promise<MycliShell
 	return snapshot;
 }
 
+async function resetSettingsKeymap(): Promise<MycliShellSettingsSnapshot> {
+	const result = await send("settings.keymap.reset", {});
+	const snapshot = settingsSnapshotFromResult(result);
+	setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, snapshot));
+	return snapshot;
+}
+
 async function selectPermission(profile: MycliShellPermissionProfile): Promise<MycliShellPermissionState> {
 	const result = await send("permissions.update", { profile: profile.id });
 	const permissions = permissionStateFromUnknown(result.permissions);
@@ -1126,6 +1133,7 @@ async function main(): Promise<void> {
 		onSessionTreeLoad: loadSessionTree,
 		onSettingsLoad: loadSettings,
 		onSettingsChange: saveSettings,
+		onSettingsKeymapReset: resetSettingsKeymap,
 		onResourceLoad: loadResources,
 		onTranscriptOutputLoad: (request) => loadFullShellOutput(send, request),
 		onTranscriptHistoryLoad: loadOlderTranscriptHistory,

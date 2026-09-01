@@ -19,6 +19,7 @@ export type {
 	MycliShellModel,
 	MycliShellPendingInput,
 	MycliShellEffectivePermission,
+	MycliShellEffectiveKeymap,
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
 	MycliShellSandboxReadiness,
@@ -34,6 +35,7 @@ export type {
 	MycliShellVisualSettings,
 	MycliShellTool,
 	MycliShellToolStatus,
+	MycliShellTerminalCapabilities,
 	MycliShellTranscriptOutput,
 	MycliShellTranscriptOutputRequest,
 } from "./model.ts";

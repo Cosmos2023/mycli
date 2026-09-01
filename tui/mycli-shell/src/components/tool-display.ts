@@ -1,4 +1,5 @@
 import { sliceByColumn, visibleWidth } from "../tui-core/utils.ts";
+import { uiGlyphs } from "../theme/terminal-style.ts";
 
 export const TOOL_PREVIEW_CHARS = 72;
 
@@ -14,35 +15,38 @@ export function shortPreview(text: string | undefined, maxChars = TOOL_PREVIEW_C
 	if (sanitized.length <= maxChars) {
 		return sanitized;
 	}
-	return `${sanitized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+	const ellipsis = uiGlyphs().ellipsis;
+	return `${sanitized.slice(0, Math.max(0, maxChars - ellipsis.length)).trimEnd()}${ellipsis}`;
 }
 
 export function compactPathPreview(text: string | undefined, maxWidth: number): string | undefined {
 	const sanitized = text ? sanitizeInline(text) : "";
 	if (!sanitized || maxWidth <= 0) return undefined;
 	if (visibleWidth(sanitized) <= maxWidth) return sanitized;
-	if (maxWidth === 1) return "…";
+	const ellipsis = uiGlyphs().ellipsis;
+	const ellipsisWidth = visibleWidth(ellipsis);
+	if (maxWidth <= ellipsisWidth) return sliceByColumn(ellipsis, 0, maxWidth);
 
 	const separator = sanitized.includes("\\") && !sanitized.includes("/") ? "\\" : "/";
 	const parts = sanitized.split(/[\\/]/u).filter(Boolean);
 	const leaf = parts.at(-1) ?? sanitized;
-	let prefix = "…";
+	let prefix = ellipsis;
 	if (parts.length > 1) {
 		if (sanitized.startsWith(`~${separator}`)) {
-			prefix = `~${separator}…${separator}`;
+			prefix = `~${separator}${ellipsis}${separator}`;
 		} else if (sanitized.startsWith(separator)) {
-			prefix = `${separator}…${separator}`;
+			prefix = `${separator}${ellipsis}${separator}`;
 		} else if (/^[A-Za-z]:[\\/]/u.test(sanitized)) {
-			prefix = `${sanitized.slice(0, 2)}${separator}…${separator}`;
+			prefix = `${sanitized.slice(0, 2)}${separator}${ellipsis}${separator}`;
 		} else {
-			prefix = `${parts[0]}${separator}…${separator}`;
+			prefix = `${parts[0]}${separator}${ellipsis}${separator}`;
 		}
 	}
 
 	if (visibleWidth(`${prefix}${leaf}`) <= maxWidth) return `${prefix}${leaf}`;
-	const suffixWidth = maxWidth - 1;
+	const suffixWidth = maxWidth - ellipsisWidth;
 	const leafWidth = visibleWidth(leaf);
-	return `…${sliceByColumn(leaf, Math.max(0, leafWidth - suffixWidth), suffixWidth)}`;
+	return `${ellipsis}${sliceByColumn(leaf, Math.max(0, leafWidth - suffixWidth), suffixWidth)}`;
 }
 
 export function isReadToolName(name: string): boolean {
