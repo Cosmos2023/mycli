@@ -25,12 +25,12 @@ redacted support bundle built on the existing diagnostic taxonomy.
 
 ## Acceptance Criteria
 
-- [ ] Preview/apply/cancel/version-conflict/partial-failure behavior has provider-free tests.
-- [ ] A repair cannot mutate state not shown in its preview.
-- [ ] Support bundle content is schema-bounded, deterministic, private on disk, and fuzz-tested for
+- [x] Preview/apply/cancel/version-conflict/partial-failure behavior has provider-free tests.
+- [x] A repair cannot mutate state not shown in its preview.
+- [x] Support bundle content is schema-bounded, deterministic, private on disk, and fuzz-tested for
   nested secrets, credential URLs, control characters, and local-path leakage.
-- [ ] Text and JSON doctor output stay compatible and reference the same repair/support metadata.
-- [ ] One root failure remains one primary TUI diagnostic after repair actions are added.
+- [x] Text and JSON doctor output stay compatible and reference the same repair/support metadata.
+- [x] One root failure remains one primary TUI diagnostic after repair actions are added.
 
 ## Technical Approach
 
