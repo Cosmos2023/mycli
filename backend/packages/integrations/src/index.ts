@@ -167,6 +167,7 @@ export { SkillRegistry } from "./skills/registry.ts";
 export type { SkillRegistryOptions } from "./skills/registry.ts";
 export {
 	createSkillToolRegistration,
+	type SkillLookup,
 	SKILL_TOOL_DEFINITION,
 	skillInvocationArtifactFromMetadata,
 	SkillTool,

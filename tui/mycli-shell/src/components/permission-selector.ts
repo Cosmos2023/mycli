@@ -6,6 +6,8 @@ type PermissionStage = "profiles" | "confirm-full-access" | "allowances";
 
 export interface PermissionSelectorOptions {
 	permissions: MycliShellPermissionState;
+	showAllowances?: boolean;
+	title?: string;
 	onSelect: (profile: MycliShellPermissionProfile) => void;
 	onClearAllowances: () => void;
 	onCancel: () => void;
@@ -16,6 +18,8 @@ export class PermissionSelectorComponent extends Container {
 	private selectedIndex = 0;
 	private error: string | null = null;
 	private readonly permissions: MycliShellPermissionState;
+	private readonly showAllowances: boolean;
+	private readonly title: string;
 	private readonly onSelectCallback: (profile: MycliShellPermissionProfile) => void;
 	private readonly onClearAllowancesCallback: () => void;
 	private readonly onCancelCallback: () => void;
@@ -23,6 +27,8 @@ export class PermissionSelectorComponent extends Container {
 	constructor(options: PermissionSelectorOptions) {
 		super();
 		this.permissions = options.permissions;
+		this.showAllowances = options.showAllowances !== false;
+		this.title = options.title ?? "Update Model Permissions";
 		this.onSelectCallback = options.onSelect;
 		this.onClearAllowancesCallback = options.onClearAllowances;
 		this.onCancelCallback = options.onCancel;
@@ -94,7 +100,7 @@ export class PermissionSelectorComponent extends Container {
 			return;
 		}
 
-		if (this.selectedIndex === this.permissions.profiles.length) {
+		if (this.showAllowances && this.selectedIndex === this.permissions.profiles.length) {
 			this.stage = "allowances";
 			this.selectedIndex = 0;
 			this.rebuild();
@@ -112,7 +118,9 @@ export class PermissionSelectorComponent extends Container {
 	}
 
 	private itemCount(): number {
-		if (this.stage === "profiles") return this.permissions.profiles.length + 1;
+		if (this.stage === "profiles") {
+			return this.permissions.profiles.length + (this.showAllowances ? 1 : 0);
+		}
 		return 2;
 	}
 
@@ -135,7 +143,7 @@ export class PermissionSelectorComponent extends Container {
 	}
 
 	private renderProfiles(): void {
-		this.addChild(new Text(theme.bold("  Update Model Permissions"), 0, 0));
+		this.addChild(new Text(theme.bold(`  ${this.title}`), 0, 0));
 		this.renderEffectivePolicy();
 		this.addChild(new Spacer(1));
 		this.permissions.profiles.forEach((profile, index) => {
@@ -147,11 +155,13 @@ export class PermissionSelectorComponent extends Container {
 			const effects = permissionEffects(profile);
 			if (effects) this.addChild(new Text(theme.fg("muted", `    ${effects}`), 0, 0));
 		});
-		this.addChild(new Spacer(1));
-		const allowanceIndex = this.permissions.profiles.length;
-		const prefix = allowanceIndex === this.selectedIndex ? theme.fg("accent", "› ") : "  ";
-		this.addChild(new Text(`${prefix}${theme.bold("Command allowances...")}`, 0, 0));
-		this.addChild(new Text(theme.fg("muted", `    ${this.permissions.commandAllowanceCount} active for this session`), 0, 0));
+		if (this.showAllowances) {
+			this.addChild(new Spacer(1));
+			const allowanceIndex = this.permissions.profiles.length;
+			const prefix = allowanceIndex === this.selectedIndex ? theme.fg("accent", "› ") : "  ";
+			this.addChild(new Text(`${prefix}${theme.bold("Command allowances...")}`, 0, 0));
+			this.addChild(new Text(theme.fg("muted", `    ${this.permissions.commandAllowanceCount} active for this session`), 0, 0));
+		}
 	}
 
 	private renderEffectivePolicy(): void {

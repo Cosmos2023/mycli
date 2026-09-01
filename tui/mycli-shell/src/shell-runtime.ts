@@ -88,6 +88,11 @@ import { shellOutputKey, TranscriptViewerComponent } from "./components/transcri
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { WebSearchComponent } from "./components/web-search.ts";
+import {
+	ConnectivityStepComponent,
+	ReadyStepComponent,
+	WelcomeStepComponent,
+} from "./components/startup-onboarding.ts";
 import { isLocalImageAttachmentPath } from "./local-image-attachments.ts";
 import { getEditorTheme, theme } from "./theme/theme.ts";
 import {
@@ -104,6 +109,10 @@ import {
 	planImplementationMessage,
 	type PlanImplementationAction,
 } from "./plan-implementation.ts";
+import {
+	StartupOnboardingCoordinator,
+	type StartupOnboardingStage,
+} from "./startup-onboarding.ts";
 
 export type MycliShellRuntimeOptions = {
 	initialState: MycliShellState;
@@ -132,6 +141,10 @@ export type MycliShellRuntimeOptions = {
 		apiKey: string,
 		authRef?: string,
 	) => void | { message?: string } | Promise<void | { message?: string }>;
+	onConnectivityValidate?: () =>
+		| void
+		| { ok: boolean; message?: string }
+		| Promise<void | { ok: boolean; message?: string }>;
 	onSessionResumePreview?: (
 		sessionId: string,
 	) => MycliShellResumeRepairPreview | Promise<MycliShellResumeRepairPreview>;
@@ -1199,9 +1212,17 @@ export class MycliShellRuntime {
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
 	private nativeTranscriptDeltaHeld = false;
 	private transcriptViewer: ActiveTranscriptViewer | null = null;
+	private startupOnboarding: StartupOnboardingCoordinator | null;
+	private startupProviderId: string | undefined;
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
+		const startupOnboarding = new StartupOnboardingCoordinator({
+			authenticationRequired: this.startupAuthenticationRequired(),
+			trustRequired: options.requireTrust === true,
+			modelSelectionAvailable: (this.state.models?.length ?? 0) > 0,
+		});
+		this.startupOnboarding = startupOnboarding.current() ? startupOnboarding : null;
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
 		this.applyVisualSettings(this.state.settings);
@@ -1274,7 +1295,7 @@ export class MycliShellRuntime {
 		this.editor.onAction("app.transcript.open", () => this.showTranscriptViewer());
 		this.ui.addInputListener((data) => this.handleGlobalInput(data));
 		this.editorContainer.addChild(this.editor);
-		if (!options.requireTrust && !this.startupAuthenticationRequired()) {
+		if (!this.startupOnboarding) {
 			this.mountMain();
 			this.rebuildAll();
 		}
@@ -1286,10 +1307,8 @@ export class MycliShellRuntime {
 		}
 		this.started = true;
 		this.ui.start();
-		if (this.options.requireTrust) {
-			this.showTrustGate();
-		} else if (this.startupAuthenticationRequired()) {
-			this.showStartupLoginFlow();
+		if (this.startupOnboarding) {
+			this.showStartupOnboardingStage();
 		} else if (!this.selectorActive) {
 			this.ui.setFocus(this.editor);
 		}
@@ -1512,6 +1531,198 @@ export class MycliShellRuntime {
 
 	showTrustGate(): void {
 		const startupGate = !this.mainMounted;
+		this.openTrustSelector({
+			onPersisted: (trusted, done) => {
+				this.patchFooter({ trust: trusted ? "trusted" : "untrusted" });
+				if (!startupGate) {
+					done();
+					return;
+				}
+				if (!trusted) {
+					void this.shutdown();
+					return;
+				}
+				done();
+				this.mountMain();
+				this.ui.setFocus(this.editor);
+			},
+			onCancel: (done) => {
+				if (startupGate) void this.shutdown();
+				else done();
+			},
+		});
+	}
+
+	private showStartupOnboardingStage(): void {
+		const stage = this.startupOnboarding?.current();
+		if (!stage) {
+			this.finishStartupOnboarding();
+			return;
+		}
+		this.ensureSelectorHostMounted();
+		switch (stage) {
+			case "welcome":
+				this.showSelector((done) => {
+					const component = new WelcomeStepComponent({
+						onContinue: () => this.completeStartupOnboardingStage(stage, done),
+						onCancel: () => { void this.shutdown(); },
+					});
+					return { component, focus: component };
+				});
+				return;
+			case "credential":
+				this.showStartupCredentialStage();
+				return;
+			case "model":
+				this.showStartupModelStage();
+				return;
+			case "connectivity":
+				this.showStartupConnectivityStage();
+				return;
+			case "trust":
+				this.showStartupTrustStage();
+				return;
+			case "permission":
+				this.showStartupPermissionStage();
+				return;
+			case "ready":
+				this.showStartupReadyStage();
+		}
+	}
+
+	private showStartupCredentialStage(): void {
+		const readiness = this.state.authReadiness;
+		this.showSelector((done) => {
+			const selector = new LoginFlowComponent({
+				tui: this.ui,
+				providers: this.authProviders(),
+				...(readiness?.providerId ? { initialProviderId: readiness.providerId } : {}),
+				...(readiness?.authRef ? { initialAuthRef: readiness.authRef } : {}),
+				onSubmit: ({ providerId, authRef, apiKey }) => {
+					void this.submitApiKeyLogin(
+						providerId,
+						authRef,
+						apiKey,
+						selector,
+						done,
+						(savedProviderId) => {
+							this.startupProviderId = savedProviderId;
+							this.advanceStartupOnboarding("credential");
+						},
+						false,
+					);
+				},
+				onCancel: () => { void this.shutdown(); },
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private showStartupModelStage(): void {
+		const providerId = this.startupProviderId ?? this.state.authReadiness?.providerId;
+		if (providerId && this.modelsForProvider(providerId).length === 0) {
+			this.advanceStartupOnboarding("model");
+			return;
+		}
+		this.showSelector((done) => {
+			const selector = new ModelSelectorComponent({
+				tui: this.ui,
+				currentModel: this.state.currentModel,
+				models: this.state.models ?? [],
+				...(providerId ? { initialSearchInput: providerId } : {}),
+				onSelect: (model, scope) => {
+					void this.submitModelSelection(model, scope, selector, done, () => {
+						this.advanceStartupOnboarding("model");
+					});
+				},
+				onCancel: () => { void this.shutdown(); },
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private showStartupConnectivityStage(): void {
+		this.showSelector((done) => {
+			const component = new ConnectivityStepComponent({
+				validationAvailable: this.options.onConnectivityValidate !== undefined,
+				onSkip: () => this.completeStartupOnboardingStage("connectivity", done),
+				onValidate: () => {
+					component.setPending(true);
+					this.ui.requestRender();
+					void Promise.resolve(this.options.onConnectivityValidate?.()).then(
+						(result) => {
+							if (result && result.ok === false) {
+								component.setError(result.message ?? "Unable to reach the selected provider.");
+								this.ui.requestRender();
+								return;
+							}
+							this.completeStartupOnboardingStage("connectivity", done);
+						},
+						(error: unknown) => {
+							component.setError(safeErrorMessage(error, "Unable to reach the selected provider."));
+							this.ui.requestRender();
+						},
+					);
+				},
+				onCancel: () => { void this.shutdown(); },
+			});
+			return { component, focus: component };
+		});
+	}
+
+	private showStartupTrustStage(): void {
+		this.openTrustSelector({
+			onPersisted: (trusted, done) => {
+				this.patchFooter({ trust: trusted ? "trusted" : "untrusted" });
+				if (!trusted) {
+					void this.shutdown();
+					return;
+				}
+				done();
+				this.advanceStartupOnboarding("trust");
+			},
+			onCancel: () => { void this.shutdown(); },
+		});
+	}
+
+	private showStartupPermissionStage(): void {
+		const permissions = this.state.permissions ?? defaultPermissionState();
+		this.showSelector((done) => {
+			const selector = new PermissionSelectorComponent({
+				permissions,
+				showAllowances: false,
+				title: "Choose model permissions",
+				onSelect: (profile) => {
+					void this.submitPermissionSelection(profile, selector, done, () => {
+						this.advanceStartupOnboarding("permission");
+					}, false);
+				},
+				onClearAllowances: () => undefined,
+				onCancel: () => { void this.shutdown(); },
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	private showStartupReadyStage(): void {
+		const activePermission = this.state.permissions?.profiles.find((profile) => profile.current);
+		this.showSelector((done) => {
+			const component = new ReadyStepComponent({
+				provider: this.state.currentModel?.provider ?? this.state.footer.provider,
+				model: this.state.currentModel?.model ?? this.state.footer.model,
+				permission: activePermission?.label,
+				trusted: this.state.footer.trust === "trusted",
+				onContinue: () => this.completeStartupOnboardingStage("ready", done),
+				onCancel: () => { void this.shutdown(); },
+			});
+			return { component, focus: component };
+		});
+	}
+
+	private openTrustSelector(options: {
+		readonly onPersisted: (trusted: boolean, done: () => void) => void;
+		readonly onCancel: (done: () => void) => void;
+	}): void {
 		this.ensureSelectorHostMounted();
 		this.showSelector((done) => {
 			let selectionPending = false;
@@ -1523,39 +1734,39 @@ export class MycliShellRuntime {
 					if (selectionPending) return;
 					selectionPending = true;
 					selector.setError();
-					void Promise.resolve(this.options.onTrustSelect?.(trusted))
-						.then(() => {
-							if (!startupGate) {
-								done();
-								this.patchFooter({ trust: trusted ? "trusted" : "untrusted" });
-								return;
-							}
-							if (trusted) {
-								done();
-								this.mountMain();
-								this.patchFooter({ trust: "trusted" });
-								if (this.startupAuthenticationRequired()) {
-									this.showStartupLoginFlow();
-								} else {
-									this.ui.setFocus(this.editor);
-								}
-								return;
-							}
-							void this.shutdown();
-						})
-						.catch(() => {
+					void Promise.resolve(this.options.onTrustSelect?.(trusted)).then(
+						() => options.onPersisted(trusted, done),
+						() => {
 							selectionPending = false;
 							selector.setError("Unable to save workspace trust.");
 							this.ui.requestRender();
-						});
+						},
+					);
 				},
-				onCancel: () => {
-					if (startupGate) void this.shutdown();
-					else done();
-				},
+				onCancel: () => options.onCancel(done),
 			});
 			return { component: selector, focus: selector };
 		});
+	}
+
+	private completeStartupOnboardingStage(
+		stage: StartupOnboardingStage,
+		done: () => void,
+	): void {
+		done();
+		this.advanceStartupOnboarding(stage);
+	}
+
+	private advanceStartupOnboarding(stage: StartupOnboardingStage): void {
+		this.startupOnboarding?.advance(stage);
+		queueMicrotask(() => this.showStartupOnboardingStage());
+	}
+
+	private finishStartupOnboarding(): void {
+		this.startupOnboarding = null;
+		this.mountMain();
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
 	}
 
 	showCommandPalette(): void {
@@ -1722,11 +1933,6 @@ export class MycliShellRuntime {
 			});
 			return { component: selector, focus: selector };
 		});
-	}
-
-	private showStartupLoginFlow(): void {
-		const readiness = this.state.authReadiness;
-		this.showLoginFlow(readiness?.providerId, readiness?.authRef, true);
 	}
 
 	async showSettingsSelector(): Promise<void> {
@@ -2023,10 +2229,9 @@ export class MycliShellRuntime {
 	}
 
 	private ensureSelectorHostMounted(): void {
-		if (this.mainMounted) {
+		if (this.mainMounted || this.ui.children.includes(this.editorContainer)) {
 			return;
 		}
-		this.mainMounted = true;
 		this.ui.addChild(this.editorContainer);
 	}
 
@@ -2036,7 +2241,6 @@ export class MycliShellRuntime {
 			this.ui.children[0] === this.editorContainer
 		) {
 			this.ui.clear();
-			this.mainMounted = false;
 		}
 	}
 
@@ -3442,13 +3646,15 @@ export class MycliShellRuntime {
 		apiKey: string,
 		selector: LoginFlowComponent,
 		done: () => void,
+		onSuccess?: (providerId: string) => void,
+		announce = true,
 	): Promise<void> {
 		try {
 			const result = await this.options.onApiKeyLogin?.(providerId, apiKey, authRef);
 			const message = result && "message" in result && result.message
 				? result.message
 				: `Saved API key for ${this.authProviderName(providerId)}.`;
-			this.addSystemNotice(message);
+			if (announce) this.addSystemNotice(message);
 			const nextState = {
 				...this.state,
 				authProviders: this.authProviders().map((provider) =>
@@ -3468,9 +3674,13 @@ export class MycliShellRuntime {
 					: {}),
 			};
 			this.setState(nextState);
+			done();
+			if (onSuccess) {
+				onSuccess(providerId);
+				return;
+			}
 			this.mountMain();
 			const providerModels = this.modelsForProvider(providerId);
-			done();
 			if (providerModels.length > 0) {
 				this.showModelSelector(providerId);
 			}
@@ -3507,10 +3717,12 @@ export class MycliShellRuntime {
 		scope: ModelSelectionScope,
 		selector: ModelSelectorComponent,
 		done: () => void,
+		onSuccess?: () => void,
 	): Promise<void> {
 		try {
 			await this.selectModel(model, scope);
 			done();
+			onSuccess?.();
 		} catch (error) {
 			selector.setError(safeErrorMessage(error, "Model selection failed."));
 		}
@@ -3520,6 +3732,8 @@ export class MycliShellRuntime {
 		profile: MycliShellPermissionProfile,
 		selector: PermissionSelectorComponent,
 		done: () => void,
+		onSuccess?: () => void,
+		announce = true,
 	): Promise<void> {
 		try {
 			const selected = await this.options.onPermissionSelect?.(profile);
@@ -3529,7 +3743,8 @@ export class MycliShellRuntime {
 			);
 			this.setState({ ...this.state, permissions });
 			done();
-			this.addSystemNotice(`Permissions updated to ${profile.label}`);
+			onSuccess?.();
+			if (announce) this.addSystemNotice(`Permissions updated to ${profile.label}`);
 		} catch (error) {
 			selector.setError(safeErrorMessage(error, "Permission update failed."));
 		}

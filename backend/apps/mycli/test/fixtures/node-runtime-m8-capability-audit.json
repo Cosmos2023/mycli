@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 40,
+	"rpc_count": 41,
     "event_count": 43,
     "required_rpc": [
       "session.bootstrap",
@@ -23,6 +23,7 @@
 		"shell.stop_all",
       "resource.list",
       "extension.manifest",
+	  "provider.connectivity.validate",
       "shutdown"
     ],
     "required_events": [

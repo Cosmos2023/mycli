@@ -15,7 +15,7 @@
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-system-prompt.mjs",
     "prepack": "node scripts/vendor-internal-packages.mjs",
-    "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
+    "test": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\" --test-reporter=dot",
     "test:m5": "node --import tsx --test test/m5-state-recovery.integration.test.ts",
     "test:m6": "node --import tsx --test test/m6-persistent-shell.integration.test.ts",
     "typecheck": "tsc --noEmit"

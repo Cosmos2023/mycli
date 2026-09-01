@@ -4866,7 +4866,7 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 	assert.equal(selected, "deepseek/deepseek-v4-flash//session");
 });
 
-test("startup trust chains into credential recovery and cancel exits cleanly", async () => {
+test("startup onboarding advances from welcome to credential recovery and cancel exits cleanly", async () => {
 	const terminal = new TestTerminal();
 	let exits = 0;
 	const runtime = new MycliShellRuntime({
@@ -4894,11 +4894,11 @@ test("startup trust chains into credential recovery and cancel exits cleanly", a
 
 	runtime.start();
 	await setTimeout(25);
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Project trust/);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Welcome to mycli/);
 	terminal.input?.("\r");
 	await setTimeout(25);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Login to OpenAI/);
-	assert.equal(runtime.ui.children.length, 6);
+	assert.equal(runtime.ui.children.length, 1);
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 
 	terminal.input?.("\x1b");
@@ -4908,6 +4908,95 @@ test("startup trust chains into credential recovery and cancel exits cleanly", a
 	await setTimeout(25);
 	assert.equal(exits, 1);
 	assert.equal(terminal.stopped, true);
+});
+
+test("fresh startup completes the ordered keyboard journey without requiring connectivity", async () => {
+	const terminal = new TestTerminal();
+	const operations: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			authProviders: [{
+				id: "openai",
+				name: "OpenAI",
+				configured: false,
+				authRef: "catalog-account",
+				credentialSource: "missing",
+			}],
+			authReadiness: {
+				ready: false,
+				providerId: "openai",
+				authRef: "catalog-account",
+				source: "missing",
+			},
+		},
+		terminal,
+		requireTrust: true,
+		onApiKeyLogin: async (providerId, apiKey, authRef) => {
+			assert.equal(apiKey, "startup-secret");
+			operations.push(`credential:${providerId}:${authRef}`);
+		},
+		onModelSelect: async (model, scope) => {
+			operations.push(`model:${model.provider}:${model.model}:${model.thinkingLevel}:${scope}`);
+			return model;
+		},
+		onConnectivityValidate: async () => {
+			operations.push("connectivity");
+			return { ok: true };
+		},
+		onTrustSelect: async (trusted) => {
+			operations.push(`trust:${trusted}`);
+		},
+		onPermissionSelect: async (profile) => {
+			operations.push(`permission:${profile.id}`);
+		},
+	});
+
+	runtime.start();
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Welcome to mycli/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Login to OpenAI/);
+
+	terminal.input?.("\x1b[200~startup-secret\x1b[201~");
+	terminal.input?.("\r");
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Select model/);
+	assert.match(output, /gpt-5\.4\s+openai/);
+	assert.doesNotMatch(output, /deepseek-v4-flash\s+deepseek/);
+
+	terminal.input?.("\r");
+	terminal.input?.("\r");
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Check provider connection/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Project trust/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Choose model permissions/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Ready to use mycli/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
+	assert.deepEqual(operations, [
+		"credential:openai:catalog-account",
+		"model:openai:gpt-5.4:medium:session",
+		"trust:true",
+		"permission:workspace",
+	]);
+	output = stripAnsi(terminal.output);
+	assert.doesNotMatch(output, /startup-secret/);
 });
 
 test("submit-time auth recovery preserves one draft and custom credential reference", async () => {
@@ -4996,6 +5085,8 @@ test("startup credential save failures remain visible and keep login mounted", a
 	});
 
 	runtime.start();
+	terminal.input?.("\r");
+	await setTimeout(25);
 	terminal.input?.("\x1b[200~secret-value-must-not-render\x1b[201~");
 	terminal.input?.("\r");
 	await setTimeout(25);

@@ -101,6 +101,7 @@
     "model.select",
     "permissions.list",
     "permissions.update",
+	"provider.connectivity.validate",
     "resource.list",
     "session.bootstrap",
     "session.list",

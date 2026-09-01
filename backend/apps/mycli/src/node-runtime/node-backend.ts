@@ -41,6 +41,7 @@ import type {
 	ConfigProfileName,
 	NodeRuntimeConfig,
 	ResolveConfigOptions,
+	WorkspaceTrustState,
 } from "@mycli/config";
 import type {
 	AgentBudget,
@@ -51,6 +52,7 @@ import type {
 	QueueSnapshot,
 	QueuedInput,
 	ReasoningEffort,
+	ProviderRequest,
 	RuntimeEvent,
 	ShellLifecycleEvent,
 } from "@mycli/core";
@@ -236,6 +238,7 @@ export interface StartNodeBackendOptions {
 	readonly maxOutputTokens?: number;
 	readonly recoverInterruptedTurns?: readonly RecoverInterruptedTurnOptions[];
 	readonly updateFetch?: typeof fetch;
+	readonly agentWorkerReadProcessRssBytes?: () => number;
 }
 
 type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
@@ -247,6 +250,7 @@ const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
 const DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS = 12_000;
 const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "workspace";
+const PROVIDER_CONNECTIVITY_TIMEOUT_MS = 15_000;
 const MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
@@ -269,10 +273,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const resolveWorkspaceModelRuntimeConfig = async (
 		input: ResolveConfigOptions,
+		workspaceTrust?: WorkspaceTrustState,
 	): Promise<NodeRuntimeConfig> => resolveModelRuntimeConfig({
 		...input,
 		...profileInput,
-		workspaceTrust: await workspaceTrustStore.load(input.workspaceRoot),
+		workspaceTrust: workspaceTrust ?? await workspaceTrustStore.load(input.workspaceRoot),
 	});
 	const resolveWorkspaceShellSettings = async (workspaceRoot: string) => (
 		resolveShellSettingsState({
@@ -355,7 +360,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const productSystemPrompt = packagedSystemPrompt();
 	const registry = new ProviderRegistry();
 	const agentWorkerPool = Object.values(agentExecutionAdapters).includes("worker")
-		? new AgentWorkerPool(agentWorkerSettings)
+		? new AgentWorkerPool({
+			...agentWorkerSettings,
+			...(options.agentWorkerReadProcessRssBytes
+				? { readProcessRssBytes: options.agentWorkerReadProcessRssBytes }
+				: {}),
+		})
 		: undefined;
 	let controlConfig = config;
 	const toolManifest = builtinToolManifest();
@@ -672,9 +682,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	}
 	const partitionedRegistrations = partitionRuntimeToolRegistrations(integrationComposition.registrations);
 	const directExtensionRegistrations = partitionedRegistrations.direct;
-	const staticDeferredRegistrations = partitionedRegistrations.deferred.filter(
-		(registration) => registration.source !== "mcp",
-	);
 	const directExtensionDefinitions = Object.freeze(directExtensionRegistrations
 		.map((registration) => registration.definition));
 	const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(
@@ -821,10 +828,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					(registration) => !allowedNames || allowedNames.has(registration.definition.name),
 				);
 			};
-			const allowedStaticDeferredDefinitions = filterToolDefinitions(
-				staticDeferredRegistrations.map((registration) => registration.definition),
-				runtimeOptions.allowedTools,
-			);
 			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
 			const staticAdapters = [
 				new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
@@ -842,8 +845,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new ShellOutputTool({ manager: shellManager }),
 			new BashOutputTool({ manager: shellManager }),
 			new KillShellTool({ manager: shellManager }),
-				...integrationComposition.registrations
-					.filter((registration) => registration.source !== "mcp")
+				...directExtensionRegistrations
 					.map((registration) => registration.adapter),
 			];
 			const adapterByName = new Map<string, ToolAdapter>(
@@ -877,9 +879,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const refreshExtensions = (): void => {
 				const deferred = allowedDeferredRegistrations();
 				toolSearch.replaceCandidates(deferredCandidates(deferred));
-				toolRouter.replaceDynamicAdapters(deferred
-					.filter((registration) => registration.source === "mcp")
-					.map((registration) => registration.adapter));
+				toolRouter.replaceDynamicAdapters(deferred.map((registration) => registration.adapter));
 				approvalPolicy.replaceExtensionTools(integrationComposition.registrations.map(
 					(registration) => ({
 						name: registration.definition.name,
@@ -1047,10 +1047,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig }) => Object.freeze({
 				skillCatalog: integrationComposition.skillCatalog,
-				workspace: loadWorkspaceInstructions({
+				workspace: workspaceInstructionsForTrust(
 					workspaceRoot,
-					cwd: workspaceRoot,
-				}),
+					executionPolicyCoordinator.snapshot().trusted,
+				),
 				environment: Object.freeze({
 					workspace_root: workspaceRoot,
 					cwd: workspaceRoot,
@@ -1080,10 +1080,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				publishLifecycle,
 			executionPolicyCoordinator,
 			planTools: plannedTools,
-				deferredTools: (turnId) => Object.freeze([
-					...allowedStaticDeferredDefinitions,
-					...toolRouter.dynamicDefinitions(turnId),
-				]),
+				deferredTools: (turnId) => toolRouter.dynamicDefinitions(turnId),
 			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
 			toolRouter,
 			hookRunner: integrationComposition.hookRunner,
@@ -1792,7 +1789,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							};
 						},
 						models: async () => await modelCatalog(homeDir, controlConfig),
-						selectModel: async (input) => {
+							selectModel: async (input) => {
 							const provider = controlString(input.provider, "provider");
 							const protocolValue = controlString(input.protocol, "protocol");
 							let profile: ReturnType<typeof resolveProviderProfile>;
@@ -1891,15 +1888,28 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								});
 							}
 							controlConfig = nextControlConfig;
-							return {
+								return {
 								...modelCatalogEntryPayload(entry),
 								current: true,
 								reasoning_effort: reasoningEffort ?? null,
 								thinking_enabled: thinkingEnabled,
 								scope,
-							};
-						},
-						activateSessionPreferences: async (preferences) => {
+								};
+							},
+							validateConnectivity: async () => {
+								const active = sessionCoordinator.snapshot();
+								const preferences = active.binding.sessionPreferences?.()
+									?? loadSessionPreferences(store, active.sessionId)
+									?? defaultPreferences;
+								controlConfig = await resolveWorkspaceModelRuntimeConfig({
+									homeDir,
+									workspaceRoot: active.workspaceRoot,
+									env: options.env,
+									overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+								});
+								return validateProviderConnectivity(registry, controlConfig);
+							},
+							activateSessionPreferences: async (preferences) => {
 							const active = sessionCoordinator.snapshot();
 							controlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
@@ -1970,6 +1980,35 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				initialState: initialTrustState,
 				load: (workspaceRoot) => workspaceTrustStore.load(workspaceRoot),
 				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
+				reload: async (workspaceRoot, state) => {
+					const active = sessionCoordinator.snapshot();
+					const persistedPreferences = active.workspaceRoot === workspaceRoot
+						? active.binding.sessionPreferences?.()
+							?? loadSessionPreferences(store, active.sessionId)
+						: undefined;
+					const nextControlConfig = await resolveWorkspaceModelRuntimeConfig({
+						homeDir,
+						workspaceRoot,
+						env: options.env,
+						overrides: persistedPreferences
+							? sessionPreferenceOverrides(active.sessionId, persistedPreferences)
+							: { ...overrides, session: active.sessionId },
+					}, state);
+					await integrationComposition.reloadProjectConfiguration({
+						workspaceRoot,
+						enabled: state === "trusted",
+					});
+					controlConfig = nextControlConfig;
+					const nextPreferences = sessionPreferencesFromConfig(
+						nextControlConfig,
+						persistedPreferences?.collaborationMode ?? defaultPreferences.collaborationMode,
+						persistedPreferences?.permissionProfile
+							?? defaultPreferences.permissionProfile
+							?? DEFAULT_PERMISSION_PROFILE,
+					);
+					if (!persistedPreferences) defaultPreferences = nextPreferences;
+					return nextPreferences;
+				},
 			},
 			integrations: gatewayIntegrations,
 				close: closeRuntimeResources,
@@ -2025,6 +2064,42 @@ async function modelCatalog(
 ): Promise<readonly Readonly<Record<string, unknown>>[]> {
 	const entries = await loadModelCatalog({ homeDir, currentConfig: config });
 	return Object.freeze(entries.map(modelCatalogEntryPayload));
+}
+
+async function validateProviderConnectivity(
+	registry: ProviderRegistry,
+	config: NodeRuntimeConfig,
+): Promise<Record<string, unknown>> {
+	if (!config.apiKey) {
+		return { ok: false, message: "No API key is configured for the selected provider." };
+	}
+	const controller = new AbortController();
+	const timer = setTimeout(() => { controller.abort(); }, PROVIDER_CONNECTIVITY_TIMEOUT_MS);
+	timer.unref?.();
+	const request: ProviderRequest = {
+		provider: config.provider,
+		protocol: config.protocol,
+		model: config.model,
+		reasoningEffort: "none",
+		instructions: "This is a connectivity check.",
+		messages: [{ role: "user", content: "Reply with OK." }],
+		tools: [],
+		maxOutputTokens: 8,
+		store: false,
+	};
+	try {
+		for await (const event of registry.create(config).stream(request, { signal: controller.signal })) {
+			if (event.type === "completed") {
+				return { ok: true, message: "Provider connection verified." };
+			}
+		}
+		return { ok: false, message: "The provider ended the check without completing it." };
+	} catch {
+		return { ok: false, message: "Unable to reach the selected provider." };
+	} finally {
+		clearTimeout(timer);
+		controller.abort();
+	}
 }
 
 function providerDisplayName(provider: string): string {
@@ -2200,9 +2275,7 @@ function integrationGateway(
 			diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
 			toolNames,
 			listResources: () => composition.resources.map((resource) => ({ ...resource })),
-		...(composition.commands.length > 0 ? {
-			commands: combinedIntegrationCommands(composition.commands),
-		} : {}),
+		commands: combinedIntegrationCommands(() => composition.commands),
 			subscribeSubagents: (
 			listener: (subagent: Readonly<Record<string, unknown>>) => void,
 			) => composition.subscribeSubagents(listener),
@@ -2581,12 +2654,12 @@ function traceUsage(value: Readonly<Record<string, unknown>>): Readonly<Record<s
 }
 
 function combinedIntegrationCommands(
-	services: readonly IntegrationCommandService[],
+	services: () => readonly IntegrationCommandService[],
 ): NodeGatewayIntegrationCommands {
 	const commands: NodeGatewayIntegrationCommands = {
-		list: () => services.flatMap((service) => service.list().map((command) => ({ ...command }))),
+		list: () => services().flatMap((service) => service.list().map((command) => ({ ...command }))),
 		run: async (command: string, signal: AbortSignal) => {
-			for (const service of services) {
+			for (const service of services()) {
 				const result = await service.run(command, signal);
 				if (result) return { ...result };
 			}
@@ -2594,6 +2667,26 @@ function combinedIntegrationCommands(
 		},
 	};
 	return Object.freeze(commands);
+}
+
+function workspaceInstructionsForTrust(
+	workspaceRoot: string,
+	trusted: boolean,
+): ReturnType<typeof loadWorkspaceInstructions> {
+	if (trusted) {
+		return loadWorkspaceInstructions({ workspaceRoot, cwd: workspaceRoot });
+	}
+	return Object.freeze({
+		content: "",
+		diagnostics: Object.freeze({
+			searchRoots: Object.freeze([]),
+			truncated: false,
+			originalLength: 0,
+			renderedLength: 0,
+			blocked: true,
+			issues: Object.freeze(["workspace_not_trusted"]),
+		}),
+	});
 }
 
 function emitChildRuntimeEvent(

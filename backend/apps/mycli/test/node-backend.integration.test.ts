@@ -3948,18 +3948,26 @@ test("Node backend persists workspace trust across process restarts", async (t) 
 	assert.equal(await second.completion, 0);
 });
 
-test("Node backend loads project configuration only after workspace trust is persisted", async (t) => {
+test("Node backend atomically activates and removes project configuration with workspace trust", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-config-trust-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	const userConfig = join(home, ".mycli", "config.toml");
 	const projectConfig = join(workspace, ".mycli", "config.toml");
+	const projectSkill = join(workspace, ".mycli", "skills", "private-review.md");
 	await Promise.all([
 		mkdir(join(home, ".mycli"), { recursive: true }),
-		mkdir(join(workspace, ".mycli"), { recursive: true }),
+		mkdir(join(workspace, ".mycli", "skills"), { recursive: true }),
 	]);
 	await writeFile(userConfig, "[model]\nname = \"user-model\"\n", "utf8");
 	await writeFile(projectConfig, "[broken\nprivate = 'not-read'\n", "utf8");
+	await writeFile(projectSkill, [
+		"---",
+		"name: private-review",
+		"description: Project-only review skill",
+		"---",
+		"private project instructions",
+	].join("\n"), "utf8");
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 	const options = {
 		cwd: workspace,
@@ -3974,32 +3982,218 @@ test("Node backend loads project configuration only after workspace trust is per
 		},
 	} as const;
 
-	const first = await startNodeBackend(options);
-	const firstMessages: Array<Record<string, unknown>> = [];
-	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
-		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	const backend = await startNodeBackend(options);
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
 	});
-	await waitFor(() => event(firstMessages, "runtime.ready"));
-	writeRequest(first, "bootstrap-untrusted-config", "session.bootstrap", { protocol_version: 1 });
-	const untrusted = await waitFor(() => response(firstMessages, "bootstrap-untrusted-config"));
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "bootstrap-untrusted-config", "session.bootstrap", { protocol_version: 1 });
+	const untrusted = await waitFor(() => response(messages, "bootstrap-untrusted-config"));
 	assert.equal(resultValue(untrusted, "model"), "user-model");
-	writeRequest(first, "trust-config", "workspace.trust.set", { state: "trusted" });
-	await waitFor(() => response(firstMessages, "trust-config"));
-	writeRequest(first, "shutdown-untrusted-config", "shutdown", {});
-	assert.equal(await first.completion, 0);
+	writeRequest(backend, "resources-untrusted-config", "resource.list", {});
+	const untrustedResources = await waitFor(() => response(messages, "resources-untrusted-config"));
+	assert.equal(
+		(resultValue(untrustedResources, "resources") as readonly Record<string, unknown>[])
+			.some((resource) => resource.id === "skill:private-review"),
+		false,
+	);
+
+	writeRequest(backend, "trust-invalid-config", "workspace.trust.set", { state: "trusted" });
+	const invalidTrust = await waitFor(() => response(messages, "trust-invalid-config"));
+	assert.equal(errorValue(invalidTrust, "code"), "internal_error");
+	writeRequest(backend, "trust-status-after-failure", "workspace.trust.status", {});
+	const failedStatus = await waitFor(() => response(messages, "trust-status-after-failure"));
+	assert.equal(resultValue(failedStatus, "state"), "unknown");
 
 	await writeFile(projectConfig, "[model]\nname = \"project-model\"\n", "utf8");
-	const second = await startNodeBackend(options);
-	const secondMessages: Array<Record<string, unknown>> = [];
-	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
-		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
-	});
-	await waitFor(() => event(secondMessages, "runtime.ready"));
-	writeRequest(second, "bootstrap-trusted-config", "session.bootstrap", { protocol_version: 1 });
-	const trusted = await waitFor(() => response(secondMessages, "bootstrap-trusted-config"));
+	writeRequest(backend, "trust-valid-config", "workspace.trust.set", { state: "trusted" });
+	const acceptedTrust = await waitFor(() => response(messages, "trust-valid-config"));
+	assert.equal(resultValue(acceptedTrust, "state"), "trusted");
+	writeRequest(backend, "bootstrap-trusted-config", "session.bootstrap", { protocol_version: 1 });
+	const trusted = await waitFor(() => response(messages, "bootstrap-trusted-config"));
 	assert.equal(resultValue(trusted, "model"), "project-model");
-	writeRequest(second, "shutdown-trusted-config", "shutdown", {});
-	assert.equal(await second.completion, 0);
+	writeRequest(backend, "resources-trusted-config", "resource.list", {});
+	const trustedResources = await waitFor(() => response(messages, "resources-trusted-config"));
+	assert.equal(
+		(resultValue(trustedResources, "resources") as readonly Record<string, unknown>[])
+			.some((resource) => resource.id === "skill:private-review"),
+		true,
+	);
+
+	writeRequest(backend, "untrust-config", "workspace.trust.set", { state: "untrusted" });
+	const removedTrust = await waitFor(() => response(messages, "untrust-config"));
+	assert.equal(resultValue(removedTrust, "state"), "untrusted");
+	writeRequest(backend, "bootstrap-revoked-config", "session.bootstrap", { protocol_version: 1 });
+	const revoked = await waitFor(() => response(messages, "bootstrap-revoked-config"));
+	assert.equal(resultValue(revoked, "model"), "user-model");
+	writeRequest(backend, "resources-revoked-config", "resource.list", {});
+	const revokedResources = await waitFor(() => response(messages, "resources-revoked-config"));
+	assert.equal(
+		(resultValue(revokedResources, "resources") as readonly Record<string, unknown>[])
+			.some((resource) => resource.id === "skill:private-review"),
+		false,
+	);
+
+	writeRequest(backend, "shutdown-config-trust", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend excludes workspace instructions until trust is active", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-instructions-trust-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const privateInstruction = "PROJECT_INSTRUCTION_VISIBLE_ONLY_AFTER_TRUST";
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	await writeFile(join(workspace, "AGENTS.md"), `# Instructions\n\n${privateInstruction}\n`, "utf8");
+	const requests: Array<Record<string, unknown>> = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requests.push(JSON.parse(body) as Record<string, unknown>);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n");
+			response.write(`data: {"type":"response.completed","response":{"id":"resp_${requests.length}"}}\n\n`);
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "instructions-trust-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_ROOT_AGENT_EXECUTION_ADAPTER: "in_process",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "instructions-untrusted-turn", "turn.submit", {
+		message: "first",
+		client_turn_id: "instructions-untrusted-turn",
+		client_user_message_id: "instructions-untrusted-message",
+	});
+	await waitFor(() => finalMessageCount(messages) === 1);
+	assert.equal(JSON.stringify(requests[0]?.input).includes(privateInstruction), false);
+
+	writeRequest(backend, "instructions-trust", "workspace.trust.set", { state: "trusted" });
+	const trusted = await waitFor(() => response(messages, "instructions-trust"));
+	assert.equal(resultValue(trusted, "state"), "trusted");
+	writeRequest(backend, "instructions-trusted-turn", "turn.submit", {
+		message: "second",
+		client_turn_id: "instructions-trusted-turn",
+		client_user_message_id: "instructions-trusted-message",
+	});
+	await waitFor(() => finalMessageCount(messages) === 2);
+	assert.equal(JSON.stringify(requests[1]?.input).includes(privateInstruction), true);
+
+	writeRequest(backend, "shutdown-instructions-trust", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("provider connectivity validation is bounded, optional, and sanitizes failures", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-connectivity-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const requests: Array<Record<string, unknown>> = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requests.push(JSON.parse(body) as Record<string, unknown>);
+			if (requests.length === 1) {
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				response.end([
+					'data: {"type":"response.output_text.delta","delta":"OK"}',
+					"",
+					'data: {"type":"response.completed","response":{"id":"resp_connectivity"}}',
+					"",
+					"data: [DONE]",
+					"",
+				].join("\n"));
+				return;
+			}
+			response.writeHead(401, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: { message: "private upstream authentication detail" } }));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "connectivity-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "connectivity-save-key", "auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "openai",
+		api_key: "connectivity-test-key",
+	});
+	const saved = await waitFor(() => response(messages, "connectivity-save-key"));
+	assert.equal(resultValue(saved, "ok"), true);
+
+	writeRequest(backend, "connectivity-success", "provider.connectivity.validate", {});
+	const success = await waitFor(() => response(messages, "connectivity-success"));
+	assert.deepEqual(success.result, { ok: true, message: "Provider connection verified." });
+	assert.equal(requests[0]?.max_output_tokens, 8);
+	assert.equal(requests[0]?.store, false);
+	assert.deepEqual(providerToolNames(requests[0]?.tools), []);
+	assert.equal(JSON.stringify(requests[0]).includes("connectivity-test-key"), false);
+
+	writeRequest(backend, "connectivity-failure", "provider.connectivity.validate", {});
+	const failure = await waitFor(() => response(messages, "connectivity-failure"));
+	assert.deepEqual(failure.result, {
+		ok: false,
+		message: "Unable to reach the selected provider.",
+	});
+	assert.equal(JSON.stringify(failure).includes("private upstream authentication detail"), false);
+
+	writeRequest(backend, "shutdown-connectivity", "shutdown", {});
+	assert.equal(await backend.completion, 0);
 });
 
 test("Node backend applies a launch profile to new and resumed sessions without persisting selection", async (t) => {

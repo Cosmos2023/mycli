@@ -279,6 +279,14 @@ async function saveWorkspaceTrust(trusted: boolean): Promise<void> {
 	setRuntimeState(reduceRuntimeEvent(runtimeState, "workspace.trust.changed", payload));
 }
 
+async function validateProviderConnectivity(): Promise<{ ok: boolean; message?: string }> {
+	const payload = await send("provider.connectivity.validate", {}, { recordErrors: false });
+	return {
+		ok: payload.ok === true,
+		...(typeof payload.message === "string" ? { message: payload.message.slice(0, 240) } : {}),
+	};
+}
+
 async function bootstrap(): Promise<void> {
 	client.start();
 	await client.waitForEvent(
@@ -1095,6 +1103,7 @@ async function main(): Promise<void> {
 		onClarificationRespond: respondClarification,
 		onPlanImplementation: startPlanImplementation,
 		onApiKeyLogin: saveApiKey,
+		onConnectivityValidate: validateProviderConnectivity,
 		onModelSelect: async (model, scope) => {
 			if (!model.protocol || !model.baseUrl) {
 				throw new Error("Model catalog entry is missing provider protocol or endpoint metadata.");

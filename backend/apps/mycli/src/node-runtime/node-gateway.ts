@@ -252,6 +252,7 @@ export interface NodeGatewayControlCommands {
 	saveApiKey(providerId: string, apiKey: string, authRef?: string): Promise<JsonObject>;
 	models(): Promise<readonly JsonObject[]>;
 	selectModel(input: JsonObject): Promise<JsonObject>;
+	validateConnectivity?(): Promise<JsonObject>;
 	activateSessionPreferences?(
 		preferences: SessionPreferences | undefined,
 	): Promise<SessionPreferences>;
@@ -310,6 +311,10 @@ export interface CreateNodeGatewayOptions {
 		readonly initialState: WorkspaceTrustState;
 		load(workspaceRoot: string): Promise<WorkspaceTrustState>;
 		save(workspaceRoot: string, state: WorkspaceTrustState): Promise<void>;
+		reload?(
+			workspaceRoot: string,
+			state: WorkspaceTrustState,
+		): Promise<SessionPreferences | void>;
 	};
 	readonly agentInteractiveRequests?: AgentInteractiveRequestGateway;
 	readonly integrations?: NodeGatewayIntegrations;
@@ -588,6 +593,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#modelList();
 			case "model.select":
 				return this.#selectModel(request.params);
+			case "provider.connectivity.validate":
+				return this.#validateConnectivity();
 			case "settings.load":
 				return this.#loadSettings();
 			case "settings.save":
@@ -992,6 +999,20 @@ class InProcessNodeGateway implements NodeGateway {
 			})),
 			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
 		};
+	}
+
+	async #validateConnectivity(): Promise<JsonObject> {
+		if (this.#activeTurn !== null) {
+			throw new GatewayFailure(
+				"turn_in_progress",
+				"Wait for the current turn to finish before testing provider connectivity.",
+			);
+		}
+		const validate = this.#options.controlCommands?.validateConnectivity;
+		if (!validate) {
+			return { ok: false, message: "Connection testing is unavailable." };
+		}
+		return await validate();
 	}
 
 	async #loadSettings(): Promise<JsonObject> {
@@ -1979,7 +2000,9 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #activateSession(snapshot: ReturnType<SessionCoordinator<NodeGatewayRuntime>["snapshot"]>): Promise<void> {
-		this.#trustState = await this.#loadWorkspaceTrust(snapshot.workspaceRoot);
+		const trustState = await this.#loadWorkspaceTrust(snapshot.workspaceRoot);
+		await this.#options.workspaceTrust?.reload?.(snapshot.workspaceRoot, trustState);
+		this.#trustState = trustState;
 		const storedPreferences = snapshot.binding.sessionPreferences?.();
 		const preferences = await this.#options.controlCommands?.activateSessionPreferences?.(
 			storedPreferences,
@@ -3372,8 +3395,58 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #setWorkspaceTrust(params: JsonObject): Promise<JsonObject> {
+		if (this.#activeTurn !== null) {
+			throw new GatewayFailure(
+				"turn_in_progress",
+				"Wait for the current turn to finish before changing workspace trust.",
+			);
+		}
 		const state = workspaceTrustState(params.state);
-		await this.#options.workspaceTrust?.save(this.#workspaceRoot(), state);
+		const workspaceRoot = this.#workspaceRoot();
+		const trust = this.#options.workspaceTrust;
+		const previousState = this.#trustState;
+		let nextPreferences: SessionPreferences | void = undefined;
+		if (trust && state === "trusted") {
+			await trust.save(workspaceRoot, state);
+			try {
+				nextPreferences = await trust.reload?.(workspaceRoot, state);
+			} catch {
+				try {
+					await trust.save(workspaceRoot, previousState);
+					const restored = await trust.reload?.(workspaceRoot, previousState);
+					if (restored) this.#applySessionPreferences(restored);
+				} catch {
+					this.#trustState = "unknown";
+					this.#configureExecutionPolicy();
+					await trust.reload?.(workspaceRoot, "unknown").catch(() => undefined);
+				}
+				throw new GatewayFailure(
+					"internal_error",
+					"Workspace trust could not be applied.",
+				);
+			}
+		} else if (trust) {
+			try {
+				nextPreferences = await trust.reload?.(workspaceRoot, state);
+			} catch {
+				throw new GatewayFailure(
+					"internal_error",
+					"Workspace trust could not be applied.",
+				);
+			}
+			try {
+				await trust.save(workspaceRoot, state);
+			} catch {
+				this.#trustState = "unknown";
+				this.#configureExecutionPolicy();
+				if (nextPreferences) this.#applySessionPreferences(nextPreferences);
+				throw new GatewayFailure(
+					"internal_error",
+					"Workspace trust could not be saved.",
+				);
+			}
+		}
+		if (nextPreferences) this.#applySessionPreferences(nextPreferences);
 		this.#trustState = state;
 		this.#configureExecutionPolicy();
 		const payload = this.#trustStatus();

@@ -7,11 +7,14 @@ import type {
 } from "@mycli/tools";
 import { defineIntegrationRegistration } from "../foundation/registration.ts";
 import type { IntegrationRegistration } from "../foundation/registration.ts";
-import type { SkillRegistry } from "./registry.ts";
-import type { SkillInvocationArtifact, SkillSourceKind } from "./types.ts";
+import type { SkillInvocationArtifact, SkillSourceKind, SkillDefinition } from "./types.ts";
+
+export interface SkillLookup {
+	get(name: string): SkillDefinition | undefined;
+}
 
 export interface SkillToolOptions {
-	readonly registry: SkillRegistry;
+	readonly registry: SkillLookup;
 }
 
 export const SKILL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
@@ -43,7 +46,7 @@ const SAFE_SKILL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export class SkillTool implements ToolAdapter {
 	readonly definition = SKILL_TOOL_DEFINITION;
-	readonly #registry: SkillRegistry;
+	readonly #registry: SkillLookup;
 
 	constructor(options: SkillToolOptions) {
 		this.#registry = options.registry;
@@ -79,7 +82,7 @@ export class SkillTool implements ToolAdapter {
 	}
 }
 
-export function createSkillToolRegistration(registry: SkillRegistry): IntegrationRegistration {
+export function createSkillToolRegistration(registry: SkillLookup): IntegrationRegistration {
 	const adapter = new SkillTool({ registry });
 	return defineIntegrationRegistration({
 		id: SKILL_TOOL_DEFINITION.id,

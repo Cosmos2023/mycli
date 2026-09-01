@@ -10,5 +10,9 @@ export const offlineUpdateFetch: typeof fetch = async () => {
 export function startTestNodeBackend(
 	options: StartNodeBackendOptions,
 ): ReturnType<typeof startNodeBackend> {
-	return startNodeBackend({ updateFetch: offlineUpdateFetch, ...options });
+	return startNodeBackend({
+		updateFetch: offlineUpdateFetch,
+		agentWorkerReadProcessRssBytes: () => 0,
+		...options,
+	});
 }

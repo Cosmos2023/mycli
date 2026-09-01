@@ -34,6 +34,7 @@ import type {
 import type { SandboxReadiness, ShellSessionSnapshot } from "@mycli/tools";
 import {
 	createNodeGateway,
+	type CreateNodeGatewayOptions,
 	type NodeGatewayCredentialReadiness,
 	type NodeGatewayRuntime,
 } from "../src/node-runtime/node-gateway.ts";
@@ -204,6 +205,7 @@ function gatewayHarness(options: {
 	clarificationFailure?: Error;
 	shell?: boolean;
 	workspaceTrust?: boolean;
+	workspaceTrustAdapter?: NonNullable<CreateNodeGatewayOptions["workspaceTrust"]>;
 	integrations?: boolean;
 	integrationCommands?: readonly Record<string, unknown>[];
 	memory?: boolean;
@@ -505,6 +507,11 @@ function gatewayHarness(options: {
 	const sessionCoordinator = options.sessions
 		? gatewaySessionCoordinator(runtime, options.sessions)
 		: undefined;
+	const workspaceTrust = options.workspaceTrustAdapter ?? (options.workspaceTrust ? {
+		initialState: "unknown" as const,
+		load: async () => "unknown" as const,
+		save: async () => undefined,
+	} : undefined);
 	const gateway = createNodeGateway({
 		sessionId: "session-node",
 		workspaceRoot: "/repo",
@@ -631,13 +638,7 @@ function gatewayHarness(options: {
 			shellManager: shell.manager,
 			shellLifecycle: shell.lifecycle,
 		} : {}),
-		...(options.workspaceTrust ? {
-			workspaceTrust: {
-				initialState: "unknown" as const,
-				load: async () => "unknown" as const,
-				save: async () => undefined,
-			},
-		} : {}),
+		...(workspaceTrust ? { workspaceTrust } : {}),
 			...(integrations ? { integrations } : {}),
 			...(options.update ? {
 				updateStatus,
@@ -1444,6 +1445,100 @@ test("gateway owns permission selection and reconfigures runtime trust policy", 
 		trust: "trusted",
 		permission: "full-access",
 	});
+	await harness.gateway.close();
+});
+
+test("gateway persists trust before reload and restores the prior record when reload fails", async () => {
+	let storedState: "trusted" | "untrusted" | "unknown" = "unknown";
+	const operations: string[] = [];
+	const harness = gatewayHarness({
+		workspaceTrustAdapter: {
+			initialState: storedState,
+			load: async () => storedState,
+			save: async (_workspaceRoot, state) => {
+				operations.push(`save:${state}`);
+				storedState = state;
+			},
+			reload: async (_workspaceRoot, state) => {
+				operations.push(`reload:${state}`);
+				assert.equal(storedState, state);
+				if (state === "trusted") throw new Error("private project integration failure");
+			},
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("workspace.trust.set", { state: "trusted" });
+	assert.equal("error" in response ? response.error.code : null, "internal_error");
+	assert.deepEqual(operations, [
+		"save:trusted",
+		"reload:trusted",
+		"save:unknown",
+		"reload:unknown",
+	]);
+	assert.equal(storedState, "unknown");
+	assert.deepEqual(harness.policyConfigurations.at(-1), {
+		trust: "unknown",
+		permission: "workspace",
+	});
+	await harness.gateway.close();
+});
+
+test("gateway removes project configuration before persisting an untrusted decision", async () => {
+	let storedState: "trusted" | "untrusted" | "unknown" = "trusted";
+	const operations: string[] = [];
+	const harness = gatewayHarness({
+		workspaceTrustAdapter: {
+			initialState: storedState,
+			load: async () => storedState,
+			save: async (_workspaceRoot, state) => {
+				operations.push(`save:${state}`);
+				storedState = state;
+			},
+			reload: async (_workspaceRoot, state) => {
+				operations.push(`reload:${state}`);
+				assert.equal(storedState, "trusted");
+			},
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("workspace.trust.set", { state: "untrusted" });
+	assert.equal("result" in response ? response.result.state : null, "untrusted");
+	assert.deepEqual(operations, ["reload:untrusted", "save:untrusted"]);
+	assert.equal(storedState, "untrusted");
+	assert.deepEqual(harness.policyConfigurations.at(-1), {
+		trust: "untrusted",
+		permission: "workspace",
+	});
+	await harness.gateway.close();
+});
+
+test("gateway rejects workspace trust changes while a turn is active", async () => {
+	const operations: string[] = [];
+	const harness = gatewayHarness({
+		control: true,
+		workspaceTrustAdapter: {
+			initialState: "unknown",
+			load: async () => "unknown",
+			save: async (_workspaceRoot, state) => { operations.push(`save:${state}`); },
+			reload: async (_workspaceRoot, state) => { operations.push(`reload:${state}`); },
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const submitted = await harness.send("turn.submit", {
+		message: "keep the runtime active",
+		client_turn_id: "trust-active-turn",
+		client_user_message_id: "trust-active-message",
+	});
+	assert.equal("result" in submitted ? submitted.result.accepted : false, true);
+	const response = await harness.send("workspace.trust.set", { state: "trusted" });
+	assert.equal("error" in response ? response.error.code : null, "turn_in_progress");
+	assert.deepEqual(operations, []);
+
+	harness.releaseTurn();
+	await waitFor(() => notification(harness.messages, "turn.completed"));
 	await harness.gateway.close();
 });
 

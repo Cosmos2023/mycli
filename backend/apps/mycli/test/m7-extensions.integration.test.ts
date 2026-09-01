@@ -260,6 +260,106 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 	await eventually(() => !processExists(mcpPid));
 });
 
+test("workspace trust starts and revocation stops project MCP and plugin hosts", {
+	timeout: 15_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-trust-reload-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const hookMarker = join(workspace, "hook-ran");
+	const mcpPidFile = join(workspace, "mcp.pid");
+	const pluginPidFile = join(workspace, ".mycli", "plugins", "good", "plugin.pid");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	await writeExtensionFixtures({
+		home,
+		workspace,
+		hookMarker,
+		mcpPidFile,
+		pluginPidFile,
+	});
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "m7-trust-reload", "--model", "gpt-test"],
+		env: {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			MYCLI_API_KEY: "test-m7-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+			PLUGIN_PID_FILE: pluginPidFile,
+		},
+	});
+	let closed = false;
+	const shutdown = async (): Promise<void> => {
+		if (closed) return;
+		closed = true;
+		send(backend, "shutdown-trust-reload", "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	};
+	t.after(shutdown);
+	const messages: JsonObject[] = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	assert.equal(existsSync(mcpPidFile), false);
+	assert.equal(existsSync(pluginPidFile), false);
+
+	const untrustedManifest = await request(
+		backend,
+		messages,
+		"manifest-before-trust",
+		"extension.manifest",
+		{},
+	);
+	assert.deepEqual(extensionToolNames(untrustedManifest).filter((name) => (
+		name === "mcp_local_echo" || name === "plugin_good_echo"
+	)), []);
+
+	await request(backend, messages, "trust-project-hosts", "workspace.trust.set", { state: "trusted" });
+	await waitFor(() => existsSync(mcpPidFile) && existsSync(pluginPidFile), 8_000);
+	let trustedManifest: JsonObject | undefined;
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		trustedManifest = await request(
+			backend,
+			messages,
+			`manifest-after-trust-${attempt}`,
+			"extension.manifest",
+			{},
+		);
+		const names = extensionToolNames(trustedManifest);
+		if (names.includes("mcp_local_echo") && names.includes("plugin_good_echo")) break;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	assert.ok(trustedManifest);
+	assert.equal(extensionToolNames(trustedManifest).includes("mcp_local_echo"), true);
+	assert.equal(extensionToolNames(trustedManifest).includes("plugin_good_echo"), true);
+	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
+	const pluginPid = Number(await readFile(pluginPidFile, "utf8"));
+	assert.equal(processExists(mcpPid), true);
+	assert.equal(processExists(pluginPid), true);
+
+	await request(backend, messages, "revoke-project-hosts", "workspace.trust.set", { state: "untrusted" });
+	const revokedManifest = await request(
+		backend,
+		messages,
+		"manifest-after-revoke",
+		"extension.manifest",
+		{},
+	);
+	assert.deepEqual(extensionToolNames(revokedManifest).filter((name) => (
+		name === "mcp_local_echo" || name === "plugin_good_echo"
+	)), []);
+	await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
+	await shutdown();
+});
+
 test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	timeout: 20_000,
 }, async (t) => {
@@ -625,6 +725,16 @@ function isObject(value: unknown): value is JsonObject {
 function providerToolNames(request: JsonObject): readonly string[] {
 	return Array.isArray(request.tools)
 		? request.tools.flatMap((tool) => (
+			isObject(tool) && typeof tool.name === "string" ? [tool.name] : []
+		))
+		: [];
+}
+
+function extensionToolNames(response: JsonObject): readonly string[] {
+	const result = isObject(response.result) ? response.result : {};
+	const manifest = isObject(result.tool_manifest) ? result.tool_manifest : {};
+	return Array.isArray(manifest.tools)
+		? manifest.tools.flatMap((tool) => (
 			isObject(tool) && typeof tool.name === "string" ? [tool.name] : []
 		))
 		: [];
