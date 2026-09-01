@@ -45,6 +45,10 @@ mycli doctor
 mycli doctor --json
 mycli sandbox status
 mycli sandbox status --json
+mycli sandbox setup
+mycli sandbox setup --confirm --json
+mycli sandbox reset
+mycli sandbox reset --confirm --json
 mycli hooks list --json
 mycli hooks inspect <identity> --json
 mycli hooks approve <identity>
@@ -193,9 +197,11 @@ does not create, migrate, repair, delete, or vacuum local state.
 
 `mycli sandbox status [--json]` runs the same side-effect-free sandbox readiness classifier without
 loading extensions, starting the interactive backend/TUI, calling a provider, requesting elevation,
-or running setup. Its state is `ready`, `setup_required`, `unavailable`, or `not_required`; the
-stable code distinguishes missing helpers, incomplete setup, handshake failure, unavailable
-enforcement, and unsupported platforms.
+or running setup. `sandbox setup` and `sandbox reset` return a typed preview by default and require
+`--confirm` before any state change. Their response includes the required privilege, bounded effects,
+result code, and post-operation readiness. Windows setup may request UAC; reset retains the restricted
+account and firewall rules. macOS/Linux missing dependencies remain manual recovery steps. Raw helper
+output and paths never enter any response.
 
 Common remediation:
 

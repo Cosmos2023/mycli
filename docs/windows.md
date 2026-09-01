@@ -54,7 +54,26 @@ redirection, pipes, chained commands, or unknown syntax may require confirmation
 Interactive shell sessions use `node-pty` and ConPTY. Restricted process profiles use the packaged
 `backend/packages/tools/native/windows/mycli-windows-sandbox.exe` helper built from
 `native/windows-sandbox-helper`. A missing or invalid helper returns `sandbox_unavailable`; mycli
-does not run the command unrestricted.
+does not run the command unrestricted. The first restricted command initializes a dedicated local
+sandbox identity and offline firewall policy. Windows displays a UAC prompt for this one-time setup;
+mycli waits for setup to finish and verifies it before running the command.
+
+Inspect or recover the same state without starting the TUI or a provider:
+
+```powershell
+mycli sandbox status
+mycli sandbox setup
+mycli sandbox setup --confirm
+mycli sandbox reset
+mycli sandbox reset --confirm
+```
+
+Setup and reset only preview their effects until `--confirm` is present. Confirmed setup can display
+UAC; canceling it leaves the restricted command blocked and reports `operation_canceled`. Confirmed
+reset does not delete the dedicated account or remove firewall/WFP restrictions. It clears only the
+encrypted credential and setup markers, so the next confirmed setup or valid restricted command can
+rotate credentials and verify the retained restrictions safely. `status` and `mycli doctor --verbose`
+show bounded typed codes; native helper output, local paths, and stacks are not printed by the CLI.
 
 ## Verification
 

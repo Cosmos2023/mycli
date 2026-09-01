@@ -29,6 +29,9 @@
   `ToolExecutionOptions.sandboxOverridePolicy?: ExecutionPolicy`.
 - Recovery derivation:
   `shellCallRequestsSandboxOverride(call) -> boolean` from the exact canonical call.
+- Windows helper setup: `mycli-windows-sandbox.exe --ensure-setup`.
+- Windows helper state reset: `mycli-windows-sandbox.exe --reset`.
+- Windows restricted execution: `mycli-windows-sandbox.exe --request-json <json>`.
 
 ### 3. Contracts
 
@@ -66,6 +69,14 @@
   never replayed.
 - Sandbox failure is returned as a tool result. Runtime must not automatically retry the command
   with escalation.
+- On Windows, the native helper validates the sandbox request before any first-use setup. A valid
+  restricted request with missing setup state requests elevation, waits for setup to finish, and
+  verifies the resulting identity and firewall state before starting the command. Cancellation,
+  setup failure, or incomplete state fails closed and the command does not run.
+- Setup and reset share one owner-scoped mutex. Reset is idempotent and removes only the encrypted
+  credential plus setup markers; it never deletes the dedicated account, removes firewall/WFP
+  restrictions, or grants broader access. UAC cancellation exits through the stable helper code `2`
+  and the Node recovery adapter projects it as `operation_canceled` without native stderr.
 - Approval persistence and TUI events contain bounded previews and structural reasons only. Do not
   persist raw model justification, command output, credentials, or arbitrary provider text.
 
@@ -85,6 +96,10 @@
 | Exact allow/session rule plus escalation | Allow and forward the host authorization bit |
 | Approved escalation under managed constraints | Apply the runtime override policy without exceeding it |
 | Domain-constrained Shell policy | Keep the sandbox network disabled |
+| First valid restricted Windows request without setup | Request UAC elevation once, verify setup, then run |
+| Invalid Windows sandbox request | Reject before requesting elevation |
+| Windows setup canceled, failed, or incomplete | Fail closed; start no requested command |
+| Confirmed Windows reset | Clear setup state under the setup mutex; retain account and network restrictions |
 | Pre-tool hook changes an authorized call | Withhold the host authorization bit |
 | Consecutive allowed Shell calls | Execute concurrently and persist results in provider order |
 | Shell call requests approval after allowed parallel calls | Finish and persist the earlier phase, then suspend |
@@ -100,10 +115,14 @@
 - Good: `rm -rf build` and Windows force-delete or URL GUI-launch forms request approval.
 - Good: `git -C nested status` is safe only when the resolved directory remains inside the
   workspace; unsafe Git global/subcommand options do not enter the safelist.
+- Good: the first valid Windows `--request-json` call serializes setup, requests UAC elevation,
+  verifies the completed state, and then runs the command.
 - Base: `Shell { command: "pwd" }` uses the current policy and does not carry an override bit.
 - Bad: treat every unknown command as host-trusted because it was allowed to enter the sandbox.
 - Bad: trust `sandbox_permissions="require_escalated"` inside `ShellTool` without a runtime-owned
   authorization bit.
+- Bad: fail the first Windows request with instructions that require the user to locate and invoke
+  an internal packaged helper manually.
 - Bad: persist a separate mutable escalation flag that can drift from the fingerprinted call.
 
 ### 6. Tests Required
@@ -115,6 +134,10 @@
   enum denial, explicit rule precedence, exact escalation allowance, and Full Access behavior.
 - Shell adapter tests assert an unapproved model escalation starts no process and an approved
   escalation can use an outside cwd through full-access process isolation.
+- Windows helper CI validates the `--ensure-setup` elevation path and the restricted request's
+  filesystem and network boundaries. It uses `--reset`, verifies `setup_complete=false`, and then
+  proves the next restricted request safely rebuilds setup. First-use setup must remain fail-closed
+  when it cannot be completed.
 - Runtime tests assert the normal allow path forwards the bit only for an unchanged canonical call.
 - Runtime tests assert allowed Shell calls overlap while preserving per-call sandbox authorization
   and provider-order result persistence.

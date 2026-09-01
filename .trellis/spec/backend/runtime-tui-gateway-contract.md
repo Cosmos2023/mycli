@@ -5801,7 +5801,9 @@ if (successfulPoll && !matchingShell) continue;
 - Runtime truth: `ExecutionPolicyCoordinator.snapshot() -> ExecutionPolicySnapshot`.
 - Read-only platform probe:
   `inspectSandboxReadiness(probes?, signal?) -> Promise<SandboxReadiness>`.
-- Management command: `mycli sandbox status [--json]`.
+- Recovery transition:
+  `runSandboxRecovery(action, confirmed, probes?, signal?) -> Promise<SandboxRecoveryResult>`.
+- Management commands: `mycli sandbox status|setup|reset [--confirm] [--json]`.
 - Gateway queries: `permissions.list({})`, `status.inspect({})`, and `session.bootstrap(...)`.
 - TUI projection:
   `permissionStateFromUnknown(value) -> MycliShellPermissionState | null`.
@@ -5821,16 +5823,32 @@ if (successfulPoll && !matchingShell) continue;
 - `sandbox_readiness` uses the closed states `ready`, `setup_required`, `unavailable`, and
   `not_required`, plus the closed codes `ready`, `setup_incomplete`, `helper_missing`,
   `handshake_failed`, `enforcement_unavailable`, `unsupported_platform`, and `not_required`.
+- The management readiness response may additionally project bounded `helper_version`,
+  `helper_compatible`, `setup_complete`, and `sandbox_ready` facts. A protocol mismatch remains
+  `handshake_failed` with `helper_compatible=false`; gateway/TUI projections may retain only the
+  base readiness fields and never infer compatibility from rendered text.
 - Full Access maps readiness to `not_required` only when the effective profile needs no process
   isolation. A managed network/root/domain restriction keeps platform readiness relevant.
 - macOS checks the fixed Seatbelt executable; Linux checks the fixed bubblewrap candidates.
-  Windows checks the packaged helper and runs only a bounded `--handshake`: two-second timeout,
+  Windows checks the packaged helper and runs only a bounded `--handshake`: five-second timeout,
   16-KiB output cap, exact helper identity/protocol, and boolean setup/readiness fields.
 - Readiness inspection never runs setup, elevation, repair, provider IO, TUI startup, or an
   interactive backend. Raw helper output, exceptions, paths, credentials, and tool arguments never
   enter the result.
 - Backend startup caches one readiness result for gateway projections. `mycli sandbox status` uses
   a dedicated lazy management path; doctor calls the same classifier through its bounded collector.
+- Setup/reset use the same lazy provider-free management path and typed readiness result. Both
+  preview by default and require `--confirm` to execute. Windows setup declares `windows_uac`, maps
+  helper exit code `2` to `operation_canceled`, and verifies readiness after execution. Windows reset
+  declares no privilege, clears only mycli setup state, and preserves the account and firewall/WFP
+  restrictions. macOS/Linux setup returns manual dependency guidance and never invokes a package
+  manager; reset returns `no_managed_state`.
+- A Windows reset is successful only when the post-operation handshake remains protocol-compatible
+  and resolves to `setup_required/setup_incomplete` with both `setup_complete=false` and
+  `sandbox_ready=false`. A false setup flag alone is insufficient because the helper may have become
+  incompatible or malformed during the transition.
+- Human and JSON rendering consume the same redacted response. Helper stdout/stderr, executable
+  paths, local exceptions, stacks, credentials, and native arguments do not cross the tools boundary.
 - `/permissions`, `/status`, bootstrap, `permissions.list`, and `permissions.update` project the
   same effective policy. Selecting a broader preset cannot remove managed/runtime constraints.
 
@@ -5841,9 +5859,15 @@ if (successfulPoll && !matchingShell) continue;
 | macOS Seatbelt or Linux bubblewrap exists | `ready/ready` with the matching isolation |
 | Required fixed executable is missing | `unavailable/helper_missing` |
 | Windows helper reports setup incomplete | `setup_required/setup_incomplete`; do not elevate |
+| Windows helper protocol version differs | `unavailable/handshake_failed` and `helper_compatible=false` |
 | Windows handshake fails, times out, overflows, or is malformed | `unavailable/handshake_failed`; omit raw output |
 | Windows setup exists but enforcement is unavailable | `unavailable/enforcement_unavailable` |
 | Unsupported platform | `unavailable/unsupported_platform` with `isolation=none` |
+| Setup/reset without `--confirm` | Return `confirmation_required` preview; perform no operation |
+| Windows setup UAC canceled | Return `canceled/operation_canceled`; keep readiness bounded |
+| Windows reset succeeds | Verify `setup_complete=false`; retain stricter native resources |
+| Post-reset helper is incompatible or contradictory | `failed/verification_failed`, even when `setup_complete=false` |
+| macOS/Linux dependency missing | Return `manual_action_required/dependency_install_required`; do not install |
 | Effective profile is unrestricted filesystem and network | `not_required/not_required` |
 | Selected Full Access is constrained by managed policy | Report the constrained effective profile and retained readiness |
 | Gateway receives an invalid preset | `invalid_params`; keep the previous selected/effective state |
@@ -5855,20 +5879,27 @@ if (successfulPoll && !matchingShell) continue;
   constrained effective filesystem, `constraints_source=managed`, and the platform readiness.
 - Good: `mycli sandbox status --json` returns one bounded readiness object without loading config,
   extensions, a provider, the backend, or the TUI.
+- Good: `mycli sandbox reset` previews one state-clearing effect, and `--confirm` removes only
+  recreateable mycli state while retained restrictions remain authoritative.
 - Base: an older gateway supplies only `active/profiles`; the selector remains usable without the
   TUI inventing effective-policy values.
 - Bad: display `approval_behavior=never` merely because `active=full-access` after the runtime
   snapshot has constrained filesystem access.
-- Bad: call the Windows setup helper, request UAC, or expose stderr while rendering status.
+- Bad: call the Windows setup helper, request UAC, or expose stderr while rendering status/preview.
+- Bad: install a system dependency, delete the Windows sandbox account, or remove firewall rules as
+  an implicit recovery action.
 
 ### 6. Tests Required
 
 - Tools tests cover macOS/Linux ready and missing helpers, unsupported platforms, every Windows
   handshake state, malformed identity, missing helper, and exception redaction.
+- Recovery tests cover no-confirm preview, setup/reset verification, UAC cancellation, version
+  mismatch before and after reset, contradictory handshake state, partial enforcement, manual
+  dependency guidance, unsupported platforms, and interruption.
 - Gateway tests track trust/profile reconfiguration and assert bootstrap/status/permission payload
   equality, effective approval behavior, managed constraint source, and `not_required` Full Access.
-- CLI tests assert parsing, human/JSON rendering, stable exit codes, no backend/provider/TUI start,
-  and no helper path in incomplete-setup output.
+- CLI tests assert status/setup/reset parsing, human/JSON rendering, stable exit codes, default
+  no-mutation previews, no backend/provider/TUI start, and no helper path or native output.
 - Doctor tests assert the process check uses the same readiness state/code and remains bounded.
 - TUI reducer and selector tests assert typed projection, managed/readiness labels, old-payload
   fallback, and width-safe rendering.
@@ -5895,6 +5926,24 @@ const readiness = await inspectSandboxReadiness();
 
 The snapshot supplies effective authority; the readiness classifier observes platform capability
 without mutating it.
+
+For a recovery transition, verify the complete typed state rather than one native boolean:
+
+#### Wrong
+
+```typescript
+if (after.setupComplete === false) return resetCompleted();
+```
+
+#### Correct
+
+```typescript
+const resetVerified = after.state === "setup_required"
+	&& after.code === "setup_incomplete"
+	&& after.helperCompatible === true
+	&& after.setupComplete === false
+	&& after.sandboxReady === false;
+```
 
 ## Scenario: Unified Settings And Command Discovery
 

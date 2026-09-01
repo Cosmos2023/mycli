@@ -14,7 +14,7 @@ available in non-interactive shells where noted. `update check` may contact the 
 | `mycli config <action> [arguments]` | Validate, inspect, locate, migrate, or update configuration | Supports `validate`, `show`, `get`, `set`, `unset`, `path`, and `migrate`; every action accepts `--json` |
 | `mycli doctor [--json] [--verbose]` | Inspect local configuration, storage, integrations, and runtime health | Read-only and provider-free; failures use a bounded exit code and diagnostic |
 | `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
-| `mycli sandbox status [--json]` | Inspect platform sandbox readiness | Read-only; reports bounded setup or helper remediation without elevating privileges |
+| `mycli sandbox status\|setup\|reset [--confirm] [--json]` | Inspect or recover platform sandbox readiness | Status is read-only; setup/reset preview by default and execute only with `--confirm` |
 | `mycli hooks <action> [identity]` | List, inspect, approve, or revoke configured hooks | Operates on local hook metadata and supports `--json` |
 | `mycli plugins <action> [arguments]` | List, inspect, or run a declared local plugin command | Validates declared commands and JSON arguments before execution |
 | `mycli mcp <action> [server-id]` | List or inspect configured MCP servers | Reads local configuration without starting an MCP server or model turn |
@@ -29,6 +29,24 @@ change.
 secret value in argv. `mycli setup --non-interactive --provider <id> --with-api-key` uses the same
 stdin-only boundary and requires explicit provider options, so an incomplete invocation exits with
 an actionable usage error instead of starting the TUI.
+
+Sandbox recovery is also provider-free and non-interactive:
+
+```bash
+mycli sandbox status [--json]
+mycli sandbox setup [--json]
+mycli sandbox setup --confirm [--json]
+mycli sandbox reset [--json]
+mycli sandbox reset --confirm [--json]
+```
+
+The unconfirmed setup/reset forms return the exact privilege and bounded effects they would use but
+perform no mutation. On Windows, confirmed setup may open UAC and verifies the helper handshake
+after elevation. Canceling UAC becomes `operation_canceled` without exposing helper output. A
+confirmed reset removes only mycli's credential and setup-marker state; it preserves the restricted
+local account and firewall/WFP restrictions so a later setup can rebuild safely. On macOS and Linux,
+mycli reports missing system dependencies and manual package-manager guidance instead of installing
+them. Human and JSON output are projections of the same typed response.
 
 ### Configuration Management
 

@@ -37,9 +37,21 @@ does not call a model provider or repair files.
 
 ## Sandbox Unavailable
 
-- macOS restricted profiles require executable `/usr/bin/sandbox-exec`.
-- Linux restricted profiles require `bwrap`.
+- Start with `mycli sandbox status`; add `--json` for automation.
+- macOS restricted profiles require executable `/usr/bin/sandbox-exec`. Restore it through the
+  operating system; mycli does not install or replace system components.
+- Linux restricted profiles require `bwrap`. Install bubblewrap through the distribution package
+  manager, then rerun status; mycli never invokes the package manager.
 - Windows restricted profiles require the packaged `mycli-windows-sandbox.exe`.
+- On first use, approve the Windows UAC prompt so mycli can initialize the dedicated sandbox identity
+  and offline firewall policy. Canceling or failing setup keeps the command blocked; retrying the
+  restricted command starts setup again.
+- To recover explicitly, run `mycli sandbox setup`, review the privilege/effects preview, then rerun
+  with `--confirm`. If Windows state is corrupt, preview and confirm `mycli sandbox reset`, then set up
+  again. Reset retains the restricted account and network restrictions; it clears only mycli setup
+  markers and encrypted credential state.
+- Use `mycli doctor --verbose` with the stable readiness/recovery code. The CLI intentionally omits
+  native stderr, executable paths, stacks, and setup credentials from both human and JSON output.
 - Missing isolation fails closed. Select `danger-full-access` only as an explicit user decision;
   do not replace the helper with an unsandboxed fallback.
 
