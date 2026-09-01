@@ -45,8 +45,12 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `request.request_max_retries` | `integer` | `4` | yes | `request.request_max_retries` | Limits retries for failures that occur before model output begins. |
 | `request.stream_max_retries` | `integer` | `5` | yes | `request.stream_max_retries` | Limits retries for interrupted model response streams. |
 | `tui.clear_on_shrink` | `boolean` | `true` | yes | `tui_clear_on_shrink` | Clears stale terminal cells after the viewport becomes smaller |
+| `tui.color_mode` | `string` | `"auto"` | yes | `tui_color_mode` | Selects automatic, truecolor, 256-color, 16-color, or no-color output |
+| `tui.glyph_mode` | `string` | `"auto"` | yes | `tui_glyph_mode` | Selects automatic, Unicode, or ASCII-only interface glyphs |
 | `tui.hardware_cursor` | `boolean` | `false` | yes | `tui_hardware_cursor` | Uses the terminal cursor for IME placement when supported |
 | `tui.hide_thinking` | `boolean` | `true` | yes | `tui_hide_thinking` | Hides reasoning blocks in assistant responses |
+| `tui.high_contrast` | `boolean` | `false` | yes | `tui_high_contrast` | Uses stronger semantic contrast for status and selection tokens |
+| `tui.reduced_motion` | `boolean` | `false` | yes | `tui_reduced_motion` | Uses static progress indicators instead of animated terminal frames |
 | `tui.statusbar_mode` | `string` | `"full"` | yes | `tui_statusbar_mode` | Controls how much session and model status is shown in the footer |
 | `tui.subagent_density` | `string` | `"normal"` | yes | `tui_subagent_density` | Controls the density of subagent task summaries |
 | `tui.terminal_progress` | `boolean` | `true` | yes | `tui_terminal_progress` | Shows compact progress while an agent turn is running |
@@ -93,8 +97,12 @@ Aliases remain readable for compatibility, emit deprecation diagnostics, and are
 - `request.request_max_retries`: `request_max_retries`
 - `request.stream_max_retries`: `stream_max_retries`, `transport_retry_limit`
 - `tui.clear_on_shrink`: `clearOnShrink`, `clear_on_shrink`
+- `tui.color_mode`: `colorMode`, `color_mode`
+- `tui.glyph_mode`: `glyphMode`, `glyph_mode`
 - `tui.hardware_cursor`: `hardwareCursor`, `hardware_cursor`
 - `tui.hide_thinking`: `hideThinking`, `hide_thinking`
+- `tui.high_contrast`: `highContrast`, `high_contrast`
+- `tui.reduced_motion`: `reducedMotion`, `reduced_motion`
 - `tui.statusbar_mode`: `statusbarMode`, `statusbar_mode`, `statusline_enabled`
 - `tui.subagent_density`: `subagentDensity`, `subagent_density`
 - `tui.terminal_progress`: `terminalProgress`, `terminal_progress`

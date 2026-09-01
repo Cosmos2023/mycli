@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "smol-toml";
+import type { ConfigLayerInput } from "./config-layers.ts";
 import type { ConfigProfileName } from "./config-profile.ts";
 import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
 import {
@@ -13,6 +14,7 @@ import {
 	type ShellSettingSource,
 	type ShellSettings,
 } from "./shell-setting-catalog.ts";
+import { resolveTuiKeymapFromLayers } from "./tui-keymap.ts";
 import {
 	applyUserConfigEdits,
 	type UserConfigEdit,
@@ -176,6 +178,24 @@ function settingsFromPayload(
 			settingValue(payload, "subagent_density") ?? fallback.subagent_density,
 			stringValues("subagent_density"),
 		),
+		color_mode: enumValue(
+			"color_mode",
+			settingValue(payload, "color_mode") ?? fallback.color_mode,
+			stringValues("color_mode"),
+		),
+		reduced_motion: booleanValue(
+			"reduced_motion",
+			settingValue(payload, "reduced_motion") ?? fallback.reduced_motion,
+		),
+		glyph_mode: enumValue(
+			"glyph_mode",
+			settingValue(payload, "glyph_mode") ?? fallback.glyph_mode,
+			stringValues("glyph_mode"),
+		),
+		high_contrast: booleanValue(
+			"high_contrast",
+			settingValue(payload, "high_contrast") ?? fallback.high_contrast,
+		),
 	};
 }
 
@@ -234,7 +254,21 @@ function loadedShellSettings(
 		settings: Object.freeze({ ...settings }),
 		sources: Object.freeze(sources),
 		overridden: Object.freeze(overridden),
+		keymap: resolveTuiKeymapFromLayers(payloadLayer(payload)),
 	});
+}
+
+function payloadLayer(payload: Readonly<Record<string, unknown>>): readonly ConfigLayerInput[] {
+	return [{
+		metadata: {
+			id: "user",
+			scope: "user",
+			source: "~/.mycli/config.toml",
+			version: 1,
+			enabled: true,
+		},
+		values: payload,
+	}];
 }
 
 function parsePayload(raw: string): Record<string, unknown> {

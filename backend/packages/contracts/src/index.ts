@@ -23,6 +23,19 @@ export {
 } from "./model-selection.ts";
 export type { ModelSelectionScope } from "./model-selection.ts";
 export {
+	normalizeTuiKeySpec,
+	TUI_KEYMAP_ACTIONS,
+	TUI_KEYMAP_CONTEXTS,
+	tuiKeymapAction,
+	tuiKeymapActionForConfig,
+	tuiKeymapConfigPath,
+} from "./tui-keymap.ts";
+export type {
+	TuiKeymapActionDescriptor,
+	TuiKeymapActionId,
+	TuiKeymapContext,
+} from "./tui-keymap.ts";
+export {
 	canonicalRuntimeFailureMessage,
 	canonicalTurnFailureMessage,
 	isRuntimeErrorCode,

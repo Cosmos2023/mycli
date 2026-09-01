@@ -4,7 +4,13 @@ import {
 	type ConfigDiagnostic,
 	type ConfigFileLayerId,
 } from "./config-diagnostics.ts";
+import {
+	TUI_KEYMAP_CONTEXTS,
+	tuiKeymapActionForConfig,
+	tuiKeymapConfigPath,
+} from "@mycli/contracts";
 import { configSettingDescriptors } from "./runtime-setting-catalog.ts";
+import { SHELL_SETTING_DESCRIPTORS } from "./shell-setting-catalog.ts";
 
 type ConfigMap = Record<string, unknown>;
 
@@ -74,34 +80,10 @@ const LEGACY_RUNTIME_KEYS = new Set([
 	...Object.values(CONFIG_SECTION_KEYS).flatMap((section) => Object.values(section)),
 ]);
 
-const SHELL_SETTING_KEYS = new Set([
-	"clearOnShrink",
-	"clear_on_shrink",
-	"hardwareCursor",
-	"hardware_cursor",
-	"hideThinking",
-	"hide_thinking",
-	"statusbarMode",
-	"statusbar_mode",
-	"statusline_enabled",
-	"subagentDensity",
-	"subagent_density",
-	"terminalProgress",
-	"terminal_progress",
-	"theme",
-	"toolDetailsDefault",
-	"tool_details_default",
-	"tui_clear_on_shrink",
-	"tui_hardware_cursor",
-	"tui_hide_thinking",
-	"tui_statusbar_mode",
-	"tui_subagent_density",
-	"tui_terminal_progress",
-	"tui_theme",
-	"tui_tool_details_default",
-	"viewMode",
-	"view_mode",
-]);
+const SHELL_SETTING_KEYS = new Set(SHELL_SETTING_DESCRIPTORS.flatMap((item) => [
+	...item.inputKeys,
+	...item.legacyPaths.flatMap((path) => path.length === 1 ? [path[0]!] : []),
+]));
 
 const PLUGIN_KEYS = new Set(["disabled", "enabled"]);
 const INLINE_SECRET_KEYS = new Set(["access_token", "api_key", "password", "secret", "token"]);
@@ -123,6 +105,10 @@ export function validateConfigDocument(
 
 	for (const key of Object.keys(payload).sort(compareText)) {
 		const value = payload[key];
+		if (key === "tui") {
+			validateTuiSection(value, layer, values, diagnostics);
+			continue;
+		}
 		const section = CONFIG_SECTION_KEYS[key];
 		if (section && isRecord(value)) {
 			validateRuntimeSection(key, value, section, layer, values, diagnostics);
@@ -165,6 +151,76 @@ export function validateConfigDocument(
 	return Object.freeze({
 		values: Object.freeze(values),
 		diagnostics: Object.freeze(diagnostics),
+	});
+}
+
+function validateTuiSection(
+	value: unknown,
+	layer: ConfigFileLayerId,
+	values: ConfigMap,
+	diagnostics: ConfigDiagnostic[],
+): void {
+	if (!isRecord(value)) {
+		throw configError({
+			code: "invalid_value",
+			severity: "error",
+			layer,
+			keyPath: "tui",
+			message: `${layerLabel(layer)} config 'tui' must be a table`,
+			remediation: "Use [tui.keymap.<context>] tables or remove the setting.",
+		});
+	}
+	for (const key of Object.keys(value).sort(compareText)) {
+		if (key === "keymap") {
+			validateTuiKeymap(value[key], layer, values);
+			continue;
+		}
+		diagnostics.push(unknownDiagnostic(layer, `tui.${key}`, isRecord(value[key])));
+	}
+}
+
+function validateTuiKeymap(
+	value: unknown,
+	layer: ConfigFileLayerId,
+	values: ConfigMap,
+): void {
+	if (!isRecord(value)) throw invalidKeymapTable(layer, "tui.keymap");
+	for (const context of Object.keys(value).sort(compareText)) {
+		if (!TUI_KEYMAP_CONTEXTS.includes(context as typeof TUI_KEYMAP_CONTEXTS[number])) {
+			throw invalidKeymapEntry(layer, `tui.keymap.${context}`, "keymap context is not supported");
+		}
+		const table = value[context];
+		if (!isRecord(table)) throw invalidKeymapTable(layer, `tui.keymap.${context}`);
+		for (const configKey of Object.keys(table).sort(compareText)) {
+			const action = tuiKeymapActionForConfig(context, configKey);
+			if (!action) {
+				throw invalidKeymapEntry(
+					layer,
+					`tui.keymap.${context}.${configKey}`,
+					"keymap action is not supported",
+				);
+			}
+			values[tuiKeymapConfigPath(action)] = table[configKey];
+		}
+	}
+}
+
+function invalidKeymapTable(layer: ConfigFileLayerId, keyPath: string): Error {
+	return invalidKeymapEntry(layer, keyPath, "keymap entry must be a table");
+}
+
+function invalidKeymapEntry(
+	layer: ConfigFileLayerId,
+	keyPath: string,
+	message: string,
+): Error {
+	return configError({
+		code: "invalid_value",
+		severity: "error",
+		layer,
+		keyPath,
+		message,
+		remediation: "Use an action and context listed by the effective keymap viewer.",
 	});
 }
 

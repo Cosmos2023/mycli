@@ -170,6 +170,23 @@ export type {
 	ShellSettingName,
 	ShellSettings,
 } from "./shell-setting-catalog.ts";
+export { resolveTuiKeymapFromLayers } from "./tui-keymap.ts";
+export type {
+	LoadedTuiKeymap,
+	TuiKeymapSource,
+} from "./tui-keymap.ts";
+export { resetTuiKeymap } from "./tui-keymap-settings.ts";
+export type { ResetTuiKeymapOptions } from "./tui-keymap-settings.ts";
+export {
+	detectTerminalCapabilities,
+	resolveTerminalCapabilities,
+} from "./terminal-capabilities.ts";
+export type {
+	DetectedTerminalCapabilities,
+	ResolvedTerminalCapabilities,
+	TerminalColorMode,
+	TerminalGlyphMode,
+} from "./terminal-capabilities.ts";
 export {
 	BUILTIN_MODEL_CATALOG,
 	findModelCatalogEntry,

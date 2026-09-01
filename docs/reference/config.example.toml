@@ -6,6 +6,14 @@
 # Allowed: true, false
 # tui_clear_on_shrink = true
 
+# Selects automatic, truecolor, 256-color, 16-color, or no-color output
+# Allowed: "auto", "truecolor", "256", "16", "none"
+# tui_color_mode = "auto"
+
+# Selects automatic, Unicode, or ASCII-only interface glyphs
+# Allowed: "auto", "unicode", "ascii"
+# tui_glyph_mode = "auto"
+
 # Uses the terminal cursor for IME placement when supported
 # Allowed: true, false
 # tui_hardware_cursor = false
@@ -13,6 +21,14 @@
 # Hides reasoning blocks in assistant responses
 # Allowed: true, false
 # tui_hide_thinking = true
+
+# Uses stronger semantic contrast for status and selection tokens
+# Allowed: true, false
+# tui_high_contrast = false
+
+# Uses static progress indicators instead of animated terminal frames
+# Allowed: true, false
+# tui_reduced_motion = false
 
 # Controls how much session and model status is shown in the footer
 # Allowed: "off", "compact", "full"

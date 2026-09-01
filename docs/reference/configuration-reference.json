@@ -449,6 +449,44 @@
       "restartRequired": false
     },
     {
+      "key": "tui.color_mode",
+      "description": "Selects automatic, truecolor, 256-color, 16-color, or no-color output",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "tui_color_mode",
+      "legacyPaths": [
+        "colorMode",
+        "color_mode"
+      ],
+      "defaultValue": "auto",
+      "allowedValues": [
+        "auto",
+        "truecolor",
+        "256",
+        "16",
+        "none"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.glyph_mode",
+      "description": "Selects automatic, Unicode, or ASCII-only interface glyphs",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "tui_glyph_mode",
+      "legacyPaths": [
+        "glyphMode",
+        "glyph_mode"
+      ],
+      "defaultValue": "auto",
+      "allowedValues": [
+        "auto",
+        "unicode",
+        "ascii"
+      ],
+      "restartRequired": false
+    },
+    {
       "key": "tui.hardware_cursor",
       "description": "Uses the terminal cursor for IME placement when supported",
       "valueKind": "boolean",
@@ -476,6 +514,40 @@
         "hide_thinking"
       ],
       "defaultValue": true,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.high_contrast",
+      "description": "Uses stronger semantic contrast for status and selection tokens",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_high_contrast",
+      "legacyPaths": [
+        "highContrast",
+        "high_contrast"
+      ],
+      "defaultValue": false,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.reduced_motion",
+      "description": "Uses static progress indicators instead of animated terminal frames",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_reduced_motion",
+      "legacyPaths": [
+        "reducedMotion",
+        "reduced_motion"
+      ],
+      "defaultValue": false,
       "allowedValues": [
         true,
         false

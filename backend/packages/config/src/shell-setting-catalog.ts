@@ -1,5 +1,6 @@
 import type { ConfigLayerId, ConfigLayerInput } from "./config-layers.ts";
 import { configError } from "./config-diagnostics.ts";
+import { resolveTuiKeymapFromLayers, type LoadedTuiKeymap } from "./tui-keymap.ts";
 
 export interface ShellSettings {
 	readonly statusbar_mode: "off" | "compact" | "full";
@@ -11,6 +12,10 @@ export interface ShellSettings {
 	readonly clear_on_shrink: boolean;
 	readonly terminal_progress: boolean;
 	readonly subagent_density: "compact" | "normal" | "detailed";
+	readonly color_mode: "auto" | "truecolor" | "256" | "16" | "none";
+	readonly reduced_motion: boolean;
+	readonly glyph_mode: "auto" | "unicode" | "ascii";
+	readonly high_contrast: boolean;
 }
 
 export type ShellSettingName = keyof ShellSettings;
@@ -20,6 +25,7 @@ export interface LoadedShellSettings {
 	readonly settings: ShellSettings;
 	readonly sources: Readonly<Record<ShellSettingName, ShellSettingSource>>;
 	readonly overridden: Readonly<Record<ShellSettingName, readonly ConfigLayerId[]>>;
+	readonly keymap: LoadedTuiKeymap;
 }
 
 export type ShellSettingClientKey =
@@ -31,7 +37,11 @@ export type ShellSettingClientKey =
 	| "hardwareCursor"
 	| "clearOnShrink"
 	| "terminalProgress"
-	| "subagentDensity";
+	| "subagentDensity"
+	| "colorMode"
+	| "reducedMotion"
+	| "glyphMode"
+	| "highContrast";
 
 export interface ShellSettingDescriptor {
 	readonly key: `tui.${string}`;
@@ -58,6 +68,10 @@ export const DEFAULT_SHELL_SETTINGS: ShellSettings = Object.freeze({
 	clear_on_shrink: true,
 	terminal_progress: true,
 	subagent_density: "normal",
+	color_mode: "auto",
+	reduced_motion: false,
+	glyph_mode: "auto",
+	high_contrast: false,
 });
 
 export const SHELL_SETTING_DESCRIPTORS: readonly ShellSettingDescriptor[] = Object.freeze([
@@ -160,6 +174,50 @@ export const SHELL_SETTING_DESCRIPTORS: readonly ShellSettingDescriptor[] = Obje
 		legacyPaths: [["subagentDensity"], ["subagent_density"]],
 		inputKeys: ["subagentDensity", "subagent_density", "tui_subagent_density"],
 	}),
+	descriptor({
+		key: "tui.color_mode",
+		settingKey: "color_mode",
+		clientKey: "colorMode",
+		label: "Color mode",
+		description: "Selects automatic, truecolor, 256-color, 16-color, or no-color output",
+		allowedValues: ["auto", "truecolor", "256", "16", "none"],
+		path: ["tui_color_mode"],
+		legacyPaths: [["colorMode"], ["color_mode"]],
+		inputKeys: ["colorMode", "color_mode", "tui_color_mode"],
+	}),
+	descriptor({
+		key: "tui.reduced_motion",
+		settingKey: "reduced_motion",
+		clientKey: "reducedMotion",
+		label: "Reduced motion",
+		description: "Uses static progress indicators instead of animated terminal frames",
+		allowedValues: [true, false],
+		path: ["tui_reduced_motion"],
+		legacyPaths: [["reducedMotion"], ["reduced_motion"]],
+		inputKeys: ["reducedMotion", "reduced_motion", "tui_reduced_motion"],
+	}),
+	descriptor({
+		key: "tui.glyph_mode",
+		settingKey: "glyph_mode",
+		clientKey: "glyphMode",
+		label: "Glyph mode",
+		description: "Selects automatic, Unicode, or ASCII-only interface glyphs",
+		allowedValues: ["auto", "unicode", "ascii"],
+		path: ["tui_glyph_mode"],
+		legacyPaths: [["glyphMode"], ["glyph_mode"]],
+		inputKeys: ["glyphMode", "glyph_mode", "tui_glyph_mode"],
+	}),
+	descriptor({
+		key: "tui.high_contrast",
+		settingKey: "high_contrast",
+		clientKey: "highContrast",
+		label: "High contrast",
+		description: "Uses stronger semantic contrast for status and selection tokens",
+		allowedValues: [true, false],
+		path: ["tui_high_contrast"],
+		legacyPaths: [["highContrast"], ["high_contrast"]],
+		inputKeys: ["highContrast", "high_contrast", "tui_high_contrast"],
+	}),
 ]);
 
 const DESCRIPTOR_BY_KEY: ReadonlyMap<string, ShellSettingDescriptor> = new Map(
@@ -193,6 +251,7 @@ export function resolveShellSettingsFromLayers(
 		settings: Object.freeze(settings) as ShellSettings,
 		sources: Object.freeze(sources),
 		overridden: Object.freeze(overridden),
+		keymap: resolveTuiKeymapFromLayers(layers),
 	});
 }
 

@@ -24,6 +24,10 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 		clear_on_shrink: true,
 		terminal_progress: true,
 		subagent_density: "normal",
+		color_mode: "auto",
+		reduced_motion: false,
+		glyph_mode: "auto",
+		high_contrast: false,
 	});
 
 	const directory = join(homeDir, ".mycli");
@@ -48,6 +52,10 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 			clearOnShrink: false,
 			terminalProgress: false,
 			subagentDensity: "detailed",
+			colorMode: "none",
+			reducedMotion: true,
+			glyphMode: "ascii",
+			highContrast: true,
 		},
 	});
 	assert.deepEqual(saved, {
@@ -60,6 +68,10 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 		clear_on_shrink: false,
 		terminal_progress: false,
 		subagent_density: "detailed",
+		color_mode: "none",
+		reduced_motion: true,
+		glyph_mode: "ascii",
+		high_contrast: true,
 	});
 	assert.deepEqual(await loadShellSettings({ homeDir }), saved);
 	const payload = parse(await readFile(path, "utf8")) as Record<string, unknown>;
@@ -78,9 +90,9 @@ test("shell setting descriptors are complete and report per-setting user sources
 		"",
 	].join("\n"), "utf8");
 
-	assert.equal(SHELL_SETTING_DESCRIPTORS.length, 9);
-	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.key)).size, 9);
-	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.clientKey)).size, 9);
+	assert.equal(SHELL_SETTING_DESCRIPTORS.length, 13);
+	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.key)).size, 13);
+	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.clientKey)).size, 13);
 	const loaded = await loadShellSettingsState({ homeDir });
 	assert.equal(loaded.settings.theme, "light");
 	assert.equal(loaded.settings.hide_thinking, false);

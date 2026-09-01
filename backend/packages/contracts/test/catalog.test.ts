@@ -13,6 +13,7 @@ test("catalog exposes the versioned current gateway surface", () => {
 	assert.ok(gatewayContractCatalog.rpcMethods.includes("turn.submit"));
 	assert.ok(gatewayContractCatalog.rpcMethods.includes("update.status"));
 	assert.ok(gatewayContractCatalog.rpcMethods.includes("update.dismiss"));
+	assert.ok(gatewayContractCatalog.rpcMethods.includes("settings.keymap.reset"));
 	assert.ok(gatewayContractCatalog.eventStreams.includes("turn.started"));
 	assert.ok(gatewayContractCatalog.eventStreams.includes("runtime.ready"));
 	assert.ok(gatewayContractCatalog.eventStreams.includes("shell.started"));
