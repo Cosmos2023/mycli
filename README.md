@@ -367,6 +367,8 @@ npm run mycli -- config unset memory.enabled --json
 npm run mycli -- config path profile --profile work --json
 npm run mycli -- config migrate --dry-run --json
 npm run mycli -- doctor --json
+npm run mycli -- doctor --fix --json
+npm run mycli -- doctor --support-bundle --json
 npm run mycli -- sandbox status --json
 npm run mycli -- sandbox setup
 npm run mycli -- sandbox setup --confirm
@@ -386,6 +388,11 @@ as a secret-manager pipe. API keys are never accepted as command-line argument v
 Sandbox setup/reset are previews unless `--confirm` is present. Windows setup can request UAC;
 reset clears only mycli setup state and keeps the restricted account and network rules in place.
 macOS and Linux dependency recovery remains a manual system-package operation.
+
+Plain `doctor` remains read-only. `doctor --fix` previews deterministic local repairs and returns a
+plan id; applying requires `doctor --fix --confirm <plan-id>`, so changed state produces a conflict
+instead of applying a different plan. `doctor --support-bundle` writes one private, redacted JSON
+artifact at `~/.mycli/support/diagnostic-support.json`. It does not copy log bodies or upload data.
 
 Invalid usage exits `2`, a failed operation exits `1`, and setup cancellation exits `130`.
 Session resume, repair, archive, delete, export, locking, and session-scoped preference behavior are

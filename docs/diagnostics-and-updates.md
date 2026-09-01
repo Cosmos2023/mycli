@@ -11,6 +11,8 @@ Run the concise local report first:
 mycli doctor
 mycli doctor --verbose
 mycli doctor --json
+mycli doctor --fix --json
+mycli doctor --support-bundle --json
 ```
 
 The default report checks authoritative local configuration, credential readiness, sandbox and
@@ -26,6 +28,24 @@ versions, platform identity, diagnostic codes, and safe log references.
 Diagnostic output excludes API keys, environment values, prompts, commands, tool content, raw
 provider bodies, internal stacks, and unnecessary absolute paths. Share the stable category, code,
 and remediation instead of copying private configuration or session files.
+
+`mycli doctor --fix` is a read-only repair preview. It returns a plan id bound to the listed actions,
+value-free configuration changes, and authoritative source versions. Apply that exact plan with:
+
+```bash
+mycli doctor --fix --confirm <plan-id>
+```
+
+mycli rebuilds the plan before applying it. A changed source returns `version_conflict`; it never
+silently applies the replacement plan. Repairs are reported individually, reuse their owning
+services, and continue to exclude provider calls, package installation, privilege escalation, and
+arbitrary shell scripts.
+
+`mycli doctor --support-bundle` writes `~/.mycli/support/diagnostic-support.json` using a private
+atomic replacement. The deterministic schema contains allowlisted diagnostic rows, configuration
+layer metadata, Sandbox/session/extension readiness, runtime versions, and relative log references.
+It does not copy logs, transcripts, prompts, commands, tool content, provider bodies, credentials,
+headers, internal stacks, or unnecessary local paths, and mycli never uploads it automatically.
 
 ## Cached Update Checks
 

@@ -12,7 +12,7 @@ available in non-interactive shells where noted. `update check` may contact the 
 | `mycli login status [--json]` | Inspect the selected provider's credential source | Reads only local configuration, environment metadata, and the credential store; never contacts the provider |
 | `mycli logout [--json]` | Remove one stored API key | Preserves unrelated credential references and cannot remove an environment-provided key |
 | `mycli config <action> [arguments]` | Validate, inspect, locate, migrate, or update configuration | Supports `validate`, `show`, `get`, `set`, `unset`, `path`, and `migrate`; every action accepts `--json` |
-| `mycli doctor [--json] [--verbose]` | Inspect local configuration, storage, integrations, and runtime health | Read-only and provider-free; failures use a bounded exit code and diagnostic |
+| `mycli doctor [--json] [--verbose] [--fix [--confirm <plan-id>] \| --support-bundle]` | Inspect health, preview/apply safe repairs, or export bounded support data | Provider-free; default and repair preview are read-only, while apply is bound to the displayed plan id |
 | `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
 | `mycli sandbox status\|setup\|reset [--confirm] [--json]` | Inspect or recover platform sandbox readiness | Status is read-only; setup/reset preview by default and execute only with `--confirm` |
 | `mycli hooks <action> [identity]` | List, inspect, approve, or revoke configured hooks | Operates on local hook metadata and supports `--json` |
@@ -29,6 +29,23 @@ change.
 secret value in argv. `mycli setup --non-interactive --provider <id> --with-api-key` uses the same
 stdin-only boundary and requires explicit provider options, so an incomplete invocation exits with
 an actionable usage error instead of starting the TUI.
+
+Doctor repair and support operations are explicit management commands:
+
+```bash
+mycli doctor --fix [--json]
+mycli doctor --fix --confirm <plan-id> [--json]
+mycli doctor --support-bundle [--json]
+```
+
+The first form only returns the exact value-free actions and effects it would apply. Confirmation
+must carry that plan id; concurrent configuration changes fail with `version_conflict` before any
+new plan is applied. The current repair normalizes/imports canonical user configuration through the
+existing migration backup transaction. It never edits credentials, elevates privileges, installs
+packages, or contacts a provider. Support export writes a mode-`0600` JSON file below the private
+`~/.mycli/support/` directory. The bundle contains allowlisted runtime versions, diagnostic rows,
+configuration layer metadata, and aggregate readiness only; it excludes prompts, commands, tool
+content, provider bodies, raw logs, stacks, credentials, session ids, and unnecessary absolute paths.
 
 Sandbox recovery is also provider-free and non-interactive:
 

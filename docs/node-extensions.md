@@ -43,6 +43,8 @@ These commands work without a TTY and before backend/provider/TUI startup:
 ```bash
 mycli doctor
 mycli doctor --json
+mycli doctor --fix --json
+mycli doctor --support-bundle --json
 mycli sandbox status
 mycli sandbox status --json
 mycli sandbox setup
@@ -189,6 +191,11 @@ output limits.
 
 `mycli doctor` runs collectors independently and sequentially. One exception becomes one failed
 check and later collectors still run. Warnings exit `0`; any failed check exits `1`.
+
+`mycli doctor --fix` previews deterministic repairs without mutation. Applying requires the exact
+displayed plan id through `--confirm <plan-id>`; the current repair delegates canonical user-config
+migration to the configuration owner. `--support-bundle` writes one private allowlisted JSON report
+without raw logs, extension payloads, commands, credentials, provider data, or automatic upload.
 
 The report covers config/auth presence, read-only SQLite/storage, logs/traces/redaction, package and
 gateway contracts, the built-in tool manifest, sandbox/process support, every extension source, and

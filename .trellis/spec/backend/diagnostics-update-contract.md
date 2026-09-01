@@ -16,8 +16,14 @@
 
 - Canonical user setting: `updates.check_on_startup: boolean`, default `true`.
 - Management commands:
-  - `mycli doctor [--verbose] [--json]`
+  - `mycli doctor [--verbose] [--json] [--fix [--confirm <plan-id>] | --support-bundle]`
   - `mycli update [status|check|dismiss <stable-version>] [--json]`
+- Doctor repair/support responses:
+  - repair plan: `{schemaVersion: 1, planId, confirmationRequired, actions}`
+  - repair execution: `{schemaVersion: 1, mode, status, code, plan, results}`
+  - support receipt: `{schemaVersion: 1, location, bytes, sha256}`
+  - `planId`: `doctor-plan-v1-` plus 64 lowercase hexadecimal characters.
+  - `location`: `.mycli/support/diagnostic-support.json`.
 - TUI command: `/update [check|dismiss <stable-version>]`.
 - Gateway RPCs:
   - `update.status({}) -> {update}`
@@ -55,6 +61,26 @@ await updates.close();
 - Doctor is provider-free by default. Collectors may inspect authoritative local configuration,
   credential readiness, sandbox/terminal support, storage/session ownership, extensions, and the
   cached update status. They must not call a model provider.
+- Plain Doctor and `doctor --fix` without `--confirm` are read-only. A fix preview lists bounded,
+  value-free actions, effects, and configuration changes. Apply is available only through
+  `--confirm <plan-id>` and only for deterministic actions delegated to the service that owns the
+  state; the initial action is canonical user-config migration.
+- A repair plan hashes the complete projected action plus its owning migration expected version.
+  Apply rebuilds the plan before mutation. A different plan id returns `version_conflict` and does
+  not apply the replacement plan. Each action reports its own applied, failed, not-needed, or
+  conflict result; mixed success is `partial_failure`. Diagnostics rerun only after an action says
+  it changed state.
+- Doctor repair never calls a provider, executes arbitrary shell, installs packages, requests
+  elevation, edits credentials, or removes the legacy config. The config owner retains lock,
+  backup, validation, atomic replacement, and rollback semantics.
+- `doctor --support-bundle` is the only support-export mutation. It atomically replaces
+  `~/.mycli/support/diagnostic-support.json` under a mode-`0700` directory and mode-`0600` file on
+  permission-bearing platforms. It never uploads the artifact.
+- Support data is built from an allowlisted DTO, not rendered report text or copied logs. It may
+  contain bounded runtime versions, diagnostic rows, config layer metadata, sandbox/session/
+  extension readiness, and recognized relative log references. It excludes log bodies, prompts,
+  commands, tool content, provider bodies, credentials, headers, session ids, stacks, arbitrary
+  object fields, local paths, and control characters.
 - Human, verbose, and JSON doctor output derive from one typed report. Each row carries category,
   stable code, summary, bounded details, remediation, recovery actions, and duration. JSON adds only
   a bounded support manifest of runtime versions, platform identity, diagnostic codes, and safe log
@@ -108,6 +134,14 @@ await updates.close();
 | Bootstrap availability is current, dismissed, disabled, or unknown | Render no startup update notice |
 | Doctor collector throws or times out | Emit one bounded failed row; continue remaining collectors |
 | Doctor collector supplies malformed fields or a forged recovery label | Normalize the row and rebuild only recognized recovery action ids |
+| `doctor --fix` has no confirmation | Return a preview or `not_needed`; perform no write |
+| Repair preview omits or truncates its change list | Return `repair_preview_failed`; expose no confirmable action |
+| Confirmation id is malformed | Reject as CLI usage before service or runtime startup |
+| Confirmed plan differs from the freshly rebuilt plan | Return `version_conflict`; apply no replacement action |
+| One repair fails after another changed state | Return per-action results and `partial_failure`; never expose the exception |
+| Support config or sandbox metadata lookup fails | Export with the bounded trust/readiness fallback |
+| Support artifact is oversized or cannot be atomically written | Return `support_bundle_write_failed` and no raw filesystem error |
+| Support text contains secrets, credential URLs, control bytes, or local paths | Redact or replace them before serialization |
 | Two failed requests reuse a method/code/message | Generate distinct occurrence ids and render two diagnostics |
 
 ### 5. Good / Base / Bad Cases
@@ -116,11 +150,19 @@ await updates.close();
   if `0.3.0` is fetched before the TUI loads settings; the next process advertises `0.3.0`.
 - Good: `/update dismiss 0.2.0` atomically records that exact version and removes the transient row;
   a later cached `0.3.0` is still shown.
+- Good: preview one user-config migration, confirm that exact plan id, apply through the config
+  transaction, and rerun diagnostics once.
+- Good: export one private support JSON file whose receipt exposes only its relative location,
+  byte count, and SHA-256 digest.
 - Base: no cache exists and the registry is offline; startup is unaffected and no notice is shown.
+- Base: no deterministic repair is needed; `doctor --fix` returns `not_needed` without creating a
+  config, backup, or support file.
 - Bad: await registry fetch before emitting `runtime.ready` or recompute settings from the newly
   written cache during the same automatic startup sequence.
 - Bad: infer update availability in the TUI, persist the notice into session history, or execute the
   package-manager command.
+- Bad: auto-apply a newly rebuilt plan, copy raw logs into a support archive, or feed repair errors
+  into the runtime-turn/TUI diagnostic lane.
 - Bad: allow backend integration tests to contact the real npm registry; inject a deterministic
   fetch implementation instead.
 
@@ -137,7 +179,12 @@ await updates.close();
 - TUI tests: one stable notice for available state, none for every other state, repeated bootstrap
   deduplication, width-safe guidance, and successful dismissal removal.
 - Doctor tests: provider-free collectors, nested redaction, human/verbose/JSON parity, duration,
-  canonical recovery actions from untrusted rows, and bounded support manifest.
+  canonical recovery actions from untrusted rows, bounded support manifest, preview/apply/no-op/
+  conflict/partial-failure repair outcomes, and text/JSON repair metadata parity.
+- Support tests: allowlisted schema shape, deterministic replacement and digest, private modes,
+  config/sandbox fallback, write failure containment, and a cross-platform fuzz corpus covering
+  nested secrets, credential URLs, C0/C1 controls, POSIX/Windows/UNC/home paths, and unknown fields.
+- CLI composition tests must prove Doctor check/fix/support starts no provider, backend, or TUI.
 - Diagnostic projection tests: representative auth/provider/config/storage failures render one
   row each; response/event lanes collapse only when they share an occurrence id, while identical
   failures with different ids remain distinct.
@@ -187,3 +234,22 @@ emitGatewayError({ occurrenceId });
 ```
 
 One failure shares one fresh identity across both delivery lanes; a later failure gets a new one.
+
+#### Wrong: Apply Whatever A Second Preview Returns
+
+```typescript
+const preview = await config.previewMigration(signal);
+await config.applyMigration(preview.expectedVersion!, signal);
+```
+
+This bypasses the user's confirmed action set and lets concurrent state select a different repair.
+
+#### Correct: Rebuild And Match The Confirmed Doctor Plan
+
+```typescript
+const execution = await repairs.execute(command.expectedPlanId, signal);
+if (execution.status === "version_conflict") return boundedConflict(execution);
+```
+
+The repair service binds user confirmation to the value-free plan and delegates the mutation to its
+owning transaction only after the current plan still matches.

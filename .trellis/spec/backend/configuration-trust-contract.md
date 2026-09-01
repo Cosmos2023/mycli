@@ -183,6 +183,24 @@ function applyUserConfigEdits(
 	},
 ): Promise<boolean>;
 
+export interface AtomicPrivateFileUpdateOptions {
+	readonly directory: string;
+	readonly fileName: string;
+	readonly maxCurrentBytes?: number;
+	readonly buildContent: (
+		current: string | undefined,
+	) => string | null | undefined | Promise<string | null | undefined>;
+	readonly prepareCommit?: (input: {
+		readonly current: string | undefined;
+		readonly content: string | null;
+	}) => void | Promise<void>;
+	readonly failpoint?: (name: string) => void;
+}
+
+export function atomicPrivateFileUpdate(
+	options: AtomicPrivateFileUpdateOptions,
+): Promise<boolean>;
+
 export function writeUserProviderConfig(input: UserProviderConfigInput): Promise<string>;
 export function saveShellSettings(options: SaveShellSettingsOptions): Promise<ShellSettings>;
 
@@ -421,6 +439,16 @@ re-exported from `@mycli/config`; model-facing tools and configuration-managemen
 submit arbitrary paths. `mutateUserConfigSetting` remains the public allowlisted compiler and asks
 the kernel to validate the current document before applying its canonical and legacy-path edits.
 
+`atomicPrivateFileUpdate` is the narrower public infrastructure primitive shared by fixed-name,
+private mycli artifacts such as auth, update cache, startup diagnostics, and the Doctor support
+bundle. It creates and hardens the target directory, serializes writers with a private lock, bounds
+an optional current-file read, writes and syncs a mode-`0600` temporary file, atomically renames,
+and syncs the directory where supported. It does not choose a path, validate a schema, redact
+content, or impose a new-content size limit. It accepts only a bounded plain file name without path
+separators; callers must supply an app-owned fixed directory, validate and bound the complete
+candidate before returning it from `buildContent`, and map errors at their domain boundary. It is
+infrastructure-only and must not be exposed as a model tool.
+
 `writeUserProviderConfig` and `saveShellSettings` are typed domain compilers over the same kernel.
 The provider compiler validates its provider/protocol profile, removes root and `[model]` inline
 credentials plus owned flat aliases, normalizes the base URL, and emits one model/request/reasoning
@@ -542,6 +570,10 @@ output. Hand edits to generated artifacts are invalid; descriptor changes must r
 | A provider or shell batch fails validation, locking, or replacement | Preserve the original bytes and map to the existing bounded domain write error without paths, source, stacks, or values |
 | A mutation changes no TOML bytes | Return `changed=false`; do not create a temporary file or replace the target |
 | A provider batch changes no bytes and skipped current-document validation for cleanup compatibility | Validate the byte-identical final candidate before returning no-op |
+| A private artifact caller supplies an invalid current-read bound | Reject before locking or writing |
+| A private artifact caller supplies a blank, hidden, nested, or traversal file name | Reject before creating the directory or calling `buildContent` |
+| A private artifact candidate is unchanged | Return `false`; do not create a temporary file or rename the target |
+| A private artifact domain cannot validate, bound, or redact its new content | Reject at that domain boundary before calling the atomic writer |
 | Migration preview finds no compatible alias or legacy value | Return `needed=false` with stable versions; create no user file or backup directory |
 | Migration preview finds more than 64 changes | Return the first 64 deterministic value-free rows and `truncated=true` |
 | Apply receives a stale expected version or either source changes before the locked rebuild | Throw `version_conflict`; preserve current bytes and create no backup |

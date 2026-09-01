@@ -38,7 +38,7 @@ Questions to answer:
 
 ## Testing Requirements
 
-### Scenario: Read-only Doctor Diagnostics
+### Scenario: Doctor Diagnostics And Explicit Recovery
 
 #### 1. Scope / Trigger
 - Trigger: Any change to `mycli doctor`, local runtime diagnostics, or health
@@ -47,24 +47,41 @@ Questions to answer:
   boundaries, but must stay outside model/runtime execution.
 
 #### 2. Signatures
-- CLI command: `mycli doctor`
+- CLI command: `mycli doctor [--fix [--confirm <plan-id>] | --support-bundle]`
 - Service API: `runDoctor(options, signal) -> Promise<DoctorReport>`.
-- Rendering API: `doctorResponseFromReport(report) -> DoctorManagementResponse`.
+- Management API: `DoctorManagementService.execute(command, signal)`.
+- Rendering API: `doctorResponseFromReport(report, options?) -> DoctorManagementResponse`.
 - Result fields: `DoctorCheck.name`, `DoctorCheck.status`,
   `DoctorCheck.message`, optional `DoctorCheck.detail`; status values are
   `ok`, `warning`, and `failed`.
 
 #### 3. Contracts
-- Doctor is read-only. It must not create config files, sessions DBs, log
-  files, file-history indexes, or MCP server processes.
+- Plain Doctor and an unconfirmed `--fix` preview are read-only. They must not
+  create config files, sessions DBs, log files, file-history indexes, or MCP
+  server processes. A confirmed repair may mutate only the actions shown in
+  the matching plan through the owning service. `--support-bundle` may write
+  only the private allowlisted support artifact.
 - Default doctor must not perform a real provider/model request.
 - Output is human-readable text headed by `mycli doctor` and ending with a
   summary count.
 - API keys, bearer tokens, and secret-like values must never be printed; report
   presence only, for example `api_key: present`.
 - Warnings return exit code `0`; one or more failed checks return exit code `1`.
+- Repair and support errors add one bounded operation issue. They do not become
+  runtime-turn failures or duplicate the primary TUI diagnostic.
 
 #### 4. Validation & Error Matrix
+- `doctor --fix` without confirmation -> value-free preview and no mutation.
+- Missing or truncated repair changes -> `repair_preview_failed`; expose no
+  plan that could mutate undisclosed state.
+- Matching `--confirm <plan-id>` -> rebuild the plan, then delegate only its
+  listed deterministic actions to their owners.
+- Stale plan -> `version_conflict`, with no newly discovered action applied.
+- Repair exception -> bounded failed result; never serialize the exception.
+- Support export -> one allowlisted JSON DTO at the fixed private location;
+  never copy raw logs or upload it.
+- Support config/sandbox probes fail -> export bounded fallback metadata.
+- Support write fails -> one `support_bundle_write_failed` issue.
 - Config resolves -> report provider, protocol, model, and base URL.
 - Config parse/validation fails -> `config=failed`; keep checking other areas.
 - API key missing -> `api_key=warning`.
@@ -281,12 +298,20 @@ Questions to answer:
   `0` with only warnings.
 - Good: A fresh machine without `~/.mycli/traces` or `~/.mycli/artifacts`
   reports `storage_layout=ok` without creating those directories.
+- Good: preview config migration, confirm the exact plan id, and let the
+  config transaction own locking, backup, validation, and atomic replacement.
+- Good: export a deterministic support bundle containing relative log
+  references but no log bodies, session ids, local paths, or credentials.
 - Base: A fresh machine with no prior sessions gets missing-storage warnings but
   no model request.
+- Base: no repair action exists, so `doctor --fix` reports `not_needed` without
+  creating any file.
 - Bad: Creating `traces/` or `artifacts/` just to check doctor health.
 - Bad: Calling `build_turn_service()` for doctor, because that can require an
   API key and initialize runtime dependencies unrelated to diagnostics.
 - Bad: Printing `sk-...` or MCP environment secret values in remediation text.
+- Bad: applying a replacement plan after a conflict or using a generic archive
+  of `.mycli` as a support bundle.
 
 #### 6. Tests Required
 - Unit test service success with config/storage/logs/history/MCP fixtures.
@@ -369,6 +394,14 @@ Questions to answer:
 - Unit test runtime-contract discovery against both direct object payload schemas and generated
   non-empty `allOf` payload schemas; malformed, unnamed, and empty-composition schemas stay absent.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
+- Repair tests cover preview, exact confirmation, stale confirmation, no-op,
+  per-action failure, aggregate partial failure, idempotency, and no provider IO.
+- Support tests cover deterministic bytes/digest, private modes, structural
+  allowlisting, fallback metadata, write containment, and fuzzed nested
+  secrets, credential URLs, control characters, and cross-platform paths.
+- Text/JSON tests assert the same plan id, action list, support location, byte
+  count, and digest; existing gateway/TUI tests keep one root failure to one
+  primary diagnostic.
 - Full Node lint, type-check, tests, and contracts check must pass because doctor touches CLI
   startup paths.
 
@@ -384,6 +417,16 @@ Correct:
 ```typescript
 const report = await runDoctor(options, signal);
 const response = doctorResponseFromReport(report);
+```
+
+Explicit repair:
+
+```typescript
+// Wrong: confirmation is ignored and the newest migration is applied.
+await config.applyMigration((await config.previewMigration(signal)).expectedVersion!, signal);
+
+// Correct: the confirmed Doctor plan is rebuilt and matched first.
+await doctorRepairService.execute(command.expectedPlanId, signal);
 ```
 
 Nullable nested recovery validation:

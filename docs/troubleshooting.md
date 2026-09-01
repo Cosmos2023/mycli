@@ -7,8 +7,10 @@ npm run mycli -- doctor
 npm run mycli -- doctor --json
 ```
 
-Doctor reads configuration, storage, package contracts, process support, and extension state. It
-does not call a model provider or repair files.
+Doctor reads configuration, storage, package contracts, process support, and extension state. The
+default command and `--fix` preview do not call a model provider or repair files. Apply only an
+unchanged preview with `mycli doctor --fix --confirm <plan-id>`. Generate a private redacted artifact
+for offline support with `mycli doctor --support-bundle`; mycli does not upload it.
 
 ## Interactive UI Does Not Start
 
