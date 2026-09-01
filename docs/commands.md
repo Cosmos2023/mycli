@@ -9,6 +9,8 @@ available in non-interactive shells where noted. `update check` may contact the 
 | Command | Purpose | Execution behavior |
 | --- | --- | --- |
 | `mycli setup` | Configure one provider, model, endpoint, and credential reference | Uses a TUI on a terminal and a plain prompt otherwise; cancellation writes nothing |
+| `mycli login status [--json]` | Inspect the selected provider's credential source | Reads only local configuration, environment metadata, and the credential store; never contacts the provider |
+| `mycli logout [--json]` | Remove one stored API key | Preserves unrelated credential references and cannot remove an environment-provided key |
 | `mycli config <action> [arguments]` | Validate, inspect, locate, migrate, or update configuration | Supports `validate`, `show`, `get`, `set`, `unset`, `path`, and `migrate`; every action accepts `--json` |
 | `mycli doctor [--json] [--verbose]` | Inspect local configuration, storage, integrations, and runtime health | Read-only and provider-free; failures use a bounded exit code and diagnostic |
 | `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
@@ -21,6 +23,12 @@ available in non-interactive shells where noted. `update check` may contact the 
 The command names above are checked against the management parser and root `mycli --help` output by
 the UX contract gate. Adding a management command requires updating all three surfaces in the same
 change.
+
+`mycli login --with-api-key` accepts the API key only from non-TTY stdin. Optional
+`--provider <id>` and `--auth-ref <ref>` select its destination; no supported command accepts a
+secret value in argv. `mycli setup --non-interactive --provider <id> --with-api-key` uses the same
+stdin-only boundary and requires explicit provider options, so an incomplete invocation exits with
+an actionable usage error instead of starting the TUI.
 
 ### Configuration Management
 

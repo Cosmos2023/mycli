@@ -15,9 +15,10 @@ but do not construct a provider or start the interactive runtime.
 
 Repository paths are excluded from discovery while workspace trust is `unknown` or `untrusted`.
 This includes repository hooks, MCP servers, plugins, skills, plugin enablement in project
-`config.toml`, and project execution rules. User-scoped integrations remain available. After
-granting trust in an already-running session, restart mycli once so startup discovery can include
-the newly trusted repository sources.
+`config.toml`, and project execution rules. User-scoped integrations remain available. Granting
+trust reloads repository sources before the decision is reported as successful. Revoking trust
+removes their tools, hooks, commands, and resources and closes project MCP/plugin hosts before the
+request completes; no restart is required.
 
 Every parser bounds file size, item count, names, and diagnostic output. A malformed entry remains
 visible as a diagnostic and does not prevent unrelated entries from loading.

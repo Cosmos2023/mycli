@@ -74,11 +74,17 @@ only ASCII letters, digits, `_`, and `-`; its sparse overrides are read from
 `~/.mycli/<name>.config.toml` after the base user file. A missing selected profile is an empty layer,
 so this is also valid when preparing a profile incrementally.
 
-Interactive startup resolves workspace trust before authentication. When the active provider/model
-has no credential in `MYCLI_API_KEY`, `~/.mycli/auth.json`, or the supported legacy user setting,
-the existing login selector opens before the composer is focused. This readiness check is local and
-does not contact the provider. Esc returns from API-key input to the provider list; canceling the
-startup login exits without writing credentials.
+Interactive startup queues only the setup stages that are still required. A fresh configuration
+walks through Welcome, credential entry, model/reasoning scope, an optional connectivity check,
+workspace trust, permissions, and Ready. The connectivity step defaults to Skip, so offline setup
+remains valid; selecting Test connection sends one bounded provider request. Existing credentials
+and a resolved trust decision open the composer directly, while a workspace that only lacks a trust
+decision shows only that gate. Esc cancels the active stage without writing it, and canceling a
+required startup stage exits instead of exposing an unusable composer.
+
+Credential readiness is derived locally from `MYCLI_API_KEY`, `~/.mycli/auth.json`, and the
+supported legacy user setting. API-key input is masked. Esc returns from API-key input to the
+provider list, and a second Esc exits the required startup flow without storing a credential.
 
 The backend checks credential readiness again immediately before accepting every turn. If a
 credential was removed after startup, mycli restores the submitted text to the composer and opens
@@ -350,6 +356,8 @@ with unknown names and malformed known commands fail locally.
 Provider-free management commands:
 
 ```bash
+npm run mycli -- login status --json
+npm run mycli -- logout --json
 npm run mycli -- config validate --json
 npm run mycli -- config validate --strict --json
 npm run mycli -- config show --json
@@ -367,6 +375,9 @@ npm run mycli -- session list --last
 npm run mycli -- session list --all --json
 npm run mycli -- session export <session-id> --json
 ```
+
+`login --with-api-key` and non-interactive `setup` accept an API key only from non-TTY stdin, such
+as a secret-manager pipe. API keys are never accepted as command-line argument values.
 
 Invalid usage exits `2`, a failed operation exits `1`, and setup cancellation exits `130`.
 Session resume, repair, archive, delete, export, locking, and session-scoped preference behavior are

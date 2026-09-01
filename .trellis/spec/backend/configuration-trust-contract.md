@@ -360,8 +360,12 @@ reload trust and resolve configuration/integrations against that persisted works
 continuing startup. The launch directory must not admit repository configuration or integrations
 for the resumed session.
 
-Repository integrations are startup-scoped. Granting trust during a running session requires a
-restart before repository hooks, MCP, plugins, and skills become visible.
+Repository integrations are runtime-scoped. Changing trust while no turn is active reloads project
+configuration, instructions, hooks, MCP, plugins, and skills against the authoritative session
+workspace. Granting trust persists first and rolls the trust record and runtime content back if
+reload fails. Revocation removes project-owned runtime content before persisting the untrusted
+decision. An active turn rejects trust changes so its frozen execution policy and tool exposure do
+not change underneath it.
 
 ### Provider-free configuration management
 
@@ -430,8 +434,12 @@ persisted trust state into provider and shell persistence so candidate validatio
 complete layer stack as the active session. After a visual write, runtime reloads shell settings
 from that canonical stack, so a profile may remain the effective source even though the base user
 file changed. Provider-free setup uses an untrusted, environment-free validation context rooted at
-the user home. Credentials remain in `auth.json`; setup retains separate atomic config/auth writes
-and its existing partial-success ordering.
+the user home. Credentials remain in `auth.json`; setup composes its two individually atomic writes
+as one compensating transaction. It writes the target credential with an ownership receipt, commits
+the provider config, and restores the exact prior credential bytes if config persistence fails.
+Unrelated auth references remain untouched. A rollback may replace bytes only while the credential
+store still equals the transaction's committed bytes; concurrent change produces the bounded
+`provider_setup_write_failed` result rather than overwriting another writer.
 
 Ordinary `model.select` requests use the closed `session | user` scope contract and default a
 missing scope to `session`. Session scope validates the complete catalog selection and credential,
@@ -906,6 +914,161 @@ configSettingDescriptors();
 // npm run config:generate
 // npm run config:check
 ```
+
+## Scenario: Unified Onboarding And Provider-Free Authentication
+
+### 1. Scope / Trigger
+
+- Trigger: interactive startup readiness, submit-time credential recovery, `setup`, `login`,
+  `login status`, `logout`, provider connectivity validation, or a runtime workspace-trust change.
+- The TUI coordinates existing config, auth, session-preference, trust, permission, and integration
+  owners. It must not introduce a second durable onboarding store.
+
+### 2. Signatures
+
+```ts
+export type AuthStoreState = "missing" | "valid" | "malformed";
+
+export interface ApiKeyStatus {
+	readonly authRef: string;
+	readonly configured: boolean;
+	readonly storeState: AuthStoreState;
+}
+
+export function inspectApiKey(options: ReadApiKeyOptions): Promise<ApiKeyStatus>;
+export function deleteApiKey(options: DeleteApiKeyOptions): Promise<boolean>;
+export function withApiKeyReplacement<Value>(
+	options: WriteApiKeyOptions & { readonly rollbackFailpoint?: (name: string) => void },
+	commit: () => Promise<Value>,
+): Promise<Value>;
+export function writeUserProviderSetup(
+	input: UserProviderSetupInput,
+): Promise<UserProviderSetupResult>;
+
+export const STARTUP_ONBOARDING_STAGES = [
+	"welcome", "credential", "model", "connectivity", "trust", "permission", "ready",
+] as const;
+```
+
+- Management commands:
+  - `mycli login status [--provider <id>] [--auth-ref <ref>] [--json]`
+  - `mycli login --with-api-key [--provider <id>] [--auth-ref <ref>] [--json]`
+  - `mycli logout [--provider <id>] [--auth-ref <ref>] [--json]`
+- Gateway methods: `auth.api_key.save`, `provider.connectivity.validate`,
+  `workspace.trust.set`, `model.select`, and `permissions.update`.
+
+### 3. Contracts
+
+- Startup derives its queue from authoritative readiness. Missing authentication starts the full
+  ordered journey; complete authentication with unresolved trust queues only `trust`; complete
+  authentication with resolved trust mounts the composer directly.
+- Each stage owns only its pending in-memory selection and persists after explicit confirmation.
+  Esc cancels the active stage without writing that stage. Canceling a required startup stage exits;
+  canceling submit-time credential recovery keeps the composer and its draft.
+- Connectivity is deliberate and optional, defaults to Skip, and does not determine whether offline
+  setup is valid. Validation re-resolves the active session/workspace config on every invocation so
+  a just-saved credential is visible without restarting the backend.
+- Connectivity uses a bounded no-tool request: reasoning `none`, `maxOutputTokens=8`, `store=false`,
+  empty tools, and a 15-second abort deadline. Success requires a provider completion event. Failure
+  returns one generic bounded message and never includes an upstream body, request, credential, or
+  local exception.
+- `login status` and `logout` inspect or mutate the local auth store without provider construction or
+  TUI startup. Source precedence is `environment > stored > legacy_config > missing`; logout removes
+  only the selected stored reference and reports when an environment or legacy credential remains
+  effective.
+- `login --with-api-key` treats `--with-api-key` as a boolean switch. The secret is read only from
+  non-TTY stdin, trimmed, bounded to 64 KiB, and never accepted as an argv value. Human/JSON output,
+  diagnostics, snapshots, process listings, and transcripts never contain the secret.
+- Malformed auth storage is provider-free and fail-closed: status reports the malformed state while
+  login/logout preserve the exact bytes instead of replacing unrelated data.
+- `writeUserProviderSetup` is a compensating config/auth transaction. It updates only the target
+  `authRef`, preserves unrelated references, validates and atomically writes the provider config,
+  and restores the exact prior auth bytes on config failure when the transaction still owns the
+  committed auth bytes.
+- Trust must be persisted and project content reloaded before the trusted state is published. Failed
+  trusted reload restores the prior trust record and runtime content. Revocation removes project
+  configuration, instructions, hooks, MCP, plugins, skills, and commands before saving `untrusted`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Auth ready and trust resolved | Queue no onboarding stage; focus the composer |
+| Auth ready and trust unknown | Queue only `trust`; do not replay Welcome, model, or permission |
+| Auth missing | Queue the ordered fresh-start journey; connectivity selection starts on Skip |
+| Esc on a required startup stage | Write nothing for that stage and exit without an unusable composer |
+| Esc during submit-time credential recovery | Preserve the draft and return focus to the composer |
+| Connectivity called while a turn is active | Return `turn_in_progress`; do not start a provider request |
+| Credential saved immediately before connectivity | Re-resolve current config and use the stored target reference |
+| Connectivity times out, rejects, or ends without completion | Return a bounded false result; omit upstream/private detail |
+| Login stdin is a TTY, empty, or larger than 64 KiB | Return one actionable input issue; do not mutate auth storage |
+| Direct API-key argv value is supplied | Exit `2` without echoing the value or starting management/runtime |
+| Auth store is malformed | Report `auth_store_malformed`; preserve exact bytes |
+| Logout target is absent | Return `removed=false`; preserve unrelated entries and effective env/legacy source |
+| Credential write fails before provider config | Preserve config and prior credential bytes |
+| Provider config fails after credential replacement | Restore exact prior credential bytes and preserve config bytes |
+| Credential rollback ownership is lost | Return `provider_setup_write_failed`; do not overwrite concurrent auth bytes |
+| Trust changes during an active turn | Return `turn_in_progress`; retain frozen tools, policy, and project context |
+| Trusted reload fails | Restore prior trust/runtime state and return canonical `internal_error` |
+| Untrusted reload or trust persistence fails | Do not publish a partially changed trusted state |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a fresh home completes Welcome, credential, model scope, skipped connectivity, trust,
+  permission, and Ready using only keyboard input, then focuses an empty composer.
+- Good: save an API key and immediately validate connectivity; the request has no tools, stores no
+  provider response, and uses the newly persisted credential.
+- Good: replace one custom auth reference while another remains byte-for-byte represented in the
+  valid store; config failure restores the complete prior auth file.
+- Base: a configured offline user skips connectivity and still reaches Ready.
+- Base: an environment-only credential reports `source=environment`; logout reports no stored key
+  while keeping authentication ready.
+- Bad: build the onboarding sequence by imperatively opening selectors from unrelated callbacks;
+  completed readiness can replay stages and cancellation can write the wrong owner.
+- Bad: send the API key as `--api-key <secret>`, include it in JSON output, or call the provider for
+  `login status`.
+- Bad: publish `trusted` and parse project configuration afterward. A malformed project can leave
+  the UI claiming trust while runtime content remains stale or partially active.
+
+### 6. Tests Required
+
+- Coordinator unit tests assert exact stage reduction, ordering, out-of-order rejection, default
+  connectivity Skip, retryable validation failure, and width-safe keyboard framing.
+- TUI integration tests drive the complete fresh journey, Esc from active stages, ready focus,
+  credential-save failure, and submit-time draft retention without rendering the secret.
+- Auth-store tests cover missing, valid, malformed, replacement, deletion, unrelated references,
+  file hardening, concurrent writers, and exact-byte preservation on failures.
+- Provider-setup tests inject auth/config/rollback failures and assert config plus auth bytes,
+  unrelated references, ownership conflict behavior, and bounded errors.
+- Management tests cover status/login/logout without provider startup, TTY rejection, empty and
+  oversized stdin, custom refs, environment and legacy sources, JSON redaction, and argv rejection.
+- Backend/gateway tests assert active-session re-resolution for connectivity, bounded request shape,
+  upstream-error sanitization, active-turn trust rejection, trusted hot reload, untrusted removal,
+  failure rollback, project instruction gating, and session-model precedence after trust changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+await writeUserProviderConfig(selection);
+await writeApiKey({ homeDir, authRef, apiKey });
+```
+
+A failed second write leaves new provider configuration pointing at an old or missing credential.
+
+#### Correct
+
+```ts
+await writeUserProviderSetup({
+	...selection,
+	homeDir,
+	authRef,
+	apiKey,
+});
+```
+
+The setup boundary owns the credential receipt, provider-config commit, and conditional rollback.
 
 ## Scenario: Single Visual Setting Persistence And Provenance
 

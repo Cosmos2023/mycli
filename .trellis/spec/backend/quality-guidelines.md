@@ -654,6 +654,82 @@ await assertProcessStops(pid);
 
 ---
 
+### Scenario: Deterministic Agent Worker Integration Memory Tests
+
+#### 1. Scope / Trigger
+- Trigger: app integration tests that repeatedly construct real `AgentWorkerPool` instances in one
+  Node test-file process.
+- The production pool intentionally samples total process RSS. A long TypeScript integration file can
+  retain enough allocator/code memory between otherwise closed backends to cross the production soft
+  limit, even though the test is serial and every individual case passes.
+
+#### 2. Signatures
+- Direct-start test seam:
+  `StartNodeBackendOptions.agentWorkerReadProcessRssBytes?: () => number`.
+- Shared app-test composition:
+  `startTestNodeBackend(options) -> ReturnType<typeof startNodeBackend>`.
+- Production composition omits the seam and therefore keeps
+  `AgentWorkerPoolOptions.readProcessRssBytes = () => process.memoryUsage.rss()`.
+
+#### 3. Contracts
+- Tests whose subject is backend behavior rather than memory pressure must use
+  `test/support/offline-update-fetch.ts` so update I/O and process RSS are deterministic.
+- The shared helper supplies a fixed non-negative RSS value. It must not change production defaults,
+  exported memory limits, CLI environment behavior, or supervisor composition.
+- Agent Worker memory-pressure behavior remains covered in `@mycli/runtime` with injected RSS values
+  around the soft and hard boundaries.
+- Serial test execution limits concurrent process load but is not a substitute for RSS injection:
+  allocator-retained memory can still accumulate within one large test file.
+- Do not solve this failure class by increasing product thresholds, lengthening child wait timeouts,
+  or globally monkey-patching `process.memoryUsage`.
+
+#### 4. Validation & Error Matrix
+- Focused Worker test passes and the full app file passes -> accept the behavioral result.
+- Focused Worker test passes, full app file stalls, and sampled RSS is above the production soft limit
+  -> inspect shared test composition before changing runtime or timeout behavior.
+- A memory-pressure unit test uses the shared low-RSS helper -> invalid coverage; construct the pool
+  directly with explicit boundary RSS values.
+- Production or supervisor startup supplies the test seam -> invalid composition; remove the override
+  so real RSS protection remains active.
+- Test seam returns a negative, fractional, or non-finite value -> pool validation fails closed.
+
+#### 5. Good/Base/Bad Cases
+- Good: app backend integration tests use `startTestNodeBackend`, while runtime pool tests inject
+  soft/hard RSS values directly and assert queue/rejection outcomes.
+- Base: a direct production `startNodeBackend` call omits the test seam and samples real process RSS.
+- Bad: increase a 5-second child wait to 30 seconds when the child lease was deliberately held by
+  soft pressure and never started.
+- Bad: raise the production 1.5/2 GiB limits only to make one accumulated test process pass.
+
+#### 6. Tests Required
+- Run the affected Worker tests by exact name to prove their semantic path independently.
+- Run the complete `node-backend.integration.test.ts` file to exercise accumulated test-process RSS.
+- Run the complete `@mycli/app` suite and repository-wide `npm test` before completion.
+- Keep `AgentWorkerPool` unit coverage for normal, soft, hard, queue-timeout, idle-retirement, and
+  interactive-reuse behavior on the real production decision logic.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+// Hides a test-process artifact by weakening the product for every user.
+export const DEFAULT_AGENT_WORKER_RSS_SOFT_LIMIT_BYTES = 3 * 1024 ** 3;
+```
+
+Correct:
+```typescript
+return startNodeBackend({
+	updateFetch: offlineUpdateFetch,
+	agentWorkerReadProcessRssBytes: () => 0,
+	...options,
+});
+```
+
+Keep the deterministic override at the direct-start app-test boundary; production memory pressure
+must continue to observe the actual process.
+
+---
+
 ### Scenario: Configuration And UX Baseline Drift Gate
 
 #### 1. Scope / Trigger

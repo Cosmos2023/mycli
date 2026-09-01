@@ -131,11 +131,12 @@ TOML, credential content, or backup payloads.
 
 ## Operational Consequences
 
-Repository integrations are discovered once during startup. If trust is granted in an already
-running session, project model/runtime configuration can participate in later resolutions, but
-repository hooks, MCP, plugins, and skills require one restart. The planned onboarding flow will
-move the trust decision before normal runtime composition and remove this visible restart from the
-first-run journey.
+Repository integrations and model/runtime configuration are reloaded transactionally when trust
+changes while the runtime is idle. Granting trust persists the decision before project files are
+opened; if project configuration or integration startup fails, both the stored decision and active
+runtime are restored. Revoking trust first swaps to user-only configuration, tools, hooks,
+commands, resources, and extension hosts, then persists the untrusted decision. Session-scoped
+model/reasoning choices continue to outrank newly admitted project defaults.
 
 All future configuration editors, doctor output, onboarding, and migration commands must derive
 effective values and explanations from the canonical layer stack. Changes to setting descriptors
