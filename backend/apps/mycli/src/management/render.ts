@@ -9,6 +9,7 @@ import type { SandboxStatusManagementResponse } from "./sandbox.ts";
 import type { SessionManagementResponse } from "./session.ts";
 import type { SessionSummary } from "../node-runtime/session-service.ts";
 import type { UpdateManagementResponse } from "./update.ts";
+import type { AuthManagementResponse } from "./auth.ts";
 
 export function renderManagementResponse(
 	command: ManagementCommand,
@@ -26,8 +27,26 @@ export function renderManagementResponse(
 	if (command.kind === "session") {
 		return renderSession(response as SessionManagementResponse);
 	}
+	if (command.kind === "login" || command.kind === "logout") {
+		return renderAuth(response as AuthManagementResponse);
+	}
 	const lines = [response.message ?? `mycli ${command.kind} ${response.ok ? "complete" : "failed"}`];
 	for (const row of responseRows(command, response)) lines.push(row);
+	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
+	return `${lines.join("\n")}\n`;
+}
+
+function renderAuth(response: AuthManagementResponse): string {
+	const lines = [
+		`mycli ${response.action}`,
+		`provider=${response.provider}`,
+		`auth_ref=${response.authRef}`,
+		`configured=${response.configured}`,
+		`source=${response.source}`,
+		`stored=${response.stored}`,
+	];
+	if (response.removed !== undefined) lines.push(`removed=${response.removed}`);
+	if (response.message) lines.push(response.message);
 	for (const issue of response.issues ?? []) lines.push(`issue=${issue}`);
 	return `${lines.join("\n")}\n`;
 }

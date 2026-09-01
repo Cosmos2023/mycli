@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import * as config from "../src/index.ts";
 
-const { readApiKey } = config;
+const { deleteApiKey, inspectApiKey, readApiKey } = config;
 
 type WriteApiKey = (input: {
 	readonly homeDir: string;
@@ -30,6 +30,34 @@ test("malformed auth JSON behaves as an empty store", async (t) => {
 	await writeFile(join(root, ".mycli", "auth.json"), "{not-json", "utf8");
 
 	assert.equal(await readApiKey({ homeDir: root, authRef: "openai" }), undefined);
+	assert.deepEqual(await inspectApiKey({ homeDir: root, authRef: "openai" }), {
+		authRef: "openai",
+		configured: false,
+		storeState: "malformed",
+	});
+});
+
+test("auth status distinguishes missing, valid absent, and configured references", async (t) => {
+	const root = await temporaryDirectory(t);
+	assert.deepEqual(await inspectApiKey({ homeDir: root, authRef: "openai" }), {
+		authRef: "openai",
+		configured: false,
+		storeState: "missing",
+	});
+	await mkdir(join(root, ".mycli"), { recursive: true });
+	await writeFile(join(root, ".mycli", "auth.json"), JSON.stringify({
+		anthropic: { type: "api_key", key: "stored" },
+	}), "utf8");
+	assert.deepEqual(await inspectApiKey({ homeDir: root, authRef: "openai" }), {
+		authRef: "openai",
+		configured: false,
+		storeState: "valid",
+	});
+	assert.deepEqual(await inspectApiKey({ homeDir: root, authRef: "anthropic" }), {
+		authRef: "anthropic",
+		configured: true,
+		storeState: "valid",
+	});
 });
 
 test("auth writer merges credentials, replaces the target, and hardens the file", async (t) => {
@@ -82,6 +110,23 @@ test("auth writer preserves old data and redacts failures before atomic rename",
 	assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".tmp")), []);
 });
 
+test("auth writer preserves malformed store bytes instead of replacing unrelated data", async (t) => {
+	const root = await temporaryDirectory(t);
+	const directory = join(root, ".mycli");
+	const path = join(directory, "auth.json");
+	const malformed = "{private-malformed-sentinel";
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, malformed, "utf8");
+
+	await assert.rejects(
+		() => config.writeApiKey({ homeDir: root, authRef: "openai", apiKey: "new-key" }),
+		(error: unknown) => error instanceof Error
+			&& error.message === "auth_write_failed: unable to update credentials"
+			&& !error.message.includes("private-malformed-sentinel"),
+	);
+	assert.equal(await readFile(path, "utf8"), malformed);
+});
+
 test("auth writer rejects blank credential fields", async (t) => {
 	const root = await temporaryDirectory(t);
 	const writeApiKey = (config as { writeApiKey?: WriteApiKey }).writeApiKey;
@@ -107,6 +152,43 @@ test("concurrent auth writers serialize their merges", async (t) => {
 		anthropic: { type: "api_key", key: "anthropic-key" },
 		openai: { type: "api_key", key: "openai-key" },
 	});
+});
+
+test("auth deletion preserves unrelated references and removes an empty store", async (t) => {
+	const root = await temporaryDirectory(t);
+	const directory = join(root, ".mycli");
+	const path = join(directory, "auth.json");
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, JSON.stringify({
+		openai: { type: "api_key", key: "remove-key" },
+		anthropic: { type: "api_key", key: "keep-key" },
+	}), "utf8");
+
+	assert.equal(await deleteApiKey({ homeDir: root, authRef: "openai" }), true);
+	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+		anthropic: { type: "api_key", key: "keep-key" },
+	});
+	assert.equal(await deleteApiKey({ homeDir: root, authRef: "anthropic" }), true);
+	await assert.rejects(access(path));
+});
+
+test("auth deletion is a no-op for a fresh home and preserves malformed bytes", async (t) => {
+	const root = await temporaryDirectory(t);
+	assert.equal(await deleteApiKey({ homeDir: root, authRef: "openai" }), false);
+	await assert.rejects(access(join(root, ".mycli")));
+
+	const directory = join(root, ".mycli");
+	const path = join(directory, "auth.json");
+	const malformed = "{private-delete-sentinel";
+	await mkdir(directory, { recursive: true });
+	await writeFile(path, malformed, "utf8");
+	await assert.rejects(
+		() => deleteApiKey({ homeDir: root, authRef: "openai" }),
+		(error: unknown) => error instanceof Error
+			&& error.message === "auth_delete_failed: unable to update credentials"
+			&& !error.message.includes("private-delete-sentinel"),
+	);
+	assert.equal(await readFile(path, "utf8"), malformed);
 });
 
 async function temporaryDirectory(t: TestContext): Promise<string> {

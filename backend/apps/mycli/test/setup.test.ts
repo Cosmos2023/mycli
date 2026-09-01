@@ -81,29 +81,43 @@ test("setup builds all provider rows, persists a successful result, and never re
 	assert.equal(response.ripgrepPath, join(homeDir, ".mycli", "vendor", "ripgrep", "test", "rg"));
 });
 
-test("non-TTY setup uses the plain interaction without attempting TUI startup", async (t) => {
+test("non-TTY setup uses explicit options and stdin without attempting TUI startup", async (t) => {
 	const homeDir = await temporaryDirectory(t);
 	let tuiCalls = 0;
-	let plainCalls = 0;
+	let inputCalls = 0;
 	const response = await runSetupCommand({
 		homeDir,
 		isTty: false,
 		prepareRipgrep: preparedRipgrep,
 		runTui: async () => { tuiCalls += 1; return undefined; },
-		runPlain: async () => {
-			plainCalls += 1;
-			return {
-				provider: "anthropic",
-				api_base_url: "https://api.anthropic.com",
-				model: "claude-sonnet-4-6",
-				api_key: "secret-value",
-			};
+		nonInteractive: {
+			provider: "anthropic",
+			readApiKeyInput: async () => {
+				inputCalls += 1;
+				return "secret-value";
+			},
 		},
 	});
 
 	assert.equal(response.ok, true);
 	assert.equal(tuiCalls, 0);
-	assert.equal(plainCalls, 1);
+	assert.equal(inputCalls, 1);
+});
+
+test("non-TTY setup without explicit options fails before reading stdin", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	let plainCalls = 0;
+	const response = await runSetupCommand({
+		homeDir,
+		isTty: false,
+		runPlain: async () => { plainCalls += 1; return undefined; },
+	});
+
+	assert.equal(response.ok, false);
+	assert.equal(response.exitCode, 2);
+	assert.deepEqual(response.issues, ["setup_non_interactive_required"]);
+	assert.equal(plainCalls, 0);
+	await assert.rejects(access(join(homeDir, ".mycli")));
 });
 
 test("setup reuses packaged ripgrep without downloading a user copy", async (t) => {
@@ -118,12 +132,11 @@ test("setup reuses packaged ripgrep without downloading a user copy", async (t) 
 			prepareCalls += 1;
 			return { path: "unexpected", installed: true };
 		},
-		runPlain: async () => ({
+		nonInteractive: {
 			provider: "openai",
-			api_base_url: "https://api.openai.com/v1",
 			model: "gpt-test",
-			api_key: "secret-value",
-		}),
+			readApiKeyInput: async () => "secret-value",
+		},
 	});
 
 	assert.equal(response.ok, true);
@@ -169,10 +182,11 @@ test("plain setup consumes pre-buffered piped answers without echoing the API ke
 
 	const response = await runSetupCommand({
 		homeDir,
-		isTty: false,
+		isTty: true,
 		input,
 		output,
 		prepareRipgrep: preparedRipgrep,
+		runTui: async () => { throw new Error("TUI unavailable"); },
 	});
 
 	assert.equal(response.ok, true);
@@ -187,12 +201,11 @@ test("setup keeps saved provider state when ripgrep preparation fails", async (t
 		homeDir,
 		isTty: false,
 		prepareRipgrep: async () => { throw new Error("download details must stay bounded"); },
-		runPlain: async () => ({
+		nonInteractive: {
 			provider: "openai",
-			api_base_url: "https://api.openai.com/v1",
 			model: "gpt-test",
-			api_key: "secret-value",
-		}),
+			readApiKeyInput: async () => "secret-value",
+		},
 	});
 
 	assert.equal(response.ok, true);
@@ -212,12 +225,11 @@ test("setup reports interrupted ripgrep preparation after preserving provider st
 			error.name = "AbortError";
 			throw error;
 		},
-		runPlain: async () => ({
+		nonInteractive: {
 			provider: "anthropic",
-			api_base_url: "https://api.anthropic.com",
 			model: "claude-test",
-			api_key: "secret-value",
-		}),
+			readApiKeyInput: async () => "secret-value",
+		},
 	});
 
 	assert.equal(response.ok, true);

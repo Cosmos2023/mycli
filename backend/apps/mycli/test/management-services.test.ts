@@ -98,6 +98,12 @@ test("management facade dispatches every extension command to its provider-free 
 		doctor: async () => { calls.push("doctor"); return result("doctor"); },
 		sandbox: async () => { calls.push("sandbox:status"); return result("status"); },
 		setup: async () => { calls.push("setup"); return result("setup"); },
+		auth: {
+			execute: async (command) => {
+				calls.push(`auth:${command.kind}:${command.action}`);
+				return result(command.action);
+			},
+		},
 	});
 	const signal = new AbortController().signal;
 
@@ -145,6 +151,9 @@ test("management facade dispatches every extension command to its provider-free 
 		{ kind: "doctor", json: false, verbose: false },
 		{ kind: "sandbox", action: "status", json: false },
 		{ kind: "setup", json: false },
+		{ kind: "login", action: "status", json: false },
+		{ kind: "login", action: "api_key", provider: "openai", json: false },
+		{ kind: "logout", action: "logout", json: false },
 	] as const) {
 		assert.equal((await services.execute(command, signal)).ok, true);
 	}
@@ -174,6 +183,9 @@ test("management facade dispatches every extension command to its provider-free 
 		"doctor",
 		"sandbox:status",
 		"setup",
+		"auth:login:status",
+		"auth:login:api_key",
+		"auth:logout:logout",
 	]);
 });
 

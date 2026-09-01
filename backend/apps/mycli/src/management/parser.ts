@@ -1,5 +1,6 @@
 import { CONFIG_PATH_SCOPES, type ConfigPathScope } from "@mycli/config/paths";
 import type {
+	AuthManagementCommand,
 	CliMode,
 	ConfigManagementCommand,
 	HooksManagementCommand,
@@ -7,10 +8,13 @@ import type {
 	McpManagementCommand,
 	PluginsManagementCommand,
 	SessionManagementCommand,
+	SetupManagementCommand,
 } from "./types.ts";
 
 export const MANAGEMENT_COMMAND_NAMES = Object.freeze([
 	"setup",
+	"login",
+	"logout",
 	"config",
 	"doctor",
 	"update",
@@ -41,10 +45,10 @@ export function parseCliMode(argv: readonly string[]): CliMode {
 
 function parseManagementCommand(root: string, rawArgs: readonly string[]): ManagementCommand {
 	if (root === "setup") {
-		if (rawArgs.length > 0) throw usage("setup");
-		return Object.freeze({ kind: "setup", json: false });
+		return parseSetup(rawArgs);
 	}
 	const { args, json } = extractFlag(rawArgs, "--json");
+	if (root === "login" || root === "logout") return parseAuth(root, args, json);
 	if (root === "doctor") {
 		const verboseFlag = extractFlag(args, "--verbose");
 		if (verboseFlag.args.length > 0) throw usage("doctor [--json] [--verbose]");
@@ -62,6 +66,92 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	if (root === "plugins") return parsePlugins(args, json);
 	if (root === "mcp") return parseMcp(args, json);
 	return parseSession(args, json);
+}
+
+function parseSetup(rawArgs: readonly string[]): SetupManagementCommand {
+	if (rawArgs.length === 0) return Object.freeze({ kind: "setup", json: false });
+	if (rawArgs.some((value) => value === "--api-key" || value.startsWith("--api-key="))) {
+		throw new Error(
+			"invalid_arguments: --api-key is not supported; use --with-api-key and pipe the key to stdin",
+		);
+	}
+	const jsonFlag = extractFlag(rawArgs, "--json");
+	const nonInteractiveFlag = extractFlag(jsonFlag.args, "--non-interactive");
+	const withApiKeyFlag = extractFlag(nonInteractiveFlag.args, "--with-api-key");
+	if (!nonInteractiveFlag.json || !withApiKeyFlag.json) throw setupUsage();
+	let provider: string | undefined;
+	let model: string | undefined;
+	let apiBaseUrl: string | undefined;
+	for (let index = 0; index < withApiKeyFlag.args.length; index += 1) {
+		const option = withApiKeyFlag.args[index];
+		const value = withApiKeyFlag.args[index + 1];
+		if (!value || value.startsWith("--")) throw setupUsage();
+		if (option === "--provider" && provider === undefined) provider = nonEmpty(value);
+		else if (option === "--model" && model === undefined) model = nonEmpty(value);
+		else if (option === "--base-url" && apiBaseUrl === undefined) apiBaseUrl = nonEmpty(value);
+		else throw setupUsage();
+		index += 1;
+	}
+	if (!provider) throw setupUsage();
+	return Object.freeze({
+		kind: "setup",
+		json: jsonFlag.json,
+		nonInteractive: true,
+		provider,
+		...(model ? { model } : {}),
+		...(apiBaseUrl ? { apiBaseUrl } : {}),
+		withApiKey: true,
+	});
+}
+
+function parseAuth(
+	root: "login" | "logout",
+	args: readonly string[],
+	json: boolean,
+): AuthManagementCommand {
+	if (args.some((value) => value === "--api-key" || value.startsWith("--api-key="))) {
+		throw new Error(
+			"invalid_arguments: --api-key is not supported; pipe the key to mycli login --with-api-key",
+		);
+	}
+	let action: "status" | "api_key" | "logout";
+	let remaining: readonly string[];
+	if (root === "logout") {
+		action = "logout";
+		remaining = args;
+	} else if (args[0] === "status") {
+		action = "status";
+		remaining = args.slice(1);
+	} else {
+		const withApiKey = extractFlag(args, "--with-api-key");
+		if (!withApiKey.json) throw authUsage();
+		action = "api_key";
+		remaining = withApiKey.args;
+	}
+	let provider: string | undefined;
+	let authRef: string | undefined;
+	for (let index = 0; index < remaining.length; index += 1) {
+		const option = remaining[index];
+		const value = remaining[index + 1];
+		if ((option !== "--provider" && option !== "--auth-ref") || !value || value.startsWith("--")) {
+			throw authUsage();
+		}
+		if (option === "--provider") {
+			if (provider !== undefined) throw authUsage();
+			provider = nonEmpty(value);
+		} else {
+			if (authRef !== undefined) throw authUsage();
+			authRef = nonEmpty(value);
+		}
+		index += 1;
+	}
+	return Object.freeze({
+		kind: root,
+		action,
+		...(provider ? { provider } : {}),
+		...(authRef ? { authRef } : {}),
+		json,
+	} as AuthManagementCommand);
 }
 
 function parseUpdate(args: readonly string[], json: boolean): ManagementCommand {
@@ -422,6 +512,18 @@ function configUsage(): Error {
 
 function sessionUsage(): Error {
 	return usage("session list|resume|fork|rename|archive|unarchive|delete|export [options]");
+}
+
+function authUsage(): Error {
+	return usage(
+		"login status|--with-api-key [--provider <id>] [--auth-ref <ref>] [--json] | logout [--provider <id>] [--auth-ref <ref>] [--json]",
+	);
+}
+
+function setupUsage(): Error {
+	return usage(
+		"setup [--non-interactive --provider <id> [--model <model>] [--base-url <url>] --with-api-key [--json]]",
+	);
 }
 
 function usage(command: string): Error {

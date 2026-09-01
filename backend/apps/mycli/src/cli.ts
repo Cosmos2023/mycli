@@ -14,6 +14,7 @@ import {
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
 import type { SetupInputStream, SetupOutputStream } from "./management/setup.ts";
+import { readApiKeyFromStdin, type AuthInputStream } from "./management/auth.ts";
 import type { ManagementCommand, ManagementExecutor } from "./management/types.ts";
 import type {
 	NodeBackend,
@@ -31,7 +32,11 @@ export const ROOT_HELP = `Usage: mycli [options]
        mycli <command> [arguments]
 
 Commands:
-  setup                             Configure provider credentials
+  setup [--non-interactive --provider <id> --with-api-key]
+                                    Configure provider settings and credentials
+  login status [--json] | --with-api-key
+                                    Inspect credentials or store an API key from stdin
+  logout [--json]                   Remove a locally stored API key
   config validate|show|get|set|unset|path|migrate
                                     Validate, inspect, migrate, or locate configuration
   doctor [--json] [--verbose]       Check local runtime health
@@ -128,13 +133,27 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 					workspaceRoot: cwd,
 					homeDir,
 					env,
-					setup: (signal) => runSetupCommand({
+					setup: (command, signal) => runSetupCommand({
 						homeDir,
 						isTty: stdin.isTTY === true && stdout.isTTY === true,
 						input: stdin as SetupInputStream,
 						output: stdout as SetupOutputStream,
 						signal,
+						...(command.nonInteractive && command.provider
+							? {
+								nonInteractive: {
+									provider: command.provider,
+									...(command.model ? { model: command.model } : {}),
+									...(command.apiBaseUrl ? { apiBaseUrl: command.apiBaseUrl } : {}),
+									readApiKeyInput: (readSignal: AbortSignal) => readApiKeyFromStdin(
+										stdin as AuthInputStream,
+										readSignal,
+									),
+								},
+							}
+							: {}),
 					}),
+					readApiKeyInput: (signal) => readApiKeyFromStdin(stdin as AuthInputStream, signal),
 				});
 			})();
 			const response = await management.execute(mode.command, new AbortController().signal);

@@ -1,6 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicPrivateFileUpdate } from "./private-file-writer.ts";
+
+const AUTH_FILE_NAME = "auth.json";
+const AUTH_REF_MAX_CHARS = 512;
 
 export interface ReadApiKeyOptions {
 	readonly homeDir: string;
@@ -12,23 +15,28 @@ export interface WriteApiKeyOptions extends ReadApiKeyOptions {
 	readonly failpoint?: (name: string) => void;
 }
 
+export interface DeleteApiKeyOptions extends ReadApiKeyOptions {
+	readonly failpoint?: (name: string) => void;
+}
+
+interface ApiKeyWriteReceipt {
+	readonly previous: string | undefined;
+	readonly committed: string;
+}
+
+export type AuthStoreState = "missing" | "valid" | "malformed";
+
+export interface ApiKeyStatus {
+	readonly authRef: string;
+	readonly configured: boolean;
+	readonly storeState: AuthStoreState;
+}
+
 export async function readApiKey(options: ReadApiKeyOptions): Promise<string | undefined> {
-	let raw: string;
-	try {
-		raw = await readFile(join(options.homeDir, ".mycli", "auth.json"), "utf8");
-	} catch {
-		return undefined;
-	}
-	let payload: unknown;
-	try {
-		payload = JSON.parse(raw);
-	} catch {
-		return undefined;
-	}
-	if (!isRecord(payload)) {
-		return undefined;
-	}
-	const credential = payload[options.authRef];
+	const authRef = normalizedAuthRef(options.authRef);
+	const store = await readAuthStore(options.homeDir);
+	if (store.state !== "valid") return undefined;
+	const credential = store.payload[authRef];
 	if (!isRecord(credential) || credential.type !== "api_key") {
 		return undefined;
 	}
@@ -36,38 +44,161 @@ export async function readApiKey(options: ReadApiKeyOptions): Promise<string | u
 	return key || undefined;
 }
 
+export async function inspectApiKey(options: ReadApiKeyOptions): Promise<ApiKeyStatus> {
+	const authRef = normalizedAuthRef(options.authRef);
+	const store = await readAuthStore(options.homeDir);
+	if (store.state !== "valid") {
+		return Object.freeze({ authRef, configured: false, storeState: store.state });
+	}
+	const credential = store.payload[authRef];
+	const configured = isRecord(credential)
+		&& credential.type === "api_key"
+		&& typeof credential.key === "string"
+		&& Boolean(credential.key.trim());
+	return Object.freeze({ authRef, configured, storeState: "valid" });
+}
+
 export async function writeApiKey(options: WriteApiKeyOptions): Promise<void> {
-	const authRef = options.authRef.trim();
+	await writeApiKeyWithReceipt(options);
+}
+
+export async function withApiKeyReplacement<Value>(
+	options: WriteApiKeyOptions & { readonly rollbackFailpoint?: (name: string) => void },
+	commit: () => Promise<Value>,
+): Promise<Value> {
+	const receipt = await writeApiKeyWithReceipt(options);
+	try {
+		return await commit();
+	} catch (error) {
+		if (receipt) {
+			await restoreApiKeyWrite(options.homeDir, receipt, options.rollbackFailpoint);
+		}
+		throw error;
+	}
+}
+
+async function writeApiKeyWithReceipt(
+	options: WriteApiKeyOptions,
+): Promise<ApiKeyWriteReceipt | undefined> {
+	const rawAuthRef = options.authRef.trim();
 	const apiKey = options.apiKey.trim();
-	if (!authRef || !apiKey) {
+	if (!rawAuthRef || !apiKey) {
 		throw new Error("auth_write_failed: authRef and apiKey must be non-empty");
 	}
+	const authRef = normalizedAuthRef(rawAuthRef);
+	let receipt: ApiKeyWriteReceipt | undefined;
 	try {
-		await atomicPrivateFileUpdate({
+		const changed = await atomicPrivateFileUpdate({
 			directory: join(options.homeDir, ".mycli"),
-			fileName: "auth.json",
+			fileName: AUTH_FILE_NAME,
 			buildContent: (current) => {
-				const payload = parseAuthPayload(current);
+				const payload = parseWritableAuthPayload(current);
 				payload[authRef] = { type: "api_key", key: apiKey };
 				return `${JSON.stringify(payload, null, 2)}\n`;
 			},
+			prepareCommit: ({ current, content }) => {
+				if (content === null) throw new Error("invalid auth replacement");
+				receipt = { previous: current, committed: content };
+			},
 			...(options.failpoint ? { failpoint: options.failpoint } : {}),
 		});
+		return changed ? receipt : undefined;
 	} catch {
 		throw new Error("auth_write_failed: unable to update credentials");
 	}
 }
 
-function parseAuthPayload(raw: string | undefined): Record<string, unknown> {
+async function restoreApiKeyWrite(
+	homeDir: string,
+	receipt: ApiKeyWriteReceipt,
+	failpoint?: (name: string) => void,
+): Promise<void> {
+	try {
+		await atomicPrivateFileUpdate({
+			directory: join(homeDir, ".mycli"),
+			fileName: AUTH_FILE_NAME,
+			buildContent: (current) => {
+				if (current !== receipt.committed) throw new Error("auth rollback conflict");
+				return receipt.previous ?? null;
+			},
+			...(failpoint ? { failpoint } : {}),
+		});
+	} catch {
+		throw new Error("auth_rollback_failed: credential state changed during rollback");
+	}
+}
+
+export async function deleteApiKey(options: DeleteApiKeyOptions): Promise<boolean> {
+	const authRef = normalizedAuthRef(options.authRef);
+	const directory = join(options.homeDir, ".mycli");
+	try {
+		await access(directory);
+	} catch {
+		return false;
+	}
+	try {
+		return await atomicPrivateFileUpdate({
+			directory,
+			fileName: AUTH_FILE_NAME,
+			buildContent: (current) => {
+				if (current === undefined) return undefined;
+				const payload = parseWritableAuthPayload(current);
+				if (!Object.hasOwn(payload, authRef)) return undefined;
+				delete payload[authRef];
+				return Object.keys(payload).length === 0
+					? null
+					: `${JSON.stringify(payload, null, 2)}\n`;
+			},
+			...(options.failpoint ? { failpoint: options.failpoint } : {}),
+		});
+	} catch {
+		throw new Error("auth_delete_failed: unable to update credentials");
+	}
+}
+
+function parseWritableAuthPayload(raw: string | undefined): Record<string, unknown> {
 	if (!raw) return {};
 	try {
 		const parsed: unknown = JSON.parse(raw);
-		return isRecord(parsed) ? { ...parsed } : {};
+		if (!isRecord(parsed)) throw new Error("invalid auth payload");
+		return Object.fromEntries(Object.entries(parsed));
 	} catch {
-		return {};
+		throw new Error("invalid auth payload");
 	}
+}
+
+async function readAuthStore(homeDir: string): Promise<
+	| { readonly state: "missing" | "malformed" }
+	| { readonly state: "valid"; readonly payload: Readonly<Record<string, unknown>> }
+> {
+	let raw: string;
+	try {
+		raw = await readFile(join(homeDir, ".mycli", AUTH_FILE_NAME), "utf8");
+	} catch (error) {
+		return isNodeError(error, "ENOENT") ? { state: "missing" } : { state: "malformed" };
+	}
+	try {
+		const payload: unknown = JSON.parse(raw);
+		return isRecord(payload)
+			? { state: "valid", payload }
+			: { state: "malformed" };
+	} catch {
+		return { state: "malformed" };
+	}
+}
+
+function normalizedAuthRef(value: string): string {
+	const normalized = value.trim();
+	if (!normalized || normalized.length > AUTH_REF_MAX_CHARS || /[\r\n\0]/u.test(normalized)) {
+		throw new Error("auth_ref_invalid: authRef must be a bounded non-empty identity");
+	}
+	return normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown, code: string): boolean {
+	return error instanceof Error && "code" in error && error.code === code;
 }

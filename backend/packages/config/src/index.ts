@@ -1,5 +1,16 @@
-export { readApiKey, writeApiKey } from "./auth-store.ts";
-export type { ReadApiKeyOptions, WriteApiKeyOptions } from "./auth-store.ts";
+export {
+	deleteApiKey,
+	inspectApiKey,
+	readApiKey,
+	writeApiKey,
+} from "./auth-store.ts";
+export type {
+	ApiKeyStatus,
+	AuthStoreState,
+	DeleteApiKeyOptions,
+	ReadApiKeyOptions,
+	WriteApiKeyOptions,
+} from "./auth-store.ts";
 export {
 	CachedUpdateError,
 	CachedUpdateService,
@@ -132,6 +143,11 @@ export type {
 export { resolveModelRuntimeConfig } from "./model-runtime-config.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";
+export { writeUserProviderSetup } from "./provider-setup-writer.ts";
+export type {
+	UserProviderSetupInput,
+	UserProviderSetupResult,
+} from "./provider-setup-writer.ts";
 export {
 	loadShellSettings,
 	loadShellSettingsState,

@@ -19,10 +19,13 @@ import {
 	workspaceSandboxProfile,
 } from "../node-runtime/integration-sandbox.ts";
 import type {
+	AuthManagementCommand,
 	ManagementCommand,
 	ManagementExecutor,
 	ManagementResponse,
+	SetupManagementCommand,
 } from "./types.ts";
+import { AuthManagementService, type ApiKeyInputReader } from "./auth.ts";
 import type { ConfigPathScope } from "@mycli/config/paths";
 import {
 	ConfigManagementError,
@@ -91,6 +94,10 @@ export interface UpdateManagementContract {
 	dismiss(version: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
+export interface AuthManagementContract {
+	execute(command: AuthManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse>;
+}
+
 export interface ManagementServicesOptions {
 	readonly config: ConfigManagementContract;
 	readonly hooks: HookManagementContract;
@@ -98,7 +105,11 @@ export interface ManagementServicesOptions {
 	readonly mcp: McpManagementContract;
 	readonly doctor: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
 	readonly sandbox: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
-	readonly setup: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly setup: (
+		command: SetupManagementCommand,
+		signal: AbortSignal,
+	) => MaybePromise<ManagementResponse>;
+	readonly auth?: AuthManagementContract;
 	readonly update: UpdateManagementContract;
 	readonly session?: SessionManagementContract;
 }
@@ -107,7 +118,11 @@ export interface DefaultManagementServicesOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: NodeJS.ProcessEnv;
-	readonly setup?: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly setup?: (
+		command: SetupManagementCommand,
+		signal: AbortSignal,
+	) => MaybePromise<ManagementResponse>;
+	readonly readApiKeyInput?: ApiKeyInputReader;
 }
 
 export class ManagementServices implements ManagementExecutor {
@@ -137,7 +152,11 @@ export class ManagementServices implements ManagementExecutor {
 	#dispatch(command: ManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse> {
 		if (command.kind === "doctor") return this.#services.doctor(signal);
 		if (command.kind === "sandbox") return this.#services.sandbox(signal);
-		if (command.kind === "setup") return this.#services.setup(signal);
+		if (command.kind === "setup") return this.#services.setup(command, signal);
+		if (command.kind === "login" || command.kind === "logout") {
+			return this.#services.auth?.execute(command, signal)
+				?? failure(command.action, "authentication management is unavailable", "auth_unavailable");
+		}
 		if (command.kind === "update") {
 			if (command.action === "status") return this.#services.update.status(signal);
 			if (command.action === "check") return this.#services.update.check(signal);
@@ -196,7 +215,7 @@ export class ManagementServices implements ManagementExecutor {
 			return this.#services.session?.execute(command)
 				?? failure(command.action, "session management is unavailable", "session_unavailable");
 		}
-		return this.#services.setup(signal);
+		return failure("management", "management command is unavailable", "management_unavailable");
 	}
 }
 
@@ -257,6 +276,11 @@ export async function createDefaultManagementServices(
 		cache: updateCache,
 		checkOnStartup: updateCheckOnStartup,
 	});
+	const auth = new AuthManagementService({
+		...options,
+		workspaceTrust,
+		...(options.readApiKeyInput ? { readApiKeyInput: options.readApiKeyInput } : {}),
+	});
 	return new ManagementServices({
 		config,
 		hooks,
@@ -274,6 +298,7 @@ export async function createDefaultManagementServices(
 			"setup is not available in this M7 batch",
 			"setup_not_implemented",
 		)),
+		auth,
 		update,
 		session: {
 			execute: async (command) => {

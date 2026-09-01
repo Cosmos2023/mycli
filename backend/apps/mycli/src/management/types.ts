@@ -94,6 +94,22 @@ export type SandboxManagementCommand = {
 	readonly json: boolean;
 };
 
+export type AuthManagementCommand =
+	| {
+		readonly kind: "login";
+		readonly action: "status" | "api_key";
+		readonly provider?: string;
+		readonly authRef?: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "logout";
+		readonly action: "logout";
+		readonly provider?: string;
+		readonly authRef?: string;
+		readonly json: boolean;
+	};
+
 export type UpdateManagementCommand =
 	| { readonly kind: "update"; readonly action: "status" | "check"; readonly json: boolean }
 	| {
@@ -153,9 +169,20 @@ export type SessionManagementCommand =
 		readonly json: boolean;
 	};
 
+export interface SetupManagementCommand {
+	readonly kind: "setup";
+	readonly json: boolean;
+	readonly nonInteractive?: boolean;
+	readonly provider?: string;
+	readonly model?: string;
+	readonly apiBaseUrl?: string;
+	readonly withApiKey?: boolean;
+}
+
 export type ManagementCommand =
 	| { readonly kind: "doctor"; readonly json: boolean; readonly verbose: boolean }
-	| { readonly kind: "setup"; readonly json: boolean }
+	| SetupManagementCommand
+	| AuthManagementCommand
 	| SandboxManagementCommand
 	| UpdateManagementCommand
 	| ConfigManagementCommand

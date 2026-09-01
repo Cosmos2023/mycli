@@ -411,7 +411,7 @@ test("default non-TTY setup persists through Node without backend or secret outp
 	await chmod(ripgrepPath, 0o755);
 	const input = new PassThrough() as PassThrough & { isTTY?: boolean };
 	input.isTTY = false;
-	input.end("5\n\n\nsecret-cli-value\n");
+	input.end("secret-cli-value\n");
 	const output = new PassThrough() as PassThrough & { isTTY?: boolean };
 	output.isTTY = false;
 	let rendered = "";
@@ -420,7 +420,13 @@ test("default non-TTY setup persists through Node without backend or secret outp
 	let starts = 0;
 
 	const code = await runCli({
-		argv: ["setup"],
+		argv: [
+			"setup",
+			"--non-interactive",
+			"--provider",
+			"anthropic",
+			"--with-api-key",
+		],
 		env: {},
 		cwd: root,
 		homeDir,

@@ -15,6 +15,64 @@ test("parser recognizes provider-free management commands before interactive fla
 		kind: "management",
 		command: { kind: "setup", json: false },
 	});
+	assert.deepEqual(parseCliMode([
+		"setup",
+		"--non-interactive",
+		"--provider",
+		"openai",
+		"--model",
+		"gpt-5",
+		"--base-url",
+		"https://api.openai.com/v1",
+		"--with-api-key",
+		"--json",
+	]), {
+		kind: "management",
+		command: {
+			kind: "setup",
+			json: true,
+			nonInteractive: true,
+			provider: "openai",
+			model: "gpt-5",
+			apiBaseUrl: "https://api.openai.com/v1",
+			withApiKey: true,
+		},
+	});
+	assert.deepEqual(parseCliMode(["login", "status", "--provider", "openai", "--json"]), {
+		kind: "management",
+		command: {
+			kind: "login",
+			action: "status",
+			provider: "openai",
+			json: true,
+		},
+	});
+	assert.deepEqual(parseCliMode([
+		"login",
+		"--with-api-key",
+		"--provider",
+		"openai",
+		"--auth-ref",
+		"openai-work",
+	]), {
+		kind: "management",
+		command: {
+			kind: "login",
+			action: "api_key",
+			provider: "openai",
+			authRef: "openai-work",
+			json: false,
+		},
+	});
+	assert.deepEqual(parseCliMode(["logout", "--auth-ref", "openai-work", "--json"]), {
+		kind: "management",
+		command: {
+			kind: "logout",
+			action: "logout",
+			authRef: "openai-work",
+			json: true,
+		},
+	});
 	assert.deepEqual(parseCliMode(["sandbox", "status", "--json"]), {
 		kind: "management",
 		command: { kind: "sandbox", action: "status", json: true },
@@ -250,6 +308,14 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["mcp", "inspect"],
 		["subagents", "unknown"],
 		["setup", "--json"],
+		["setup", "--non-interactive", "--provider", "openai"],
+		["setup", "--with-api-key", "--provider", "openai"],
+		["setup", "--non-interactive", "--with-api-key"],
+		["login"],
+		["login", "status", "extra"],
+		["login", "--with-api-key", "--provider"],
+		["login", "--with-api-key", "--provider", "openai", "--provider", "deepseek"],
+		["logout", "extra"],
 		["sandbox"],
 		["sandbox", "setup"],
 			["sandbox", "status", "extra"],
@@ -264,6 +330,20 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		assert.throws(
 			() => parseCliMode(argv),
 			/(?:invalid_arguments|invalid_json_arguments):/,
+		);
+	}
+});
+
+test("parser rejects API key argv values without repeating the submitted secret", () => {
+	for (const argv of [
+		["login", "--api-key", "private-argv-sentinel"],
+		["login", "--api-key=private-argv-sentinel"],
+	] as const) {
+		assert.throws(
+			() => parseCliMode(argv),
+			(error: unknown) => error instanceof Error
+				&& /--api-key is not supported/u.test(error.message)
+				&& !error.message.includes("private-argv-sentinel"),
 		);
 	}
 });
