@@ -77,6 +77,14 @@ test("parser recognizes provider-free management commands before interactive fla
 		kind: "management",
 		command: { kind: "sandbox", action: "status", json: true },
 	});
+	assert.deepEqual(parseCliMode(["sandbox", "setup"]), {
+		kind: "management",
+		command: { kind: "sandbox", action: "setup", confirmed: false, json: false },
+	});
+	assert.deepEqual(parseCliMode(["sandbox", "reset", "--confirm", "--json"]), {
+		kind: "management",
+		command: { kind: "sandbox", action: "reset", confirmed: true, json: true },
+	});
 	assert.deepEqual(parseCliMode(["config", "validate", "--json"]), {
 		kind: "management",
 		command: { kind: "config", action: "validate", json: true },
@@ -317,10 +325,10 @@ test("parser rejects invalid management usage and JSON arguments", () => {
 		["login", "--with-api-key", "--provider", "openai", "--provider", "deepseek"],
 		["logout", "extra"],
 		["sandbox"],
-		["sandbox", "setup"],
-			["sandbox", "status", "extra"],
-			["update", "dismiss"],
-			["update", "unknown"],
+		["sandbox", "status", "extra"],
+		["sandbox", "setup", "--confirm", "--confirm"],
+		["update", "dismiss"],
+		["update", "unknown"],
 		["session", "resume"],
 		["session", "list", "--mode", "broken"],
 		["session", "list", "--limit", "many"],

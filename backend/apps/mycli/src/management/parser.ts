@@ -7,6 +7,7 @@ import type {
 	ManagementCommand,
 	McpManagementCommand,
 	PluginsManagementCommand,
+	SandboxManagementCommand,
 	SessionManagementCommand,
 	SetupManagementCommand,
 } from "./types.ts";
@@ -55,10 +56,7 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 		return Object.freeze({ kind: "doctor", json, verbose: verboseFlag.json });
 	}
 	if (root === "sandbox") {
-		if (args.length !== 1 || args[0] !== "status") {
-			throw usage("sandbox status [--json]");
-		}
-		return Object.freeze({ kind: "sandbox", action: "status", json });
+		return parseSandbox(args, json);
 	}
 	if (root === "update") return parseUpdate(args, json);
 	if (root === "config") return parseConfig(args, json);
@@ -66,6 +64,25 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	if (root === "plugins") return parsePlugins(args, json);
 	if (root === "mcp") return parseMcp(args, json);
 	return parseSession(args, json);
+}
+
+function parseSandbox(args: readonly string[], json: boolean): SandboxManagementCommand {
+	const action = args[0];
+	if (action === "status" && args.length === 1) {
+		return Object.freeze({ kind: "sandbox", action, json });
+	}
+	if (action === "setup" || action === "reset") {
+		const confirmation = extractFlag(args.slice(1), "--confirm");
+		if (confirmation.args.length === 0) {
+			return Object.freeze({
+				kind: "sandbox",
+				action,
+				confirmed: confirmation.json,
+				json,
+			});
+		}
+	}
+	throw usage("sandbox status|setup|reset [--confirm] [--json]");
 }
 
 function parseSetup(rawArgs: readonly string[]): SetupManagementCommand {

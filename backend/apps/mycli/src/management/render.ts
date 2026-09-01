@@ -5,7 +5,7 @@ import type {
 	ConfigSettingValue,
 } from "./config.ts";
 import { redactDoctorText } from "./doctor/redaction.ts";
-import type { SandboxStatusManagementResponse } from "./sandbox.ts";
+import type { SandboxManagementResponse } from "./sandbox.ts";
 import type { SessionManagementResponse } from "./session.ts";
 import type { SessionSummary } from "../node-runtime/session-service.ts";
 import type { UpdateManagementResponse } from "./update.ts";
@@ -18,7 +18,7 @@ export function renderManagementResponse(
 	if (command.json) return `${JSON.stringify(response)}\n`;
 	if (command.kind === "doctor") return renderDoctor(response, command.verbose);
 	if (command.kind === "sandbox") {
-		return renderSandbox(response as SandboxStatusManagementResponse);
+		return renderSandbox(response as SandboxManagementResponse);
 	}
 	if (command.kind === "config") {
 		return renderConfig(response as ConfigManagementResponse);
@@ -102,14 +102,40 @@ function renderSessionSummary(session: SessionSummary): string {
 	].join(" ");
 }
 
-function renderSandbox(response: SandboxStatusManagementResponse): string {
+function renderSandbox(response: SandboxManagementResponse): string {
 	const lines = [
-		"mycli sandbox status",
+		`mycli sandbox ${response.action}`,
+	];
+	if (response.result && response.preview) {
+		lines.push(
+			`result=${response.result.status}`,
+			`result_code=${response.result.code}`,
+			`confirmation_required=${response.preview.confirmationRequired}`,
+			`privilege=${response.preview.privilege}`,
+			`effects=${response.preview.effects.join(",") || "none"}`,
+		);
+		if (response.preview.confirmationFlag) {
+			lines.push(`confirmation_flag=${response.preview.confirmationFlag}`);
+		}
+	}
+	lines.push(
 		`state=${response.readiness.state}`,
 		`code=${response.readiness.code}`,
 		`platform=${response.readiness.platform}`,
 		`isolation=${response.readiness.isolation}`,
-	];
+	);
+	if (response.readiness.helperVersion !== undefined) {
+		lines.push(`helper_version=${response.readiness.helperVersion}`);
+	}
+	if (response.readiness.helperCompatible !== undefined) {
+		lines.push(`helper_compatible=${response.readiness.helperCompatible}`);
+	}
+	if (response.readiness.setupComplete !== undefined) {
+		lines.push(`setup_complete=${response.readiness.setupComplete}`);
+	}
+	if (response.readiness.sandboxReady !== undefined) {
+		lines.push(`sandbox_ready=${response.readiness.sandboxReady}`);
+	}
 	if (response.remediation) lines.push(`remediation=${response.remediation}`);
 	return `${lines.join("\n")}\n`;
 }

@@ -42,7 +42,8 @@ Commands:
   doctor [--json] [--verbose]       Check local runtime health
   update [status|check|dismiss <version>] [--json]
                                     Inspect or dismiss cached update notices
-  sandbox status [--json]           Inspect platform sandbox readiness
+  sandbox status|setup|reset [--confirm] [--json]
+                                    Inspect or recover platform sandbox readiness
   hooks list|inspect|approve|revoke Manage configured hooks
   plugins list|inspect|run          Manage local plugins
   mcp list|inspect                  Inspect MCP servers
@@ -116,12 +117,13 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 			const homeDir = options.homeDir ?? homedir();
 			const management = options.management ?? await (async () => {
 				if (mode.command.kind === "sandbox") {
-					const { inspectSandboxStatus } = await import("./management/sandbox.ts");
+					const { SandboxManagementService } = await import("./management/sandbox.ts");
+					const sandbox = new SandboxManagementService();
 					const executor: ManagementExecutor = {
 						execute: (
-							_command: ManagementCommand,
+							command: ManagementCommand,
 							signal = new AbortController().signal,
-						) => inspectSandboxStatus({}, signal),
+						) => sandbox.execute(command as Extract<ManagementCommand, { kind: "sandbox" }>, signal),
 					};
 					return executor;
 				}

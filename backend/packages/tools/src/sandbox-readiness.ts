@@ -6,7 +6,7 @@ import { LINUX_BUBBLEWRAP_EXECUTABLES } from "./sandbox/linux-bubblewrap.ts";
 import { MACOS_SEATBELT_EXECUTABLE } from "./sandbox/macos-seatbelt.ts";
 import { WINDOWS_SANDBOX_PROTOCOL_VERSION } from "./sandbox/windows-restricted-token.ts";
 
-const WINDOWS_HANDSHAKE_TIMEOUT_MS = 2_000;
+const WINDOWS_HANDSHAKE_TIMEOUT_MS = 5_000;
 const WINDOWS_HANDSHAKE_MAX_BYTES = 16_384;
 
 export type SandboxReadinessState =
@@ -35,6 +35,10 @@ export interface SandboxReadiness {
 	readonly code: SandboxReadinessCode;
 	readonly platform: NodeJS.Platform;
 	readonly isolation: SandboxReadinessIsolation;
+	readonly helperVersion?: number;
+	readonly helperCompatible?: boolean;
+	readonly setupComplete?: boolean;
+	readonly sandboxReady?: boolean;
 }
 
 export interface WindowsSandboxHandshake {
@@ -81,22 +85,45 @@ export async function inspectSandboxReadiness(
 				helper,
 				signal,
 			);
-		} catch {
+		} catch (error) {
+			if (signal?.aborted || isAbortError(error)) throw error;
 			return readiness(platform, "windows_restricted_token", "unavailable", "handshake_failed");
 		}
-		if (!validWindowsHandshake(handshake)) {
+		if (!validWindowsHandshakeShape(handshake) || handshake.name !== "mycli-windows-sandbox") {
 			return readiness(platform, "windows_restricted_token", "unavailable", "handshake_failed");
+		}
+		const details = {
+			helperVersion: handshake.protocolVersion,
+			helperCompatible: handshake.protocolVersion === WINDOWS_SANDBOX_PROTOCOL_VERSION,
+			setupComplete: handshake.setupComplete,
+			sandboxReady: handshake.sandboxReady,
+		} as const;
+		if (!details.helperCompatible) {
+			return readiness(
+				platform,
+				"windows_restricted_token",
+				"unavailable",
+				"handshake_failed",
+				details,
+			);
 		}
 		if (!handshake.setupComplete) {
-			return readiness(platform, "windows_restricted_token", "setup_required", "setup_incomplete");
+			return readiness(
+				platform,
+				"windows_restricted_token",
+				"setup_required",
+				"setup_incomplete",
+				details,
+			);
 		}
 		return handshake.sandboxReady
-			? readiness(platform, "windows_restricted_token", "ready", "ready")
+			? readiness(platform, "windows_restricted_token", "ready", "ready", details)
 			: readiness(
 				platform,
 				"windows_restricted_token",
 				"unavailable",
 				"enforcement_unavailable",
+				details,
 			);
 	}
 	return readiness(platform, "none", "unavailable", "unsupported_platform");
@@ -144,12 +171,16 @@ function runWindowsSandboxHandshake(
 			try {
 				const value: unknown = JSON.parse(stdout);
 				if (!isRecord(value)) throw new TypeError("invalid sandbox handshake");
-				resolve({
-					name: value.name as string,
-					protocolVersion: value.protocol_version as number,
-					setupComplete: value.setup_complete as boolean,
-					sandboxReady: value.sandbox_ready as boolean,
-				});
+				const handshake = {
+					name: value.name,
+					protocolVersion: value.protocol_version,
+					setupComplete: value.setup_complete,
+					sandboxReady: value.sandbox_ready,
+				};
+				if (!validWindowsHandshakeShape(handshake)) {
+					throw new TypeError("invalid sandbox handshake");
+				}
+				resolve(handshake);
 			} catch (parseError) {
 				reject(parseError);
 			}
@@ -157,11 +188,15 @@ function runWindowsSandboxHandshake(
 	});
 }
 
-function validWindowsHandshake(value: WindowsSandboxHandshake): boolean {
-	return value.name === "mycli-windows-sandbox"
-		&& value.protocolVersion === WINDOWS_SANDBOX_PROTOCOL_VERSION
+function validWindowsHandshakeShape(value: unknown): value is WindowsSandboxHandshake {
+	if (!isRecord(value)) return false;
+	return typeof value.name === "string"
+		&& typeof value.protocolVersion === "number"
+		&& Number.isSafeInteger(value.protocolVersion)
+		&& value.protocolVersion >= 0
 		&& typeof value.setupComplete === "boolean"
-		&& typeof value.sandboxReady === "boolean";
+		&& typeof value.sandboxReady === "boolean"
+		&& (value.setupComplete || !value.sandboxReady);
 }
 
 function readiness(
@@ -169,10 +204,18 @@ function readiness(
 	isolation: SandboxReadinessIsolation,
 	state: SandboxReadinessState,
 	code: SandboxReadinessCode,
+	details: Readonly<Partial<Pick<
+		SandboxReadiness,
+		"helperVersion" | "helperCompatible" | "setupComplete" | "sandboxReady"
+	>>> = {},
 ): SandboxReadiness {
-	return Object.freeze({ state, code, platform, isolation });
+	return Object.freeze({ state, code, platform, isolation, ...details });
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
 }

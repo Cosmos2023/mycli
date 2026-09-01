@@ -88,11 +88,18 @@ export type ConfigManagementCommand =
 		readonly json: boolean;
 	};
 
-export type SandboxManagementCommand = {
-	readonly kind: "sandbox";
-	readonly action: "status";
-	readonly json: boolean;
-};
+export type SandboxManagementCommand =
+	| {
+		readonly kind: "sandbox";
+		readonly action: "status";
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "sandbox";
+		readonly action: "setup" | "reset";
+		readonly confirmed: boolean;
+		readonly json: boolean;
+	};
 
 export type AuthManagementCommand =
 	| {

@@ -96,7 +96,12 @@ test("management facade dispatches every extension command to its provider-free 
 			dismiss: async (version) => { calls.push(`update:dismiss:${version}`); return result("dismiss"); },
 		},
 		doctor: async () => { calls.push("doctor"); return result("doctor"); },
-		sandbox: async () => { calls.push("sandbox:status"); return result("status"); },
+		sandbox: {
+			execute: async (command) => {
+				calls.push(`sandbox:${command.action}`);
+				return result(command.action);
+			},
+		},
 		setup: async () => { calls.push("setup"); return result("setup"); },
 		auth: {
 			execute: async (command) => {
@@ -150,6 +155,8 @@ test("management facade dispatches every extension command to its provider-free 
 		{ kind: "update", action: "dismiss", version: "1.2.3", json: false },
 		{ kind: "doctor", json: false, verbose: false },
 		{ kind: "sandbox", action: "status", json: false },
+		{ kind: "sandbox", action: "setup", confirmed: false, json: false },
+		{ kind: "sandbox", action: "reset", confirmed: true, json: false },
 		{ kind: "setup", json: false },
 		{ kind: "login", action: "status", json: false },
 		{ kind: "login", action: "api_key", provider: "openai", json: false },
@@ -182,6 +189,8 @@ test("management facade dispatches every extension command to its provider-free 
 		"update:dismiss:1.2.3",
 		"doctor",
 		"sandbox:status",
+		"sandbox:setup",
+		"sandbox:reset",
 		"setup",
 		"auth:login:status",
 		"auth:login:api_key",
@@ -202,7 +211,7 @@ test("management facade converts service exceptions to one redacted failure", as
 		mcp: unusedService(),
 		update: unusedService(),
 		doctor: async () => never(),
-		sandbox: async () => never(),
+		sandbox: { execute: async () => never() },
 		setup: async () => never(),
 	});
 

@@ -22,7 +22,7 @@ export async function collectProcessChecks(
 	const supported = SUPPORTED_PLATFORMS.has(platform);
 	const readiness = await inspectSandboxReadiness(options, signal);
 	const sandboxReady = readiness.state === "ready" || readiness.state === "not_required";
-	const remediation = sandboxReadinessRemediation(readiness.code);
+	const remediation = sandboxReadinessRemediation(readiness);
 	const sandbox = check(
 		"process_sandbox",
 		sandboxReady ? "ok" : "failed",

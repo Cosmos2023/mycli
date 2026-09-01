@@ -253,6 +253,12 @@ test("Windows sandbox readiness validates bounded handshake states", async () =>
 		setupComplete: true,
 		sandboxReady: true,
 	})).code, "handshake_failed");
+	assert.equal((await inspect({
+		name: "mycli-windows-sandbox",
+		protocolVersion: 1,
+		setupComplete: false,
+		sandboxReady: true,
+	})).code, "handshake_failed");
 });
 
 test("Windows sandbox readiness fails closed for a missing or failed helper", async () => {

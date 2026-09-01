@@ -23,6 +23,7 @@ import type {
 	ManagementCommand,
 	ManagementExecutor,
 	ManagementResponse,
+	SandboxManagementCommand,
 	SetupManagementCommand,
 } from "./types.ts";
 import { AuthManagementService, type ApiKeyInputReader } from "./auth.ts";
@@ -36,7 +37,7 @@ import {
 	doctorResponseFromReport,
 	runDoctor,
 } from "./doctor/runner.ts";
-import { inspectSandboxStatus } from "./sandbox.ts";
+import { SandboxManagementService } from "./sandbox.ts";
 import { SessionManagementService } from "./session.ts";
 import { SessionService } from "../node-runtime/session-service.ts";
 import type { SessionManagementCommand } from "./types.ts";
@@ -98,13 +99,17 @@ export interface AuthManagementContract {
 	execute(command: AuthManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
+export interface SandboxManagementContract {
+	execute(command: SandboxManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse>;
+}
+
 export interface ManagementServicesOptions {
 	readonly config: ConfigManagementContract;
 	readonly hooks: HookManagementContract;
 	readonly plugins: PluginManagementContract;
 	readonly mcp: McpManagementContract;
 	readonly doctor: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
-	readonly sandbox: (signal: AbortSignal) => MaybePromise<ManagementResponse>;
+	readonly sandbox: SandboxManagementContract;
 	readonly setup: (
 		command: SetupManagementCommand,
 		signal: AbortSignal,
@@ -151,7 +156,7 @@ export class ManagementServices implements ManagementExecutor {
 
 	#dispatch(command: ManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse> {
 		if (command.kind === "doctor") return this.#services.doctor(signal);
-		if (command.kind === "sandbox") return this.#services.sandbox(signal);
+		if (command.kind === "sandbox") return this.#services.sandbox.execute(command, signal);
 		if (command.kind === "setup") return this.#services.setup(command, signal);
 		if (command.kind === "login" || command.kind === "logout") {
 			return this.#services.auth?.execute(command, signal)
@@ -281,6 +286,7 @@ export async function createDefaultManagementServices(
 		workspaceTrust,
 		...(options.readApiKeyInput ? { readApiKeyInput: options.readApiKeyInput } : {}),
 	});
+	const sandbox = new SandboxManagementService();
 	return new ManagementServices({
 		config,
 		hooks,
@@ -292,7 +298,7 @@ export async function createDefaultManagementServices(
 			includeRepository,
 			updateStatus: () => update.readStatus(signal),
 		}, signal)),
-		sandbox: (signal) => inspectSandboxStatus({}, signal),
+		sandbox,
 		setup: options.setup ?? (async () => failure(
 			"setup",
 			"setup is not available in this M7 batch",
