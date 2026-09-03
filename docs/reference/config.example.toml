@@ -128,12 +128,12 @@
 # Allowed: "responses", "chat_completions", "anthropic_messages"
 # protocol = "responses"
 
-# Selects the configured provider profile.
-# Allowed: "openai", "codex", "deepseek", "qwen", "anthropic", "compatible"
+# Selects a stable profile or an explicitly configured provider route.
+# Allowed: "openai", "codex", "deepseek", "qwen", "anthropic", "openrouter", "groq", "together", "moonshotai", "nvidia", "cerebras", "compatible"
 # provider = "openai"
 
 # Overrides whether the selected compatible endpoint accepts image inputs.
-# supports_images = true
+# supports_images = false
 
 [reasoning]
 # Selects the reasoning effort requested from models that support effort controls.
@@ -144,14 +144,12 @@
 # enabled = true
 
 [request]
-# Enables provider cache-control metadata for protocols that support it.
-# cache_control_enabled = false
+# Selects the provider-neutral prompt-cache retention preference passed to pi-ai.
+# Allowed: "none", "short", "long"
+# cache_retention = "short"
 
 # Caps the prompt tokens assembled for each model request.
 # max_prompt_tokens = 12000
-
-# Enables stable prompt-cache keys for providers that support them.
-# prompt_cache_key_enabled = true
 
 # Limits retries for failures that occur before model output begins.
 # request_max_retries = 4

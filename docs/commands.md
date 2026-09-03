@@ -256,8 +256,8 @@ model-input reference tables. It reports deleted raw/stored bytes and reusable f
 idempotent, and never runs `VACUUM`. Run doctor plus representative resume, pagination, search, and
 provider-ledger checks before the separate `--apply-vacuum` action is used for physical shrinkage.
 
-`/model` uses the user-owned `~/.mycli/models.json` catalog. The Node runtime bootstraps it when it
-is missing, validates provider/protocol, endpoint,
+`/model` combines the pinned pi-ai catalog with the user-owned `~/.mycli/models.json` declarations.
+The Node runtime does not create that file during discovery when it is missing, and validates provider/protocol, endpoint,
 `auth_ref`, and reasoning-effort compatibility on selection. The TUI then asks whether to use the
 selection for the current session or make it the user default. `Use for this session` is the safe
 default and survives resume without changing `~/.mycli/config.toml` or new sessions. `Make user

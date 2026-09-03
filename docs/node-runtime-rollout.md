@@ -48,9 +48,8 @@ Run from a clean Node install:
 npm ci
 npm run contracts:check
 npm run lint
-npm test
+npm run test:ci
 npm run typecheck
-npm run test:m8
 npm run smoke:m8
 npm run smoke:package
 ```

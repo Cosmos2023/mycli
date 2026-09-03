@@ -42,8 +42,12 @@ for offline support with `mycli doctor --support-bundle`; mycli does not upload 
 - Start with `mycli sandbox status`; add `--json` for automation.
 - macOS restricted profiles require executable `/usr/bin/sandbox-exec`. Restore it through the
   operating system; mycli does not install or replace system components.
-- Linux restricted profiles require `bwrap`. Install bubblewrap through the distribution package
-  manager, then rerun status; mycli never invokes the package manager.
+- Linux restricted profiles require both an executable `bwrap` and usable user, PID, and network
+  namespaces. Mycli runs a bounded read-only capability probe, so a container or CI host can report
+  `enforcement_unavailable` even when the binary exists (for example when namespace or loopback
+  setup is denied). Enable the required host/container namespace capabilities or use a compatible
+  runner; reinstalling bubblewrap alone will not fix that case. Mycli never invokes the package
+  manager.
 - Windows restricted profiles require the packaged `mycli-windows-sandbox.exe`.
 - On first use, approve the Windows UAC prompt so mycli can initialize the dedicated sandbox identity
   and offline firewall policy. Canceling or failing setup keeps the command blocked; retrying the
@@ -80,6 +84,18 @@ for offline support with `mycli doctor --support-bundle`; mycli does not upload 
 The former Python console script and wheel are no longer shipped. Install dependencies with
 `npm ci`, build with `npm run build`, and launch with `npm run mycli`; there is no compatibility
 fallback or manual session-data migration in the retirement step.
+
+## Upgrade Or Compatibility Gate Failure
+
+- Read [compatibility.md](compatibility.md) before changing package or session versions.
+- Run `npm run release:compatibility` for local policy and documentation drift.
+- Run `npm run smoke:package` to isolate the candidate artifact from npm registry availability.
+- The registry-backed `npm run smoke:release-compatibility` returns exit `77` only for a bounded
+  external registry/network blocker. Any other nonzero exit is a product or fixture failure and
+  must not be waived.
+- Configuration migration apply requires the exact version from a fresh preview. Use the returned
+  backup id for rollback; do not edit migration backup files manually.
+- Follow [upgrading.md](upgrading.md) for package-name replacement and session-safe downgrade.
 
 ## Extension Failure
 

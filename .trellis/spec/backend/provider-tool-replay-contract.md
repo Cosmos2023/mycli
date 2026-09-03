@@ -422,31 +422,27 @@ for (const phase of manifestGatedProviderOrderPhases(calls)) {
 - Provider-grouped `models.json` may set `capabilities.web_search` at the provider level and override
   it per model. Enabling hosted search with a non-Responses protocol is a configuration error.
 - A live Responses request adds `{ type: "web_search", external_web_access: true }` to the same
-  stable tool array as local function tools. Disabled requests do not expose the hosted tool.
-- `response.output_item.added` starts a readable search lifecycle. The matching completed
-  `web_search_call` supplies its bounded id and action. Redundant web-search status frames and
-  output-text annotation frames must not terminate the stream or create duplicate rows.
-- The running search cell owns the user-visible `Searching the web` label. The generic turn activity
-  indicator remains generic and must not repeat that label as a header or nested detail. A later
-  search call uses its own call id and may appear after an earlier completed search.
-- Completed web-search calls are retained in the same bounded Responses native replay state as
-  encrypted reasoning and replayed before the matching assistant output. Legacy
-  `responsesReasoningItems` remains readable.
-- Persist only bounded call identity and the `search`, `open_page`, or `find_in_page` action needed
-  for replay and readable presentation. Do not persist source bodies, raw search results, or page
-  content in transcript display metadata.
-- Stream retry removes every transient search row from the incomplete attempt. Terminal failure or
-  interruption removes unfinished rows, retains completed rows, and marks those rows durable.
-- A completed search is persisted as `display_activity:web_search`; the readable projector must
-  preserve its call id, status, bounded action metadata, and text so live and resumed TUI rows match.
+- The provider registry always selects `PiAiProvider`; no direct OpenAI hosted-search transport or
+  SDK dependency exists in mycli.
+- The pinned pi-ai version consumes keepalive and `response.web_search_call.*` frames without publishing them in
+  its public assistant event union. These frames must not terminate the request. The final assistant
+  text, usage, response identity, and completion continue through the canonical provider boundary.
+- New pi-ai turns do not fabricate `web_search_started`, `web_search_completed`, or
+  `display_activity:web_search` rows. Pi-ai replay drops native `web_search_call` items and retains
+  only supported assistant/reasoning/tool-call state, so continuation falls back to canonical
+  assistant content for search results.
+- Historical canonical search activity produced by the retired compatibility transport remains
+  readable. It does not cause a new direct transport to be selected during continuation.
+- Provider-hosted search remains outside local approval, sandbox, `ToolRouter`, and local tool-call
+  replay because it is an upstream Responses tool rather than a mycli function tool.
 
 ### 3. Tests Required
 
 - Config tests cover OpenAI live defaults, non-OpenAI disabled defaults, provider inheritance,
   model override, invalid capability types, and rejection on non-Responses protocols.
-- Responses tests cover enabled/disabled request serialization, legal auxiliary stream frames,
-  bounded action mapping, omission of source bodies, native replay, and call-id limits.
-- Worker/runtime tests cover request and event round trips, returned search calls, readable
-  persistence, and provider-state continuation replay.
-- Storage, gateway, and TUI tests cover live start/completion, retry reset, terminal cleanup,
-  non-duplicated turn activity, width-safe rendering, and equivalent resumed projection.
+- Provider tests cover enabled/disabled request serialization, rejection outside Responses, one
+  pi-ai request, heartbeat and native search lifecycle tolerance, final text, and completion.
+- Replay tests prove native `web_search_call` items are discarded while supported Responses
+  reasoning and canonical assistant content remain usable.
+- Storage, gateway, and TUI retain backward-compatible projection tests for historical persisted
+  search activity; new pi-ai requests are not required to emit progress rows.

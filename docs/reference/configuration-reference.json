@@ -294,7 +294,7 @@
     },
     {
       "key": "model.provider",
-      "description": "Selects the configured provider profile.",
+      "description": "Selects a stable profile or an explicitly configured provider route.",
       "valueKind": "string",
       "writable": true,
       "canonicalPath": "model.provider",
@@ -308,6 +308,12 @@
         "deepseek",
         "qwen",
         "anthropic",
+        "openrouter",
+        "groq",
+        "together",
+        "moonshotai",
+        "nvidia",
+        "cerebras",
         "compatible"
       ],
       "restartRequired": false
@@ -321,7 +327,7 @@
       "legacyPaths": [
         "supports_images"
       ],
-      "defaultValue": true,
+      "defaultValue": false,
       "restartRequired": false
     },
     {
@@ -371,15 +377,20 @@
       "restartRequired": false
     },
     {
-      "key": "request.cache_control_enabled",
-      "description": "Enables provider cache-control metadata for protocols that support it.",
-      "valueKind": "boolean",
+      "key": "request.cache_retention",
+      "description": "Selects the provider-neutral prompt-cache retention preference passed to pi-ai.",
+      "valueKind": "string",
       "writable": true,
-      "canonicalPath": "request.cache_control_enabled",
+      "canonicalPath": "request.cache_retention",
       "legacyPaths": [
-        "cache_control_enabled"
+        "cache_retention"
       ],
-      "defaultValue": false,
+      "defaultValue": "short",
+      "allowedValues": [
+        "none",
+        "short",
+        "long"
+      ],
       "restartRequired": false
     },
     {
@@ -392,18 +403,6 @@
         "max_prompt_tokens"
       ],
       "defaultValue": 12000,
-      "restartRequired": false
-    },
-    {
-      "key": "request.prompt_cache_key_enabled",
-      "description": "Enables stable prompt-cache keys for providers that support them.",
-      "valueKind": "boolean",
-      "writable": true,
-      "canonicalPath": "request.prompt_cache_key_enabled",
-      "legacyPaths": [
-        "prompt_cache_key_enabled"
-      ],
-      "defaultValue": true,
       "restartRequired": false
     },
     {

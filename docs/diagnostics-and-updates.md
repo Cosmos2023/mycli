@@ -54,7 +54,7 @@ missing or older-than-20-hours cache starts a five-second npm registry refresh i
 The refresh never delays runtime readiness or first TUI paint. A version fetched in the background
 is first eligible for a notice on the next startup.
 
-Only a strict stable semantic version for `@mycli/app` can be advertised. Offline requests,
+Only a strict stable semantic version for `@cosmos2023/mycli` can be advertised. Offline requests,
 timeouts, malformed responses, cache corruption, and failed cache writes are non-fatal and preserve
 the previous valid cache. The cache is private, versioned, bounded, locked, and replaced atomically.
 

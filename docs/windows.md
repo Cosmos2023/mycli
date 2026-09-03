@@ -86,4 +86,11 @@ npm run smoke:package
 ```
 
 CI covers Node 22.19 and Node 24 on Windows and separately compiles/tests the sandbox protocol,
-restricted-token primitives, filesystem policy, and network policy.
+restricted-token primitives, filesystem policy, and network policy. Release compatibility uses the
+stable `windows-2022` image, installs the packed candidate, and uploads a sanitized structural
+evidence file. It never records local paths, commands, credentials, provider content, or native
+helper stderr.
+
+For a package upgrade or downgrade, stop all mycli windows first, back up `%USERPROFILE%\.mycli`,
+and follow [upgrading.md](upgrading.md). Sandbox machine state is not part of the npm or
+configuration rollback; run `mycli sandbox status` after changing versions.

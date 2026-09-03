@@ -38,6 +38,101 @@ Questions to answer:
 
 ## Testing Requirements
 
+### Scenario: Repository Test Suite Taxonomy
+
+#### 1. Scope / Trigger
+
+- Trigger: adding, moving, renaming, or changing a Node test, root test command, smoke script, or
+  CI/release test gate.
+- `scripts/test-suite-catalog.mjs` is the canonical repository test classifier;
+  `scripts/run-test-suite.mjs` is the canonical root Node test orchestrator.
+
+#### 2. Signatures
+
+- Deterministic repository gate: `npm test` or `npm run test:ci`.
+- Focused suites: `test:unit`, `test:contract`, `test:integration`, `test:platform`, and
+  `test:release`.
+- Provider-free executable gate: `npm run test:smoke`.
+- Credential-gated provider probe: `npm run test:smoke:live`.
+- Catalog inspection: `npm run test:list [-- --json]`.
+
+#### 3. Contracts
+
+- Every discovered `*.test.*` file belongs to exactly one suite. CI expands to unit, contract,
+  integration, platform, and release in stable order and selects every catalog row once.
+- Ordinary workspace tests default to unit. The contracts workspace and repository test directory
+  default to contract. Whole-file `.integration.test.*`, `.platform.test.*`, and
+  `.contract.test.*` suffixes select the matching boundary.
+- A small explicit override map may classify legacy mixed filenames. Catalog discovery fails when
+  an override points to a missing file.
+- Unit tests are deterministic and in-process. Integration tests may own loopback servers, Workers,
+  subprocesses, SQLite concurrency, or extension hosts. Platform tests exercise real PTY, shell,
+  process transport, sandbox, or native behavior. Each test owns cleanup for every resource it
+  starts.
+- Smoke journeys are executable scripts, not ordinary test modules. Real provider traffic is never
+  part of `npm test` and remains explicit, credential-gated, bounded, and redacted.
+- Root tests resolve current TypeScript through `mycli-source`. Tests that intentionally inspect
+  compiled or packed output run after the root build boundary.
+- Package-local test scripts remain valid focused entry points. CI uses only the root catalog and
+  must not rerun milestone tests already selected by it.
+- Historical `test:m2` through `test:m8` scripts may remain as investigation shortcuts, but they are
+  not separate quality gates.
+
+#### 4. Validation & Error Matrix
+
+- Unknown suite selector -> `unknown_test_suite`; execute nothing.
+- Missing suite argument -> `test_suite_value_required`; execute nothing.
+- Duplicate discovered path -> `duplicate_test_catalog_path`; execute nothing.
+- Override points to a removed or renamed test -> `stale_test_suite_override`; execute nothing.
+- Test path escapes the repository -> `test_path_outside_repository`; execute nothing.
+- A smoke-named `node:test` file -> `smoke_test_must_be_an_explicit_script`; move the journey to an
+  explicit smoke script or classify the deterministic assertions correctly.
+- A target process fails or is interrupted -> stop later suites and preserve the failing exit code.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: add `queue-coordinator.test.ts`; it is discovered as a runtime unit test without editing a
+  second file list.
+- Good: add `mcp-process.integration.test.ts`; the suffix places it in integration automatically.
+- Good: keep native PTY coverage in platform and run it on every supported CI host.
+- Base: use an override while a large legacy file contains more than one execution boundary, then
+  remove the override when the file is split or renamed.
+- Bad: add a real-provider request to a package `test` command or silently skip it when credentials
+  are absent.
+- Bad: run `npm test` and then `test:m8` in the same CI job even though the catalog already includes
+  the M8 audit.
+- Bad: make the complete app suite serial to hide leaked ports, global environment changes, or
+  incomplete Worker/process cleanup.
+
+#### 6. Tests Required
+
+- Catalog tests prove unique paths, non-empty suites, complete CI selection, representative
+  classification, stale-override rejection, selector expansion, and argument forwarding.
+- Repository script tests keep root command names and suite mappings stable.
+- Workflow drift tests require `test:ci` and reject a second `test:m8` step.
+- Run each changed focused suite, then `npm test`, lint, type-check, contract drift, config drift, and
+  `git diff --check` before completion.
+- Changes to native/platform behavior also run provider-free packed smoke on every supported host.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```json
+{
+  "test": "npm run test --workspaces && npm run test:m8"
+}
+```
+
+Correct:
+
+```json
+{
+  "test": "node scripts/run-test-suite.mjs --suite ci",
+  "test:platform": "node scripts/run-test-suite.mjs --suite platform"
+}
+```
+
 ### Scenario: Doctor Diagnostics And Explicit Recovery
 
 #### 1. Scope / Trigger

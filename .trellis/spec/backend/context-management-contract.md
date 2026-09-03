@@ -102,17 +102,9 @@
   - `estimated_cacheable_prefix_chars`
   - `provider_projection`
   - `compact_policy`
-- Provider projection diagnostics must distinguish the protocol lane without
-  mutating canonical timeline content:
-  - Responses: `lane=responses`, optional future `prompt_cache_key` as
-    wire-only hint.
-  - Chat Completions: `lane=chat_completions`, stable transcript prefix.
-    DeepSeek keeps stable instructions in the initial `system` message and projects later
-    developer-authority timeline updates as bounded user-context messages at their chronological
-    suffix. Runtime policy remains authoritative; adding a dynamic update must not add another
-    DeepSeek `system` message or rewrite the prior wire prefix.
-  - Anthropic Messages: `lane=anthropic_messages`, optional future
-    `cache_control` as wire-only hint.
+- Provider projection diagnostics may distinguish the Responses, Chat Completions, and Anthropic
+  protocol lanes without mutating canonical timeline content. Role selection and cache wire fields
+  are pi-ai model/compat behavior and must not be predicted by context diagnostics.
 - Compact policy diagnostics must state that all providers use the canonical
   compact engine by default. Cheap pruning may only target dynamic replay and
   must not alter the stable prefix hash.
@@ -187,9 +179,8 @@
 - Runtime reminders, hook context, and plugin context should be placed before
   the current user input so the newest user request remains the final
   model-visible instruction.
-- Anthropic `cache_control` and OpenAI `prompt_cache_key` must not be persisted
-  into canonical messages or request fragments; they are provider wire/request
-  hints only.
+- Provider cache keys, cache-control blocks, retention wire fields, and affinity headers must not be
+  persisted into canonical messages or request fragments; pi-ai owns them at serialization time.
 ### 5. Good/Base/Bad Cases
 
 - Good: `.mycli.md` at workspace root is fenced as `workspace-context` with
@@ -430,9 +421,9 @@ const section = {
 - Compact/rehydration implementation is a protected boundary for Codex
   alignment runtime-kernel phases. Runtime continuity work may add read-only
   regression tests, but must not rewrite compact rehydration behavior.
-- Compaction rehydration remains dynamic context in request-shape fragments.
-  Changing only compaction rehydration text must not change the stable prefix
-  hash or `prompt_cache_key`.
+- Compaction rehydration remains dynamic context in request-shape fragments. Changing only
+  compaction rehydration text must not change the stable prefix hash or the configured
+  `cacheRetention` intent.
 - Provider-private reasoning state must remain filtered before compacted or
   rehydrated context becomes model-visible.
 
@@ -488,8 +479,8 @@ const section = {
   raw prompt, and secret-like values.
 - Unit test fork child updates do not pollute parent transcript/history.
 - Unit test `session_continuity` doctor summary redacts raw payload fields.
-- Cache stability regression proving compaction rehydration stays dynamic and
-  does not affect stable prefix hash or `prompt_cache_key`.
+- Cache stability regression proving compaction rehydration stays dynamic and does not affect the
+  stable prefix hash or configured cache-retention intent.
 - Compact boundary diff audit before completion:
   `git diff -- backend/packages/runtime/src/compaction-coordinator.ts backend/packages/runtime/src/model-input-pipeline.ts backend/packages/runtime/src/memory-context-service.ts`
   must be empty for runtime-continuity-only work.
@@ -670,8 +661,8 @@ const baselineMetadata = Object.fromEntries(Object.entries(fragment.metadata).fi
   bootstrapPrefixSha256, timelineSha256, commonPrefixItemCount)`
 - Storage reader:
   `ModelInputLedgerStore.loadProviderInputTimelineEvents(sessionId)`
-- Chat provider projection:
-  `ChatProvider.stream(request: ProviderRequest, options: ProviderStreamOptions) -> AsyncIterable<ProviderEvent>`
+- Provider projection:
+  `ModelProvider.stream(request: ProviderRequest, options: ProviderStreamOptions) -> AsyncIterable<ProviderEvent>`
 
 ### 3. Contracts
 
@@ -690,15 +681,12 @@ const baselineMetadata = Object.fromEntries(Object.entries(fragment.metadata).fi
 - Request configuration and request signature exclude hashes that change only because timeline items
   were appended. Timeline growth changes `timelineSha256`, while adjacent-request diagnostics record
   the exact `commonPrefixItemCount`.
-- Responses and native Chat keep dynamic developer context at its timeline position. DeepSeek maps
-  such an item to fenced `user` context at that same position; only bootstrap developer
-  instructions join the leading system prefix. Runtime policy remains authoritative. Anthropic has
-  only top-level system authority, so it promotes developer context to `system`; that
-  authority-preserving change may reset the system prefix, while ordinary contextual-user turns
-  still preserve the message prefix.
-- Prompt-cache prefix stability does not depend on `previous_response_id`. Continuation is a separate
-  capability-gated optimization; HTTP-compatible Responses projection replays canonical input and
-  omits `previous_response_id` unless the selected transport explicitly supports it.
+- Provider projection keeps the canonical timeline provider-neutral. Stable instructions,
+  configured developer instructions, and every developer-role context item are joined in
+  deterministic order into pi-ai `Context.systemPrompt`; those context items are not also emitted
+  as messages. Pi-ai then chooses the system/developer wire role from model metadata and compat.
+- Cache retention does not depend on `previous_response_id`. Continuation is a separate validated
+  optimization; incompatible or transport-unbound replay falls back to canonical input.
 - Diagnostics persist only window ids, event ids, hashes, counts, and bounded boundary labels. They
   must not contain raw prompt text, tool output, provider payloads, credentials, or full cache keys.
 
@@ -715,17 +703,16 @@ const baselineMetadata = Object.fromEntries(Object.entries(fragment.metadata).fi
 - Any timeline/manifest/request/prepared write fails -> roll back the complete provider step and do
   not call the provider.
 - Reopen or resume -> load immutable events, select the latest window, and continue its exact prefix.
-- DeepSeek dynamic developer-context change -> preserve every prior wire message as an exact
-  prefix, append the update with `role="user"`, and retain exactly one initial `system` message.
+- Developer context changes -> preserve the append-only canonical timeline and rebuild the ordered
+  pi-ai `systemPrompt`; do not invent a lower-authority user/assistant marker.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: a DeepSeek permission change appends a fenced `user` context message after the complete
-  previous wire request and before the current user request.
-- Base: native Chat continues to project dynamic developer context with `role="developer"` at its
-  chronological timeline position.
-- Bad: projecting a later DeepSeek permission update as another `system` message, which changes
-  the provider's system-prefix cache identity.
+- Good: a permission change appends one canonical developer context item; provider projection folds
+  it into `Context.systemPrompt` and pi-ai selects the wire authority.
+- Base: ordinary user context stays at its chronological message position.
+- Bad: converting developer context to a user or assistant marker to preserve a guessed provider
+  prefix.
 
 ### 6. Tests Required
 
@@ -735,40 +722,31 @@ const baselineMetadata = Object.fromEntries(Object.entries(fragment.metadata).fi
   transactional rollback.
 - Runtime tests for ordinary turns, changed context, compaction, v1 adoption, and provider dispatch
   only after persistence.
-- Wire tests for Responses, native Chat, DeepSeek chronological role fallback, and ordinary
-  Anthropic message-prefix stability.
-- Continuation tests proving protocol/capability gating and prompt-cache compatibility without
+- Wire tests for deterministic `Context.systemPrompt` assembly and pi-ai-owned role selection across
+  Responses, Chat/DeepSeek, and Anthropic.
+- Continuation tests proving transport-identity validation and cache-retention independence from
   `previous_response_id`.
-- DeepSeek Chat projection tests proving dynamic developer-context updates preserve the complete
-  prior wire-message prefix and do not add a second `system` message.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
-```text
-system: stable instructions
-user: U1
-assistant: A1
-system: <permissions>updated permission profile</permissions>
-user: U2
+```typescript
+messages.push({ role: "assistant", content: developerContextMarker });
 ```
 
-Adding a changed permission update as a second DeepSeek `system` message invalidates the
-provider's system-prefix cache identity.
+Marker messages lower or misstate instruction authority and retain a second wire serializer.
 
 #### Correct
 
-```text
-system: stable instructions
-user: U1
-assistant: A1
-user: <permissions>updated permission profile</permissions>
-user: U2
+```typescript
+const systemPrompt = [stableInstructions, ...developerInstructions, ...developerContext]
+  .filter(Boolean)
+  .join("\n\n");
+const context = { systemPrompt, messages: canonicalMessages };
 ```
 
-Keep one stable initial `system` message, preserve the complete previous wire request as an exact
-prefix, and append the fenced permission context chronologically before the current user request.
+Preserve canonical history and let pi-ai project its authoritative prompt to the selected API.
 
 ## Scenario: Recovery Diagnostics And Provider Replay Recovery
 
@@ -905,318 +883,169 @@ trace.push({
 });
 ```
 
-## Scenario: Provider Wire Cache Policy Projection
+## Scenario: Provider-neutral cache retention projection
 
 ### 1. Scope / Trigger
 
-- Trigger: changes to request-shape provider policy, OpenAI Responses payload
-  construction, OpenAI-compatible Chat Completions payload construction,
-  Anthropic Messages serialization, cache-shape diagnostics, or doctor context
-  diagnostics.
-- The flow crosses canonical request shape, runtime item/message formatting,
-  provider adapters, clients, trace, doctor, and smoke evaluations.
+- Trigger: changes to cache configuration, provider request construction, durable request recovery,
+  pi-ai stream options, usage normalization, or cache diagnostics.
+- The flow crosses config, canonical request shape, runtime/Worker transport, storage readers,
+  provider adapters, and provider usage telemetry.
 
 ### 2. Signatures
 
-- Domain policy:
-  `ProviderRequestPolicyShape.for_request_shape(...) -> ProviderRequestPolicyShape`
-- Request shape:
-  `RequestShape.provider_request_policy: ProviderRequestPolicyShape | None`
-- Runtime item:
-  `RuntimeItem.metadata: dict[str, object]`
-- Responses request builder:
-  `ResponsesRequestBuilder.build(..., prompt_cache_key: str | None = None)`
-- Responses client/adapter:
-  `create_response(..., prompt_cache_key: str | None = None)`
-  and `stream_response(..., prompt_cache_key: str | None = None)`
-- Anthropic adapter:
-  `_serialize_items(...) -> tuple[str | list[dict[str, object]] | None, list[dict[str, object]]]`
+- Config: `NodeRuntimeConfig.cacheRetention: "none" | "short" | "long"`.
+- Request: `ProviderRequestConfig { sessionId?: string; cacheRetention?: CacheRetention }`.
+- Pi-ai options: `SimpleStreamOptions { sessionId?, cacheRetention?, maxRetries: 0 }`.
+- Durable reader: `normalizeProviderRequest(value) -> ProviderRequest`.
 
 ### 3. Contracts
 
-- Provider request policy is derived from provider, protocol, model,
-  `system_hash`, `tool_schema_hash`, and `cacheable_prefix_hash`.
-- Provider cache hint capability is resolved before request-shape construction
-  in this order:
-  1. explicit `AgentConfig.cache_policy_capability` override,
-  2. `ProviderProfile.cache_policy_capability` default,
-  3. conservative fallback with both hints disabled.
-- Built-in provider defaults are safe by lane:
-  - OpenAI Responses / OpenAI Chat: `prompt_cache_key` enabled,
-    `cache_control` disabled.
-  - Anthropic Messages: `cache_control` enabled, `prompt_cache_key` disabled.
-  - Anthropic Messages transport pointed at a DeepSeek base URL:
-    `cache_control` disabled by default because DeepSeek's Anthropic-compatible
-    API ignores Anthropic `cache_control`; cache telemetry there reflects
-    DeepSeek's automatic prefix cache rather than wire hints.
-  - DeepSeek / unsupported compatible lanes: both disabled with
-    `wire_hints_supported=false` unless a profile explicitly advertises support.
-    DeepSeek profiles must still declare `provider_family=deepseek` and
-    `cache_strategy=automatic_prefix_cache` so trace/doctor do not confuse
-    missing wire hints with missing cache capability.
-  - Compatible OpenAI-style endpoints may disable `prompt_cache_key` through
-    config/profile when the upstream endpoint rejects the field.
-- Normal `RequestPipeline` request assembly must pass the resolved capability to
-  `RequestShapeBuilder`; the builder-level explicit argument remains available
-  for focused tests and low-level call sites.
-- OpenAI Responses and OpenAI-compatible Chat Completions use
-  `prompt_cache_key` only as a request-level wire option.
-- Anthropic Messages uses `cache_control: {"type": "ephemeral"}` only on
-  serialized payload content-block copies. The Node adapter marks the final system block, then the
-  last cacheable content block of the earliest three non-system messages. Those fixed message
-  breakpoints do not move when later timeline items are appended.
-- Provider cache hints must not be written into canonical conversation messages,
-  request fragments, persisted transcripts, or runtime history.
-- `RequestShape.summary()` may expose bounded policy diagnostics, including
-  key hash, preview, hint enabled state, and breakpoint counts. It must not
-  expose the full `prompt_cache_key`.
-- Full `prompt_cache_key` may exist only in runtime/provider metadata used by
-  provider clients during request construction.
-- Chat Completions message projection must strip provider-private fields such as
-  `metadata`, `cache_control`, `anthropic`, `responses`, and underscore-prefixed
-  keys before sending.
-- Cache-shape diagnostics and doctor summaries must use bounded counts, hashes,
-  and previews only.
-- Cache-shape diagnostics must normalize fake/local usage payloads from
-  Responses, Chat, and Anthropic-style providers into bounded fields:
-  `provider_cached_tokens`, `provider_cache_usage.cached_tokens`,
-  `provider_cache_usage.cache_write_tokens`, and
-  `provider_cache_usage.telemetry_status`.
-- Doctor cache policy validation must distinguish
-  `enabled_and_emitted`, `disabled_by_policy`, `enabled_but_missing`, and
-  `unsupported`. `disabled_by_policy` is informational; `enabled_but_missing`
-  should produce bounded remediation.
-- P3 cache observability adds a provider-free diagnostics loop:
-  - `ProviderCachePolicyCapability` gates request-level `prompt_cache_key` and
-    Anthropic `cache_control` independently. Default capability preserves safe
-    P2 behavior; compatible or legacy provider paths may disable unsupported
-    hints without changing canonical fragments. It also carries the bounded
-    diagnostic fields `provider_family` and `cache_strategy`; these are
-    provider-policy labels, not raw provider payload.
-  - `ProviderPayloadSnapshot` summarizes provider lane, message/runtime item
-    counts, request-option hint presence, sanitized provider-private field
-    counts, Anthropic cache-control block counts, and bounded prompt-cache-key
-    hash/preview. It must not include raw user text, raw tool output, secrets, or
-    the full `prompt_cache_key`.
-  - `ProviderRequestDryRun` compares two request shapes without calling a model
-    provider. It reports cache-boundary hash stability, prompt-cache-key hash
-    stability, first changed cache class, and redacted per-turn snapshots.
-  - `ProviderRequestDryRunRenderer` exposes a reusable provider-free local
-    diagnostic surface with provider lane, boundary hash stability,
-    prompt-cache-key hash stability, first changed cache class, wire hint state,
-    and snapshot counts. It must not include raw prompts, raw tool output,
-    provider wire payload bodies, secrets, or the full `prompt_cache_key`.
-  - Doctor context diagnostics must summarize first-changed-cache-class
-    distributions, stable/dynamic/ephemeral change counts, enabled/disabled/
-    missing wire-hint counts, max/latest provider cached tokens, and bounded
-    remediation text.
-- Wire-only hints remain outside the canonical timeline. It is valid for
-  summaries to name a wire-only hint such as `cache_control`, but raw canonical
-  fragments, persisted messages, and runtime blocks must not contain provider
-  wire payload fields such as `cache_control` or full prompt-cache keys.
-- Provider quirk profiles are provider-edge metadata, not timeline content.
-  `resolve_provider_quirk_profile(...)` must resolve bounded labels from
-  configured provider, protocol, and base URL inference. It may report provider
-  family, protocol, cache strategy, hint support booleans, automatic prefix-cache
-  status, reasoning replay label, cached-token usage-shape label, streaming
-  shape label, and retry-error shape label. It must not include raw base URLs,
-  API keys, headers, provider payload bodies, raw prompts, raw tool output, or
-  full prompt-cache keys.
-- Provider quirk resolution must recognize Anthropic protocol pointed at
-  DeepSeek's Anthropic-compatible endpoint as `provider_family=deepseek` with
-  `cache_strategy=automatic_prefix_cache` and wire hints disabled. This explains
-  DeepSeek prefix-cache behavior without emitting Anthropic `cache_control`.
-- Doctor `provider_quirk_diagnostics` and provider-free eval matrix rows may
-  expose only the bounded quirk labels above. They must not mutate request
-  fragments, canonical conversation messages, provider payload snapshots, or
-  persisted session history.
+- Mycli exposes one provider-neutral preference: `request.cache_retention`, with closed values
+  `none`, `short`, and `long`, and default `short`. The environment override is
+  `MYCLI_CACHE_RETENTION`.
+- Every new ordinary request carries the stable mycli session id and effective cache retention.
+  Provider switching keeps this intent unchanged; no provider-specific cache capability guard runs
+  before pi-ai.
+- Pi-ai receives `sessionId` and `cacheRetention` through `SimpleStreamOptions`. Its selected model,
+  automatic detection, and `Model.compat` decide prompt-cache keys, retention fields, cache-control
+  placement, and session-affinity headers. Mycli must not recreate those fields in `onPayload`.
+- A retention value is a preference, not evidence that a provider stored or hit a cache entry.
+  Provider usage remains the only cache-hit/cache-write evidence and is normalized into canonical
+  usage counts without treating absence as a transport error.
+- Provider profiles contain no cache truth table. A private relay whose wire behavior differs from
+  pi-ai detection uses validated route/model `compat`, with model values overriding route values.
+- Removed `prompt_cache_key_enabled` and `cache_control_enabled` config keys emit bounded
+  deprecation diagnostics pointing to `request.cache_retention`; their values never reach runtime.
+- New canonical request, Worker RPC, continuation signatures, and storage projections emit only
+  `sessionId` and `cacheRetention`. Legacy durable readers may accept `store`, `promptCacheKey`, and
+  `cacheControlEnabled`, normalize them once, and never write them back.
+- Cache wire fields must not be persisted in canonical conversation items, context fragments,
+  readable transcripts, runtime history, or diagnostics. Diagnostics may expose only bounded cache
+  usage counts and non-secret structural state.
+- Payload snapshots used by tests may inspect pi-ai's mock wire request, but production traces,
+  errors, and evidence must not contain provider payloads, cache keys, relay URLs, prompts,
+  responses, response ids, credentials, or request headers.
 
 ### 4. Validation & Error Matrix
 
-- Ephemeral/current intent changes only -> `prompt_cache_key` remains stable.
-- Stable system, tool schema, or stable prefix changes -> `prompt_cache_key`
-  changes.
-- Client does not accept `prompt_cache_key` -> adapter must omit the argument
-  instead of failing.
-- Config/profile disables `prompt_cache_key` -> the request policy reports
-  `wire_hint_state=disabled_by_policy`, runtime metadata has no full
-  `prompt_cache_key`, and doctor does not fail.
-- DeepSeek automatic prefix cache -> request policy reports
-  `wire_hint_state=unsupported`, `provider_family=deepseek`, and
-  `cache_strategy=automatic_prefix_cache`; doctor should count this separately
-  from wire-hint failures.
-- Policy says a hint should be emitted but provider metadata lacks a hint ->
-  doctor reports `enabled_but_missing` with bounded remediation and no raw
-  payload.
-- Provider/lane is unsupported -> doctor reports `unsupported` as bounded
-  policy state rather than printing raw request data.
-- Anthropic system has no cache breakpoint -> keep legacy string system payload.
-- Anthropic system has cache breakpoint -> serialize system as text blocks and
-  put block-level `cache_control` on the final system block.
-- Chat message contains provider-private fields -> outgoing provider messages
-  exclude those fields.
-- Trace payload includes full `prompt_cache_key` -> invalid; only hash/preview
-  are allowed.
-- Payload snapshot or dry-run summary includes raw user prompt, tool output,
-  secret-like values, or full `prompt_cache_key` -> invalid.
-- Compatible provider capability disables `prompt_cache_key` -> policy summary
-  reports the hint disabled and provider wire metadata omits the full key.
-- Dry-run `runtime_diagnostics` is local diagnostic metadata only. It may include
-  exposed tool names/counts, policy decision summaries, sandbox lane counts,
-  approval lane state, lifecycle counts, and session continuity counts, but must
-  not alter request fragments, provider payload snapshots, cache boundary hashes,
-  or provider wire payloads.
-- DeepSeek Anthropic-compatible endpoint -> quirk diagnostics report
-  `provider_family=deepseek`, `protocol=anthropic_messages`,
-  `cache_strategy=automatic_prefix_cache`, and `wire_hints=false` without
-  printing base URL, key, request, response, or prompt text.
+- Missing setting -> resolve `cacheRetention="short"`.
+- `none`, `short`, or `long` -> carry the exact value with the stable session id to pi-ai.
+- Any other retention value -> fail configuration validation before runtime construction.
+- Removed cache boolean appears in user/project config -> ignore its value for request behavior and
+  emit a deprecation diagnostic naming `request.cache_retention`.
+- Session switches providers -> keep the same retention preference; do not fail because the new
+  provider cannot represent a former wire hint.
+- Provider cannot represent long retention -> pi-ai downgrades or omits the wire field; mycli does
+  not convert this into `unsupported_capability`.
+- Legacy durable request has `promptCacheKey` or `cacheControlEnabled` -> normalize to bounded
+  `sessionId`/`cacheRetention`, verify original content addressing, and emit no legacy field later.
+- Provider usage includes cache reads/writes -> normalize bounded numeric counts by protocol.
+- Provider usage has no cache fields -> accept it; do not infer that caching is broken.
+- Production diagnostic includes a full cache key, endpoint, prompt, response, response id, or key
+  -> reject/redact it at the owning boundary.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: Responses payload has `prompt_cache_key` beside `model`, while input
-  items contain no cache hint fields.
-- Good: Anthropic payload has `cache_control` on the final system block and the
-  earliest three non-system cacheable content-block copies, while
-  `RequestShape.summary()` has no `cache_control`.
-- Base: A legacy/fake Responses client without `prompt_cache_key` support still
-  receives normal `input_items` and `tools`.
-- Bad: Persisting `cache_control` in `RuntimeBlock.metadata`.
-- Bad: Passing Anthropic `cache_control` or `thinking` blocks through Chat
-  Completions messages.
-- Bad: Inferring provider quirks by inspecting persisted transcript text or
-  provider payload bodies.
+- Good: a request carries `{sessionId, cacheRetention: "short"}` and pi-ai emits the correct mock
+  Responses or Anthropic cache representation.
+- Good: a DeepSeek request receives the same neutral preference and proceeds without an OpenAI-only
+  capability failure.
+- Base: `cacheRetention="none"` leaves cache-field omission/disable behavior to pi-ai.
+- Bad: persist `prompt_cache_key` or `cache_control` in canonical context metadata.
+- Bad: infer provider cache support from URL strings or provider profile booleans.
 
 ### 6. Tests Required
 
-- Unit test provider request policy generation and summary redaction.
-- Unit test stable `prompt_cache_key` across ephemeral-only changes.
-- Unit test `RuntimeItem.metadata` preservation through request-shape formatter.
-- Unit test Responses request builder/client/adapter request-level
-  `prompt_cache_key` propagation.
-- Unit test Anthropic wire-only `cache_control` and canonical non-mutation.
-- Unit test Chat Completions provider-private field stripping.
-- Unit test cache-shape diagnostics and doctor bounded cache policy summary.
-- Unit test cache stability regressions across static, dynamic, and ephemeral
-  request changes.
-- Unit test provider payload snapshots and dry-run comparisons are redacted.
-- Unit test provider cache policy capability gates.
-- Unit test provider quirk resolution for OpenAI, compatible, Anthropic,
-  DeepSeek Chat, and DeepSeek Anthropic-compatible endpoints.
-- Unit test doctor provider quirk diagnostics are bounded and secret-safe.
-- Unit test provider-free quirk eval matrix rows cover the supported fixture
-  lanes without live provider calls.
-- Unit test provider profile/config capability resolution and RequestPipeline
-  automatic capability injection.
-- Unit test redacted dry-run renderer output contract.
-- Unit test redacted dry-run runtime diagnostics contract.
-- Unit test provider cache usage telemetry normalization and doctor policy
-  validation states.
-- Provider package tests cover all three provider lanes plus capability resolution, dry-run
-  comparison, snapshot counts, runtime diagnostics fields, and telemetry normalization fields.
+- Config tests cover default/file/environment retention, invalid values, canonical writing, and
+  deprecation diagnostics for both removed booleans.
+- Runtime and Worker tests assert stable session identity and exact retention survive request
+  projection and structured-clone validation, while old fields are rejected from new RPC payloads.
+- Storage tests reconstruct legacy request-blob and timeline-manifest forms from real SQLite and
+  preserve strict content-address verification.
+- Provider payload tests use mock HTTP endpoints to assert pi-ai maps `none`, `short`, and `long` for
+  Responses and Anthropic without mycli cache rewrites.
+- Provider switching tests prove the neutral preference cannot trigger a stale provider-specific
+  capability failure.
+- Usage tests cover cache read/write normalization for Responses, Chat, and Anthropic.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
 ```typescript
-block.metadata.cacheControl = { type: "ephemeral" };
-tracePayload.providerRequestPolicy = { promptCacheKey: fullKey };
-const quirk = inferFromPayloadBody(rawProviderPayload);
+request.promptCacheKey = makeProviderCacheKey(sessionId);
+request.cacheControlEnabled = provider === "anthropic";
+payload.cache_control = { type: "ephemeral" };
 ```
 
 #### Correct
 
 ```typescript
-const wireBlock = { type: "text", text: block.text, cache_control: { type: "ephemeral" } };
-tracePayload.providerRequestPolicy = {
-  promptCacheKeyHash: stableHash(fullKey),
-  promptCacheKeyPreview: `${fullKey.slice(0, 48)}...`,
+const request = {
+  ...canonicalRequest,
+  sessionId,
+  cacheRetention: config.cacheRetention,
 };
-const quirk = resolveProviderQuirkProfile(config.provider, config.protocol);
+const options = { sessionId, cacheRetention: config.cacheRetention, maxRetries: 0 };
 ```
+
+Mycli expresses retention intent; pi-ai alone projects provider cache fields.
 
 ## Scenario: Provider Adapter Replay Hardening
 
 ### 1. Scope / Trigger
 
-- Trigger: changes to Responses input serialization, Chat Completions provider
-  adapters, Anthropic Messages serialization, provider-private runtime
-  metadata, or deterministic fallback provider ids.
-- The flow crosses canonical runtime items, provider adapter wire projection,
-  provider-private state replay, schema sanitization, and local provider-free
-  tests.
+- Trigger: changes to canonical assistant/tool replay, pi-ai replay restoration, transport identity,
+  provider-state validation, or deterministic fallback tool ids.
+- The flow crosses canonical runtime items, provider transport snapshots, pi-ai context projection,
+  provider-private replay state, and local provider tests.
 
 ### 2. Signatures
 
-- Responses serialization:
-  `ResponsesInputSerializer.serialize_items(items: list[RuntimeItem]) -> list[dict[str, object]]`
-- Chat provider adapter:
-  `ChatProviderAdapter.adapt_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]`
-- Anthropic serialization:
-  `AnthropicMessagesModelAdapter._serialize_items(items) -> tuple[system, messages]`
-- Provider-private helper:
-  `responses_replay_items(provider_state: object) -> tuple[dict[str, object], ...]`
-  `sanitize_provider_private(value: object) -> object`
-  `deterministic_provider_id(prefix: str, payload: object) -> str`
+- Registry boundary:
+  `ProviderRegistry.create(config: ProviderTransportConfig, route?: ProviderRouteDescriptor) -> ModelProvider`
+- Canonical provider stream:
+  `ModelProvider.stream(request: ProviderRequest, options: ProviderStreamOptions) -> AsyncIterable<ProviderEvent>`
+- Replay restoration:
+  `restorePiAiReplay(item, api, provider, model) -> PiAiReplayProjection`
 
 ### 3. Contracts
 
-- Responses lane may replay provider-private state only from adapter-supported
-  provider state keys:
-  `codex_reasoning_items` and `codex_message_items`.
-- Responses encrypted reasoning replay must remain opaque. It must not be
-  flattened into `input_text`, assistant content, Chat messages, Anthropic
-  thinking blocks, summaries, trace payloads, or diagnostics.
+- New provider replay uses the bounded versioned `pi_ai_assistant` envelope. Legacy Responses replay
+  accepts `responsesNativeItems` and `responsesReasoningItems` only through the compatibility reader.
+- Responses encrypted reasoning replay must remain opaque. It must not be flattened into assistant
+  text, Chat messages, Anthropic thinking blocks, summaries, trace payloads, or diagnostics.
 - Responses replay items are same-issuer only. A replay item with
   `_issuer_kind` that is present and not equal to the supported Responses issuer
   must be filtered before request serialization.
-- Responses replay item wire copies may retain only supported wire fields. All
-  underscore-prefixed keys and unsupported metadata keys must be removed.
+- Pi-ai replay projections retain only supported provider state bound to the current route, API,
+  model, and normalized endpoint hash.
 - Replay items lacking provider ids receive deterministic fallback ids derived
   from their sanitized payload.
-- Chat Completions providers must strip provider-private fields recursively
-  before sending:
-  `provider_state`, `codex_reasoning_items`, `codex_message_items`, `responses`,
-  `cache_control`, `anthropic`, `thinking`, `signature`, `provider_request_policy`,
-  `metadata`, and underscore-prefixed keys.
-- Provider-specific Chat adapters may explicitly reintroduce supported metadata
-  from their own namespace. Example: DeepSeek may use `metadata.deepseek` to
-  replay `reasoning_content`, while default OpenAI-compatible adapters strip it.
-- The provider registry must select provider-specific Chat wire policy from the
-  resolved provider id, not from `chat_completions` alone. DeepSeek constructs
-  `ChatProvider` with `developerInstructionMode=merge_into_system`; compatible,
-  OpenAI, and Qwen Chat keep the default native developer-role projection.
-- DeepSeek bootstrap developer instructions are merged with base instructions into one leading
-  `system` message at the wire boundary. Dynamic developer-authority context is mapped to a later
-  `system` message at its timeline position. Canonical instructions and request signatures retain
-  their developer authority classification.
-- Anthropic Messages serialization must ignore Responses-private reasoning
-  blocks. It may replay Anthropic raw thinking only when block metadata contains
-  an Anthropic `thinking` block.
-- Anthropic `cache_control` remains wire-only and must not mutate runtime items
-  or canonical timeline state.
+- Provider-specific reasoning/tool replay is restored through pi-ai message types; mycli does not
+  rebuild raw Responses, Chat, DeepSeek, or Anthropic wire payloads.
+- Foreign, transport-unbound, malformed, inconsistent, or oversized replay degrades to canonical
+  assistant/tool content with a bounded diagnostic. It must never cause provider state from one
+  route/model to cross into another.
+- Stable/developer instructions and developer-role context are projected once into
+  `Context.systemPrompt`. Pi-ai selects the wire role; replay code must not introduce marker messages
+  or provider-specific role downgrades.
+- Provider cache controls remain pi-ai wire state and must not mutate runtime items or canonical
+  timeline state.
 
 ### 4. Validation & Error Matrix
 
-- Responses same-issuer `codex_reasoning_items` -> serialized as opaque
-  `reasoning` wire items.
+- Responses legacy reasoning items -> restored as pi-ai thinking metadata only when provider and
+  canonical content validation succeeds.
 - Responses foreign-issuer encrypted reasoning -> omitted before request.
-- Responses same-shape `codex_message_items` -> serialized as sanitized
-  `message` wire items.
-- Responses replay item missing `id` -> deterministic fallback id with stable
-  prefix (`rs_` or `msg_`).
-- Chat message contains nested provider-private fields -> outgoing message has
-  only supported Chat fields and recursively sanitized tool call objects.
-- DeepSeek receives a bootstrap `developer` instruction -> adapter merges it into the leading
-  `system` message explicitly.
-- DeepSeek receives a dynamic developer context after conversation -> adapter maps it to `system` at
-  that chronological position.
-- A DeepSeek child agent adds a role instruction -> its first Chat request has
-  one leading `system` message and no `developer` wire message.
-- Anthropic receives a reasoning block with only Responses provider_state ->
-  no Anthropic thinking block is emitted.
-- Anthropic receives raw `metadata.anthropic.type=thinking` -> thinking block is
-  replayed with Anthropic fields intact except wire/private helper keys.
+- Responses legacy hosted-search items -> omitted by the pi-ai replay reader while canonical content
+  and supported reasoning are retained.
+- Replay transport route, API, model, or endpoint differs -> omit private replay and retain canonical
+  content with a bounded degradation diagnostic.
+- DeepSeek receives developer authority -> pi-ai receives the same ordered `systemPrompt` as other
+  APIs and selects its supported wire role from model compat.
+- Anthropic receives only Responses-private state -> omit that state and retain canonical content.
 - Anthropic tool call with missing/placeholder id -> deterministic `toolu_...`
   fallback id.
 
@@ -1224,28 +1053,22 @@ const quirk = resolveProviderQuirkProfile(config.provider, config.protocol);
 
 - Good: Responses replays same-issuer encrypted reasoning as a `type=reasoning`
   item before normal assistant text.
-- Good: OpenAI Chat strips nested `_internal`, `cache_control`, and `responses`
-  fields inside tool calls.
-- Good: Anthropic ignores Codex encrypted reasoning but keeps Anthropic thinking
-  signatures.
+- Good: Chat and Anthropic ignore foreign Responses replay while keeping canonical assistant text and
+  tool calls.
 - Base: Runtime items without provider-private state serialize exactly as before.
 - Bad: Sending `reasoning.encrypted_content` to Chat Completions.
-- Bad: Sending Anthropic `cache_control` through a canonical runtime item or
-  default Chat message.
+- Bad: sending cache controls or provider-specific role markers through a canonical runtime item.
 
 ### 6. Tests Required
 
 - Unit test Responses same-issuer encrypted reasoning replay.
 - Unit test Responses foreign issuer reasoning filtering.
 - Unit test Responses same-shape message replay and deterministic fallback ids.
-- Unit test default/OpenAI-compatible Chat recursive provider-private field
-  stripping.
-- Unit tests prove bootstrap developer-role downgrade remains explicit and dynamic developer context
-  remains at its chronological position.
-- Registry test proves only resolved `provider=deepseek` enables the downgrade.
-- Real Node agent smoke proves a DeepSeek Chat child completes its first provider turn and tool call
-  through the worker runtime.
-- Unit test Anthropic wire-only cache control remains non-mutating.
+- Unit tests prove deterministic `Context.systemPrompt` assembly and pi-ai-owned role selection.
+- Registry tests prove every supported route resolves to pi-ai and private replay is transport-bound.
+- Mock Node agent smoke proves a DeepSeek Chat child completes its first provider turn and tool call
+  through the worker runtime without provider-specific mycli serialization.
+- Unit test provider cache fields remain outside canonical replay state.
 - Unit test Anthropic ignores Responses-private reasoning while preserving
   Anthropic thinking metadata.
 - Unit test deterministic Anthropic `tool_use` fallback ids.
@@ -1255,16 +1078,15 @@ const quirk = resolveProviderQuirkProfile(config.provider, config.protocol);
 #### Wrong
 
 ```typescript
-content.push({ type: "thinking", thinking: block.text });
-chatMessage.reasoning = { encrypted_content: encrypted };
+payload.messages.push(deepSeekDeveloperMarker);
+payload.cache_control = canonicalItem.metadata.cacheControl;
 ```
 
 #### Correct
 
 ```typescript
-if (block.metadata.anthropic?.type === "thinking") content.push(anthropicThinkingBlock);
-responsesItems.push(...responsesReplayItems(item.metadata.providerState));
-const chatMessage = sanitizeProviderPrivate(inputChatMessage);
+const replay = restorePiAiReplay(item, api, transportProvider, transportIdentity);
+const context = { systemPrompt: authoritativePrompt(request), messages: replay.messages };
 ```
 
 ## Scenario: Compact Cheap Pruning / Tail Protection

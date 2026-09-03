@@ -11,7 +11,8 @@ the sanitized M2-M7 corpus.
 
 - The final cross-backend baseline advertised the same 33 RPC methods and 42 event streams. Later
   contract work added shell controls, explicit `session.new`, settings and update controls, and
-  provider connectivity validation, so the Node contract now advertises 41 RPC methods and 43
+  provider connectivity validation, model controls, provider-scoped directory listing, and durable
+  queue-restoration acknowledgement, so the Node contract now advertises 44 RPC methods and 43
   event streams.
 - The retained slash surface contains 35 commands and 13 argument-prefix aliases. The retired
   agent-profile browser is absent; `/agents` is canonical and `/tasks` remains a compatibility alias.

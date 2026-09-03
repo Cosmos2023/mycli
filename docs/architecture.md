@@ -12,7 +12,7 @@ generated declaration, test gate, and release package.
 | `backend/packages/contracts` | JSON schemas, generated TypeScript wire types, validation, gateway catalog |
 | `backend/packages/core` | Runtime events and shared domain types without provider/storage ownership |
 | `backend/packages/config` | User/project config, auth, trust, model catalog, shell settings, execution policy |
-| `backend/packages/providers` | Responses, Chat Completions, and Anthropic provider adapters and streaming normalization |
+| `backend/packages/providers` | Pi-ai transport boundary, provider directory, payload adaptation, canonical normalization, and replay |
 | `backend/packages/runtime` | Turn loop, continuation, approval, clarification, queue, compaction, memory, session coordination |
 | `backend/packages/storage` | SQLite session store, transcript snapshots, durable state and recovery operations |
 | `backend/packages/tools` | Tool manifest, file tools, approvals, process policy, PTY transports, shell lifecycle |
@@ -24,6 +24,18 @@ generated declaration, test gate, and release package.
 Dependencies point from composition packages toward focused libraries. `core` and contracts do not
 depend on app infrastructure. Providers, filesystem, process launch, and SQLite remain behind
 typed boundaries so runtime workflows can use fakes in tests.
+
+Ordinary Responses, Chat Completions, DeepSeek, Qwen/compatible, and Anthropic traffic uses the
+exact pinned `@earendil-works/pi-ai` version behind mycli's `ModelProvider` boundary. Mycli remains
+authoritative for configuration, credentials, instruction roles, canonical events, replay state,
+error classification, cancellation, and retry timing; every pi-ai call sets `maxRetries: 0`.
+
+Live OpenAI Responses web search uses the same pi-ai transport. Mycli injects the provider-native
+`web_search` tool through pi-ai's payload hook and rejects the capability on other protocols before
+traffic. Mycli's current pi-ai integration consumes native search lifecycle and heartbeat frames
+without exposing them as assistant events, so new turns retain final assistant output but do not
+show canonical search progress rows or retain native search-call replay. Historical persisted search
+activity remains readable.
 
 ## Interactive Flow
 
@@ -107,7 +119,8 @@ output.
 Responses, Chat Completions, and Anthropic Messages project the same durable logical contract.
 Native system/developer channels are used where supported; compatibility fallback changes wire
 representation without changing the persisted semantic role or chronological position. DeepSeek
-maps dynamic developer context to an in-place `system` message. Anthropic preserves developer
+maps stable developer instructions into its system prefix and appends dynamic developer context as
+a user-role suffix, preserving the existing DeepSeek route behavior. Anthropic preserves developer
 authority through its top-level system channel, so a dynamic developer change may reset that system
 prefix even though ordinary contextual-user turns retain the message prefix. Continuation is a
 separate capability-gated optimization: prompt-cache stability relies on the full append-only input,

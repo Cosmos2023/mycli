@@ -34,14 +34,13 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `model.auth_ref` | `string` | `"openai"` | yes | `model.auth_ref` | Selects the credential-store reference without placing a credential in TOML. |
 | `model.name` | `string` | `"gpt-5"` | yes | `model.name` | Selects the provider model used for new runtime requests. |
 | `model.protocol` | `string` | `"responses"` | yes | `model.protocol` | Selects the provider wire protocol used for model requests. |
-| `model.provider` | `string` | `"openai"` | yes | `model.provider` | Selects the configured provider profile. |
-| `model.supports_images` | `boolean` | `true` | yes | `model.supports_images` | Overrides whether the selected compatible endpoint accepts image inputs. |
+| `model.provider` | `string` | `"openai"` | yes | `model.provider` | Selects a stable profile or an explicitly configured provider route. |
+| `model.supports_images` | `boolean` | `false` | yes | `model.supports_images` | Overrides whether the selected compatible endpoint accepts image inputs. |
 | `model.web_search_mode` | `string` | `"live"` | no | `model.web_search_mode` | Reports the web-search mode derived from provider capabilities; this setting is read-only. |
 | `reasoning.effort` | `string` | `"medium"` | yes | `reasoning.effort` | Selects the reasoning effort requested from models that support effort controls. |
 | `reasoning.enabled` | `boolean` | `true` | yes | `reasoning.enabled` | Enables or disables model reasoning for providers that expose this capability. |
-| `request.cache_control_enabled` | `boolean` | `false` | yes | `request.cache_control_enabled` | Enables provider cache-control metadata for protocols that support it. |
+| `request.cache_retention` | `string` | `"short"` | yes | `request.cache_retention` | Selects the provider-neutral prompt-cache retention preference passed to pi-ai. |
 | `request.max_prompt_tokens` | `integer` | `12000` | yes | `request.max_prompt_tokens` | Caps the prompt tokens assembled for each model request. |
-| `request.prompt_cache_key_enabled` | `boolean` | `true` | yes | `request.prompt_cache_key_enabled` | Enables stable prompt-cache keys for providers that support them. |
 | `request.request_max_retries` | `integer` | `4` | yes | `request.request_max_retries` | Limits retries for failures that occur before model output begins. |
 | `request.stream_max_retries` | `integer` | `5` | yes | `request.stream_max_retries` | Limits retries for interrupted model response streams. |
 | `tui.clear_on_shrink` | `boolean` | `true` | yes | `tui_clear_on_shrink` | Clears stale terminal cells after the viewport becomes smaller |
@@ -91,9 +90,8 @@ Aliases remain readable for compatibility, emit deprecation diagnostics, and are
 - `model.supports_images`: `supports_images`
 - `reasoning.effort`: `thinking_effort`, `reasoning_effort`, `reasoning.reasoning_effort`
 - `reasoning.enabled`: `thinking_enabled`
-- `request.cache_control_enabled`: `cache_control_enabled`
+- `request.cache_retention`: `cache_retention`
 - `request.max_prompt_tokens`: `max_prompt_tokens`
-- `request.prompt_cache_key_enabled`: `prompt_cache_key_enabled`
 - `request.request_max_retries`: `request_max_retries`
 - `request.stream_max_retries`: `stream_max_retries`, `transport_retry_limit`
 - `tui.clear_on_shrink`: `clearOnShrink`, `clear_on_shrink`

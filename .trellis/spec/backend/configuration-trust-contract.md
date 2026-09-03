@@ -1000,10 +1000,10 @@ export const STARTUP_ONBOARDING_STAGES = [
 - Connectivity is deliberate and optional, defaults to Skip, and does not determine whether offline
   setup is valid. Validation re-resolves the active session/workspace config on every invocation so
   a just-saved credential is visible without restarting the backend.
-- Connectivity uses a bounded no-tool request: reasoning `none`, `maxOutputTokens=8`, `store=false`,
-  empty tools, and a 15-second abort deadline. Success requires a provider completion event. Failure
-  returns one generic bounded message and never includes an upstream body, request, credential, or
-  local exception.
+- Connectivity uses a bounded no-tool request: reasoning `none`, `maxOutputTokens=8`,
+  `cacheRetention="none"`, empty tools, and a 15-second abort deadline. Pi-ai owns any provider
+  storage default. Success requires a provider completion event. Failure returns one generic bounded
+  message and never includes an upstream body, request, credential, or local exception.
 - `login status` and `logout` inspect or mutate the local auth store without provider construction or
   TUI startup. Source precedence is `environment > stored > legacy_config > missing`; logout removes
   only the selected stored reference and reports when an environment or legacy credential remains

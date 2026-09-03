@@ -52,6 +52,12 @@ On first use, configure a provider through the setup wizard:
 npm run mycli -- setup
 ```
 
+The stable provider routes include OpenAI, Codex, DeepSeek, Qwen, Anthropic, OpenRouter, Groq,
+Together, Moonshot AI, NVIDIA, and Cerebras. Additional API-key routes from the pinned pi-ai
+directory can be activated explicitly; other endpoints use a complete compatible declaration. See
+[Provider Support](docs/providers.md) for activation, provider-scoped model selection, credentials,
+rollback, and opt-in live verification.
+
 `@mycli/tools` declares six OS/CPU-specific ripgrep packages as optional dependencies. npm installs
 only the package compatible with the current machine, and the CLI prepends its ripgrep 15.1.0
 directory to `PATH` at startup. Source checkouts and older packages use the setup-prepared fallback
@@ -103,8 +109,9 @@ Setup writes user state under `~/.mycli`:
 - `managed_config.toml`: optional execution-policy upper bounds loaded independently of user and
   project configuration.
 - `auth.json`: API keys referenced by `auth_ref`.
-- `models.json`: the provider-grouped model catalog used by `/model`, including reasoning and
-  context/output capabilities. Legacy flat catalogs remain readable.
+- `models.json`: explicit provider-route activation and provider-local model overrides used by
+  `/model`. Catalog-backed routes follow the pinned pi-ai catalog by default even when overrides
+  exist; `model_policy: "subset"` is the explicit allowlist. Legacy flat catalogs remain readable.
 - `sessions.db`: durable session, turn, queue, approval, clarification, shell, and trace state.
 - `sessions/<session-id>/`: readable projections derived from SQLite: schema-v2 `session.json`,
   append-only `events.jsonl`, retained background output under `tasks/`, and subagent snapshots
@@ -199,6 +206,11 @@ application: session scope changes only the active TUI, while user-default scope
 `~/.mycli/config.toml` atomically. `Ctrl+P` searches commands, aliases, and settings terminology;
 unavailable commands remain non-executable and show a bounded reason.
 
+`/model` opens the current provider's models directly: Enter applies a session selection, Tab opens
+reasoning and scope options, `[`/`]` cycles providers, and Esc opens the provider list.
+`/model <name>` searches the current provider only. See
+[Provider Support](docs/providers.md#provider-scoped-model-selection) for activation and switching.
+
 `sessions.db` is authoritative. The Node runtime repairs derivable session files during session
 preparation; deleting or corrupting a projection does not make it a provider-recovery source.
 
@@ -216,7 +228,7 @@ supports_images = true
 [request]
 request_max_retries = 4
 stream_max_retries = 5
-prompt_cache_key_enabled = true
+cache_retention = "short"
 
 [reasoning]
 enabled = true
@@ -233,10 +245,10 @@ request_permissions_tool = false
 `stream_max_retries` controls recovery of an incomplete provider stream; any partial assistant
 output from the failed attempt is discarded before the replacement stream is displayed.
 
-Hosted web search is enabled by default for the `openai` and `codex` profiles when they use the
-Responses protocol. It is disabled by default for compatible, Qwen, DeepSeek, and Anthropic
-profiles; model names are not used to guess support. A custom Responses endpoint can opt in at the
-provider level, and an individual model can override that choice in `~/.mycli/models.json`:
+Hosted web search is enabled by default for the `openai` and `codex` Responses models that advertise
+it. It is separate from pi-ai wire compatibility because mycli's current pi-ai integration has no
+first-class hosted-search option. A custom Responses endpoint can opt in at the provider level, and
+an individual model can override that choice in `~/.mycli/models.json`:
 
 ```json
 {
@@ -259,9 +271,9 @@ provider level, and an individual model can override that choice in `~/.mycli/mo
 ```
 
 `capabilities.web_search = true` is valid only with `protocol = "responses"`. Hosted search runs
-inside the provider without a local tool approval. mycli persists a bounded provider-native call
-for continuation replay and a readable search activity for `/resume`, but not fetched page bodies
-or raw search results.
+inside the provider without a local tool approval. Mycli's current pi-ai integration does not expose
+the native hosted-search lifecycle through public stream events, so mycli does not synthesize search
+progress or native search-call replay. Historical canonical search activity remains readable.
 
 Memory is disabled by default so normal turns never incur memory selection,
 extraction, consolidation, or injected-context token usage. Set
@@ -284,8 +296,8 @@ export MYCLI_BASE_URL="https://api.openai.com/v1"
 
 Do not put credentials in project config, logs, plugin manifests, prompts, or bug reports.
 
-OpenAI, Codex, Qwen, Anthropic, and compatible profiles enable image input by default. DeepSeek
-keeps it disabled because its current profile is text-only. Override a compatible endpoint with
+Catalog-backed models derive image input from pi-ai metadata. An uncatalogued private relay must
+declare `capabilities.images`, while the active compatible route can still use
 `[model].supports_images` or `MYCLI_SUPPORTS_IMAGES`. The Node TUI accepts PNG, JPEG, GIF, and WebP
 attachments, up to 16 files, 10 MB per file, and 15 MB total per submitted input. Canonical image
 data is retained in SQLite so a resumed provider turn does not depend on the original local file.
@@ -442,12 +454,17 @@ remains offline rather than receiving unrestricted network access.
 npm ci
 npm run contracts:check
 npm run lint
-npm test
+npm run test:ci
 npm run typecheck
-npm run test:m8
 npm run smoke:m8
 npm run smoke:package
 ```
+
+The test catalog separates unit, contract, integration, platform, release, and smoke boundaries.
+Use `npm run test:list` to inspect the current distribution or run one focused `test:<suite>`
+command. See [Testing mycli](docs/testing.md) for classification and CI rules. Historical
+`test:m2` through `test:m8` commands remain focused compatibility shortcuts and are not additional
+CI gates.
 
 The packed smoke installs the app tarball with its nine vendored runtime workspaces, exercises the compiled CLI and native PTY,
 runs provider-free management commands, and fails if the npm artifact imports, starts, invokes, or
@@ -465,7 +482,10 @@ drift. The final M8 capability inventory is in
 
 Release preparation, npm Trusted Publishing setup, coordinated versioning, tag publication, and
 partial-release recovery are documented in [docs/releasing.md](docs/releasing.md). The workspace
-root remains private; users install the published CLI with `npm install -g @mycli/app`.
+root remains private; users install the published CLI with `npm install -g @cosmos2023/mycli`.
+Supported Node, configuration, catalog, session, and deprecation windows are documented in
+[docs/compatibility.md](docs/compatibility.md); use [docs/upgrading.md](docs/upgrading.md) for the
+`@cosmos2023/app` package-name migration and safe rollback sequence.
 
 ## Troubleshooting And Rollback
 

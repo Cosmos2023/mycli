@@ -512,7 +512,7 @@ and tool execution. A later permission change does not affect a running turn.
 - `gateway.error` payload:
   - `code`: stable short error code from the gateway request-error taxonomy:
     `internal_error`, `invalid_params`, `method_not_found`,
-    `turn_in_progress`, `decision_not_pending`, or
+    `turn_in_progress`, `session_changed`, `decision_not_pending`, or
     `clarification_not_pending`, or `incompatible_protocol`
   - Canonical gateway contracts own the source taxonomy. The TUI exposes the matching
     `GATEWAY_ERROR_CODES` runtime constant and `GatewayErrorCode` type from
@@ -703,16 +703,19 @@ and tool execution. A later permission change does not affect a running turn.
     preview columns or fields to durable session state.
 - Running-turn queue RPCs:
   - `turn.steer` accepts `{message, expected_turn_id, client_turn_id?,
-    client_user_message_id?, local_images?}`. A matching active turn produces
+    client_user_message_id?, local_images?, session_id?, generation?}`. A matching active turn produces
     `pending_steer`; a stale or no-longer-active target produces a durable
     `rejected_steer` for the next server turn instead of losing the input.
   - `turn.follow_up` accepts `{message, client_turn_id?,
-    client_user_message_id?, local_images?}` and may race terminal completion.
+    client_user_message_id?, local_images?, session_id?, generation?}` and may race terminal completion.
     Once accepted, it remains durable until a later turn reservation succeeds.
   - `turn.queue.pop` removes only the newest ordinary follow-up and returns the
     removed structured item plus the new revision.
-  - `turn.queue.clear` accepts `{}` and returns the cleared steering and
-    follow-up messages so the TUI can restore them into the editor.
+  - `turn.queue.clear` accepts `{restore_token, session_id?, generation?}` and atomically claims the
+    returned steering and follow-up messages for composer restoration. It does not delete them.
+  - `turn.queue.restore.ack` accepts the same `{restore_token, session_id?, generation?}` only after
+    composer restoration and retires exactly the matching claims. Unacknowledged claims return to
+    `queued` during session activation or process recovery.
   - `turn.queue.migration.ack` accepts a bootstrap migration `token` and removes
     exactly the matching visible user records. A stale token is `queue_conflict`.
   - `local_images` is an array of `{path, placeholder}` local image attachment
@@ -754,14 +757,26 @@ and tool execution. A later permission change does not affect a running turn.
 ### 2. Signatures
 
 - Gateway RPCs: `turn.steer`, `turn.follow_up`, `turn.queue.pop`,
-  `turn.queue.clear`, and `turn.queue.migration.ack`.
+  `turn.queue.clear`, `turn.queue.restore.ack`, and `turn.queue.migration.ack`.
 - Runtime: `QueueCoordinator.enqueueSteer()`, `enqueueFollowUp()`,
-  `commitPending(turnId)`, `rejectPending(turnId)`, `next()`, and
-  `markStarted(queueId)`.
+  `commitPending(turnId)`, `rejectPending(turnId)`,
+  `prepareInterruptedSteers(turnId)`, `next()`, `claim(queueId, turnId)`,
+  `releaseClaim(queueId, turnId)`, `retireClaim(queueId, turnId)`, and
+  `reconcileClaim(queueId, turnId)`, plus `claimForRestoration(token)`,
+  `acknowledgeRestoration(token)`, and `releaseRestorationClaims()`.
 - Storage:
   `SessionStore.saveQueueSnapshot({sessionId, workspaceRoot, threadId, snapshot}) -> QueueSnapshot`
   and
   `SessionStore.commitQueuedInputs({sessionId, turnId, records}) -> QueueSnapshot`.
+- Queued turn reservation:
+  `reserve({clientTurnId, clientUserMessageId, turnId, queueId, inputSource, ...}) -> TurnReservation`.
+- User interrupt response may include:
+  `pending_steers_resubmitted=true` and
+  `resubmitted_client_user_message_ids: string[]` when the backend durably prepared the accepted
+  steers for one immediate next turn.
+- TUI session input ownership is split between reducer snapshots for optimistic input and shell
+  snapshots for the draft, local image descriptors, last submitted input, activity signature, and
+  Enter-to-`turn.started` pending state.
 
 ### 3. Contracts
 
@@ -772,6 +787,12 @@ and tool execution. A later permission change does not affect a running turn.
   writes accept only an identical idempotent payload or exactly `current + 1`.
 - Persist the candidate before replacing the in-memory snapshot, emitting
   `turn.queue.updated`, or returning RPC success.
+- The backend queue is the only dispatch authority. TUI local arrays are an optimistic projection
+  and recovery copy; they must never form a second queue that independently races the backend.
+- A queue RPC ACK proves that the backend persisted the input. The TUI may replace its optimistic
+  row with the identity-matching durable preview, but the queued intent remains visible until a
+  matching committed user item, explicit queue removal, or interrupt restoration proves the next
+  lifecycle transition.
 - Before every provider request, atomically append matching pending steers to
   canonical conversation/history and remove them from `input_queue` by
   `queue_id`; then reload canonical provider history.
@@ -780,26 +801,72 @@ and tool execution. A later permission change does not affect a running turn.
   queue record `clientTurnId` as `client_user_message_id` and the durable
   history item id as the lifecycle item id so direct/mirrored event dedup keeps
   one user transcript row and clears the matching optimistic pending preview.
-- On normal completion, persist remaining matching pending steers as
-  `rejected_steer` before terminal success. Interruption retains pending steers.
-- After a completed turn, inspect at most one rejected steer/follow-up. Reuse
-  its `clientTurnId` as the reservation idempotency key, reserve first, and call
-  `markStarted()` only after reservation succeeds.
-- After reservation and `markStarted()` succeed, publish `item.started` and
+- On normal completion and failure, persist remaining matching accepted steers as
+  `rejected_steer` before the terminal event, then invoke the common idle scheduler.
+- A user interrupt with accepted steers atomically merges only those steers, in input order, into
+  one priority `rejected_steer`. It reuses the first queue/client identity, joins text with a blank
+  line, concatenates image paths, and rebases each message-local `[image #n]` placeholder into the
+  merged attachment order. Existing rejected steers and follow-ups remain behind it.
+- Publish the merged `turn.queue.updated` revision before `turn.interrupted`. Return
+  `pending_steers_resubmitted=true` plus every consumed client user-message id only after the
+  durable merge. The common terminal release then schedules exactly that one merged turn.
+- A user interrupt without a prepared steer does not auto-drain rejected steers or follow-ups.
+  After the terminal interrupt RPC confirms, the TUI calls `turn.queue.clear` with a unique
+  `restore_token`. The backend atomically claims the returned records for restoration instead of
+  deleting them; restoration claims are omitted from visible queue projections. The TUI applies
+  the authoritative revision, merges the returned structured records with any unacknowledged local
+  copies by identity, restores them in `rejected -> pending -> follow-up` order, and only then calls
+  `turn.queue.restore.ack` with the same token to retire those records. If the client exits before
+  ACK, session activation or process recovery releases the orphan restoration claims back to
+  `queued`, so accepted input remains recoverable.
+- Runtime-originated interruption without a TUI restoration owner may continue the durable queue;
+  user-requested interruption is distinguished by the active turn's latched interrupt disposition.
+- After a dispatchable terminal transition, inspect at most one rejected steer/follow-up. Reuse
+  its `clientTurnId` as the reservation idempotency key, persist a `claimed` queue record tied to
+  the proposed turn id, then atomically reserve the turn with `queueId` and `inputSource`.
+- After reservation succeeds, retire the exact matching claim and publish `item.started` and
   `item.completed` for the queued turn before provider IO. Reuse the queue
   record `clientTurnId` as `client_user_message_id`; project a rejected steer
   with `source=steer` and an ordinary follow-up with `source=submit`. This
   lifecycle lets the TUI render the user input once and clear its matching
   optimistic queue entry.
+- If reservation returns an existing turn, reconcile the claim against canonical committed
+  `queue_id` metadata. Retire a committed claim without executing the turn again; otherwise release
+  it back to `queued`. On restart, apply the same rule to every orphan claim before scheduling.
+- Completed, failed, cooperative-interrupt, and forced-interrupt paths release active execution
+  through one gateway finalizer. It persists terminal state first, finalizes queue disposition,
+  releases session execution ownership, publishes terminal/idle state, and only then invokes the
+  idempotent scheduler. Clearing `#activeTurn` in a separate forced-interrupt branch is forbidden
+  because the later task finalizer can no longer observe ownership and the queue stalls.
+- Session new/resume and session-control operations are serialized with turn admission. Session
+  activation releases orphan restoration claims while the transition gate is held, but queued-turn
+  scheduling starts only after that gate is released; scheduling inside activation is a no-op and
+  leaves an idle resumed queue stalled.
+- A temporary gate that still permits durable queue mutation must treat a blocked scheduling
+  attempt as a pending wake-up. Releasing a session-control gate requests the idempotent scheduler
+  again after the updated configuration is fully applied, on both success and failure paths. Do not
+  assume another status, queue, or terminal event will arrive to wake an idle persisted record.
+- New TUI mutation requests carry the captured `session_id` and positive `generation` for
+  `turn.submit`, `turn.interrupt`, `turn.steer`, `turn.follow_up`, `turn.queue.pop`,
+  `turn.queue.clear`, `turn.queue.restore.ack`, and clarification responses. The gateway compares
+  both values with its active session context before mutating state. Missing fields remain a
+  compatibility path for older clients and resolve to the current context; a stale or cross-session
+  value fails with `session_changed` and cannot affect the replacement session.
 - Queue callbacks carry the captured session generation. Old-generation
   callbacks cannot replace or publish the new active session queue.
 - A successful queue-mutation RPC response is also an authoritative TUI
-  acknowledgement. Remove the matching optimistic input by
-  `client_user_message_id` before applying the response's monotonic queue
-  snapshot. The response and `turn.queue.updated` notification may arrive in
-  either order; an older revision must not restore a consumed preview. An RPC
-  failure keeps the local recovery path intact.
+  acknowledgement. Apply the response's monotonic queue snapshot, then remove
+  the matching optimistic input by `client_user_message_id` only when that
+  revision was accepted; its identity-matching durable preview remains. The
+  response and `turn.queue.updated` notification may arrive in either order;
+  an older response must neither remove newer terminal recovery state nor
+  restore a consumed preview. An RPC failure keeps the local recovery path intact.
 - Preserve unknown compatible root and record fields when rewriting the `input_queue` payload.
+- Every structured queue record preserves `queue_id`, `session_id`, client identity, target turn,
+  kind, delivery state, optional `claim_turn_id`, source, timestamps, text, and image descriptors.
+- Session changes snapshot local pending/rejected/follow-up/submitting records before restoring the
+  target session. The shell snapshots and restores the target draft and attachments before queued
+  autosend; a late ACK cleans only its source session and never mutates the active session.
 
 ### 4. Validation & Error Matrix
 
@@ -813,6 +880,21 @@ and tool execution. A later permission change does not affect a running turn.
   message; do not expose paths, SQL, payloads, or exception text.
 - Next-turn reservation failure -> retain the record and emit bounded
   `queue_worker_start_failed`; do not start provider IO.
+- Claim persistence failure -> leave the original record `queued`; publish no claim revision and
+  start no provider request.
+- Failure after claim but before/while reservation -> reconcile against committed `queue_id`;
+  release an uncommitted claim or retire a committed claim.
+- Interrupted-steer merge exceeds queue record/attachment capacity or cannot persist -> keep every
+  original accepted steer durable, omit `pending_steers_resubmitted`, and use the ordinary
+  restoration path; emit one bounded queue error.
+- `turn.queue.clear` fails during ordinary interrupt restoration -> keep the durable queue and
+  render one actionable request error; never pretend the queue was removed.
+- `turn.queue.restore.ack` fails or the client disappears before ACK -> retain the claimed records;
+  release them to `queued` on the next activation/recovery rather than silently deleting them.
+- Queue event or ACK belongs to another session/generation -> ignore it for the active projection;
+  a late ACK may only reconcile the stored source-session optimistic snapshot.
+- Queue mutation carries a stale `session_id` or `generation`, or arrives during a session
+  transition -> `session_changed`; perform no queue, turn, approval, or clarification mutation.
 
 ### 5. Good/Base/Bad Cases
 
@@ -822,8 +904,20 @@ and tool execution. A later permission change does not affect a running turn.
   legacy migration payload.
 - Good: a follow-up racing turn completion is persisted, reserved with its own
   client id, then removed and run once.
+- Good: two accepted steers followed by Esc become one queued turn with their text and images in
+  stable order; the merge revision precedes the interrupt terminal event.
+- Good: forced interruption uses the same release/finalization method as cooperative interruption
+  and starts the prepared steer once even while the aborted worker settles late.
+- Good: an ordinary interrupt with only follow-ups starts no next turn; queue clear returns the
+  records and the TUI restores them to the composer.
+- Good: a follow-up persisted while `model.select` is pending remains idle until selection
+  finishes, then starts automatically with the newly selected model.
 - Bad: deleting a queued record before reservation or publishing a revision
   before SQLite commit, because a crash can lose input or expose phantom state.
+- Bad: treating a queue ACK as consumption, independently dispatching the TUI copy, or clearing the
+  active turn in the force path without calling the shared finalizer.
+- Bad: clearing a session-control gate without requesting scheduling again; the earlier scheduling
+  microtask already observed the gate and no later event is guaranteed to wake the durable queue.
 
 ### 6. Tests Required
 
@@ -836,6 +930,13 @@ and tool execution. A later permission change does not affect a running turn.
   steer deferral, queue RPC revisions, sanitized errors, generation fencing,
   reservation-before-removal, reservation-failure retention, and queued-turn
   user lifecycle identity/source for both rejected steers and follow-ups.
+- Core/runtime tests proving interrupted steers merge once, preserve priority, rebase image
+  placeholders, persist before publication, and leave internal task notifications untouched.
+- Gateway regressions for cooperative and forced interrupt, multiple pending steers, ordinary
+  follow-up restoration, failed-turn steer deferral, queue-update-before-terminal ordering, and
+  late completion suppression.
+- A controlled session-control barrier must prove queued input remains idle while the gate is held,
+  starts automatically after release, and observes the newly applied session configuration.
 - TUI reducer tests proving the queued-turn `item.completed` identity removes
   the matching optimistic pending input and appends one user transcript row.
 - TUI reducer tests proving a successful queue RPC replaces its optimistic
@@ -848,6 +949,10 @@ and tool execution. A later permission change does not affect a running turn.
   steering message and the same messages in durable transcript loading.
 - Backend restart integration proving a queued record is readable after process
   restart without provider IO.
+- Restart integration proving an orphan claim is released once, a claim with committed queue
+  metadata is retired without provider IO, and queued order remains durable.
+- TUI tests proving A -> B -> A restores only A's draft/attachments/optimistic inputs and that
+  ordinary interrupt restoration stably rebases placeholders across multiple queued messages.
 
 ### 7. Wrong vs Correct
 
@@ -861,11 +966,33 @@ const reservation = runtime.reserve(submission);
 #### Correct
 
 ```ts
+const proposedTurnId = createTurnId();
+queue.claim(record.queueId, proposedTurnId);
 const reservation = runtime.reserve({
 	...submission,
 	clientTurnId: record.clientTurnId,
+	turnId: proposedTurnId,
+	queueId: record.queueId,
+	inputSource: record.kind === "rejected_steer" ? "steer" : "submit",
 });
-queue.markStarted(record.queueId);
+queue.retireClaim(record.queueId, proposedTurnId);
+```
+
+#### Wrong: Gate Release Drops The Wake-Up
+
+```ts
+finally {
+	this.#sessionControlActive = false;
+}
+```
+
+#### Correct: Gate Release Replays Idempotent Scheduling
+
+```ts
+finally {
+	this.#sessionControlActive = false;
+	this.#requestNextQueuedTurn();
+}
 ```
 
 - Node workspace dependency layout:
@@ -1485,7 +1612,7 @@ return bootstrap;
   `writeApiKey({homeDir, authRef, apiKey}) -> Promise<void>`.
 - Config writer:
   `writeUserProviderConfig({homeDir, provider, protocol, model, apiBaseUrl, authRef,
-  promptCacheKeyEnabled, cacheControlEnabled}) -> Promise<string>`.
+  cacheRetention, thinkingEnabled?, reasoningEffort?}) -> Promise<string>`.
 - Setup TUI:
   `runSetupTui({state, terminal?, signal?}) -> Promise<SetupWizardResult | undefined>`.
 - Doctor runner:
@@ -1522,8 +1649,9 @@ return bootstrap;
 - Auth/config updates create a mode-`0700` user directory, write and fsync a sibling mode-`0600`
   temporary file under a short exclusive lock, rename atomically, fsync the directory where
   supported, and remove temporary/lock files. Concurrent auth merges serialize.
-- User config writing preserves unrelated TOML values/tables, updates `[model]` and cache fields,
-  normalizes trailing base-URL slashes, and removes legacy root or `[model]` `api_key` values.
+- User config writing preserves unrelated TOML values/tables, updates `[model]` and canonical
+  `request.cache_retention`, normalizes trailing base-URL slashes, removes legacy cache booleans, and
+  removes legacy root or `[model]` `api_key` values.
 - Node doctor runs independent collectors in stable config, storage, runtime, extensions, and
   process order. Collector exceptions and collector-local `AbortError` values become one failed
   check and later collectors continue. Caller cancellation aborts the whole command.
@@ -3382,9 +3510,9 @@ return nodeRuntime.run(turn);
 
 - Node registry: `node-slash-command-registry.ts`.
 - Node execution: `command.run`, command-specific RPCs, and TUI client actions.
-- Model catalog: `~/.mycli/models.json` -> `model.list` -> TUI model selector ->
-  `model.select({scope: session|user})` -> active session preferences, with user config mutation
-  only for explicit `user` scope.
+- Model catalog: `provider.list` -> `model.list({provider})` -> provider-scoped TUI model selector
+  -> `model.select({provider, protocol, model, base_url, reasoning_effort?, scope})` -> active
+  session preferences, with user config mutation only for explicit `user` scope.
 - Visual settings: TUI settings selector -> `settings.save` -> `saveShellSettings` ->
   `~/.mycli/config.toml`.
 
@@ -3395,17 +3523,25 @@ return nodeRuntime.run(turn);
   Node service, gateway, and TUI paths.
 - Metadata hashes may freeze command names, aliases, surfaces, and presentation, but must not be
   described as full behavioral evidence without end-to-end tests.
-- Node `/model` reads the user-owned `~/.mycli/models.json`. It bootstraps the built-in catalog only
-  when the file is missing and never replaces an existing registry.
-- `model.list` returns every valid catalog entry with the exact current entry first. Public payloads
-  include selection metadata but exclude `auth_ref`, API keys, and other credentials.
-- `session.bootstrap.models` is a top-level catalog payload, not a field inside `status`. The TUI
-  adapter stores it as catalog state before projecting the model selector. Later `status.changed`
-  events that omit a catalog must preserve the last catalog instead of collapsing to the current
-  model fallback.
-- Opening the bare TUI `/model` refreshes `model.list` immediately before mounting the selector,
-  and a successful `model.select` response refreshes the stored catalog so current markers and
-  runtime edits to `models.json` are visible without restarting.
+- Node `/model` resolves explicitly activated routes from `provider.list`; built-in route/model
+  metadata comes from the lazily loaded, exactly pinned pi-ai catalog, and user `models.json`
+  declarations override or extend only the exact owning route. Catalog-backed routes inherit new
+  matching-protocol models by default; only `model_policy: "subset"` narrows a route. Discovery
+  never creates or rewrites `models.json` merely because it is missing.
+- `model.list` requires one validated activated route and returns `{provider, models}` for only that
+  route, with the exact current entry first. Public payloads include selection metadata but exclude
+  `auth_ref`, API keys, headers, and other credentials.
+- `session.bootstrap` carries current provider/model status and auth readiness, but no global model
+  catalog. The TUI stores a model array only together with its `modelsProvider` owner and replaces
+  both from a matching `model.list` result.
+- Opening bare TUI `/model` loads `provider.list`, resolves the current or explicitly preferred
+  route, and immediately requests `model.list({provider})`. With no resolvable current route it opens
+  the searchable provider list. A configured route without credentials remains visible and opens
+  login before model traffic.
+- While viewing or loading models, `tui.select.previousGroup` and `tui.select.nextGroup` load the
+  adjacent provider directly. Esc opens the provider list when multiple routes are usable and closes
+  the selector otherwise. Every load carries a generation; a late response for a superseded route
+  is discarded without replacing the current provider's rows.
 - `model.select` resolves `auth_ref` on the backend from the selected catalog entry, verifies the
   credential exists, and validates provider/protocol/base URL and supported reasoning effort before
   changing state. Scope is exactly `session` or `user`; missing scope defaults to `session`.
@@ -3422,8 +3558,12 @@ return nodeRuntime.run(turn);
   `statusline_enabled`, `tui_statusbar_mode`, and `tui_theme`. It preserves unrelated TOML,
   comments, and newline style rather than serializing the complete user document.
 - Bare TUI `/model`, direct `model.list`/`model.select`, and inline `/model <name>` share the same
-  catalog and selection path. The TUI adds a final scope stage with `Use for this session` first and
-  selected by default; inline selection omits scope and is therefore session-local.
+  provider-scoped catalog and exact-identity selection path. Enter on a model is the common path: it
+  submits session scope with the catalog's valid default reasoning effort, or the first supported
+  effort when no valid default exists. `tui.select.options` (Tab by default) opens reasoning when
+  applicable and then the scope stage, where the user can make the selection their user default.
+  Inline `/model <name>` searches only the active provider and is session-local; it never falls back
+  to another route containing the same model name.
 - A failed selection leaves the active provider/model, session preferences, and durable config
   unchanged. A successful session selection is visible in `/status`, subsequent turns, subagents,
   and resume without changing defaults for new sessions. A successful user selection additionally
@@ -3438,12 +3578,22 @@ return nodeRuntime.run(turn);
 
 ### 4. Validation & Error Matrix
 
-- Missing `models.json` -> atomically create the compatible built-in registry with private
-  directory/file permissions.
-- Invalid JSON, missing `models`, duplicate identity, unsupported provider/protocol, invalid URL,
-  repeated reasoning effort, or unlisted default effort -> bounded `model_catalog_error`.
-- Model absent from the catalog, endpoint mismatch, unsupported effort, or missing catalog
+- Missing `models.json` -> use the pinned pi-ai catalog plus built-in route declarations without
+  writing a file.
+- Catalog-backed v2 declaration with `models` and no `model_policy` -> merge those entries as
+  provider-local overrides/additions while retaining the rest of the installed catalog.
+- `model_policy: "subset"` without non-empty `models`, an unknown policy, or a catalog policy on an
+  explicitly declared custom route -> bounded catalog/config error.
+- Invalid JSON, duplicate exact identity, incomplete custom route, unsupported provider/protocol,
+  invalid URL, repeated reasoning effort, or unlisted default effort -> bounded catalog/config error.
+- Missing, malformed, inactive, or unserviceable `model.list.provider` -> `invalid_params`; return no
+  models from another route.
+- Model absent from the selected route, endpoint mismatch, unsupported effort, or missing selected
   credential -> reject before config mutation and provider startup.
+- Provider/model load fails or a quick selection is rejected -> keep the selector open, show one
+  bounded redacted error, release the submission fence, and allow exactly one request on retry.
+- A provider response arrives after a newer provider generation -> discard it without mutating the
+  visible route, cached model owner, or current selection.
 - Model without a reasoning effort -> persist thinking disabled and remove stale active thinking
   effort while retaining a valid base reasoning setting for future models.
 - Public model payload or error -> no API key, bearer token, raw auth-store content, or private
@@ -3455,30 +3605,36 @@ return nodeRuntime.run(turn);
 
 ### 5. Good/Base/Bad Cases
 
-- Good: one shared fixture produces identical config, gateway, and TUI public model-catalog payloads,
-  then a catalog selection survives restart and is used by the next turn.
+- Good: `/model` opens the current provider's models, one Enter applies the highlighted model to the
+  session, and Tab still reaches custom reasoning plus user-default scope.
+- Good: upgrading the pinned pi-ai package adds a newly catalogued model to an existing
+  catalog-backed route even when that route already has local model metadata overrides.
+- Good: cycling providers replaces the list with only the adjacent route's models; an older response
+  that completes afterward cannot replace them.
 - Good: a visual settings save changes only owned root compatibility keys while preserving provider
   comments and plugin tables; a later model selection preserves those TUI keys.
-- Base: an existing catalog with no exact current entry is returned intact with no row marked
+- Base: a provider-scoped catalog with no exact current entry is returned intact with no row marked
   current.
 - Bad: synthesize one default model per provider and call it catalog parity.
+- Bad: concatenate every provider's models, filter by credential presence, or switch provider on a
+  same-name match.
 - Bad: accept arbitrary `model.select` input or trust `auth_ref` supplied by the TUI.
 - Bad: let `model.select` or `settings.save` parse/stringify the whole TOML document in the gateway.
 - Bad: freeze only the slash registry checksum while command services use different data sources.
 
 ### 6. Tests Required
 
-- Config unit tests cover compatible loading, bootstrap, private permissions, exact current
-  matching, duplicate and reasoning validation, and credential-free payloads.
-- A shared-fixture test feeds the same `models.json` through config, gateway, and TUI projections
-  and compares all public fields and ordering.
-- Gateway tests cover missing-scope session defaulting, invalid-scope rejection, explicit user scope,
-  bare/inline ownership, catalog-backed inline selection, structured failures, current `/status`
-  projection, and the next turn's model/reasoning overrides.
-- TUI tests cover the final scope stage, session-first focus, user/session callbacks, Esc
-  back-navigation, inline errors, and narrow widths.
-- TUI adapter tests pass a catalog through the top-level bootstrap envelope, project every entry,
-  preserve it across a catalog-free `status.changed`, and replace it from a later `model.list`.
+- Config and provider-directory unit tests cover exact route ownership, provider-local overrides,
+  custom routes, duplicate/reasoning validation, lazy pi-ai loading, and credential-free payloads.
+- Gateway tests cover required provider input, inactive/malformed routes, same-name route isolation,
+  missing-scope session defaulting, invalid-scope rejection, explicit user scope, structured
+  failures, current `/status` projection, and the next turn's model/reasoning overrides.
+- TUI tests cover current-provider auto-load, one-confirmation Enter, default-effort fallback, Tab
+  reasoning/scope, user/session callbacks, bracket provider cycling, Esc provider back-navigation,
+  login, loading/empty/error/retry states, stale-response fencing, inline errors, and narrow widths.
+- TUI adapter tests associate each catalog with `modelsProvider`, reject malformed provider
+  directories, preserve unrelated state across status updates, and replace the owned catalog only
+  from a matching `model.list` result.
 - Backend integration tests use a temporary HOME with a real catalog and auth store, verify
   catalog-owned `auth_ref`, session-only config isolation, resume persistence, user-default
   persistence, failed-write atomicity, and absence of credentials in responses.
@@ -3493,14 +3649,16 @@ return nodeRuntime.run(turn);
 #### Wrong
 
 ```typescript
-const models = listProviderProfiles().map(defaultModelForProvider);
-gateway.model = requestedModel;
+const models = allProviderModels.filter((model) => hasAnyCredential(model.provider));
+const selected = models.find((model) => model.model === requestedModel);
 ```
 
 #### Correct
 
 ```typescript
-const catalog = await loadModelCatalog({ homeDir, currentConfig });
+const routes = await providerModelDirectory.load(currentConfig);
+const route = routes.requireActive(request.provider);
+const catalog = route.models();
 const selected = validateCatalogSelection(catalog, request);
 const active = sessionCoordinator.snapshot();
 const preferences = sessionPreferencesFromSelection(selected, active);
@@ -5829,9 +5987,11 @@ if (successfulPoll && !matchingShell) continue;
   base readiness fields and never infer compatibility from rendered text.
 - Full Access maps readiness to `not_required` only when the effective profile needs no process
   isolation. A managed network/root/domain restriction keeps platform readiness relevant.
-- macOS checks the fixed Seatbelt executable; Linux checks the fixed bubblewrap candidates.
-  Windows checks the packaged helper and runs only a bounded `--handshake`: five-second timeout,
-  16-KiB output cap, exact helper identity/protocol, and boolean setup/readiness fields.
+- macOS checks the fixed Seatbelt executable. Linux first finds a fixed bubblewrap candidate and
+  then runs one bounded read-only capability probe covering user, PID, and network namespaces;
+  executable presence alone is not readiness. The probe has a five-second timeout and a 16-KiB
+  output cap. Windows checks the packaged helper and runs only a bounded `--handshake`: five-second
+  timeout, 16-KiB output cap, exact helper identity/protocol, and boolean setup/readiness fields.
 - Readiness inspection never runs setup, elevation, repair, provider IO, TUI startup, or an
   interactive backend. Raw helper output, exceptions, paths, credentials, and tool arguments never
   enter the result.
@@ -5856,7 +6016,9 @@ if (successfulPoll && !matchingShell) continue;
 
 | Condition | Required behavior |
 | --- | --- |
-| macOS Seatbelt or Linux bubblewrap exists | `ready/ready` with the matching isolation |
+| macOS Seatbelt exists | `ready/ready` with the matching isolation |
+| Linux bubblewrap exists and its namespace probe succeeds | `ready/ready` with `bubblewrap` isolation |
+| Linux bubblewrap exists but namespace enforcement is denied or unavailable | `unavailable/enforcement_unavailable` |
 | Required fixed executable is missing | `unavailable/helper_missing` |
 | Windows helper reports setup incomplete | `setup_required/setup_incomplete`; do not elevate |
 | Windows helper protocol version differs | `unavailable/handshake_failed` and `helper_compatible=false` |

@@ -5,12 +5,20 @@ This directory is split by document purpose.
 ## Current Architecture
 
 - [architecture.md](./architecture.md): Node workspace and runtime ownership boundaries.
+- [testing.md](./testing.md): canonical test suites, classification rules, local commands, and CI composition.
 - [architecture/configuration-trust-and-provenance.md](./architecture/configuration-trust-and-provenance.md): configuration precedence, workspace trust, provenance, and secret boundaries.
 - [reference/configuration.md](./reference/configuration.md): generated configuration keys, defaults, canonical paths, and compatibility aliases.
 - [reference/config.example.toml](./reference/config.example.toml): generated commented configuration example.
+- [providers.md](./providers.md): first-class provider defaults, compatible endpoints, credentials, rollback, and opt-in live verification.
 - [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
 - [terminal-accessibility.md](./terminal-accessibility.md): terminal capabilities, custom keymaps, CJK/IME, paste, resize, completion, and non-TTY behavior.
 - [parity/configuration-ux-baseline.md](./parity/configuration-ux-baseline.md): provider-free UX journeys, budgets, privacy rules, and drift gates.
+- [compatibility.md](./compatibility.md): supported Node, platform, config, catalog, session, deprecation, and evidence windows.
+- [upgrading.md](./upgrading.md): public package migration, config backup/rollback, and session-safe package rollback.
+- [release-notes.md](./release-notes.md): current unversioned release-candidate changes and operator notes.
+- [releasing.md](./releasing.md): coordinated versioning, compatibility gates, publication, and partial-release recovery.
+- [parity/configuration-ux-release-evidence.md](./parity/configuration-ux-release-evidence.md): the eight OMX Definition of Done outcomes mapped to deterministic and installed-artifact evidence.
+- [parity/pi-ai-provider-catalog-release-evidence.md](./parity/pi-ai-provider-catalog-release-evidence.md): deterministic, packed, and available live evidence for the curated pi-ai provider expansion.
 - [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.
 - [troubleshooting.md](./troubleshooting.md): provider-free diagnosis and common recovery paths.
 - [diagnostics-and-updates.md](./diagnostics-and-updates.md): structured doctor output, privacy boundaries, cached update checks, and dismissal.
