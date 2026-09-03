@@ -798,6 +798,7 @@ export interface Status {
   };
   queue_items: {
     follow_ups?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -810,13 +811,14 @@ export interface Status {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     pending_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -829,13 +831,14 @@ export interface Status {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     rejected_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -848,7 +851,7 @@ export interface Status {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
@@ -896,7 +899,10 @@ export interface Status {
   [k: string]: any;
 }
 export interface Status1 {
+  session_id?: string;
+  generation?: number;
   client_turn_id?: string;
+  turn_id?: string;
   kind: string;
   message?: string;
   severity?: string;
@@ -972,6 +978,8 @@ export interface Tool3 {
   [k: string]: any;
 }
 export interface Turn {
+  session_id?: string;
+  generation?: number;
   activity_events: any[];
   assistant_message: string;
   client_turn_id: string;
@@ -1006,6 +1014,8 @@ export interface Turn2 {
   [k: string]: any;
 }
 export interface Turn3 {
+  session_id?: string;
+  generation?: number;
   additional_details?: string;
   client_turn_id: string;
   code:
@@ -1031,6 +1041,8 @@ export interface Turn3 {
   [k: string]: any;
 }
 export interface Turn4 {
+  session_id?: string;
+  generation?: number;
   client_turn_id?: string;
   code?: "interrupted";
   input_rolled_back?: boolean;
@@ -1070,6 +1082,7 @@ export interface TurnQueue {
   has_pending_input?: boolean;
   queue_items: {
     follow_ups?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -1082,13 +1095,14 @@ export interface TurnQueue {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     pending_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -1101,13 +1115,14 @@ export interface TurnQueue {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     rejected_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -1120,7 +1135,7 @@ export interface TurnQueue {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
@@ -1146,11 +1161,15 @@ export interface TurnQueue {
   [k: string]: any;
 }
 export interface Turn5 {
+  session_id?: string;
+  generation?: number;
   client_turn_id: string;
   turn_id: string;
   [k: string]: any;
 }
 export interface Turn6 {
+  session_id?: string;
+  generation?: number;
   client_turn_id?: string;
   kind: string;
   message?: string;

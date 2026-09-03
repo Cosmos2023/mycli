@@ -7,7 +7,6 @@ import {
 import {
 	CachedUpdateService,
 	loadManagedExecutionPolicy,
-	loadModelCatalog,
 	readApiKey,
 	resolveConfig,
 	WorkspaceTrustStore,
@@ -18,6 +17,7 @@ import {
 	pluginSandboxProfile,
 	workspaceSandboxProfile,
 } from "../node-runtime/integration-sandbox.ts";
+import { ProviderModelDirectory } from "../node-runtime/provider-model-directory.ts";
 import type {
 	AuthManagementCommand,
 	DoctorManagementCommand,
@@ -231,9 +231,9 @@ export class ManagementServices implements ManagementExecutor {
 export async function createDefaultManagementServices(
 	options: DefaultManagementServicesOptions,
 ): Promise<ManagementServices> {
-	const workspaceTrust = await new WorkspaceTrustStore({
-		homeDir: options.homeDir,
-	}).load(options.workspaceRoot);
+	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir: options.homeDir });
+	const workspaceTrust = await workspaceTrustStore.load(options.workspaceRoot);
+	const providerModelDirectory = new ProviderModelDirectory({ homeDir: options.homeDir });
 	const includeRepository = workspaceTrust === "trusted";
 	const config = new ConfigManagementService({
 		workspaceRoot: options.workspaceRoot,
@@ -337,10 +337,25 @@ export async function createDefaultManagementServices(
 						store,
 						currentConfig: () => currentConfig,
 						currentPermissionProfile: () => "workspace",
-						loadModelCatalog: () => loadModelCatalog({
-							homeDir: options.homeDir,
-							currentConfig,
-						}),
+						loadModelCatalog: async (preferences, workspaceRoot, sessionId) => {
+							const resolved = await resolveConfig({
+								homeDir: options.homeDir,
+								workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(workspaceRoot),
+								overrides: {
+									session: sessionId,
+									provider: preferences.provider,
+									protocol: preferences.protocol,
+									model: preferences.model,
+									apiBaseUrl: preferences.apiBaseUrl,
+									authRef: preferences.authRef,
+									reasoningEffort: preferences.reasoningEffort,
+									thinkingEnabled: preferences.reasoningEffort !== "none",
+								},
+							});
+							return (await providerModelDirectory.load(resolved)).models(preferences.provider);
+						},
 						hasCredential: async (preferences) => {
 							if (preferences.authRef === currentConfig.authRef && currentConfig.apiKey) {
 								return true;

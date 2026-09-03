@@ -21,6 +21,7 @@ import type {
 	ProviderUsage,
 	RuntimeErrorCode,
 } from "@mycli/core";
+import { parseProviderRouteId } from "@mycli/core";
 import * as storage from "../src/index.ts";
 import type {
 	AgentEffectLedgerStore,
@@ -37,6 +38,8 @@ interface ReserveTurnInput {
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly userText: string;
+	readonly queueId?: string;
+	readonly inputSource?: "submit" | "steer" | "queued";
 	readonly imagePaths?: readonly string[];
 	readonly images?: readonly CanonicalImage[];
 	readonly startedAt: string;
@@ -73,6 +76,7 @@ interface Store {
 	loadConversation(sessionId: string): readonly CanonicalMessage[];
 	loadConversationItems(sessionId: string): readonly CanonicalConversationItem[];
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
+	loadCommittedQueueIds(sessionId: string): ReadonlySet<string>;
 	loadRecentHistoryItems(
 		sessionId: string,
 		limit: number,
@@ -734,6 +738,52 @@ test("reserves a turn atomically and deduplicates the same fingerprint", async (
 	assert.equal(count(database, "runtime_turns"), 1);
 });
 
+test("queued turn reservation commits queue identity and source with the user input", async (t) => {
+	const SQLiteSessionStore = constructor();
+	const fixture = await databaseFixture(t);
+	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
+	t.after(() => store.close());
+	const input = {
+		...submission(fixture.root),
+		clientTurnId: "queued-client",
+		clientUserMessageId: "queued-client",
+		turnId: "queued-turn",
+		queueId: "queue-next",
+		inputSource: "steer" as const,
+		userText: "continue from the queue",
+	};
+
+	const reservation = store.reserveTurn(input);
+
+	assert.equal(reservation.kind, "reserved");
+	assert.deepEqual([...store.loadCommittedQueueIds("session-1")], ["queue-next"]);
+	assert.deepEqual(store.loadConversation("session-1"), [
+		{ role: "user", content: "continue from the queue" },
+	]);
+	const userHistory = store.loadHistoryItems("session-1")[0];
+	assert.equal(userHistory?.id, "queued-turn:queue:queue-next");
+	assert.deepEqual(userHistory?.metadata, {
+		client_turn_id: "queued-client",
+		client_user_message_id: "queued-client",
+		queue_id: "queue-next",
+		source: "steer",
+		image_paths: [],
+	});
+
+	const database = await openDatabase(fixture.dbPath);
+	t.after(() => database.close());
+	const message = JSON.parse(String((database.prepare(`
+		SELECT payload_json FROM conversation_messages
+		WHERE session_id = ? ORDER BY message_index LIMIT 1
+	`).get("session-1") as { payload_json: unknown }).payload_json)) as Record<string, unknown>;
+	const metadata = message.metadata as Record<string, unknown>;
+	assert.equal(metadata.queue_id, "queue-next");
+	assert.equal(metadata.source, "steer");
+	assert.equal(count(database, "runtime_turns"), 1);
+	assert.equal(count(database, "conversation_messages"), 1);
+	assert.equal(count(database, "history_items"), 1);
+});
+
 test("completes a turn with one assistant message, history item, and rollout", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const fixture = await databaseFixture(t);
@@ -911,7 +961,7 @@ test("persists provider replay state and context with its tool result", async (t
 	t.after(() => store.close());
 	store.reserveTurn({ ...submission(fixture.root), threadId: "thread-1" });
 	const providerState: ProviderReplayState = {
-		provider: "openai",
+		provider: parseProviderRouteId("cloudflare-ai-gateway"),
 		value: { thinking: "checked", signature: "sig-test" },
 		tokenEstimate: 73,
 	};

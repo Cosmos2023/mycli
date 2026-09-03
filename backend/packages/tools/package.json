@@ -36,12 +36,12 @@
     "tar": "^7.5.22"
   },
   "optionalDependencies": {
-    "@mycli/ripgrep-darwin-arm64": "0.1.0",
-    "@mycli/ripgrep-darwin-x64": "0.1.0",
-    "@mycli/ripgrep-linux-arm64": "0.1.0",
-    "@mycli/ripgrep-linux-x64": "0.1.0",
-    "@mycli/ripgrep-win32-arm64": "0.1.0",
-    "@mycli/ripgrep-win32-x64": "0.1.0"
+    "@cosmos2023/ripgrep-darwin-arm64": "0.1.0",
+    "@cosmos2023/ripgrep-darwin-x64": "0.1.0",
+    "@cosmos2023/ripgrep-linux-arm64": "0.1.0",
+    "@cosmos2023/ripgrep-linux-x64": "0.1.0",
+    "@cosmos2023/ripgrep-win32-arm64": "0.1.0",
+    "@cosmos2023/ripgrep-win32-x64": "0.1.0"
   },
   "devDependencies": {
     "tsx": "^4.22.4",

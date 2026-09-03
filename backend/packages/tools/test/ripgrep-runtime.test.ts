@@ -19,9 +19,9 @@ test("ripgrep target normalization matches the Python runtime layout", () => {
 	assert.equal(ripgrepPlatformKey("win32", "x64"), "windows-x86_64");
 	assert.throws(() => ripgrepPlatformKey("freebsd", "x64"), /unsupported ripgrep platform/u);
 	assert.throws(() => ripgrepPlatformKey("linux", "riscv64"), /unsupported ripgrep architecture/u);
-	assert.equal(RIPGREP_TARGETS["macos-aarch64"].npmPackage, "@mycli/ripgrep-darwin-arm64");
-	assert.equal(RIPGREP_TARGETS["linux-x86_64"].npmPackage, "@mycli/ripgrep-linux-x64");
-	assert.equal(RIPGREP_TARGETS["windows-aarch64"].npmPackage, "@mycli/ripgrep-win32-arm64");
+	assert.equal(RIPGREP_TARGETS["macos-aarch64"].npmPackage, "@cosmos2023/ripgrep-darwin-arm64");
+	assert.equal(RIPGREP_TARGETS["linux-x86_64"].npmPackage, "@cosmos2023/ripgrep-linux-x64");
+	assert.equal(RIPGREP_TARGETS["windows-aarch64"].npmPackage, "@cosmos2023/ripgrep-win32-arm64");
 });
 
 test("platform package ripgrep wins over legacy package, user, and system binaries", async (t) => {

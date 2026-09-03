@@ -609,7 +609,11 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					this.#insertEvent(parseTranscriptEventAppendInput({
 						schemaVersion: 1,
 						sessionId: input.sessionId,
-						eventId: semanticEventId(input.turnId, "user", input.clientUserMessageId),
+						eventId: semanticEventId(
+							input.turnId,
+							input.queueId ? "queued-user" : "user",
+							input.queueId ?? input.clientUserMessageId,
+						),
 						turnId: input.turnId,
 						eventType: "user_input",
 						modelVisible: true,
@@ -617,7 +621,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 						payload: {
 							text: input.userText,
 							clientUserMessageId: input.clientUserMessageId,
-							source: "submit",
+							...(input.queueId ? { queueId: input.queueId } : {}),
+							source: input.inputSource ?? "submit",
 							...(images.length > 0 ? { images } : {}),
 						},
 					}));

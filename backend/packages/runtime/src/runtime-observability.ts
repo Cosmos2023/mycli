@@ -1,5 +1,5 @@
 import type { RuntimeErrorCode } from "@mycli/contracts";
-import type { ProviderId, ProtocolId } from "@mycli/core";
+import type { ProtocolId, ProviderRouteId } from "@mycli/core";
 
 export interface ProviderStreamDiagnostics {
 	readonly attempt: number;
@@ -26,7 +26,7 @@ export type RuntimeDiagnosticEvent =
 	| (ProviderStreamDiagnostics & {
 		readonly kind: "model_stream_diagnostics";
 		readonly turnId: string;
-		readonly provider: ProviderId;
+		readonly provider: ProviderRouteId;
 		readonly protocol: ProtocolId;
 		readonly model: string;
 	})

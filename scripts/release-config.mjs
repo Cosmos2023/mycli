@@ -10,12 +10,12 @@ function releasePackage(name, relativePath, workspace) {
 }
 
 export const PLATFORM_RELEASE_PACKAGES = Object.freeze([
-	releasePackage("@mycli/ripgrep-darwin-arm64", "npm/ripgrep/macos-aarch64", false),
-	releasePackage("@mycli/ripgrep-darwin-x64", "npm/ripgrep/macos-x86_64", false),
-	releasePackage("@mycli/ripgrep-linux-arm64", "npm/ripgrep/linux-aarch64", false),
-	releasePackage("@mycli/ripgrep-linux-x64", "npm/ripgrep/linux-x86_64", false),
-	releasePackage("@mycli/ripgrep-win32-arm64", "npm/ripgrep/windows-aarch64", false),
-	releasePackage("@mycli/ripgrep-win32-x64", "npm/ripgrep/windows-x86_64", false),
+	releasePackage("@cosmos2023/ripgrep-darwin-arm64", "npm/ripgrep/macos-aarch64", false),
+	releasePackage("@cosmos2023/ripgrep-darwin-x64", "npm/ripgrep/macos-x86_64", false),
+	releasePackage("@cosmos2023/ripgrep-linux-arm64", "npm/ripgrep/linux-aarch64", false),
+	releasePackage("@cosmos2023/ripgrep-linux-x64", "npm/ripgrep/linux-x86_64", false),
+	releasePackage("@cosmos2023/ripgrep-win32-arm64", "npm/ripgrep/windows-aarch64", false),
+	releasePackage("@cosmos2023/ripgrep-win32-x64", "npm/ripgrep/windows-x86_64", false),
 ]);
 
 export const VENDORED_WORKSPACE_PACKAGES = Object.freeze([
@@ -31,7 +31,7 @@ export const VENDORED_WORKSPACE_PACKAGES = Object.freeze([
 ]);
 
 export const APPLICATION_RELEASE_PACKAGE = releasePackage(
-	"@mycli/app",
+	"@cosmos2023/mycli",
 	"backend/apps/mycli",
 	true,
 );

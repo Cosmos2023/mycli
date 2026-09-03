@@ -3,6 +3,7 @@ import test from "node:test";
 import type { ProviderEvent, ProviderRequest, RuntimeEvent } from "@mycli/core";
 import {
 	ProviderFailure,
+	ProviderRegistry,
 	providerFailureToRuntimeFailure,
 } from "@mycli/providers";
 import {
@@ -133,6 +134,109 @@ test("ProviderAgentLoop retries and resets an incomplete streamed attempt", asyn
 		{ type: "message_complete", responseId: "response-2" },
 		{ type: "stream_recovered" },
 	]);
+});
+
+test("ProviderAgentLoop owns request and stream retries for pi-ai failures", async (context) => {
+	await context.test("request recovery", async () => {
+		const source = piAiBackedProvider(["request_failure", "success"]);
+		const emitted: RuntimeEvent[] = [];
+		const result = await new ProviderAgentLoop().runStep({
+			provider: source.provider,
+			request: providerRequest(),
+			requestMaxRetries: 1,
+			maxRetries: 0,
+			signal: new AbortController().signal,
+			toolCallsAllowed: false,
+			emit: (event) => emitted.push(event),
+			normalizeFailure,
+			sleep: async () => undefined,
+			random: () => 0.5,
+		});
+		assert.equal("failure" in result, false);
+		assert.equal(source.attempts(), 2);
+		assert.deepEqual(emitted.map((event) => event.type), [
+			"stream_retrying",
+			"text_delta",
+			"message_complete",
+			"stream_recovered",
+		]);
+		assert.equal(emitted[0]?.type === "stream_retrying" && emitted[0].recoveryKind, "request");
+	});
+
+	await context.test("post-output stream recovery", async () => {
+		const source = piAiBackedProvider(["stream_failure", "success"]);
+		const emitted: RuntimeEvent[] = [];
+		const result = await new ProviderAgentLoop().runStep({
+			provider: source.provider,
+			request: providerRequest(),
+			requestMaxRetries: 0,
+			maxRetries: 1,
+			signal: new AbortController().signal,
+			toolCallsAllowed: false,
+			emit: (event) => emitted.push(event),
+			normalizeFailure,
+			sleep: async () => undefined,
+			random: () => 0.5,
+		});
+		assert.equal("failure" in result, false);
+		assert.equal(source.attempts(), 2);
+		const retrying = emitted.find((event) => event.type === "stream_retrying");
+		assert(retrying?.type === "stream_retrying");
+		assert.equal(retrying.recoveryKind, "stream");
+		assert.equal(retrying.resetOutput, true);
+		assert.equal(retrying.failureKind, "response_stream_error");
+	});
+});
+
+test("ProviderAgentLoop exhausts and aborts pi-ai retry backoff", async (context) => {
+	await context.test("exhaustion", async () => {
+		const source = piAiBackedProvider(["request_failure", "request_failure"]);
+		const result = await new ProviderAgentLoop().runStep({
+			provider: source.provider,
+			request: providerRequest(),
+			requestMaxRetries: 1,
+			maxRetries: 0,
+			signal: new AbortController().signal,
+			toolCallsAllowed: false,
+			emit: () => undefined,
+			normalizeFailure,
+			sleep: async () => undefined,
+			random: () => 0.5,
+		});
+		assert.equal(source.attempts(), 2);
+		assert.equal("failure" in result ? result.failure.code : undefined, "retry_exhausted");
+	});
+
+	await context.test("abortable backoff", async () => {
+		const source = piAiBackedProvider(["request_failure", "success"]);
+		const controller = new AbortController();
+		let backoffStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => { backoffStarted = resolve; });
+		const pending = new ProviderAgentLoop().runStep({
+			provider: source.provider,
+			request: providerRequest(),
+			requestMaxRetries: 1,
+			maxRetries: 0,
+			signal: controller.signal,
+			toolCallsAllowed: false,
+			emit: () => undefined,
+			normalizeFailure,
+			random: () => 0.5,
+			sleep: async (_delay, signal) => {
+				backoffStarted?.();
+				await new Promise<void>((_resolve, reject) => signal.addEventListener(
+					"abort",
+					() => reject(signal.reason),
+					{ once: true },
+				));
+			},
+		});
+		await started;
+		controller.abort();
+		const result = await pending;
+		assert.equal(source.attempts(), 1);
+		assert.equal("failure" in result ? result.failure.code : undefined, "interrupted");
+	});
 });
 
 test("ProviderAgentLoop fails a stream that ends without completion", async () => {
@@ -423,7 +527,85 @@ function normalizeFailure(error: unknown): ProviderAgentLoopFailure {
 	if (error instanceof ProviderFailure) {
 		return providerFailureToRuntimeFailure(error);
 	}
+	if (error instanceof Error && error.name === "AbortError") {
+		return { code: "interrupted", message: "provider request interrupted", retryable: false };
+	}
 	return { code: "provider_error", message: "provider failed", retryable: false };
+}
+
+type PiAiAttempt = "request_failure" | "stream_failure" | "success";
+
+function piAiBackedProvider(scripts: readonly PiAiAttempt[]) {
+	let attempt = 0;
+	const provider = new ProviderRegistry({
+		fetch: async () => {
+			const script = scripts[attempt++] ?? "request_failure";
+			if (script === "request_failure") {
+				return new Response(JSON.stringify({
+					error: { type: "server_error", message: "temporarily unavailable" },
+				}), {
+					status: 500,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response(responsesStream(script === "success"), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		},
+	}).create({
+		provider: "openai",
+		protocol: "responses",
+		model: "test-model",
+		apiBaseUrl: "https://provider.example/v1",
+		apiKey: "test-key",
+		supportsImages: true,
+		modelContextWindowTokens: 128_000,
+		maxOutputTokens: 16_000,
+		maxPromptTokens: 100_000,
+	});
+	return { provider, attempts: () => attempt };
+}
+
+function responsesStream(completed: boolean): string {
+	const message = {
+		type: "message",
+		id: "msg_runtime_retry",
+		role: "assistant",
+		status: "completed",
+		content: [{ type: "output_text", text: completed ? "done" : "discarded", annotations: [] }],
+	};
+	const frames: unknown[] = [
+		{ type: "response.created", response: { id: "resp_runtime_retry", status: "in_progress" } },
+		{
+			type: "response.output_item.added",
+			output_index: 0,
+			item: { ...message, status: "in_progress", content: [] },
+		},
+		{
+			type: "response.output_text.delta",
+			output_index: 0,
+			content_index: 0,
+			delta: completed ? "done" : "discarded",
+		},
+	];
+	if (completed) {
+		frames.push(
+			{ type: "response.output_item.done", output_index: 0, item: message },
+			{
+				type: "response.completed",
+				response: {
+					id: "resp_runtime_retry",
+					status: "completed",
+					output: [message],
+					usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+				},
+			},
+		);
+	}
+	return `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}${
+		completed ? "data: [DONE]\n\n" : ""
+	}`;
 }
 
 function numberSequence(values: readonly number[]): () => number {

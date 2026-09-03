@@ -65,7 +65,8 @@ export interface QueuedInput {
   client_turn_id: Identifier;
   target_turn_id: NullableIdentifier;
   kind: "pending_steer" | "rejected_steer" | "follow_up";
-  state: "queued" | "accepted" | "committed";
+  state: "queued" | "accepted" | "claimed" | "committed";
+  claim_turn_id?: NullableIdentifier;
   text: string;
   /**
    * @maxItems 16

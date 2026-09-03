@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
 	defaultUserRipgrepRoot,
+	resolveRipgrep,
 	ripgrepOutputPath,
 	ripgrepPlatformKey,
 } from "@mycli/tools";
@@ -149,7 +150,7 @@ test("shell completion runs without TTY, management, backend, provider, or TUI s
 	}
 });
 
-test("CLI startup prepends vendored ripgrep before handling local commands", async (t) => {
+test("CLI startup prepends resolved vendored ripgrep before handling local commands", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-cli-ripgrep-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const homeDir = join(root, "home");
@@ -158,11 +159,13 @@ test("CLI startup prepends vendored ripgrep before handling local commands", asy
 	await writeFile(binary, "#!/bin/sh\nexit 0\n", "utf8");
 	await chmod(binary, 0o755);
 	const env: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
+	const resolvedBinary = resolveRipgrep({ homeDir, pathValue: env.PATH });
+	assert.ok(resolvedBinary);
 	const harness = cliHarness({ argv: ["--help"], env, homeDir });
 
 	assert.equal(await runCli(harness.options), 0);
-	assert.equal(env.PATH, `${dirname(binary)}:/usr/bin`);
-	assert.equal(env.MYCLI_RIPGREP_PATH_DIR, dirname(binary));
+	assert.equal(env.PATH, `${dirname(resolvedBinary)}:/usr/bin`);
+	assert.equal(env.MYCLI_RIPGREP_PATH_DIR, dirname(resolvedBinary));
 });
 
 test("retired runtime backend flags fail before starting Node", async () => {

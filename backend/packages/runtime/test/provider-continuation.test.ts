@@ -138,7 +138,7 @@ test("builds a stable request signature and changes it with provider-visible set
 	);
 	assert.notEqual(
 		buildProviderRequestSignature(base),
-		buildProviderRequestSignature({ ...base, store: false }),
+		buildProviderRequestSignature({ ...base, cacheRetention: "long" }),
 	);
 	assert.notEqual(
 		buildProviderRequestSignature(base),
@@ -149,13 +149,14 @@ test("builds a stable request signature and changes it with provider-visible set
 	);
 });
 
-test("keeps prompt-cache compatibility independent of timeline growth and continuation state", () => {
+test("keeps cache intent independent of timeline growth and continuation state", () => {
 	const visible = {
 		provider: "openai" as const,
 		protocol: "responses" as const,
 		model: "gpt-test",
 		instructions: "You are mycli.",
-		promptCacheKey: "cache-key",
+		sessionId: "session-1",
+		cacheRetention: "short" as const,
 		tools: [],
 	};
 	const firstSignature = buildProviderRequestSignature({

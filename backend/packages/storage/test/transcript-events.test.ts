@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PROVIDER_IDS } from "@mycli/core";
 import {
 	compareTranscriptEventOrder,
 	deterministicLegacyTranscriptEventId,
@@ -48,6 +49,28 @@ test("keeps assistant output and provider replay state in one event", () => {
 		text: "Done.",
 		providerState: { provider: "openai", value: {}, tokenEstimate: -1 },
 	}, { providerIndex: 1, modelVisible: true })), TranscriptEventContractError);
+});
+
+test("round trips stable and dynamic provider replay identities", () => {
+	for (const provider of [
+		...PROVIDER_IDS.filter((candidate) => ![
+		"openai", "codex", "compatible", "qwen", "deepseek", "anthropic",
+		].includes(candidate)),
+		"google",
+	] as const) {
+		const event = parseTranscriptEventEnvelope(envelope("assistant_output", {
+			text: "Done.",
+			providerState: { provider, value: { model: `${provider}-model` } },
+		}, { providerIndex: 1, modelVisible: true }));
+		assert.equal(event.eventType, "assistant_output");
+		assert.equal(event.payload.providerState?.provider, provider);
+	}
+	for (const provider of ["Google", "google_cloud", "google--cloud", "google\0cloud"] as const) {
+		assert.throws(() => parseTranscriptEventEnvelope(envelope("assistant_output", {
+			text: "Done.",
+			providerState: { provider, value: {} },
+		}, { providerIndex: 1, modelVisible: true })), TranscriptEventContractError);
+	}
 });
 
 test("preserves multi-call assistant batches as one ordered canonical event", () => {

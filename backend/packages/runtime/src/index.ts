@@ -264,6 +264,7 @@ export type {
 	QueueActivityKind,
 	QueueActivityWaitInput,
 	QueueActivityWaitResult,
+	QueueClaimReconciliation,
 	QueueCoordinatorOptions,
 	QueueCoordinatorStore,
 	QueueFollowUpInput,

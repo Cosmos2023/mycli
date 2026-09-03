@@ -39,6 +39,8 @@ export interface ReserveTurnInput {
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly userText: string;
+	readonly queueId?: string;
+	readonly inputSource?: "submit" | "steer" | "queued";
 	readonly imagePaths?: readonly string[];
 	readonly images?: readonly CanonicalImage[];
 	readonly source?: "user" | "agent_mailbox";

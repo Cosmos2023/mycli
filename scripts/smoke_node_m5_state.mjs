@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { resolveConfig } from "@mycli/config";
 import { fingerprintSubmission } from "@mycli/core";
-import { OpenAIProviderRegistry } from "@mycli/providers";
+import { ProviderRegistry } from "@mycli/providers";
 import {
 	CompactionCoordinator,
 	MemoryContextService,
@@ -94,7 +94,7 @@ async function main() {
 			store: memoryStore,
 			sessionStore: store,
 		});
-		const registry = new OpenAIProviderRegistry();
+		const registry = new ProviderRegistry();
 		const runtimeConfig = {
 			...sourceConfig,
 			homeDir,
@@ -107,7 +107,7 @@ async function main() {
 			requestMaxRetries: 0,
 			streamMaxRetries: 0,
 			thinkingEnabled: false,
-			promptCacheKeyEnabled: false,
+			cacheRetention: "none",
 			memoryEnabled: true,
 			compactionTokenLimit: 128,
 			compactionReservedOutputTokens: 32,

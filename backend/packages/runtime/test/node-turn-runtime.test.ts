@@ -202,7 +202,7 @@ test("persists hosted web search for resume while retaining provider-native repl
 	});
 });
 
-test("projects model catalog output and storage options into provider requests", async () => {
+test("projects model output limits and cache intent into provider requests", async () => {
 	const trace: string[] = [];
 	const requests: ProviderRequest[] = [];
 	const runtime = createRuntime({
@@ -213,7 +213,7 @@ test("projects model catalog output and storage options into provider requests",
 		]]),
 		toolRouter: new SequencedRouter(trace),
 		planTools: () => [],
-		runtimeConfig: config({ maxOutputTokens: 64, store: false }),
+		runtimeConfig: config({ maxOutputTokens: 64, cacheRetention: "long" }),
 	});
 
 	const result = await runtime.submit(submission(), () => undefined, {
@@ -222,7 +222,8 @@ test("projects model catalog output and storage options into provider requests",
 
 	assert.equal(result.status, "completed");
 	assert.equal(requests[0]?.maxOutputTokens, 64);
-	assert.equal(requests[0]?.store, false);
+	assert.equal(requests[0]?.sessionId, "session-1");
+	assert.equal(requests[0]?.cacheRetention, "long");
 	assert.equal(requests[0]?.webSearchMode, "live");
 });
 
@@ -1019,8 +1020,7 @@ test("runs Anthropic tool continuations through the shared runtime", async () =>
 			model: "claude-test",
 			apiBaseUrl: "https://api.anthropic.com",
 			authRef: "anthropic",
-			promptCacheKeyEnabled: false,
-			cacheControlEnabled: true,
+			cacheRetention: "long",
 		}),
 	});
 
@@ -1031,7 +1031,7 @@ test("runs Anthropic tool continuations through the shared runtime", async () =>
 	assert.equal(result.status, "completed");
 	assert.equal(requests.length, 2);
 	assert.equal(requests[0]?.protocol, "anthropic_messages");
-	assert.equal(requests[0]?.cacheControlEnabled, true);
+	assert.equal(requests[0]?.cacheRetention, "long");
 	assert.equal(requests[1]?.previousResponseId, undefined);
 	assert.equal(store.items.at(1)?.type, "assistant_tool_calls");
 });
@@ -2573,6 +2573,33 @@ test("compacts before the first provider request and keeps the current user item
 		maxTokens: 12_000,
 		durationMs: 15,
 	});
+});
+
+test("uses the canonical queue history identity for a queued turn's fresh input", async () => {
+	const trace: string[] = [];
+	const requests: ProviderRequest[] = [];
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("not_needed", []),
+	]);
+	const result = await createRuntime({
+		store: new FakeStore(trace),
+		provider: scriptedProvider(trace, requests, [[
+			{ type: "text_delta", text: "Queued input completed." },
+			{ type: "completed", responseId: "resp-queued" },
+		]]),
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+	}).submit({
+		clientTurnId: "queued-client",
+		clientUserMessageId: "queued-client",
+		queueId: "queue-1",
+		inputSource: "submit",
+		message: "Run queued input",
+	}, () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual([...coordinator.calls[0]!.freshItemIds], ["turn-1:queue:queue-1"]);
+	assert.deepEqual(requests[0]?.items, [{ type: "user", text: "Run queued input" }]);
 });
 
 test("publishes provider and tool diagnostics without exposing tool content", async () => {
@@ -4428,7 +4455,6 @@ function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 		reasoningEffort: "medium",
 		thinkingEnabled: true,
 		supportsImages: true,
-		promptCacheKeyEnabled: true,
 		...overrides,
 		webSearchMode: overrides.webSearchMode ?? "live",
 		requestPermissionsToolEnabled: overrides.requestPermissionsToolEnabled ?? false,

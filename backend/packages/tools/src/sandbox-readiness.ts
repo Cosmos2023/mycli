@@ -2,12 +2,17 @@ import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LINUX_BUBBLEWRAP_EXECUTABLES } from "./sandbox/linux-bubblewrap.ts";
+import {
+	LINUX_BUBBLEWRAP_EXECUTABLES,
+	linuxBubblewrapProbeArgs,
+} from "./sandbox/linux-bubblewrap.ts";
 import { MACOS_SEATBELT_EXECUTABLE } from "./sandbox/macos-seatbelt.ts";
 import { WINDOWS_SANDBOX_PROTOCOL_VERSION } from "./sandbox/windows-restricted-token.ts";
 
 const WINDOWS_HANDSHAKE_TIMEOUT_MS = 5_000;
 const WINDOWS_HANDSHAKE_MAX_BYTES = 16_384;
+const LINUX_PROBE_TIMEOUT_MS = 5_000;
+const LINUX_PROBE_MAX_BYTES = 16_384;
 
 export type SandboxReadinessState =
 	| "ready"
@@ -52,6 +57,10 @@ export interface SandboxReadinessProbes {
 	readonly platform?: NodeJS.Platform;
 	readonly isExecutable?: (path: string) => boolean;
 	readonly windowsHelperPath?: string;
+	readonly linuxBubblewrapProbe?: (
+		path: string,
+		signal: AbortSignal | undefined,
+	) => Promise<boolean>;
 	readonly windowsHandshake?: (
 		path: string,
 		signal: AbortSignal | undefined,
@@ -70,9 +79,32 @@ export async function inspectSandboxReadiness(
 			: readiness(platform, "macos_seatbelt", "unavailable", "helper_missing");
 	}
 	if (platform === "linux") {
-		return LINUX_BUBBLEWRAP_EXECUTABLES.some(isExecutable)
-			? readiness(platform, "linux_bubblewrap", "ready", "ready")
-			: readiness(platform, "linux_bubblewrap", "unavailable", "helper_missing");
+		const helper = LINUX_BUBBLEWRAP_EXECUTABLES.find(isExecutable);
+		if (!helper) {
+			return readiness(platform, "linux_bubblewrap", "unavailable", "helper_missing");
+		}
+		try {
+			const capable = await (probes.linuxBubblewrapProbe ?? runLinuxBubblewrapProbe)(
+				helper,
+				signal,
+			);
+			return capable
+				? readiness(platform, "linux_bubblewrap", "ready", "ready")
+				: readiness(
+					platform,
+					"linux_bubblewrap",
+					"unavailable",
+					"enforcement_unavailable",
+				);
+		} catch (error) {
+			if (signal?.aborted || isAbortError(error)) throw error;
+			return readiness(
+				platform,
+				"linux_bubblewrap",
+				"unavailable",
+				"enforcement_unavailable",
+			);
+		}
 	}
 	if (platform === "win32") {
 		const helper = probes.windowsHelperPath ?? packagedWindowsSandboxHelper();
@@ -184,6 +216,27 @@ function runWindowsSandboxHandshake(
 			} catch (parseError) {
 				reject(parseError);
 			}
+		});
+	});
+}
+
+function runLinuxBubblewrapProbe(
+	path: string,
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	return new Promise((resolve, reject) => {
+		execFile(path, linuxBubblewrapProbeArgs(), {
+			encoding: "utf8",
+			maxBuffer: LINUX_PROBE_MAX_BYTES,
+			timeout: LINUX_PROBE_TIMEOUT_MS,
+			windowsHide: true,
+			...(signal ? { signal } : {}),
+		}, (error) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+			resolve(true);
 		});
 	});
 }

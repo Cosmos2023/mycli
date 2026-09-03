@@ -102,6 +102,8 @@ export {
 	DEFAULT_QUEUE_CAPACITY,
 	QueueCapacityError,
 	QueueConflictError,
+	claimQueueForRestoration,
+	claimQueuedInput,
 	claimPendingSteers,
 	clearQueue,
 	enqueueFollowUp,
@@ -109,7 +111,12 @@ export {
 	markQueuedInputStarted,
 	nextQueuedInput,
 	popLastFollowUp,
+	preparePendingSteersForResubmit,
 	rejectPendingSteers,
+	releaseQueueRestorationClaims,
+	releaseQueuedInputClaim,
+	retireQueueRestorationClaim,
+	retireQueuedInputClaim,
 	restoreQueue,
 } from "./queue-state.ts";
 export type {
@@ -122,7 +129,9 @@ export type {
 	QueueItemKind,
 	QueueMutation,
 	QueueRemoval,
+	QueueRestorationClaim,
 	QueueSnapshot,
+	QueueSteerResubmitResult,
 	QueuedInput,
 	RestoreQueueInput,
 } from "./queue-state.ts";
@@ -131,7 +140,13 @@ export {
 	failTurn,
 	startTurn,
 } from "./turn-state.ts";
-export { PROVIDER_REPLAY_STATE_MAX_JSON_CHARS } from "./types.ts";
+export {
+	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
+	PROVIDER_ROUTE_ID_MAX_CHARS,
+	isProviderId,
+	isProviderRouteId,
+	parseProviderRouteId,
+} from "./types.ts";
 export type {
 	CompleteTurnInput,
 	FailTurnInput,
@@ -150,6 +165,7 @@ export type {
 	CanonicalContextMetadata,
 	CanonicalContextKind,
 	CanonicalImage,
+	CacheRetention,
 	ApprovalChoice,
 	ApprovalPreviewDetails,
 	FileMutationPreviewChange,
@@ -165,6 +181,7 @@ export type {
 	ProtocolId,
 	ProviderEvent,
 	ProviderId,
+	ProviderRouteId,
 	ProviderRequest,
 	ProviderRequestConfig,
 	ProviderReplayState,
@@ -181,6 +198,7 @@ export type {
 	WebSearchCall,
 	WebSearchMode,
 } from "./types.ts";
+export { PROVIDER_IDS } from "./types.ts";
 export {
 	effectiveModelContextEvents,
 	manifestLogicalInputSha256,

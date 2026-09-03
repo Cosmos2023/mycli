@@ -134,7 +134,11 @@ export interface SessionServiceOptions {
 	readonly store: RuntimeSessionStore;
 	readonly currentConfig: () => SessionPreferenceConfig;
 	readonly currentPermissionProfile?: () => PermissionProfile;
-	readonly loadModelCatalog: () => Promise<readonly ModelCatalogEntry[]>;
+	readonly loadModelCatalog: (
+		preferences: SessionPreferences,
+		workspaceRoot: string,
+		sessionId: string,
+	) => Promise<readonly ModelCatalogEntry[]>;
 	readonly hasCredential: (preferences: SessionPreferences) => boolean | Promise<boolean>;
 	readonly managedExecutionPolicy?: ManagedExecutionPolicyConstraints;
 	readonly workspaceAvailable?: (workspaceRoot: string) => boolean;
@@ -273,7 +277,11 @@ export class SessionService {
 			));
 		}
 		if (preferences) {
-			const catalog = await this.#options.loadModelCatalog();
+			const catalog = await this.#options.loadModelCatalog(
+				preferences,
+				session.cwd,
+				session.id,
+			);
 			if (!findModelCatalogEntry(catalog, {
 				provider: preferences.provider,
 				protocol: preferences.protocol,

@@ -34,7 +34,7 @@ test("settings catalog projects seven bounded categories and canonical visual de
 		integrationsAvailable: true,
 		update: {
 			schemaVersion: 1,
-			packageName: "@mycli/app",
+			packageName: "@cosmos2023/mycli",
 			currentVersion: "0.1.0",
 			checkOnStartup: true,
 			availability: "available",
@@ -42,7 +42,7 @@ test("settings catalog projects seven bounded categories and canonical visual de
 			latestVersion: "0.2.0",
 			install: {
 				method: "npm",
-				command: "npm install -g @mycli/app@latest",
+				command: "npm install -g @cosmos2023/mycli@latest",
 				fallback: false,
 			},
 		},

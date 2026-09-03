@@ -5,14 +5,17 @@ import {
 	runtimeErrorPublicMessage,
 	sanitizeRuntimeErrorDetail,
 } from "@mycli/contracts";
-import { stableModelInputJson } from "@mycli/core";
+import {
+	isProviderRouteId,
+	stableModelInputJson,
+} from "@mycli/core";
 import type {
 	CanonicalContextMetadata,
 	CanonicalConversationItem,
 	CanonicalImage,
 	CanonicalMessage,
 	CanonicalToolCall,
-	ProviderId,
+	ProviderRouteId,
 	ProviderReplayState,
 	ProviderRequest,
 	ProviderUsage,
@@ -26,6 +29,11 @@ import type {
 	ProviderAgentLoopFailure,
 	ProviderAgentLoopResult,
 } from "./provider-agent-loop.ts";
+import {
+	validatePiAiCompatOverride,
+	type PiAiCompatOverride,
+	type ProviderRouteDescriptor,
+} from "@mycli/providers";
 import type { ProviderStreamDiagnostics } from "./runtime-observability.ts";
 import { AGENT_WORKER_PROTOCOL_VERSION } from "./agent-worker-protocol.ts";
 
@@ -46,17 +54,19 @@ const CONTEXT_CONTENT_MAX_CHARS = 64 * 1024;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
 
-const PROVIDERS = [
-	"openai", "codex", "compatible", "qwen", "deepseek", "anthropic",
-] as const;
 const PROTOCOLS = [
 	"responses", "chat_completions", "anthropic_messages",
 ] as const;
 export interface AgentWorkerProviderTransportConfig {
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
+	readonly model: string;
 	readonly apiBaseUrl: string;
 	readonly apiKey?: string;
+	readonly supportsImages: boolean;
+	readonly maxPromptTokens: number;
+	readonly modelContextWindowTokens?: number;
+	readonly maxOutputTokens?: number;
 }
 
 interface AgentWorkerProviderRpcIdentity {
@@ -78,6 +88,7 @@ export type AgentWorkerProviderCommand =
 	| (AgentWorkerProviderRpcIdentity & {
 		readonly type: "provider_step_execute";
 		readonly config: AgentWorkerProviderTransportConfig;
+		readonly route: ProviderRouteDescriptor;
 		readonly request: ProviderRequest;
 		readonly requestMaxRetries: number;
 		readonly maxRetries: number;
@@ -121,17 +132,26 @@ export function parseAgentWorkerProviderCommand(value: unknown): AgentWorkerProv
 		"type", "protocolVersion", "coordinatorEpoch", "workerId", "workerGeneration",
 		"leaseId", "jobId", "sessionId", "turnId", "timelineWindowId",
 		"timelineVersion", "requestId", "sequence", "config", "request",
-		"requestMaxRetries", "maxRetries", "toolCallsAllowed",
+		"route", "requestMaxRetries", "maxRetries", "toolCallsAllowed",
 	], "provider execution");
 	const config = parseTransportConfig(record.config);
+	const route = parseProviderRouteDescriptor(record.route);
 	const request = parseProviderRequest(record.request);
-	if (request.provider !== config.provider || request.protocol !== config.protocol) {
+	if (request.provider !== config.provider
+		|| request.protocol !== config.protocol
+		|| request.model !== config.model) {
 		throw invalid("provider request does not match transport config");
+	}
+	if (route.routeId !== config.provider
+		|| route.protocol !== config.protocol
+		|| normalizedBaseUrl(route.apiBaseUrl) !== normalizedBaseUrl(config.apiBaseUrl)) {
+		throw invalid("provider route does not match transport config");
 	}
 	return Object.freeze({
 		type: record.type,
 		...identity,
 		config,
+		route,
 		request,
 		requestMaxRetries: boundedInteger(
 			record.requestMaxRetries,
@@ -296,25 +316,158 @@ function protocolVersion(value: unknown): typeof AGENT_WORKER_PROTOCOL_VERSION {
 
 function parseTransportConfig(value: unknown): AgentWorkerProviderTransportConfig {
 	const config = boundedRecord(value, "provider transport config");
-	const keys = ["provider", "protocol", "apiBaseUrl"];
+	const keys = [
+		"provider", "protocol", "model", "apiBaseUrl", "supportsImages", "maxPromptTokens",
+	];
 	if (config.apiKey !== undefined) keys.push("apiKey");
+	if (config.modelContextWindowTokens !== undefined) keys.push("modelContextWindowTokens");
+	if (config.maxOutputTokens !== undefined) keys.push("maxOutputTokens");
 	assertExactKeys(config, keys, "provider transport config");
-	const provider = oneOf(config.provider, PROVIDERS, "provider");
+	const provider = providerRoute(config.provider, "provider");
 	const protocol = oneOf(config.protocol, PROTOCOLS, "provider protocol");
-	const apiBaseUrl = boundedString(config.apiBaseUrl, "provider base URL", URL_MAX_CHARS);
-	try {
-		new URL(apiBaseUrl);
-	} catch {
-		throw invalid("provider base URL is invalid");
-	}
+	const apiBaseUrl = providerBaseUrl(config.apiBaseUrl, "provider base URL");
 	return Object.freeze({
 		provider,
 		protocol,
+		model: boundedString(config.model, "provider model", IDENTITY_MAX_CHARS),
 		apiBaseUrl,
+		supportsImages: booleanValue(config.supportsImages, "provider image support"),
+		maxPromptTokens: boundedInteger(config.maxPromptTokens, "maximum prompt tokens", 1),
+		...(config.modelContextWindowTokens === undefined ? {} : {
+			modelContextWindowTokens: boundedInteger(
+				config.modelContextWindowTokens,
+				"model context window tokens",
+				1,
+			),
+		}),
+		...(config.maxOutputTokens === undefined ? {} : {
+			maxOutputTokens: boundedInteger(config.maxOutputTokens, "maximum output tokens", 1),
+		}),
 		...(config.apiKey === undefined
 			? {}
 			: { apiKey: boundedString(config.apiKey, "provider API key", API_KEY_MAX_CHARS) }),
 	});
+}
+
+function parseProviderRouteDescriptor(value: unknown): ProviderRouteDescriptor {
+	const route = boundedRecord(value, "provider route descriptor");
+	const keys = [
+		"routeId", "displayName", "supportTier", "source", "protocol", "apiBaseUrl",
+		"authRef", "activation", "modelPolicy", "snapshotVersion",
+	];
+	if (route.catalogProviderId !== undefined) keys.push("catalogProviderId");
+	if (route.compat !== undefined) keys.push("compat");
+	if (route.modelCompat !== undefined) keys.push("modelCompat");
+	assertExactKeys(route, keys, "provider route descriptor");
+	const source = oneOf(
+		route.source,
+		["pi_ai_builtin", "pi_ai_declared"] as const,
+		"provider route source",
+	);
+	const catalogProviderId = route.catalogProviderId === undefined
+		? undefined
+		: providerRoute(route.catalogProviderId, "catalog provider");
+	if ((source === "pi_ai_builtin") !== (catalogProviderId !== undefined)) {
+		throw invalid("provider route catalog identity is invalid");
+	}
+	const activation = oneOf(
+		route.activation,
+		["active", "inactive", "unserviceable"] as const,
+		"provider route activation",
+	);
+	if (activation !== "active") throw invalid("provider route is not active");
+	const protocol = oneOf(route.protocol, PROTOCOLS, "provider route protocol");
+	const compat = parseCompatOverride(route.compat, protocol, "provider route compat");
+	const modelCompat = parseModelCompat(route.modelCompat, protocol);
+	return Object.freeze({
+		routeId: providerRoute(route.routeId, "provider route"),
+		displayName: boundedString(route.displayName, "provider display name", 512),
+		supportTier: oneOf(
+			route.supportTier,
+			["stable", "experimental", "compatible"] as const,
+			"provider support tier",
+		),
+		source,
+		...(catalogProviderId === undefined ? {} : { catalogProviderId }),
+		protocol,
+		apiBaseUrl: providerBaseUrl(route.apiBaseUrl, "provider route base URL"),
+		authRef: boundedString(route.authRef, "provider auth reference", IDENTITY_MAX_CHARS),
+		activation,
+		modelPolicy: parseProviderRouteModelPolicy(route.modelPolicy),
+		...(compat === undefined ? {} : { compat }),
+		...(modelCompat === undefined ? {} : { modelCompat }),
+		snapshotVersion: boundedInteger(route.snapshotVersion, "provider snapshot version", 1),
+	});
+}
+
+function parseModelCompat(
+	value: unknown,
+	protocol: ProtocolId,
+): Readonly<Record<string, PiAiCompatOverride>> | undefined {
+	if (value === undefined) return undefined;
+	const record = boundedRecord(value, "provider model compat");
+	if (Object.keys(record).length === 0) throw invalid("provider model compat is invalid");
+	return Object.freeze(Object.fromEntries(Object.entries(record).map(([model, compat]) => [
+		boundedString(model, "provider model compat id", 512),
+		parseCompatOverride(compat, protocol, "provider model compat")!,
+	])));
+}
+
+function parseCompatOverride(
+	value: unknown,
+	protocol: ProtocolId,
+	label: string,
+): PiAiCompatOverride | undefined {
+	if (value === undefined) return undefined;
+	try {
+		return validatePiAiCompatOverride(protocol, jsonRecord(value, label));
+	} catch {
+		throw invalid(`${label} is invalid`);
+	}
+}
+
+function parseProviderRouteModelPolicy(
+	value: unknown,
+): ProviderRouteDescriptor["modelPolicy"] {
+	const policy = boundedRecord(value, "provider route model policy");
+	if (policy.kind === "catalog") {
+		assertExactKeys(policy, ["kind"], "provider catalog model policy");
+		return Object.freeze({ kind: "catalog" });
+	}
+	const kind = oneOf(
+		policy.kind,
+		["subset", "declared"] as const,
+		"provider route model policy",
+	);
+	assertExactKeys(policy, ["kind", "modelIds"], "provider route model policy");
+	const modelIds = boundedArray(
+		policy.modelIds,
+		"provider route model ids",
+		(item) => boundedString(item, "provider route model id", 512),
+	);
+	if (modelIds.length === 0 || new Set(modelIds).size !== modelIds.length) {
+		throw invalid("provider route model ids are invalid");
+	}
+	return Object.freeze({ kind, modelIds: Object.freeze(modelIds) });
+}
+
+function providerBaseUrl(value: unknown, label: string): string {
+	const baseUrl = boundedString(value, label, URL_MAX_CHARS);
+	let parsed: URL;
+	try {
+		parsed = new URL(baseUrl);
+	} catch {
+		throw invalid(`${label} is invalid`);
+	}
+	if ((parsed.protocol !== "https:" && parsed.protocol !== "http:")
+		|| parsed.username || parsed.password || parsed.search || parsed.hash) {
+		throw invalid(`${label} is invalid`);
+	}
+	return baseUrl;
+}
+
+function normalizedBaseUrl(value: string): string {
+	return value.trim().replace(/\/+$/u, "");
 }
 
 function parseProviderRequest(value: unknown): ProviderRequest {
@@ -322,12 +475,12 @@ function parseProviderRequest(value: unknown): ProviderRequest {
 	assertObjectShape(request,
 		["provider", "protocol", "model", "instructions", "messages", "tools"],
 		[
-			"reasoningEffort", "maxOutputTokens", "store", "promptCacheKey", "cacheControlEnabled",
+			"reasoningEffort", "maxOutputTokens", "sessionId", "cacheRetention",
 			"webSearchMode", "developerInstructions", "items", "previousResponseId",
 		],
 		"provider request");
 	return Object.freeze({
-		provider: oneOf(request.provider, PROVIDERS, "request provider"),
+		provider: providerRoute(request.provider, "request provider"),
 		protocol: oneOf(request.protocol, PROTOCOLS, "request protocol"),
 		model: boundedString(request.model, "provider model", IDENTITY_MAX_CHARS),
 		instructions: boundedText(request.instructions, "provider instructions", TEXT_MAX_CHARS),
@@ -341,14 +494,15 @@ function parseProviderRequest(value: unknown): ProviderRequest {
 		...(hasOwn(request, "maxOutputTokens") ? {
 			maxOutputTokens: boundedInteger(request.maxOutputTokens, "maximum output tokens", 1),
 		} : {}),
-		...(hasOwn(request, "store") ? {
-			store: booleanValue(request.store, "provider storage flag"),
+		...(hasOwn(request, "sessionId") ? {
+			sessionId: boundedString(request.sessionId, "provider cache session", IDENTITY_MAX_CHARS),
 		} : {}),
-		...(hasOwn(request, "promptCacheKey") ? {
-			promptCacheKey: boundedString(request.promptCacheKey, "prompt cache key", IDENTITY_MAX_CHARS),
-		} : {}),
-		...(hasOwn(request, "cacheControlEnabled") ? {
-			cacheControlEnabled: booleanValue(request.cacheControlEnabled, "cache-control flag"),
+		...(hasOwn(request, "cacheRetention") ? {
+			cacheRetention: oneOf(
+				request.cacheRetention,
+				["none", "short", "long"] as const,
+				"provider cache retention",
+			),
 		} : {}),
 		...(hasOwn(request, "webSearchMode") ? {
 			webSearchMode: oneOf(
@@ -496,7 +650,7 @@ function parseProviderReplayState(value: unknown): ProviderReplayState {
 	const state = boundedRecord(value, "provider replay state");
 	assertObjectShape(state, ["provider", "value"], ["tokenEstimate"], "provider replay state");
 	return Object.freeze({
-		provider: oneOf(state.provider, PROVIDERS, "provider replay state provider"),
+		provider: providerRoute(state.provider, "provider replay state provider"),
 		value: jsonRecord(state.value, "provider replay state value"),
 		...(hasOwn(state, "tokenEstimate") ? {
 			tokenEstimate: boundedInteger(
@@ -968,6 +1122,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	if (!isRecord(value)) return false;
 	const prototype = Object.getPrototypeOf(value) as unknown;
 	return prototype === Object.prototype || prototype === null;
+}
+
+function providerRoute(value: unknown, label: string): ProviderRouteId {
+	if (!isProviderRouteId(value)) throw invalid(`${label} is invalid`);
+	return value;
 }
 
 function invalid(message: string): AgentWorkerProviderRpcError {

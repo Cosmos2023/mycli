@@ -6,6 +6,80 @@ import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
 import { AuthManagementService, readApiKeyFromStdin } from "../src/management/auth.ts";
 
+test("curated providers share the provider-free login status and logout lifecycle", async (t) => {
+	const providers = [
+		["openrouter", "OPENROUTER_API_KEY"],
+		["groq", "GROQ_API_KEY"],
+		["together", "TOGETHER_API_KEY"],
+		["moonshotai", "MOONSHOT_API_KEY"],
+		["nvidia", "NVIDIA_API_KEY"],
+		["cerebras", "CEREBRAS_API_KEY"],
+	] as const;
+	const signal = new AbortController().signal;
+
+	for (const [provider, ambientVariable] of providers) {
+		const root = await temporaryDirectory(t);
+		const homeDir = join(root, "home");
+		const secret = `${provider}-stored-secret`;
+		await mkdir(join(homeDir, ".mycli"), { recursive: true });
+		await writeFile(join(homeDir, ".mycli", "config.toml"), [
+			"[model]",
+			`provider = "${provider}"`,
+			"",
+		].join("\n"), "utf8");
+		const service = new AuthManagementService({
+			homeDir,
+			workspaceRoot: root,
+			env: { [ambientVariable]: `${provider}-ambient-secret` },
+			workspaceTrust: "untrusted",
+			readApiKeyInput: async () => secret,
+		});
+		const missing = await service.execute({
+			kind: "login",
+			action: "status",
+			json: true,
+		}, signal);
+		assert.equal(missing.provider, provider);
+		assert.equal(missing.authRef, provider);
+		assert.equal(missing.source, "missing");
+
+		const loggedIn = await service.execute({
+			kind: "login",
+			action: "api_key",
+			provider,
+			json: true,
+		}, signal);
+		assert.equal(loggedIn.source, "stored");
+		assert.equal(loggedIn.authRef, provider);
+		assert.equal(JSON.stringify(loggedIn).includes(secret), false);
+		assert.equal(JSON.stringify(loggedIn).includes("ambient-secret"), false);
+
+		const environment = new AuthManagementService({
+			homeDir,
+			workspaceRoot: root,
+			env: { MYCLI_API_KEY: `${provider}-environment-secret` },
+			workspaceTrust: "untrusted",
+		});
+		const environmentStatus = await environment.execute({
+			kind: "login",
+			action: "status",
+			json: true,
+		}, signal);
+		assert.equal(environmentStatus.source, "environment");
+		assert.equal(JSON.stringify(environmentStatus).includes("environment-secret"), false);
+
+		const loggedOut = await service.execute({
+			kind: "logout",
+			action: "logout",
+			provider,
+			json: true,
+		}, signal);
+		assert.equal(loggedOut.removed, true);
+		assert.equal(loggedOut.source, "missing");
+		assert.equal(JSON.stringify(loggedOut).includes(secret), false);
+	}
+});
+
 test("auth status is provider-free and reports missing, stored, and environment sources", async (t) => {
 	const root = await temporaryDirectory(t);
 	const homeDir = join(root, "home");

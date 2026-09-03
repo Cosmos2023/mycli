@@ -205,6 +205,7 @@ function gatewayHarness(options: {
 	};
 	queue?: {
 		readonly initial?: QueueSnapshot;
+		readonly committedQueueIds?: ReadonlySet<string>;
 	};
 	approvalFailure?: Error;
 	clarificationFailure?: Error;
@@ -239,6 +240,9 @@ function gatewayHarness(options: {
 	cooperativeInterrupt?: boolean;
 	loadShellOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
 	credentialReadiness?: NodeGatewayCredentialReadiness;
+	credentialReadinessLoader?: () => Promise<NodeGatewayCredentialReadiness>;
+	selectModelLoader?: (input: Readonly<Record<string, unknown>>) => Promise<Readonly<Record<string, unknown>>>;
+	submitStatuses?: readonly RuntimeTurnRecord["status"][];
 	executionPolicySnapshot?: (
 		configuration: GatewayPolicyConfiguration,
 	) => ExecutionPolicySnapshot;
@@ -357,7 +361,7 @@ function gatewayHarness(options: {
 	let updateChecks = 0;
 	let updateStatus: CachedUpdateStatus = {
 		schemaVersion: 1,
-		packageName: "@mycli/app",
+		packageName: "@cosmos2023/mycli",
 		currentVersion: "0.1.0",
 		checkOnStartup: true,
 		availability: "available",
@@ -366,12 +370,15 @@ function gatewayHarness(options: {
 		lastCheckedAt: "2026-08-30T00:00:00.000Z",
 		install: {
 			method: "npm",
-			command: "npm install -g @mycli/app@latest",
+			command: "npm install -g @cosmos2023/mycli@latest",
 			fallback: false,
 		},
 	};
 	const queue = options.queue
-		? gatewayQueueFixture(options.queue.initial ?? emptyQueue("session-node"))
+		? gatewayQueueFixture(
+			options.queue.initial ?? emptyQueue("session-node"),
+			options.queue.committedQueueIds,
+		)
 		: undefined;
 	const shell = options.shell ? gatewayShellFixture() : undefined;
 	const subagentListeners = new Set<(subagent: Readonly<Record<string, unknown>>) => void>();
@@ -522,13 +529,23 @@ function gatewayHarness(options: {
 				message: "original",
 			}, runtimeOptions.signal.aborted ? "interrupted" : "completed");
 		},
-		submit: async (submission: TurnSubmission, emit: (event: RuntimeEvent) => void, options: { signal: AbortSignal }) => {
+			submit: async (
+				submission: TurnSubmission,
+				emit: (event: RuntimeEvent) => void,
+				runtimeOptions: { signal: AbortSignal },
+			) => {
+				const submissionIndex = submissions.length;
 				submissions.push(submission);
 				emitRuntime = emit;
-				signal = options.signal;
-				await waitForTurnRelease(options.signal);
+				signal = runtimeOptions.signal;
+				await waitForTurnRelease(runtimeOptions.signal);
 				runtimeSettled = true;
-				return turnRecord(submission, options.signal.aborted ? "interrupted" : "completed");
+				return turnRecord(
+					submission,
+					runtimeOptions.signal.aborted
+						? "interrupted"
+						: options.submitStatuses?.[submissionIndex] ?? "completed",
+				);
 			},
 			forceInterrupt: async (
 				input: { readonly clientTurnId: string; readonly turnId: string },
@@ -542,10 +559,18 @@ function gatewayHarness(options: {
 				}, "interrupted");
 				emit({ type: "turn_interrupted", message: "turn interrupted" });
 				return interrupted;
-			},
-		};
+		},
+	};
+	const targetQueue = options.sessions?.targetQueue
+		? gatewayQueueFixture(options.sessions.targetQueue)
+		: undefined;
 	const sessionCoordinator = options.sessions
-		? gatewaySessionCoordinator(runtime, options.sessions)
+		? gatewaySessionCoordinator(runtime, {
+			...options.sessions,
+			...(targetQueue ? {
+				targetRuntime: { ...runtime, queueCoordinator: targetQueue.coordinator },
+			} : {}),
+		})
 		: undefined;
 	const workspaceTrust = options.workspaceTrustAdapter ?? (options.workspaceTrust ? {
 		initialState: "unknown" as const,
@@ -712,8 +737,10 @@ function gatewayHarness(options: {
 						configured: savedApiKeys.some((item) => item.providerId === "openai"),
 						default_model: "gpt-test",
 					}],
-					...(credentialReadiness ? {
-						credentialReadiness: async () => credentialReadiness!,
+					...(credentialReadiness || options.credentialReadinessLoader ? {
+						credentialReadiness: async () => options.credentialReadinessLoader
+							? await options.credentialReadinessLoader()
+							: credentialReadiness!,
 					} : {}),
 					saveApiKey: async (providerId: string, apiKey: string, authRef?: string) => {
 						savedApiKeys.push({
@@ -732,6 +759,13 @@ function gatewayHarness(options: {
 						}
 						return { ok: true, provider_id: providerId, message: `Saved API key for ${providerId}.` };
 					},
+					providers: async () => [{
+						id: "openai",
+						name: "OpenAI",
+						activation: "active",
+						ready: true,
+						current: true,
+					}],
 					models: async () => [{
 						provider: "openai",
 						protocol: "responses",
@@ -740,10 +774,12 @@ function gatewayHarness(options: {
 						base_url: "https://example.invalid/v1",
 						current: true,
 					}],
-					selectModel: async (input: Readonly<Record<string, unknown>>) => {
-						selectedModels.push({ ...input });
-						return { ...input, name: String(input.model), current: true };
-					},
+						selectModel: async (input: Readonly<Record<string, unknown>>) => {
+							selectedModels.push({ ...input });
+							return options.selectModelLoader
+								? await options.selectModelLoader(input)
+								: { ...input, name: String(input.model), current: true };
+						},
 					loadSettings: async () => controlSettingsSnapshot(),
 					resetKeymap: async () => {
 						keymapResets += 1;
@@ -800,6 +836,7 @@ function gatewayHarness(options: {
 			forcedInterrupts: () => forcedInterrupts,
 		sessionCoordinator,
 		queue,
+		targetQueue,
 		shell,
 			publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
 				for (const listener of subagentListeners) listener(subagent);
@@ -1100,7 +1137,8 @@ test("every advertised canonical TUI RPC is routed by the Node gateway", async (
 		["completion.path", {}],
 		["completion.slash", {}],
 		["decision.resolve", {}],
-		["model.list", {}],
+		["provider.list", {}],
+		["model.list", { provider: "openai" }],
 		["model.select", {}],
 		["session.new", {}],
 		["settings.save", {}],
@@ -1199,8 +1237,10 @@ test("canonical control RPCs use injected Node services and update active state"
 
 	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
 	assert.ok("result" in bootstrap);
-	assert.equal("result" in bootstrap ? bootstrap.result.models.length : 0, 1);
+	assert.equal("result" in bootstrap ? "models" in bootstrap.result : true, false);
 	assert.equal("result" in bootstrap ? bootstrap.result.auth_providers[0]?.configured : null, false);
+	const providers = await harness.send("provider.list");
+	assert.equal("result" in providers ? providers.result.providers[0]?.id : null, "openai");
 
 	const auth = await harness.send("auth.api_key.save", {
 		provider_id: "openai",
@@ -1213,7 +1253,7 @@ test("canonical control RPCs use injected Node services and update active state"
 		apiKey: "test-secret-that-must-not-return",
 	}]);
 
-	const models = await harness.send("model.list");
+	const models = await harness.send("model.list", { provider: "openai" });
 	assert.equal("result" in models ? models.result.models[0]?.model : null, "gpt-test");
 	const selected = await harness.send("model.select", {
 		provider: "openai",
@@ -3338,7 +3378,12 @@ test("read-only session replay rejects turn submission", async () => {
 });
 
 test("status projects rejected steers as deferred follow-up input", async () => {
-	const harness = gatewayHarness({ sessions: { targetQueue: populatedQueue("target") } });
+	const harness = gatewayHarness({
+		sessions: {
+			targetQueue: populatedQueue("target"),
+			targetPendingApproval: true,
+		},
+	});
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
 	await harness.send("session.resume", { session_id: "target" });
 	const status = await waitFor(() => notificationForSession(
@@ -3347,17 +3392,17 @@ test("status projects rejected steers as deferred follow-up input", async () => 
 		"target",
 	));
 
-	assert.deepEqual(status.params.queued_steering, ["steer now"]);
-	assert.deepEqual(status.params.queued_follow_up, ["deferred steer", "follow later"]);
+	assert.deepEqual(status.params.queued_steering, []);
+	assert.deepEqual(status.params.queued_follow_up, ["deferred steer", "steer now", "follow later"]);
 	assert.deepEqual(status.params.queue_activity, {
 		kind: "pending_input",
 		has_pending_input: true,
-		steering_count: 1,
-		follow_up_count: 2,
+		steering_count: 0,
+		follow_up_count: 3,
 	});
 	assert.deepEqual(
 		status.params.queue_items.rejected_steers.map((item: { queue_id: string }) => item.queue_id),
-		["queue-rejected"],
+		["queue-rejected", "queue-pending"],
 	);
 	await harness.gateway.close();
 });
@@ -3440,7 +3485,7 @@ test("stale steers are durably deferred instead of losing user input", async () 
 		client_turn_id: "stale-steer",
 		turn_id: "turn-node",
 		item: {
-			id: "turn-node:user:stale-steer",
+			id: "turn-node:queue:queue-1",
 			type: "user_message",
 			client_user_message_id: "stale-steer",
 			content: "use a newer turn",
@@ -3476,6 +3521,122 @@ test("follow-up input racing terminal completion remains durably queued", async 
 	await harness.gateway.close();
 });
 
+test("idle follow-up input starts without waiting for another terminal event", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("turn.follow_up", {
+		message: "run from idle",
+		client_turn_id: "idle-follow-up",
+	});
+	await waitFor(() => harness.submissions.length === 1);
+
+	assert.equal("result" in response ? response.result.disposition : null, "queued_follow_up");
+	assert.equal(harness.submissions[0]?.clientTurnId, "idle-follow-up");
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("resuming an idle session schedules its durable queued input", async () => {
+	const targetQueue: QueueSnapshot = Object.freeze({
+		sessionId: "target",
+		revision: 1,
+		pendingSteers: Object.freeze([]),
+		rejectedSteers: Object.freeze([]),
+		followUps: Object.freeze([
+			queuedInput("target", "queue-resume", "follow_up", "continue after resume"),
+		]),
+	});
+	const harness = gatewayHarness({ sessions: { targetQueue } });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const response = await harness.send("session.resume", { session_id: "target" });
+	assert.equal("result" in response ? response.result.session_id : null, "target");
+	await waitFor(() => harness.submissions.some(
+		(submission) => submission.clientTurnId === "client-queue-resume",
+	));
+
+	const submission = harness.submissions.find(
+		(candidate) => candidate.clientTurnId === "client-queue-resume",
+	);
+	assert.equal(submission?.message, "continue after resume");
+	assert.equal(submission?.queueId, "queue-resume");
+	assert.equal(harness.targetQueue?.coordinator.snapshot().followUps.length, 0);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("resuming a session releases an unacknowledged composer restoration claim", async () => {
+	const harness = gatewayHarness({
+		sessions: {
+			targetQueue: populatedQueue("target"),
+			targetPendingApproval: true,
+		},
+	});
+	harness.targetQueue?.coordinator.claimForRestoration("restore_lost_response");
+	assert.equal(
+		harness.targetQueue?.coordinator.snapshot().followUps[0]?.state,
+		"claimed",
+	);
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	await harness.send("session.resume", { session_id: "target" });
+
+	const restored = harness.targetQueue?.coordinator.snapshot();
+	assert.equal(restored?.followUps[0]?.state, "queued");
+	assert.equal(restored?.followUps[0]?.claimTurnId, undefined);
+	assert.equal(restored?.rejectedSteers.every((record) => record.state === "queued"), true);
+	await harness.gateway.close();
+});
+
+for (const terminalStatus of ["failed", "interrupted"] as const) {
+	test(`queued input starts after a ${terminalStatus} terminal outcome`, async () => {
+		const harness = gatewayHarness({ queue: {}, submitStatuses: [terminalStatus, "completed"] });
+		await waitFor(() => notification(harness.messages, "runtime.ready"));
+		await harness.send("turn.submit", {
+			message: "first turn",
+			client_turn_id: `client-${terminalStatus}`,
+			client_user_message_id: `message-${terminalStatus}`,
+			local_images: [],
+		});
+		await harness.send("turn.follow_up", {
+			message: `after ${terminalStatus}`,
+			client_turn_id: `follow-${terminalStatus}`,
+		});
+
+		harness.releaseTurn();
+		await waitFor(() => harness.submissions.length === 2);
+
+		assert.equal(harness.submissions[1]?.clientTurnId, `follow-${terminalStatus}`);
+		assert.equal(harness.submissions[1]?.message, `after ${terminalStatus}`);
+		await harness.gateway.close();
+	});
+}
+
+test("failed turns defer accepted steers before scheduling the next turn", async () => {
+	const harness = gatewayHarness({ queue: {}, submitStatuses: ["failed", "completed"] });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "first turn",
+		client_turn_id: "client-failed-steer",
+		client_user_message_id: "message-failed-steer",
+		local_images: [],
+	});
+	await harness.send("turn.steer", {
+		message: "continue after failure",
+		client_user_message_id: "steer-after-failure",
+		expected_turn_id: "turn-node",
+	});
+
+	harness.releaseTurn();
+	await waitFor(() => harness.submissions.length === 2);
+
+	assert.equal(harness.submissions[1]?.clientTurnId, "steer-after-failure");
+	assert.equal(harness.submissions[1]?.message, "continue after failure");
+	await harness.gateway.close();
+});
+
 test("reserves one queued next turn before removing its queue record", async () => {
 	const harness = gatewayHarness({ queue: {} });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
@@ -3497,12 +3658,19 @@ test("reserves one queued next turn before removing its queue record", async () 
 	assert.deepEqual(harness.submissions[1], {
 		clientTurnId: "queued-client-id",
 		clientUserMessageId: "queued-client-id",
+		queueId: "queue-1",
+		inputSource: "submit",
 		turnId: "turn-node",
 		message: "queued next turn",
 		localImages: [],
 		modelOverride: "gpt-test",
 	});
 	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+	assert.deepEqual(
+		harness.queue?.persistedSnapshots.map((snapshot) =>
+			snapshot.followUps.map((item) => `${item.queueId}:${item.state}`)),
+		[["queue-1:queued"], ["queue-1:claimed"], []],
+	);
 	const started = await waitFor(() => notifications(harness.messages, "item.started")
 		.find((message) => message.params.item.client_user_message_id === "queued-client-id"));
 	const completed = await waitFor(() => notifications(harness.messages, "item.completed")
@@ -3511,7 +3679,7 @@ test("reserves one queued next turn before removing its queue record", async () 
 		client_turn_id: "queued-client-id",
 		turn_id: "turn-node",
 		item: {
-			id: "turn-node:user:queued-client-id",
+			id: "turn-node:queue:queue-1",
 			type: "user_message",
 			client_user_message_id: "queued-client-id",
 			content: "queued next turn",
@@ -3552,14 +3720,67 @@ test("retains queued input when the next-turn reservation fails", async () => {
 		harness.queue?.coordinator.snapshot().followUps.map((item) => item.text),
 		["keep queued"],
 	);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps[0]?.state, "queued");
+	assert.equal(harness.queue?.coordinator.snapshot().followUps[0]?.claimTurnId, undefined);
+	assert.deepEqual(
+		harness.queue?.persistedSnapshots.map((snapshot) =>
+			snapshot.followUps.map((item) => `${item.queueId}:${item.state}`)),
+		[["queue-1:queued"], ["queue-1:claimed"], ["queue-1:queued"]],
+	);
 	assert.equal(failure.params.code, "queue_worker_start_failed");
 	assert.equal(JSON.stringify(failure).includes("private reservation failure"), false);
+	await harness.gateway.close();
+});
+
+test("retires a committed queue claim without executing an existing turn twice", async () => {
+	const harness = gatewayHarness({
+		queue: {},
+		reserve: (submission) => {
+			if (submission.clientTurnId === "queued-client-id") {
+				harness.queue?.committedQueueIds.add(submission.queueId!);
+				return { kind: "existing", turn: turnRecord(submission, "interrupted") };
+			}
+			return { kind: "reserved", turn: turnRecord(submission, "in_progress") };
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "first turn",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+		local_images: [],
+	});
+	await harness.send("turn.follow_up", {
+		message: "already reserved",
+		client_turn_id: "queued-client-id",
+	});
+
+	harness.releaseTurn();
+	await waitFor(() => harness.reservedClientTurnIds.includes("queued-client-id"));
+	await waitFor(() => harness.queue?.coordinator.snapshot().followUps.length === 0);
+
+	assert.equal(harness.submissions.length, 1);
+	assert.deepEqual(
+		notifications(harness.messages, "gateway.error").filter(
+			(message) => message.params.code === "queue_worker_start_failed",
+		),
+		[],
+	);
+	assert.equal(notifications(harness.messages, "item.started").some(
+		(message) => message.params.item.client_user_message_id === "queued-client-id",
+	), false);
 	await harness.gateway.close();
 });
 
 test("queue pop, clear, and legacy migration ack return durable revisions", async () => {
 	const harness = gatewayHarness({ queue: {} });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "keep queue pending",
+		client_turn_id: "queue-owner",
+		client_user_message_id: "queue-owner-message",
+		local_images: [],
+	});
 	await harness.send("turn.follow_up", { message: "first", client_turn_id: "follow-1" });
 	await harness.send("turn.follow_up", { message: "second", client_turn_id: "follow-2" });
 
@@ -3568,6 +3789,10 @@ test("queue pop, clear, and legacy migration ack return durable revisions", asyn
 	assert.equal("result" in popped ? popped.result.queue_revision : null, 3);
 	const cleared = await harness.send("turn.queue.clear");
 	assert.deepEqual("result" in cleared ? cleared.result.follow_up : null, ["first"]);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps[0]?.state, "claimed");
+	const restoreToken = "result" in cleared ? String(cleared.result.restore_token) : "";
+	const restored = await harness.send("turn.queue.restore.ack", { restore_token: restoreToken });
+	assert.equal("result" in restored ? restored.result.acknowledged : false, true);
 	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
 
 	await harness.send("turn.follow_up", { message: "legacy", client_turn_id: "legacy-1" });
@@ -3577,6 +3802,40 @@ test("queue pop, clear, and legacy migration ack return durable revisions", asyn
 	const acknowledged = await harness.send("turn.queue.migration.ack", { token: migration.token });
 	assert.equal("result" in acknowledged ? acknowledged.result.acknowledged : false, true);
 	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("queue mutations reject stale session generations without touching the active queue", async () => {
+	const harness = gatewayHarness({
+		sessions: {
+			targetQueue: populatedQueue("target"),
+			targetPendingApproval: true,
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("session.resume", { session_id: "target" });
+	const before = harness.targetQueue?.coordinator.snapshot();
+
+	for (const [method, params] of [
+		["turn.steer", {
+			message: "stale steer",
+			client_user_message_id: "stale-steer",
+			expected_turn_id: "turn-old",
+		}],
+		["turn.follow_up", { message: "stale follow-up", client_turn_id: "stale-follow" }],
+		["turn.queue.pop", {}],
+		["turn.queue.clear", { restore_token: "restore_stale" }],
+	] as const) {
+		const response = await harness.send(method, {
+			...params,
+			session_id: "session-node",
+			generation: 1,
+		});
+		assert.equal("error" in response ? response.error.code : null, "session_changed");
+		assert.strictEqual(harness.targetQueue?.coordinator.snapshot(), before);
+	}
+
 	await harness.gateway.close();
 });
 
@@ -3642,6 +3901,171 @@ test("turn submission cannot reserve the source while target preparation is pend
 	);
 	assert.ok("result" in resumed);
 	assert.deepEqual(harness.submissions, []);
+	await harness.gateway.close();
+});
+
+test("session activation remains exclusive until the resumed snapshot is fully published", async () => {
+	let activationStarted!: () => void;
+	let releaseActivation!: () => void;
+	const started = new Promise<void>((resolve) => { activationStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releaseActivation = resolve; });
+	let reloadCount = 0;
+	const harness = gatewayHarness({
+		sessions: {},
+		workspaceTrustAdapter: {
+			initialState: "trusted",
+			load: async () => "trusted",
+			save: async () => undefined,
+			reload: async () => {
+				reloadCount += 1;
+				if (reloadCount === 1) {
+					activationStarted();
+					await released;
+				}
+			},
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const firstResume = harness.send("session.resume", { session_id: "target" });
+	await started;
+	const competingResume = await harness.send("session.resume", { session_id: "other" });
+	releaseActivation();
+	const resumed = await firstResume;
+
+	assert.equal("error" in competingResume ? competingResume.error.code : null, "turn_in_progress");
+	assert.equal("result" in resumed ? resumed.result.session_id : null, "target");
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "target");
+	assert.deepEqual(
+		notifications(harness.messages, "session.changed").map((event) => event.params.session_id),
+		["target"],
+	);
+	await harness.gateway.close();
+});
+
+test("turn submission claims execution before asynchronous credential readiness", async () => {
+	let readinessStarted!: () => void;
+	let releaseReadiness!: () => void;
+	const started = new Promise<void>((resolve) => { readinessStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releaseReadiness = resolve; });
+	let readinessCalls = 0;
+	const harness = gatewayHarness({
+		sessions: {},
+		control: true,
+		credentialReadinessLoader: async () => {
+			readinessCalls += 1;
+			if (readinessCalls === 1) {
+				readinessStarted();
+				await released;
+			}
+			return {
+				ready: true,
+				providerId: "openai",
+				authRef: "openai",
+				source: "stored",
+			};
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const firstSubmit = harness.send("turn.submit", {
+		message: "first",
+		client_turn_id: "first-turn",
+		client_user_message_id: "first-message",
+	});
+	await started;
+	const competingSubmit = await harness.send("turn.submit", {
+		message: "second",
+		client_turn_id: "second-turn",
+		client_user_message_id: "second-message",
+	});
+	releaseReadiness();
+	const accepted = await firstSubmit;
+
+	assert.equal("result" in accepted ? accepted.result.accepted : false, true);
+	assert.equal("error" in competingSubmit ? competingSubmit.error.code : null, "turn_in_progress");
+	assert.deepEqual(harness.reservedClientTurnIds, ["first-turn"]);
+	assert.equal(harness.submissions.length, 1);
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("session-scoped control mutations exclude resume until their result is applied", async () => {
+	let selectionStarted!: () => void;
+	let releaseSelection!: () => void;
+	const started = new Promise<void>((resolve) => { selectionStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releaseSelection = resolve; });
+	const harness = gatewayHarness({
+		sessions: {},
+		control: true,
+		selectModelLoader: async (input) => {
+			selectionStarted();
+			await released;
+			return { ...input, name: String(input.model), current: true };
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const selection = harness.send("model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-next",
+		base_url: "https://example.invalid/v1",
+		scope: "session",
+	});
+	await started;
+	const competingResume = await harness.send("session.resume", { session_id: "target" });
+	releaseSelection();
+	const selected = await selection;
+
+	assert.equal("error" in competingResume ? competingResume.error.code : null, "turn_in_progress");
+	assert.equal("result" in selected ? selected.result.selected.model : null, "gpt-next");
+	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "session-node");
+	await harness.gateway.close();
+});
+
+test("queued input starts after a session control mutation applies", async () => {
+	let selectionStarted!: () => void;
+	let releaseSelection!: () => void;
+	const started = new Promise<void>((resolve) => { selectionStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releaseSelection = resolve; });
+	const harness = gatewayHarness({
+		queue: {},
+		control: true,
+		selectModelLoader: async (input) => {
+			selectionStarted();
+			await released;
+			return { ...input, name: String(input.model), current: true };
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const selection = harness.send("model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-next",
+		base_url: "https://example.invalid/v1",
+		scope: "session",
+	});
+	await started;
+	const followUp = await harness.send("turn.follow_up", {
+		message: "run after selection",
+		client_turn_id: "follow-after-selection",
+	});
+
+	assert.equal("result" in followUp ? followUp.result.disposition : null, "queued_follow_up");
+	assert.equal(harness.submissions.length, 0);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 1);
+
+	releaseSelection();
+	await selection;
+	await waitFor(() => harness.submissions.length === 1);
+
+	assert.equal(harness.submissions[0]?.clientTurnId, "follow-after-selection");
+	assert.equal(harness.submissions[0]?.message, "run after selection");
+	assert.equal(harness.submissions[0]?.modelOverride, "gpt-next");
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+	harness.releaseTurn();
 	await harness.gateway.close();
 });
 
@@ -3953,6 +4377,8 @@ test("gateway publishes provider diagnostics only through turn.failed", async ()
 	parseGatewayEvent(turnStatus);
 	parseGatewayEvent(statusUpdate);
 	assert.deepEqual(failed.params, {
+		session_id: "session-node",
+		generation: 1,
 		client_turn_id: "client-auth",
 		turn_id: "turn-node",
 		code: "auth_error",
@@ -3961,6 +4387,8 @@ test("gateway publishes provider diagnostics only through turn.failed", async ()
 	});
 	assert.doesNotMatch(JSON.stringify(failed), /private-value/u);
 	assert.deepEqual(turnStatus.params, {
+		session_id: "session-node",
+		generation: 1,
 		state: "failed",
 		kind: "failed",
 		text: "Failed",
@@ -3969,6 +4397,9 @@ test("gateway publishes provider diagnostics only through turn.failed", async ()
 		turn_id: "turn-node",
 	});
 	assert.deepEqual(statusUpdate.params, {
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
 		state: "failed",
 		kind: "failed",
 		text: "Failed",
@@ -4463,6 +4894,8 @@ test("recovered interruption publishes durable terminal state before idle status
 	]);
 	const interrupted = notification(harness.messages, "turn.interrupted");
 	assert.deepEqual(interrupted?.params, {
+		session_id: "session-node",
+		generation: 1,
 		client_turn_id: "client-recovered",
 		turn_id: "turn-recovered",
 		code: "interrupted",
@@ -4513,6 +4946,89 @@ test("turn interrupt aborts the active request and shutdown closes resources", a
 	await harness.send("shutdown", {});
 	await harness.gateway.completion;
 	assert.equal(harness.closeCalls(), 1);
+});
+
+test("forced interrupt consolidates pending steers and starts one durable next turn", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "wait",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+	});
+	await harness.send("turn.steer", {
+		message: "inspect the first result",
+		client_user_message_id: "steer-first",
+		expected_turn_id: "turn-node",
+	});
+	await harness.send("turn.steer", {
+		message: "then compare the second result",
+		client_user_message_id: "steer-second",
+		expected_turn_id: "turn-node",
+	});
+
+	const interruptStart = harness.messages.length;
+	const interrupted = await harness.send("turn.interrupt", { turn_id: "turn-node" });
+	await waitFor(() => harness.submissions.length === 2);
+
+	assert.equal("result" in interrupted && interrupted.result.pending_steers_resubmitted, true);
+	assert.deepEqual(
+		"result" in interrupted
+			? interrupted.result.resubmitted_client_user_message_ids
+			: null,
+		["steer-first", "steer-second"],
+	);
+	assert.equal(harness.submissions[1]?.clientTurnId, "steer-first");
+	assert.equal(
+		harness.submissions[1]?.message,
+		"inspect the first result\n\nthen compare the second result",
+	);
+	assert.equal(harness.forcedInterrupts(), 1);
+	assert.equal(harness.queue?.coordinator.snapshot().pendingSteers.length, 0);
+	const interruptMessages = harness.messages.slice(interruptStart);
+	const queueUpdateIndex = interruptMessages.findIndex(
+		(message) => "method" in message && message.method === "turn.queue.updated",
+	);
+	const terminalIndex = interruptMessages.findIndex(
+		(message) => "method" in message && message.method === "turn.interrupted",
+	);
+	assert.ok(queueUpdateIndex >= 0 && queueUpdateIndex < terminalIndex);
+	assert.ok(harness.messages.indexOf(interrupted) > interruptStart + terminalIndex);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
+});
+
+test("ordinary interrupt leaves durable follow-ups available for composer restoration", async () => {
+	const harness = gatewayHarness({ queue: {} });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "wait",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+	});
+	await harness.send("turn.follow_up", {
+		message: "restore this draft",
+		client_turn_id: "follow-after-interrupt",
+	});
+
+	const interrupted = await harness.send("turn.interrupt", { turn_id: "turn-node" });
+
+	assert.equal("result" in interrupted && interrupted.result.pending_steers_resubmitted, undefined);
+	assert.equal(harness.submissions.length, 1);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps[0]?.text, "restore this draft");
+	const cleared = await harness.send("turn.queue.clear", {});
+	assert.deepEqual(
+		"result" in cleared ? cleared.result.follow_up : null,
+		["restore this draft"],
+	);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps[0]?.state, "claimed");
+	const restoreToken = "result" in cleared ? String(cleared.result.restore_token) : "";
+	await harness.send("turn.queue.restore.ack", { restore_token: restoreToken });
+	assert.equal(harness.queue?.coordinator.snapshot().followUps.length, 0);
+
+	harness.releaseTurn();
+	await harness.gateway.close();
 });
 
 test("turn interrupt prefers cooperative runtime settlement inside the grace window", async () => {
@@ -4826,6 +5342,7 @@ function gatewaySessionCoordinator(
 		readonly initialPendingClarification?: boolean;
 		readonly targetPendingClarification?: boolean;
 		readonly approvalOptions?: readonly PendingApprovalChoice[];
+		readonly targetRuntime?: NodeGatewayRuntime;
 	},
 ): SessionCoordinator<NodeGatewayRuntime> {
 	let freshSessionSequence = 0;
@@ -4848,7 +5365,7 @@ function gatewaySessionCoordinator(
 			}
 			return preparedGatewaySession(
 				sessionId,
-				runtime,
+				options.targetRuntime ?? runtime,
 				options.targetReadOnly ?? false,
 				options.targetQueue,
 				options.targetPendingApproval ?? false,
@@ -4965,26 +5482,35 @@ function queuedInput(
 	});
 }
 
-function gatewayQueueFixture(initial: QueueSnapshot) {
+function gatewayQueueFixture(
+	initial: QueueSnapshot,
+	initialCommittedQueueIds: ReadonlySet<string> = new Set(),
+) {
 	let durable = initial;
 	let nextQueueId = 0;
 	const persistedRevisions: number[] = [];
+	const persistedSnapshots: QueueSnapshot[] = [];
+	const committedQueueIds = new Set(initialCommittedQueueIds);
 	const fixture = {
 		failSave: false,
 		persistedRevisions,
+		persistedSnapshots,
+		committedQueueIds,
 		coordinator: undefined as unknown as QueueCoordinator,
 	};
 	const store: QueueCoordinatorStore = {
-		loadCommittedQueueIds: () => new Set(),
+		loadCommittedQueueIds: () => new Set(committedQueueIds),
 		saveSnapshot: (snapshot) => {
 			if (fixture.failSave) {
 				throw new StorageFailure("private sqlite path /Users/example/.mycli/sessions.db");
 			}
 			durable = snapshot;
 			persistedRevisions.push(snapshot.revision);
+			persistedSnapshots.push(snapshot);
 		},
 		commitPending: (_turnId, records) => {
 			const ids = new Set(records.map((record) => record.queueId));
+			for (const queueId of ids) committedQueueIds.add(queueId);
 			durable = Object.freeze({
 				...durable,
 				revision: durable.revision + 1,
@@ -5074,7 +5600,7 @@ async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 1_000):
 
 function turnRecord(
 	submission: TurnSubmission,
-	status: "in_progress" | "completed" | "interrupted",
+	status: RuntimeTurnRecord["status"],
 ): RuntimeTurnRecord {
 	return {
 		schema_version: 1,
@@ -5086,7 +5612,9 @@ function turnRecord(
 			localImages: submission.localImages,
 		}),
 		status,
-		error_code: status === "interrupted" ? "interrupted" : null,
+		error_code: status === "interrupted"
+			? "interrupted"
+			: status === "failed" ? "provider_error" : null,
 		result: null,
 		started_at: "2026-08-04T00:00:00.000Z",
 		completed_at: status === "in_progress" ? null : "2026-08-04T00:00:01.000Z",

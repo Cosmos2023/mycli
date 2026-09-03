@@ -52,7 +52,10 @@ export const TUI_KEYMAP_ACTIONS = [
 	action("tui.select.down", "selector", "down", "Move selection down", ["down"]),
 	action("tui.select.pageUp", "selector", "page_up", "Move one selection page up", ["pageUp"]),
 	action("tui.select.pageDown", "selector", "page_down", "Move one selection page down", ["pageDown"]),
+	action("tui.select.previousGroup", "selector", "previous_group", "Move to the previous selection group", ["["]),
+	action("tui.select.nextGroup", "selector", "next_group", "Move to the next selection group", ["]"]),
 	action("tui.select.confirm", "selector", "confirm", "Confirm the selected item", ["enter"], true),
+	action("tui.select.options", "selector", "options", "Open options for the selected item", ["tab"]),
 	action("tui.select.cancel", "selector", "cancel", "Cancel or leave the selector", ["escape", "ctrl+c"], true, true),
 ] as const satisfies readonly TuiKeymapActionDescriptor[];
 

@@ -481,7 +481,7 @@ test("rejects unsupported providers without echoing configured values", async (t
 	const { homeDir, workspaceRoot } = await configTree(t);
 	await writeToml(join(homeDir, ".mycli", "config.toml"), [
 		"[model]",
-		'provider = "must-not-leak"',
+		'provider = "MUST-NOT-LEAK"',
 	]);
 
 	await assert.rejects(
@@ -489,9 +489,9 @@ test("rejects unsupported providers without echoing configured values", async (t
 		(error: unknown) => error instanceof ConfigError
 			&& error.diagnostic.code === "invalid_value"
 			&& error.diagnostic.keyPath === "provider"
-			&& error.diagnostic.message === "unsupported provider configuration"
-			&& !JSON.stringify(error.diagnostic).includes("must-not-leak")
-			&& !error.message.includes("must-not-leak"),
+			&& error.diagnostic.message === "invalid provider route configuration"
+			&& !JSON.stringify(error.diagnostic).includes("MUST-NOT-LEAK")
+			&& !error.message.includes("MUST-NOT-LEAK"),
 	);
 });
 
@@ -641,7 +641,7 @@ test("legacy transport retry limit feeds the stream retry setting", async (t) =>
 	assert.equal(resolved.streamMaxRetries, 7);
 });
 
-test("resolves Anthropic defaults and cache-control policy", async (t) => {
+test("resolves Anthropic defaults with provider-neutral cache retention", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);
 
 	const resolved = await resolveConfig({
@@ -654,10 +654,98 @@ test("resolves Anthropic defaults and cache-control policy", async (t) => {
 	assert.equal(resolved.protocol, "anthropic_messages");
 	assert.equal(resolved.model, "claude-sonnet-4-6");
 	assert.equal(resolved.apiBaseUrl, "https://api.anthropic.com");
-	assert.equal(resolved.promptCacheKeyEnabled, false);
-	assert.equal(resolved.cacheControlEnabled, true);
-	assert.equal(resolved.supportsImages, true);
+	assert.equal(resolved.cacheRetention, "short");
+	assert.equal(resolved.supportsImages, false);
 	assert.equal(resolved.webSearchMode, "disabled");
+});
+
+test("resolves curated provider defaults and explicit layered overrides", async (t) => {
+	const providers = [
+		["openrouter", "openrouter/auto", "https://openrouter.ai/api/v1"],
+		["groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1"],
+		["together", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1"],
+		["moonshotai", "kimi-k2.7-code", "https://api.moonshot.ai/v1"],
+		["nvidia", "openai/gpt-oss-120b", "https://integrate.api.nvidia.com/v1"],
+		["cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1"],
+	] as const;
+
+	for (const [provider, defaultModel, defaultBaseUrl] of providers) {
+		const { homeDir, workspaceRoot } = await configTree(t);
+		const defaults = await resolveConfig({
+			homeDir,
+			workspaceRoot,
+			env: { MYCLI_PROVIDER: provider },
+		});
+		assert.equal(defaults.provider, provider);
+		assert.equal(defaults.protocol, "chat_completions");
+		assert.equal(defaults.model, defaultModel);
+		assert.equal(defaults.apiBaseUrl, defaultBaseUrl);
+		assert.equal(defaults.authRef, provider);
+		assert.equal(defaults.supportsImages, false);
+		assert.equal(defaults.cacheRetention, "short");
+		assert.equal(defaults.webSearchMode, "disabled");
+
+		const explicit = await resolveConfig({
+			homeDir,
+			workspaceRoot,
+			env: {
+				MYCLI_PROVIDER: provider,
+				MYCLI_PROTOCOL: "chat_completions",
+				MYCLI_MODEL: `${provider}-custom-model`,
+				MYCLI_BASE_URL: `https://${provider}.example.test/v1/`,
+				MYCLI_AUTH_REF: `${provider}-custom-auth`,
+				MYCLI_SUPPORTS_IMAGES: "true",
+			},
+		});
+		assert.equal(explicit.provider, provider);
+		assert.equal(explicit.protocol, "chat_completions");
+		assert.equal(explicit.model, `${provider}-custom-model`);
+		assert.equal(explicit.apiBaseUrl, `https://${provider}.example.test/v1`);
+		assert.equal(explicit.authRef, `${provider}-custom-auth`);
+		assert.equal(explicit.supportsImages, true);
+	}
+});
+
+test("resolves structurally complete dynamic provider routes conservatively", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const resolved = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: {
+			MYCLI_PROVIDER: "fireworks",
+			MYCLI_PROTOCOL: "chat_completions",
+			MYCLI_MODEL: "accounts/example/models/custom",
+			MYCLI_BASE_URL: "https://api.fireworks.ai/inference/v1/",
+			MYCLI_AUTH_REF: "fireworks-primary",
+		},
+	});
+
+	assert.equal(resolved.provider, "fireworks");
+	assert.equal(resolved.protocol, "chat_completions");
+	assert.equal(resolved.model, "accounts/example/models/custom");
+	assert.equal(resolved.apiBaseUrl, "https://api.fireworks.ai/inference/v1");
+	assert.equal(resolved.authRef, "fireworks-primary");
+	assert.equal(resolved.supportsImages, false);
+	assert.equal(resolved.cacheRetention, "short");
+	assert.equal(resolved.webSearchMode, "disabled");
+});
+
+test("rejects incomplete dynamic provider runtime configuration", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	const complete = {
+		MYCLI_PROVIDER: "fireworks",
+		MYCLI_PROTOCOL: "chat_completions",
+		MYCLI_MODEL: "accounts/example/models/custom",
+		MYCLI_BASE_URL: "https://api.fireworks.ai/inference/v1",
+	};
+	for (const missing of ["MYCLI_PROTOCOL", "MYCLI_MODEL", "MYCLI_BASE_URL"] as const) {
+		const env = { ...complete, [missing]: undefined };
+		await assert.rejects(
+			() => resolveConfig({ homeDir, workspaceRoot, env }),
+			(error: unknown) => error instanceof ConfigError
+				&& error.diagnostic.code === "invalid_value",
+		);
+	}
 });
 
 test("resolves provider image capability with an explicit override", async (t) => {

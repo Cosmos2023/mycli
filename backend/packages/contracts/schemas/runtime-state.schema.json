@@ -67,8 +67,9 @@
         },
         "state": {
           "type": "string",
-          "enum": ["queued", "accepted", "committed"]
+          "enum": ["queued", "accepted", "claimed", "committed"]
         },
+        "claim_turn_id": {"$ref": "#/$defs/nullable_identifier"},
         "text": {
           "type": "string",
           "minLength": 1,

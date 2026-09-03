@@ -47,9 +47,11 @@ test("executes a provider step in the leased Worker and returns streamed events"
 	const events: RuntimeEvent[] = [];
 	const diagnostics: ProviderStreamDiagnostics[] = [];
 
+	const apiBaseUrl = `http://127.0.0.1:${address.port}/v1`;
 	const result = await executor.execute({
-		config: config(`http://127.0.0.1:${address.port}/v1`),
+		config: config(apiBaseUrl),
 		provider: { stream: coordinatorProviderMustNotRun },
+		providerRoute: route(apiBaseUrl),
 		request: providerRequest(),
 		timelineWindowId: "window-1",
 		timelineVersion: 1,
@@ -109,9 +111,11 @@ test("aborts only the active provider request on its lease", async (t) => {
 	});
 	const controller = new AbortController();
 	const events: RuntimeEvent[] = [];
+	const apiBaseUrl = `http://127.0.0.1:${address.port}/v1`;
 	const executing = new WorkerProviderStepExecutor({ lease }).execute({
-		config: config(`http://127.0.0.1:${address.port}/v1`),
+		config: config(apiBaseUrl),
 		provider: { stream: coordinatorProviderMustNotRun },
+		providerRoute: route(apiBaseUrl),
 		request: providerRequest(),
 		timelineWindowId: "window-1",
 		timelineVersion: 1,
@@ -324,6 +328,7 @@ test("rejects stale provider timeline state after establishing the Worker high-w
 			const input = (timelineWindowId: string, timelineVersion: number) => ({
 				config: config(`http://127.0.0.1:${address.port}/v1`),
 				provider: { stream: coordinatorProviderMustNotRun },
+				providerRoute: route(`http://127.0.0.1:${address.port}/v1`),
 				request: providerRequest(),
 				timelineWindowId,
 				timelineVersion,
@@ -398,8 +403,7 @@ function config(apiBaseUrl: string): NodeRuntimeConfig {
 		thinkingEnabled: false,
 		supportsImages: false,
 		webSearchMode: "disabled",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: false,
+		cacheRetention: "short",
 		memoryEnabled: false,
 		requestPermissionsToolEnabled: false,
 		updatesCheckOnStartup: true,
@@ -430,6 +434,24 @@ function providerRequest(): ProviderRequest {
 		instructions: "You are mycli.",
 		messages: Object.freeze([{ role: "user" as const, content: "hello" }]),
 		tools: Object.freeze([]),
+	});
+}
+
+function route(apiBaseUrl: string) {
+	return Object.freeze({
+		routeId: "openai" as const,
+		displayName: "OpenAI",
+		supportTier: "stable" as const,
+		source: "pi_ai_declared" as const,
+		protocol: "chat_completions" as const,
+		apiBaseUrl,
+		authRef: "openai",
+		activation: "active" as const,
+		modelPolicy: Object.freeze({
+			kind: "declared" as const,
+			modelIds: Object.freeze(["test-model"]),
+		}),
+		snapshotVersion: 1,
 	});
 }
 

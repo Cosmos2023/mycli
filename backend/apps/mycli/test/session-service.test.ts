@@ -5,15 +5,60 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import Database from "better-sqlite3";
 import type { ModelCatalogEntry } from "@mycli/config";
+import { PROVIDER_IDS } from "@mycli/core";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	loadSessionPreferences,
+	parseSessionPreferences,
 	saveSessionPreferences,
 } from "../src/node-runtime/session-preferences.ts";
 import {
 	SessionService,
 	SessionServiceError,
 } from "../src/node-runtime/session-service.ts";
+
+test("parses stable and dynamic provider routes and rejects malformed identities", () => {
+	for (const provider of PROVIDER_IDS.filter((candidate) => ![
+		"openai", "codex", "compatible", "qwen", "deepseek", "anthropic",
+	].includes(candidate))) {
+		const preferences = parseSessionPreferences({
+			state_version: 1,
+			provider,
+			protocol: "chat_completions",
+			model: `${provider}-model`,
+			api_base_url: `https://${provider}.example.test/v1`,
+			auth_ref: provider,
+			reasoning_effort: "none",
+			collaboration_mode: "default",
+		});
+		assert.equal(preferences.provider, provider);
+		assert.equal(preferences.protocol, "chat_completions");
+	}
+	const dynamic = parseSessionPreferences({
+		state_version: 1,
+		provider: "google",
+		protocol: "chat_completions",
+		model: "future-model",
+		api_base_url: "https://example.test/v1",
+		auth_ref: "google",
+		reasoning_effort: "none",
+		collaboration_mode: "default",
+	});
+	assert.equal(dynamic.provider, "google");
+
+	for (const provider of ["Google", "google_cloud", "google--cloud", "google\ncloud"] as const) {
+		assert.throws(() => parseSessionPreferences({
+			state_version: 1,
+			provider,
+			protocol: "chat_completions",
+			model: "future-model",
+			api_base_url: "https://example.test/v1",
+			auth_ref: "google",
+			reasoning_effort: "none",
+			collaboration_mode: "default",
+		}));
+	}
+});
 
 test("session service owns bounded list metadata mutations and redacted export", async (t) => {
 	const fixture = await sessionFixture(t);

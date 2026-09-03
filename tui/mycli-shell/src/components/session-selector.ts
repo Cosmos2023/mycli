@@ -25,6 +25,7 @@ export class SessionSelectorComponent extends Container {
 	private nameFilter: SessionNameFilter = "all";
 	private showPath = true;
 	private error: string | null = null;
+	private submitting = false;
 	private readonly currentWorkspace?: string;
 	private readonly onSelectCallback: (session: MycliShellSession) => void;
 	private readonly onCancelCallback: () => void;
@@ -58,11 +59,13 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	setError(message: string): void {
+		this.submitting = false;
 		this.error = message.trim() || "Unable to resume this session.";
 		this.updateList();
 	}
 
 	handleInput(data: string): void {
+		if (this.submitting) return;
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.input.tab")) {
 			this.scope = this.scope === "current" ? "all" : "current";
@@ -84,7 +87,10 @@ export class SessionSelectorComponent extends Container {
 		}
 		if (kb.matches(data, "tui.select.confirm")) {
 			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected) this.onSelectCallback(selected);
+			if (selected) {
+				this.submitting = true;
+				this.onSelectCallback(selected);
+			}
 			return;
 		}
 		if (kb.matches(data, "tui.select.cancel")) {

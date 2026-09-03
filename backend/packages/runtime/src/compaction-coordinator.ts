@@ -67,6 +67,8 @@ export async function summarizeCompactionWithProvider(
 			model: input.model ?? config.model,
 			reasoningEffort: "none",
 			maxOutputTokens: input.maxOutputTokens,
+			...(config.sessionId === undefined ? {} : { sessionId: config.sessionId }),
+			...(config.cacheRetention === undefined ? {} : { cacheRetention: config.cacheRetention }),
 		},
 		instructions: input.instruction,
 		history: input.items,

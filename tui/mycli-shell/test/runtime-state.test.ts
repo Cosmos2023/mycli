@@ -24,6 +24,8 @@ import {
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
 	runtimeStateWithModelCatalog,
+	runtimeStateWithProviderDirectory,
+	providerRoutesFromResult,
 	runtimeStateRejectPendingSteer,
 	runtimeStateAcknowledgeQueuedInput,
 	popLastLocalFollowUp,
@@ -99,7 +101,7 @@ test("bootstrap renders one cached update notice and dismissal removes it", () =
 		workspace: "/repo",
 		update: {
 			schema_version: 1,
-			package_name: "@mycli/app",
+			package_name: "@cosmos2023/mycli",
 			current_version: "0.1.0",
 			check_on_startup: true,
 			availability: "available",
@@ -107,7 +109,7 @@ test("bootstrap renders one cached update notice and dismissal removes it", () =
 			latest_version: "0.2.0",
 			install: {
 				method: "unknown",
-				command: "npm install -g @mycli/app@latest",
+				command: "npm install -g @cosmos2023/mycli@latest",
 				fallback: true,
 			},
 		},
@@ -117,7 +119,10 @@ test("bootstrap renders one cached update notice and dismissal removes it", () =
 	const notices = state.transcript.filter((item) => item.metadata?.update_notice === true);
 	assert.equal(notices.length, 1);
 	assert.match(notices[0]?.text ?? "", /mycli 0\.2\.0 is available\./u);
-	assert.match(notices[0]?.text ?? "", /Manual fallback: npm install -g @mycli\/app@latest/u);
+	assert.match(
+		notices[0]?.text ?? "",
+		/Manual fallback: npm install -g @cosmos2023\/mycli@latest/u,
+	);
 	assert.match(notices[0]?.text ?? "", /\/update dismiss 0\.2\.0/u);
 
 	state = runtimeStateWithCommandResult(state, "/update dismiss 0.2.0", {
@@ -135,7 +140,7 @@ test("bootstrap does not render disabled, dismissed, or unknown update states", 
 				schema_version: 1,
 				availability,
 				latest_version: "0.2.0",
-				install: { command: "npm install -g @mycli/app@latest", fallback: false },
+				install: { command: "npm install -g @cosmos2023/mycli@latest", fallback: false },
 			},
 		});
 		assert.equal(state.transcript.some((item) => item.metadata?.update_notice === true), false);
@@ -469,6 +474,7 @@ test("runtime adapter preserves the top-level bootstrap model catalog across sta
 	assert.equal(projectRuntimeState(state).models?.length, 2);
 
 	state = runtimeStateWithModelCatalog(state, {
+		provider: "openai",
 		models: [{
 			provider: "openai",
 			protocol: "responses",
@@ -478,6 +484,89 @@ test("runtime adapter preserves the top-level bootstrap model catalog across sta
 		}],
 	});
 	assert.deepEqual(projectRuntimeState(state).models?.map((model) => model.model), ["gpt-5.4"]);
+	assert.equal(projectRuntimeState(state).modelsProvider, "openai");
+
+	state = runtimeStateWithProviderDirectory(state, {
+		providers: [{
+			id: "openai",
+			name: "OpenAI",
+			support_tier: "stable",
+			source: "pi_ai_builtin",
+			protocols: ["responses"],
+			protocol: "responses",
+			base_url: "https://api.openai.com/v1",
+			auth_ref: "openai",
+			activation: "active",
+			configured: true,
+			ready: true,
+			current: true,
+			model_count: 12,
+		}],
+	});
+	assert.deepEqual(projectRuntimeState(state).providerRoutes, [{
+		id: "openai",
+		name: "OpenAI",
+		supportTier: "stable",
+		source: "pi_ai_builtin",
+		catalogProviderId: undefined,
+		protocols: ["responses"],
+		protocol: "responses",
+		baseUrl: "https://api.openai.com/v1",
+		authRef: "openai",
+		activation: "active",
+		configured: true,
+		ready: true,
+		current: true,
+		endpointRequired: undefined,
+		modelCount: 12,
+		disabledReason: undefined,
+	}]);
+});
+
+test("provider directory parser rejects malformed or unbounded route DTOs", () => {
+	const valid = {
+		id: "cloudflare-ai-gateway",
+		name: "Cloudflare AI Gateway",
+		catalog_provider_id: "cloudflare-ai-gateway",
+		protocols: ["responses", "chat_completions", "anthropic_messages"],
+		protocol: "responses",
+		base_url: "https://gateway.example/v1",
+		auth_ref: "cloudflare-primary",
+		activation: "active",
+		configured: true,
+		ready: false,
+		current: false,
+		model_count: 12,
+	};
+	const providers = providerRoutesFromResult({
+		providers: [
+			valid,
+			{ ...valid, id: "Cloudflare" },
+			{ ...valid, id: `p${"a".repeat(64)}` },
+			{ ...valid, name: `name-${"a".repeat(512)}` },
+			{ ...valid, auth_ref: "unsafe\nreference" },
+			{ ...valid, protocols: ["responses", "unknown"] },
+			{ ...valid, base_url: `https://example.invalid/${"a".repeat(2_048)}` },
+			{ ...valid, model_count: -1 },
+		],
+	});
+
+	assert.deepEqual(providers, [{
+		id: "cloudflare-ai-gateway",
+		name: "Cloudflare AI Gateway",
+		catalogProviderId: "cloudflare-ai-gateway",
+		protocols: ["responses", "chat_completions", "anthropic_messages"],
+		protocol: "responses",
+		baseUrl: "https://gateway.example/v1",
+		authRef: "cloudflare-primary",
+		activation: "active",
+		configured: true,
+		ready: false,
+		current: false,
+		endpointRequired: undefined,
+		modelCount: 12,
+		disabledReason: undefined,
+	}]);
 });
 
 test("only a trusted workspace dismisses the startup trust gate", () => {
@@ -3053,6 +3142,25 @@ test("runtime adapter ignores stale queue revisions", () => {
 	assert.deepEqual(state.queuedPendingSteers.map((item) => item.message), ["new"]);
 });
 
+test("runtime adapter hides inputs claimed for composer restoration", () => {
+	const state = reduceRuntimeEvent(initialRuntimeState(), "turn.queue.updated", {
+		queue_revision: 4,
+		queue_items: {
+			pending_steers: [],
+			rejected_steers: [{
+				message: "already restored",
+				state: "claimed",
+				claim_turn_id: "restore_request_1",
+			}],
+			follow_ups: [{ message: "still queued", state: "queued" }],
+		},
+	});
+
+	assert.deepEqual(state.queuedRejectedSteers, []);
+	assert.deepEqual(state.queuedFollowUpInputs.map((item) => item.message), ["still queued"]);
+	assert.equal(state.hasPendingInput, true);
+});
+
 test("session changes reset queue revision and hide internal notifications", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "turn.queue.updated", {
@@ -3104,14 +3212,135 @@ test("session changes clear active transcript state and the older-history cursor
 	assert.deepEqual(state.status, {});
 });
 
+test("runtime adapter ignores stale session generations and cross-session transcript pages", () => {
+	let state = runtimeStateFromBootstrap(initialRuntimeState(), {
+		session_id: "session-current",
+		generation: 4,
+		status: { session_id: "session-current", generation: 4 },
+	});
+	state = runtimeStateFromTranscript(state, {
+		session_id: "session-current",
+		items: [{ id: "current", type: "assistant_final", text: "current history", metadata: {} }],
+	});
+	const current = state;
+
+	state = reduceRuntimeEvent(state, "session.changed", {
+		session_id: "session-stale",
+		generation: 3,
+	});
+	assert.strictEqual(state, current);
+
+	state = runtimeStateFromTranscript(state, {
+		session_id: "session-stale",
+		items: [{ id: "stale", type: "assistant_final", text: "stale history", metadata: {} }],
+	});
+	assert.strictEqual(state, current);
+	assert.equal(state.transcript.some((item) => item.id === "current"), true);
+	assert.equal(state.transcript.some((item) => item.id === "stale"), false);
+
+	const staleResume = runtimeStateAfterSessionResume(
+		state,
+		"session-stale",
+		"Stale session",
+		{ session_id: "session-stale", generation: 3 },
+	);
+	assert.strictEqual(staleResume, state);
+});
+
 test("runtime adapter tracks the active server turn until its matching terminal event", () => {
 	let state = initialRuntimeState();
-	state = reduceRuntimeEvent(state, "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "turn.started", {
+		turn_id: "turn-1",
+		client_turn_id: "client-1",
+	});
 	state = reduceRuntimeEvent(state, "turn.completed", { turn_id: "turn-other" });
 	assert.equal(state.activeTurnId, "turn-1");
+	assert.equal(state.activeClientTurnId, "client-1");
+	assert.equal(state.turnRunning, true);
 
-	state = reduceRuntimeEvent(state, "turn.completed", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		turn_id: "turn-1",
+		client_turn_id: "client-1",
+	});
 	assert.equal(state.activeTurnId, null);
+	assert.equal(state.activeClientTurnId, null);
+});
+
+test("stale terminal events cannot mutate a newer session turn", () => {
+	let state = runtimeStateFromBootstrap(initialRuntimeState(), {
+		session_id: "session-new",
+		generation: 4,
+		status: { session_id: "session-new", generation: 4 },
+	});
+	state = reduceRuntimeEvent(state, "turn.started", {
+		session_id: "session-new",
+		generation: 4,
+		turn_id: "turn-new",
+		client_turn_id: "client-new",
+	});
+	state = reduceRuntimeEvent(state, "tool.start", {
+		turn_id: "turn-new",
+		client_turn_id: "client-new",
+		tool_id: "tool-new",
+		call_id: "call-new",
+		name: "Read",
+		context: "Reading current input",
+	});
+	state = {
+		...state,
+		pendingApproval: {
+			session_id: "session-new",
+			generation: 4,
+			turn_id: "turn-new",
+			decision_id: "decision-new",
+		},
+		pendingClarification: {
+			session_id: "session-new",
+			generation: 4,
+			turn_id: "turn-new",
+			request_id: "question-new",
+		},
+	};
+
+	const staleEvents: Array<[string, Record<string, unknown>]> = [
+		["turn.completed", {
+			session_id: "session-new",
+			generation: 4,
+			turn_id: "turn-old",
+			client_turn_id: "client-old",
+			turn_state: "interrupted",
+			input_rolled_back: true,
+		}],
+		["turn.failed", {
+			session_id: "session-new",
+			generation: 3,
+			turn_id: "turn-new",
+			client_turn_id: "client-new",
+			code: "provider_error",
+			message: "Old failure",
+		}],
+		["turn.interrupted", {
+			session_id: "session-old",
+			generation: 4,
+			turn_id: "turn-new",
+			client_turn_id: "client-new",
+			requested: false,
+		}],
+		["turn.status", {
+			turn_id: "turn-new",
+			client_turn_id: "client-old",
+			state: "completed",
+			terminal: true,
+		}],
+		["status.update", {
+			client_turn_id: "client-old",
+			state: "failed",
+		}],
+	];
+
+	for (const [method, params] of staleEvents) {
+		assert.equal(reduceRuntimeEvent(state, method, params), state, method);
+	}
 });
 
 test("runtime adapter keeps the turn running after final message until turn completion", () => {
@@ -3758,7 +3987,7 @@ test("runtime input disposition queues follow-ups while a turn is interrupting",
 	assert.equal(runtimeInputDisposition(idle, true), "follow_up");
 });
 
-test("interrupt resolution resubmits pending steers but keeps ordinary follow-ups queued", () => {
+test("interrupt resolution leaves pending steer resubmission to the durable backend", () => {
 	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
 		clientUserMessageId: "steer-1",
 		message: "redirect the turn",
@@ -3772,11 +4001,10 @@ test("interrupt resolution resubmits pending steers but keeps ordinary follow-up
 
 	const resolved = resolveLocalInterruptInputs(state, true);
 
-	assert.equal(resolved.dispatchNext, true);
+	assert.equal(resolved.dispatchNext, false);
 	assert.deepEqual(resolved.restoreToComposer, []);
-	assert.deepEqual(resolved.state.localRejectedSteers.map((input) => input.message), [
-		"redirect the turn",
-	]);
+	assert.deepEqual(resolved.state.localPendingSteers, []);
+	assert.deepEqual(resolved.state.localRejectedSteers, []);
 	assert.deepEqual(resolved.state.localFollowUps.map((input) => input.message), [
 		"then summarize",
 	]);
@@ -3856,17 +4084,10 @@ test("runtime adapter restores structured queue state from bootstrap", () => {
 	assert.deepEqual(state.queuedFollowUpInputs.map((item) => item.message), ["later"]);
 });
 
-test("legacy queue migration imports user records into local queues once", () => {
+test("legacy queue migration projects user records without transferring durable ownership", () => {
 	const payload = {
 		session_id: "session-1",
-		status: {
-			queue_revision: 4,
-			queue_items: {
-				pending_steers: [{ queue_id: "queue-1", message: "inspect" }],
-				rejected_steers: [],
-				follow_ups: [{ queue_id: "queue-2", message: "later" }],
-			},
-		},
+		status: {},
 		legacy_user_queue_migration: {
 			token: "migration-1",
 			records: [
@@ -3885,19 +4106,27 @@ test("legacy queue migration imports user records into local queues once", () =>
 	let state = runtimeStateFromBootstrap(initialRuntimeState(), payload);
 	state = runtimeStateFromBootstrap(state, payload);
 
-	assert.deepEqual(state.localRejectedSteers, [
-		{ clientUserMessageId: "queue-1", message: "inspect", attachments: [] },
-	]);
-	assert.deepEqual(state.localFollowUps, [
+	assert.deepEqual(state.localPendingSteers, []);
+	assert.deepEqual(state.localRejectedSteers, []);
+	assert.deepEqual(state.localFollowUps, []);
+	assert.deepEqual(state.queuedPendingSteers, [
 		{
+			queueId: "queue-1",
+			kind: "pending_steer",
+			message: "inspect",
+			attachments: [],
+		},
+	]);
+	assert.deepEqual(state.queuedRejectedSteers, []);
+	assert.deepEqual(state.queuedFollowUpInputs, [
+		{
+			queueId: "queue-2",
 			clientUserMessageId: "client-2",
+			kind: "follow_up",
 			message: "later",
 			attachments: [{ path: "/tmp/later.png", placeholder: "[image #1]" }],
 		},
 	]);
-	assert.deepEqual(state.queuedPendingSteers, []);
-	assert.deepEqual(state.queuedRejectedSteers, []);
-	assert.deepEqual(state.queuedFollowUpInputs, []);
 });
 
 test("runtime adapter projects pending steering through rejection and removal", () => {
@@ -3936,7 +4165,7 @@ test("runtime adapter projects pending steering through rejection and removal", 
 	assert.equal(projectRuntimeState(state).pendingInput, undefined);
 });
 
-test("queue RPC acknowledgement replaces optimistic steering with the durable snapshot", () => {
+test("event-before-ACK replaces optimistic steering with one identity-preserving preview", () => {
 	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
 		clientUserMessageId: "steer-1",
 		message: "inspect output",
@@ -3960,8 +4189,114 @@ test("queue RPC acknowledgement replaces optimistic steering with the durable sn
 
 	assert.deepEqual(state.localPendingSteers, []);
 	assert.deepEqual(projectRuntimeState(state).pendingInput, {
-		pendingSteers: [{ text: "inspect output", hasImages: false }],
+		pendingSteers: [{
+			queueId: "queue-1",
+			clientUserMessageId: "steer-1",
+			text: "inspect output",
+			hasImages: false,
+		}],
 		rejectedSteers: [],
+		followUps: [],
+	});
+});
+
+test("ACK-before-event also renders one identity-preserving steer preview", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "inspect output",
+		attachments: [],
+	});
+	const queueSnapshot = {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{
+				queue_id: "queue-1",
+				client_user_message_id: "steer-1",
+				message: "inspect output",
+			}],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	};
+
+	state = runtimeStateAcknowledgeQueuedInput(state, "steer-1", queueSnapshot);
+	state = reduceRuntimeEvent(state, "turn.queue.updated", queueSnapshot);
+
+	assert.deepEqual(state.localPendingSteers, []);
+	assert.equal(projectRuntimeState(state).pendingInput?.pendingSteers.length, 1);
+});
+
+test("a late queue ACK cleans its source session without leaking into the active session", () => {
+	let state: RuntimeShellState = { ...initialRuntimeState(), sessionId: "session-a" };
+	state = runtimeStateWithPendingSteer(state, {
+		clientUserMessageId: "steer-a",
+		message: "inspect A",
+		attachments: [],
+	});
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-b" });
+	state = runtimeStateAcknowledgeQueuedInput(state, "steer-a", {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{
+				queue_id: "queue-a",
+				session_id: "session-a",
+				client_turn_id: "steer-a",
+				message: "inspect A",
+			}],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	}, "session-a");
+
+	assert.equal(projectRuntimeState(state).pendingInput, undefined);
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-a" });
+	assert.deepEqual(state.localPendingSteers, []);
+});
+
+test("a stale steer ACK cannot discard newer terminal recovery state", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "inspect output",
+		attachments: [],
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 2,
+		queue_items: {
+			pending_steers: [],
+			rejected_steers: [{
+				queue_id: "queue-1",
+				client_user_message_id: "steer-1",
+				kind: "rejected_steer",
+				message: "inspect output",
+			}],
+			follow_ups: [],
+		},
+	});
+
+	state = runtimeStateAcknowledgeQueuedInput(state, "steer-1", {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{
+				queue_id: "queue-1",
+				client_user_message_id: "steer-1",
+				message: "inspect output",
+			}],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+
+	assert.equal(state.queueRevision, 2);
+	assert.equal(state.localPendingSteers.length, 1);
+	assert.deepEqual(projectRuntimeState(state).pendingInput, {
+		pendingSteers: [],
+		rejectedSteers: [{
+			queueId: "queue-1",
+			clientUserMessageId: "steer-1",
+			kind: "rejected_steer",
+			text: "inspect output",
+			hasImages: false,
+		}],
 		followUps: [],
 	});
 });
@@ -3996,6 +4331,51 @@ test("queue RPC acknowledgement converges to empty and ignores an older notifica
 	assert.equal(state.queueRevision, 2);
 	assert.deepEqual(state.localPendingSteers, []);
 	assert.equal(projectRuntimeState(state).pendingInput, undefined);
+});
+
+test("queue updates preserve claim ownership and ignore another session", () => {
+	let state: RuntimeShellState = {
+		...initialRuntimeState(),
+		sessionId: "session-a",
+		sessionGeneration: 2,
+	};
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		session_id: "session-a",
+		generation: 2,
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [],
+			rejected_steers: [],
+			follow_ups: [{
+				queue_id: "queue-a",
+				session_id: "session-a",
+				client_turn_id: "client-a",
+				kind: "follow_up",
+				state: "claimed",
+				claim_turn_id: "turn-a",
+				message: "continue A",
+			}],
+		},
+	});
+
+	assert.deepEqual(projectRuntimeState(state).pendingInput?.followUps, [{
+		queueId: "queue-a",
+		clientUserMessageId: "client-a",
+		sessionId: "session-a",
+		claimTurnId: "turn-a",
+		kind: "follow_up",
+		state: "claimed",
+		text: "continue A",
+		hasImages: false,
+	}]);
+	const current = state;
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		session_id: "session-b",
+		generation: 1,
+		queue_revision: 2,
+		queue_items: { pending_steers: [], rejected_steers: [], follow_ups: [] },
+	});
+	assert.equal(state, current);
 });
 
 test("runtime adapter moves a consumed steer from pending input into transcript", () => {
@@ -4101,15 +4481,27 @@ test("local rejected inputs precede follow-ups and edit-last restores latest fol
 	assert.deepEqual(popped.state.localFollowUps.map((item) => item.message), ["later one"]);
 });
 
-test("session changes clear transient local user input queues", () => {
-	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+test("session changes snapshot and restore transient local user input queues", () => {
+	let state: RuntimeShellState = { ...initialRuntimeState(), sessionId: "session-1" };
+	state = runtimeStateWithPendingSteer(state, {
+		clientUserMessageId: "rejected-1",
+		message: "retry this",
+		attachments: [],
+	});
+	state = runtimeStateRejectPendingSteer(state, "rejected-1");
+	state = runtimeStateWithPendingSteer(state, {
 		clientUserMessageId: "steer-1",
 		message: "inspect",
-		attachments: [],
+		attachments: [{ path: "/tmp/inspect.png", placeholder: "[image #1]" }],
 	});
 	state = runtimeStateWithLocalFollowUp(state, {
 		clientUserMessageId: "follow-1",
 		message: "later",
+		attachments: [],
+	});
+	state = runtimeStateWithSubmittingMessage(state, {
+		clientUserMessageId: "submit-1",
+		message: "starting",
 		attachments: [],
 	});
 	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-2" });
@@ -4118,6 +4510,24 @@ test("session changes clear transient local user input queues", () => {
 	assert.deepEqual(state.localRejectedSteers, []);
 	assert.deepEqual(state.localFollowUps, []);
 	assert.deepEqual(state.localSubmittingMessages, []);
+
+	state = runtimeStateWithLocalFollowUp(state, {
+		clientUserMessageId: "follow-2",
+		message: "only session two",
+		attachments: [],
+	});
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-1" });
+
+	assert.deepEqual(state.localPendingSteers.map((input) => input.clientUserMessageId), ["steer-1"]);
+	assert.deepEqual(state.localRejectedSteers.map((input) => input.clientUserMessageId), ["rejected-1"]);
+	assert.deepEqual(state.localFollowUps.map((input) => input.clientUserMessageId), ["follow-1"]);
+	assert.deepEqual(state.localSubmittingMessages.map((input) => input.clientUserMessageId), ["submit-1"]);
+	assert.deepEqual(state.localPendingSteers[0]?.attachments, [
+		{ path: "/tmp/inspect.png", placeholder: "[image #1]" },
+	]);
+
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-2" });
+	assert.deepEqual(state.localFollowUps.map((input) => input.clientUserMessageId), ["follow-2"]);
 });
 
 test("session resume reapplies the target background shell snapshot after session clearing", () => {
@@ -4164,13 +4574,14 @@ test("gateway steering retries a turn mismatch with stable user identity", () =>
 	assert.match(steeringBody, /runtimeStateWithPendingSteer/);
 	assert.match(steeringBody, /const result = await send\("turn\.steer"/);
 	assert.match(steeringBody, /runtimeStateAcknowledgeQueuedInput/);
-	assert.match(steeringBody, /runtimeStateRejectPendingSteer/);
+	assert.match(steeringBody, /removeLocalUserInput/);
+	assert.match(steeringBody, /throw error/);
 	assert.match(source, /activeTurnId:\s*turnId \?\? runtimeState\.activeTurnId/);
 	assert.match(source, /if \(backendTurnBusy\) \{\s*setRuntimeState\(\{/);
 	assert.match(source, /event\.method === "status\.changed" && event\.params\.turn_running === false/);
 	assert.doesNotMatch(source, /event\.method === "status\.changed" && backendTurnBusy/);
 	assert.doesNotMatch(source, /queuedSteeringTurns|queuedFollowUpTurns/);
-	assert.doesNotMatch(source, /send\("turn\.follow_up"/);
+	assert.match(source, /send\("turn\.follow_up"/);
 });
 
 test("gateway interruption recovers a missing active turn id and retries one lifecycle race", () => {
@@ -4190,6 +4601,11 @@ test("gateway interruption recovers a missing active turn id and retries one lif
 	assert.match(interruptBody, /error\.code === "turn_id_mismatch"/);
 	assert.match(interruptBody, /error\.data\.actual_turn_id/);
 	assert.match(interruptBody, /expectedTurnId = actualTurnId/);
+	assert.match(interruptBody, /await resolveRequestedInterrupt\(result, context\)/);
+	assert.match(source, /send\("turn\.queue\.clear"/);
+	assert.match(source, /send\("turn\.queue\.restore\.ack"/);
+	assert.match(source, /\.\.\.sessionMutationFields\(context\)/);
+	assert.match(source, /pending_steers_resubmitted === true/);
 	assert.doesNotMatch(interruptBody, /!expectedTurnId && backendTurnBusy/);
 	assert.doesNotMatch(interruptBody, /\.\.\.\(expectedTurnId \?/);
 });
@@ -4216,7 +4632,11 @@ test("runtime adapter syncs typed backend message queues", () => {
 	assert.equal(shell.footer.hasPendingInput, true);
 	assert.equal(shell.footer.queueActivity, "pending_input");
 	assert.deepEqual(shell.pendingInput, {
-		pendingSteers: [{ text: "steer with image", hasImages: true }],
+		pendingSteers: [{
+			text: "steer with image",
+			hasImages: true,
+			localImages: [{ path: "/tmp/a.png", placeholder: "[image #1]" }],
+		}],
 		rejectedSteers: [],
 		followUps: [{ text: "follow later", hasImages: false }],
 	});
@@ -4240,7 +4660,11 @@ test("runtime adapter projects typed queue items from status bootstrap", () => {
 	const shell = projectRuntimeState(state);
 
 	assert.deepEqual(shell.pendingInput, {
-		pendingSteers: [{ text: "inspect current output", hasImages: true }],
+		pendingSteers: [{
+			text: "inspect current output",
+			hasImages: true,
+			localImages: [{ path: "/tmp/a.png", placeholder: "[image #1]" }],
+		}],
 		rejectedSteers: [],
 		followUps: [{ text: "summarize afterward", hasImages: false }],
 	});

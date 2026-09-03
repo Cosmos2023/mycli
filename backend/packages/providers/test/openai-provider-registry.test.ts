@@ -1,240 +1,194 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import test from "node:test";
-import {
-	NODE_RUNTIME_CONTEXT_DEFAULTS,
-	type NodeRuntimeConfig,
-} from "@mycli/config";
-import type { ProviderEvent } from "@mycli/core";
-import type { ModelProvider } from "../src/model-provider.ts";
-import * as providers from "../src/index.ts";
+import { NODE_RUNTIME_CONTEXT_DEFAULTS, type NodeRuntimeConfig } from "@mycli/config";
+import type { ProviderEvent, ProviderRequest } from "@mycli/core";
+import { ProviderRegistry } from "../src/provider-registry.ts";
+import { startProviderMockServer } from "./provider-mock-server.ts";
 
-interface ClientOptions {
-	readonly apiKey: string;
-	readonly baseURL: string;
-	readonly maxRetries: number;
-}
-
-interface FakeOpenAIClient {
-	readonly responses: {
-		readonly create: (request: Record<string, unknown>) => Promise<AsyncIterable<unknown>>;
-	};
-	readonly chat: {
-		readonly completions: {
-			readonly create: (request: Record<string, unknown>) => Promise<AsyncIterable<unknown>>;
-		};
-	};
-}
-
-type RegistryConstructor = new (options?: {
-	clientFactory?: (options: ClientOptions) => FakeOpenAIClient;
-}) => {
-	create(config: NodeRuntimeConfig): ModelProvider;
-};
-
-test("registry configures the official client boundary and selects Chat", async () => {
-	const OpenAIProviderRegistry = Reflect.get(
-		providers,
-		"OpenAIProviderRegistry",
-	) as RegistryConstructor | undefined;
-	assert.equal(typeof OpenAIProviderRegistry, "function");
-	let capturedOptions: ClientOptions | undefined;
-	let chatCalls = 0;
-	let responsesCalls = 0;
-	const client: FakeOpenAIClient = {
-		responses: {
-			create: async () => {
-				responsesCalls += 1;
-				return events([]);
-			},
-		},
-		chat: {
-			completions: {
-				create: async () => {
-					chatCalls += 1;
-					return events([{
-						id: "chatcmpl-registry",
-						choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-					}]);
-				},
-			},
-		},
-	};
-	const registry = new OpenAIProviderRegistry!({
-		clientFactory: (options) => {
-			capturedOptions = options;
-			return client;
-		},
-	});
-	const provider = registry.create(config("chat_completions"));
-
-	const result = await collect(provider.stream(request("chat_completions"), {
-		signal: new AbortController().signal,
+test("registry sends ordinary Responses traffic through pi-ai", async (context) => {
+	const server = await startProviderMockServer({ protocol: "responses" });
+	context.after(() => server.close());
+	const provider = new ProviderRegistry().create(config("responses", {
+		apiBaseUrl: `${server.baseUrl}/v1`,
 	}));
-
-	assert.deepEqual(capturedOptions, {
-		apiKey: "test-key",
-		baseURL: "https://provider.example/v1",
-		maxRetries: 0,
-	});
-	assert.deepEqual(result.at(-1), { type: "completed", responseId: "chatcmpl-registry" });
-	assert.equal(chatCalls, 1);
-	assert.equal(responsesCalls, 0);
-});
-
-test("registry applies the DeepSeek Chat developer-role downgrade", async () => {
-	const OpenAIProviderRegistry = Reflect.get(
-		providers,
-		"OpenAIProviderRegistry",
-	) as RegistryConstructor | undefined;
-	assert.equal(typeof OpenAIProviderRegistry, "function");
-	let capturedRequest: Record<string, unknown> | undefined;
-	const registry = new OpenAIProviderRegistry!({
-		clientFactory: () => ({
-			responses: { create: async () => events([]) },
-			chat: { completions: {
-				create: async (body) => {
-					capturedRequest = body;
-					return events([{
-						id: "chatcmpl-deepseek",
-						choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-					}]);
-				},
-			} },
-		}),
-	});
-	const provider = registry.create({
-		...config("chat_completions"),
-		provider: "deepseek",
-		authRef: "deepseek",
-		promptCacheKeyEnabled: false,
-	});
-
-	await collect(provider.stream({
-		...request("chat_completions"),
-		provider: "deepseek",
-		reasoningEffort: "high",
-		developerInstructions: ["Use the child role."],
+	const result = await collect(provider.stream({
+		...request("responses"),
+		developerInstructions: ["durable policy"],
+		items: [
+			contextItem("trusted hook policy", "developer"),
+			{ type: "user", text: "hello" },
+		],
+		sessionId: "session-cache",
+		cacheRetention: "short",
+		maxOutputTokens: 8,
 	}, { signal: new AbortController().signal }));
 
-	assert.deepEqual(capturedRequest?.messages, [
-		{ role: "system", content: "system\n\nUse the child role." },
-		{ role: "user", content: "hello" },
+	assert.equal(server.requests.length, 1);
+	assert.equal(server.requests[0]?.path, "/v1/responses");
+	assert.equal(server.requests[0]?.body.instructions, undefined);
+	assert.equal(server.requests[0]?.body.store, false);
+	assert.equal(server.requests[0]?.body.prompt_cache_key, "session-cache");
+	assert.equal(server.requests[0]?.body.max_output_tokens, 16);
+	const input = server.requests[0]?.body.input as readonly Record<string, unknown>[];
+	assert.deepEqual(input.slice(0, 2), [
+		{ role: "system", content: "system\n\ndurable policy\n\ntrusted hook policy" },
+		{ role: "user", content: [{ type: "input_text", text: "hello" }] },
 	]);
-	assert.deepEqual(capturedRequest?.thinking, { type: "enabled" });
-	assert.equal("extra_body" in (capturedRequest ?? {}), false);
-	assert.equal(capturedRequest?.reasoning_effort, "high");
+	assert.deepEqual(result.at(-1), { type: "completed", responseId: "resp_mock" });
 });
 
-test("official client sends DeepSeek thinking at the HTTP body top level", async (context) => {
-	const OpenAIProviderRegistry = Reflect.get(
-		providers,
-		"OpenAIProviderRegistry",
-	) as RegistryConstructor | undefined;
-	assert.equal(typeof OpenAIProviderRegistry, "function");
-	let capturedBody: Record<string, unknown> | undefined;
-	const server = createServer((request, response) => {
-		const chunks: Buffer[] = [];
-		request.on("data", (chunk: Buffer) => chunks.push(chunk));
-		request.on("end", () => {
-			capturedBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
-			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.end([
-				'data: {"id":"chatcmpl-wire","choices":[{"delta":{},"finish_reason":"stop"}]}',
-				"",
-				"data: [DONE]",
-				"",
-			].join("\n"));
-		});
-	});
-	await new Promise<void>((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", () => {
-			server.off("error", reject);
-			resolve();
-		});
-	});
-	context.after(() => new Promise<void>((resolve, reject) => {
-		server.close((error) => error ? reject(error) : resolve());
-	}));
-	const address = server.address();
-	assert(address && typeof address !== "string");
-	const provider = new OpenAIProviderRegistry!().create({
-		...config("chat_completions"),
+test("registry lets pi-ai preserve DeepSeek instruction authority", async (context) => {
+	const server = await startProviderMockServer({ protocol: "chat_completions" });
+	context.after(() => server.close());
+	const provider = new ProviderRegistry().create(config("chat_completions", {
 		provider: "deepseek",
-		authRef: "deepseek",
-		apiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
-	});
+		model: "deepseek-reasoner",
+		apiBaseUrl: `${server.baseUrl}/v1`,
+	}));
 
 	await collect(provider.stream({
 		...request("chat_completions"),
 		provider: "deepseek",
+		model: "deepseek-reasoner",
 		reasoningEffort: "high",
+		developerInstructions: ["durable policy"],
+		items: [
+			{ type: "user", text: "U1" },
+			{ type: "assistant", text: "A1" },
+			contextItem("updated permission", "developer"),
+			{ type: "user", text: "U2" },
+		],
 	}, { signal: new AbortController().signal }));
 
-	assert.deepEqual(capturedBody?.thinking, { type: "enabled" });
-	assert.equal("extra_body" in (capturedBody ?? {}), false);
+	assert.equal(server.requests.length, 1);
+	assert.deepEqual(server.requests[0]?.body.messages, [
+		{ role: "system", content: "system\n\ndurable policy\n\nupdated permission" },
+		{ role: "user", content: "U1" },
+		{ role: "assistant", content: "A1", reasoning_content: "" },
+		{ role: "user", content: "U2" },
+	]);
+	assert.deepEqual(server.requests[0]?.body.thinking, { type: "enabled" });
+	assert.equal(server.requests[0]?.body.reasoning_effort, "high");
 });
 
-test("registry selects Responses and rejects missing credentials", async () => {
-	const OpenAIProviderRegistry = Reflect.get(
-		providers,
-		"OpenAIProviderRegistry",
-	) as RegistryConstructor | undefined;
-	assert.equal(typeof OpenAIProviderRegistry, "function");
-	let responsesCalls = 0;
-	const registry = new OpenAIProviderRegistry!({
-		clientFactory: () => ({
-			responses: {
-				create: async () => {
-					responsesCalls += 1;
-					return events([{
-						type: "response.completed",
-						response: { id: "resp-registry", usage: {} },
-					}]);
-				},
-			},
-			chat: { completions: { create: async () => events([]) } },
-		}),
+test("one pi-ai invocation performs one HTTP attempt", async (context) => {
+	const server = await startProviderMockServer({
+		protocol: "chat_completions",
+		mode: "failed",
+		status: 429,
 	});
-	const provider = registry.create(config("responses"));
-
-	const result = await collect(provider.stream(request("responses"), {
-		signal: new AbortController().signal,
+	context.after(() => server.close());
+	const provider = new ProviderRegistry().create(config("chat_completions", {
+		apiBaseUrl: `${server.baseUrl}/v1`,
 	}));
 
-	assert.deepEqual(result.at(-1), { type: "completed", responseId: "resp-registry" });
-	assert.equal(responsesCalls, 1);
-	assert.throws(
-		() => registry.create({ ...config("responses"), apiKey: undefined }),
-		/auth_error: provider API key is not configured/,
+	await assert.rejects(
+		() => collect(provider.stream(request("chat_completions"), {
+			signal: new AbortController().signal,
+		})),
+		(error: unknown) => error instanceof Error && /rate_limited/u.test(error.message),
 	);
+	assert.equal(server.requests.length, 1);
 });
 
-test("registry rejects an unsupported protocol at the runtime boundary", () => {
-	const OpenAIProviderRegistry = Reflect.get(
-		providers,
-		"OpenAIProviderRegistry",
-	) as RegistryConstructor | undefined;
-	assert.equal(typeof OpenAIProviderRegistry, "function");
-	const registry = new OpenAIProviderRegistry!({
-		clientFactory: () => ({
-			responses: { create: async () => events([]) },
-			chat: { completions: { create: async () => events([]) } },
-		}),
+test("Responses routes preserve native tool ids across pi-ai continuation", async (context) => {
+	for (const route of ["codex", "compatible"] as const) {
+		const server = await startProviderMockServer({ protocol: "responses" });
+		context.after(() => server.close());
+		const provider = new ProviderRegistry().create(config("responses", {
+			provider: route,
+			model: "gpt-test",
+			apiBaseUrl: `${server.baseUrl}/v1`,
+		}));
+
+		await collect(provider.stream({
+			...request("responses"),
+			provider: route,
+			items: [
+				{ type: "user", text: "read" },
+				{
+					type: "assistant_tool_calls",
+					text: "",
+					calls: [{ callId: "call-1", name: "Read", argumentsJson: "{}" }],
+					providerState: {
+						provider: route,
+						value: {
+							kind: "pi_ai_assistant",
+							version: 1,
+							api: "openai-responses",
+							provider: route,
+							model: "gpt-test",
+							textBlocks: [],
+							thinkingBlocks: [],
+							toolCalls: [{
+								callId: "call-1",
+								nativeId: "call-1|fc_1",
+								name: "Read",
+								argumentsJson: "{}",
+							}],
+						},
+					},
+				},
+				{
+					type: "tool_result",
+					callId: "call-1",
+					toolName: "Read",
+					output: "contents",
+					success: true,
+				},
+			],
+			tools: [{
+				id: "builtin:Read",
+				name: "Read",
+				description: "Read a file.",
+				inputSchema: { type: "object", properties: {} },
+			}],
+		}, { signal: new AbortController().signal }));
+
+		const input = server.requests[0]?.body.input as readonly Record<string, unknown>[];
+		assert.deepEqual(input.find((item) => item.type === "function_call"), {
+			type: "function_call",
+			id: "fc_1",
+			call_id: "call-1",
+			name: "Read",
+			arguments: "{}",
+		});
+		assert.deepEqual(input.find((item) => item.type === "function_call_output"), {
+			type: "function_call_output",
+			call_id: "call-1",
+			output: "contents",
+		});
+	}
+});
+
+test("live Responses web search stays on pi-ai and tolerates provider heartbeats", async (context) => {
+	const server = await startProviderMockServer({
+		protocol: "responses",
+		responsesScenario: "web_search",
 	});
-	const invalidConfig = {
-		...config("responses"),
-		protocol: "unknown_protocol",
-	} as unknown as NodeRuntimeConfig;
+	context.after(() => server.close());
+	const provider = new ProviderRegistry().create(config("responses", {
+		apiBaseUrl: `${server.baseUrl}/v1`,
+	}));
+	const result = await collect(provider.stream({
+		...request("responses"),
+		webSearchMode: "live",
+	}, { signal: new AbortController().signal }));
 
-	assert.throws(
-		() => registry.create(invalidConfig),
-		/config_error: unsupported provider protocol/,
-	);
+	assert.equal(server.requests.length, 1);
+	assert.deepEqual(server.requests[0]?.body.tools, [{
+		type: "web_search",
+		external_web_access: true,
+	}]);
+	assert.equal(result.some((event) => event.type === "text_delta"), true);
+	assert.equal(result.some((event) => event.type === "web_search_started"), false);
+	assert.deepEqual(result.at(-1), { type: "completed", responseId: "resp_mock" });
 });
 
-function config(protocol: "responses" | "chat_completions"): NodeRuntimeConfig {
+function config(
+	protocol: "responses" | "chat_completions",
+	overrides: Partial<NodeRuntimeConfig> = {},
+): NodeRuntimeConfig {
 	return {
 		...NODE_RUNTIME_CONTEXT_DEFAULTS,
 		workspaceRoot: "/workspace",
@@ -247,40 +201,52 @@ function config(protocol: "responses" | "chat_completions"): NodeRuntimeConfig {
 		authRef: "compatible",
 		sessionId: "session-1",
 		sessionsDbPath: "/home/test/.mycli/sessions.db",
-		maxPromptTokens: 12000,
+		maxPromptTokens: 12_000,
+		modelContextWindowTokens: 20_000,
+		maxOutputTokens: 4_096,
 		requestMaxRetries: 4,
 		streamMaxRetries: 5,
 		reasoningEffort: "medium",
 		thinkingEnabled: true,
 		supportsImages: true,
 		webSearchMode: "disabled",
-		promptCacheKeyEnabled: true,
+		cacheRetention: "short",
 		requestPermissionsToolEnabled: false,
 		updatesCheckOnStartup: true,
+		...overrides,
 	};
 }
 
-function request(protocol: "responses" | "chat_completions") {
+function request(protocol: "responses" | "chat_completions"): ProviderRequest {
 	return {
-		provider: "compatible" as const,
+		provider: "compatible",
 		protocol,
 		model: "gpt-test",
 		instructions: "system",
-		messages: [{ role: "user" as const, content: "hello" }],
-		tools: [] as const,
+		messages: [{ role: "user", content: "hello" }],
+		tools: [],
 	};
 }
 
-async function* events(items: readonly unknown[]): AsyncIterable<unknown> {
-	for (const item of items) {
-		yield item;
-	}
+function contextItem(text: string, role?: "developer" | "user") {
+	return {
+		type: "context" as const,
+		text,
+		metadata: {
+			kind: "hook_context" as const,
+			...(role ? { role } : {}),
+			cacheClass: "ephemeral" as const,
+			durability: "persistent" as const,
+			scope: "turn" as const,
+			sourceId: `hook-${role ?? "user"}`,
+			contentSha256: "a".repeat(64),
+			contentLength: text.length,
+		},
+	};
 }
 
 async function collect(stream: AsyncIterable<ProviderEvent>): Promise<ProviderEvent[]> {
-	const collected: ProviderEvent[] = [];
-	for await (const event of stream) {
-		collected.push(event);
-	}
-	return collected;
+	const result: ProviderEvent[] = [];
+	for await (const event of stream) result.push(event);
+	return result;
 }

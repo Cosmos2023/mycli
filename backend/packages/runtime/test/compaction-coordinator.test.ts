@@ -47,7 +47,8 @@ test("summarizes through the provider abstraction with a bounded no-tool request
 		protocol: "responses",
 		model: "main-model",
 		reasoningEffort: "high",
-		promptCacheKey: "must-not-leak",
+		sessionId: "session-1",
+		cacheRetention: "short",
 	};
 
 	const summary = await summarize!(provider, config, {
@@ -62,7 +63,8 @@ test("summarizes through the provider abstraction with a bounded no-tool request
 	assert.equal(requests[0]?.model, "summary-model");
 	assert.equal(requests[0]?.reasoningEffort, "none");
 	assert.equal(requests[0]?.maxOutputTokens, 600);
-	assert.equal(requests[0]?.promptCacheKey, undefined);
+	assert.equal(requests[0]?.sessionId, "session-1");
+	assert.equal(requests[0]?.cacheRetention, "short");
 	assert.deepEqual(requests[0]?.tools, []);
 	assert.deepEqual(requests[0]?.items, [{ type: "user", text: "old work" }]);
 });

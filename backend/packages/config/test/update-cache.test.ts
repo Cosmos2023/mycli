@@ -11,7 +11,7 @@ import {
 	updateInstallGuidance,
 } from "../src/index.ts";
 
-const PACKAGE_NAME = "@mycli/app";
+const PACKAGE_NAME = "@cosmos2023/mycli";
 const CURRENT_VERSION = "1.2.3";
 
 test("stable semantic versions reject prerelease, build, and leading-zero forms", () => {
@@ -46,7 +46,7 @@ test("cached update refresh writes a private valid record and advertises it on a
 	assert.equal(later.availability, "available");
 	assert.equal(later.cacheState, "fresh");
 	assert.equal(later.latestVersion, "1.3.0");
-	assert.equal(later.install.command, "npm install -g @mycli/app@latest");
+	assert.equal(later.install.command, "npm install -g @cosmos2023/mycli@latest");
 	const cachePath = join(homeDir, ".mycli", "version.json");
 	assert.deepEqual(JSON.parse(await readFile(cachePath, "utf8")), {
 		schemaVersion: 1,
@@ -330,12 +330,12 @@ test("installation guidance is evidence based with an explicit npm fallback", ()
 		npm_config_user_agent: "pnpm/10.0.0 npm/? node/v24",
 	}, ""), {
 		method: "pnpm",
-		command: "pnpm add -g @mycli/app@latest",
+		command: "pnpm add -g @cosmos2023/mycli@latest",
 		fallback: false,
 	});
 	assert.deepEqual(updateInstallGuidance(PACKAGE_NAME, {}, "/opt/mycli/bin/mycli"), {
 		method: "unknown",
-		command: "npm install -g @mycli/app@latest",
+		command: "npm install -g @cosmos2023/mycli@latest",
 		fallback: true,
 	});
 });

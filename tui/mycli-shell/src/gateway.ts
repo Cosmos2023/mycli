@@ -13,24 +13,24 @@ import {
 	runtimeStateWithSettingsSnapshot,
 	runtimeStateWithCredentialReadiness,
 	runtimeStateWithModelCatalog,
+	runtimeStateWithProviderDirectory,
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
 	runtimeInputDisposition,
-	runtimeStateRejectPendingSteer,
 	resolveLocalInterruptInputs,
-	popLastLocalFollowUp,
 	nextLocalUserInput,
 	removeLocalUserInput,
+	removeLocalUserInputForSession,
 	runtimeStateAcknowledgeQueuedInput,
 	resourcesFromResult,
+	modelsFromResult,
+	providerRoutesFromResult,
 	permissionStateFromUnknown,
 	sessionResumePreviewFromResult,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsSnapshotFromResult,
-	legacyQueueMigrationToken,
-	runtimeStateWithLegacyQueueMigration,
 	type RuntimeShellState,
 	type RuntimeLocalUserInput,
 } from "./adapters/runtime-state.ts";
@@ -39,8 +39,10 @@ import { NativeChatRuntime } from "./native-chat-runtime.ts";
 import type {
 	MycliShellPendingApproval,
 	MycliShellPendingClarification,
+	MycliShellModel,
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
+	MycliShellProviderRoute,
 	MycliShellResumeRepairAction,
 	MycliShellResumeRepairPreview,
 	MycliShellSession,
@@ -50,6 +52,7 @@ import type {
 	MycliShellVisualSettings,
 } from "./model.ts";
 import type {
+	MycliShellLocalImageAttachment,
 	MycliShellQueuedInput,
 	MycliShellSubmitAttachments,
 } from "./shell-runtime.ts";
@@ -89,6 +92,13 @@ type QueuedTurnInput = {
 	attachments?: MycliShellSubmitAttachments;
 	clientUserMessageId: string;
 	source?: string;
+};
+type RestorableQueuedInput = RuntimeLocalUserInput & {
+	readonly kind: "pending_steer" | "rejected_steer" | "follow_up";
+};
+type SessionMutationContext = {
+	readonly sessionId: string | null;
+	readonly generation: number | null;
 };
 
 const commandSurface = process.env.MYCLI_TUI_NATIVE === "1" ? "cli" : "tui";
@@ -175,16 +185,19 @@ function handleGatewayEvent(event: GatewayEvent): void {
 		return;
 	}
 	let nextState = reduceRuntimeEvent(runtimeState, event.method, event.params);
+	const eventApplied = nextState !== runtimeState;
 	const interrupted =
-		(event.method === "turn.interrupted" && event.params.requested !== true) ||
-		(event.method === "turn.completed" && event.params.turn_state === "interrupted");
+		eventApplied && (
+			(event.method === "turn.interrupted" && event.params.requested !== true) ||
+			(event.method === "turn.completed" && event.params.turn_state === "interrupted")
+		);
 	const shouldResolveInterrupt =
 		interrupted &&
 		(interruptRequested || runtimeState.turnRunning || runtimeState.activeTurnId !== null);
-	if (shouldResolveInterrupt) {
+	if (shouldResolveInterrupt && !interruptRequested) {
 		const resolution = resolveLocalInterruptInputs(
 			nextState,
-			resubmitPendingSteersAfterInterrupt,
+			false,
 		);
 		nextState = resolution.state;
 		localDispatchEligible = resolution.dispatchNext;
@@ -197,23 +210,23 @@ function handleGatewayEvent(event: GatewayEvent): void {
 				restoreSubmittedInput: event.params.input_rolled_back === true,
 			},
 		);
-		interruptRequested = false;
-		resubmitPendingSteersAfterInterrupt = false;
 	}
 	setRuntimeState(nextState, { eventType: runtimeEventType(event) });
-	if (event.method === "turn.started") {
+	if (event.method === "turn.started" && eventApplied) {
 		backendTurnBusy = true;
 	}
 	if (
-		(event.method === "turn.completed" && !interrupted) ||
-		event.method === "turn.failed"
+		eventApplied && (
+			(event.method === "turn.completed" && !interrupted) ||
+			event.method === "turn.failed"
+		)
 	) {
 		localDispatchEligible = true;
 	}
 	if (event.method === "status.changed" && event.params.turn_running === false) {
 		backendTurnBusy = false;
 		scheduleNextLocalInput();
-	} else if (shouldResolveInterrupt && !backendTurnBusy) {
+	} else if (shouldResolveInterrupt && !interruptRequested && !backendTurnBusy) {
 		scheduleNextLocalInput();
 	}
 }
@@ -301,7 +314,6 @@ async function bootstrap(): Promise<void> {
 		client: { name: "mycli-shell-tui", version: TUI_VERSION },
 	});
 	setRuntimeState(runtimeStateFromBootstrap(runtimeState, bootstrapPayload));
-	await acknowledgeLegacyQueueMigration(bootstrapPayload);
 	const transcriptPayload = await send("transcript.load", {
 		session_id: runtimeState.sessionId ?? undefined,
 		before: null,
@@ -349,24 +361,6 @@ async function previewSessionResume(sessionId: string): Promise<MycliShellResume
 	return preview;
 }
 
-async function acknowledgeLegacyQueueMigration(
-	payload: Record<string, unknown>,
-): Promise<void> {
-	const migrationToken = legacyQueueMigrationToken(payload);
-	if (!migrationToken) return;
-	try {
-		await send(
-			"turn.queue.migration.ack",
-			{ token: migrationToken },
-			{ recordErrors: false },
-		);
-	} catch (error) {
-		if (!(error instanceof GatewayRequestError && error.code === "queue_conflict")) {
-			throw error;
-		}
-	}
-}
-
 async function submitTurn(
 	message: string,
 	attachments: MycliShellSubmitAttachments = {},
@@ -400,12 +394,12 @@ async function submitTurn(
 	}
 	const disposition = runtimeInputDisposition(runtimeState, backendTurnBusy);
 	if (disposition === "follow_up") {
-		setRuntimeState(
-			runtimeStateWithLocalFollowUp(
-				runtimeState,
-				runtimeLocalInput(clientUserMessageId, text, attachments),
-			),
-		);
+		await queueFollowUp({
+			kind: "followUp",
+			message: text,
+			attachments,
+			clientUserMessageId,
+		});
 		return;
 	}
 	if (disposition === "steer") {
@@ -418,6 +412,7 @@ async function submitTurn(
 		return;
 	}
 	const clientTurnId = nextClientTurnId("ui");
+	const context = currentSessionMutationContext();
 	const localInput = runtimeLocalInput(clientUserMessageId, text, attachments);
 	setRuntimeState(runtimeStateWithSubmittingMessage(runtimeState, localInput));
 	backendTurnBusy = true;
@@ -428,6 +423,7 @@ async function submitTurn(
 					message: text,
 					client_turn_id: clientTurnId,
 					client_user_message_id: clientUserMessageId,
+					...sessionMutationFields(context),
 					...(options.collaborationMode ? { collaboration_mode: options.collaborationMode } : {}),
 					...(attachments?.localImages?.length ? { local_images: attachments.localImages } : {}),
 				},
@@ -439,6 +435,7 @@ async function submitTurn(
 				...runtimeState,
 				turnRunning: true,
 				activeTurnId: turnId ?? runtimeState.activeTurnId,
+				activeClientTurnId: clientTurnId,
 			});
 		}
 	} catch (error) {
@@ -575,18 +572,50 @@ async function submitFollowUp(message: string, attachments?: MycliShellSubmitAtt
 		clientUserMessageId: nextClientTurnId("followUp"),
 	};
 	if (runtimeState.turnRunning || runtimeState.activeTurnId || backendTurnBusy) {
-		setRuntimeState(
-			runtimeStateWithLocalFollowUp(
-				runtimeState,
-				runtimeLocalInput(input.clientUserMessageId, input.message, input.attachments),
-			),
-		);
+		await queueFollowUp(input);
 		return;
 	}
 	await submitTurn(input.message, input.attachments, input.clientUserMessageId);
 }
 
+async function queueFollowUp(input: QueuedTurnInput): Promise<void> {
+	const context = currentSessionMutationContext();
+	const sessionId = context.sessionId;
+	const localInput = runtimeLocalInput(
+		input.clientUserMessageId,
+		input.message,
+		input.attachments,
+	);
+	setRuntimeState(runtimeStateWithLocalFollowUp(runtimeState, localInput));
+	try {
+		const result = await send("turn.follow_up", {
+			message: input.message,
+			client_turn_id: input.clientUserMessageId,
+			...sessionMutationFields(context),
+			...(input.attachments?.localImages?.length
+				? { local_images: input.attachments.localImages }
+				: {}),
+		}, { recordErrors: false });
+		setRuntimeState(runtimeStateAcknowledgeQueuedInput(
+			runtimeState,
+			input.clientUserMessageId,
+			result,
+			sessionId,
+		));
+	} catch (error) {
+		if (!sessionMutationContextIsCurrent(context)) return;
+		setRuntimeState(removeLocalUserInputForSession(
+			runtimeState,
+			sessionId,
+			input.clientUserMessageId,
+		));
+		throw error;
+	}
+}
+
 async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
+	const context = currentSessionMutationContext();
+	const sessionId = context.sessionId;
 	const localInput = runtimeLocalInput(
 		input.clientUserMessageId,
 		input.message,
@@ -600,6 +629,7 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 				message: input.message,
 				client_user_message_id: input.clientUserMessageId,
 				expected_turn_id: expectedTurnId,
+				...sessionMutationFields(context),
 				...(input.attachments?.localImages?.length
 					? { local_images: input.attachments.localImages }
 					: {}),
@@ -608,9 +638,11 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 				runtimeState,
 				input.clientUserMessageId,
 				result,
+				sessionId,
 			));
 			return;
 		} catch (error) {
+			if (!sessionMutationContextIsCurrent(context)) return;
 			const actualTurnId =
 				error instanceof GatewayRequestError &&
 				error.code === "turn_id_mismatch" &&
@@ -622,31 +654,46 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 				setRuntimeState({ ...runtimeState, activeTurnId: actualTurnId });
 				continue;
 			}
-			setRuntimeState(
-				runtimeStateRejectPendingSteer(
-					runtimeState,
-					input.clientUserMessageId,
-				),
-			);
-			return;
+			setRuntimeState(removeLocalUserInputForSession(
+				runtimeState,
+				sessionId,
+				input.clientUserMessageId,
+			));
+			throw error;
 		}
 	}
 }
 
 async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
-	const popped = popLastLocalFollowUp(runtimeState);
-	setRuntimeState(popped.state);
-	return popped.input
-		? {
-			text: popped.input.message,
-			...(popped.input.attachments.length
-				? { localImages: popped.input.attachments }
-				: {}),
-		}
+	const context = currentSessionMutationContext();
+	const result = await send(
+		"turn.queue.pop",
+		sessionMutationFields(context),
+		{ recordErrors: false },
+	);
+	if (!sessionMutationContextIsCurrent(context)) return null;
+	const item = typeof result.item === "object" && result.item !== null
+		? result.item as Record<string, unknown>
 		: null;
+	const clientUserMessageId = item
+		? stringField(item.client_user_message_id ?? item.client_turn_id)
+		: undefined;
+	const nextState = reduceRuntimeEvent(runtimeState, "turn.queue.updated", result);
+	setRuntimeState(clientUserMessageId
+		? removeLocalUserInput(nextState, clientUserMessageId)
+		: nextState);
+	if (!item) return null;
+	const text = stringField(item.message ?? item.text);
+	if (!text) return null;
+	const localImages = localImageAttachmentsFromGateway(item.local_images);
+	return {
+		text,
+		...(localImages.length > 0 ? { localImages } : {}),
+	};
 }
 
 async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<boolean> {
+	const context = currentSessionMutationContext();
 	const pendingClarification = runtimeState.pendingClarification;
 	const pendingClarificationTurnId = pendingClarification
 		? stringField(pendingClarification.turn_id) ?? stringField(pendingClarification.turnId)
@@ -654,7 +701,9 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 	const clarificationPending = pendingClarification !== null && pendingClarificationTurnId !== null;
 	if (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId || clarificationPending) {
 		interruptRequested = true;
-		resubmitPendingSteersAfterInterrupt = runtimeState.localPendingSteers.length > 0;
+		resubmitPendingSteersAfterInterrupt = resubmitPendingSteersAfterInterrupt
+			|| runtimeState.localPendingSteers.length > 0
+			|| runtimeState.queuedPendingSteers.length > 0;
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "turn.interrupted", {
 				requested: true,
@@ -696,6 +745,7 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 				const result = await send("turn.interrupt", {
 					rollback_user_input: options.rollbackUserInput,
 					turn_id: expectedTurnId,
+					...sessionMutationFields(context),
 				}, { recordErrors: false });
 				if (result.accepted !== true || result.requested !== true) {
 					backendTurnBusy = result.turn_running === true;
@@ -703,6 +753,7 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 					clearOptimisticInterrupt();
 					return false;
 				}
+				await resolveRequestedInterrupt(result, context);
 				return true;
 			} catch (error) {
 				const actualTurnId =
@@ -724,6 +775,96 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 		clearOptimisticInterrupt();
 		throw error;
 	}
+}
+
+async function resolveRequestedInterrupt(
+	result: Record<string, unknown>,
+	context: SessionMutationContext,
+): Promise<void> {
+	if (!sessionMutationContextIsCurrent(context)) {
+		interruptRequested = false;
+		resubmitPendingSteersAfterInterrupt = false;
+		return;
+	}
+	const resubmitted = result.pending_steers_resubmitted === true;
+	let nextState = runtimeState;
+	let restoreInputs: RuntimeLocalUserInput[] = [];
+	let restoreToken: string | undefined;
+	if (resubmitted) {
+		const resolution = resolveLocalInterruptInputs(nextState, true);
+		nextState = resolution.state;
+	} else {
+		let durableInputs: RestorableQueuedInput[] = [];
+		try {
+			restoreToken = `restore_${nextClientTurnId("queue")}`;
+			const cleared = await send("turn.queue.clear", {
+				...sessionMutationFields(context),
+				restore_token: restoreToken,
+			}, { recordErrors: false });
+			if (!sessionMutationContextIsCurrent(context)) {
+				interruptRequested = false;
+				resubmitPendingSteersAfterInterrupt = false;
+				return;
+			}
+			durableInputs = clearedQueuedInputs(cleared);
+			nextState = reduceRuntimeEvent(nextState, "turn.queue.updated", cleared);
+		} catch (error) {
+			nextState = reduceRuntimeEvent(nextState, "gateway.error", {
+				code: error instanceof GatewayRequestError ? error.code : "request_failed",
+				message: safeErrorMessage(error, "Queued input could not be restored."),
+				method: "turn.queue.clear",
+				...(error instanceof GatewayRequestError
+					? requestDiagnosticFields(error.data)
+					: {}),
+			});
+		}
+		if (!sessionMutationContextIsCurrent(context)) {
+			interruptRequested = false;
+			resubmitPendingSteersAfterInterrupt = false;
+			return;
+		}
+		const localInputs: RestorableQueuedInput[] = [
+			...nextState.localRejectedSteers.map((input) => ({ ...input, kind: "rejected_steer" as const })),
+			...nextState.localPendingSteers.map((input) => ({ ...input, kind: "pending_steer" as const })),
+			...nextState.localFollowUps.map((input) => ({ ...input, kind: "follow_up" as const })),
+		];
+		const resolution = resolveLocalInterruptInputs(nextState, false);
+		nextState = resolution.state;
+		restoreInputs = mergeRestoredInputs(durableInputs, localInputs);
+	}
+	setRuntimeState(nextState);
+	runtime?.completeInterruptedTurn(
+		restoreInputs.map((input) => ({
+			text: input.message,
+			...(input.attachments.length ? { localImages: input.attachments } : {}),
+		})),
+		{ restoreSubmittedInput: result.input_rolled_back === true },
+	);
+	if (restoreToken) {
+		try {
+			const acknowledged = await send("turn.queue.restore.ack", {
+				...sessionMutationFields(context),
+				restore_token: restoreToken,
+			}, { recordErrors: false });
+			if (sessionMutationContextIsCurrent(context)) {
+				setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", acknowledged));
+			}
+		} catch (error) {
+			if (sessionMutationContextIsCurrent(context)) {
+				setRuntimeState(reduceRuntimeEvent(runtimeState, "gateway.error", {
+					code: error instanceof GatewayRequestError ? error.code : "request_failed",
+					message: safeErrorMessage(error, "Restored input could not be acknowledged."),
+					method: "turn.queue.restore.ack",
+					...(error instanceof GatewayRequestError
+						? requestDiagnosticFields(error.data)
+						: {}),
+				}));
+			}
+		}
+	}
+	localDispatchEligible = false;
+	interruptRequested = false;
+	resubmitPendingSteersAfterInterrupt = false;
 }
 
 async function respondApproval(
@@ -844,16 +985,28 @@ async function saveApiKey(
 		api_key: apiKey,
 		...(authRef ? { auth_ref: authRef } : {}),
 	});
-	const modelResult = await send("model.list", {}, { recordErrors: false });
-	setRuntimeState(runtimeStateWithCredentialReadiness(runtimeStateWithModelCatalog({
+	setRuntimeState(runtimeStateWithCredentialReadiness({
 		...runtimeState,
 		authProviders: runtimeState.authProviders.map((provider) =>
 			provider.id === providerId
 				? { ...provider, configured: true, authRef: authRef ?? provider.authRef ?? provider.id, credentialSource: "stored" }
 				: provider,
 		),
-	}, modelResult), result));
+	}, result));
 	return { message: typeof result.message === "string" ? result.message : undefined };
+}
+
+async function loadProviderRoutes(): Promise<MycliShellProviderRoute[]> {
+	const result = await send("provider.list", {}, { recordErrors: false });
+	return providerRoutesFromResult(result);
+}
+
+async function loadProviderModels(providerId: string): Promise<MycliShellModel[]> {
+	const result = await send("model.list", { provider: providerId }, { recordErrors: false });
+	if (stringField(result.provider) !== providerId) {
+		throw new Error("Gateway returned models for a different provider route.");
+	}
+	return modelsFromResult(result);
 }
 
 async function runCommand(command: string): Promise<void> {
@@ -861,10 +1014,6 @@ async function runCommand(command: string): Promise<void> {
 	const result = await send("command.run", { command, surface: commandSurface });
 	const clientAction = clientActionFromResult(result);
 	if (clientAction && runtime) {
-		if (clientAction.action === "open_model_selector") {
-			const modelResult = await send("model.list", {});
-			setRuntimeState(runtimeStateWithModelCatalog(runtimeState, modelResult));
-		}
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
 		return;
 	}
@@ -926,14 +1075,13 @@ async function selectSession(
 	}
 	const session = sessions.find((candidate) => candidate.id === sessionId);
 	const resumedSessionId = String(result.session_id ?? sessionId);
-	runtimeState = runtimeStateAfterSessionResume(
+	const resumedState = runtimeStateAfterSessionResume(
 		runtimeState,
 		resumedSessionId,
 		session?.title ?? sessionId,
 		result,
 	);
-	setRuntimeState(runtimeState);
-	await acknowledgeLegacyQueueMigration(result);
+	setRuntimeState(resumedState, { replaceSessionTranscript: true });
 	const transcriptPayload = await send("transcript.load", {
 		session_id: resumedSessionId,
 		before: null,
@@ -1111,6 +1259,14 @@ async function main(): Promise<void> {
 		onPlanImplementation: startPlanImplementation,
 		onApiKeyLogin: saveApiKey,
 		onConnectivityValidate: validateProviderConnectivity,
+		onProviderLoad: loadProviderRoutes,
+		onModelLoad: loadProviderModels,
+		onProviderRoutesChange: (providerRoutes) => {
+			setRuntimeState(runtimeStateWithProviderDirectory(runtimeState, { providers: providerRoutes }));
+		},
+		onModelCatalogChange: (provider, models) => {
+			setRuntimeState(runtimeStateWithModelCatalog(runtimeState, { provider, models }));
+		},
 		onModelSelect: async (model, scope) => {
 			if (!model.protocol || !model.baseUrl) {
 				throw new Error("Model catalog entry is missing provider protocol or endpoint metadata.");
@@ -1179,8 +1335,94 @@ function stringField(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function localImageAttachmentsFromGateway(value: unknown): MycliShellLocalImageAttachment[] {
+	if (!Array.isArray(value)) return [];
+	return value.slice(0, 16).flatMap((entry, index) => {
+		if (typeof entry !== "object" || entry === null) return [];
+		const record = entry as Record<string, unknown>;
+		const path = stringField(record.path);
+		if (!path) return [];
+		return [{
+			path,
+			placeholder: stringField(record.placeholder) ?? `[image #${index + 1}]`,
+		}];
+	});
+}
+
+function clearedQueuedInputs(payload: Record<string, unknown>): RestorableQueuedInput[] {
+	const steering = queueInputsFromUnknown(payload.steering_items, "pending_steer");
+	const deferred = queueInputsFromUnknown(payload.follow_up_items, "follow_up");
+	return [
+		...deferred.filter((input) => input.kind === "rejected_steer"),
+		...steering,
+		...deferred.filter((input) => input.kind !== "rejected_steer"),
+	];
+}
+
+function queueInputsFromUnknown(
+	value: unknown,
+	fallbackKind: "pending_steer" | "follow_up",
+): RestorableQueuedInput[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((entry, index) => {
+		if (typeof entry !== "object" || entry === null) return [];
+		const record = entry as Record<string, unknown>;
+		const message = stringField(record.message ?? record.text);
+		if (!message) return [];
+		const rawKind = stringField(record.kind);
+		const kind = rawKind === "rejected_steer"
+			? "rejected_steer"
+			: rawKind === "follow_up"
+				? "follow_up"
+				: fallbackKind;
+		return [{
+			clientUserMessageId: stringField(
+				record.client_user_message_id ?? record.client_turn_id,
+			) ?? `interrupt-restore-${kind}-${index}`,
+			message,
+			attachments: localImageAttachmentsFromGateway(record.local_images),
+			kind,
+		}];
+	});
+}
+
+function mergeRestoredInputs(
+	durable: readonly RestorableQueuedInput[],
+	local: readonly RestorableQueuedInput[],
+): RuntimeLocalUserInput[] {
+	const seen = new Set<string>();
+	const merged: RuntimeLocalUserInput[] = [];
+	for (const kind of ["rejected_steer", "pending_steer", "follow_up"] as const) {
+		for (const { kind: _kind, ...input } of [...durable, ...local]) {
+			if (_kind !== kind || seen.has(input.clientUserMessageId)) continue;
+			seen.add(input.clientUserMessageId);
+			merged.push(input);
+		}
+	}
+	return merged;
+}
+
 function integerField(value: unknown): number | undefined {
 	return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
+}
+
+function currentSessionMutationContext(): SessionMutationContext {
+	return Object.freeze({
+		sessionId: runtimeState.sessionId,
+		generation: runtimeState.sessionGeneration,
+	});
+}
+
+function sessionMutationFields(context: SessionMutationContext): Record<string, unknown> {
+	return {
+		...(context.sessionId ? { session_id: context.sessionId } : {}),
+		...(context.generation !== null ? { generation: context.generation } : {}),
+	};
+}
+
+function sessionMutationContextIsCurrent(context: SessionMutationContext): boolean {
+	return context.sessionId === runtimeState.sessionId
+		&& context.generation === runtimeState.sessionGeneration;
 }
 
 function requestDiagnosticFields(data: Readonly<Record<string, unknown>>): Record<string, unknown> {

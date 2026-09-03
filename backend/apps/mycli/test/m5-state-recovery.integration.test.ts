@@ -14,6 +14,10 @@ import { MemoryStore } from "@mycli/runtime";
 import { openRuntimeSessionStore, type RuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import {
+	responsesAuthorityText,
+	responsesTextEvents,
+} from "./support/responses-sse.ts";
 
 type Protocol = "responses" | "chat_completions";
 type JsonObject = Record<string, unknown>;
@@ -36,7 +40,7 @@ test("Worker-backed Responses root compacts, injects memory, resumes, and comple
 		content: "Prefer concise output.",
 	});
 	const provider = await providerFixture(t, (body, index) => {
-		const instructions = stringValue(body.instructions);
+		const instructions = responsesAuthorityText(body);
 		if (instructions.includes("select memory files")) {
 			return responsesFinal(JSON.stringify({ selected_memories: ["tone.md"] }), `selector-${index}`);
 		}
@@ -67,15 +71,15 @@ test("Worker-backed Responses root compacts, injects memory, resumes, and comple
 	assert.equal(events(first.messages, "compaction.started").length, 1);
 	assert.equal(events(first.messages, "compaction.completed").length, 1);
 	assert.equal(provider.requests.filter((request) => (
-		stringValue(request.body.instructions).includes("select memory files")
+		responsesAuthorityText(request.body).includes("select memory files")
 	)).length, 0);
 	assert.equal(provider.requests.length, 2);
 	const summaryRequest = provider.requests.find((request) => (
-		stringValue(request.body.instructions).includes("Summarize the supplied conversation")
+		responsesAuthorityText(request.body).includes("Summarize the supplied conversation")
 	));
 	assert.equal(summaryRequest?.body.max_output_tokens, 4_096);
 	const mainRequest = provider.requests.find((request) => (
-		stringValue(request.body.instructions).startsWith("# Identity\n")
+		responsesAuthorityText(request.body).startsWith("# Identity\n")
 	));
 	assert.ok(mainRequest);
 	assert.match(JSON.stringify(mainRequest.body.input), /Prefer concise output\./u);
@@ -117,42 +121,150 @@ test("Worker-backed Responses root compacts, injects memory, resumes, and comple
 	await restarted.close();
 });
 
-test("queue and rejected steering state survive a backend restart", async (t) => {
+test("queued input survives restart and drains automatically in durable order", async (t) => {
 	const paths = await scenarioPaths(t, "queue");
-	const first = await startBackend(paths, "http://127.0.0.1:9/v1", {
-		MYCLI_MEMORY_ENABLED: "false",
-	});
-	t.after(() => first.close());
-	send(first.backend, "steer", "turn.steer", {
-		message: "defer this steer",
-		expected_turn_id: "missing-turn",
-		client_turn_id: "m5-steer",
-	});
-	const steer = await waitFor(() => rpcResponse(first.messages, "steer"));
-	assert.equal(resultValue(steer, "queue_revision"), 1);
-	send(first.backend, "follow", "turn.follow_up", {
-		message: "run this next",
-		client_turn_id: "m5-follow",
-	});
-	const follow = await waitFor(() => rpcResponse(first.messages, "follow"));
-	assert.equal(resultValue(follow, "queue_revision"), 2);
-	await first.close();
-
-	const restarted = await startBackend(paths, "http://127.0.0.1:9/v1", {
+	const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
+	try {
+		seed.saveState({
+			sessionId: paths.sessionId,
+			workspaceRoot: paths.workspace,
+			threadId: paths.sessionId,
+			key: "input_queue",
+			payload: queuePayload(paths.sessionId, [{
+				queueId: "queue-steer",
+				clientTurnId: "m5-steer",
+				kind: "rejected_steer",
+				text: "defer this steer",
+			}, {
+				queueId: "queue-follow",
+				clientTurnId: "m5-follow",
+				kind: "follow_up",
+				text: "run this next",
+			}]),
+		});
+	} finally {
+		seed.close();
+	}
+	const provider = await providerFixture(t, (_body, index) => (
+		responsesFinal(`Queued turn ${index} completed.`, `queue-${index}`)
+	));
+	const restarted = await startBackend(paths, provider.baseUrl, {
 		MYCLI_MEMORY_ENABLED: "false",
 	});
 	t.after(() => restarted.close());
-	send(restarted.backend, "bootstrap", "session.bootstrap", { protocol_version: 1 });
-	const bootstrap = await waitFor(() => rpcResponse(restarted.messages, "bootstrap"));
-	const status = resultValue(bootstrap, "status") as JsonObject;
-	assert.equal(status.queue_revision, 2);
-	assert.deepEqual(status.queued_steering, []);
-	assert.deepEqual(status.queued_follow_up, ["defer this steer", "run this next"]);
-	const queueItems = status.queue_items as JsonObject;
-	assert.equal((queueItems.rejected_steers as unknown[]).length, 1);
-	assert.equal((queueItems.follow_ups as unknown[]).length, 1);
+	await waitForFinal(restarted.messages, "m5-steer");
+	await waitForFinal(restarted.messages, "m5-follow");
+
+	assert.equal(provider.requests.length, 2);
+	assert.match(JSON.stringify(provider.requests[0]?.body.input), /defer this steer/u);
+	assert.match(JSON.stringify(provider.requests[1]?.body.input), /run this next/u);
+	const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
+	try {
+		const queue = persisted.loadState(paths.sessionId, "input_queue") as JsonObject;
+		assert.deepEqual(queue.rejected_steers, []);
+		assert.deepEqual(queue.follow_ups, []);
+		assert.deepEqual([...persisted.loadCommittedQueueIds(paths.sessionId)], [
+			"queue-steer",
+			"queue-follow",
+		]);
+	} finally {
+		persisted.close();
+	}
 	assert.equal(existsSync(paths.pythonMarker), false);
 	await restarted.close();
+});
+
+test("restart releases orphaned queue claims and retires committed claims", async (t) => {
+	await t.test("orphaned claim", async (subtest) => {
+		const paths = await scenarioPaths(subtest, "queue-claim-orphan");
+		const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
+		try {
+			seed.saveState({
+				sessionId: paths.sessionId,
+				workspaceRoot: paths.workspace,
+				threadId: paths.sessionId,
+				key: "input_queue",
+				payload: queuePayload(paths.sessionId, [{
+					queueId: "queue-orphan",
+					clientTurnId: "client-orphan",
+					kind: "follow_up",
+					state: "claimed",
+					claimTurnId: "turn-abandoned",
+					text: "recover orphaned claim",
+				}]),
+			});
+		} finally {
+			seed.close();
+		}
+		const provider = await providerFixture(subtest, (_body, index) => (
+			responsesFinal("Orphan recovered.", `orphan-${index}`)
+		));
+		const backend = await startBackend(paths, provider.baseUrl, {
+			MYCLI_MEMORY_ENABLED: "false",
+		});
+		subtest.after(() => backend.close());
+		await waitForFinal(backend.messages, "client-orphan");
+		assert.equal(provider.requests.length, 1);
+		assert.match(JSON.stringify(provider.requests[0]?.body.input), /recover orphaned claim/u);
+		await backend.close();
+	});
+
+	await t.test("committed claim", async (subtest) => {
+		const paths = await scenarioPaths(subtest, "queue-claim-committed");
+		const seed = openRuntimeSessionStore({ dbPath: paths.dbPath });
+		try {
+			seed.saveState({
+				sessionId: paths.sessionId,
+				workspaceRoot: paths.workspace,
+				threadId: paths.sessionId,
+				key: "input_queue",
+				payload: queuePayload(paths.sessionId, [{
+					queueId: "queue-committed",
+					clientTurnId: "client-committed",
+					kind: "follow_up",
+					state: "claimed",
+					claimTurnId: "turn-committed",
+					text: "already committed",
+				}]),
+			});
+			seed.reserveTurn({
+				sessionId: paths.sessionId,
+				clientTurnId: "client-committed",
+				clientUserMessageId: "client-committed",
+				turnId: "turn-committed",
+				requestFingerprint: fingerprintSubmission({ message: "already committed" }),
+				workspaceRoot: paths.workspace,
+				threadId: paths.sessionId,
+				userText: "already committed",
+				queueId: "queue-committed",
+				inputSource: "submit",
+				startedAt: "2026-08-05T00:00:00.000Z",
+			});
+		} finally {
+			seed.close();
+		}
+		const provider = await providerFixture(subtest, (_body, index) => (
+			responsesFinal("Must not run.", `committed-${index}`)
+		));
+		const backend = await startBackend(paths, provider.baseUrl, {
+			MYCLI_MEMORY_ENABLED: "false",
+		});
+		subtest.after(() => backend.close());
+		await waitFor(() => event(backend.messages, "runtime.ready"));
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal(provider.requests.length, 0);
+		await backend.close();
+
+		const persisted = openRuntimeSessionStore({ dbPath: paths.dbPath });
+		try {
+			const queue = persisted.loadState(paths.sessionId, "input_queue") as JsonObject;
+			assert.deepEqual(queue.follow_ups, []);
+			assert.equal(persisted.loadTurn(paths.sessionId, "client-committed")?.status, "interrupted");
+			assert.equal([...persisted.loadCommittedQueueIds(paths.sessionId)].length, 1);
+		} finally {
+			persisted.close();
+		}
+	});
 });
 
 test("a strict Write approval resumes compactly after restart and executes once", async (t) => {
@@ -385,7 +497,7 @@ test("M5 live smoke bounds provider calls and reports only structural recovery s
 	const paths = await scenarioPaths(t, "smoke-completed");
 	const secret = "test-live-secret";
 	const provider = await providerFixture(t, (body, index) => {
-		const instructions = stringValue(body.instructions);
+		const instructions = responsesAuthorityText(body);
 		return instructions.includes("Summarize the supplied conversation")
 			? responsesFinal("A compact safe summary.", `smoke-summary-${index}`)
 			: responsesFinal("OK", `smoke-turn-${index}`);
@@ -532,7 +644,7 @@ async function startBackend(
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
-			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_CACHE_RETENTION: "none",
 			MYCLI_PYTHON: paths.pythonMarker,
 			...envOverrides,
 		},
@@ -582,6 +694,44 @@ function seedCompletedTurn(
 		usage: {},
 		completedAt: "2026-08-04T00:00:01.000Z",
 	});
+}
+
+function queuePayload(
+	sessionId: string,
+	records: readonly {
+		readonly queueId: string;
+		readonly clientTurnId: string;
+		readonly kind: "pending_steer" | "rejected_steer" | "follow_up";
+		readonly state?: "queued" | "accepted" | "claimed" | "committed";
+		readonly claimTurnId?: string;
+		readonly targetTurnId?: string | null;
+		readonly text: string;
+		readonly imagePaths?: readonly string[];
+		readonly source?: string;
+	}[],
+): JsonObject {
+	const now = "2026-08-05T00:00:00.000Z";
+	const persisted = records.map((record) => ({
+		queue_id: record.queueId,
+		session_id: sessionId,
+		client_turn_id: record.clientTurnId,
+		target_turn_id: record.targetTurnId ?? null,
+		kind: record.kind,
+		state: record.state ?? (record.kind === "pending_steer" ? "accepted" : "queued"),
+		...(record.claimTurnId ? { claim_turn_id: record.claimTurnId } : {}),
+		text: record.text,
+		image_paths: [...(record.imagePaths ?? [])],
+		source: record.source ?? "user",
+		created_at: now,
+		updated_at: now,
+	}));
+	return {
+		session_id: sessionId,
+		revision: records.length,
+		pending_steers: persisted.filter((record) => record.kind === "pending_steer"),
+		rejected_steers: persisted.filter((record) => record.kind === "rejected_steer"),
+		follow_ups: persisted.filter((record) => record.kind === "follow_up"),
+	};
 }
 
 function seedWaitingApproval(
@@ -686,17 +836,25 @@ function seedWaitingApproval(
 }
 
 function responsesFinal(text: string, responseId: string): readonly JsonObject[] {
-	return [
-		{ type: "response.output_text.delta", delta: text },
-		{ type: "response.completed", response: { id: responseId } },
-	];
+	return responsesTextEvents(text, responseId, {
+		input_tokens: 4,
+		output_tokens: 1,
+		total_tokens: 5,
+	});
 }
 
 function chatFinal(text: string, responseId: string): readonly JsonObject[] {
-	return [{
-		id: responseId,
-		choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }],
-	}];
+	return [
+		{
+			id: responseId,
+			choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }],
+		},
+		{
+			id: responseId,
+			choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+			usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+		},
+	];
 }
 
 function writeSse(
@@ -749,12 +907,14 @@ function paramValue(message: JsonObject, key: string): unknown {
 }
 
 async function waitForFinal(messages: readonly JsonObject[], clientTurnId: string): Promise<JsonObject> {
-	return waitFor(() => messages.find((message) => (
-		message.method === "message.complete"
-		&& isObject(message.params)
-		&& message.params.final === true
+	const terminal = await waitFor(() => messages.find((message) => (
+		isObject(message.params)
 		&& message.params.client_turn_id === clientTurnId
+		&& (message.method === "turn.failed"
+			|| (message.method === "message.complete" && message.params.final === true))
 	)));
+	assert.notEqual(terminal.method, "turn.failed", JSON.stringify(terminal.params));
+	return terminal;
 }
 
 async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 5_000): Promise<T> {
@@ -788,10 +948,6 @@ function runProcess(
 		child.once("error", reject);
 		child.once("close", (code) => resolve({ code, stdout, stderr }));
 	});
-}
-
-function stringValue(value: unknown): string {
-	return typeof value === "string" ? value : "";
 }
 
 function longText(label: string): string {

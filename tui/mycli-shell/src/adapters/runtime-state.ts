@@ -40,8 +40,10 @@ import type {
 	MycliShellModel,
 	MycliShellPendingApproval,
 	MycliShellPendingClarification,
+	MycliShellQueuedInputPreview,
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
+	MycliShellProviderRoute,
 	MycliShellResource,
 	MycliShellSettingsCatalog,
 	MycliShellSettingsCategory,
@@ -85,6 +87,11 @@ const SEMANTIC_TOOL_ROW_NAMES = new Set([
 ]);
 
 const STARTUP_UPDATE_NOTICE_ID = "startup-update-notice";
+const PROVIDER_ROUTE_ID_MAX_CHARS = 64;
+const PROVIDER_ROUTE_TEXT_MAX_CHARS = 512;
+const PROVIDER_ROUTE_URL_MAX_CHARS = 2_048;
+const PROVIDER_ROUTE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
+const PROVIDER_ROUTE_CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 
 type RuntimeTranscriptItem = {
 	id: string;
@@ -121,8 +128,15 @@ type RuntimeShellProcess = {
 };
 
 type RuntimeQueuedInputPreview = {
+	queueId?: string;
+	clientUserMessageId?: string;
+	sessionId?: string;
+	targetTurnId?: string;
+	claimTurnId?: string;
+	kind?: "pending_steer" | "rejected_steer" | "follow_up";
+	state?: string;
 	message: string;
-	hasImages: boolean;
+	attachments: MycliShellLocalImageAttachment[];
 	source?: string;
 };
 
@@ -130,6 +144,13 @@ export type RuntimeLocalUserInput = {
 	clientUserMessageId: string;
 	message: string;
 	attachments: MycliShellLocalImageAttachment[];
+};
+
+type RuntimeSessionLocalInputs = {
+	localPendingSteers: RuntimeLocalUserInput[];
+	localRejectedSteers: RuntimeLocalUserInput[];
+	localFollowUps: RuntimeLocalUserInput[];
+	localSubmittingMessages: RuntimeLocalUserInput[];
 };
 
 type RuntimeLiveStatus = {
@@ -142,6 +163,7 @@ type RuntimeLiveStatus = {
 
 export type RuntimeShellState = {
 	sessionId: string | null;
+	sessionGeneration: number | null;
 	sessionTitle: string | null;
 	workspace: string;
 	model: string;
@@ -151,10 +173,13 @@ export type RuntimeShellState = {
 	trustGateDismissed: boolean;
 	status: Record<string, unknown>;
 	models: MycliShellModel[] | null;
+	modelsProvider: string | null;
+	providerRoutes: MycliShellProviderRoute[];
 	transcript: RuntimeTranscriptItem[];
 	transcriptNextBefore: string | null;
 	turnRunning: boolean;
 	activeTurnId: string | null;
+	activeClientTurnId: string | null;
 	activeAssistantItemId: string | null;
 	queuedInputs: string[];
 	queueRevision: number;
@@ -165,6 +190,7 @@ export type RuntimeShellState = {
 	localRejectedSteers: RuntimeLocalUserInput[];
 	localFollowUps: RuntimeLocalUserInput[];
 	localSubmittingMessages: RuntimeLocalUserInput[];
+	sessionLocalInputs: Record<string, RuntimeSessionLocalInputs>;
 	hasPendingInput: boolean;
 	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
 	liveStatus: RuntimeLiveStatus | null;
@@ -191,6 +217,7 @@ export type RuntimeShellState = {
 export function initialRuntimeState(): RuntimeShellState {
 	return {
 		sessionId: null,
+		sessionGeneration: null,
 		sessionTitle: null,
 		workspace: process.cwd(),
 		model: "",
@@ -200,10 +227,13 @@ export function initialRuntimeState(): RuntimeShellState {
 		trustGateDismissed: false,
 		status: {},
 		models: null,
+		modelsProvider: null,
+		providerRoutes: [],
 		transcript: [],
 		transcriptNextBefore: null,
 		turnRunning: false,
 		activeTurnId: null,
+		activeClientTurnId: null,
 		activeAssistantItemId: null,
 		queuedInputs: [],
 		queueRevision: 0,
@@ -214,6 +244,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		localRejectedSteers: [],
 		localFollowUps: [],
 		localSubmittingMessages: [],
+		sessionLocalInputs: {},
 		hasPendingInput: false,
 		queueActivity: null,
 		liveStatus: null,
@@ -512,27 +543,8 @@ function projectRuntimeShellState(
 	const tools: MycliShellTool[] = projectedTranscript?.tools ?? [];
 	const bash: MycliShellBash[] = projectedTranscript?.bash ?? [];
 	const transcript: MycliShellTranscriptBlock[] = projectedTranscript?.transcript ?? [];
-	const pendingSteers = state.localPendingSteers.map((item) => ({
-		text: item.message,
-		hasImages: item.attachments.length > 0,
-	})).concat(state.queuedPendingSteers.map((item) => ({
-		text: item.message,
-		hasImages: item.hasImages,
-	})));
-	const rejectedSteers = state.localRejectedSteers.map((item) => ({
-		text: item.message,
-		hasImages: item.attachments.length > 0,
-	})).concat(state.queuedRejectedSteers.map((item) => ({
-		text: item.message,
-		hasImages: item.hasImages,
-	})));
-	const followUps = state.localFollowUps.map((item) => ({
-		text: item.message,
-		hasImages: item.attachments.length > 0,
-	})).concat(state.queuedFollowUpInputs.map((item) => ({
-		text: item.message,
-		hasImages: item.hasImages,
-	})));
+	const { pendingSteers, rejectedSteers, followUps } = projectedQueueInputs(state);
+	const queueCount = pendingSteers.length + rejectedSteers.length + followUps.length;
 
 	for (
 		let transcriptIndex = projectedTranscript ? state.transcript.length : sourceStart;
@@ -726,11 +738,11 @@ function projectRuntimeShellState(
 			model: state.model || undefined,
 			reasoningLevel: reasoningLevelFromStatus(state.status),
 			...usageFooterData(state.status),
-			queueCount: queuedInputCount(state),
-			steeringQueueCount: pendingSteers.length,
-			followUpQueueCount: rejectedSteers.length + followUps.length,
-			hasPendingInput: queuedInputCount(state) > 0,
-			queueActivity: state.queueActivity?.kind ?? (queuedInputCount(state) > 0 ? "pending_input" : "idle"),
+				queueCount,
+				steeringQueueCount: pendingSteers.length,
+				followUpQueueCount: rejectedSteers.length + followUps.length,
+				hasPendingInput: queueCount > 0,
+				queueActivity: state.queueActivity?.kind ?? (queueCount > 0 ? "pending_input" : "idle"),
 			trust: state.trust.state ?? "unknown",
 			collaborationMode: state.collaborationMode,
 			liveState: footerLiveState(state),
@@ -749,6 +761,8 @@ function projectRuntimeShellState(
 			?? (state.model
 				? [currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status))]
 				: []),
+		modelsProvider: state.modelsProvider ?? undefined,
+		providerRoutes: state.providerRoutes,
 		authProviders: state.authProviders,
 		authReadiness: state.authReadiness ?? undefined,
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
@@ -995,8 +1009,6 @@ function footerLiveState(state: RuntimeShellState): string {
 
 export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
 	const status = recordValue(payload.status);
-	const migration = recordValue(payload.legacy_user_queue_migration);
-	const hasLegacyMigration = Array.isArray(migration.records) && migration.records.length > 0;
 	const trust = trustFromPayload(payload.trust ?? status.trust, String(payload.workspace ?? state.workspace));
 	const welcome = recordValue(payload.welcome);
 	const startupMark = recordValue(welcome.startup_mark);
@@ -1011,6 +1023,9 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 	const bootstrapState = {
 		...state,
 		sessionId: stringValue(payload.session_id) ?? state.sessionId,
+		sessionGeneration: generationValue(payload.generation)
+			?? generationValue(status.generation)
+			?? state.sessionGeneration,
 		sessionTitle: stringValue(payload.session_title) ?? state.sessionTitle,
 		workspace: stringValue(payload.workspace) ?? state.workspace,
 		model,
@@ -1024,27 +1039,18 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		trust,
 		trustGateDismissed: trust.state === "trusted",
 		activeTurnId: stringValue(status.turn_id),
+		activeClientTurnId: stringValue(status.client_turn_id),
 		transcript: [
 			...state.transcript,
 			{ id: "welcome", type: "system_notice", text: welcomeText, folded: false, metadata: welcome },
 		],
 	};
 	const updateState = runtimeStateWithStartupUpdate(bootstrapState, payload.update);
-	const nextState = hasLegacyMigration
-		? runtimeStateWithMessageQueues(updateState, {
-			pendingSteers: [],
-			rejectedSteers: [],
-			followUps: [],
-		})
-		: applyQueuePayload(updateState, status, "status");
+	const nextState = applyQueuePayload(updateState, status, "status");
 	return applyShellBootstrap(
 		runtimeStateWithLegacyQueueMigration(nextState, payload),
 		Array.isArray(payload.background_shells) ? payload.background_shells : status.background_shells,
 	);
-}
-
-export function legacyQueueMigrationToken(payload: Record<string, unknown>): string | null {
-	return stringValue(recordValue(payload.legacy_user_queue_migration).token);
 }
 
 export function runtimeStateWithLegacyQueueMigration(
@@ -1052,17 +1058,20 @@ export function runtimeStateWithLegacyQueueMigration(
 	payload: Record<string, unknown>,
 ): RuntimeShellState {
 	const migration = recordValue(payload.legacy_user_queue_migration);
-	const migrated = applyLegacyQueueMigration(
-		state,
-		migration,
-	);
-	return Array.isArray(migration.records) && migration.records.length > 0
-		? runtimeStateWithMessageQueues(migrated, {
-			pendingSteers: [],
-			rejectedSteers: [],
-			followUps: [],
-		})
-		: migrated;
+	if (!Array.isArray(migration.records) || migration.records.length === 0) return state;
+	if (
+		state.queuedPendingSteers.length > 0 ||
+		state.queuedRejectedSteers.length > 0 ||
+		state.queuedFollowUpInputs.length > 0
+	) {
+		return state;
+	}
+	const records = queuedInputPreviews(migration.records, []);
+	return runtimeStateWithMessageQueues(state, {
+		pendingSteers: records.filter((record) => record.kind === "pending_steer"),
+		rejectedSteers: records.filter((record) => record.kind === "rejected_steer"),
+		followUps: records.filter((record) => record.kind === "follow_up"),
+	});
 }
 
 export function runtimeStateAfterSessionResume(
@@ -1071,6 +1080,8 @@ export function runtimeStateAfterSessionResume(
 	sessionTitle: string,
 	payload: Record<string, unknown>,
 ): RuntimeShellState {
+	const generation = generationValue(payload.generation);
+	if (!sessionChangeCanApply(state, sessionId, generation)) return state;
 	const eventStatus = stringValue(state.status.session_id) === sessionId
 		? state.status
 		: {};
@@ -1078,6 +1089,9 @@ export function runtimeStateAfterSessionResume(
 		...reduceRuntimeEvent(state, "session.changed", {
 			session_id: sessionId,
 			session_title: sessionTitle,
+			...(generation !== null
+				? { generation }
+				: {}),
 		}),
 		transcript: [],
 	};
@@ -1091,7 +1105,10 @@ export function runtimeStateAfterSessionResume(
 	nextState = runtimeStateWithCredentialReadiness(nextState, payload);
 	const authProviders = authProvidersFromUnknown(payload.auth_providers);
 	if (authProviders.length > 0) nextState = { ...nextState, authProviders };
-	return runtimeStateWithLegacyQueueMigration(nextState, payload);
+	return runtimeStateWithLegacyQueueMigration(
+		applyQueuePayload(nextState, payload, "event"),
+		payload,
+	);
 }
 
 export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
@@ -1110,6 +1127,7 @@ function runtimeStateFromTranscriptPage(
 	payload: Record<string, unknown>,
 	mode: "merge" | "prepend",
 ): RuntimeShellState {
+	if (!eventBelongsToActiveSession(state, payload)) return state;
 	const rawItems = Array.isArray(payload.items)
 		? payload.items
 				.filter(isTranscriptItem)
@@ -1251,6 +1269,7 @@ export function reduceRuntimeEvent(
 		return applyShellLifecycle(state, method, params);
 	}
 	if (method === "turn.started") {
+		if (!eventBelongsToActiveSession(state, params)) return state;
 		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
 		const preserveClarification = pendingRequestBelongsToDifferentTurn(
 			state.pendingClarification,
@@ -1259,7 +1278,9 @@ export function reduceRuntimeEvent(
 		return {
 			...state,
 			turnRunning: true,
+			sessionGeneration: generationValue(params.generation) ?? state.sessionGeneration,
 			activeTurnId: stringValue(params.turn_id) ?? state.activeTurnId,
+			activeClientTurnId: stringValue(params.client_turn_id) ?? state.activeClientTurnId,
 			activeAssistantItemId: nextId("assistant"),
 			liveStatus: { state: "running", kind: "running", text: "Running" },
 			retryRestoreStatus: null,
@@ -1593,6 +1614,7 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "turn.completed") {
+		if (!terminalEventBelongsToActiveTurn(state, params)) return state;
 		const turnState = stringValue(params.turn_state);
 		const durationMs = turnDurationMsValue(params.duration_ms);
 		const inputRolledBack = params.input_rolled_back === true;
@@ -1626,6 +1648,7 @@ export function reduceRuntimeEvent(
 			...state,
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
+			activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
 			retryRestoreStatus: null,
@@ -1662,11 +1685,17 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "turn.status" || method === "status.update") {
+		const terminalStatus = params.terminal === true
+			|| ["completed", "failed", "interrupted", "rejected"].includes(
+				stringValue(params.state) ?? "",
+			);
+		if (terminalStatus && !terminalEventBelongsToActiveTurn(state, params)) return state;
 		if (params.state === "failed") {
 			return {
 				...state,
 				turnRunning: false,
 				activeTurnId: activeTurnIdAfterTerminal(state, params),
+				activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
 				activeAssistantItemId: null,
 				liveReasoning: null,
 				retryRestoreStatus: null,
@@ -1683,6 +1712,10 @@ export function reduceRuntimeEvent(
 		return {
 			...state,
 			turnRunning: params.state === "running" || params.state === "waiting_approval" || params.state === "waiting_clarification",
+			activeTurnId: terminalStatus ? activeTurnIdAfterTerminal(state, params) : state.activeTurnId,
+			activeClientTurnId: terminalStatus
+				? activeClientTurnIdAfterTerminal(state, params)
+				: state.activeClientTurnId,
 			liveStatus: {
 				state: stringValue(params.state) ?? "running",
 				kind: stringValue(params.kind) ?? "status",
@@ -1707,10 +1740,12 @@ export function reduceRuntimeEvent(
 				retryRestoreStatus: null,
 			};
 		}
+		if (!terminalEventBelongsToActiveTurn(state, params)) return state;
 		return {
 			...state,
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
+			activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
 			retryRestoreStatus: null,
@@ -1727,6 +1762,9 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "turn.failed" || method === "gateway.error") {
+		if (method === "turn.failed" && !terminalEventBelongsToActiveTurn(state, params)) {
+			return state;
+		}
 		// The response handler reconciles this race with status.inspect; avoid leaving
 		// a misleading error row behind while the selector is being replaced or cleared.
 		const staleInteractiveError = method === "gateway.error"
@@ -1762,6 +1800,7 @@ export function reduceRuntimeEvent(
 			...state,
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
+			activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
 			retryRestoreStatus: null,
@@ -1888,6 +1927,7 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "status.changed") {
+		if (!statusSnapshotBelongsToActiveSession(state, params)) return state;
 		const trust = trustFromPayload(params.trust, state.workspace);
 		const turnRunning = booleanValue(params.turn_running);
 		const statusSessionId = stringValue(params.session_id) ?? stringValue(params.sessionId) ?? undefined;
@@ -1910,12 +1950,17 @@ export function reduceRuntimeEvent(
 		const nextState = applyQueuePayload({
 			...state,
 			status: params,
+			sessionGeneration: generationValue(params.generation) ?? state.sessionGeneration,
 			models: modelCatalogFromPayload(params) ?? state.models,
 			turnRunning: turnRunning ?? state.turnRunning,
 			activeTurnId:
 				turnRunning === false
 					? null
 					: stringValue(params.turn_id) ?? state.activeTurnId,
+			activeClientTurnId:
+				turnRunning === false
+					? null
+					: stringValue(params.client_turn_id) ?? state.activeClientTurnId,
 			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
 			liveReasoning: turnRunning === false ? null : state.liveReasoning,
 			liveStatus:
@@ -1951,17 +1996,32 @@ export function reduceRuntimeEvent(
 		return { ...state, trust, trustGateDismissed: trust.state === "trusted" };
 	}
 	if (method === "turn.queue.updated") {
+		if (!eventBelongsToActiveSession(state, params)) return state;
 		return applyQueuePayload(state, params, "event");
 	}
 	if (method === "session.changed") {
+		const nextSessionId = stringValue(params.session_id) ?? state.sessionId;
+		const nextGeneration = generationValue(params.generation);
+		if (!sessionChangeCanApply(state, nextSessionId, nextGeneration)) return state;
+		const sessionLocalInputs = state.sessionId
+			? {
+				...state.sessionLocalInputs,
+				[state.sessionId]: localInputsSnapshot(state),
+			}
+			: state.sessionLocalInputs;
+		const restoredLocalInputs = nextSessionId
+			? cloneLocalInputsSnapshot(sessionLocalInputs[nextSessionId])
+			: cloneLocalInputsSnapshot();
 		return {
 			...state,
-			sessionId: stringValue(params.session_id) ?? state.sessionId,
+			sessionId: nextSessionId,
+			sessionGeneration: nextGeneration ?? state.sessionGeneration,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			pendingApproval: null,
 			pendingClarification: null,
 			turnRunning: false,
 			activeTurnId: null,
+			activeClientTurnId: null,
 			activeAssistantItemId: null,
 			liveStatus: null,
 			liveReasoning: null,
@@ -1973,10 +2033,8 @@ export function reduceRuntimeEvent(
 			queuedPendingSteers: [],
 			queuedRejectedSteers: [],
 			queuedFollowUpInputs: [],
-			localPendingSteers: [],
-			localRejectedSteers: [],
-			localFollowUps: [],
-			localSubmittingMessages: [],
+			...restoredLocalInputs,
+			sessionLocalInputs,
 			hasPendingInput: false,
 			queueActivity: null,
 			retryRestoreStatus: null,
@@ -2077,11 +2135,14 @@ export function resolveLocalInterruptInputs(
 	restoreToComposer: RuntimeLocalUserInput[];
 	dispatchNext: boolean;
 } {
-	if (resubmitPendingSteers && state.localPendingSteers.length > 0) {
+	if (resubmitPendingSteers) {
 		return {
-			state: restorePendingSteersAfterInterrupt(state),
+			state: {
+				...state,
+				localPendingSteers: [],
+			},
 			restoreToComposer: [],
-			dispatchNext: true,
+			dispatchNext: false,
 		};
 	}
 
@@ -2141,16 +2202,47 @@ export function removeLocalUserInput(
 	};
 }
 
+export function removeLocalUserInputForSession(
+	state: RuntimeShellState,
+	sessionId: string | null,
+	clientUserMessageId: string,
+): RuntimeShellState {
+	if (!sessionId || !state.sessionId || sessionId === state.sessionId) {
+		return removeLocalUserInput(state, clientUserMessageId);
+	}
+	const snapshot = state.sessionLocalInputs[sessionId];
+	if (!snapshot) return state;
+	const withoutIdentity = (inputs: RuntimeLocalUserInput[]) =>
+		inputs.filter((input) => input.clientUserMessageId !== clientUserMessageId);
+	return {
+		...state,
+		sessionLocalInputs: {
+			...state.sessionLocalInputs,
+			[sessionId]: {
+				localPendingSteers: withoutIdentity(snapshot.localPendingSteers),
+				localRejectedSteers: withoutIdentity(snapshot.localRejectedSteers),
+				localFollowUps: withoutIdentity(snapshot.localFollowUps),
+				localSubmittingMessages: withoutIdentity(snapshot.localSubmittingMessages),
+			},
+		},
+	};
+}
+
 export function runtimeStateAcknowledgeQueuedInput(
 	state: RuntimeShellState,
 	clientUserMessageId: string,
 	queuePayload: Record<string, unknown>,
+	sessionId: string | null = state.sessionId,
 ): RuntimeShellState {
-	return applyQueuePayload(
-		removeLocalUserInput(state, clientUserMessageId),
-		queuePayload,
-		"event",
-	);
+	if (sessionId && state.sessionId && sessionId !== state.sessionId) {
+		return removeLocalUserInputForSession(state, sessionId, clientUserMessageId);
+	}
+	const acknowledged = applyQueuePayload(state, queuePayload, "event");
+	// A delayed response may carry a snapshot older than a terminal queue event. In that case the
+	// local recovery record belongs to the newer state and must not be removed by the stale ACK.
+	return acknowledged === state
+		? state
+		: removeLocalUserInput(acknowledged, clientUserMessageId);
 }
 
 function appendLocalInput(
@@ -2174,33 +2266,29 @@ function appendLocalInput(
 	return inputs;
 }
 
-function applyLegacyQueueMigration(
-	state: RuntimeShellState,
-	migration: Record<string, unknown>,
-): RuntimeShellState {
-	if (!Array.isArray(migration.records)) return state;
-	let nextState = state;
-	for (const value of migration.records) {
-		const record = recordValue(value);
-		const queueId = stringValue(record.queue_id);
-		const message = stringValue(record.text) ?? stringValue(record.message);
-		const kind = stringValue(record.kind);
-		if (!queueId || !message || !kind) continue;
-		const input: RuntimeLocalUserInput = {
-			clientUserMessageId: stringValue(record.client_user_message_id) ?? queueId,
-			message,
-			attachments: localImageAttachments(record.local_images),
-		};
-		if (kind === "follow_up") {
-			nextState = runtimeStateWithLocalFollowUp(nextState, input);
-		} else if (kind === "pending_steer" || kind === "rejected_steer") {
-			nextState = {
-				...nextState,
-				localRejectedSteers: appendLocalInput(nextState.localRejectedSteers, input),
-			};
-		}
-	}
-	return nextState;
+function localInputsSnapshot(state: RuntimeShellState): RuntimeSessionLocalInputs {
+	return cloneLocalInputsSnapshot({
+		localPendingSteers: state.localPendingSteers,
+		localRejectedSteers: state.localRejectedSteers,
+		localFollowUps: state.localFollowUps,
+		localSubmittingMessages: state.localSubmittingMessages,
+	});
+}
+
+function cloneLocalInputsSnapshot(
+	snapshot?: RuntimeSessionLocalInputs,
+): RuntimeSessionLocalInputs {
+	const clone = (inputs: RuntimeLocalUserInput[] | undefined): RuntimeLocalUserInput[] =>
+		(inputs ?? []).map((input) => ({
+			...input,
+			attachments: input.attachments.map((attachment) => ({ ...attachment })),
+		}));
+	return {
+		localPendingSteers: clone(snapshot?.localPendingSteers),
+		localRejectedSteers: clone(snapshot?.localRejectedSteers),
+		localFollowUps: clone(snapshot?.localFollowUps),
+		localSubmittingMessages: clone(snapshot?.localSubmittingMessages),
+	};
 }
 
 function localImageAttachments(value: unknown): MycliShellLocalImageAttachment[] {
@@ -2260,9 +2348,86 @@ function activeTurnIdAfterTerminal(
 	params: Record<string, unknown>,
 ): string | null {
 	const terminalTurnId = stringValue(params.turn_id);
-	return terminalTurnId !== null && terminalTurnId === state.activeTurnId
-		? null
-		: state.activeTurnId;
+	const terminalClientTurnId = stringValue(params.client_turn_id);
+	if (
+		(terminalTurnId !== null && terminalTurnId === state.activeTurnId)
+		|| (terminalTurnId === null
+			&& terminalClientTurnId !== null
+			&& terminalClientTurnId === state.activeClientTurnId)
+	) {
+		return null;
+	}
+	return state.activeTurnId;
+}
+
+function activeClientTurnIdAfterTerminal(
+	state: RuntimeShellState,
+	params: Record<string, unknown>,
+): string | null {
+	const terminalTurnId = stringValue(params.turn_id);
+	const terminalClientTurnId = stringValue(params.client_turn_id);
+	if (
+		(terminalClientTurnId !== null && terminalClientTurnId === state.activeClientTurnId)
+		|| (terminalClientTurnId === null
+			&& terminalTurnId !== null
+			&& terminalTurnId === state.activeTurnId)
+	) {
+		return null;
+	}
+	return state.activeClientTurnId;
+}
+
+function eventBelongsToActiveSession(
+	state: RuntimeShellState,
+	params: Record<string, unknown>,
+): boolean {
+	const sessionId = stringValue(params.session_id) ?? stringValue(params.sessionId);
+	if (sessionId !== null && state.sessionId !== null && sessionId !== state.sessionId) {
+		return false;
+	}
+	const generation = generationValue(params.generation);
+	return generation === null
+		|| state.sessionGeneration === null
+		|| generation === state.sessionGeneration;
+}
+
+function sessionChangeCanApply(
+	state: RuntimeShellState,
+	nextSessionId: string | null,
+	nextGeneration: number | null,
+): boolean {
+	if (nextGeneration === null || state.sessionGeneration === null) return true;
+	return nextGeneration > state.sessionGeneration
+		|| (nextGeneration === state.sessionGeneration && nextSessionId === state.sessionId);
+}
+
+function statusSnapshotBelongsToActiveSession(
+	state: RuntimeShellState,
+	params: Record<string, unknown>,
+): boolean {
+	const sessionId = stringValue(params.session_id) ?? stringValue(params.sessionId);
+	if (sessionId !== null && state.sessionId !== null && sessionId !== state.sessionId) {
+		return false;
+	}
+	const generation = generationValue(params.generation);
+	return generation === null
+		|| state.sessionGeneration === null
+		|| generation >= state.sessionGeneration;
+}
+
+function terminalEventBelongsToActiveTurn(
+	state: RuntimeShellState,
+	params: Record<string, unknown>,
+): boolean {
+	if (!eventBelongsToActiveSession(state, params)) return false;
+	const turnId = stringValue(params.turn_id);
+	if (turnId !== null && state.activeTurnId !== null && turnId !== state.activeTurnId) {
+		return false;
+	}
+	const clientTurnId = stringValue(params.client_turn_id);
+	return clientTurnId === null
+		|| state.activeClientTurnId === null
+		|| clientTurnId === state.activeClientTurnId;
 }
 
 function appendInterruptedNotice(
@@ -2498,15 +2663,63 @@ function runtimeStateWithMessageQueues(
 	};
 }
 
-function queuedInputCount(state: RuntimeShellState): number {
-	const splitQueueCount =
-		state.localPendingSteers.length +
-		state.localRejectedSteers.length +
-		state.localFollowUps.length +
-		state.queuedPendingSteers.length +
-		state.queuedRejectedSteers.length +
-		state.queuedFollowUpInputs.length;
-	return splitQueueCount > 0 ? splitQueueCount : state.queuedInputs.length;
+function projectedQueueInputs(state: RuntimeShellState): {
+	pendingSteers: MycliShellQueuedInputPreview[];
+	rejectedSteers: MycliShellQueuedInputPreview[];
+	followUps: MycliShellQueuedInputPreview[];
+} {
+	const durableInputs = [
+		...state.queuedPendingSteers,
+		...state.queuedRejectedSteers,
+		...state.queuedFollowUpInputs,
+	];
+	const durableClientIds = new Set(
+		durableInputs.flatMap((input) => input.clientUserMessageId ? [input.clientUserMessageId] : []),
+	);
+	const seenLocalIds = new Set<string>();
+	const localPreviews = (inputs: RuntimeLocalUserInput[]): MycliShellQueuedInputPreview[] => inputs
+		.filter((input) => {
+			if (durableClientIds.has(input.clientUserMessageId) || seenLocalIds.has(input.clientUserMessageId)) {
+				return false;
+			}
+			seenLocalIds.add(input.clientUserMessageId);
+			return true;
+		})
+		.map((input) => ({
+			clientUserMessageId: input.clientUserMessageId,
+			text: input.message,
+			hasImages: input.attachments.length > 0,
+			...(input.attachments.length > 0
+				? { localImages: input.attachments.map((attachment) => ({ ...attachment })) }
+				: {}),
+		}));
+	const durablePreviews = (
+		inputs: RuntimeQueuedInputPreview[],
+	): MycliShellQueuedInputPreview[] => inputs.map((input) => ({
+		...(input.queueId ? { queueId: input.queueId } : {}),
+		...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
+		...(input.sessionId ? { sessionId: input.sessionId } : {}),
+		...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
+		...(input.claimTurnId ? { claimTurnId: input.claimTurnId } : {}),
+		...(input.kind ? { kind: input.kind } : {}),
+		...(input.state ? { state: input.state } : {}),
+		text: input.message,
+		hasImages: input.attachments.length > 0,
+		...(input.attachments.length > 0
+			? { localImages: input.attachments.map((attachment) => ({ ...attachment })) }
+			: {}),
+		...(input.source ? { source: input.source } : {}),
+	}));
+
+	// A rejected local record represents a newer disposition than a pending optimistic record.
+	const localRejected = localPreviews(state.localRejectedSteers);
+	const localPending = localPreviews(state.localPendingSteers);
+	const localFollowUps = localPreviews(state.localFollowUps);
+	return {
+		pendingSteers: [...localPending, ...durablePreviews(state.queuedPendingSteers)],
+		rejectedSteers: [...localRejected, ...durablePreviews(state.queuedRejectedSteers)],
+		followUps: [...localFollowUps, ...durablePreviews(state.queuedFollowUpInputs)],
+	};
 }
 
 function queueActivityFromPayload(
@@ -2530,7 +2743,9 @@ function visibleQueuedMessages(messages: string[]): string[] {
 
 function visibleQueuedPreviews(items: RuntimeQueuedInputPreview[]): RuntimeQueuedInputPreview[] {
 	return items.filter(
-		(item) => item.source !== "task_notification" && !isInternalTaskNotification(item.message),
+		(item) => item.source !== "task_notification"
+			&& !item.claimTurnId?.startsWith("restore_")
+			&& !isInternalTaskNotification(item.message),
 	);
 }
 
@@ -2539,14 +2754,29 @@ function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedIn
 	return raw
 		.map((item): RuntimeQueuedInputPreview | null => {
 			if (typeof item === "string") {
-				return item.trim() ? { message: item.trim(), hasImages: false } : null;
+				return item.trim() ? { message: item.trim(), attachments: [] } : null;
 			}
 			const record = recordValue(item);
 			const message = stringValue(record.message) ?? stringValue(record.text);
 			if (!message?.trim()) return null;
+			const kindValue = stringValue(record.kind);
+			const kind = kindValue === "pending_steer"
+				|| kindValue === "rejected_steer"
+				|| kindValue === "follow_up"
+				? kindValue
+				: undefined;
 			return {
+				...(stringValue(record.queue_id) ? { queueId: stringValue(record.queue_id)! } : {}),
+				...(stringValue(record.client_user_message_id ?? record.client_turn_id)
+					? { clientUserMessageId: stringValue(record.client_user_message_id ?? record.client_turn_id)! }
+					: {}),
+				...(stringValue(record.session_id) ? { sessionId: stringValue(record.session_id)! } : {}),
+				...(stringValue(record.target_turn_id) ? { targetTurnId: stringValue(record.target_turn_id)! } : {}),
+				...(stringValue(record.claim_turn_id) ? { claimTurnId: stringValue(record.claim_turn_id)! } : {}),
+				...(kind ? { kind } : {}),
+				...(stringValue(record.state) ? { state: stringValue(record.state)! } : {}),
 				message: message.trim(),
-				hasImages: Array.isArray(record.local_images) && record.local_images.length > 0,
+				attachments: localImageAttachments(record.local_images),
 				...(stringValue(record.source) ? { source: stringValue(record.source)! } : {}),
 			};
 		})
@@ -4757,8 +4987,29 @@ export function runtimeStateWithModelCatalog(
 	payload: Record<string, unknown>,
 ): RuntimeShellState {
 	const models = modelCatalogFromPayload(payload);
-	const nextState = models === null ? state : { ...state, models };
+	const provider = stringValue(payload.provider);
+	const nextState = models === null
+		? state
+		: { ...state, models, modelsProvider: provider ?? state.modelsProvider };
 	return runtimeStateWithCredentialReadiness(nextState, payload);
+}
+
+export function runtimeStateWithProviderDirectory(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+): RuntimeShellState {
+	return { ...state, providerRoutes: providerRoutesFromResult(payload) };
+}
+
+export function providerRoutesFromResult(payload: Record<string, unknown>): MycliShellProviderRoute[] {
+	const providers = Array.isArray(payload.providers) ? payload.providers : [];
+	return providers
+		.map(providerRouteFromUnknown)
+		.filter((provider): provider is MycliShellProviderRoute => provider !== null);
+}
+
+export function modelsFromResult(payload: Record<string, unknown>): MycliShellModel[] {
+	return modelCatalogFromPayload(payload) ?? [];
 }
 
 export function runtimeStateWithCredentialReadiness(
@@ -4943,6 +5194,114 @@ function modelFromUnknown(value: unknown): MycliShellModel | null {
 		current: booleanValue(record.current) ?? undefined,
 		default: booleanValue(record.default) ?? undefined,
 	};
+}
+
+function providerRouteFromUnknown(value: unknown): MycliShellProviderRoute | null {
+	const record = recordValue(value);
+	const id = providerRouteIdValue(record.id);
+	const name = record.name === undefined
+		? id
+		: boundedProviderRouteText(record.name, PROVIDER_ROUTE_TEXT_MAX_CHARS);
+	const activation = providerActivationValue(record.activation);
+	if (!id || !name || !activation
+		|| typeof record.configured !== "boolean"
+		|| typeof record.ready !== "boolean"
+		|| typeof record.current !== "boolean") return null;
+	const catalogProviderValue = record.catalog_provider_id ?? record.catalogProviderId;
+	const catalogProviderId = catalogProviderValue === undefined
+		? undefined
+		: providerRouteIdValue(catalogProviderValue);
+	const protocols = providerProtocolsValue(record.protocols);
+	const protocolValue = record.protocol;
+	const protocol = protocolValue === undefined ? undefined : providerProtocolValue(protocolValue);
+	const baseUrlValue = record.base_url ?? record.baseUrl;
+	const baseUrl = baseUrlValue === undefined
+		? undefined
+		: boundedProviderRouteText(baseUrlValue, PROVIDER_ROUTE_URL_MAX_CHARS);
+	const authRefValue = record.auth_ref ?? record.authRef;
+	const authRef = authRefValue === undefined
+		? undefined
+		: boundedProviderRouteText(authRefValue, PROVIDER_ROUTE_TEXT_MAX_CHARS);
+	const disabledReasonValue = record.disabled_reason ?? record.disabledReason;
+	const disabledReason = disabledReasonValue === undefined
+		? undefined
+		: boundedProviderRouteText(disabledReasonValue, PROVIDER_ROUTE_TEXT_MAX_CHARS);
+	const modelCountValue = record.model_count ?? record.modelCount;
+	const modelCount = modelCountValue === undefined ? undefined : nonNegativeIntegerValue(modelCountValue);
+	if ((catalogProviderValue !== undefined && !catalogProviderId)
+		|| protocols === null
+		|| (protocolValue !== undefined && !protocol)
+		|| (baseUrlValue !== undefined && !baseUrl)
+		|| (authRefValue !== undefined && !authRef)
+		|| (disabledReasonValue !== undefined && !disabledReason)
+		|| (modelCountValue !== undefined && modelCount === null)) return null;
+	const supportTier = providerSupportTierValue(record.support_tier ?? record.supportTier);
+	const source = providerSourceValue(record.source);
+	return {
+		id,
+		name,
+		...(supportTier ? { supportTier } : {}),
+		...(source ? { source } : {}),
+		catalogProviderId: catalogProviderId ?? undefined,
+		protocols,
+		protocol: protocol ?? undefined,
+		baseUrl: baseUrl ?? undefined,
+		authRef: authRef ?? undefined,
+		activation,
+		configured: record.configured,
+		ready: record.ready,
+		current: record.current,
+		endpointRequired: booleanValue(record.endpoint_required ?? record.endpointRequired) ?? undefined,
+		modelCount: modelCount ?? undefined,
+		disabledReason: disabledReason ?? undefined,
+	};
+}
+
+function providerRouteIdValue(value: unknown): string | null {
+	return typeof value === "string"
+		&& value.length <= PROVIDER_ROUTE_ID_MAX_CHARS
+		&& PROVIDER_ROUTE_ID_PATTERN.test(value)
+		? value
+		: null;
+}
+
+function boundedProviderRouteText(value: unknown, maxChars: number): string | null {
+	if (typeof value !== "string") return null;
+	const normalized = value.trim();
+	return normalized.length > 0
+		&& normalized.length <= maxChars
+		&& !PROVIDER_ROUTE_CONTROL_CHARACTER.test(normalized)
+		? normalized
+		: null;
+}
+
+function providerProtocolsValue(value: unknown): string[] | null {
+	if (!Array.isArray(value) || value.length > 3) return null;
+	const protocols = value.map(providerProtocolValue);
+	if (protocols.some((protocol) => protocol === null)) return null;
+	return [...new Set(protocols as string[])];
+}
+
+function providerProtocolValue(value: unknown): string | null {
+	return value === "responses" || value === "chat_completions" || value === "anthropic_messages"
+		? value
+		: null;
+}
+
+function nonNegativeIntegerValue(value: unknown): number | null {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function providerActivationValue(value: unknown): MycliShellProviderRoute["activation"] | null {
+	return value === "active" || value === "inactive" || value === "unserviceable" ? value : null;
+}
+
+function providerSupportTierValue(value: unknown): MycliShellProviderRoute["supportTier"] | null {
+	return value === "stable" || value === "experimental" || value === "compatible" ? value : null;
+}
+
+function providerSourceValue(value: unknown): MycliShellProviderRoute["source"] | null {
+	return value === "pi_ai_builtin" || value === "pi_ai_declared" ? value : null;
 }
 
 function authProvidersFromUnknown(value: unknown): MycliShellAuthProvider[] {
@@ -5167,6 +5526,14 @@ function collaborationModeValue(value: unknown): RuntimeShellState["collaboratio
 
 function numberValue(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function generationValue(value: unknown): number | null {
+	return typeof value === "number"
+		&& Number.isSafeInteger(value)
+		&& value > 0
+		? value
+		: null;
 }
 
 function turnDurationMsValue(value: unknown): number | undefined {

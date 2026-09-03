@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { writeResponsesText } from "./support/responses-sse.ts";
 
 const ROOT = new URL("../../../../", import.meta.url);
 const RUNNER = new URL("scripts/smoke_node_m2.mjs", ROOT);
@@ -53,8 +54,11 @@ for (const protocol of ["responses", "chat_completions"] as const) {
 				});
 				response.writeHead(200, { "content-type": "text/event-stream" });
 				if (protocol === "responses") {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-smoke\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n");
+					writeResponsesText(response, "OK", "resp-smoke", {
+						input_tokens: 2,
+						output_tokens: 1,
+						total_tokens: 3,
+					});
 				} else {
 					response.write("data: {\"id\":\"chat-smoke\",\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n");
 					response.write("data: {\"id\":\"chat-smoke\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n");

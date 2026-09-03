@@ -13,6 +13,7 @@ test("shell environment keeps core keys and replaces PWD with the canonical cwd"
 		cwd,
 		homeDir: join(cwd, "isolated-home"),
 		packageRoot: join(cwd, "isolated-package"),
+		platformPackageRoot: null,
 		sourceEnv: {
 			HOME: "/home/demo",
 			LANG: "en_US.UTF-8",
@@ -44,6 +45,7 @@ test("shell environment removes secret-like names without exposing their values"
 		cwd,
 		homeDir: join(cwd, "isolated-home"),
 		packageRoot: join(cwd, "isolated-package"),
+		platformPackageRoot: null,
 		sourceEnv: {
 			PATH: "/usr/bin",
 			API_KEY: secrets[0],

@@ -10,6 +10,7 @@ import { parseJsonRpcMessage } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import { responsesTextEvents, responsesToolEvents } from "./support/responses-sse.ts";
 
 type Protocol = "responses" | "chat_completions";
 type JsonObject = Record<string, unknown>;
@@ -272,51 +273,66 @@ async function submitAndWait(fixture: ScenarioFixture, message: string): Promise
 		client_turn_id: `${fixture.sessionId}-turn`,
 		client_user_message_id: `${fixture.sessionId}-message`,
 	});
-	await waitFor(() => fixture.messages.find((item) => {
+	const terminal = await waitFor(() => fixture.messages.find((item) => {
+		if (item.method === "turn.failed") return true;
 		if (item.method !== "message.complete") return false;
 		const params = item.params as JsonObject | undefined;
 		return params?.final === true;
 	}));
+	assert.notEqual(terminal.method, "turn.failed", JSON.stringify(terminal.params));
 }
 
 function responsesTool(callId: string, name: string, argumentsValue: JsonObject): readonly JsonObject[] {
-	return [
-		{
-			type: "response.output_item.done",
-			item: { type: "function_call", call_id: callId, name, arguments: JSON.stringify(argumentsValue) },
-		},
-		{ type: "response.completed", response: { id: `resp-${callId}` } },
-	];
+	return responsesToolEvents(callId, name, argumentsValue, `resp-${callId}`, {
+		input_tokens: 4,
+		output_tokens: 1,
+		total_tokens: 5,
+	});
 }
 
 function responsesFinal(text: string): readonly JsonObject[] {
-	return [
-		{ type: "response.output_text.delta", delta: text },
-		{ type: "response.completed", response: { id: "resp-final" } },
-	];
+	return responsesTextEvents(text, "resp-final", {
+		input_tokens: 4,
+		output_tokens: 1,
+		total_tokens: 5,
+	});
 }
 
 function chatTool(callId: string, name: string, argumentsValue: JsonObject): readonly JsonObject[] {
-	return [{
-		id: `chat-${callId}`,
-		choices: [{
-			index: 0,
-			delta: { tool_calls: [{
+	return [
+		{
+			id: `chat-${callId}`,
+			choices: [{
 				index: 0,
-				id: callId,
-				type: "function",
-				function: { name, arguments: JSON.stringify(argumentsValue) },
-			}] },
-			finish_reason: "tool_calls",
-		}],
-	}];
+				delta: { role: "assistant", tool_calls: [{
+					index: 0,
+					id: callId,
+					type: "function",
+					function: { name, arguments: JSON.stringify(argumentsValue) },
+				}] },
+				finish_reason: null,
+			}],
+		},
+		{
+			id: `chat-${callId}`,
+			choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+			usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+		},
+	];
 }
 
 function chatFinal(text: string): readonly JsonObject[] {
-	return [{
-		id: "chat-final",
-		choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }],
-	}];
+	return [
+		{
+			id: "chat-final",
+			choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }],
+		},
+		{
+			id: "chat-final",
+			choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+			usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+		},
+	];
 }
 
 function writeSse(response: ServerResponse, items: readonly JsonObject[]): void {

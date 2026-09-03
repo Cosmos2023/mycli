@@ -200,14 +200,14 @@ test("concurrent user config mutations serialize without losing either update", 
 
 	const [memory, cache] = await Promise.all([
 		mutate(root, "set", "memory.enabled", "true"),
-		mutate(root, "set", "request.cache_control_enabled", "true"),
+		mutate(root, "set", "request.cache_retention", "long"),
 	]);
 	assert.equal(memory.changed, true);
 	assert.equal(cache.changed, true);
 	const raw = await readFile(join(root.homeDir, ".mycli", "config.toml"), "utf8");
 	const payload = parse(raw) as Record<string, unknown>;
 	assert.deepEqual(payload.memory, { enabled: true });
-	assert.deepEqual(payload.request, { cache_control_enabled: true });
+	assert.deepEqual(payload.request, { cache_retention: "long" });
 
 	const resolved = await resolveConfigWithMetadata({
 		...root,
@@ -215,7 +215,7 @@ test("concurrent user config mutations serialize without losing either update", 
 		workspaceTrust: "untrusted",
 	});
 	assert.equal(resolved.config.memoryEnabled, true);
-	assert.equal(resolved.config.cacheControlEnabled, true);
+	assert.equal(resolved.config.cacheRetention, "long");
 });
 
 test("user config mutation persists the canonical startup update opt-out", async (t) => {
@@ -247,8 +247,7 @@ test("provider CLI and shell config mutations serialize without losing completed
 			model: "gpt-5.6-sol",
 			apiBaseUrl: "https://api.openai.com/v1/",
 			authRef: "openai",
-			promptCacheKeyEnabled: true,
-			cacheControlEnabled: false,
+			cacheRetention: "short",
 		}),
 		mutate(root, "set", "memory.enabled", "true"),
 		saveShellSettings({

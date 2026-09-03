@@ -1,6 +1,9 @@
 import type { NodeRuntimeConfig } from "@mycli/config";
 import type { ProviderRequest, RuntimeEvent } from "@mycli/core";
-import type { ModelProvider } from "@mycli/providers";
+import type {
+	ModelProvider,
+	ProviderRouteDescriptor,
+} from "@mycli/providers";
 import {
 	ProviderAgentLoop,
 	normalizeProviderAgentLoopFailure,
@@ -11,6 +14,7 @@ import type { ProviderStreamDiagnostics } from "./runtime-observability.ts";
 export interface ProviderStepExecutionInput {
 	readonly config: NodeRuntimeConfig;
 	readonly provider: ModelProvider;
+	readonly providerRoute?: ProviderRouteDescriptor;
 	readonly request: ProviderRequest;
 	readonly timelineWindowId: string;
 	readonly timelineVersion: number;

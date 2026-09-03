@@ -11,6 +11,7 @@ import {
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
+	isProviderRouteId,
 	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
 	QueueConflictError,
 	selectAgentForkConversation,
@@ -2159,7 +2160,8 @@ function userMessage(input: ReserveTurnInput): Readonly<Record<string, unknown>>
 			turn_id: input.turnId,
 			client_turn_id: input.clientTurnId,
 			client_user_message_id: input.clientUserMessageId,
-			source: "submit",
+			...(input.queueId ? { queue_id: input.queueId } : {}),
+			source: input.inputSource ?? "submit",
 			...(input.imagePaths && input.imagePaths.length > 0
 				? { image_paths: [...input.imagePaths] }
 				: {}),
@@ -2171,7 +2173,9 @@ function userMessage(input: ReserveTurnInput): Readonly<Record<string, unknown>>
 
 function userHistoryItem(input: ReserveTurnInput): Readonly<Record<string, unknown>> {
 	return {
-		id: `${input.turnId}:user:${input.clientUserMessageId}`,
+		id: input.queueId
+			? `${input.turnId}:queue:${input.queueId}`
+			: `${input.turnId}:user:${input.clientUserMessageId}`,
 		thread_id: input.threadId,
 		turn_id: input.turnId,
 		type: "user_message",
@@ -2181,7 +2185,8 @@ function userHistoryItem(input: ReserveTurnInput): Readonly<Record<string, unkno
 		metadata: {
 			client_turn_id: input.clientTurnId,
 			client_user_message_id: input.clientUserMessageId,
-			source: "submit",
+			...(input.queueId ? { queue_id: input.queueId } : {}),
+			source: input.inputSource ?? "submit",
 			image_paths: [...(input.imagePaths ?? [])],
 		},
 	};
@@ -2605,7 +2610,6 @@ const MAX_CONTEXT_ITEM_ID_CHARS = 512;
 const MAX_CONTEXT_TEXT_CHARS = 131_072;
 const MAX_CONTEXT_CONTENT_CHARS = 65_536;
 const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
-const PROVIDER_IDS = new Set(["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]);
 
 function validateContextItem(input: AppendContextItemInput): void {
 	const { metadata } = input;
@@ -2649,7 +2653,7 @@ function persistedContextMetadata(
 }
 
 function persistedProviderState(state: ProviderReplayState): Readonly<Record<string, unknown>> {
-	if (!PROVIDER_IDS.has(state.provider)) {
+	if (!isProviderRouteId(state.provider)) {
 		throw new StorageFailure("invalid provider replay state");
 	}
 	if (state.tokenEstimate !== undefined

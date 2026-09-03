@@ -37,6 +37,7 @@ export class WorkerProviderStepExecutor implements ProviderStepExecutor {
 
 	async execute(input: ProviderStepExecutionInput): Promise<ProviderAgentLoopResult> {
 		if (this.#running) throw invalid("provider step is already running");
+		if (!input.providerRoute) throw invalid("provider route snapshot is unavailable");
 		input.signal.throwIfAborted();
 		this.#acceptTimeline(input.timelineWindowId, input.timelineVersion);
 		this.#running = true;
@@ -98,9 +99,19 @@ export class WorkerProviderStepExecutor implements ProviderStepExecutor {
 				config: Object.freeze({
 					provider: input.config.provider,
 					protocol: input.config.protocol,
+					model: input.config.model,
 					apiBaseUrl: input.config.apiBaseUrl,
+					supportsImages: input.config.supportsImages,
+					maxPromptTokens: input.config.maxPromptTokens,
+					...(input.config.modelContextWindowTokens === undefined ? {} : {
+						modelContextWindowTokens: input.config.modelContextWindowTokens,
+					}),
+					...(input.config.maxOutputTokens === undefined ? {} : {
+						maxOutputTokens: input.config.maxOutputTokens,
+					}),
 					...(input.config.apiKey ? { apiKey: input.config.apiKey } : {}),
 				}),
+				route: input.providerRoute,
 				request: input.request,
 				requestMaxRetries: input.config.requestMaxRetries,
 				maxRetries: input.maxRetries,

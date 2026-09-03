@@ -140,6 +140,17 @@ test("rejects cross-session resume while the current generation is executing", a
 	assert.equal((await coordinator.resume("target")).sessionId, "target");
 });
 
+test("execution claims are exclusive until the owning generation releases them", () => {
+	const coordinator = fixture();
+	const context = coordinator.context();
+
+	assert.equal(coordinator.markExecuting(context, true), true);
+	assert.equal(coordinator.markExecuting(context, true), false);
+	assert.equal(coordinator.executing(), true);
+	assert.equal(coordinator.markExecuting(context, false), true);
+	assert.equal(coordinator.executing(), false);
+});
+
 test("session preparation excludes a turn execution claim until commit", async () => {
 	let preparationStarted!: () => void;
 	let releasePreparation!: () => void;

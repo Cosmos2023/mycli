@@ -10,6 +10,7 @@ import type {
 	ProviderReplayState,
 	ProviderUsage,
 } from "@mycli/core";
+import { isProviderRouteId } from "@mycli/core";
 import { canonicalImages } from "./canonical-images.ts";
 import { stableJson } from "./stable-json.ts";
 
@@ -19,14 +20,6 @@ export const TRANSCRIPT_EVENT_MAX_BATCH_ITEMS = 4_096;
 const IDENTITY_MAX_CHARS = 512;
 const CREATED_AT_MAX_CHARS = 100;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
-const PROVIDER_IDS = new Set<ProviderReplayState["provider"]>([
-	"openai",
-	"codex",
-	"compatible",
-	"qwen",
-	"deepseek",
-	"anthropic",
-]);
 const CONTEXT_KINDS = new Set<CanonicalContextMetadata["kind"]>([
 	"collaboration_mode",
 	"permissions",
@@ -814,7 +807,7 @@ function optionalProviderState(value: unknown): ProviderReplayState | undefined 
 		["provider", "value"],
 		"payload.providerState",
 	);
-	if (!PROVIDER_IDS.has(state.provider as ProviderReplayState["provider"])) {
+	if (!isProviderRouteId(state.provider)) {
 		invalid("payload.providerState.provider");
 	}
 	return Object.freeze({

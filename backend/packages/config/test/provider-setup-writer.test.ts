@@ -1,9 +1,52 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { writeUserProviderSetup } from "../src/index.ts";
+import { resolveConfig, writeUserProviderSetup } from "../src/index.ts";
+
+test("provider setup round trips every curated provider through private files", async (t) => {
+	const providers = [
+		["openrouter", "openrouter/auto", "https://openrouter.ai/api/v1"],
+		["groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1"],
+		["together", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1"],
+		["moonshotai", "kimi-k2.7-code", "https://api.moonshot.ai/v1"],
+		["nvidia", "openai/gpt-oss-120b", "https://integrate.api.nvidia.com/v1"],
+		["cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1"],
+	] as const;
+
+	for (const [provider, model, baseUrl] of providers) {
+		const homeDir = await temporaryDirectory(t);
+		const secret = `${provider}-private-sentinel`;
+		const result = await writeUserProviderSetup({
+			homeDir,
+			provider,
+			protocol: "chat_completions",
+			model,
+			apiBaseUrl: `${baseUrl}/`,
+			authRef: provider,
+			apiKey: secret,
+			cacheRetention: "short",
+		});
+		const resolved = await resolveConfig({
+			homeDir,
+			workspaceRoot: homeDir,
+			env: {},
+		});
+		assert.equal(resolved.provider, provider);
+		assert.equal(resolved.protocol, "chat_completions");
+		assert.equal(resolved.model, model);
+		assert.equal(resolved.apiBaseUrl, baseUrl);
+		assert.equal(resolved.authRef, provider);
+		assert.equal(resolved.apiKey, secret);
+		assert.equal((await readFile(result.configPath, "utf8")).includes(secret), false);
+		assert.equal(JSON.stringify(result).includes(secret), false);
+		if (process.platform !== "win32") {
+			assert.equal((await stat(result.configPath)).mode & 0o777, 0o600);
+			assert.equal((await stat(result.authPath)).mode & 0o777, 0o600);
+		}
+	}
+});
 
 test("provider setup writes config and credentials without returning the secret", async (t) => {
 	const homeDir = await temporaryDirectory(t);
@@ -15,8 +58,7 @@ test("provider setup writes config and credentials without returning the secret"
 		apiBaseUrl: "https://api.openai.com/v1",
 		authRef: "openai",
 		apiKey: "private-setup-sentinel",
-		promptCacheKeyEnabled: true,
-		cacheControlEnabled: false,
+		cacheRetention: "short",
 	});
 
 	assert.equal(result.configPath, join(homeDir, ".mycli", "config.toml"));
@@ -48,8 +90,7 @@ test("provider setup restores exact credential bytes when config persistence fai
 			apiBaseUrl: "https://api.openai.com/v1",
 			authRef: "openai",
 			apiKey: "private-replacement-sentinel",
-			promptCacheKeyEnabled: true,
-			cacheControlEnabled: false,
+			cacheRetention: "short",
 			configFailpoint: () => { throw new Error("private-config-failure"); },
 		}),
 		(error: unknown) => error instanceof Error
@@ -76,8 +117,7 @@ test("provider setup reports a bounded failure when credential rollback cannot p
 			apiBaseUrl: "https://api.openai.com/v1",
 			authRef: "openai",
 			apiKey: "replacement-key",
-			promptCacheKeyEnabled: true,
-			cacheControlEnabled: false,
+			cacheRetention: "short",
 			configFailpoint: () => { throw new Error("config failure"); },
 			authRollbackFailpoint: () => { throw new Error("rollback failure"); },
 		}),

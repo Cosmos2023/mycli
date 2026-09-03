@@ -18,6 +18,11 @@ import {
 import { openRuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import {
+	responsesAuthorityText,
+	responsesTextEvents as responsesFinal,
+	responsesToolEvents as responsesTool,
+} from "./support/responses-sse.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -209,7 +214,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
-			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_CACHE_RETENTION: "none",
 			MYCLI_MEMORY_ENABLED: "false",
 			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
 		},
@@ -451,7 +456,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
-			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_CACHE_RETENTION: "none",
 			MYCLI_MEMORY_ENABLED: "false",
 			COLORTERM: "",
 			PLUGIN_PID_FILE: pluginPidFile,
@@ -644,36 +649,8 @@ async function writeExtensionFixtures(options: {
 	assert.equal(options.pluginPidFile, join(pluginRoot, "plugin.pid"));
 }
 
-function responsesTool(callId: string, name: string, argumentsValue: JsonObject): readonly JsonObject[] {
-	return [
-		{
-			type: "response.output_item.done",
-			item: {
-				type: "function_call",
-				call_id: callId,
-				name,
-				arguments: JSON.stringify(argumentsValue),
-			},
-		},
-		{ type: "response.completed", response: { id: `resp-${callId}` } },
-	];
-}
-
-function responsesFinal(text: string, id: string): readonly JsonObject[] {
-	return [
-		{ type: "response.output_text.delta", delta: text },
-		{ type: "response.completed", response: { id } },
-	];
-}
-
 function isSubagentRequest(payload: JsonObject): boolean {
-	if (!Array.isArray(payload.input)) return false;
-	return payload.input.some((item) => (
-		isObject(item)
-		&& item.role === "developer"
-		&& typeof item.content === "string"
-		&& item.content.includes("<subagent_context>")
-	));
+	return responsesAuthorityText(payload).includes("<subagent_context>");
 }
 
 function writeSse(response: ServerResponse, items: readonly JsonObject[]): void {

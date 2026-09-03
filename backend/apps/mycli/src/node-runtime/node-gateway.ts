@@ -250,7 +250,8 @@ export interface NodeGatewayControlCommands {
 	authProviders(): Promise<readonly JsonObject[]>;
 	credentialReadiness?(): Promise<NodeGatewayCredentialReadiness>;
 	saveApiKey(providerId: string, apiKey: string, authRef?: string): Promise<JsonObject>;
-	models(): Promise<readonly JsonObject[]>;
+	providers(): Promise<readonly JsonObject[]>;
+	models(provider: string): Promise<readonly JsonObject[]>;
 	selectModel(input: JsonObject): Promise<JsonObject>;
 	validateConnectivity?(): Promise<JsonObject>;
 	activateSessionPreferences?(
@@ -367,6 +368,9 @@ interface ActiveTurn {
 	pendingProposedPlan?: string;
 	inputRolledBack?: boolean;
 	interruptionFinalizedLogged?: boolean;
+	resubmitPendingSteersAfterInterrupt?: boolean;
+	interruptedSteerClientIds?: readonly string[];
+	failedSteersPrepared?: boolean;
 	interruptPromise?: Promise<JsonObject>;
 	forceInterruptPromise?: Promise<RuntimeTurnRecord>;
 	contextWindow?: Readonly<{
@@ -401,6 +405,9 @@ class InProcessNodeGateway implements NodeGateway {
 	readonly #resolveCompletion: (code: number) => void;
 	#activeTurn: ActiveTurn | null = null;
 	#activeTurnTask: Promise<void> | null = null;
+	#turnAdmissionPending = false;
+	#sessionTransitionActive = false;
+	#sessionControlActive = false;
 	#sequence = 0;
 	#closed = false;
 	#closePromise: Promise<void> | null = null;
@@ -448,6 +455,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#bindExtensions();
 		this.#bindAgentInteractiveRequests();
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionId() });
+		this.#requestNextQueuedTurn();
 	}
 
 	close(): Promise<void> {
@@ -514,7 +522,10 @@ class InProcessNodeGateway implements NodeGateway {
 		});
 		this.#emitRuntime(
 			"status.update",
-			statusPayload("interrupted", record.client_turn_id, "Turn interrupted"),
+			{
+				...statusPayload("interrupted", record.client_turn_id, "Turn interrupted"),
+				turn_id: record.turn_id,
+			},
 		);
 		this.#emitRuntime("status.changed", this.#status());
 	}
@@ -590,8 +601,10 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#completePath(request.params);
 			case "auth.api_key.save":
 				return this.#saveApiKey(request.params);
+			case "provider.list":
+				return this.#providerList();
 			case "model.list":
-				return this.#modelList();
+				return this.#modelList(request.params);
 			case "model.select":
 				return this.#selectModel(request.params);
 			case "provider.connectivity.validate":
@@ -638,9 +651,11 @@ class InProcessNodeGateway implements NodeGateway {
 			case "turn.follow_up":
 				return this.#followUp(request.params);
 			case "turn.queue.pop":
-				return this.#queuePop();
+				return this.#queuePop(request.params);
 			case "turn.queue.clear":
-				return this.#queueClear();
+				return this.#queueClear(request.params);
+			case "turn.queue.restore.ack":
+				return this.#queueRestoreAck(request.params);
 			case "turn.queue.migration.ack":
 				return this.#queueMigrationAck(request.params);
 			case "turn.interrupt":
@@ -689,9 +704,8 @@ class InProcessNodeGateway implements NodeGateway {
 		if (params.protocol_version !== 1) {
 			throw new GatewayFailure("incompatible_protocol", "Unsupported gateway protocol version.");
 		}
-		const [authProviders, models, authStatus] = await Promise.all([
+		const [authProviders, authStatus] = await Promise.all([
 			this.#authProviders(),
-			this.#models(),
 			this.#credentialReadiness(),
 		]);
 		const payload: JsonObject = {
@@ -705,7 +719,6 @@ class InProcessNodeGateway implements NodeGateway {
 				shellSnapshotPayload(snapshot, this.#sessionContext())),
 			auth_providers: authProviders,
 			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
-			models,
 			permissions: this.#permissions(),
 			...(this.#visibleUpdateStatus ? {
 				update: cachedUpdateStatusPayload(this.#visibleUpdateStatus),
@@ -928,19 +941,26 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #saveApiKey(params: JsonObject): Promise<JsonObject> {
-		const providerId = requiredString(params.provider_id, "provider_id").trim();
-		const apiKey = requiredString(params.api_key, "api_key").trim();
-		const authRef = optionalBoundedIdentity(params.auth_ref, "auth_ref");
-		const commands = this.#options.controlCommands;
-		if (!commands) {
-			throw new GatewayFailure("internal_error", "Credential storage is unavailable.");
+		const release = this.#claimSessionControlOperation(
+			"Wait for the current session operation before saving credentials.",
+		);
+		try {
+			const providerId = requiredString(params.provider_id, "provider_id").trim();
+			const apiKey = requiredString(params.api_key, "api_key").trim();
+			const authRef = optionalBoundedIdentity(params.auth_ref, "auth_ref");
+			const commands = this.#options.controlCommands;
+			if (!commands) {
+				throw new GatewayFailure("internal_error", "Credential storage is unavailable.");
+			}
+			const saved = await commands.saveApiKey(providerId, apiKey, authRef);
+			const readiness = await this.#credentialReadiness();
+			return {
+				...saved,
+				...(readiness ? { auth_status: credentialReadinessPayload(readiness) } : {}),
+			};
+		} finally {
+			release();
 		}
-		const saved = await commands.saveApiKey(providerId, apiKey, authRef);
-		const readiness = await this.#credentialReadiness();
-		return {
-			...saved,
-			...(readiness ? { auth_status: credentialReadinessPayload(readiness) } : {}),
-		};
 	}
 
 	async #authProviders(): Promise<readonly JsonObject[]> {
@@ -951,71 +971,84 @@ class InProcessNodeGateway implements NodeGateway {
 		return await this.#options.controlCommands?.credentialReadiness?.() ?? null;
 	}
 
-	async #models(): Promise<readonly JsonObject[]> {
-		return await this.#options.controlCommands?.models() ?? [];
+	async #providers(): Promise<readonly JsonObject[]> {
+		return await this.#options.controlCommands?.providers() ?? [];
 	}
 
-	async #modelList(): Promise<JsonObject> {
-		return { models: await this.#models() };
+	async #models(provider: string): Promise<readonly JsonObject[]> {
+		return await this.#options.controlCommands?.models(provider) ?? [];
+	}
+
+	async #providerList(): Promise<JsonObject> {
+		return { providers: await this.#providers() };
+	}
+
+	async #modelList(params: JsonObject): Promise<JsonObject> {
+		const provider = requiredString(params.provider, "provider").trim();
+		return { provider, models: await this.#models(provider) };
 	}
 
 	async #selectModel(params: JsonObject): Promise<JsonObject> {
-		if (this.#activeTurn !== null) {
-			throw new GatewayFailure(
-				"turn_in_progress",
-				"Wait for the current turn to finish before changing models.",
-			);
+		const release = this.#claimSessionControlOperation(
+			"Wait for the current turn to finish before changing models.",
+		);
+		try {
+			const effort = reasoningEffort(params.reasoning_effort);
+			const scope = modelSelectionScope(params.scope);
+			const selection: JsonObject = {
+				provider: requiredString(params.provider, "provider").trim(),
+				protocol: requiredString(params.protocol, "protocol").trim(),
+				model: requiredString(params.model, "model").trim(),
+				base_url: requiredString(params.base_url, "base_url").trim(),
+				collaboration_mode: this.#collaborationMode,
+				scope,
+				...(effort ? { reasoning_effort: effort } : {}),
+			};
+			const commands = this.#options.controlCommands;
+			if (!commands) throw new GatewayFailure("internal_error", "Model selection is unavailable.");
+			const selected = await commands.selectModel(selection);
+			const persisted = this.#runtime().sessionPreferences?.();
+			if (persisted) {
+				this.#applySessionPreferences(persisted);
+			} else {
+				this.#provider = String(selected.provider ?? selection.provider);
+				this.#model = String(selected.model ?? selection.model);
+				this.#reasoningEffort = reasoningEffort(selected.reasoning_effort ?? effort);
+			}
+			const status = this.#status();
+			this.#emitRuntime("status.changed", status);
+			const selectedProvider = String(selected.provider ?? selection.provider);
+			const models = await this.#models(selectedProvider);
+			const authStatus = await this.#credentialReadiness();
+			return {
+				selected,
+				provider: selectedProvider,
+				scope,
+				status,
+				models: models.map((entry) => ({
+					...entry,
+					current: sameModelCatalogIdentity(entry, selected),
+				})),
+				...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
+			};
+		} finally {
+			release();
 		}
-		const effort = reasoningEffort(params.reasoning_effort);
-		const scope = modelSelectionScope(params.scope);
-		const selection: JsonObject = {
-			provider: requiredString(params.provider, "provider").trim(),
-			protocol: requiredString(params.protocol, "protocol").trim(),
-			model: requiredString(params.model, "model").trim(),
-			base_url: requiredString(params.base_url, "base_url").trim(),
-			collaboration_mode: this.#collaborationMode,
-			scope,
-			...(effort ? { reasoning_effort: effort } : {}),
-		};
-		const commands = this.#options.controlCommands;
-		if (!commands) throw new GatewayFailure("internal_error", "Model selection is unavailable.");
-		const selected = await commands.selectModel(selection);
-		const persisted = this.#runtime().sessionPreferences?.();
-		if (persisted) {
-			this.#applySessionPreferences(persisted);
-		} else {
-			this.#provider = String(selected.provider ?? selection.provider);
-			this.#model = String(selected.model ?? selection.model);
-			this.#reasoningEffort = reasoningEffort(selected.reasoning_effort ?? effort);
-		}
-		const status = this.#status();
-		this.#emitRuntime("status.changed", status);
-		const models = await this.#models();
-		const authStatus = await this.#credentialReadiness();
-		return {
-			selected,
-			scope,
-			status,
-			models: models.map((entry) => ({
-				...entry,
-				current: sameModelCatalogIdentity(entry, selected),
-			})),
-			...(authStatus ? { auth_status: credentialReadinessPayload(authStatus) } : {}),
-		};
 	}
 
 	async #validateConnectivity(): Promise<JsonObject> {
-		if (this.#activeTurn !== null) {
-			throw new GatewayFailure(
-				"turn_in_progress",
-				"Wait for the current turn to finish before testing provider connectivity.",
-			);
+		const release = this.#claimSessionControlOperation(
+			"Wait for the current turn to finish before testing provider connectivity.",
+		);
+		try {
+			const validate = this.#options.controlCommands?.validateConnectivity;
+			if (!validate) {
+				return { ok: false, message: "Connection testing is unavailable." };
+			}
+			return await validate();
+		} finally {
+			release();
 		}
-		const validate = this.#options.controlCommands?.validateConnectivity;
-		if (!validate) {
-			return { ok: false, message: "Connection testing is unavailable." };
-		}
-		return await validate();
 	}
 
 	async #loadSettings(): Promise<JsonObject> {
@@ -1025,49 +1058,63 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #resetKeymap(): Promise<JsonObject> {
-		const resetKeymap = this.#options.controlCommands?.resetKeymap;
-		if (!resetKeymap) {
-			throw new GatewayFailure("internal_error", "Keymap storage is unavailable.");
+		const release = this.#claimSessionControlOperation(
+			"Wait for the current session operation before resetting the keymap.",
+		);
+		try {
+			const resetKeymap = this.#options.controlCommands?.resetKeymap;
+			if (!resetKeymap) {
+				throw new GatewayFailure("internal_error", "Keymap storage is unavailable.");
+			}
+			const snapshot = settingsSnapshot(await resetKeymap());
+			return {
+				ok: true,
+				message: "Reset TUI keymap.",
+				...await this.#settingsPayload(snapshot),
+			};
+		} finally {
+			release();
 		}
-		const snapshot = settingsSnapshot(await resetKeymap());
-		return {
-			ok: true,
-			message: "Reset TUI keymap.",
-			...await this.#settingsPayload(snapshot),
-		};
 	}
 
 	async #saveSettings(params: JsonObject): Promise<JsonObject> {
-		const commands = this.#options.controlCommands;
-		if (!commands) throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
-		if ("setting_id" in params || "value" in params) {
-			const mutation = shellSettingMutation(params);
-			if (!commands.saveSetting) {
-				throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
+		const release = this.#claimSessionControlOperation(
+			"Wait for the current session operation before saving settings.",
+		);
+		try {
+			const commands = this.#options.controlCommands;
+			if (!commands) throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
+			if ("setting_id" in params || "value" in params) {
+				const mutation = shellSettingMutation(params);
+				if (!commands.saveSetting) {
+					throw new GatewayFailure("internal_error", "Settings storage is unavailable.");
+				}
+				const saved = settingsSnapshot(await commands.saveSetting(mutation.settingId, mutation.value));
+				return {
+					ok: true,
+					message: "Saved TUI setting.",
+					...await this.#settingsPayload({
+						...saved,
+						sources: authoritativeSettingsSources(saved),
+					}),
+				};
 			}
-			const saved = settingsSnapshot(await commands.saveSetting(mutation.settingId, mutation.value));
+			if (!isObject(params.settings)) {
+				throw new GatewayFailure("invalid_params", "settings is required.");
+			}
+			const settings = await commands.saveSettings(params.settings);
+			const saved = settingsSnapshot(settings);
 			return {
 				ok: true,
-				message: "Saved TUI setting.",
+				message: "Saved TUI settings.",
 				...await this.#settingsPayload({
 					...saved,
 					sources: authoritativeSettingsSources(saved),
 				}),
 			};
+		} finally {
+			release();
 		}
-		if (!isObject(params.settings)) {
-			throw new GatewayFailure("invalid_params", "settings is required.");
-		}
-		const settings = await commands.saveSettings(params.settings);
-		const saved = settingsSnapshot(settings);
-		return {
-			ok: true,
-			message: "Saved TUI settings.",
-			...await this.#settingsPayload({
-				...saved,
-				sources: authoritativeSettingsSources(saved),
-			}),
-		};
 	}
 
 	async #settingsPayload(snapshot: SettingsSnapshot): Promise<JsonObject> {
@@ -1698,10 +1745,8 @@ class InProcessNodeGateway implements NodeGateway {
 			const selection = parseModelSelection(invocation.args);
 			const selectedModel = selection.model ?? (selection.reasoningEffort ? this.#model : undefined);
 			if (selectedModel) {
-				const catalog = await this.#models();
-				const candidates = catalog.filter((entry) => entry.model === selectedModel);
-				const entry = candidates.find((candidate) => candidate.provider === this.#provider)
-					?? candidates[0];
+				const catalog = await this.#models(this.#provider);
+				const entry = catalog.find((candidate) => candidate.model === selectedModel);
 				if (!entry) {
 					return errorCommandResult(
 						invocation,
@@ -1948,60 +1993,76 @@ class InProcessNodeGateway implements NodeGateway {
 		const coordinator = this.#options.sessionCoordinator;
 		if (!coordinator) throw new GatewayFailure("method_not_found", "New session creation is unavailable.");
 		this.#assertSessionTransitionAvailable(coordinator);
-		const snapshot = await coordinator.startNew();
-		await this.#activateSession(snapshot);
-		return await this.#sessionTransitionPayload(snapshot);
+		this.#sessionTransitionActive = true;
+		let activated = false;
+		try {
+			const snapshot = await coordinator.startNew();
+			await this.#activateSession(snapshot);
+			activated = true;
+			return await this.#sessionTransitionPayload(snapshot);
+		} finally {
+			this.#sessionTransitionActive = false;
+			if (activated) this.#requestNextQueuedTurn();
+		}
 	}
 
 	async #sessionResume(params: JsonObject): Promise<JsonObject> {
 		const coordinator = this.#options.sessionCoordinator;
 		if (!coordinator) throw new GatewayFailure("method_not_found", "Session resume is unavailable.");
 		this.#assertSessionTransitionAvailable(coordinator);
-		let sessionId = requiredString(params.session_id, "session_id");
-		const previewResume = this.#options.sessionCommands?.previewResume;
-		if (previewResume) {
-			let preview: ResumeRepairPreview | undefined;
-			try {
-				preview = await previewResume(sessionId);
-			} catch (error) {
-				if (gatewayFailure(error).code !== "session_not_found") throw error;
-			}
-			if (preview && !preview.ready) {
-				const action = optionalString(params.repair_action);
-				const revision = integerValue(params.metadata_revision);
-				const applyRepair = this.#options.sessionCommands?.applyResumeRepair;
-				if (!action || revision === undefined || !applyRepair) {
-					throw new GatewayFailure(
-						"session_repair_required",
-						"Review the session recovery options before resuming.",
-						{ preview: resumeRepairPreviewPayload(preview) },
+		this.#sessionTransitionActive = true;
+		let activated = false;
+		try {
+			let sessionId = requiredString(params.session_id, "session_id");
+			const previewResume = this.#options.sessionCommands?.previewResume;
+			if (previewResume) {
+				let preview: ResumeRepairPreview | undefined;
+				try {
+					preview = await previewResume(sessionId);
+				} catch (error) {
+					if (gatewayFailure(error).code !== "session_not_found") throw error;
+				}
+				if (preview && !preview.ready) {
+					const action = optionalString(params.repair_action);
+					const revision = integerValue(params.metadata_revision);
+					const applyRepair = this.#options.sessionCommands?.applyResumeRepair;
+					if (!action || revision === undefined || !applyRepair) {
+						throw new GatewayFailure(
+							"session_repair_required",
+							"Review the session recovery options before resuming.",
+							{ preview: resumeRepairPreviewPayload(preview) },
+						);
+					}
+					if (!isResumeRepairAction(action)) {
+						throw new GatewayFailure("invalid_params", "Unknown session repair action.");
+					}
+					const repaired = await applyRepair({
+						sessionId,
+						expectedMetadataRevision: revision,
+						action,
+					});
+					sessionId = repaired.sessionId;
+					const repairedPreview = resumePreviewAfterConfirmedAction(
+						await previewResume(sessionId),
+						action,
 					);
-				}
-				if (!isResumeRepairAction(action)) {
-					throw new GatewayFailure("invalid_params", "Unknown session repair action.");
-				}
-				const repaired = await applyRepair({
-					sessionId,
-					expectedMetadataRevision: revision,
-					action,
-				});
-				sessionId = repaired.sessionId;
-				const repairedPreview = resumePreviewAfterConfirmedAction(
-					await previewResume(sessionId),
-					action,
-				);
-				if (!repairedPreview.ready) {
-					throw new GatewayFailure(
-						"session_repair_required",
-						"Review the remaining session recovery options before resuming.",
-						{ preview: resumeRepairPreviewPayload(repairedPreview) },
-					);
+					if (!repairedPreview.ready) {
+						throw new GatewayFailure(
+							"session_repair_required",
+							"Review the remaining session recovery options before resuming.",
+							{ preview: resumeRepairPreviewPayload(repairedPreview) },
+						);
+					}
 				}
 			}
+			const snapshot = await coordinator.resume(sessionId);
+			await this.#activateSession(snapshot);
+			activated = true;
+			return await this.#sessionTransitionPayload(snapshot);
+		} finally {
+			this.#sessionTransitionActive = false;
+			if (activated) this.#requestNextQueuedTurn();
 		}
-		const snapshot = await coordinator.resume(sessionId);
-		await this.#activateSession(snapshot);
-		return await this.#sessionTransitionPayload(snapshot);
 	}
 
 	async #sessionResumePreview(params: JsonObject): Promise<JsonObject> {
@@ -2015,7 +2076,13 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#assertSessionTransitionAvailable(coordinator: SessionCoordinator<NodeGatewayRuntime>): void {
-		if (this.#activeTurn !== null) {
+		if (
+			this.#sessionTransitionActive
+			|| this.#sessionControlActive
+			|| this.#turnAdmissionPending
+			|| this.#activeTurn !== null
+			|| coordinator.executing()
+		) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
 		if (coordinator.snapshot().pendingApproval || coordinator.snapshot().pendingClarification) {
@@ -2025,6 +2092,27 @@ class InProcessNodeGateway implements NodeGateway {
 			|| this.#interactiveRequests.length > 0) {
 			throw new GatewayFailure("turn_in_progress", "A pending agent request owns the terminal.");
 		}
+	}
+
+	#claimSessionControlOperation(message: string): () => void {
+		const coordinator = this.#options.sessionCoordinator;
+		if (
+			this.#sessionControlActive
+			|| this.#sessionTransitionActive
+			|| this.#turnAdmissionPending
+			|| this.#activeTurn !== null
+			|| coordinator?.executing()
+		) {
+			throw new GatewayFailure("turn_in_progress", message);
+		}
+		this.#sessionControlActive = true;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.#sessionControlActive = false;
+			this.#requestNextQueuedTurn();
+		};
 	}
 
 	async #activateSession(snapshot: ReturnType<SessionCoordinator<NodeGatewayRuntime>["snapshot"]>): Promise<void> {
@@ -2037,6 +2125,14 @@ class InProcessNodeGateway implements NodeGateway {
 		) ?? storedPreferences;
 		this.#applySessionPreferences(preferences, snapshot.binding);
 		this.#configureExecutionPolicy(snapshot.binding);
+		const queue = snapshot.binding.queueCoordinator;
+		if (queue) {
+			const released = queue.releaseRestorationClaims();
+			this.#options.sessionCoordinator?.updateQueue({
+				sessionId: snapshot.sessionId,
+				generation: snapshot.generation,
+			}, released);
+		}
 		this.#bindQueue();
 		this.#emitDirect("session.changed", {
 			session_id: snapshot.sessionId,
@@ -2138,9 +2234,15 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #submit(params: JsonObject): Promise<JsonObject> {
-		if (this.#activeTurn !== null) {
+		if (
+			this.#activeTurn !== null
+			|| this.#turnAdmissionPending
+			|| this.#sessionTransitionActive
+			|| this.#sessionControlActive
+		) {
 			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
+		const context = this.#assertSessionMutationContext(params);
 		if (this.#options.sessionCoordinator?.snapshot().pendingApproval
 			|| this.#options.sessionCoordinator?.snapshot().pendingClarification) {
 			throw new GatewayFailure("turn_in_progress", "A pending continuation owns the session.");
@@ -2160,71 +2262,75 @@ class InProcessNodeGateway implements NodeGateway {
 		const localImages = stringArray(params.local_images, "local_images");
 		const collaborationMode = collaborationModeParameter(params.collaboration_mode)
 			?? this.#collaborationMode;
-		const readiness = await this.#credentialReadiness();
-		if (readiness && !readiness.ready) {
-			throw new GatewayFailure(
-				"auth_required",
-				"Provider credentials are required before starting a turn.",
-				credentialReadinessPayload(readiness),
-			);
-		}
-		this.#ensureSessionPreferences(collaborationMode);
-		const submission: TurnSubmission = {
-			clientTurnId,
-			clientUserMessageId,
-			turnId: this.#options.createTurnId?.()
-				?? `turn_${randomUUID().replaceAll("-", "")}`,
-			message,
-			localImages,
-			modelOverride: this.#model,
-			...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
-		};
-		const context = this.#sessionContext();
 		const runtime = this.#runtime();
 		const coordinator = this.#options.sessionCoordinator;
+		this.#turnAdmissionPending = true;
 		if (coordinator && !coordinator.markExecuting(context, true)) {
+			this.#turnAdmissionPending = false;
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
-		let reservation: TurnReservation;
+		let activeInstalled = false;
 		try {
-			reservation = runtime.reserve(submission);
-		} catch (error) {
-			coordinator?.markExecuting(context, false);
-			throw error;
-		}
-		const turnId = reservation.turn.turn_id;
-		const collaborationModeChanged = collaborationMode !== this.#collaborationMode;
-		if (collaborationModeChanged) {
-			this.#collaborationMode = collaborationMode;
-			runtime.configureRuntimeContext?.({ collaborationMode });
-		}
-		this.#collaborationModeByTurn.set(turnId, collaborationMode);
-		runtime.configureRuntimeContext?.({ collaborationMode, turnId });
-		const active: ActiveTurn = {
-			clientTurnId,
-			clientUserMessageId,
-			controller: new AbortController(),
-			context,
-			runtime,
-			collaborationMode,
-			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
-			turnId,
-			terminalEmitted: false,
-		};
-		this.#emitUserMessageLifecycle(active, message, "submit");
-		this.#activeTurn = active;
-		if (collaborationModeChanged) this.#emitRuntime("status.changed", this.#status());
-		this.#activeTurnTask = new Promise<void>((resolve) => {
-			queueMicrotask(() => {
-				void this.#runTurn(active, submission, reservation).then(resolve);
+			const readiness = await this.#credentialReadiness();
+			if (readiness && !readiness.ready) {
+				throw new GatewayFailure(
+					"auth_required",
+					"Provider credentials are required before starting a turn.",
+					credentialReadinessPayload(readiness),
+				);
+			}
+			this.#ensureSessionPreferences(collaborationMode);
+			const submission: TurnSubmission = {
+				clientTurnId,
+				clientUserMessageId,
+				turnId: this.#options.createTurnId?.()
+					?? `turn_${randomUUID().replaceAll("-", "")}`,
+				message,
+				localImages,
+				modelOverride: this.#model,
+				...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
+			};
+			const reservation = runtime.reserve(submission);
+			const turnId = reservation.turn.turn_id;
+			const collaborationModeChanged = collaborationMode !== this.#collaborationMode;
+			if (collaborationModeChanged) {
+				this.#collaborationMode = collaborationMode;
+				runtime.configureRuntimeContext?.({ collaborationMode });
+			}
+			this.#collaborationModeByTurn.set(turnId, collaborationMode);
+			runtime.configureRuntimeContext?.({ collaborationMode, turnId });
+			const active: ActiveTurn = {
+				clientTurnId,
+				clientUserMessageId,
+				controller: new AbortController(),
+				context,
+				runtime,
+				collaborationMode,
+				...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
+				turnId,
+				terminalEmitted: false,
+			};
+			this.#emitUserMessageLifecycle(active, message, "submit");
+			this.#activeTurn = active;
+			activeInstalled = true;
+			if (collaborationModeChanged) this.#emitRuntime("status.changed", this.#status());
+			this.#activeTurnTask = new Promise<void>((resolve) => {
+				queueMicrotask(() => {
+					void this.#runTurn(active, submission, reservation).then(resolve);
+				});
 			});
-		});
-		return {
-			accepted: true,
-			client_turn_id: clientTurnId,
-			client_user_message_id: clientUserMessageId,
-			turn_id: turnId,
-		};
+			return {
+				accepted: true,
+				client_turn_id: clientTurnId,
+				client_user_message_id: clientUserMessageId,
+				turn_id: turnId,
+			};
+		} catch (error) {
+			if (!activeInstalled) coordinator?.markExecuting(context, false);
+			throw error;
+		} finally {
+			this.#turnAdmissionPending = false;
+		}
 	}
 
 	#ensureSessionPreferences(
@@ -2354,10 +2460,21 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		const requestId = requiredString(params.request_id, "request_id").trim();
 		const response = requiredString(params.response, "response").trim();
+		const requestedSessionId = optionalString(params.session_id);
+		const requestedGeneration = params.generation === undefined
+			? snapshot.generation
+			: positiveInteger(params.generation);
+		if (requestedGeneration === undefined) {
+			throw new GatewayFailure("invalid_params", "generation must be a positive integer.");
+		}
 		if (response.length > 4_096) {
 			throw new GatewayFailure("invalid_params", "response exceeds 4096 characters.");
 		}
-		if (requestId !== pending.requestId) {
+		if (
+			requestId !== pending.requestId
+			|| requestedSessionId !== undefined && requestedSessionId !== snapshot.sessionId
+			|| requestedGeneration !== snapshot.generation
+		) {
 			throw new GatewayFailure(
 				"clarification_not_pending",
 				"No pending clarification matches the request.",
@@ -2415,11 +2532,12 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#steer(params: JsonObject): JsonObject {
+		const context = this.#assertSessionMutationContext(params);
 		const queue = this.#requiredQueueCoordinator();
 		const expectedTurnId = requiredString(params.expected_turn_id, "expected_turn_id");
 		const active = this.#activeTurn;
 		const mutation = queue.enqueueSteer({
-			sessionId: this.#sessionId(),
+			sessionId: context.sessionId,
 			clientTurnId: queueClientTurnId(params, "steer"),
 			expectedTurnId,
 			activeTurnId: active?.turnId ?? null,
@@ -2428,38 +2546,63 @@ class InProcessNodeGateway implements NodeGateway {
 			imagePaths: localImagePaths(params.local_images),
 			source: "user",
 		});
-		return queueMutationResponse(mutation);
+		if (this.#activeTurn === null) this.#requestNextQueuedTurn();
+		return queueMutationResponse(mutation, context);
 	}
 
 	#followUp(params: JsonObject): JsonObject {
+		const context = this.#assertSessionMutationContext(params);
 		const mutation = this.#requiredQueueCoordinator().enqueueFollowUp({
-			sessionId: this.#sessionId(),
+			sessionId: context.sessionId,
 			clientTurnId: queueClientTurnId(params, "follow"),
 			text: requiredString(params.message, "message"),
 			imagePaths: localImagePaths(params.local_images),
 			source: "user",
 		});
-		return queueMutationResponse(mutation);
+		if (this.#activeTurn === null) this.#requestNextQueuedTurn();
+		return queueMutationResponse(mutation, context);
 	}
 
-	#queuePop(): JsonObject {
+	#queuePop(params: JsonObject): JsonObject {
+		const context = this.#assertSessionMutationContext(params);
 		const removal = this.#requiredQueueCoordinator().popLastFollowUp();
 		return {
+			session_id: context.sessionId,
+			generation: context.generation,
 			...queueProjection(removal.snapshot),
 			item: removal.record ? gatewayQueueItem(removal.record) : null,
 		};
 	}
 
-	#queueClear(): JsonObject {
-		const result = this.#requiredQueueCoordinator().clear();
+	#queueClear(params: JsonObject): JsonObject {
+		const context = this.#assertSessionMutationContext(params);
+		const token = optionalBoundedIdentity(params.restore_token, "restore_token")
+			?? `restore_${randomUUID().replaceAll("-", "")}`;
+		const result = this.#requiredQueueCoordinator().claimForRestoration(token);
 		const steering = result.records.filter((record) => record.kind === "pending_steer");
 		const followUps = result.records.filter((record) => record.kind !== "pending_steer");
 		return {
+			session_id: context.sessionId,
+			generation: context.generation,
+			restore_token: result.token,
 			...queueProjection(result.snapshot),
 			steering: steering.map((record) => record.text),
 			follow_up: followUps.map((record) => record.text),
 			steering_items: steering.map(legacyQueueItem),
 			follow_up_items: followUps.map(legacyQueueItem),
+		};
+	}
+
+	#queueRestoreAck(params: JsonObject): JsonObject {
+		const context = this.#assertSessionMutationContext(params);
+		const token = requiredString(params.restore_token, "restore_token");
+		const snapshot = this.#requiredQueueCoordinator().acknowledgeRestoration(token);
+		return {
+			acknowledged: true,
+			restore_token: token,
+			session_id: context.sessionId,
+			generation: context.generation,
+			...queueProjection(snapshot),
 		};
 	}
 
@@ -2474,7 +2617,7 @@ class InProcessNodeGateway implements NodeGateway {
 		submission: TurnSubmission,
 		reservation: TurnReservation,
 	): Promise<void> {
-		let scheduleNext = false;
+		let terminalFinalized = false;
 		try {
 			const record = await active.runtime.submit(
 				submission,
@@ -2485,12 +2628,13 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!active.terminalEmitted && this.#isCurrent(active)) {
 				this.#projectStoredTerminal(active, record);
 			}
-			scheduleNext = record.status === "completed";
+			terminalFinalized = record.status !== "in_progress";
 		} catch {
 			if (active.controller.signal.aborted && !active.terminalEmitted) {
 				try {
 					const record = await this.#forceInterruptActive(active);
 					this.#projectForcedInterrupt(active, record);
+					terminalFinalized = record.status !== "in_progress";
 				} catch {
 					if (!active.terminalEmitted) {
 						this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
@@ -2500,19 +2644,7 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
 			}
 		} finally {
-			const releasedActive = this.#activeTurn === active;
-			if (releasedActive) {
-				this.#options.sessionCoordinator?.markExecuting(active.context, false);
-				this.#activeTurn = null;
-				this.#activeTurnTask = null;
-			}
-			if (releasedActive && !this.#closed && this.#isCurrent(active)) {
-				this.#emitRuntime("status.changed", this.#status());
-				this.#emitPendingProposedPlan(active);
-			}
-			if (releasedActive && scheduleNext && !this.#closed && this.#isCurrent(active)) {
-				this.#scheduleNextQueuedTurn();
-			}
+			this.#releaseActiveExecution(active, terminalFinalized);
 		}
 	}
 
@@ -2521,7 +2653,7 @@ class InProcessNodeGateway implements NodeGateway {
 		input: ResolveApprovalInput,
 		pending: PendingSessionApproval,
 	): Promise<void> {
-		let scheduleNext = false;
+		let terminalFinalized = false;
 		try {
 			const record = await active.runtime.resolveApproval(
 				input,
@@ -2532,12 +2664,13 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!active.terminalEmitted && this.#isCurrent(active)) {
 				this.#projectStoredTerminal(active, record);
 			}
-			scheduleNext = record.status === "completed";
+			terminalFinalized = record.status !== "in_progress";
 		} catch (error) {
 			if (active.controller.signal.aborted) {
 				try {
 					const record = await this.#forceInterruptActive(active);
 					this.#projectForcedInterrupt(active, record);
+					terminalFinalized = record.status !== "in_progress";
 				} catch {
 					if (!active.terminalEmitted && this.#isCurrent(active)) {
 						this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
@@ -2563,19 +2696,7 @@ class InProcessNodeGateway implements NodeGateway {
 				);
 			}
 		} finally {
-			const releasedActive = this.#activeTurn === active;
-			if (releasedActive) {
-				this.#options.sessionCoordinator?.markExecuting(active.context, false);
-				this.#activeTurn = null;
-				this.#activeTurnTask = null;
-			}
-			if (releasedActive && !this.#closed && this.#isCurrent(active)) {
-				this.#emitRuntime("status.changed", this.#status());
-				this.#emitPendingProposedPlan(active);
-			}
-			if (releasedActive && scheduleNext && !this.#closed && this.#isCurrent(active)) {
-				this.#scheduleNextQueuedTurn();
-			}
+			this.#releaseActiveExecution(active, terminalFinalized);
 		}
 	}
 
@@ -2584,7 +2705,7 @@ class InProcessNodeGateway implements NodeGateway {
 		input: ResolveClarificationInput,
 		pending: PendingSessionClarification,
 	): Promise<void> {
-		let scheduleNext = false;
+		let terminalFinalized = false;
 		try {
 			const record = await active.runtime.resolveClarification(
 				input,
@@ -2595,12 +2716,13 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!active.terminalEmitted && this.#isCurrent(active)) {
 				this.#projectStoredTerminal(active, record);
 			}
-			scheduleNext = record.status === "completed";
+			terminalFinalized = record.status !== "in_progress";
 		} catch (error) {
 			if (active.controller.signal.aborted) {
 				try {
 					const record = await this.#forceInterruptActive(active);
 					this.#projectForcedInterrupt(active, record);
+					terminalFinalized = record.status !== "in_progress";
 				} catch {
 					if (!active.terminalEmitted && this.#isCurrent(active)) {
 						this.#emitTurnFailure(active, "persistence_error", "Session persistence failed.");
@@ -2630,52 +2752,97 @@ class InProcessNodeGateway implements NodeGateway {
 				);
 			}
 		} finally {
-			const releasedActive = this.#activeTurn === active;
-			if (releasedActive) {
-				this.#options.sessionCoordinator?.markExecuting(active.context, false);
-				this.#activeTurn = null;
-				this.#activeTurnTask = null;
-			}
-			if (releasedActive && !this.#closed && this.#isCurrent(active)) {
-				this.#emitRuntime("status.changed", this.#status());
-				this.#emitPendingProposedPlan(active);
-			}
-			if (releasedActive && scheduleNext && !this.#closed && this.#isCurrent(active)) {
-				this.#scheduleNextQueuedTurn();
-			}
+			this.#releaseActiveExecution(active, terminalFinalized);
 		}
 	}
 
+	#releaseActiveExecution(active: ActiveTurn, terminalFinalized: boolean): void {
+		if (this.#activeTurn !== active) return;
+		this.#options.sessionCoordinator?.markExecuting(active.context, false);
+		this.#activeTurn = null;
+		this.#activeTurnTask = null;
+		if (this.#closed || !this.#isCurrent(active)) return;
+		this.#emitRuntime("status.changed", this.#status());
+		this.#emitPendingProposedPlan(active);
+		if (
+			terminalFinalized
+			&& (active.terminalState !== "interrupted"
+				|| active.resubmitPendingSteersAfterInterrupt === undefined
+				|| (active.interruptedSteerClientIds?.length ?? 0) > 0)
+		) {
+			this.#scheduleNextQueuedTurn();
+		}
+	}
+
+	#requestNextQueuedTurn(): void {
+		queueMicrotask(() => {
+			if (!this.#closed) this.#scheduleNextQueuedTurn();
+		});
+	}
+
 	#scheduleNextQueuedTurn(): void {
-		if (this.#activeTurn !== null) return;
+		if (
+			this.#activeTurn !== null
+			|| this.#turnAdmissionPending
+			|| this.#sessionTransitionActive
+			|| this.#sessionControlActive
+		) return;
 		const queue = this.#queueCoordinator();
 		const record = queue?.next();
 		if (!queue || !record) return;
 		const context = this.#sessionContext();
 		const runtime = this.#runtime();
 		const coordinator = this.#options.sessionCoordinator;
+		const session = coordinator?.snapshot();
+		if (session?.pendingApproval || session?.pendingClarification || session?.suspendedTurn) return;
 		if (coordinator && !coordinator.markExecuting(context, true)) return;
+		const reservedTurnId = this.#options.createTurnId?.()
+			?? `turn_${randomUUID().replaceAll("-", "")}`;
 		const proposed: TurnSubmission = {
 			clientTurnId: record.clientTurnId,
 			clientUserMessageId: record.clientTurnId,
-			turnId: this.#options.createTurnId?.()
-				?? `turn_${randomUUID().replaceAll("-", "")}`,
+			queueId: record.queueId,
+			inputSource: record.kind === "rejected_steer" ? "steer" : "submit",
+			turnId: reservedTurnId,
 			message: record.text,
 			localImages: record.imagePaths,
 			modelOverride: this.#model,
 			...(this.#reasoningEffort ? { reasoningEffort: this.#reasoningEffort } : {}),
 		};
 		let reservation: TurnReservation;
+		let claimed = false;
 		try {
+			queue.claim(record.queueId, reservedTurnId);
+			claimed = true;
 			reservation = runtime.reserve(proposed);
-			queue.markStarted(record.queueId);
+			if (reservation.kind === "existing") {
+				const reconciliation = queue.reconcileClaim(record.queueId, reservedTurnId);
+				claimed = false;
+				coordinator?.markExecuting(context, false);
+				if (reconciliation.committed) this.#requestNextQueuedTurn();
+				else this.#emitQueueWorkerStartFailed();
+				return;
+			}
+			try {
+				queue.retireClaim(record.queueId, reservedTurnId);
+				claimed = false;
+			} catch {
+				const reconciliation = queue.reconcileClaim(record.queueId, reservedTurnId);
+				claimed = false;
+				if (!reconciliation.committed) {
+					throw new Error("queued turn reservation was not committed");
+				}
+			}
 		} catch {
+			if (claimed) {
+				try {
+					queue.reconcileClaim(record.queueId, reservedTurnId);
+				} catch {
+					// The durable claim remains recoverable on the next runtime load.
+				}
+			}
 			coordinator?.markExecuting(context, false);
-			this.#emitRuntime("gateway.error", {
-				code: "queue_worker_start_failed",
-				message: "Queued turn could not be reserved.",
-				method: "turn.submit",
-			});
+			this.#emitQueueWorkerStartFailed();
 			return;
 		}
 		const submission: TurnSubmission = {
@@ -2703,6 +2870,7 @@ class InProcessNodeGateway implements NodeGateway {
 			active,
 			record.text,
 			record.kind === "rejected_steer" ? "steer" : "submit",
+			`${reservation.turn.turn_id}:queue:${record.queueId}`,
 		);
 		this.#activeTurn = active;
 		this.#activeTurnTask = new Promise<void>((resolve) => {
@@ -2712,7 +2880,16 @@ class InProcessNodeGateway implements NodeGateway {
 		});
 	}
 
+	#emitQueueWorkerStartFailed(): void {
+		this.#emitRuntime("gateway.error", {
+			code: "queue_worker_start_failed",
+			message: "Queued turn could not be reserved.",
+			method: "turn.submit",
+		});
+	}
+
 	#interrupt(params: JsonObject): JsonObject | Promise<JsonObject> {
+		this.#assertSessionMutationContext(params);
 		let active = this.#activeTurn;
 		if (!active) {
 			const pendingClarification = this.#options.sessionCoordinator?.snapshot().pendingClarification;
@@ -2750,6 +2927,11 @@ class InProcessNodeGateway implements NodeGateway {
 			);
 		}
 		if (active.interruptPromise) return active.interruptPromise;
+		active.resubmitPendingSteersAfterInterrupt = this.#queueCoordinator()
+			?.snapshot()
+			.pendingSteers.some(
+				(record) => record.targetTurnId === actualTurnId && record.source === "user",
+			) === true;
 		active.inputRolledBack = params.rollback_user_input === true
 			&& active.visibleAgentOutput !== true;
 		this.#appendInterruptTrace("turn_interrupt_requested", active, {
@@ -2773,14 +2955,7 @@ class InProcessNodeGateway implements NodeGateway {
 			if (pendingClarification?.turnId === active.turnId) {
 				this.#options.sessionCoordinator?.updatePendingClarification(active.context, undefined);
 			}
-			this.#options.sessionCoordinator?.markExecuting(active.context, false);
-			if (this.#activeTurn === active) {
-				this.#activeTurn = null;
-				this.#activeTurnTask = null;
-			}
-			if (!this.#closed && this.#isCurrent(active)) {
-				this.#emitRuntime("status.changed", this.#status());
-			}
+			this.#releaseActiveExecution(active, record.status !== "in_progress");
 		}
 		const interrupted = active.terminalState === "interrupted";
 		return {
@@ -2789,6 +2964,12 @@ class InProcessNodeGateway implements NodeGateway {
 			client_turn_id: active.clientTurnId,
 			turn_id: active.turnId ?? active.clientTurnId,
 			input_rolled_back: interrupted && active.inputRolledBack === true,
+			...(active.interruptedSteerClientIds?.length
+				? {
+					pending_steers_resubmitted: true,
+					resubmitted_client_user_message_ids: [...active.interruptedSteerClientIds],
+				}
+				: {}),
 			...(!interrupted ? this.#status() : {}),
 		};
 	}
@@ -3261,6 +3442,7 @@ class InProcessNodeGateway implements NodeGateway {
 		message: string,
 		additionalDetails?: string,
 	): void {
+		this.#prepareFailedSteers(active);
 		active.terminalState = "failed";
 		this.#collaborationModeByTurn.delete(active.turnId ?? active.clientTurnId);
 		const safeAdditionalDetails = sanitizeRuntimeErrorDetail(additionalDetails);
@@ -3277,6 +3459,7 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#emitInterrupted(active: ActiveTurn): void {
 		active.terminalState = "interrupted";
+		this.#prepareInterruptedSteers(active);
 		this.#collaborationModeByTurn.delete(active.turnId ?? active.clientTurnId);
 		this.#emitRuntime("turn.interrupted", {
 			client_turn_id: active.clientTurnId,
@@ -3294,6 +3477,38 @@ class InProcessNodeGateway implements NodeGateway {
 			"status.update",
 			statusPayload("interrupted", active.clientTurnId, "Turn interrupted"),
 		);
+	}
+
+	#prepareInterruptedSteers(active: ActiveTurn): void {
+		if (active.interruptedSteerClientIds !== undefined) return;
+		active.interruptedSteerClientIds = Object.freeze([]);
+		if (!active.resubmitPendingSteersAfterInterrupt || !active.turnId) return;
+		try {
+			const result = this.#queueCoordinator()?.prepareInterruptedSteers(active.turnId);
+			active.interruptedSteerClientIds = Object.freeze(
+				(result?.records ?? []).map((record) => record.clientTurnId),
+			);
+		} catch {
+			this.#emitRuntime("gateway.error", {
+				code: "queue_worker_start_failed",
+				message: "Queued steer could not be prepared after interruption.",
+				method: "turn.interrupt",
+			});
+		}
+	}
+
+	#prepareFailedSteers(active: ActiveTurn): void {
+		if (active.failedSteersPrepared || !active.turnId) return;
+		active.failedSteersPrepared = true;
+		try {
+			this.#queueCoordinator()?.rejectPending(active.turnId);
+		} catch {
+			this.#emitRuntime("gateway.error", {
+				code: "queue_worker_start_failed",
+				message: "Queued steer could not be deferred after turn failure.",
+				method: "turn.submit",
+			});
+		}
 	}
 
 	#appendInterruptTrace(
@@ -3423,64 +3638,65 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #setWorkspaceTrust(params: JsonObject): Promise<JsonObject> {
-		if (this.#activeTurn !== null) {
-			throw new GatewayFailure(
-				"turn_in_progress",
-				"Wait for the current turn to finish before changing workspace trust.",
-			);
-		}
-		const state = workspaceTrustState(params.state);
-		const workspaceRoot = this.#workspaceRoot();
-		const trust = this.#options.workspaceTrust;
-		const previousState = this.#trustState;
-		let nextPreferences: SessionPreferences | void = undefined;
-		if (trust && state === "trusted") {
-			await trust.save(workspaceRoot, state);
-			try {
-				nextPreferences = await trust.reload?.(workspaceRoot, state);
-			} catch {
+		const release = this.#claimSessionControlOperation(
+			"Wait for the current turn to finish before changing workspace trust.",
+		);
+		try {
+			const state = workspaceTrustState(params.state);
+			const workspaceRoot = this.#workspaceRoot();
+			const trust = this.#options.workspaceTrust;
+			const previousState = this.#trustState;
+			let nextPreferences: SessionPreferences | void = undefined;
+			if (trust && state === "trusted") {
+				await trust.save(workspaceRoot, state);
 				try {
-					await trust.save(workspaceRoot, previousState);
-					const restored = await trust.reload?.(workspaceRoot, previousState);
-					if (restored) this.#applySessionPreferences(restored);
+					nextPreferences = await trust.reload?.(workspaceRoot, state);
+				} catch {
+					try {
+						await trust.save(workspaceRoot, previousState);
+						const restored = await trust.reload?.(workspaceRoot, previousState);
+						if (restored) this.#applySessionPreferences(restored);
+					} catch {
+						this.#trustState = "unknown";
+						this.#configureExecutionPolicy();
+						await trust.reload?.(workspaceRoot, "unknown").catch(() => undefined);
+					}
+					throw new GatewayFailure(
+						"internal_error",
+						"Workspace trust could not be applied.",
+					);
+				}
+			} else if (trust) {
+				try {
+					nextPreferences = await trust.reload?.(workspaceRoot, state);
+				} catch {
+					throw new GatewayFailure(
+						"internal_error",
+						"Workspace trust could not be applied.",
+					);
+				}
+				try {
+					await trust.save(workspaceRoot, state);
 				} catch {
 					this.#trustState = "unknown";
 					this.#configureExecutionPolicy();
-					await trust.reload?.(workspaceRoot, "unknown").catch(() => undefined);
+					if (nextPreferences) this.#applySessionPreferences(nextPreferences);
+					throw new GatewayFailure(
+						"internal_error",
+						"Workspace trust could not be saved.",
+					);
 				}
-				throw new GatewayFailure(
-					"internal_error",
-					"Workspace trust could not be applied.",
-				);
 			}
-		} else if (trust) {
-			try {
-				nextPreferences = await trust.reload?.(workspaceRoot, state);
-			} catch {
-				throw new GatewayFailure(
-					"internal_error",
-					"Workspace trust could not be applied.",
-				);
-			}
-			try {
-				await trust.save(workspaceRoot, state);
-			} catch {
-				this.#trustState = "unknown";
-				this.#configureExecutionPolicy();
-				if (nextPreferences) this.#applySessionPreferences(nextPreferences);
-				throw new GatewayFailure(
-					"internal_error",
-					"Workspace trust could not be saved.",
-				);
-			}
+			if (nextPreferences) this.#applySessionPreferences(nextPreferences);
+			this.#trustState = state;
+			this.#configureExecutionPolicy();
+			const payload = this.#trustStatus();
+			this.#emitRuntime("workspace.trust.changed", payload);
+			this.#emitRuntime("status.changed", this.#status());
+			return payload;
+		} finally {
+			release();
 		}
-		if (nextPreferences) this.#applySessionPreferences(nextPreferences);
-		this.#trustState = state;
-		this.#configureExecutionPolicy();
-		const payload = this.#trustStatus();
-		this.#emitRuntime("workspace.trust.changed", payload);
-		this.#emitRuntime("status.changed", this.#status());
-		return payload;
 	}
 
 	#permissions(): JsonObject {
@@ -3618,6 +3834,33 @@ class InProcessNodeGateway implements NodeGateway {
 			?? Object.freeze({ sessionId: this.#options.sessionId, generation: 1 });
 	}
 
+	#assertSessionMutationContext(params: JsonObject): SessionGenerationContext {
+		const context = this.#sessionContext();
+		const requestedSessionId = optionalBoundedIdentity(params.session_id, "session_id")
+			?? context.sessionId;
+		const requestedGeneration = params.generation === undefined
+			? context.generation
+			: positiveInteger(params.generation);
+		if (requestedGeneration === undefined) {
+			throw new GatewayFailure("invalid_params", "generation must be a positive integer.");
+		}
+		if (
+			this.#sessionTransitionActive
+			|| requestedSessionId !== context.sessionId
+			|| requestedGeneration !== context.generation
+		) {
+			throw new GatewayFailure(
+				"session_changed",
+				"The active session changed before queued input could be updated.",
+				{
+					active_session_id: context.sessionId,
+					active_generation: context.generation,
+				},
+			);
+		}
+		return context;
+	}
+
 	#isCurrent(active: ActiveTurn): boolean {
 		return this.#options.sessionCoordinator?.isCurrent(active.context) ?? true;
 	}
@@ -3666,13 +3909,14 @@ class InProcessNodeGateway implements NodeGateway {
 		active: ActiveTurn,
 		content: string,
 		source: "submit" | "steer",
+		itemId?: string,
 	): void {
 		const turnId = active.turnId ?? active.clientTurnId;
 		const params = {
 			client_turn_id: active.clientTurnId,
 			turn_id: turnId,
 			item: {
-				id: `${turnId}:user:${active.clientUserMessageId}`,
+				id: itemId ?? `${turnId}:user:${active.clientUserMessageId}`,
 				type: "user_message",
 				client_user_message_id: active.clientUserMessageId,
 				content,
@@ -3728,15 +3972,30 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#emitRuntimeNow(method: string, params: JsonObject): void {
-		this.#emitDirect(method, params);
+		const ownedParams = this.#ownedRuntimeParams(method, params);
+		this.#emitDirect(method, ownedParams);
 		this.#sequence += 1;
 		this.#emitDirect("runtime.event", {
 			version: 1,
 			sequence: this.#sequence,
 			type: method,
-			payload: params,
+			payload: ownedParams,
 			timestamp: this.#clock(),
 		});
+	}
+
+	#ownedRuntimeParams(method: string, params: JsonObject): JsonObject {
+		if (!isTurnOwnershipEvent(method)) return params;
+		const context = this.#sessionContext();
+		const active = this.#activeTurn;
+		return {
+			...params,
+			session_id: context.sessionId,
+			generation: context.generation,
+			...(method === "status.update" && active?.turnId && params.turn_id === undefined
+				? { turn_id: active.turnId }
+				: {}),
+		};
 	}
 
 	#emitDirect(method: string, params: JsonObject): void {
@@ -4221,6 +4480,7 @@ function gatewayQueueItem(item: QueuedInput): JsonObject {
 		target_turn_id: item.targetTurnId,
 		kind: item.kind,
 		state: item.state,
+		claim_turn_id: item.claimTurnId ?? null,
 		message: item.text,
 		text: item.text,
 		source: item.source,
@@ -4235,9 +4495,14 @@ function gatewayQueueItem(item: QueuedInput): JsonObject {
 	};
 }
 
-function queueMutationResponse(mutation: QueueMutation): JsonObject {
+function queueMutationResponse(
+	mutation: QueueMutation,
+	context: SessionGenerationContext,
+): JsonObject {
 	return {
 		accepted: true,
+		session_id: context.sessionId,
+		generation: context.generation,
 		disposition: mutation.disposition,
 		record: gatewayQueueItem(mutation.record),
 		...queueProjection(mutation.snapshot),
@@ -4916,6 +5181,15 @@ function statusPayload(state: string, clientTurnId: string, message?: string): J
 		client_turn_id: clientTurnId,
 		...(message ? { message } : {}),
 	};
+}
+
+function isTurnOwnershipEvent(method: string): boolean {
+	return method === "turn.started"
+		|| method === "turn.completed"
+		|| method === "turn.failed"
+		|| method === "turn.interrupted"
+		|| method === "turn.status"
+		|| method === "status.update";
 }
 
 function aggregateUsage(rollouts: readonly JsonObject[]): Readonly<Record<string, number>> {

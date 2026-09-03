@@ -9,6 +9,7 @@ import test from "node:test";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import { writeResponsesText, writeResponsesTool } from "./support/responses-sse.ts";
 
 test("Worker-backed root replays a Responses Read continuation and persists it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m3-read-"));
@@ -28,19 +29,13 @@ test("Worker-backed root replays a Responses Read continuation and persists it",
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-read-1",
-						name: "Read",
-						arguments: JSON.stringify({ file_path: "README.md", offset: 1, limit: 2 }),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-tools\"}}\n\n");
+				writeResponsesTool(response, "call-read-1", "Read", {
+					file_path: "README.md",
+					offset: 1,
+					limit: 2,
+				}, "resp-tools");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"README inspected.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-final\"}}\n\n");
+				writeResponsesText(response, "README inspected.", "resp-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});

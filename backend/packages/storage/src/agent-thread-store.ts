@@ -6,6 +6,7 @@ import {
 	agentThreadId,
 	assertAgentStatusTransition,
 	childAgentPath,
+	isProviderRouteId,
 	parseAgentPath,
 	rootAgentPath,
 } from "@mycli/core";
@@ -777,7 +778,7 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 				writableRoots: stringArray(executionPolicy.writableRoots, "writableRoots", 256),
 		}),
 		provider: Object.freeze({
-			provider: enumValue(provider.provider, ["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"], "provider"),
+			provider: providerRoute(provider.provider),
 			protocol: enumValue(provider.protocol, ["responses", "chat_completions", "anthropic_messages"], "protocol"),
 			model: boundedString(provider.model, "model", 256),
 			...(provider.reasoningEffort === undefined ? {} : {
@@ -795,6 +796,11 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 		forkTurns,
 	} satisfies AgentSpawnConfigSnapshot;
 	return deepFreeze(config);
+}
+
+function providerRoute(value: unknown): AgentSpawnConfigSnapshot["provider"]["provider"] {
+	if (!isProviderRouteId(value)) throw new StorageFailure("provider is invalid");
+	return value;
 }
 
 function parseBudget(value: unknown): NonNullable<AgentSpawnConfigSnapshot["budget"]> {

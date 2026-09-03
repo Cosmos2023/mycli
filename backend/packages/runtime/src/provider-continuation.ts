@@ -105,9 +105,8 @@ export function buildProviderRequestSignature(input: ProviderRequestSignatureInp
 		developer_instructions: input.developerInstructions ?? [],
 		reasoning_effort: input.reasoningEffort ?? null,
 		max_output_tokens: input.maxOutputTokens ?? null,
-		store: input.store ?? null,
-		prompt_cache_key: input.promptCacheKey ?? null,
-		cache_control_enabled: input.cacheControlEnabled ?? false,
+		session_id: input.sessionId ?? null,
+		cache_retention: input.cacheRetention ?? null,
 		web_search_mode: input.webSearchMode ?? "disabled",
 		tools: input.tools.map((tool) => ({
 			name: tool.name,

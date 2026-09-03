@@ -26,6 +26,7 @@ test("a real managed child shell resolves the user-vendored ripgrep", {
 		cwd: root,
 		homeDir,
 		packageRoot: join(root, "package"),
+		platformPackageRoot: null,
 		sourceEnv: { HOME: homeDir, PATH: "/usr/bin:/bin" },
 	});
 	const result = spawnSync("/bin/sh", ["-c", "rg --version"], {

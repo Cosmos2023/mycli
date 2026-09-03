@@ -7,13 +7,54 @@ export type SessionId = Brand<string, "SessionId">;
 export type ClientTurnId = Brand<string, "ClientTurnId">;
 export type TurnId = Brand<string, "TurnId">;
 
-export type ProviderId = "openai" | "codex" | "compatible" | "qwen" | "deepseek" | "anthropic";
+export const PROVIDER_IDS = Object.freeze([
+	"openai",
+	"codex",
+	"deepseek",
+	"qwen",
+	"anthropic",
+	"openrouter",
+	"groq",
+	"together",
+	"moonshotai",
+	"nvidia",
+	"cerebras",
+	"compatible",
+] as const);
+
+export type ProviderId = typeof PROVIDER_IDS[number];
+export const PROVIDER_ROUTE_ID_MAX_CHARS = 64;
+
+export type ProviderRouteId = ProviderId | Brand<string, "ProviderRouteId">;
 export type ProtocolId = "responses" | "chat_completions" | "anthropic_messages";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type CacheRetention = "none" | "short" | "long";
 export type WebSearchMode = "live" | "disabled";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
 
 export const PROVIDER_REPLAY_STATE_MAX_JSON_CHARS = 1_048_576;
+
+const PROVIDER_ID_SET = new Set<string>(PROVIDER_IDS);
+const PROVIDER_ROUTE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
+
+export function isProviderId(value: unknown): value is ProviderId {
+	return typeof value === "string" && PROVIDER_ID_SET.has(value);
+}
+
+export function isProviderRouteId(value: unknown): value is ProviderRouteId {
+	return typeof value === "string"
+		&& value.length <= PROVIDER_ROUTE_ID_MAX_CHARS
+		&& PROVIDER_ROUTE_ID_PATTERN.test(value);
+}
+
+export function parseProviderRouteId(value: unknown): ProviderRouteId {
+	if (!isProviderRouteId(value)) {
+		throw new TypeError(
+			`provider route id must start with a lowercase ASCII letter, contain only lowercase ASCII letters, digits, or internal hyphens, and be at most ${PROVIDER_ROUTE_ID_MAX_CHARS} characters`,
+		);
+	}
+	return value as ProviderRouteId;
+}
 
 export interface CanonicalMessage {
 	readonly role: "user" | "assistant";
@@ -80,7 +121,7 @@ export interface CanonicalImage {
 }
 
 export interface ProviderReplayState {
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly value: Readonly<Record<string, unknown>>;
 	readonly tokenEstimate?: number;
 }
@@ -157,14 +198,13 @@ export type CanonicalConversationItem =
 	| ({ readonly type: "tool_result" } & CanonicalToolResult);
 
 export interface ProviderRequestConfig {
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
 	readonly model: string;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly maxOutputTokens?: number;
-	readonly store?: boolean;
-	readonly promptCacheKey?: string;
-	readonly cacheControlEnabled?: boolean;
+	readonly sessionId?: string;
+	readonly cacheRetention?: CacheRetention;
 	readonly webSearchMode?: WebSearchMode;
 }
 

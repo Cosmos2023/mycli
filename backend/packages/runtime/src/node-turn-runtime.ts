@@ -28,7 +28,7 @@ import {
 	ProviderFailure,
 	providerFailureToRuntimeFailure,
 } from "@mycli/providers";
-import type { ModelProvider } from "@mycli/providers";
+import type { ModelProvider, ProviderRouteDescriptor } from "@mycli/providers";
 import type {
 	ApprovalPolicyDecision,
 	ExecutionPolicy,
@@ -114,6 +114,8 @@ export interface TurnSubmission {
 	readonly clientUserMessageId?: string;
 	readonly turnId?: string;
 	readonly message: string;
+	readonly queueId?: string;
+	readonly inputSource?: "submit" | "steer" | "queued";
 	readonly localImages?: readonly string[];
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
@@ -140,6 +142,7 @@ export interface NodeTurnRuntimeOptions {
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
 	readonly createProvider: (config: NodeRuntimeConfig) => ModelProvider;
+	readonly resolveProviderRoute?: (config: NodeRuntimeConfig) => ProviderRouteDescriptor;
 	readonly providerStepExecutor?: ProviderStepExecutor;
 	readonly loadLocalImages: (paths: readonly string[]) => readonly CanonicalImage[];
 	readonly createTurnId: () => string;
@@ -302,6 +305,7 @@ interface TurnExecutionContext {
 	readonly turnId: string;
 	readonly config: NodeRuntimeConfig;
 	readonly provider: ModelProvider;
+	readonly providerRoute?: ProviderRouteDescriptor;
 	readonly instructions: string;
 	readonly instructionSnapshot: InstructionSnapshot;
 	readonly tools: readonly ToolDefinition[];
@@ -488,6 +492,8 @@ export class NodeTurnRuntime {
 			workspaceRoot: this.#options.workspaceRoot,
 			threadId: this.#options.threadId,
 			userText: submission.message,
+			...(submission.queueId ? { queueId: submission.queueId } : {}),
+			...(submission.inputSource ? { inputSource: submission.inputSource } : {}),
 			...(imagePaths.length > 0 ? { imagePaths, images } : {}),
 			...(submission.source ? { source: submission.source } : {}),
 			startedAt: this.#options.clock(),
@@ -513,10 +519,10 @@ export class NodeTurnRuntime {
 		let retainPolicy = false;
 		try {
 			let prepared: PreparedTurn;
-			try {
-				prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
-			} catch (error) {
-				return await this.#finalizeFailure(
+				try {
+					prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
+				} catch (error) {
+					return await this.#finalizeFailure(
 					submission,
 					normalizeFailure(error, options.signal, "config_error"),
 					emit,
@@ -759,7 +765,9 @@ export class NodeTurnRuntime {
 				freshItemIds: submission.source === "agent_mailbox"
 					? new Set<string>()
 					: new Set([
-						`${turnId}:user:${submission.clientUserMessageId ?? submission.clientTurnId}`,
+						submission.queueId
+							? `${turnId}:queue:${submission.queueId}`
+							: `${turnId}:user:${submission.clientUserMessageId ?? submission.clientTurnId}`,
 					]),
 				accumulatedUsage: {},
 			}),
@@ -794,11 +802,13 @@ export class NodeTurnRuntime {
 		if (expectedProtocol && config.protocol !== expectedProtocol) {
 			throw configFailure("resolved provider protocol does not match suspended turn");
 		}
+		const providerRoute = this.#options.resolveProviderRoute?.(config);
 		return {
 			submission,
 			turnId,
 			config,
 			provider: this.#options.createProvider(config),
+			...(providerRoute ? { providerRoute } : {}),
 			instructions,
 			instructionSnapshot,
 			hookContexts: new HookContextAccumulator(),
@@ -811,16 +821,13 @@ export class NodeTurnRuntime {
 				model: submission.modelOverride ?? config.model,
 				reasoningEffort: submission.reasoningEffort
 					?? (config.thinkingEnabled ? config.reasoningEffort : "none"),
-				...(config.promptCacheKeyEnabled
-					? { promptCacheKey: this.#options.sessionId }
-					: {}),
-				...(config.cacheControlEnabled ? { cacheControlEnabled: true } : {}),
+				sessionId: this.#options.sessionId,
+				cacheRetention: config.cacheRetention,
 				...((this.#options.maxOutputTokens ?? config.maxOutputTokens) === undefined
 					? {}
 					: { maxOutputTokens: this.#options.maxOutputTokens ?? config.maxOutputTokens }),
-					...(config.store === undefined ? {} : { store: config.store }),
-					webSearchMode: config.webSearchMode,
-				},
+				webSearchMode: config.webSearchMode,
+			},
 			emit,
 			signal,
 			...(this.#options.hookRunner ? {
@@ -1119,6 +1126,7 @@ export class NodeTurnRuntime {
 			const rawStepResult = await this.#providerStepExecutor.execute({
 				config,
 				provider,
+				...(context.providerRoute ? { providerRoute: context.providerRoute } : {}),
 				request,
 				timelineWindowId: durableTimelineWindowId ?? turnId,
 				timelineVersion: durableProviderStep ?? this.#agentBudget.providerSteps,

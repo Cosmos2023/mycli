@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import {
+	builtinModelReasoningDefaults,
 	listProviderProfiles,
 	readApiKey,
 	writeUserProviderSetup,
@@ -71,15 +72,6 @@ export interface SetupCommandResponse extends ManagementResponse {
 	readonly ripgrepPath?: string;
 	readonly ripgrepInstalled?: boolean;
 }
-
-const PROVIDER_NAMES: Readonly<Record<string, string>> = Object.freeze({
-	openai: "OpenAI",
-	codex: "Codex Responses",
-	deepseek: "DeepSeek",
-	qwen: "Qwen",
-	anthropic: "Anthropic",
-	compatible: "Compatible",
-});
 
 export async function runSetupCommand(
 	options: RunSetupCommandOptions,
@@ -183,7 +175,7 @@ function setupRipgrepPreparer(
 async function buildSetupState(homeDir: string): Promise<SetupWizardState> {
 	const providers = await Promise.all(listProviderProfiles().map(async (profile): Promise<SetupProvider> => ({
 		id: profile.provider,
-		name: PROVIDER_NAMES[profile.provider] ?? profile.provider,
+		name: profile.displayName,
 		configured: Boolean(await readApiKey({ homeDir, authRef: profile.provider })),
 		default_model: profile.defaultModel ?? "",
 		default_base_url: profile.defaultBaseUrl,
@@ -209,6 +201,11 @@ async function saveSetupResult(
 	let configPath: string;
 	let authPath: string;
 	try {
+		const reasoning = builtinModelReasoningDefaults({
+			provider: profile.provider,
+			protocol: profile.defaultProtocol,
+			model: result.model.trim(),
+		});
 		const saved = await writeUserProviderSetup({
 			homeDir,
 			provider: profile.provider,
@@ -216,8 +213,9 @@ async function saveSetupResult(
 			model: result.model,
 			apiBaseUrl: result.api_base_url,
 			authRef: profile.provider,
-			promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
-			cacheControlEnabled: profile.cacheControlEnabled,
+			cacheRetention: "short",
+			thinkingEnabled: reasoning.thinkingEnabled,
+			reasoningEffort: reasoning.reasoningEffort,
 			apiKey: result.api_key,
 		});
 		configPath = saved.configPath;

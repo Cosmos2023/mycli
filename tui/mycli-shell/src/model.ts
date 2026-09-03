@@ -332,8 +332,17 @@ export type MycliShellFooterData = {
 };
 
 export type MycliShellQueuedInputPreview = {
+	queueId?: string;
+	clientUserMessageId?: string;
+	sessionId?: string;
+	targetTurnId?: string;
+	claimTurnId?: string;
+	kind?: "pending_steer" | "rejected_steer" | "follow_up";
+	state?: "queued" | "accepted" | "claimed" | "committed" | string;
 	text: string;
 	hasImages: boolean;
+	localImages?: MycliShellLocalImageAttachment[];
+	source?: string;
 };
 
 export type MycliShellLocalImageAttachment = {
@@ -362,6 +371,25 @@ export type MycliShellModel = {
 	default?: boolean;
 	thinkingLevel?: string;
 	scoped?: boolean;
+};
+
+export type MycliShellProviderRoute = {
+	id: string;
+	name: string;
+	supportTier?: "stable" | "experimental" | "compatible";
+	source?: "pi_ai_builtin" | "pi_ai_declared";
+	catalogProviderId?: string;
+	protocols: string[];
+	protocol?: string;
+	baseUrl?: string;
+	authRef?: string;
+	activation: "active" | "inactive" | "unserviceable";
+	configured: boolean;
+	ready: boolean;
+	current: boolean;
+	endpointRequired?: boolean;
+	modelCount?: number;
+	disabledReason?: string;
 };
 
 export type MycliShellAuthProvider = {
@@ -676,6 +704,8 @@ export type MycliShellState = {
 	pendingApproval?: MycliShellPendingApproval;
 	pendingClarification?: MycliShellPendingClarification;
 	models?: MycliShellModel[];
+	modelsProvider?: string;
+	providerRoutes?: MycliShellProviderRoute[];
 	authProviders?: MycliShellAuthProvider[];
 	authReadiness?: MycliShellCredentialReadiness;
 	currentModel?: MycliShellModel;

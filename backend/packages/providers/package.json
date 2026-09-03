@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -13,17 +15,17 @@
     }
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
-    "@mycli/config": "0.1.0",
-    "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0",
-    "openai": "^7.3.0"
-  },
+		"@earendil-works/pi-ai": "0.84.4",
+		"@mycli/config": "0.1.0",
+		"@mycli/contracts": "0.1.0",
+		"@mycli/core": "0.1.0"
+	},
   "devDependencies": {
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"

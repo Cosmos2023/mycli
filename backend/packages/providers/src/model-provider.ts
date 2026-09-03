@@ -10,24 +10,3 @@ export interface ModelProvider {
 		options: ProviderStreamOptions,
 	): AsyncIterable<ProviderEvent>;
 }
-
-export interface ResponsesClient {
-	create(
-		request: Readonly<Record<string, unknown>>,
-		options: ProviderStreamOptions,
-	): Promise<AsyncIterable<unknown>>;
-}
-
-export interface ChatCompletionsClient {
-	create(
-		request: Readonly<Record<string, unknown>>,
-		options: ProviderStreamOptions,
-	): Promise<AsyncIterable<unknown>>;
-}
-
-export interface AnthropicMessagesClient {
-	stream(
-		request: Readonly<Record<string, unknown>>,
-		options: ProviderStreamOptions,
-	): Promise<AsyncIterable<unknown>>;
-}

@@ -1,0 +1,19 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: daily
+      time: "09:00"
+      timezone: Asia/Shanghai
+    allow:
+      - dependency-name: "@earendil-works/pi-ai"
+        dependency-type: direct
+    versioning-strategy: increase
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+      - pi-ai
+    commit-message:
+      prefix: "deps(pi-ai)"

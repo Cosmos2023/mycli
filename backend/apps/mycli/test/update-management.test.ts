@@ -12,7 +12,7 @@ test("update management checks, renders guidance, and dismisses only the adverti
 	const homeDir = await temporaryDirectory(t);
 	const cache = new CachedUpdateService({
 		homeDir,
-		packageName: "@mycli/app",
+		packageName: "@cosmos2023/mycli",
 		currentVersion: "1.0.0",
 		now: () => new Date("2026-08-30T00:00:00.000Z"),
 		fetch: (async () => new Response(JSON.stringify({ version: "1.1.0" }), { status: 200 })) as typeof fetch,
@@ -31,7 +31,7 @@ test("update management checks, renders guidance, and dismisses only the adverti
 	);
 	assert.match(rendered, /^mycli update status\n/u);
 	assert.match(rendered, /status=available/u);
-	assert.match(rendered, /install_command=npm install -g @mycli\/app@latest/u);
+	assert.match(rendered, /install_command=npm install -g @cosmos2023\/mycli@latest/u);
 
 	const invalid = await service.dismiss("1.1.1", signal);
 	assert.equal(invalid.ok, false);
@@ -45,7 +45,7 @@ test("update management checks, renders guidance, and dismisses only the adverti
 test("doctor update projection is provider-free, structured, and actionable", async () => {
 	const status = {
 		schemaVersion: 1,
-		packageName: "@mycli/app",
+		packageName: "@cosmos2023/mycli",
 		currentVersion: "1.0.0",
 		checkOnStartup: true,
 		availability: "available",
@@ -54,7 +54,7 @@ test("doctor update projection is provider-free, structured, and actionable", as
 		lastCheckedAt: "2026-08-30T00:00:00.000Z",
 		install: {
 			method: "npm",
-			command: "npm install -g @mycli/app@latest",
+			command: "npm install -g @cosmos2023/mycli@latest",
 			fallback: false,
 		},
 	} as const;
@@ -75,7 +75,7 @@ test("explicit management checks refresh fresh cache while preserving startup op
 	let now = new Date("2026-08-30T00:00:00.000Z");
 	const cache = new CachedUpdateService({
 		homeDir,
-		packageName: "@mycli/app",
+		packageName: "@cosmos2023/mycli",
 		currentVersion: "1.0.0",
 		now: () => now,
 		fetch: (async () => {

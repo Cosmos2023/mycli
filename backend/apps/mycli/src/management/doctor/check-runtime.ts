@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { gatewayContractCatalog } from "@mycli/contracts";
 import { builtinToolManifest } from "@mycli/tools";
+import { MYCLI_PACKAGE_NAME } from "../../version.ts";
 import type { DoctorCheck } from "./types.ts";
 
 const MINIMUM_NODE = Object.freeze([22, 19, 0] as const);
@@ -83,7 +84,7 @@ async function checkPackageLayout(root: string, appRoot: string): Promise<Doctor
 
 async function checkInstalledPackageLayout(appRoot: string): Promise<DoctorCheck> {
 	const manifest = await packageManifest(appRoot);
-	if (!manifest || manifest.name !== "@mycli/app") {
+	if (!manifest || manifest.name !== MYCLI_PACKAGE_NAME) {
 		return check("package_layout", "failed", "application package manifest missing");
 	}
 	const missing: string[] = [];

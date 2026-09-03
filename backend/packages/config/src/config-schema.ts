@@ -32,8 +32,7 @@ export const CONFIG_SECTION_KEYS: Readonly<Record<string, Readonly<Record<string
 		max_prompt_tokens: "max_prompt_tokens",
 		request_max_retries: "request_max_retries",
 		stream_max_retries: "stream_max_retries",
-		prompt_cache_key_enabled: "prompt_cache_key_enabled",
-		cache_control_enabled: "cache_control_enabled",
+		cache_retention: "cache_retention",
 	},
 	reasoning: {
 		enabled: "thinking_enabled",
@@ -87,6 +86,12 @@ const SHELL_SETTING_KEYS = new Set(SHELL_SETTING_DESCRIPTORS.flatMap((item) => [
 
 const PLUGIN_KEYS = new Set(["disabled", "enabled"]);
 const INLINE_SECRET_KEYS = new Set(["access_token", "api_key", "password", "secret", "token"]);
+const REMOVED_CACHE_SETTINGS: Readonly<Record<string, string>> = Object.freeze({
+	"request.prompt_cache_key_enabled": "request.cache_retention",
+	"request.cache_control_enabled": "request.cache_retention",
+	prompt_cache_key_enabled: "request.cache_retention",
+	cache_control_enabled: "request.cache_retention",
+});
 
 export function validateConfigDocument(
 	payload: ConfigMap,
@@ -138,6 +143,10 @@ export function validateConfigDocument(
 		}
 		if (LEGACY_RUNTIME_KEYS.has(key)) {
 			values[key] = value;
+			continue;
+		}
+		if (REMOVED_CACHE_SETTINGS[key]) {
+			diagnostics.push(removedCacheSettingDiagnostic(layer, key));
 			continue;
 		}
 		if (SHELL_SETTING_KEYS.has(key)) {
@@ -264,12 +273,30 @@ function validateRuntimeSection(
 			values[flattened] = value[key];
 			continue;
 		}
+		if (REMOVED_CACHE_SETTINGS[keyPath]) {
+			diagnostics.push(removedCacheSettingDiagnostic(layer, keyPath));
+			continue;
+		}
 		if (INLINE_SECRET_KEYS.has(key)) {
 			handleInlineSecret(keyPath, value[key], layer, values, diagnostics, false);
 			continue;
 		}
 		diagnostics.push(unknownDiagnostic(layer, keyPath, isRecord(value[key])));
 	}
+}
+
+function removedCacheSettingDiagnostic(
+	layer: ConfigFileLayerId,
+	keyPath: string,
+): ConfigDiagnostic {
+	return configDiagnostic({
+		code: "deprecated_key",
+		severity: "warning",
+		layer,
+		keyPath,
+		message: `${layerLabel(layer)} config uses a retired provider cache setting`,
+		remediation: "Replace it with request.cache_retention = \"none\", \"short\", or \"long\".",
+	});
 }
 
 function validatePluginSection(

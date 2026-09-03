@@ -13,8 +13,7 @@ type WriteUserProviderConfig = (input: {
 	readonly model: string;
 	readonly apiBaseUrl: string;
 	readonly authRef: string;
-	readonly promptCacheKeyEnabled: boolean;
-	readonly cacheControlEnabled: boolean;
+	readonly cacheRetention: "none" | "short" | "long";
 	readonly thinkingEnabled?: boolean;
 	readonly reasoningEffort?: string;
 	readonly failpoint?: (name: string) => void;
@@ -57,8 +56,7 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		model: "claude-sonnet-4-6",
 		apiBaseUrl: "https://api.anthropic.com/",
 		authRef: "anthropic",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: true,
+		cacheRetention: "short",
 		thinkingEnabled: true,
 		reasoningEffort: "high",
 	});
@@ -82,8 +80,7 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 	});
 	assert.deepEqual(payload.request, {
 		custom_option: "keep",
-		prompt_cache_key_enabled: false,
-		cache_control_enabled: true,
+		cache_retention: "short",
 	});
 	assert.deepEqual(payload.reasoning, {
 		enabled: true,
@@ -103,8 +100,7 @@ test("user config writer preserves unrelated TOML and removes inline API keys", 
 		model: "claude-sonnet-4-6",
 		apiBaseUrl: "https://api.anthropic.com/",
 		authRef: "anthropic",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: true,
+		cacheRetention: "short",
 		thinkingEnabled: true,
 		reasoningEffort: "high",
 		failpoint: () => { throw new Error("no-op must not replace"); },
@@ -132,8 +128,7 @@ test("user config writer preserves the old file and redacts atomic replacement f
 			model: "private-model",
 			apiBaseUrl: "https://private.example/v1",
 			authRef: "private-auth",
-			promptCacheKeyEnabled: true,
-			cacheControlEnabled: false,
+			cacheRetention: "short",
 			failpoint: () => { throw new Error("sk-private-secret-value"); },
 		}),
 		(error: unknown) => error instanceof Error
@@ -159,11 +154,36 @@ test("user config writer rejects incomplete provider settings", async (t) => {
 			model: " ",
 			apiBaseUrl: "https://api.openai.com/v1",
 			authRef: "openai",
-			promptCacheKeyEnabled: true,
-			cacheControlEnabled: false,
+			cacheRetention: "short",
 		}),
 		/config_write_failed: provider settings must be non-empty/,
 	);
+});
+
+test("user config writer persists a validated dynamic provider route", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const writeUserProviderConfig = (
+		config as { writeUserProviderConfig?: WriteUserProviderConfig }
+	).writeUserProviderConfig;
+	assert.equal(typeof writeUserProviderConfig, "function");
+
+	await writeUserProviderConfig!({
+		homeDir,
+		provider: "fireworks",
+		protocol: "chat_completions",
+		model: "accounts/example/models/custom",
+		apiBaseUrl: "https://api.fireworks.ai/inference/v1",
+		authRef: "fireworks-primary",
+		cacheRetention: "short",
+	});
+	const resolved = await config.resolveConfig({
+		homeDir,
+		workspaceRoot: homeDir,
+		env: {},
+	});
+	assert.equal(resolved.provider, "fireworks");
+	assert.equal(resolved.model, "accounts/example/models/custom");
+	assert.equal(resolved.authRef, "fireworks-primary");
 });
 
 test("user config writer clears active thinking effort when model reasoning is disabled", async (t) => {
@@ -185,8 +205,7 @@ test("user config writer clears active thinking effort when model reasoning is d
 		model: "deepseek-chat",
 		apiBaseUrl: "https://api.deepseek.com",
 		authRef: "deepseek",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: false,
+		cacheRetention: "short",
 		thinkingEnabled: false,
 		reasoningEffort: "high",
 	});
@@ -226,8 +245,7 @@ test("user config writer validates the complete candidate before replacement", a
 			model: "private-model-sentinel",
 			apiBaseUrl: "https://private.example/v1",
 			authRef: "openai",
-			promptCacheKeyEnabled: true,
-			cacheControlEnabled: false,
+			cacheRetention: "short",
 		}),
 		(error: unknown) => error instanceof Error
 			&& error.message === "config_write_failed: unable to update user config"

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import {
+	claimQueueForRestoration,
+	claimQueuedInput,
 	claimPendingSteers,
 	clearQueue,
 	enqueueFollowUp as enqueueFollowUpState,
@@ -7,8 +9,13 @@ import {
 	markQueuedInputStarted,
 	nextQueuedInput,
 	popLastFollowUp,
+	preparePendingSteersForResubmit,
 	QueueConflictError,
 	rejectPendingSteers,
+	releaseQueueRestorationClaims,
+	releaseQueuedInputClaim,
+	retireQueueRestorationClaim,
+	retireQueuedInputClaim,
 	restoreQueue,
 } from "@mycli/core";
 import type {
@@ -16,7 +23,9 @@ import type {
 	QueueClearResult,
 	QueueMutation,
 	QueueRemoval,
+	QueueRestorationClaim,
 	QueueSnapshot,
+	QueueSteerResubmitResult,
 	QueuedInput,
 } from "@mycli/core";
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
@@ -89,6 +98,11 @@ export interface QueueFollowUpInput {
 export interface LegacyQueueMigration {
 	readonly token: string;
 	readonly records: readonly QueuedInput[];
+}
+
+export interface QueueClaimReconciliation {
+	readonly committed: boolean;
+	readonly snapshot: QueueSnapshot;
 }
 
 export interface QueueCoordinatorOptions {
@@ -284,12 +298,53 @@ export class QueueCoordinator {
 		return this.#persist(rejectPendingSteers(this.#snapshot, turnId, this.#clock()));
 	}
 
+	prepareInterruptedSteers(turnId: string): QueueSteerResubmitResult {
+		const result = preparePendingSteersForResubmit(
+			this.#snapshot,
+			turnId,
+			this.#clock(),
+		);
+		this.#persist(result.snapshot);
+		return result;
+	}
+
 	next(): QueuedInput | undefined {
 		return nextQueuedInput(this.#snapshot);
 	}
 
 	markStarted(queueId: string): QueueSnapshot {
 		return this.#persist(markQueuedInputStarted(this.#snapshot, queueId));
+	}
+
+	claim(queueId: string, turnId: string): QueueSnapshot {
+		return this.#persist(claimQueuedInput(this.#snapshot, queueId, turnId, this.#clock()));
+	}
+
+	releaseClaim(queueId: string, turnId: string): QueueSnapshot {
+		return this.#persist(releaseQueuedInputClaim(
+			this.#snapshot,
+			queueId,
+			turnId,
+			this.#clock(),
+		));
+	}
+
+	retireClaim(queueId: string, turnId: string): QueueSnapshot {
+		const next = this.#persist(retireQueuedInputClaim(this.#snapshot, queueId, turnId));
+		this.#committedQueueIds.add(queueId);
+		return next;
+	}
+
+	reconcileClaim(queueId: string, turnId: string): QueueClaimReconciliation {
+		const committed = this.#store.loadCommittedQueueIds();
+		for (const committedQueueId of committed) this.#committedQueueIds.add(committedQueueId);
+		const wasCommitted = committed.has(queueId);
+		return Object.freeze({
+			committed: wasCommitted,
+			snapshot: wasCommitted
+				? this.retireClaim(queueId, turnId)
+				: this.releaseClaim(queueId, turnId),
+		});
 	}
 
 	popLastFollowUp(): QueueRemoval {
@@ -304,9 +359,25 @@ export class QueueCoordinator {
 		return result;
 	}
 
+	claimForRestoration(token: string): QueueRestorationClaim {
+		const claim = claimQueueForRestoration(this.#snapshot, token, this.#clock());
+		const snapshot = this.#persist(claim.snapshot);
+		return Object.freeze({ ...claim, snapshot });
+	}
+
+	acknowledgeRestoration(token: string): QueueSnapshot {
+		return this.#persist(retireQueueRestorationClaim(this.#snapshot, token));
+	}
+
+	releaseRestorationClaims(): QueueSnapshot {
+		return this.#persist(releaseQueueRestorationClaims(this.#snapshot, this.#clock()));
+	}
+
 	legacyMigration(): LegacyQueueMigration | undefined {
 		const records = activeRecords(this.#snapshot).filter(
-			(record) => record.source !== "task_notification" && record.source !== "agent_mailbox",
+			(record) => record.state !== "claimed"
+				&& record.source !== "task_notification"
+				&& record.source !== "agent_mailbox",
 		);
 		if (records.length === 0) return undefined;
 		return Object.freeze({

@@ -1,4 +1,5 @@
 import {
+	isProviderRouteId,
 	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
 	type CanonicalContextMetadata,
 	type CanonicalConversationItem,
@@ -11,7 +12,6 @@ import { stableJson } from "./stable-json.ts";
 
 const MAX_CONTEXT_CONTENT_CHARS = 65_536;
 const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
-const PROVIDER_IDS = new Set(["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]);
 
 export function canonicalConversationItem(
 	payloadJson: unknown,
@@ -224,7 +224,7 @@ function canonicalProviderState(value: unknown): ProviderReplayState | undefined
 	if (value === undefined || value === null) return undefined;
 	const state = recordValue(value);
 	const provider = stringValue(state.provider);
-	if (!provider || !PROVIDER_IDS.has(provider)) {
+	if (!isProviderRouteId(provider)) {
 		throw new StorageFailure("invalid provider replay state");
 	}
 	let json: string;

@@ -1,3 +1,4 @@
+import { PROVIDER_IDS } from "@mycli/core";
 import type { NodeRuntimeConfig } from "./settings.ts";
 import {
 	shellSettingDescriptor,
@@ -165,20 +166,14 @@ const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
 	),
 	writable("reasoning.enabled", "thinking_enabled", "boolean", (config) => config.thinkingEnabled),
 	writable(
-		"request.cache_control_enabled",
-		"cache_control_enabled",
-		"boolean",
-		(config) => config.cacheControlEnabled,
+		"request.cache_retention",
+		"cache_retention",
+		"string",
+		(config) => config.cacheRetention,
 	),
 	writable("request.max_prompt_tokens", "max_prompt_tokens", "integer", (config) => (
 		config.maxPromptTokens
 	)),
-	writable(
-		"request.prompt_cache_key_enabled",
-		"prompt_cache_key_enabled",
-		"boolean",
-		(config) => config.promptCacheKeyEnabled,
-	),
 	writable("request.request_max_retries", "request_max_retries", "integer", (config) => (
 		config.requestMaxRetries
 	)),
@@ -223,23 +218,23 @@ const RUNTIME_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = Object.fr
 	"model.auth_ref": "Selects the credential-store reference without placing a credential in TOML.",
 	"model.name": "Selects the provider model used for new runtime requests.",
 	"model.protocol": "Selects the provider wire protocol used for model requests.",
-	"model.provider": "Selects the configured provider profile.",
+	"model.provider": "Selects a stable profile or an explicitly configured provider route.",
 	"model.supports_images": "Overrides whether the selected compatible endpoint accepts image inputs.",
 	"model.web_search_mode": "Reports the web-search mode derived from provider capabilities; this setting is read-only.",
 	"reasoning.effort": "Selects the reasoning effort requested from models that support effort controls.",
 	"reasoning.enabled": "Enables or disables model reasoning for providers that expose this capability.",
-	"request.cache_control_enabled": "Enables provider cache-control metadata for protocols that support it.",
+	"request.cache_retention": "Selects the provider-neutral prompt-cache retention preference passed to pi-ai.",
 	"request.max_prompt_tokens": "Caps the prompt tokens assembled for each model request.",
-	"request.prompt_cache_key_enabled": "Enables stable prompt-cache keys for providers that support them.",
 	"request.request_max_retries": "Limits retries for failures that occur before model output begins.",
 	"request.stream_max_retries": "Limits retries for interrupted model response streams.",
 	"updates.check_on_startup": "Enables the background cached update check after interactive startup.",
 });
 
 const RUNTIME_ALLOWED_VALUES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-	"model.provider": Object.freeze(["openai", "codex", "deepseek", "qwen", "anthropic", "compatible"]),
+	"model.provider": PROVIDER_IDS,
 	"model.protocol": Object.freeze(["responses", "chat_completions", "anthropic_messages"]),
 	"reasoning.effort": Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),
+	"request.cache_retention": Object.freeze(["none", "short", "long"]),
 });
 
 export function runtimeSettingSnapshots(

@@ -7,6 +7,27 @@ import type { SandboxedProcessLaunch } from "../process-sandbox.ts";
 
 export const LINUX_BUBBLEWRAP_EXECUTABLES = ["/usr/bin/bwrap", "/bin/bwrap"] as const;
 
+export function linuxBubblewrapProbeArgs(nodeExecutable = process.execPath): readonly string[] {
+	return Object.freeze([
+		"--new-session",
+		"--die-with-parent",
+		"--ro-bind",
+		"/",
+		"/",
+		"--dev",
+		"/dev",
+		"--unshare-user",
+		"--unshare-pid",
+		"--unshare-net",
+		"--proc",
+		"/proc",
+		"--",
+		nodeExecutable,
+		"-e",
+		"",
+	]);
+}
+
 export function linuxBubblewrapLaunch(
 	executable: string,
 	argv: readonly string[],

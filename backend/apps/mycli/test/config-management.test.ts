@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { parseConfigProfileName } from "@mycli/config";
+import { configSettingDescriptors, parseConfigProfileName } from "@mycli/config";
+import { PROVIDER_IDS } from "@mycli/core";
 import {
 	ConfigManagementService,
 	type ConfigMigrationResponse,
@@ -13,6 +14,12 @@ import {
 } from "../src/management/config.ts";
 import { renderManagementResponse } from "../src/management/render.ts";
 import { createDefaultManagementServices } from "../src/management/services.ts";
+
+test("config management exposes the canonical provider choices exactly once", () => {
+	const provider = configSettingDescriptors().find((row) => row.key === "model.provider");
+	assert.deepEqual(provider?.allowedValues, PROVIDER_IDS);
+	assert.equal(new Set(provider?.allowedValues).size, PROVIDER_IDS.length);
+});
 
 test("config show reports bounded defaults without creating user files", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-config-show-defaults-"));

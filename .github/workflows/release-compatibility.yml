@@ -1,0 +1,88 @@
+name: release-compatibility
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packed-release-journey:
+    name: ${{ matrix.platform }} packed release journey
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin
+            os: macos-latest
+            packed_args: ""
+          - platform: linux
+            os: ubuntu-latest
+            packed_args: ""
+          - platform: win32
+            os: windows-2022
+            packed_args: "--require-windows-helper"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install Linux process prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential make g++
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Build Windows sandbox helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+          New-Item -ItemType Directory -Force backend/packages/tools/native/windows | Out-Null
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            backend/packages/tools/native/windows/mycli-windows-sandbox.exe
+      - run: npm ci
+      - run: npm run build
+      - name: Verify compatibility policy and documentation
+        run: npm run release:compatibility
+      - name: Prepare compatibility evidence directory
+        run: >-
+          node -e "require('node:fs').mkdirSync('release-evidence', { recursive: true })"
+      - name: Exercise the installed candidate artifact
+        run: >-
+          npm run --silent smoke:package -- ${{ matrix.packed_args }}
+          > release-evidence/${{ matrix.platform }}-packed.json
+      - name: Exercise the real predecessor upgrade and downgrade
+        run: >-
+          npm run smoke:release-compatibility --
+          --allow-external-blocker
+          --evidence release-evidence/${{ matrix.platform }}-upgrade.json
+      - name: Upload sanitized compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-compatibility-${{ matrix.platform }}
+          path: release-evidence/${{ matrix.platform }}-*.json
+          if-no-files-found: warn
+          retention-days: 14

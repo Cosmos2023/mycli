@@ -1,112 +1,104 @@
-import type { ProtocolId, ProviderId } from "@mycli/core";
+import { PROVIDER_IDS, type ProtocolId, type ProviderId } from "@mycli/core";
 
 export interface ProviderProfile {
 	readonly provider: ProviderId;
+	readonly displayName: string;
 	readonly defaultProtocol: ProtocolId;
-	readonly supportsResponses: boolean;
-	readonly supportsChatCompletions: boolean;
-	readonly supportsAnthropicMessages: boolean;
-	readonly supportsImages: boolean;
-	readonly supportsHostedWebSearch: boolean;
 	readonly defaultBaseUrl: string;
 	readonly defaultModel?: string;
-	readonly promptCacheKeyEnabled: boolean;
-	readonly cacheControlEnabled: boolean;
 }
 
 const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 	openai: {
 		provider: "openai",
+		displayName: "OpenAI",
 		defaultProtocol: "responses",
-		supportsResponses: true,
-		supportsChatCompletions: true,
-		supportsAnthropicMessages: false,
-		supportsImages: true,
-		supportsHostedWebSearch: true,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		defaultModel: "gpt-5",
-		promptCacheKeyEnabled: true,
-		cacheControlEnabled: false,
 	},
 	codex: {
 		provider: "codex",
+		displayName: "OpenAI Codex",
 		defaultProtocol: "responses",
-		supportsResponses: true,
-		supportsChatCompletions: false,
-		supportsAnthropicMessages: false,
-		supportsImages: true,
-		supportsHostedWebSearch: true,
 		defaultBaseUrl: "https://api.openai.com/v1",
 		defaultModel: "gpt-5",
-		promptCacheKeyEnabled: true,
-		cacheControlEnabled: false,
 	},
 	compatible: {
 		provider: "compatible",
+		displayName: "OpenAI Compatible",
 		defaultProtocol: "chat_completions",
-		supportsResponses: true,
-		supportsChatCompletions: true,
-		supportsAnthropicMessages: false,
-		supportsImages: true,
-		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.openai.com/v1",
-		promptCacheKeyEnabled: true,
-		cacheControlEnabled: false,
 	},
 	qwen: {
 		provider: "qwen",
+		displayName: "Qwen",
 		defaultProtocol: "chat_completions",
-		supportsResponses: true,
-		supportsChatCompletions: true,
-		supportsAnthropicMessages: false,
-		supportsImages: true,
-		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		defaultModel: "qwen3.6-plus",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: false,
 	},
 	deepseek: {
 		provider: "deepseek",
+		displayName: "DeepSeek",
 		defaultProtocol: "chat_completions",
-		supportsResponses: false,
-		supportsChatCompletions: true,
-		supportsAnthropicMessages: false,
-		supportsImages: false,
-		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.deepseek.com",
 		defaultModel: "deepseek-chat",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: false,
 	},
 	anthropic: {
 		provider: "anthropic",
+		displayName: "Anthropic",
 		defaultProtocol: "anthropic_messages",
-		supportsResponses: false,
-		supportsChatCompletions: false,
-		supportsAnthropicMessages: true,
-		supportsImages: true,
-		supportsHostedWebSearch: false,
 		defaultBaseUrl: "https://api.anthropic.com",
 		defaultModel: "claude-sonnet-4-6",
-		promptCacheKeyEnabled: false,
-		cacheControlEnabled: true,
+	},
+	openrouter: {
+		provider: "openrouter",
+		displayName: "OpenRouter",
+		defaultProtocol: "chat_completions",
+		defaultBaseUrl: "https://openrouter.ai/api/v1",
+		defaultModel: "openrouter/auto",
+	},
+	groq: {
+		provider: "groq",
+		displayName: "Groq",
+		defaultProtocol: "chat_completions",
+		defaultBaseUrl: "https://api.groq.com/openai/v1",
+		defaultModel: "openai/gpt-oss-120b",
+	},
+	together: {
+		provider: "together",
+		displayName: "Together",
+		defaultProtocol: "chat_completions",
+		defaultBaseUrl: "https://api.together.ai/v1",
+		defaultModel: "moonshotai/Kimi-K2.7-Code",
+	},
+	moonshotai: {
+		provider: "moonshotai",
+		displayName: "Moonshot AI",
+		defaultProtocol: "chat_completions",
+		defaultBaseUrl: "https://api.moonshot.ai/v1",
+		defaultModel: "kimi-k2.7-code",
+	},
+	nvidia: {
+		provider: "nvidia",
+		displayName: "NVIDIA",
+		defaultProtocol: "chat_completions",
+		defaultBaseUrl: "https://integrate.api.nvidia.com/v1",
+		defaultModel: "openai/gpt-oss-120b",
+	},
+	cerebras: {
+		provider: "cerebras",
+		displayName: "Cerebras",
+		defaultProtocol: "chat_completions",
+		defaultBaseUrl: "https://api.cerebras.ai/v1",
+		defaultModel: "gpt-oss-120b",
 	},
 };
 
-const PROVIDERS = new Set<string>(Object.keys(PROFILES));
+const PROVIDERS = new Set<string>(PROVIDER_IDS);
 const PROTOCOLS = new Set<string>(["responses", "chat_completions", "anthropic_messages"]);
-const PROVIDER_ORDER: readonly ProviderId[] = Object.freeze([
-	"openai",
-	"codex",
-	"deepseek",
-	"qwen",
-	"anthropic",
-	"compatible",
-]);
 
 export function listProviderProfiles(): readonly ProviderProfile[] {
-	return Object.freeze(PROVIDER_ORDER.map((provider) => PROFILES[provider]));
+	return Object.freeze(PROVIDER_IDS.map((provider) => PROFILES[provider]));
 }
 
 export function inferProviderFromBaseUrl(baseUrl: string): ProviderId {
@@ -128,6 +120,24 @@ export function inferProviderFromBaseUrl(baseUrl: string): ProviderId {
 	if (hostname === "api.anthropic.com" || hostname.endsWith(".anthropic.com")) {
 		return "anthropic";
 	}
+	if (hostname === "openrouter.ai" || hostname.endsWith(".openrouter.ai")) {
+		return "openrouter";
+	}
+	if (hostname === "api.groq.com" || hostname.endsWith(".groq.com")) {
+		return "groq";
+	}
+	if (hostname === "api.together.ai" || hostname.endsWith(".together.ai")) {
+		return "together";
+	}
+	if (hostname === "api.moonshot.ai" || hostname.endsWith(".moonshot.ai")) {
+		return "moonshotai";
+	}
+	if (hostname === "integrate.api.nvidia.com" || hostname.endsWith(".api.nvidia.com")) {
+		return "nvidia";
+	}
+	if (hostname === "api.cerebras.ai" || hostname.endsWith(".cerebras.ai")) {
+		return "cerebras";
+	}
 	return "compatible";
 }
 
@@ -137,23 +147,7 @@ export function resolveProviderProfile(providerValue: string, protocolValue?: st
 	}
 	const provider = providerValue as ProviderId;
 	const profile = PROFILES[provider];
-	const protocol = protocolValue ?? profile.defaultProtocol;
-	if (!PROTOCOLS.has(protocol)) {
-		throw new Error(`config_error: unsupported protocol '${protocol}'`);
-	}
-	if (protocol === "responses" && !profile.supportsResponses) {
-		throw new Error(`config_error: provider '${provider}' does not support protocol 'responses'`);
-	}
-	if (protocol === "chat_completions" && !profile.supportsChatCompletions) {
-		throw new Error(
-			`config_error: provider '${provider}' does not support protocol 'chat_completions'`,
-		);
-	}
-	if (protocol === "anthropic_messages" && !profile.supportsAnthropicMessages) {
-		throw new Error(
-			`config_error: provider '${provider}' does not support protocol 'anthropic_messages'`,
-		);
-	}
+	parseProtocol(protocolValue ?? profile.defaultProtocol);
 	return profile;
 }
 

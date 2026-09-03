@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
+	CacheRetention,
 	ProtocolId,
-	ProviderId,
+	ProviderRouteId,
 	ReasoningEffort,
 	WebSearchMode,
 } from "@mycli/core";
+import { isProviderId, parseProviderRouteId } from "@mycli/core";
 import { parse, TomlError } from "smol-toml";
 import { readApiKey } from "./auth-store.ts";
 import {
@@ -49,7 +51,7 @@ type ConfigMap = Record<string, unknown>;
 export interface NodeRuntimeConfig {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
 	readonly model: string;
 	readonly apiBaseUrl: string;
@@ -60,15 +62,13 @@ export interface NodeRuntimeConfig {
 	readonly maxPromptTokens: number;
 	readonly modelContextWindowTokens?: number;
 	readonly maxOutputTokens?: number;
-	readonly store?: boolean;
 	readonly requestMaxRetries: number;
 	readonly streamMaxRetries: number;
 	readonly reasoningEffort: ReasoningEffort;
 	readonly thinkingEnabled: boolean;
 	readonly supportsImages: boolean;
 	readonly webSearchMode: WebSearchMode;
-	readonly promptCacheKeyEnabled: boolean;
-	readonly cacheControlEnabled: boolean;
+	readonly cacheRetention: CacheRetention;
 	readonly memoryEnabled: boolean;
 	readonly requestPermissionsToolEnabled: boolean;
 	readonly updatesCheckOnStartup: boolean;
@@ -93,7 +93,7 @@ export interface NodeRuntimeConfig {
 }
 
 export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
-	cacheControlEnabled: false,
+	cacheRetention: "short" as const,
 	memoryEnabled: false,
 	compressionThresholdTokens: 8_000,
 	compactionTokenLimit: 9_600,
@@ -113,7 +113,7 @@ export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
 	compactionRehydrationMaxFiles: 5,
 } satisfies Pick<
 	NodeRuntimeConfig,
-	| "cacheControlEnabled"
+	| "cacheRetention"
 	| "memoryEnabled"
 	| "compressionThresholdTokens"
 	| "compactionTokenLimit"
@@ -138,7 +138,7 @@ export interface ResolveConfigOptions {
 	readonly workspaceRoot: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly overrides?: {
-		readonly provider?: ProviderId;
+		readonly provider?: ProviderRouteId;
 		readonly protocol?: ProtocolId;
 		readonly model?: string;
 		readonly apiBaseUrl?: string;
@@ -172,7 +172,7 @@ const ENVIRONMENT_CONFIG_KEYS = Object.freeze({
 	MYCLI_API_KEY: "api_key",
 	MYCLI_AUTH_REF: "auth_ref",
 	MYCLI_BASE_URL: "api_base_url",
-	MYCLI_CACHE_CONTROL_ENABLED: "cache_control_enabled",
+	MYCLI_CACHE_RETENTION: "cache_retention",
 	MYCLI_COMPACTION_L4_BUFFER_TOKENS: "compaction_l4_buffer_tokens",
 	MYCLI_COMPACTION_L4_CARRY_COST_PER_1K: "compaction_l4_carry_cost_per_1k",
 	MYCLI_COMPACTION_L4_CARRY_TURNS: "compaction_l4_carry_turns",
@@ -195,7 +195,6 @@ const ENVIRONMENT_CONFIG_KEYS = Object.freeze({
 	MYCLI_MAX_PROMPT_TOKENS: "max_prompt_tokens",
 	MYCLI_MEMORY_ENABLED: "memory_enabled",
 	MYCLI_MODEL: "model",
-	MYCLI_PROMPT_CACHE_KEY_ENABLED: "prompt_cache_key_enabled",
 	MYCLI_PROTOCOL: "protocol",
 	MYCLI_PROVIDER: "provider",
 	MYCLI_REASONING_EFFORT: "reasoning_effort",
@@ -299,22 +298,48 @@ async function resolveConfigFromSources(
 		options.env.MYCLI_PROVIDER,
 		...sources.map((source) => source.provider),
 	)) ?? inferProviderFromBaseUrl(inferenceUrl);
-	const initialProfile = providerProfileSetting(providerValue);
-	const protocolValue = stringValue(firstTruthy(
+	const provider = providerRouteSetting(providerValue);
+	const stableProvider = isProviderId(provider);
+	const initialProfile = stableProvider ? providerProfileSetting(providerValue) : undefined;
+	const configuredProtocol = stringValue(firstTruthy(
 		options.overrides?.protocol,
 		options.env.MYCLI_PROTOCOL,
 		...sources.map((source) => source.protocol),
-	)) ?? initialProfile.defaultProtocol;
-	const profile = providerProfileSetting(providerValue, protocolValue);
+	));
+	if (!stableProvider && configuredProtocol === undefined) {
+		throw invalidConfigValue(
+			"protocol",
+			"custom provider routes require an explicit protocol",
+			"Set model.protocol for the configured provider route.",
+		);
+	}
+	const protocolValue = configuredProtocol ?? initialProfile!.defaultProtocol;
+	const profile = stableProvider
+		? providerProfileSetting(providerValue, protocolValue)
+		: undefined;
 	const protocol = parseProtocol(protocolValue);
-	const model = stringValue(firstTruthy(
+	const configuredModel = stringValue(firstTruthy(
 		options.overrides?.model,
 		options.env.MYCLI_MODEL,
 		...sources.map((source) => source.model),
-		profile.defaultModel,
-		"gpt-5",
-	)) ?? "gpt-5";
-	const apiBaseUrl = (stringValue(configuredBaseUrl) ?? profile.defaultBaseUrl).replace(/\/+$/, "");
+	));
+	if (!stableProvider && configuredModel === undefined) {
+		throw invalidConfigValue(
+			"model",
+			"custom provider routes require an explicit model",
+			"Set model.name for the configured provider route.",
+		);
+	}
+	const model = configuredModel ?? profile?.defaultModel ?? "gpt-5";
+	const configuredApiBaseUrl = stringValue(configuredBaseUrl);
+	if (!stableProvider && configuredApiBaseUrl === undefined) {
+		throw invalidConfigValue(
+			"api_base_url",
+			"custom provider routes require an explicit API base URL",
+			"Set model.api_base_url for the configured provider route.",
+		);
+	}
+	const apiBaseUrl = (configuredApiBaseUrl ?? profile!.defaultBaseUrl).replace(/\/+$/, "");
 	const authRef = stringValue(firstTruthy(
 		options.overrides?.authRef,
 		options.env.MYCLI_AUTH_REF,
@@ -391,17 +416,11 @@ async function resolveConfigFromSources(
 		"MYCLI_SUPPORTS_IMAGES",
 		"supports_images",
 	));
-	const promptCacheOverride = optionalBoolean(setting(
+	const cacheRetention = cacheRetentionValue(setting(
 		options.env,
 		sources,
-		"MYCLI_PROMPT_CACHE_KEY_ENABLED",
-		"prompt_cache_key_enabled",
-	));
-	const cacheControlOverride = optionalBoolean(setting(
-		options.env,
-		sources,
-		"MYCLI_CACHE_CONTROL_ENABLED",
-		"cache_control_enabled",
+		"MYCLI_CACHE_RETENTION",
+		"cache_retention",
 	));
 	const memoryEnabled = booleanSetting(
 		setting(options.env, sources, "MYCLI_MEMORY_ENABLED", "memory_enabled"),
@@ -620,7 +639,7 @@ async function resolveConfigFromSources(
 	return {
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
-		provider: providerValue as ProviderId,
+		provider,
 		protocol,
 		model,
 		apiBaseUrl,
@@ -633,12 +652,11 @@ async function resolveConfigFromSources(
 		streamMaxRetries,
 		reasoningEffort,
 		thinkingEnabled,
-		supportsImages: supportsImagesOverride ?? profile.supportsImages,
-		webSearchMode: profile.supportsHostedWebSearch && protocol === "responses"
+		supportsImages: supportsImagesOverride ?? false,
+		webSearchMode: protocol === "responses" && (provider === "openai" || provider === "codex")
 			? "live"
 			: "disabled",
-		promptCacheKeyEnabled: promptCacheOverride ?? profile.promptCacheKeyEnabled,
-		cacheControlEnabled: cacheControlOverride ?? profile.cacheControlEnabled,
+		cacheRetention,
 		memoryEnabled,
 		requestPermissionsToolEnabled,
 		updatesCheckOnStartup,
@@ -1012,6 +1030,20 @@ function reasoningEffortValue(value: unknown): ReasoningEffort {
 	return normalized as ReasoningEffort;
 }
 
+function cacheRetentionValue(value: unknown): CacheRetention {
+	const normalized = value === undefined || value === null
+		? NODE_RUNTIME_CONTEXT_DEFAULTS.cacheRetention
+		: String(value).trim().toLowerCase();
+	if (normalized !== "none" && normalized !== "short" && normalized !== "long") {
+		throw invalidConfigValue(
+			"cache_retention",
+			"unsupported cache retention",
+			"Use one of: none, short, or long.",
+		);
+	}
+	return normalized;
+}
+
 function invalidConfigValue(
 	keyPath: string,
 	message: string,
@@ -1040,6 +1072,18 @@ function providerProfileSetting(
 			keyPath === "provider"
 				? "Use a provider supported by this mycli installation."
 				: "Use a protocol supported by the selected provider.",
+		);
+	}
+}
+
+function providerRouteSetting(value: string): ProviderRouteId {
+	try {
+		return parseProviderRouteId(value);
+	} catch {
+		throw invalidConfigValue(
+			"provider",
+			"invalid provider route configuration",
+			"Use a lowercase provider route containing only letters, digits, and internal hyphens.",
 		);
 	}
 }

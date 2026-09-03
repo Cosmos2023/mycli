@@ -140,7 +140,6 @@ export type {
 	ConfigDiagnosticSeverity,
 	ConfigFileLayerId,
 } from "./config-diagnostics.ts";
-export { resolveModelRuntimeConfig } from "./model-runtime-config.ts";
 export { writeUserProviderConfig } from "./user-config-writer.ts";
 export type { UserProviderConfigInput } from "./user-config-writer.ts";
 export { writeUserProviderSetup } from "./provider-setup-writer.ts";
@@ -189,15 +188,22 @@ export type {
 } from "./terminal-capabilities.ts";
 export {
 	BUILTIN_MODEL_CATALOG,
+	builtinModelReasoningDefaults,
 	findModelCatalogEntry,
 	loadModelCatalog,
+	loadModelProviderDeclarations,
 	ModelCatalogError,
 	modelInputTokenLimit,
 	modelCatalogEntryPayload,
 } from "./model-catalog.ts";
 export type {
+	ModelCatalogModelDeclaration,
 	ModelCatalogCurrentConfig,
 	ModelCatalogEntry,
+	ModelProviderDeclaration,
+	ModelProviderDeclarationModelPolicy,
+	ModelProviderDeclarationSource,
+	ModelReasoningDefaults,
 	ModelCatalogSelection,
 } from "./model-catalog.ts";
 export { WorkspaceTrustStore } from "./workspace-trust-store.ts";

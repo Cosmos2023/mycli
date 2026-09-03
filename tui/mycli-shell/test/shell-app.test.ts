@@ -4803,14 +4803,127 @@ test("mycli shell model selector opens from slash command and selects model", as
 
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\r");
-	terminal.input?.("\r");
-	terminal.input?.("\r");
 	await setTimeout(25);
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.equal(runtime.getState().footer.model, "gpt-5.4");
 	assert.equal(runtime.getState().footer.provider, "openai");
 	assert.equal(runtime.getState().footer.reasoningLevel, "medium");
 	assert.equal(selected, "openai/gpt-5.4/medium/session");
+});
+
+test("mycli shell loads a provider before its model catalog", async () => {
+	const terminal = new TestTerminal();
+	const requests: string[] = [];
+	let selected = "";
+	const state = sampleState();
+	const runtime = new MycliShellRuntime({
+		initialState: { ...state, models: [], modelsProvider: undefined, providerRoutes: [] },
+		terminal,
+		onProviderLoad: async () => [
+			{
+				id: "deepseek",
+				name: "DeepSeek",
+				protocols: ["chat_completions"],
+				activation: "active",
+				configured: true,
+				ready: true,
+				current: true,
+			},
+			{
+				id: "openai",
+				name: "OpenAI",
+				protocols: ["responses"],
+				activation: "active",
+				configured: true,
+				ready: true,
+				current: false,
+			},
+		],
+		onModelLoad: async (providerId) => {
+			requests.push(providerId);
+			return state.models?.filter((model) => model.provider === providerId) ?? [];
+		},
+		onModelSelect: (model) => { selected = `${model.provider}/${model.model}`; },
+	});
+	runtime.start();
+	await setTimeout(25);
+	await runtime.handleClientAction("open_model_selector", "");
+	await setTimeout(25);
+	assert.deepEqual(requests, ["deepseek"]);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.equal(selected, "deepseek/deepseek-v4-flash");
+});
+
+test("mycli shell inline model lookup stays on the active provider", async () => {
+	const terminal = new TestTerminal();
+	const requests: string[] = [];
+	const state = sampleState();
+	const runtime = new MycliShellRuntime({
+		initialState: { ...state, models: [], modelsProvider: undefined, providerRoutes: [] },
+		terminal,
+		onProviderLoad: async () => [{
+			id: "deepseek",
+			name: "DeepSeek",
+			protocols: ["chat_completions"],
+			activation: "active",
+			configured: true,
+			ready: true,
+			current: true,
+		}, {
+			id: "openai",
+			name: "OpenAI",
+			protocols: ["responses"],
+			activation: "active",
+			configured: true,
+			ready: true,
+			current: false,
+		}],
+		onModelLoad: async (providerId) => {
+			requests.push(providerId);
+			return state.models?.filter((model) => model.provider === providerId) ?? [];
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	await runtime.handleClientAction("open_model_selector", "gpt-5.4");
+	await setTimeout(25);
+
+	assert.deepEqual(requests, ["deepseek"]);
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /No matching models/);
+	assert.doesNotMatch(output, /GPT 5\.4/);
+});
+
+test("mycli shell opens route login before loading models when credentials are missing", async () => {
+	const terminal = new TestTerminal();
+	let modelLoads = 0;
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), models: [], modelsProvider: undefined, providerRoutes: [] },
+		terminal,
+		onProviderLoad: async () => [{
+			id: "openai",
+			name: "OpenAI",
+			protocols: ["responses"],
+			authRef: "openai-account",
+			activation: "active",
+			configured: true,
+			ready: false,
+			current: true,
+		}],
+		onModelLoad: async () => {
+			modelLoads += 1;
+			return [];
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	await runtime.handleClientAction("open_model_selector", "");
+	await setTimeout(25);
+
+	assert.equal(modelLoads, 0);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Login to OpenAI/);
 });
 
 test("mycli shell shows command inventory as a dismissible editor overlay", async () => {
@@ -5157,7 +5270,7 @@ test("mycli shell model selector can change thinking effort with model selection
 	await setTimeout(25);
 	await runtime.handleClientAction("open_model_selector", "");
 	terminal.input?.("\x1b[B");
-	terminal.input?.("\r");
+	terminal.input?.("\t");
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Select reasoning effort/);
 	assert.match(output, /medium/);
@@ -5188,7 +5301,6 @@ test("mycli shell keeps model selector open until backend selection succeeds", a
 	await runtime.handleClientAction("open_model_selector", "");
 
 	terminal.input?.("\r");
-	terminal.input?.("\r");
 	await setTimeout(10);
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 
@@ -5211,14 +5323,13 @@ test("mycli shell keeps model selector open and shows backend selection errors",
 	await runtime.handleClientAction("open_model_selector", "");
 
 	terminal.input?.("\r");
-	terminal.input?.("\r");
 	await setTimeout(25);
 
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Provider rejected this model/);
 	assert.equal(runtime.getState().footer.model, "deepseek-v4-flash");
 
-	terminal.input?.("\x1b");
+	terminal.input?.("\x1b[B");
 	await setTimeout(25);
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Select model/);
@@ -5937,6 +6048,34 @@ test("mycli shell keeps the session selector mounted until resume history is rea
 	assert.doesNotMatch(stripAnsi(runtime.ui.render(terminal.columns).join("\n")), /Resume Session/);
 });
 
+test("mycli shell submits a session selection only once while resume is pending", async () => {
+	const terminal = new TestTerminal();
+	let releaseResume!: () => void;
+	const resume = new Promise<void>((resolve) => { releaseResume = resolve; });
+	let selections = 0;
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSessionSelect: async () => {
+			selections += 1;
+			await resume;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.showSessionSelector();
+	await setTimeout(25);
+	terminal.input?.("\r");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.equal(selections, 1);
+	releaseResume();
+	await setTimeout(25);
+	await runtime.shutdown();
+});
+
 test("mycli shell resource selector loads resources and opens runtime inspect command", async () => {
 	const terminal = new TestTerminal();
 	const commands: string[] = [];
@@ -6569,6 +6708,37 @@ test("mycli shell runtime queues follow-up image attachments with tab while runn
 	assert.equal(runtime.editor.getText(), "");
 });
 
+test("mycli shell runtime restores composer drafts and image attachments per session", async () => {
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), sessionId: "session-a" },
+		terminal: new TestTerminal(),
+		onSubmit: (text, attachments) => {
+			submitted.push({
+				text,
+				images: attachments?.localImages?.map((image) => image.path) ?? [],
+			});
+		},
+	});
+
+	runtime.editor.setText("/tmp/session-a.png");
+	runtime.editor.setText(`${runtime.editor.getText()} explain session A`);
+	runtime.setState({ ...runtime.getState(), sessionId: "session-b" });
+	assert.equal(runtime.editor.getText(), "");
+
+	runtime.editor.setText("draft for session B");
+	runtime.setState({ ...runtime.getState(), sessionId: "session-a" });
+	assert.equal(runtime.editor.getText(), "[image #1] explain session A");
+	await runtime.editor.onSubmit?.(runtime.editor.getText());
+	assert.deepEqual(submitted, [{
+		text: "[image #1] explain session A",
+		images: ["/tmp/session-a.png"],
+	}]);
+
+	runtime.setState({ ...runtime.getState(), sessionId: "session-b" });
+	assert.equal(runtime.editor.getText(), "draft for session B");
+});
+
 test("mycli shell runtime restores queued messages with alt up", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
@@ -6690,6 +6860,41 @@ test("mycli shell runtime interrupts running turns with ctrl c and restores subm
 	runtime.completeInterruptedTurn([]);
 	assert.equal(runtime.editor.getText(), "draft before send");
 	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupt requested/);
+});
+
+test("Esc interrupts exactly once while turn submission is still awaiting start", async () => {
+	let resolveSubmit!: () => void;
+	let resolveInterrupt!: () => void;
+	const submitPending = new Promise<void>((resolve) => { resolveSubmit = resolve; });
+	const interruptPending = new Promise<void>((resolve) => { resolveInterrupt = resolve; });
+	let interruptRequests = 0;
+	let rollbackUserInput = false;
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: () => submitPending,
+		onInterrupt: (options) => {
+			interruptRequests += 1;
+			rollbackUserInput = options.rollbackUserInput;
+			return interruptPending;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("pending start");
+	terminal.input?.("\r");
+	await setTimeout(10);
+	terminal.input?.("\x1b");
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+
+	assert.equal(interruptRequests, 1);
+	assert.equal(rollbackUserInput, true);
+	resolveInterrupt();
+	resolveSubmit();
+	await setTimeout(25);
 });
 
 test("mycli shell runtime removes restored interrupted submit from prompt history", async () => {
@@ -6877,21 +7082,40 @@ test("mycli shell allows a second ctrl c while interrupt confirmation is pending
 	resolveInterrupt();
 });
 
-test("mycli shell restores interrupted queued inputs in order with attachments", () => {
+
+test("mycli shell restores interrupted queued inputs with stable image placeholder rebasing", async () => {
+	const submitted: Array<{ text: string; images: string[] }> = [];
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal: new TestTerminal(),
+		onSubmit: (text, attachments) => {
+			submitted.push({
+				text,
+				images: attachments?.localImages?.map((image) => image.path) ?? [],
+			});
+		},
 	});
 
 	runtime.completeInterruptedTurn([
-		{ text: "first queued" },
+		{
+			text: "[image #1] first queued",
+			localImages: [{ path: "/tmp/first.png", placeholder: "[image #1]" }],
+		},
 		{
 			text: "[image #1] second queued",
-			localImages: [{ path: "/tmp/queued.png", placeholder: "[image #1]" }],
+			localImages: [{ path: "/tmp/second.png", placeholder: "[image #1]" }],
 		},
 	]);
 
-	assert.equal(runtime.editor.getText(), "first queued\n\n[image #1] second queued");
+	assert.equal(
+		runtime.editor.getText(),
+		"[image #1] first queued\n\n[image #2] second queued",
+	);
+	await runtime.editor.onSubmit?.(runtime.editor.getText());
+	assert.deepEqual(submitted, [{
+		text: "[image #1] first queued\n\n[image #2] second queued",
+		images: ["/tmp/first.png", "/tmp/second.png"],
+	}]);
 });
 
 test("mycli shell renders reconnect details and keeps the turn interruptible", async () => {
@@ -8460,24 +8684,28 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 	assert.equal(result.stdout, "");
 });
 
-test("gateway resolves interrupted inputs only after the backend terminal event", () => {
+test("gateway resolves interrupted inputs after terminal confirmation and durable queue cleanup", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const interruptBody = source.match(
 		/async function interruptTurn\([\s\S]*?\): Promise<boolean> \{([\s\S]*?)\n\}/,
 	)?.[1] ?? "";
 
-	assert.match(source, /popLastLocalFollowUp\(runtimeState\)/);
+	assert.doesNotMatch(source, /popLastLocalFollowUp\(runtimeState\)/);
+	assert.match(source, /"turn\.queue\.pop"/);
+	assert.match(source, /send\("turn\.follow_up"/);
 	assert.match(source, /resolveLocalInterruptInputs\(/);
 	assert.match(source, /completeInterruptedTurn\(/);
-	assert.doesNotMatch(source, /send\("turn\.queue\.pop"/);
-	assert.doesNotMatch(source, /send\("turn\.queue\.clear"/);
+	assert.match(source, /send\("turn\.queue\.clear"/);
+	assert.match(source, /send\("turn\.queue\.restore\.ack"/);
+	assert.match(source, /sessionMutationFields\(context\)/);
+	assert.match(interruptBody, /await resolveRequestedInterrupt\(result, context\)/);
 	assert.doesNotMatch(
 		interruptBody,
 		/resolveLocalInterruptInputs|completeInterruptedTurn|dequeueQueuedInput|popLastQueuedFollowUp|clearQueuedTurns/,
 	);
 });
 
-test("scripted gateway client follows backend user lifecycle and local follow-up queues", () => {
+test("scripted gateway client follows backend lifecycle and durable follow-up queues", () => {
 	const source = readFileSync(new URL("./support/scripted-client.ts", import.meta.url), "utf8");
 
 	assert.match(source, /client_user_message_id/);
@@ -8485,6 +8713,9 @@ test("scripted gateway client follows backend user lifecycle and local follow-up
 	assert.match(source, /runtimeStateWithPendingSteer/);
 	assert.match(source, /runtimeStateWithLocalFollowUp/);
 	assert.doesNotMatch(source, /runtimeStateWithUserMessage/);
-	assert.doesNotMatch(source, /send\("turn\.follow_up"/);
-	assert.doesNotMatch(source, /send\("turn\.queue\.(?:pop|clear)"/);
+	assert.match(source, /send\("turn\.follow_up"/);
+	assert.match(source, /send\("turn\.queue\.clear"/);
+	assert.match(source, /send\("turn\.queue\.restore\.ack"/);
+	assert.doesNotMatch(source, /turn\.queue\.migration\.ack/);
+	assert.doesNotMatch(source, /nextLocalUserInput/);
 });

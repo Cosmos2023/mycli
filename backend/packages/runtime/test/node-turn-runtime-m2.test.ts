@@ -593,7 +593,6 @@ function config(overrides: Partial<NodeRuntimeConfig> = {}): NodeRuntimeConfig {
 		reasoningEffort: "medium",
 		thinkingEnabled: true,
 		supportsImages: true,
-		promptCacheKeyEnabled: true,
 		...overrides,
 		webSearchMode: overrides.webSearchMode ?? "live",
 		requestPermissionsToolEnabled: overrides.requestPermissionsToolEnabled ?? false,

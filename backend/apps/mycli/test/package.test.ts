@@ -54,6 +54,7 @@ test("runtime workspaces expose deterministic build scripts", () => {
 test("app production bin targets compiled JavaScript", () => {
 	const manifest = readManifest(packages[0].root);
 
+	assert.equal(manifest.name, "@cosmos2023/mycli");
 	assert.deepEqual(manifest.bin, { mycli: "dist/cli.js" });
 	assert.equal(manifest.scripts?.prepack, "node scripts/vendor-internal-packages.mjs");
 	assertRuntimeMetadataUsesDist(manifest);

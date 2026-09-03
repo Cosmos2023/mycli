@@ -1393,6 +1393,7 @@ function queueRecordFromPayload(payload: {
 	readonly target_turn_id: string | null;
 	readonly kind: QueuedInput["kind"];
 	readonly state: QueuedInput["state"];
+	readonly claim_turn_id?: string | null;
 	readonly text: string;
 	readonly image_paths: readonly string[];
 	readonly source: string;
@@ -1406,6 +1407,7 @@ function queueRecordFromPayload(payload: {
 		targetTurnId: payload.target_turn_id,
 		kind: payload.kind,
 		state: payload.state,
+		...(payload.claim_turn_id ? { claimTurnId: payload.claim_turn_id } : {}),
 		text: payload.text,
 		imagePaths: Object.freeze([...payload.image_paths]),
 		source: payload.source,
@@ -1447,6 +1449,7 @@ function queueRecordPayload(
 		target_turn_id: record.targetTurnId,
 		kind: record.kind,
 		state: record.state,
+		claim_turn_id: record.claimTurnId ?? null,
 		text: record.text,
 		image_paths: [...record.imagePaths],
 		source: record.source,

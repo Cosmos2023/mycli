@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type {
 	CanonicalConversationItem,
 	ProtocolId,
-	ProviderId,
+	ProviderRouteId,
 	ReasoningEffort,
 } from "./types.ts";
 
@@ -104,7 +104,7 @@ export interface AgentExecutionPolicySnapshot {
 }
 
 export interface AgentProviderSnapshot {
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
 	readonly model: string;
 	readonly reasoningEffort?: ReasoningEffort;

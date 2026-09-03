@@ -1,4 +1,5 @@
 import {
+	isProviderRouteId,
 	manifestLogicalInputSha256,
 	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
@@ -30,7 +31,6 @@ const TEXT_FIELD_MAX_CHARS = 8_192;
 const TOOL_DESCRIPTION_MAX_CHARS = 65_536;
 const LIFECYCLE_PAYLOAD_MAX_CHARS = 16_384;
 
-const PROVIDERS = new Set(["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]);
 const PROTOCOLS = new Set(["responses", "chat_completions", "anthropic_messages"]);
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const FRAGMENT_KINDS = new Set([
@@ -397,8 +397,8 @@ export function validateManifestLogicalDigest(
 export function normalizeProviderRequest(value: ProviderRequest): ProviderRequest {
 	const record = normalizedRecord(value, "logical provider request", MODEL_INPUT_JSON_MAX_CHARS);
 	assertKeys(record, [
-		"provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey",
-		"cacheControlEnabled", "webSearchMode", "instructions", "developerInstructions", "messages", "items", "tools",
+		"provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "sessionId", "cacheRetention",
+		"store", "promptCacheKey", "cacheControlEnabled", "webSearchMode", "instructions", "developerInstructions", "messages", "items", "tools",
 		"previousResponseId",
 	], ["provider", "protocol", "model", "instructions", "messages", "tools"], "logical provider request");
 	const config = normalizeProviderConfig(record, true);
@@ -594,12 +594,12 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	const record = normalizedRecord(value, "provider request configuration");
 	if (!allowRequestFields) {
 		for (const key of Object.keys(record)) {
-			if (!["provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "store", "promptCacheKey", "cacheControlEnabled", "webSearchMode"].includes(key)) {
+			if (!["provider", "protocol", "model", "reasoningEffort", "maxOutputTokens", "sessionId", "cacheRetention", "store", "promptCacheKey", "cacheControlEnabled", "webSearchMode"].includes(key)) {
 				throw invalid("provider request configuration contains unknown fields");
 			}
 		}
 	}
-	if (!PROVIDERS.has(String(record.provider)) || !PROTOCOLS.has(String(record.protocol))) {
+	if (!isProviderRouteId(record.provider) || !PROTOCOLS.has(String(record.protocol))) {
 		throw invalid("provider request route is invalid");
 	}
 	if (record.reasoningEffort !== undefined && !REASONING_EFFORTS.has(String(record.reasoningEffort))) {
@@ -607,6 +607,12 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	}
 	if (record.cacheControlEnabled !== undefined && typeof record.cacheControlEnabled !== "boolean") {
 		throw invalid("provider cache-control setting is invalid");
+	}
+	if (record.cacheRetention !== undefined
+		&& record.cacheRetention !== "none"
+		&& record.cacheRetention !== "short"
+		&& record.cacheRetention !== "long") {
+		throw invalid("provider cache retention is invalid");
 	}
 	if (record.webSearchMode !== undefined
 		&& record.webSearchMode !== "live"
@@ -616,6 +622,17 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 	if (record.store !== undefined && typeof record.store !== "boolean") {
 		throw invalid("provider storage setting is invalid");
 	}
+	const sessionId = record.sessionId === undefined
+		? record.promptCacheKey === undefined
+			? undefined
+			: boundedString(record.promptCacheKey, "provider prompt cache key", TEXT_FIELD_MAX_CHARS, true)
+		: boundedString(record.sessionId, "provider cache session", TEXT_FIELD_MAX_CHARS, true);
+	const cacheRetention = record.cacheRetention
+		?? (record.cacheControlEnabled === false
+			? "none"
+			: record.promptCacheKey !== undefined || record.cacheControlEnabled === true
+				? "short"
+				: undefined);
 	return Object.freeze({
 		provider: record.provider as ProviderRequestConfig["provider"],
 		protocol: record.protocol as ProviderRequestConfig["protocol"],
@@ -626,13 +643,8 @@ function normalizeProviderConfig(value: unknown, allowRequestFields = false): Pr
 		...(record.maxOutputTokens === undefined ? {} : {
 			maxOutputTokens: positiveInteger(record.maxOutputTokens, "provider max output tokens"),
 		}),
-		...(record.store === undefined ? {} : { store: record.store }),
-		...(record.promptCacheKey === undefined ? {} : {
-			promptCacheKey: boundedString(record.promptCacheKey, "provider prompt cache key", TEXT_FIELD_MAX_CHARS, true),
-		}),
-		...(record.cacheControlEnabled === undefined ? {} : {
-			cacheControlEnabled: record.cacheControlEnabled,
-		}),
+		...(sessionId === undefined ? {} : { sessionId }),
+		...(cacheRetention === undefined ? {} : { cacheRetention }),
 		...(record.webSearchMode === undefined ? {} : {
 			webSearchMode: record.webSearchMode,
 		}),
@@ -646,11 +658,8 @@ function providerConfigFromRequest(request: ProviderRequest): ProviderRequestCon
 		model: request.model,
 		...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
 		...(request.maxOutputTokens === undefined ? {} : { maxOutputTokens: request.maxOutputTokens }),
-		...(request.store === undefined ? {} : { store: request.store }),
-		...(request.promptCacheKey === undefined ? {} : { promptCacheKey: request.promptCacheKey }),
-		...(request.cacheControlEnabled === undefined ? {} : {
-			cacheControlEnabled: request.cacheControlEnabled,
-		}),
+		...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+		...(request.cacheRetention === undefined ? {} : { cacheRetention: request.cacheRetention }),
 		...(request.webSearchMode === undefined ? {} : {
 			webSearchMode: request.webSearchMode,
 		}),
@@ -782,7 +791,7 @@ function normalizeProviderReplayState(value: unknown): ProviderReplayState {
 		["provider", "value"],
 		"provider replay state",
 	);
-	if (!PROVIDERS.has(String(record.provider))) throw invalid("provider replay state route is invalid");
+	if (!isProviderRouteId(record.provider)) throw invalid("provider replay state route is invalid");
 	return Object.freeze({
 		provider: record.provider as ProviderReplayState["provider"],
 		value: Object.freeze(normalizedRecord(record.value, "provider replay value")),

@@ -838,7 +838,7 @@ function runtimeConfig(): NodeRuntimeConfig {
 		thinkingEnabled: false,
 		supportsImages: true,
 		webSearchMode: "live",
-		promptCacheKeyEnabled: false,
+		cacheRetention: "none",
 		requestPermissionsToolEnabled: false,
 		updatesCheckOnStartup: true,
 	});

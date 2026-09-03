@@ -13,6 +13,7 @@ import { parseJsonRpcMessage } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import { responsesTextEvents, responsesToolEvents } from "./support/responses-sse.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -80,7 +81,7 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
-			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_CACHE_RETENTION: "none",
 		},
 	});
 	const messages: JsonObject[] = [];
@@ -221,25 +222,19 @@ test("M6 live smoke drives a full-access PTY without approval and reports only s
 });
 
 function responsesTool(callId: string, name: string, argumentsValue: JsonObject): readonly JsonObject[] {
-	return [
-		{
-			type: "response.output_item.done",
-			item: {
-				type: "function_call",
-				call_id: callId,
-				name,
-				arguments: JSON.stringify(argumentsValue),
-			},
-		},
-		{ type: "response.completed", response: { id: `resp-${callId}` } },
-	];
+	return responsesToolEvents(callId, name, argumentsValue, `resp-${callId}`, {
+		input_tokens: 4,
+		output_tokens: 1,
+		total_tokens: 5,
+	});
 }
 
 function responsesFinal(text: string): readonly JsonObject[] {
-	return [
-		{ type: "response.output_text.delta", delta: text },
-		{ type: "response.completed", response: { id: "resp-final" } },
-	];
+	return responsesTextEvents(text, "resp-final", {
+		input_tokens: 4,
+		output_tokens: 1,
+		total_tokens: 5,
+	});
 }
 
 function writeSse(response: ServerResponse, items: readonly JsonObject[]): void {

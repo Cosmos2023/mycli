@@ -194,7 +194,7 @@ test("restricted profiles fail closed when the platform wrapper is unavailable",
 	}
 });
 
-test("sandbox readiness reports macOS Linux and unsupported platforms without execution", async () => {
+test("sandbox readiness reports macOS missing Linux and unsupported platforms", async () => {
 	assert.deepEqual(await inspectSandboxReadiness(probes("darwin", ["/usr/bin/sandbox-exec"])), {
 		state: "ready",
 		code: "ready",
@@ -213,6 +213,42 @@ test("sandbox readiness reports macOS Linux and unsupported platforms without ex
 		platform: "aix",
 		isolation: "none",
 	});
+});
+
+test("Linux sandbox readiness probes namespace enforcement instead of executable presence", async () => {
+	const calls: string[] = [];
+	const ready = await inspectSandboxReadiness({
+		platform: "linux",
+		isExecutable: (path) => path === "/usr/bin/bwrap",
+		linuxBubblewrapProbe: async (path) => {
+			calls.push(path);
+			return true;
+		},
+	});
+	assert.deepEqual(calls, ["/usr/bin/bwrap"]);
+	assert.deepEqual(ready, {
+		state: "ready",
+		code: "ready",
+		platform: "linux",
+		isolation: "linux_bubblewrap",
+	});
+
+	for (const linuxBubblewrapProbe of [
+		async () => false,
+		async () => { throw new Error("bwrap: loopback setup denied"); },
+	]) {
+		const unavailable = await inspectSandboxReadiness({
+			platform: "linux",
+			isExecutable: () => true,
+			linuxBubblewrapProbe,
+		});
+		assert.deepEqual(unavailable, {
+			state: "unavailable",
+			code: "enforcement_unavailable",
+			platform: "linux",
+			isolation: "linux_bubblewrap",
+		});
+	}
 });
 
 test("Windows sandbox readiness validates bounded handshake states", async () => {

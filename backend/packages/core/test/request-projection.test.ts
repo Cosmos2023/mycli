@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as core from "../src/index.ts";
-import type { CanonicalConversationItem } from "../src/index.ts";
+import { PROVIDER_IDS, type CanonicalConversationItem } from "../src/index.ts";
 
 const projectNoToolRequest = core.projectNoToolRequest;
+
+test("preserves every curated provider identity in canonical requests", () => {
+	for (const provider of PROVIDER_IDS.filter((candidate) => ![
+		"openai", "codex", "compatible", "qwen", "deepseek", "anthropic",
+	].includes(candidate))) {
+		const request = core.projectProviderRequest({
+			config: { provider, protocol: "chat_completions", model: `${provider}-model` },
+			instructions: "You are mycli.",
+			history: [{ type: "user", text: "hello" }],
+			tools: [],
+		});
+		assert.equal(request.provider, provider);
+		assert.equal(request.protocol, "chat_completions");
+		assert.equal(request.model, `${provider}-model`);
+	}
+});
 
 test("projects a no-tool Responses request with current intent last", () => {
 	const request = projectNoToolRequest({

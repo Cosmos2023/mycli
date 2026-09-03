@@ -1,5 +1,5 @@
 export type QueueItemKind = "pending_steer" | "rejected_steer" | "follow_up";
-export type QueueDeliveryState = "queued" | "accepted" | "committed";
+export type QueueDeliveryState = "queued" | "accepted" | "claimed" | "committed";
 export type QueueDisposition =
 	| "accepted_for_turn"
 	| "deferred_to_end_of_turn"
@@ -20,6 +20,7 @@ export interface QueuedInput {
 	readonly targetTurnId: string | null;
 	readonly kind: QueueItemKind;
 	readonly state: QueueDeliveryState;
+	readonly claimTurnId?: string;
 	readonly text: string;
 	readonly imagePaths: readonly string[];
 	readonly source: string;
@@ -79,6 +80,18 @@ export interface QueueRemoval {
 export interface QueueClearResult {
 	readonly snapshot: QueueSnapshot;
 	readonly records: readonly QueuedInput[];
+}
+
+export interface QueueRestorationClaim {
+	readonly token: string;
+	readonly snapshot: QueueSnapshot;
+	readonly records: readonly QueuedInput[];
+}
+
+export interface QueueSteerResubmitResult {
+	readonly snapshot: QueueSnapshot;
+	readonly records: readonly QueuedInput[];
+	readonly merged?: QueuedInput;
 }
 
 export class QueueConflictError extends Error {
@@ -226,11 +239,13 @@ export function restoreQueue(
 	let changed = false;
 	const pending: QueuedInput[] = [];
 	const rejected: QueuedInput[] = [];
-	for (const record of snapshot.rejectedSteers) {
-		if (input.committedQueueIds.has(record.queueId)) {
+	for (const storedRecord of snapshot.rejectedSteers) {
+		const record = restoreClaimedRecord(storedRecord, input.committedQueueIds, now);
+		if (!record) {
 			changed = true;
 			continue;
 		}
+		if (record !== storedRecord) changed = true;
 		if (isPendingInternalNotification(record)) {
 			pending.push(freezeRecord({
 				...record,
@@ -243,11 +258,13 @@ export function restoreQueue(
 		}
 		rejected.push(record);
 	}
-	for (const record of snapshot.pendingSteers) {
-		if (input.committedQueueIds.has(record.queueId)) {
+	for (const storedRecord of snapshot.pendingSteers) {
+		const record = restoreClaimedRecord(storedRecord, input.committedQueueIds, now);
+		if (!record) {
 			changed = true;
 			continue;
 		}
+		if (record !== storedRecord) changed = true;
 		if (!isPendingInternalNotification(record)
 			&& (activeTurnId === null || record.targetTurnId !== activeTurnId)) {
 			rejected.push(freezeRecord({
@@ -262,11 +279,13 @@ export function restoreQueue(
 		pending.push(record);
 	}
 	const followUps: QueuedInput[] = [];
-	for (const record of snapshot.followUps) {
-		if (input.committedQueueIds.has(record.queueId)) {
+	for (const storedRecord of snapshot.followUps) {
+		const record = restoreClaimedRecord(storedRecord, input.committedQueueIds, now);
+		if (!record) {
 			changed = true;
 			continue;
 		}
+		if (record !== storedRecord) changed = true;
 		if (isInternalNotification(record)) {
 			pending.push(freezeRecord({
 				...record,
@@ -294,6 +313,20 @@ export function restoreQueue(
 	return restored;
 }
 
+function restoreClaimedRecord(
+	record: QueuedInput,
+	committedQueueIds: ReadonlySet<string>,
+	now: string,
+): QueuedInput | undefined {
+	if (committedQueueIds.has(record.queueId)) return undefined;
+	if (record.state !== "claimed") return record;
+	return freezeRecord({
+		...withoutClaimTurnId(record),
+		state: "queued",
+		updatedAt: now,
+	});
+}
+
 function isPendingInternalNotification(record: QueuedInput): boolean {
 	return isInternalNotification(record) && record.targetTurnId === "turn_pending";
 }
@@ -309,7 +342,8 @@ export function claimPendingSteers(
 	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
 	const normalizedTurnId = nonEmpty(turnId, "turnId");
 	return Object.freeze(snapshot.pendingSteers.filter(
-		(record) => record.targetTurnId === normalizedTurnId || record.targetTurnId === "turn_pending",
+		(record) => record.state !== "claimed"
+			&& (record.targetTurnId === normalizedTurnId || record.targetTurnId === "turn_pending"),
 	));
 }
 
@@ -321,7 +355,7 @@ export function rejectPendingSteers(
 	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
 	const normalizedTurnId = nonEmpty(turnId, "turnId");
 	const matching = snapshot.pendingSteers.filter(
-		(record) => record.targetTurnId === normalizedTurnId,
+		(record) => record.state !== "claimed" && record.targetTurnId === normalizedTurnId,
 	);
 	if (matching.length === 0) {
 		return snapshot;
@@ -345,10 +379,106 @@ export function rejectPendingSteers(
 	});
 }
 
+export function preparePendingSteersForResubmit(
+	snapshot: QueueSnapshot,
+	turnId: string,
+	now: string,
+): QueueSteerResubmitResult {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	const normalizedTurnId = nonEmpty(turnId, "turnId");
+	const matching = snapshot.pendingSteers.filter(
+		(record) => record.state !== "claimed"
+			&& record.targetTurnId === normalizedTurnId
+			&& !isInternalNotification(record),
+	);
+	if (matching.length === 0) {
+		return Object.freeze({ snapshot, records: Object.freeze([]) });
+	}
+
+	const updatedAt = nonEmpty(now, "now");
+	const mergedPayload = mergeQueuedInputPayloads(matching);
+	const first = matching[0]!;
+	const merged = freezeRecord({
+		...first,
+		targetTurnId: normalizedTurnId,
+		kind: "rejected_steer",
+		state: "queued",
+		text: mergedPayload.text,
+		imagePaths: mergedPayload.imagePaths,
+		updatedAt,
+	});
+	const matchingIds = new Set(matching.map((record) => record.queueId));
+	const candidate = freezeSnapshot({
+		...snapshot,
+		revision: nextRevision(snapshot.revision),
+		pendingSteers: snapshot.pendingSteers.filter(
+			(record) => !matchingIds.has(record.queueId),
+		),
+		rejectedSteers: [merged, ...snapshot.rejectedSteers],
+	});
+	validateSnapshot(candidate, DEFAULT_QUEUE_CAPACITY);
+	return Object.freeze({
+		snapshot: candidate,
+		records: Object.freeze(matching),
+		merged,
+	});
+}
+
 export function nextQueuedInput(snapshot: QueueSnapshot): QueuedInput | undefined {
 	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
-	return snapshot.rejectedSteers.find((record) => !isInternalNotification(record))
+	const next = snapshot.rejectedSteers.find((record) => !isInternalNotification(record))
 		?? snapshot.followUps.find((record) => !isInternalNotification(record));
+	return next?.state === "claimed" ? undefined : next;
+}
+
+export function claimQueuedInput(
+	snapshot: QueueSnapshot,
+	queueId: string,
+	turnId: string,
+	now: string,
+): QueueSnapshot {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	const expected = nextQueuedInput(snapshot);
+	if (!expected || expected.queueId !== nonEmpty(queueId, "queueId")) {
+		throw new QueueConflictError("queue id is not the next end-of-turn record");
+	}
+	return replaceQueueRecord(snapshot, freezeRecord({
+		...expected,
+		state: "claimed",
+		claimTurnId: nonEmpty(turnId, "turnId"),
+		updatedAt: nonEmpty(now, "now"),
+	}));
+}
+
+export function releaseQueuedInputClaim(
+	snapshot: QueueSnapshot,
+	queueId: string,
+	turnId: string,
+	now: string,
+): QueueSnapshot {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	const record = claimedRecord(snapshot, queueId, turnId);
+	return replaceQueueRecord(snapshot, freezeRecord({
+		...withoutClaimTurnId(record),
+		state: "queued",
+		updatedAt: nonEmpty(now, "now"),
+	}));
+}
+
+function withoutClaimTurnId(record: QueuedInput): QueuedInput {
+	const queued = { ...record };
+	delete queued.claimTurnId;
+	return queued;
+}
+
+export function retireQueuedInputClaim(
+	snapshot: QueueSnapshot,
+	queueId: string,
+	turnId: string,
+): QueueSnapshot {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	const record = claimedRecord(snapshot, queueId, turnId);
+	return removeQueueRecord(snapshot, record);
 }
 
 export function markQueuedInputStarted(
@@ -372,9 +502,47 @@ export function markQueuedInputStarted(
 	});
 }
 
+function claimedRecord(snapshot: QueueSnapshot, queueId: string, turnId: string): QueuedInput {
+	const normalizedQueueId = nonEmpty(queueId, "queueId");
+	const normalizedTurnId = nonEmpty(turnId, "turnId");
+	const record = activeRecords(snapshot).find((item) => item.queueId === normalizedQueueId);
+	if (record?.state !== "claimed" || record.claimTurnId !== normalizedTurnId) {
+		throw new QueueConflictError("queued input claim does not match the reserved turn");
+	}
+	return record;
+}
+
+function replaceQueueRecord(snapshot: QueueSnapshot, replacement: QueuedInput): QueueSnapshot {
+	return freezeSnapshot({
+		...snapshot,
+		revision: nextRevision(snapshot.revision),
+		pendingSteers: snapshot.pendingSteers.map(
+			(record) => record.queueId === replacement.queueId ? replacement : record,
+		),
+		rejectedSteers: snapshot.rejectedSteers.map(
+			(record) => record.queueId === replacement.queueId ? replacement : record,
+		),
+		followUps: snapshot.followUps.map(
+			(record) => record.queueId === replacement.queueId ? replacement : record,
+		),
+	});
+}
+
+function removeQueueRecord(snapshot: QueueSnapshot, record: QueuedInput): QueueSnapshot {
+	return freezeSnapshot({
+		...snapshot,
+		revision: nextRevision(snapshot.revision),
+		pendingSteers: snapshot.pendingSteers.filter((item) => item.queueId !== record.queueId),
+		rejectedSteers: snapshot.rejectedSteers.filter((item) => item.queueId !== record.queueId),
+		followUps: snapshot.followUps.filter((item) => item.queueId !== record.queueId),
+	});
+}
+
 export function popLastFollowUp(snapshot: QueueSnapshot): QueueRemoval {
 	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
-	const index = snapshot.followUps.findLastIndex((record) => !isInternalNotification(record));
+	const index = snapshot.followUps.findLastIndex(
+		(record) => record.state !== "claimed" && !isInternalNotification(record),
+	);
 	if (index < 0) {
 		return Object.freeze({ snapshot });
 	}
@@ -395,7 +563,7 @@ export function popLastFollowUp(snapshot: QueueSnapshot): QueueRemoval {
 export function clearQueue(snapshot: QueueSnapshot): QueueClearResult {
 	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
 	const records = Object.freeze(activeRecords(snapshot).filter(
-		(record) => !isInternalNotification(record),
+		(record) => record.state !== "claimed" && !isInternalNotification(record),
 	));
 	if (records.length === 0) {
 		return Object.freeze({ snapshot, records });
@@ -419,6 +587,104 @@ export function clearQueue(snapshot: QueueSnapshot): QueueClearResult {
 	});
 }
 
+export function claimQueueForRestoration(
+	snapshot: QueueSnapshot,
+	token: string,
+	now: string,
+): QueueRestorationClaim {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	const normalizedToken = restorationToken(token);
+	const existingClaims = activeRecords(snapshot).filter(isRestorationClaim);
+	if (existingClaims.some((record) => record.claimTurnId !== normalizedToken)) {
+		throw new QueueConflictError("another queue restoration is already in progress");
+	}
+	if (existingClaims.length > 0) {
+		return Object.freeze({
+			token: normalizedToken,
+			snapshot,
+			records: Object.freeze(existingClaims),
+		});
+	}
+	const records = activeRecords(snapshot).filter(
+		(record) => record.state !== "claimed" && !isInternalNotification(record),
+	);
+	if (records.length === 0) {
+		return Object.freeze({ token: normalizedToken, snapshot, records: Object.freeze([]) });
+	}
+	const claimedIds = new Set(records.map((record) => record.queueId));
+	const updatedAt = nonEmpty(now, "now");
+	const claimRecord = (record: QueuedInput): QueuedInput => claimedIds.has(record.queueId)
+		? freezeRecord({
+			...record,
+			state: "claimed",
+			claimTurnId: normalizedToken,
+			updatedAt,
+		})
+		: record;
+	const candidate = freezeSnapshot({
+		...snapshot,
+		revision: nextRevision(snapshot.revision),
+		pendingSteers: snapshot.pendingSteers.map(claimRecord),
+		rejectedSteers: snapshot.rejectedSteers.map(claimRecord),
+		followUps: snapshot.followUps.map(claimRecord),
+	});
+	validateSnapshot(candidate, DEFAULT_QUEUE_CAPACITY);
+	return Object.freeze({
+		token: normalizedToken,
+		snapshot: candidate,
+		records: Object.freeze(activeRecords(candidate).filter(
+			(record) => claimedIds.has(record.queueId),
+		)),
+	});
+}
+
+export function retireQueueRestorationClaim(
+	snapshot: QueueSnapshot,
+	token: string,
+): QueueSnapshot {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	const normalizedToken = restorationToken(token);
+	const restorationClaims = activeRecords(snapshot).filter(isRestorationClaim);
+	if (restorationClaims.some((record) => record.claimTurnId !== normalizedToken)) {
+		throw new QueueConflictError("queue restoration token is stale");
+	}
+	const removeIds = new Set(restorationClaims
+		.filter((record) => record.claimTurnId === normalizedToken)
+		.map((record) => record.queueId));
+	if (removeIds.size === 0) return snapshot;
+	return freezeSnapshot({
+		...snapshot,
+		revision: nextRevision(snapshot.revision),
+		pendingSteers: snapshot.pendingSteers.filter((record) => !removeIds.has(record.queueId)),
+		rejectedSteers: snapshot.rejectedSteers.filter((record) => !removeIds.has(record.queueId)),
+		followUps: snapshot.followUps.filter((record) => !removeIds.has(record.queueId)),
+	});
+}
+
+export function releaseQueueRestorationClaims(
+	snapshot: QueueSnapshot,
+	now: string,
+): QueueSnapshot {
+	validateSnapshot(snapshot, DEFAULT_QUEUE_CAPACITY);
+	if (!activeRecords(snapshot).some(isRestorationClaim)) return snapshot;
+	const updatedAt = nonEmpty(now, "now");
+	const releaseRecord = (record: QueuedInput): QueuedInput => {
+		if (!isRestorationClaim(record)) return record;
+		return freezeRecord({
+			...withoutClaimTurnId(record),
+			state: record.kind === "pending_steer" ? "accepted" : "queued",
+			updatedAt,
+		});
+	};
+	return freezeSnapshot({
+		...snapshot,
+		revision: nextRevision(snapshot.revision),
+		pendingSteers: snapshot.pendingSteers.map(releaseRecord),
+		rejectedSteers: snapshot.rejectedSteers.map(releaseRecord),
+		followUps: snapshot.followUps.map(releaseRecord),
+	});
+}
+
 function normalizedPayload(
 	text: string,
 	imagePaths: readonly string[] | undefined,
@@ -431,6 +697,25 @@ function normalizedPayload(
 		)]),
 		source: nonEmpty(source, "source"),
 	};
+}
+
+function mergeQueuedInputPayloads(
+	records: readonly QueuedInput[],
+): { readonly text: string; readonly imagePaths: readonly string[] } {
+	let imageOffset = 0;
+	const imagePaths: string[] = [];
+	const text = records.map((record) => {
+		const rebased = record.text.replace(/\[image #(\d+)\]/giu, (placeholder, rawIndex: string) => {
+			const index = Number.parseInt(rawIndex, 10);
+			return Number.isSafeInteger(index) && index >= 1 && index <= record.imagePaths.length
+				? `[image #${imageOffset + index}]`
+				: placeholder;
+		});
+		imagePaths.push(...record.imagePaths);
+		imageOffset += record.imagePaths.length;
+		return rebased;
+	}).join("\n\n");
+	return Object.freeze({ text, imagePaths: Object.freeze(imagePaths) });
 }
 
 function duplicateOrConflict(
@@ -496,6 +781,14 @@ function validateSnapshot(snapshot: QueueSnapshot, capacity: QueueCapacity): voi
 				throw new QueueConflictError("queueId is duplicated in queue snapshot");
 			}
 			seenQueueIds.add(record.queueId);
+			if (record.state === "claimed") {
+				if (!record.claimTurnId?.trim()
+					|| (record.kind === "pending_steer" && !isRestorationClaim(record))) {
+					throw new QueueConflictError("claimed queued input must own an end-of-turn reservation");
+				}
+			} else if (record.claimTurnId !== undefined) {
+				throw new QueueConflictError("unclaimed queued input cannot retain a claim turn id");
+			}
 		}
 	}
 	validateCapacity(snapshot, capacity);
@@ -557,6 +850,18 @@ function activeRecords(snapshot: QueueSnapshot): QueuedInput[] {
 		...snapshot.rejectedSteers,
 		...snapshot.followUps,
 	];
+}
+
+function isRestorationClaim(record: QueuedInput): boolean {
+	return record.state === "claimed" && record.claimTurnId?.startsWith("restore_") === true;
+}
+
+function restorationToken(value: string): string {
+	const token = nonEmpty(value, "token");
+	if (!token.startsWith("restore_")) {
+		throw new QueueConflictError("queue restoration token is invalid");
+	}
+	return token;
 }
 
 function nonEmpty(value: string, name: string): string {

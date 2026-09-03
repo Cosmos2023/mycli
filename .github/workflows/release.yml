@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   windows-sandbox-helper:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,14 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap build-essential make g++
+      - name: Install Linux process prerequisites
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential make g++
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
@@ -61,14 +68,33 @@ jobs:
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - name: Verify release metadata and tag
         run: npm run release:verify -- --tag "$GITHUB_REF_NAME" --require-windows-helper
+      - name: Verify compatibility policy and documentation
+        run: npm run release:compatibility
       - run: npm run contracts:check
       - run: npm run lint
-      - run: npm test
+      - name: Run deterministic test suites
+        run: npm run test:ci
       - run: npm run typecheck
-      - run: npm run test:m8
       - run: npm run smoke:m8
+      - name: Prepare release evidence directory
+        run: >-
+          node -e "require('node:fs').mkdirSync('release-evidence', { recursive: true })"
       - name: Validate every packed npm artifact
-        run: npm run smoke:package -- --all-platforms --require-windows-helper
+        run: >-
+          npm run --silent smoke:package -- --all-platforms --require-windows-helper
+          > release-evidence/ubuntu-packed.json
+      - name: Validate predecessor upgrade, downgrade, and migration rollback
+        run: >-
+          npm run smoke:release-compatibility --
+          --evidence release-evidence/ubuntu-upgrade.json
+      - name: Upload sanitized release compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-compatibility-tag-${{ github.ref_name }}
+          path: release-evidence/ubuntu-*.json
+          if-no-files-found: warn
+          retention-days: 30
       - name: Publish npm packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

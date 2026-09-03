@@ -21,15 +21,13 @@ import {
 	CachedUpdateService,
 	detectTerminalCapabilities,
 	ExecPolicyStore,
-	findModelCatalogEntry,
 	listProviderProfiles,
-	loadModelCatalog,
 	loadManagedExecutionPolicy,
-	modelCatalogEntryPayload,
+	modelInputTokenLimit,
 	parseConfigProfileName,
 	parseProtocol,
 	readApiKey,
-	resolveModelRuntimeConfig,
+	resolveConfig,
 	resolveProviderProfile,
 	resolveShellSettingsState,
 	resolveTerminalCapabilities,
@@ -63,8 +61,11 @@ import type {
 } from "@mycli/core";
 import {
 	agentThreadId,
+	isProviderId,
+	isProviderRouteId,
 	modelInputSha256,
 	narrowAgentExecutionPolicy,
+	parseProviderRouteId,
 	rootAgentPath,
 } from "@mycli/core";
 import {
@@ -78,7 +79,10 @@ import {
 	type WaitAgentActivityContract,
 	type WaitAgentActivityInput,
 } from "@mycli/integrations";
-import { ProviderRegistry } from "@mycli/providers";
+import {
+	ProviderRegistry,
+	type ProviderRouteDescriptor,
+} from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
 	AgentActivityBus,
@@ -217,6 +221,13 @@ import {
 	type SessionPreferences,
 } from "./session-preferences.ts";
 import { SessionService } from "./session-service.ts";
+import {
+	applyProviderScopedModelConfig,
+	findProviderScopedModelEntry,
+	providerScopedModelPayload,
+	ProviderModelDirectory,
+	type ProviderModelDirectorySnapshot,
+} from "./provider-model-directory.ts";
 import { MYCLI_PACKAGE_NAME, MYCLI_VERSION } from "../version.ts";
 
 export interface NodeBackend {
@@ -277,10 +288,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const managedExecutionPolicy = await loadManagedExecutionPolicy({ homeDir });
 	const sandboxReadinessPromise = inspectSandboxReadiness();
 	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
+	const providerModelDirectory = new ProviderModelDirectory({ homeDir });
 	const resolveWorkspaceModelRuntimeConfig = async (
 		input: ResolveConfigOptions,
 		workspaceTrust?: WorkspaceTrustState,
-	): Promise<NodeRuntimeConfig> => resolveModelRuntimeConfig({
+	): Promise<NodeRuntimeConfig> => resolveConfig({
 		...input,
 		...profileInput,
 		workspaceTrust: workspaceTrust ?? await workspaceTrustStore.load(input.workspaceRoot),
@@ -295,14 +307,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		})
 	);
 	let startupTrustState = await workspaceTrustStore.load(options.cwd);
-	let config = await resolveModelRuntimeConfig({
+	let config = await resolveWorkspaceModelRuntimeConfig({
 		homeDir,
 		workspaceRoot: options.cwd,
 		env: options.env,
 		overrides,
 		...profileInput,
-		workspaceTrust: startupTrustState,
-	});
+	}, startupTrustState);
 	for (const recovery of options.recoverInterruptedTurns ?? []) {
 		if (recovery.sessionId !== config.sessionId) {
 			throw new Error("recovered_interrupt_session_mismatch");
@@ -321,14 +332,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		const persisted = store.loadSession(config.sessionId);
 		if (persisted && persisted.workspaceRoot !== config.workspaceRoot) {
 			startupTrustState = await workspaceTrustStore.load(persisted.workspaceRoot);
-			config = await resolveModelRuntimeConfig({
+			config = await resolveWorkspaceModelRuntimeConfig({
 				homeDir,
 				workspaceRoot: persisted.workspaceRoot,
 				env: options.env,
 				overrides,
 				...profileInput,
-				workspaceTrust: startupTrustState,
-			});
+			}, startupTrustState);
 		}
 		recoveredInterrupts = (options.recoverInterruptedTurns ?? []).flatMap((recovery) => {
 			const record = store.recoverInterruptedTurn(
@@ -365,6 +375,60 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	startupProfiler.mark("storage_ready");
 	const productSystemPrompt = packagedSystemPrompt();
 	const registry = new ProviderRegistry();
+	const providerRoutesByConfig = new WeakMap<NodeRuntimeConfig, ProviderRouteDescriptor>();
+	const captureProviderRoute = async (
+		resolved: NodeRuntimeConfig,
+		resolveWithModelLimit?: (inputTokenLimit: number) => Promise<NodeRuntimeConfig>,
+	): Promise<NodeRuntimeConfig> => {
+		const snapshot = await providerModelDirectory.load(resolved);
+		const route = snapshot.route(resolved.provider);
+		if (!route || route.activation !== "active") {
+			throw new Error("provider_model_directory_error: active provider route is unavailable");
+		}
+		const entry = findProviderScopedModelEntry(snapshot, {
+			provider: resolved.provider,
+			protocol: resolved.protocol,
+			model: resolved.model,
+			baseUrl: resolved.apiBaseUrl,
+		});
+		const inputTokenLimit = entry === undefined ? undefined : modelInputTokenLimit(entry);
+		const modelAwareConfig = inputTokenLimit === undefined || resolveWithModelLimit === undefined
+			? resolved
+			: await resolveWithModelLimit(inputTokenLimit);
+		const effective = entry === undefined
+			? modelAwareConfig
+			: applyProviderScopedModelConfig(modelAwareConfig, entry);
+		providerRoutesByConfig.set(effective, route);
+		return effective;
+	};
+	const resolveCapturedProviderModelConfig = async (
+		input: ResolveConfigOptions,
+		workspaceTrust?: WorkspaceTrustState,
+	): Promise<NodeRuntimeConfig> => {
+		const preliminary = await resolveWorkspaceModelRuntimeConfig(input, workspaceTrust);
+		return captureProviderRoute(preliminary, (inputTokenLimit) => (
+			resolveWorkspaceModelRuntimeConfig({
+				...input,
+				overrides: {
+					...input.overrides,
+					provider: preliminary.provider,
+					protocol: preliminary.protocol,
+					model: preliminary.model,
+					apiBaseUrl: preliminary.apiBaseUrl,
+					authRef: preliminary.authRef,
+				},
+				defaultMaxPromptTokens: inputTokenLimit,
+				maxPromptTokensCeiling: inputTokenLimit,
+			}, workspaceTrust)
+		));
+	};
+	const providerRouteForConfig = (resolved: NodeRuntimeConfig): ProviderRouteDescriptor => {
+		const route = providerRoutesByConfig.get(resolved);
+		if (!route) {
+			throw new Error("provider_model_directory_error: provider route snapshot was not captured");
+		}
+		return route;
+	};
 	const agentWorkerPool = Object.values(agentExecutionAdapters).includes("worker")
 		? new AgentWorkerPool({
 			...agentWorkerSettings,
@@ -747,7 +811,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const preferences = runtimeOptions.provider
 					? undefined
 					: sessionPreferences ?? defaultPreferences;
-				const resolved = await resolveWorkspaceModelRuntimeConfig({
+				const configInput: ResolveConfigOptions = {
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -766,16 +830,27 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							?? preferences?.model
 							?? defaultPreferences.model,
 					},
-				});
-				if (!runtimeOptions.provider) return resolved;
-				return Object.freeze({
-					...resolved,
-					provider: runtimeOptions.provider.provider,
-					protocol: runtimeOptions.provider.protocol,
-					model: runtimeOptions.provider.model,
-					reasoningEffort: runtimeOptions.provider.reasoningEffort ?? "none",
-					thinkingEnabled: (runtimeOptions.provider.reasoningEffort ?? "none") !== "none",
-				});
+				};
+				const resolveEffective = async (inputTokenLimit?: number): Promise<NodeRuntimeConfig> => {
+					const resolved = await resolveWorkspaceModelRuntimeConfig({
+						...configInput,
+						...(inputTokenLimit === undefined
+							? {}
+							: {
+								defaultMaxPromptTokens: inputTokenLimit,
+								maxPromptTokensCeiling: inputTokenLimit,
+							}),
+					});
+					return !runtimeOptions.provider ? resolved : Object.freeze({
+						...resolved,
+						provider: runtimeOptions.provider.provider,
+						protocol: runtimeOptions.provider.protocol,
+						model: runtimeOptions.provider.model,
+						reasoningEffort: runtimeOptions.provider.reasoningEffort ?? "none",
+						thinkingEnabled: (runtimeOptions.provider.reasoningEffort ?? "none") !== "none",
+					});
+				};
+				return captureProviderRoute(await resolveEffective(), resolveEffective);
 			};
 			const fileSnapshots = new FileSnapshotStore();
 			const fileHistory = new FileHistoryStore({ homeDir, workspaceRoot });
@@ -1019,7 +1094,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							model: input.model ?? resolved.model,
 						};
 						return summarizeCompactionWithProvider(
-							registry.create(summaryConfig),
+							registry.create(summaryConfig, providerRouteForConfig(resolved)),
 							{
 								provider: summaryConfig.provider,
 								protocol: summaryConfig.protocol,
@@ -1074,7 +1149,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				: { maxOutputTokens: options.maxOutputTokens }),
 				store,
 				resolveConfig: (submission) => resolveRuntimeConfig(submission.modelOverride),
-				createProvider: (resolved) => registry.create(resolved),
+				createProvider: (resolved) => registry.create(
+					resolved,
+					providerRouteForConfig(resolved),
+				),
+				resolveProviderRoute: providerRouteForConfig,
 				loadLocalImages: loadRuntimeImages,
 				createTurnId: randomUUID,
 				clock: () => new Date().toISOString(),
@@ -1513,11 +1592,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return store.loadSessionLineage(sessionId);
 			},
 			});
-			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
-			const initialPreferences = initial.binding.sessionPreferences?.();
-			if (initialPreferences) {
-				controlConfig = await resolveWorkspaceModelRuntimeConfig({
-					homeDir,
+				const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
+				const initialPreferences = initial.binding.sessionPreferences?.();
+				if (initialPreferences) {
+					controlConfig = await resolveCapturedProviderModelConfig({
+						homeDir,
 					workspaceRoot: initial.workspaceRoot,
 					env: options.env,
 					overrides: sessionPreferenceOverrides(initial.sessionId, initialPreferences),
@@ -1568,10 +1647,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				currentConfig: () => controlConfig,
 				currentPermissionProfile: () => sessionCoordinator.snapshot().binding
 					.sessionPreferences?.()?.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
-				loadModelCatalog: () => loadModelCatalog({
-					homeDir,
-					currentConfig: controlConfig,
-				}),
+				loadModelCatalog: async (preferences, sessionWorkspaceRoot, sessionId) => {
+					const resolved = await resolveWorkspaceModelRuntimeConfig({
+						homeDir,
+						workspaceRoot: sessionWorkspaceRoot,
+						env: options.env,
+						overrides: sessionPreferenceOverrides(sessionId, preferences),
+					});
+					const snapshot = await providerModelDirectory.load(resolved);
+					return snapshot.models(preferences.provider);
+				},
 				hasCredential: async (preferences) => {
 					if (preferences.authRef === controlConfig.authRef && controlConfig.apiKey) return true;
 					return Boolean(await readApiKey({ homeDir, authRef: preferences.authRef }));
@@ -1769,7 +1854,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									: Boolean(await readApiKey({ homeDir, authRef }));
 								return {
 									id: profile.provider,
-									name: providerDisplayName(profile.provider),
+									name: profile.displayName,
 									configured: isCurrent ? current.ready : stored,
 									credential_source: isCurrent ? current.source : stored ? "stored" : "missing",
 									...(isCurrent ? { auth_ref: current.authRef } : {}),
@@ -1779,29 +1864,58 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						},
 						credentialReadiness,
 						saveApiKey: async (providerId, apiKey, requestedAuthRef) => {
-							const profile = resolveProviderProfile(providerId);
-							const current = await credentialReadiness();
-							const authRef = requestedAuthRef ?? profile.provider;
-							if (authRef !== profile.provider
-								&& (profile.provider !== current.providerId || authRef !== current.authRef)) {
+							let provider;
+							try {
+								provider = parseProviderRouteId(providerId);
+							} catch {
+								throw controlRequestError("Selected provider route is invalid.");
+							}
+							const snapshot = await providerModelDirectory.load(controlConfig);
+							const route = snapshot.route(provider);
+							if (!route || route.activation !== "active") {
+								throw controlRequestError("Selected provider route is not active.");
+							}
+							const profile = isProviderId(provider)
+								? resolveProviderProfile(provider, route.protocol)
+								: undefined;
+							const authRef = requestedAuthRef ?? profile?.provider ?? route.authRef;
+							if (authRef !== route.authRef && authRef !== profile?.provider) {
 								throw controlRequestError("Credential reference is not active for this provider.");
 							}
 							await writeApiKey({ homeDir, authRef, apiKey });
 							return {
 								ok: true,
-								provider_id: profile.provider,
+								provider_id: route.routeId,
 								auth_ref: authRef,
-								message: `Saved API key for ${providerDisplayName(profile.provider)}.`,
+								message: `Saved API key for ${route.displayName}.`,
 							};
 						},
-						models: async () => await modelCatalog(homeDir, controlConfig),
+						providers: async () => providerDirectoryPayload(
+							await providerModelDirectory.load(controlConfig),
+							homeDir,
+							controlConfig,
+						),
+						models: async (providerValue) => {
+							let provider;
+							try {
+								provider = parseProviderRouteId(providerValue);
+							} catch {
+								throw controlRequestError("Selected provider route is invalid.");
+							}
+							const snapshot = await providerModelDirectory.load(controlConfig);
+							const route = snapshot.route(provider);
+							if (!route || route.activation !== "active") {
+								throw controlRequestError("Selected provider route is not active.");
+							}
+							return snapshot.models(provider).map(providerScopedModelPayload);
+						},
 							selectModel: async (input) => {
-							const provider = controlString(input.provider, "provider");
+							const providerValue = controlString(input.provider, "provider");
 							const protocolValue = controlString(input.protocol, "protocol");
-							let profile: ReturnType<typeof resolveProviderProfile>;
+							let provider;
 							let protocol: ReturnType<typeof parseProtocol>;
 							try {
-								profile = resolveProviderProfile(provider, protocolValue);
+								provider = parseProviderRouteId(providerValue);
 								protocol = parseProtocol(protocolValue);
 							} catch {
 								throw controlRequestError("Selected provider or protocol is not supported.");
@@ -1811,9 +1925,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							const collaborationMode = controlCollaborationMode(input.collaboration_mode);
 							const scope = controlModelSelectionScope(input.scope);
 							const requestedEffort = controlReasoningEffort(input.reasoning_effort);
-							const catalog = await loadModelCatalog({ homeDir, currentConfig: controlConfig });
-							const entry = findModelCatalogEntry(catalog, {
-								provider: profile.provider,
+							const snapshot = await providerModelDirectory.load(controlConfig);
+							const route = snapshot.route(provider);
+							if (!route || route.activation !== "active" || route.protocol !== protocol) {
+								throw controlRequestError("Selected provider route is not active.");
+							}
+							const entry = findProviderScopedModelEntry(snapshot, {
+								provider,
 								protocol,
 								model,
 								baseUrl: apiBaseUrl,
@@ -1854,12 +1972,24 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								reasoningEffort: thinkingEnabled ? nextReasoningEffort : "none",
 								collaborationMode,
 							}) satisfies SessionPreferences;
-							const nextControlConfig = await resolveWorkspaceModelRuntimeConfig({
+							const inputTokenLimit = modelInputTokenLimit(entry);
+							const unresolvedControlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
 								overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+								...(inputTokenLimit === undefined
+									? {}
+									: {
+										defaultMaxPromptTokens: inputTokenLimit,
+										maxPromptTokensCeiling: inputTokenLimit,
+									}),
 							});
+							const nextControlConfig = applyProviderScopedModelConfig(
+								unresolvedControlConfig,
+								entry,
+							);
+							providerRoutesByConfig.set(nextControlConfig, route);
 							if (scope === "user") {
 								await writeUserProviderConfig({
 									homeDir,
@@ -1872,8 +2002,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									model,
 									apiBaseUrl: entry.baseUrl,
 									authRef: entry.authRef,
-									promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
-									cacheControlEnabled: profile.cacheControlEnabled,
+									cacheRetention: nextControlConfig.cacheRetention,
 									thinkingEnabled,
 									reasoningEffort: nextReasoningEffort,
 								});
@@ -1894,8 +2023,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								});
 							}
 							controlConfig = nextControlConfig;
-								return {
-								...modelCatalogEntryPayload(entry),
+							return {
+								...providerScopedModelPayload(entry),
 								current: true,
 								reasoning_effort: reasoningEffort ?? null,
 								thinking_enabled: thinkingEnabled,
@@ -1907,17 +2036,21 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								const preferences = active.binding.sessionPreferences?.()
 									?? loadSessionPreferences(store, active.sessionId)
 									?? defaultPreferences;
-								controlConfig = await resolveWorkspaceModelRuntimeConfig({
-									homeDir,
-									workspaceRoot: active.workspaceRoot,
-									env: options.env,
-									overrides: sessionPreferenceOverrides(active.sessionId, preferences),
-								});
-								return validateProviderConnectivity(registry, controlConfig);
+								controlConfig = await resolveCapturedProviderModelConfig({
+										homeDir,
+										workspaceRoot: active.workspaceRoot,
+										env: options.env,
+										overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+									});
+								return validateProviderConnectivity(
+									registry,
+									controlConfig,
+									providerRouteForConfig(controlConfig),
+								);
 							},
 							activateSessionPreferences: async (preferences) => {
 							const active = sessionCoordinator.snapshot();
-							controlConfig = await resolveWorkspaceModelRuntimeConfig({
+							controlConfig = await resolveCapturedProviderModelConfig({
 								homeDir,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
@@ -1995,7 +2128,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						? active.binding.sessionPreferences?.()
 							?? loadSessionPreferences(store, active.sessionId)
 						: undefined;
-					const nextControlConfig = await resolveWorkspaceModelRuntimeConfig({
+					const nextControlConfig = await resolveCapturedProviderModelConfig({
 						homeDir,
 						workspaceRoot,
 						env: options.env,
@@ -2067,17 +2200,65 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	}
 }
 
-async function modelCatalog(
+async function providerDirectoryPayload(
+	snapshot: ProviderModelDirectorySnapshot,
 	homeDir: string,
 	config: NodeRuntimeConfig,
 ): Promise<readonly Readonly<Record<string, unknown>>[]> {
-	const entries = await loadModelCatalog({ homeDir, currentConfig: config });
-	return Object.freeze(entries.map(modelCatalogEntryPayload));
+	const storedCredentials = new Map(await Promise.all(
+		[...new Set(snapshot.routes.map((route) => route.authRef))].map(async (authRef) => [
+			authRef,
+			Boolean(await readApiKey({ homeDir, authRef })),
+		] as const),
+	));
+	const activeRouteIds = new Set(snapshot.routes.map((route) => route.routeId));
+	const active = snapshot.routes.map((route) => Object.freeze({
+		id: route.routeId,
+		name: route.displayName,
+		support_tier: route.supportTier,
+		source: route.source,
+		...(route.catalogProviderId === undefined
+			? {}
+			: { catalog_provider_id: route.catalogProviderId }),
+		protocols: Object.freeze([route.protocol]),
+		protocol: route.protocol,
+		base_url: route.apiBaseUrl,
+		auth_ref: route.authRef,
+		activation: route.activation,
+		configured: true,
+		ready: storedCredentials.get(route.authRef) === true
+			|| (route.routeId === config.provider
+				&& route.authRef === config.authRef
+				&& Boolean(config.apiKey)),
+		current: route.routeId === config.provider,
+		model_count: snapshot.models(route.routeId).length,
+	}));
+	const dormant = snapshot.catalog.providers
+		.filter((provider) => !activeRouteIds.has(provider.catalogProviderId))
+		.map((provider) => Object.freeze({
+			id: provider.catalogProviderId,
+			name: provider.name,
+			support_tier: "experimental",
+			source: "pi_ai_builtin",
+			catalog_provider_id: provider.catalogProviderId,
+			protocols: Object.freeze([...provider.protocols]),
+			activation: provider.status === "unsupported" ? "unserviceable" : "inactive",
+			configured: false,
+			ready: false,
+			current: false,
+			endpoint_required: provider.endpointRequired,
+			model_count: provider.models.length,
+			...(provider.disabledReason === undefined
+				? {}
+				: { disabled_reason: provider.disabledReason }),
+		}));
+	return Object.freeze([...active, ...dormant]);
 }
 
 async function validateProviderConnectivity(
 	registry: ProviderRegistry,
 	config: NodeRuntimeConfig,
+	route: ProviderRouteDescriptor,
 ): Promise<Record<string, unknown>> {
 	if (!config.apiKey) {
 		return { ok: false, message: "No API key is configured for the selected provider." };
@@ -2094,10 +2275,14 @@ async function validateProviderConnectivity(
 		messages: [{ role: "user", content: "Reply with OK." }],
 		tools: [],
 		maxOutputTokens: 8,
-		store: false,
+		sessionId: config.sessionId,
+		cacheRetention: config.cacheRetention,
 	};
 	try {
-		for await (const event of registry.create(config).stream(request, { signal: controller.signal })) {
+		for await (const event of registry.create(config, route).stream(
+			request,
+			{ signal: controller.signal },
+		)) {
 			if (event.type === "completed") {
 				return { ok: true, message: "Provider connection verified." };
 			}
@@ -2109,17 +2294,6 @@ async function validateProviderConnectivity(
 		clearTimeout(timer);
 		controller.abort();
 	}
-}
-
-function providerDisplayName(provider: string): string {
-	return {
-		openai: "OpenAI",
-		codex: "OpenAI Codex",
-		compatible: "OpenAI Compatible",
-		qwen: "Qwen",
-		deepseek: "DeepSeek",
-		anthropic: "Anthropic",
-	}[provider] ?? provider;
 }
 
 function sessionPreferenceOverrides(
@@ -2446,7 +2620,7 @@ function modelStreamTracePayload(
 	value: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
 	return compactTracePayload({
-		provider: traceEnum(value.provider, ["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]),
+		provider: isProviderRouteId(value.provider) ? value.provider : undefined,
 		protocol: traceEnum(value.protocol, ["responses", "chat_completions", "anthropic_messages"]),
 		model: boundedTraceToken(value.model, 256),
 		attempt: boundedTraceCount(value.attempt),
@@ -3473,6 +3647,7 @@ function queueRecord(record: {
 	readonly target_turn_id: string | null;
 	readonly kind: QueuedInput["kind"];
 	readonly state: QueuedInput["state"];
+	readonly claim_turn_id?: string | null;
 	readonly text: string;
 	readonly image_paths: readonly string[];
 	readonly source: string;
@@ -3486,6 +3661,7 @@ function queueRecord(record: {
 		targetTurnId: record.target_turn_id,
 		kind: record.kind,
 		state: record.state,
+		...(record.claim_turn_id ? { claimTurnId: record.claim_turn_id } : {}),
 		text: record.text,
 		imagePaths: Object.freeze([...record.image_paths]),
 		source: record.source,

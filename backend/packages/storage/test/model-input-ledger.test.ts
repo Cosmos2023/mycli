@@ -9,6 +9,7 @@ import {
 	manifestLogicalInputSha256,
 	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
+	parseProviderRouteId,
 	projectProviderRequest,
 	providerTimelinePrefixSha256,
 } from "@mycli/core";
@@ -35,7 +36,9 @@ import {
 	SQLiteSessionStore,
 	SQLiteTranscriptEventRepository,
 	StorageFailure,
+	encodeSessionContentBlob,
 } from "../src/index.ts";
+import { modelInputBlob } from "../src/model-input-validation.ts";
 import type {
 	CommitProviderStepInput,
 	ModelInputLedgerFailpoint,
@@ -86,6 +89,39 @@ test("atomically commits and reconstructs an exact bootstrap provider request", 
 	assert.equal(count(database, "model_context_events"), 1);
 	assert.equal(count(database, "provider_request_manifests"), 1);
 	assert.equal(count(database, "provider_step_events"), 1);
+});
+
+test("round trips dynamic provider routes and rejects malformed model-input identities", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = sessionStore(fixture.dbPath);
+	t.after(() => store.close());
+	reserveSession(store, fixture.root);
+	const base = providerStep({ requestId: "request-dynamic-provider" });
+	const malformed = {
+		...base,
+		manifest: {
+			...base.manifest,
+			providerConfig: { ...base.manifest.providerConfig, provider: "Cloudflare" },
+		},
+		request: { ...base.request, provider: "Cloudflare" },
+	} as unknown as CommitProviderStepInput;
+	assert.throws(() => store.modelInputLedger.commitProviderStep(malformed), StorageFailure);
+
+	const provider = parseProviderRouteId("cloudflare-ai-gateway");
+	const input = Object.freeze({
+		...base,
+		manifest: Object.freeze({
+			...base.manifest,
+			providerConfig: Object.freeze({ ...base.manifest.providerConfig, provider }),
+		}),
+		request: Object.freeze({ ...base.request, provider }),
+	});
+	const committed = store.modelInputLedger.commitProviderStep(input);
+	assert.deepEqual(committed, { manifest: input.manifest, request: input.request });
+	assert.deepEqual(
+		store.modelInputLedger.reconstructProviderStep("request-dynamic-provider"),
+		committed,
+	);
 });
 
 test("persists and reconstructs an immutable v2 provider input timeline", async (t) => {
@@ -526,6 +562,20 @@ test("stores v11 model-input ownership through compressed content without changi
 	);
 });
 
+test("reconstructs legacy cache fields from a v10 request blob", async (t) => {
+	const fixture = await transcriptLedgerFixture(t, SCHEMA_V10_VERSION, "v10-legacy-cache");
+	const input = timelineProviderStep();
+	fixture.repository.modelInputLedger.commitProviderStep(input);
+	fixture.repository.close();
+	rewriteCacheVocabularyAsLegacy(fixture.dbPath, input, false);
+
+	const reopened = new SQLiteTranscriptEventRepository({ dbPath: fixture.dbPath, clock: () => NOW });
+	t.after(() => reopened.close());
+	const reconstructed = reopened.modelInputLedger.reconstructProviderStep(input.manifest.requestId);
+	assert.deepEqual(reconstructed.request, input.request);
+	assert.deepEqual(reconstructed.manifest.providerConfig, input.manifest.providerConfig);
+});
+
 test("rolls back v11 model-input content and references with the provider step", async (t) => {
 	const fixture = await transcriptLedgerFixture(t, SCHEMA_V11_VERSION, "rollback", {
 		modelInputFailpoint: (name) => {
@@ -634,6 +684,21 @@ test("reconstructs exact v12 requests without a logical request blob", async (t)
 		request: input.request,
 		state: "unknown",
 	}]);
+});
+
+test("reconstructs legacy cache fields from a v12 timeline manifest", async (t) => {
+	const fixture = await transcriptLedgerFixture(t, SCHEMA_V12_VERSION, "v12-legacy-cache");
+	const v2 = timelineProviderStep();
+	const input = v3TimelineProviderStep(v2, v2.timelineEvents ?? []);
+	fixture.repository.modelInputLedger.commitProviderStep(input);
+	fixture.repository.close();
+	rewriteCacheVocabularyAsLegacy(fixture.dbPath, input, true);
+
+	const reopened = new SQLiteTranscriptEventRepository({ dbPath: fixture.dbPath, clock: () => NOW });
+	t.after(() => reopened.close());
+	const reconstructed = reopened.modelInputLedger.reconstructProviderStep(input.manifest.requestId);
+	assert.deepEqual(reconstructed.request, input.request);
+	assert.deepEqual(reconstructed.manifest.providerConfig, input.manifest.providerConfig);
 });
 
 test("keeps older v12 timeline prefixes exact after later appends", async (t) => {
@@ -951,7 +1016,8 @@ function providerStep(options: {
 		messages: [{ role: "user", content: payloadText }],
 		items: [{ type: "user", text: payloadText }],
 		tools: toolSet.tools,
-		store: false,
+		sessionId: "session-1",
+		cacheRetention: "short",
 	};
 	const manifest: ProviderRequestManifestV1 = {
 		schemaVersion: 1,
@@ -963,7 +1029,8 @@ function providerStep(options: {
 			provider: request.provider,
 			protocol: request.protocol,
 			model: request.model,
-			store: request.store,
+			sessionId: request.sessionId,
+			cacheRetention: request.cacheRetention,
 		},
 		instructionSnapshotId: instructions.snapshotId,
 		toolSetSnapshotId: toolSet.snapshotId,
@@ -1424,6 +1491,100 @@ function reserveSession(store: SQLiteSessionStore, workspaceRoot: string): void 
 
 function sessionStore(dbPath: string): SQLiteSessionStore {
 	return new SQLiteSessionStore({ dbPath, clock: () => NOW });
+}
+
+function rewriteCacheVocabularyAsLegacy(
+	dbPath: string,
+	input: ProviderStepInputV2 | ProviderStepInputV3,
+	contentBacked: boolean,
+): void {
+	const legacyConfig = legacyCacheShape(input.manifest.providerConfig);
+	const legacyRequest = legacyCacheShape(input.request);
+	const requestConfigurationSha256 = input.manifest.schemaVersion === 3
+		? modelInputSha256({
+			provider_config: legacyConfig,
+			instruction_snapshot_sha256: input.instructionSnapshot.contentSha256,
+			tool_set_snapshot_sha256: input.toolSetSnapshot.contentSha256,
+		})
+		: modelInputSha256(legacyConfig);
+	const manifestBlob = modelInputBlob({
+		...input.manifest,
+		providerConfig: legacyConfig,
+		requestConfigurationSha256,
+	});
+	const requestBlob = modelInputBlob(legacyRequest);
+	const database = new Database(dbPath);
+	try {
+		putLegacyModelInputBlob(database, manifestBlob, contentBacked);
+		if (!contentBacked) putLegacyModelInputBlob(database, requestBlob, false);
+		database.exec("DROP TRIGGER provider_request_manifests_no_update");
+		if (contentBacked) {
+			database.prepare(`
+				UPDATE provider_request_manifests
+				SET manifest_blob_id = ?, logical_request_sha256 = ?
+				WHERE request_id = ?
+			`).run(manifestBlob.id, requestBlob.id, input.manifest.requestId);
+		} else {
+			database.prepare(`
+				UPDATE provider_request_manifests
+				SET manifest_blob_id = ?, logical_request_blob_id = ?, logical_request_sha256 = ?
+				WHERE request_id = ?
+			`).run(manifestBlob.id, requestBlob.id, requestBlob.id, input.manifest.requestId);
+		}
+	} finally {
+		database.close();
+	}
+}
+
+function legacyCacheShape(value: object): Readonly<Record<string, unknown>> {
+	const {
+		sessionId,
+		cacheRetention,
+		...rest
+	} = value as Readonly<Record<string, unknown>>;
+	assert.equal(typeof sessionId, "string");
+	assert.equal(cacheRetention, "short");
+	return Object.freeze({
+		...rest,
+		store: false,
+		promptCacheKey: sessionId,
+		cacheControlEnabled: true,
+	});
+}
+
+function putLegacyModelInputBlob(
+	database: Database.Database,
+	blob: ReturnType<typeof modelInputBlob>,
+	contentBacked: boolean,
+): void {
+	if (!contentBacked) {
+		database.prepare(`
+			INSERT INTO model_input_blobs (blob_id, payload_json, created_at)
+			VALUES (?, ?, ?)
+		`).run(blob.id, blob.json, NOW);
+		return;
+	}
+	const content = encodeSessionContentBlob(blob.json);
+	database.prepare(`
+		INSERT INTO session_content_blobs (
+			blob_id, codec, raw_bytes, stored_bytes, payload_blob, created_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`).run(
+		content.blobId,
+		content.codec,
+		content.rawBytes,
+		content.storedBytes,
+		content.payload,
+		NOW,
+	);
+	database.prepare(`
+		INSERT INTO model_input_blobs (blob_id, payload_json, created_at)
+		VALUES (?, ?, ?)
+	`).run(blob.id, MODEL_INPUT_CONTENT_BLOB_MARKER_JSON, NOW);
+	database.prepare(`
+		INSERT INTO model_input_blob_refs (blob_id, content_blob_id)
+		VALUES (?, ?)
+	`).run(blob.id, content.blobId);
 }
 
 async function transcriptLedgerFixture(

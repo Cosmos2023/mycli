@@ -5,7 +5,7 @@ export function parseAppVersion(manifest: unknown): string {
 	return parsePackageVersion(manifest);
 }
 
-export const MYCLI_PACKAGE_NAME = "@mycli/app";
+export const MYCLI_PACKAGE_NAME = "@cosmos2023/mycli";
 
 const manifest = JSON.parse(
 	readFileSync(new URL("../package.json", import.meta.url), "utf8"),

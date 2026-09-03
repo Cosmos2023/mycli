@@ -3,6 +3,8 @@ import test from "node:test";
 import {
 	QueueCapacityError,
 	QueueConflictError,
+	claimQueueForRestoration,
+	claimQueuedInput,
 	claimPendingSteers,
 	clearQueue,
 	enqueueFollowUp,
@@ -10,7 +12,12 @@ import {
 	markQueuedInputStarted,
 	nextQueuedInput,
 	popLastFollowUp,
+	preparePendingSteersForResubmit,
 	rejectPendingSteers,
+	releaseQueueRestorationClaims,
+	releaseQueuedInputClaim,
+	retireQueueRestorationClaim,
+	retireQueuedInputClaim,
 	restoreQueue,
 	type QueueSnapshot,
 } from "../src/queue-state.ts";
@@ -217,6 +224,43 @@ test("claims matching pending steers and moves terminal steers to the rejected q
 	assert.equal(rejectPendingSteers(rejected, "t1", now), rejected);
 });
 
+test("merges interrupted pending steers ahead of deferred input and rebases images", () => {
+	let snapshot = enqueueSteer(emptyQueue(), steerInput({
+		queueId: "q-first",
+		clientTurnId: "c-first",
+		text: "inspect [image #1]",
+		imagePaths: ["first.png"],
+	})).snapshot;
+	snapshot = enqueueSteer(snapshot, steerInput({
+		queueId: "q-second",
+		clientTurnId: "c-second",
+		text: "compare [image #1] and keep [image #9] literal",
+		imagePaths: ["second.png"],
+	})).snapshot;
+	snapshot = enqueueFollowUp(snapshot, followUpInput()).snapshot;
+
+	const result = preparePendingSteersForResubmit(
+		snapshot,
+		"t1",
+		"2026-08-04T00:00:02.000Z",
+	);
+
+	assert.deepEqual(result.records.map((record) => record.queueId), ["q-first", "q-second"]);
+	assert.deepEqual(result.merged, {
+		...snapshot.pendingSteers[0],
+		kind: "rejected_steer",
+		state: "queued",
+		text: "inspect [image #1]\n\ncompare [image #2] and keep [image #9] literal",
+		imagePaths: ["first.png", "second.png"],
+		updatedAt: "2026-08-04T00:00:02.000Z",
+	});
+	assert.equal(result.snapshot.pendingSteers.length, 0);
+	assert.equal(result.snapshot.rejectedSteers[0]?.queueId, "q-first");
+	assert.equal(nextQueuedInput(result.snapshot)?.queueId, "q-first");
+	assert.equal(result.snapshot.followUps[0]?.queueId, "q-follow");
+	assert.equal(result.snapshot.revision, snapshot.revision + 1);
+});
+
 test("consumes only the priority record, pops the newest follow-up, and clears atomically", () => {
 	let snapshot = enqueueFollowUp(
 		emptyQueue(),
@@ -239,6 +283,130 @@ test("consumes only the priority record, pops the newest follow-up, and clears a
 	assert.deepEqual(cleared.records.map((item) => item.queueId), ["q-first", "q-last"]);
 	assert.equal(cleared.snapshot.followUps.length, 0);
 	assert.equal(cleared.snapshot.revision, snapshot.revision + 1);
+});
+
+test("claims one queued input without deleting it and protects the in-flight record", () => {
+	const queued = enqueueFollowUp(emptyQueue(), followUpInput()).snapshot;
+	const claimed = claimQueuedInput(
+		queued,
+		"q-follow",
+		"turn-queued",
+		"2026-08-04T00:00:01.000Z",
+	);
+
+	assert.equal(claimed.revision, queued.revision + 1);
+	assert.deepEqual(claimed.followUps[0], {
+		...queued.followUps[0],
+		state: "claimed",
+		claimTurnId: "turn-queued",
+		updatedAt: "2026-08-04T00:00:01.000Z",
+	});
+	assert.equal(nextQueuedInput(claimed), undefined);
+	assert.equal(popLastFollowUp(claimed).record, undefined);
+	assert.deepEqual(clearQueue(claimed), { snapshot: claimed, records: [] });
+
+	const released = releaseQueuedInputClaim(
+		claimed,
+		"q-follow",
+		"turn-queued",
+		"2026-08-04T00:00:02.000Z",
+	);
+	assert.equal(released.followUps[0]?.state, "queued");
+	assert.equal(released.followUps[0]?.claimTurnId, undefined);
+	assert.equal(nextQueuedInput(released)?.queueId, "q-follow");
+
+	const reclaimed = claimQueuedInput(
+		released,
+		"q-follow",
+		"turn-retry",
+		"2026-08-04T00:00:03.000Z",
+	);
+	const retired = retireQueuedInputClaim(reclaimed, "q-follow", "turn-retry");
+	assert.equal(retired.followUps.length, 0);
+	assert.equal(retired.revision, reclaimed.revision + 1);
+});
+
+test("restart releases orphaned claims and retires claims with committed user input", () => {
+	const queued = enqueueFollowUp(emptyQueue(), followUpInput()).snapshot;
+	const claimed = claimQueuedInput(
+		queued,
+		"q-follow",
+		"turn-queued",
+		"2026-08-04T00:00:01.000Z",
+	);
+
+	const orphaned = restoreQueue(claimed, {
+		committedQueueIds: new Set(),
+		activeTurnId: null,
+		now: "2026-08-04T00:00:02.000Z",
+	});
+	assert.equal(orphaned.followUps[0]?.state, "queued");
+	assert.equal(orphaned.followUps[0]?.claimTurnId, undefined);
+	assert.equal(orphaned.revision, claimed.revision + 1);
+
+	const committed = restoreQueue(claimed, {
+		committedQueueIds: new Set(["q-follow"]),
+		activeTurnId: null,
+		now: "2026-08-04T00:00:02.000Z",
+	});
+	assert.equal(committed.followUps.length, 0);
+	assert.equal(committed.revision, claimed.revision + 1);
+});
+
+test("restoration claims retain queued input until an idempotent acknowledgement", () => {
+	let snapshot = enqueueSteer(emptyQueue(), steerInput()).snapshot;
+	snapshot = enqueueFollowUp(snapshot, followUpInput()).snapshot;
+	const claimed = claimQueueForRestoration(
+		snapshot,
+		"restore_request_1",
+		"2026-08-04T00:00:01.000Z",
+	);
+
+	assert.equal(claimed.snapshot.revision, snapshot.revision + 1);
+	assert.deepEqual(claimed.records.map((record) => record.queueId), ["q1", "q-follow"]);
+	assert.equal(claimed.snapshot.pendingSteers[0]?.state, "claimed");
+	assert.equal(claimed.snapshot.followUps[0]?.state, "claimed");
+	assert.deepEqual(claimPendingSteers(claimed.snapshot, "t1"), []);
+	assert.equal(nextQueuedInput(claimed.snapshot), undefined);
+
+	const retry = claimQueueForRestoration(
+		claimed.snapshot,
+		"restore_request_1",
+		"2026-08-04T00:00:02.000Z",
+	);
+	assert.strictEqual(retry.snapshot, claimed.snapshot);
+	assert.deepEqual(retry.records.map((record) => record.queueId), ["q1", "q-follow"]);
+	assert.throws(
+		() => claimQueueForRestoration(claimed.snapshot, "restore_request_2", now),
+		QueueConflictError,
+	);
+
+	const retired = retireQueueRestorationClaim(claimed.snapshot, "restore_request_1");
+	assert.equal(retired.pendingSteers.length, 0);
+	assert.equal(retired.followUps.length, 0);
+	assert.equal(retired.revision, claimed.snapshot.revision + 1);
+	assert.strictEqual(
+		retireQueueRestorationClaim(retired, "restore_request_1"),
+		retired,
+	);
+});
+
+test("orphaned restoration claims return to their dispatchable queue state", () => {
+	let snapshot = enqueueSteer(emptyQueue(), steerInput()).snapshot;
+	snapshot = enqueueFollowUp(snapshot, followUpInput()).snapshot;
+	const claimed = claimQueueForRestoration(snapshot, "restore_orphan", now).snapshot;
+	const released = releaseQueueRestorationClaims(
+		claimed,
+		"2026-08-04T00:00:03.000Z",
+	);
+
+	assert.equal(released.pendingSteers[0]?.state, "accepted");
+	assert.equal(released.pendingSteers[0]?.claimTurnId, undefined);
+	assert.equal(released.followUps[0]?.state, "queued");
+	assert.equal(released.followUps[0]?.claimTurnId, undefined);
+	assert.equal(released.revision, claimed.revision + 1);
+	assert.equal(claimPendingSteers(released, "t1")[0]?.queueId, "q1");
+	assert.equal(nextQueuedInput(released)?.queueId, "q-follow");
 });
 
 test("end-of-turn queue operations preserve internal task notifications", () => {

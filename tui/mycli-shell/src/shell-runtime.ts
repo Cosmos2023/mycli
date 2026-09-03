@@ -27,6 +27,7 @@ import type {
 	MycliShellPendingClarification,
 	MycliShellPermissionProfile,
 	MycliShellPermissionState,
+	MycliShellProviderRoute,
 	MycliShellResource,
 	MycliShellResumeRepairAction,
 	MycliShellResumeRepairPreview,
@@ -136,6 +137,10 @@ export type MycliShellRuntimeOptions = {
 		model: MycliShellModel,
 		scope: ModelSelectionScope,
 	) => void | MycliShellModel | Promise<void | MycliShellModel>;
+	onProviderLoad?: () => Promise<MycliShellProviderRoute[]>;
+	onModelLoad?: (providerId: string) => Promise<MycliShellModel[]>;
+	onProviderRoutesChange?: (providers: MycliShellProviderRoute[]) => void;
+	onModelCatalogChange?: (providerId: string, models: MycliShellModel[]) => void;
 	onPermissionSelect?: (profile: MycliShellPermissionProfile) => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onPermissionClearAllowances?: () => void | MycliShellPermissionState | Promise<void | MycliShellPermissionState>;
 	onApiKeyLogin?: (
@@ -207,6 +212,15 @@ export type MycliShellSubmitAttachments = {
 export type MycliShellQueuedInput = {
 	text: string;
 	localImages?: MycliShellLocalImageAttachment[];
+};
+
+type ComposerSessionSnapshot = {
+	draft: string;
+	pendingLocalImages: MycliShellLocalImageAttachment[];
+	lastSubmittedInput: MycliShellQueuedInput | null;
+	lastSubmittedInputEligible: boolean;
+	lastSubmittedActivitySignature: string;
+	userTurnPendingStart: boolean;
 };
 
 type ToolDetailMode = "default" | "expanded" | "collapsed";
@@ -1213,8 +1227,10 @@ export class MycliShellRuntime {
 	private lastSubmittedInputEligible = false;
 	private lastSubmittedActivitySignature = "";
 	private userTurnPendingStart = false;
+	private interruptRequestPending = false;
 	private dismissedSubagentIds = new Set<string>();
 	private pendingLocalImages: MycliShellLocalImageAttachment[] = [];
+	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
 	private toolDetailProjection: ToolDetailProjectionCache | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1325,6 +1341,8 @@ export class MycliShellRuntime {
 	setState(nextState: MycliShellState, options: MycliShellStateUpdateOptions = {}): void {
 		const previousState = this.state;
 		const effectiveState = this.applyToolDetailMode(nextState, options.transcriptUpdate);
+		const sessionChanged = previousState.sessionId !== effectiveState.sessionId;
+		if (sessionChanged) this.captureComposerSession(previousState.sessionId);
 		const settingsChanged = this.settingsSignature(previousState) !== this.settingsSignature(effectiveState);
 		const transcriptAppended = this.transcriptBlockCount(effectiveState) > this.transcriptBlockCount(previousState);
 		if (
@@ -1342,6 +1360,7 @@ export class MycliShellRuntime {
 		}
 		this.applyVisualSettings(effectiveState.settings, effectiveState.terminalCapabilities);
 		this.state = effectiveState;
+		if (sessionChanged) this.restoreComposerSession(effectiveState.sessionId);
 		this.updateTranscriptViewer(effectiveState);
 		if (this.mainMounted) {
 			if (settingsChanged) {
@@ -1410,9 +1429,7 @@ export class MycliShellRuntime {
 		this.lastSubmittedInputEligible = false;
 		this.lastSubmittedActivitySignature = "";
 		this.userTurnPendingStart = false;
-		for (const input of inputs.reverse()) {
-			this.restoreQueuedInputToEditor(input);
-		}
+		this.prependQueuedInputs(inputs);
 	}
 
 	async shutdown(): Promise<void> {
@@ -1631,24 +1648,16 @@ export class MycliShellRuntime {
 
 	private showStartupModelStage(): void {
 		const providerId = this.startupProviderId ?? this.state.authReadiness?.providerId;
-		if (providerId && this.modelsForProvider(providerId).length === 0) {
+		if (!this.options.onModelLoad && providerId && this.modelsForProvider(providerId).length === 0) {
 			this.advanceStartupOnboarding("model");
 			return;
 		}
-		this.showSelector((done) => {
-			const selector = new ModelSelectorComponent({
-				tui: this.ui,
-				currentModel: this.state.currentModel,
-				models: this.state.models ?? [],
-				...(providerId ? { initialSearchInput: providerId } : {}),
-				onSelect: (model, scope) => {
-					void this.submitModelSelection(model, scope, selector, done, () => {
-						this.advanceStartupOnboarding("model");
-					});
-				},
-				onCancel: () => { void this.shutdown(); },
-			});
-			return { component: selector, focus: selector };
+		this.openModelSelector({
+			...(providerId ? { preferredProviderId: providerId } : {}),
+			lockPreferredProvider: Boolean(providerId),
+			...(!this.options.onModelLoad && providerId ? { initialSearchInput: providerId } : {}),
+			onSelected: () => this.advanceStartupOnboarding("model"),
+			onCancel: () => { void this.shutdown(); },
 		});
 	}
 
@@ -1886,17 +1895,62 @@ export class MycliShellRuntime {
 	}
 
 	showModelSelector(initialSearchInput?: string): void {
-		const models = this.state.models ?? [];
+		const preferredProviderId = this.state.currentModel?.provider ?? this.state.footer.provider;
+		this.openModelSelector({
+			...(initialSearchInput ? { initialSearchInput } : {}),
+			...(preferredProviderId ? { preferredProviderId } : {}),
+			lockPreferredProvider: Boolean(initialSearchInput),
+		});
+	}
+
+	private openModelSelector(options: {
+		readonly initialSearchInput?: string;
+		readonly preferredProviderId?: string;
+		readonly lockPreferredProvider?: boolean;
+		readonly onSelected?: () => void;
+		readonly onCancel?: () => void;
+	}): void {
 		this.showSelector((done) => {
 			const selector = new ModelSelectorComponent({
-				tui: this.ui,
-				currentModel: this.state.currentModel,
-				models,
-				initialSearchInput,
-					onSelect: (model, scope) => {
-						void this.submitModelSelection(model, scope, selector, done);
-					},
-				onCancel: () => done(),
+					tui: this.ui,
+					currentModel: this.state.currentModel,
+					models: this.state.models ?? [],
+					...(options.initialSearchInput ? { initialSearchInput: options.initialSearchInput } : {}),
+				...(options.preferredProviderId ? { preferredProviderId: options.preferredProviderId } : {}),
+				lockPreferredProvider: options.lockPreferredProvider === true,
+				...(this.options.onProviderLoad ? { onProviderLoad: this.options.onProviderLoad } : {}),
+				...(this.options.onModelLoad ? { onModelLoad: this.options.onModelLoad } : {}),
+				onProvidersLoaded: (providerRoutes) => {
+					if (this.options.onProviderRoutesChange) {
+						this.options.onProviderRoutesChange(providerRoutes);
+					} else {
+						this.setState({ ...this.state, providerRoutes });
+					}
+				},
+				onModelsLoaded: (providerId, models) => {
+					if (this.options.onModelCatalogChange) {
+						this.options.onModelCatalogChange(providerId, models);
+					} else {
+						this.setState({ ...this.state, models, modelsProvider: providerId });
+					}
+				},
+				onLoginRequired: (provider) => {
+					done();
+					this.showLoginFlow(provider.id, provider.authRef, false, (savedProviderId) => {
+						this.openModelSelector({
+							...options,
+							preferredProviderId: savedProviderId,
+							lockPreferredProvider: true,
+						});
+					});
+				},
+				onSelect: (model, scope) => {
+					void this.submitModelSelection(model, scope, selector, done, options.onSelected);
+				},
+				onCancel: () => {
+					done();
+					options.onCancel?.();
+				},
 			});
 			return { component: selector, focus: selector };
 		});
@@ -1923,6 +1977,7 @@ export class MycliShellRuntime {
 		initialProviderId?: string,
 		initialAuthRef?: string,
 		exitOnCancel = false,
+		onSuccess?: (providerId: string) => void,
 	): void {
 		this.ensureSelectorHostMounted();
 		this.showSelector((done) => {
@@ -1932,7 +1987,14 @@ export class MycliShellRuntime {
 				...(initialProviderId ? { initialProviderId } : {}),
 				...(initialAuthRef ? { initialAuthRef } : {}),
 				onSubmit: ({ providerId, authRef, apiKey }) => {
-					void this.submitApiKeyLogin(providerId, authRef, apiKey, selector, done);
+					void this.submitApiKeyLogin(
+						providerId,
+						authRef,
+						apiKey,
+						selector,
+						done,
+						onSuccess,
+					);
 				},
 				onCancel: () => {
 					if (exitOnCancel) {
@@ -3257,9 +3319,7 @@ export class MycliShellRuntime {
 	private async handleInterrupt(): Promise<void> {
 		if (this.selectorActive) {
 			if (this.clarificationSurfaceRequestId !== null) {
-				await this.options.onInterrupt?.({
-					rollbackUserInput: this.lastSubmittedInputEligible,
-				});
+				await this.requestTurnInterrupt();
 				return;
 			}
 			if (this.approvalSurfaceDecisionId !== null) {
@@ -3269,15 +3329,25 @@ export class MycliShellRuntime {
 			return;
 		}
 		if (this.isTurnRunning()) {
-			await this.options.onInterrupt?.({
-				rollbackUserInput: this.lastSubmittedInputEligible,
-			});
+			await this.requestTurnInterrupt();
 			return;
 		}
 		if (this.editor.getText().length > 0) {
 			return;
 		}
 		this.restoreEditor();
+	}
+
+	private async requestTurnInterrupt(): Promise<void> {
+		if (this.interruptRequestPending) return;
+		this.interruptRequestPending = true;
+		try {
+			await this.options.onInterrupt?.({
+				rollbackUserInput: this.lastSubmittedInputEligible,
+			});
+		} finally {
+			this.interruptRequestPending = false;
+		}
 	}
 
 	private async handleCtrlC(): Promise<void> {
@@ -3314,24 +3384,81 @@ export class MycliShellRuntime {
 	}
 
 	private restoreQueuedTextToEditor(queued: string): void {
-		const current = this.editor.getText().trim();
-		this.editor.setText([queued, current].filter((text) => text.trim()).join("\n\n"));
+		this.prependQueuedInputs([queued]);
 	}
 
 	private restoreQueuedInputToEditor(input: MycliShellQueuedInput | string): void {
-		const text = typeof input === "string" ? input : input.text;
-		if (typeof input !== "string") {
-			const existing = new Map(this.pendingLocalImages.map((image) => [image.placeholder, image]));
-			for (const image of input.localImages ?? []) {
-				if (text.includes(image.placeholder) && !existing.has(image.placeholder)) {
-					this.pendingLocalImages.push(image);
-				}
-			}
+		this.prependQueuedInputs([input]);
+	}
+
+	private captureComposerSession(sessionId: string | undefined): void {
+		if (!sessionId) return;
+		const draft = this.editor.getText();
+		const pendingLocalImages = this.pendingLocalImages
+			.filter((image) => draft.includes(image.placeholder))
+			.map((image) => ({ ...image }));
+		this.composerSnapshots.set(sessionId, {
+			draft,
+			pendingLocalImages,
+			lastSubmittedInput: cloneQueuedInput(this.lastSubmittedInput),
+			lastSubmittedInputEligible: this.lastSubmittedInputEligible,
+			lastSubmittedActivitySignature: this.lastSubmittedActivitySignature,
+			userTurnPendingStart: this.userTurnPendingStart,
+		});
+	}
+
+	private restoreComposerSession(sessionId: string | undefined): void {
+		const snapshot = sessionId ? this.composerSnapshots.get(sessionId) : undefined;
+		this.pendingLocalImages = (snapshot?.pendingLocalImages ?? []).map((image) => ({ ...image }));
+		this.lastSubmittedInput = cloneQueuedInput(snapshot?.lastSubmittedInput ?? null);
+		this.lastSubmittedInputEligible = snapshot?.lastSubmittedInputEligible ?? false;
+		this.lastSubmittedActivitySignature = snapshot?.lastSubmittedActivitySignature ?? "";
+		this.userTurnPendingStart = snapshot?.userTurnPendingStart ?? false;
+		this.lastCtrlCAtMs = null;
+		this.editor.setText(snapshot?.draft ?? "");
+	}
+
+	private prependQueuedInputs(inputs: Array<MycliShellQueuedInput | string>): void {
+		const currentText = this.editor.getText().trim();
+		const parts: MycliShellQueuedInput[] = inputs.map((input) =>
+			typeof input === "string" ? { text: input } : input);
+		if (currentText) {
+			parts.push({
+				text: currentText,
+				...(this.pendingLocalImages.length > 0
+					? { localImages: this.pendingLocalImages.map((image) => ({ ...image })) }
+					: {}),
+			});
 		}
-		this.restoreQueuedTextToEditor(text);
+
+		let imageNumber = 1;
+		const mergedImages: MycliShellLocalImageAttachment[] = [];
+		const mergedText = parts.flatMap((part, partIndex) => {
+			if (!part.text.trim()) return [];
+			let text = part.text.trim();
+			const replacements: Array<{ token: string; placeholder: string }> = [];
+			for (const [imageIndex, image] of (part.localImages ?? []).entries()) {
+				if (!text.includes(image.placeholder)) continue;
+				const token = `\u0000mycli-image-${partIndex}-${imageIndex}\u0000`;
+				const placeholder = `[image #${imageNumber}]`;
+				imageNumber += 1;
+				text = text.replaceAll(image.placeholder, token);
+				replacements.push({ token, placeholder });
+				mergedImages.push({ path: image.path, placeholder });
+			}
+			for (const replacement of replacements) {
+				text = text.replaceAll(replacement.token, replacement.placeholder);
+			}
+			return [text];
+		}).join("\n\n");
+		this.pendingLocalImages = mergedImages;
+		this.editor.setText(mergedText);
 	}
 
 	private isTurnRunning(): boolean {
+		if (this.userTurnPendingStart) {
+			return true;
+		}
 		if (this.isTurnActivityRunning(this.state)) {
 			return true;
 		}
@@ -3695,8 +3822,21 @@ export class MycliShellRuntime {
 	}
 
 	private authProviders(): MycliShellAuthProvider[] {
-		if (this.state.authProviders?.length) {
-			return this.state.authProviders;
+		if (this.state.authProviders?.length || this.state.providerRoutes?.length) {
+			const providers = [...(this.state.authProviders ?? [])];
+			const known = new Set(providers.map((provider) => provider.id));
+			for (const route of this.state.providerRoutes ?? []) {
+				if (!route.configured || route.activation !== "active" || known.has(route.id)) continue;
+				providers.push({
+					id: route.id,
+					name: route.name,
+					configured: route.ready,
+					authRef: route.authRef ?? route.id,
+					credentialSource: route.ready ? "stored" : "missing",
+				});
+				known.add(route.id);
+			}
+			return providers;
 		}
 		return [
 			{ id: "openai", name: "OpenAI", defaultModel: "gpt-5" },
@@ -3751,8 +3891,9 @@ export class MycliShellRuntime {
 				return;
 			}
 			this.mountMain();
-			const providerModels = this.modelsForProvider(providerId);
-			if (providerModels.length > 0) {
+			if (this.options.onProviderLoad && this.options.onModelLoad) {
+				this.openModelSelector({ preferredProviderId: providerId, lockPreferredProvider: true });
+			} else if (this.modelsForProvider(providerId).length > 0) {
 				this.showModelSelector(providerId);
 			}
 		} catch (error) {
@@ -3765,6 +3906,7 @@ export class MycliShellRuntime {
 	}
 
 	private modelsForProvider(providerId: string): MycliShellModel[] {
+		if (this.state.modelsProvider && this.state.modelsProvider !== providerId) return [];
 		return (this.state.models ?? []).filter((model) => model.provider === providerId);
 	}
 
@@ -3867,6 +4009,16 @@ export class MycliShellRuntime {
 		}
 		await this.options.onCommandSubmit?.(command);
 	}
+}
+
+function cloneQueuedInput(input: MycliShellQueuedInput | null): MycliShellQueuedInput | null {
+	if (!input) return null;
+	return {
+		text: input.text,
+		...(input.localImages
+			? { localImages: input.localImages.map((image) => ({ ...image })) }
+			: {}),
+	};
 }
 
 function resumeBlockedMessage(preview: MycliShellResumeRepairPreview): string {

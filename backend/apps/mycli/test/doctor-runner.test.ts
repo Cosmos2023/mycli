@@ -279,7 +279,7 @@ test("config doctor validates profiles and reports API key presence without expo
 
 	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
 		"[model]",
-		'provider = "must-not-leak"',
+		'provider = "must-not-leak!"',
 	].join("\n"), "utf8");
 	const unsupportedProvider = await collectConfigChecks({
 		workspaceRoot: root.workspaceRoot,

@@ -7,17 +7,13 @@ import {
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateAfterCommandResult,
-	runtimeStateWithLegacyQueueMigration,
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
-	runtimeStateRejectPendingSteer,
 	runtimeStateAcknowledgeQueuedInput,
 	restorePendingSteersAfterInterrupt,
-	nextLocalUserInput,
 	removeLocalUserInput,
 	sessionsFromResult,
-	legacyQueueMigrationToken,
 	type RuntimeShellState,
 	type RuntimeLocalUserInput,
 } from "../../src/adapters/runtime-state.ts";
@@ -79,7 +75,6 @@ export async function runScriptedClient(
 			client: { name: "mycli-shell-scripted", version: "0.1.0" },
 		});
 		state = runtimeStateFromBootstrap(state, bootstrap);
-		await acknowledgeLegacyQueueMigration(bootstrap);
 		await loadTranscript();
 		await loadSessions();
 
@@ -133,20 +128,6 @@ async function send(method: string, params: Record<string, unknown> = {}): Promi
 	}
 }
 
-async function acknowledgeLegacyQueueMigration(
-	payload: Record<string, unknown>,
-): Promise<void> {
-	const migrationToken = legacyQueueMigrationToken(payload);
-	if (!migrationToken) return;
-	try {
-		await send("turn.queue.migration.ack", { token: migrationToken });
-	} catch (error) {
-		if (!(error instanceof GatewayRequestError && error.code === "queue_conflict")) {
-			throw error;
-		}
-	}
-}
-
 async function loadTranscript(): Promise<void> {
 	const payload = await send("transcript.load", {
 		session_id: state.sessionId ?? undefined,
@@ -187,7 +168,10 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 			"turn.started",
 			(event) => event.params.client_turn_id === clientTurnId,
 		);
-		await send("turn.interrupt", { turn_id: started.params.turn_id });
+		await send("turn.interrupt", {
+			turn_id: started.params.turn_id,
+			...sessionMutationFields(),
+		});
 		await waitForInterruptedTerminal(clientTurnId);
 		await waitForInterruptedStatus(clientTurnId);
 		return;
@@ -208,13 +192,12 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 			await queueSteeringMessage(message);
 		}
 		for (const message of action.follow_up ?? []) {
-			queueFollowUpMessage(message);
+			await queueFollowUpMessage(message);
 		}
 		if (action.clear === true) {
-			clearLocalQueuedMessages();
+			await clearQueuedMessages();
 		}
 		await waitForExpectedTurnState(clientTurnId, action.expected_state ?? "completed");
-		await dispatchLocalInputs();
 		return;
 	}
 
@@ -224,12 +207,12 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 	}
 
 	if (action.type === "turn.follow_up") {
-		queueFollowUpMessage(action.message);
+		await queueFollowUpMessage(action.message);
 		return;
 	}
 
 	if (action.type === "turn.queue.clear") {
-		clearLocalQueuedMessages();
+		await clearQueuedMessages();
 		return;
 	}
 
@@ -242,8 +225,6 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 			async (sessionId) =>
 				await send("transcript.load", { session_id: sessionId, before: null }),
 		);
-		state = runtimeStateWithLegacyQueueMigration(state, result);
-		await acknowledgeLegacyQueueMigration(result);
 		return;
 	}
 
@@ -300,6 +281,7 @@ async function submitScriptedTurn(
 			message,
 			client_turn_id: clientTurnId,
 			client_user_message_id: input.clientUserMessageId,
+			...sessionMutationFields(),
 		});
 	} catch (error) {
 		state = removeLocalUserInput(state, input.clientUserMessageId);
@@ -307,37 +289,17 @@ async function submitScriptedTurn(
 	}
 }
 
-async function dispatchLocalInputs(): Promise<void> {
-	await client.waitForEvent(
-		"status.changed",
-		(event) => event.params.turn_running === false,
-	);
-	while (!state.pendingApproval && !state.pendingClarification) {
-		const next = nextLocalUserInput(state);
-		if (!next) {
-			return;
-		}
-		state = removeLocalUserInput(state, next.input.clientUserMessageId);
-		const clientTurnId = `script_local_${Date.now()}_${clientMessageSequence}`;
-		await submitScriptedTurn(next.input.message, clientTurnId, next.input);
-		await waitForSubmittedTurn(clientTurnId);
-	}
-}
-
 async function queueSteeringMessage(message: string): Promise<void> {
 	const input = localInput(message, "steer");
 	state = runtimeStateWithPendingSteer(state, input);
 	let expectedTurnId = state.activeTurnId;
-	if (!expectedTurnId) {
-		state = runtimeStateRejectPendingSteer(state, input.clientUserMessageId);
-		return;
-	}
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			const result = await send("turn.steer", {
 				message,
 				client_user_message_id: input.clientUserMessageId,
 				expected_turn_id: expectedTurnId,
+				...sessionMutationFields(),
 			});
 			state = runtimeStateAcknowledgeQueuedInput(
 				state,
@@ -357,22 +319,55 @@ async function queueSteeringMessage(message: string): Promise<void> {
 				state = { ...state, activeTurnId: actualTurnId };
 				continue;
 			}
-			state = runtimeStateRejectPendingSteer(state, input.clientUserMessageId);
-			return;
+			state = removeLocalUserInput(state, input.clientUserMessageId);
+			throw error;
 		}
 	}
 }
 
-function queueFollowUpMessage(message: string): void {
-	state = runtimeStateWithLocalFollowUp(state, localInput(message, "follow_up"));
+async function queueFollowUpMessage(message: string): Promise<void> {
+	const input = localInput(message, "follow_up");
+	state = runtimeStateWithLocalFollowUp(state, input);
+	try {
+		const result = await send("turn.follow_up", {
+			message,
+			client_turn_id: input.clientUserMessageId,
+			...sessionMutationFields(),
+		});
+		state = runtimeStateAcknowledgeQueuedInput(
+			state,
+			input.clientUserMessageId,
+			result,
+		);
+	} catch (error) {
+		state = removeLocalUserInput(state, input.clientUserMessageId);
+		throw error;
+	}
 }
 
-function clearLocalQueuedMessages(): void {
+async function clearQueuedMessages(): Promise<void> {
+	const restoreToken = `restore_script_${Date.now()}_${clientMessageSequence}`;
+	const result = await send("turn.queue.clear", {
+		...sessionMutationFields(),
+		restore_token: restoreToken,
+	});
 	state = {
-		...state,
+		...reduceRuntimeEvent(state, "turn.queue.updated", result),
 		localPendingSteers: [],
 		localRejectedSteers: [],
 		localFollowUps: [],
+	};
+	const acknowledged = await send("turn.queue.restore.ack", {
+		...sessionMutationFields(),
+		restore_token: restoreToken,
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", acknowledged);
+}
+
+function sessionMutationFields(): Record<string, unknown> {
+	return {
+		...(state.sessionId ? { session_id: state.sessionId } : {}),
+		...(state.sessionGeneration !== null ? { generation: state.sessionGeneration } : {}),
 	};
 }
 

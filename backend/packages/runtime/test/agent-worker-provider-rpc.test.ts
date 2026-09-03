@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PROVIDER_IDS } from "@mycli/core";
 import {
 	AgentWorkerProviderRpcError,
 	parseAgentWorkerProviderCommand,
@@ -24,6 +25,46 @@ const IDENTITY = Object.freeze({
 test("parses the complete provider request schema across the Worker boundary", () => {
 	const command = executeCommand();
 
+	const parsed = parseAgentWorkerProviderCommand(command);
+	assert.deepEqual(parsed, command);
+	assert(Object.isFrozen(parsed.route));
+	assert(Object.isFrozen(parsed.route.compat));
+	assert(Object.isFrozen(parsed.route.modelCompat));
+	assert(Object.isFrozen(parsed.route.modelCompat?.["test-model"]));
+});
+
+test("round trips every curated provider identity across the Worker boundary", () => {
+	const base = executeCommand();
+	for (const provider of PROVIDER_IDS.filter((candidate) => ![
+		"openai", "codex", "compatible", "qwen", "deepseek", "anthropic",
+	].includes(candidate))) {
+		const command = {
+			...base,
+			config: { ...base.config, provider },
+			route: { ...base.route, routeId: provider, displayName: provider, authRef: provider },
+			request: { ...base.request, provider },
+		};
+		assert.deepEqual(parseAgentWorkerProviderCommand(command), command);
+	}
+});
+
+test("round trips a validated dynamic provider route across the Worker boundary", () => {
+	const base = executeCommand();
+	const command = {
+		...base,
+		config: { ...base.config, provider: "cloudflare-ai-gateway" },
+		route: {
+			...base.route,
+			routeId: "cloudflare-ai-gateway",
+			displayName: "Cloudflare AI Gateway",
+			supportTier: "experimental",
+			source: "pi_ai_builtin",
+			catalogProviderId: "cloudflare-ai-gateway",
+			authRef: "cloudflare-ai-gateway",
+			modelPolicy: { kind: "catalog" },
+		},
+		request: { ...base.request, provider: "cloudflare-ai-gateway" },
+	};
 	assert.deepEqual(parseAgentWorkerProviderCommand(command), command);
 });
 
@@ -32,10 +73,30 @@ test("rejects malformed nested provider requests before dispatch", () => {
 	const invalid: readonly unknown[] = [
 		{ ...base, request: { ...base.request, unexpected: true } },
 		{ ...base, request: { ...base.request, provider: "future-provider" } },
+		{
+			...base,
+			config: { ...base.config, provider: "Cloudflare" },
+			request: { ...base.request, provider: "Cloudflare" },
+		},
+		{
+			...base,
+			config: { ...base.config, provider: "cloudflare_ai" },
+			request: { ...base.request, provider: "cloudflare_ai" },
+		},
+		{
+			...base,
+			config: { ...base.config, provider: `p${"a".repeat(64)}` },
+			request: { ...base.request, provider: `p${"a".repeat(64)}` },
+		},
 		{ ...base, request: { ...base.request, protocol: "responses" } },
+		{ ...base, request: { ...base.request, model: "different-model" } },
 		{ ...base, request: { ...base.request, maxOutputTokens: 0 } },
-		{ ...base, request: { ...base.request, store: "no" } },
-		{ ...base, request: { ...base.request, cacheControlEnabled: "yes" } },
+		{ ...base, request: { ...base.request, store: false } },
+		{ ...base, request: { ...base.request, promptCacheKey: "legacy" } },
+		{ ...base, request: { ...base.request, cacheControlEnabled: true } },
+		{ ...base, request: { ...base.request, cacheRetention: "forever" } },
+		{ ...base, route: { ...base.route, compat: { supportsTemperature: false } } },
+		{ ...base, route: { ...base.route, modelCompat: { "test-model": { thinkingFormat: "unknown" } } } },
 		{ ...base, request: { ...base.request, webSearchMode: "cached" } },
 		{ ...base, request: { ...base.request, developerInstructions: [1] } },
 		{ ...base, request: { ...base.request, messages: [{ role: "system", content: "no" }] } },
@@ -300,18 +361,47 @@ function executeCommand() {
 		config: {
 			provider: "openai" as const,
 			protocol: "chat_completions" as const,
+			model: "test-model",
 			apiBaseUrl: "http://127.0.0.1:43123/v1",
 			apiKey: "test-key",
+			supportsImages: true,
+			maxPromptTokens: 12_000,
+			modelContextWindowTokens: 16_000,
+			maxOutputTokens: 512,
+		},
+		route: {
+			routeId: "openai" as const,
+			displayName: "OpenAI",
+			supportTier: "stable" as const,
+			source: "pi_ai_declared" as const,
+			protocol: "chat_completions" as const,
+			apiBaseUrl: "http://127.0.0.1:43123/v1",
+			authRef: "openai",
+			activation: "active" as const,
+			modelPolicy: {
+				kind: "declared" as const,
+				modelIds: ["test-model"],
+			},
+			compat: {
+				supportsDeveloperRole: false,
+				maxTokensField: "max_tokens" as const,
+			},
+			modelCompat: {
+				"test-model": {
+					supportsDeveloperRole: true,
+					maxTokensField: "max_completion_tokens" as const,
+				},
+			},
+			snapshotVersion: 1,
 		},
 		request: {
 			provider: "openai" as const,
 			protocol: "chat_completions" as const,
 			model: "test-model",
-			reasoningEffort: "medium" as const,
-			maxOutputTokens: 512,
-			store: false,
-			promptCacheKey: "session-1",
-			cacheControlEnabled: true,
+				reasoningEffort: "medium" as const,
+				maxOutputTokens: 512,
+				sessionId: "session-1",
+				cacheRetention: "long" as const,
 			webSearchMode: "disabled" as const,
 			instructions: "You are mycli.",
 			developerInstructions: ["Keep coordinator ownership."],

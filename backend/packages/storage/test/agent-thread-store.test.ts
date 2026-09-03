@@ -3,7 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { parseAgentPath, rootAgentPath, type AgentSpawnConfigSnapshot } from "@mycli/core";
+import {
+	parseAgentPath,
+	parseProviderRouteId,
+	PROVIDER_IDS,
+	rootAgentPath,
+	type AgentSpawnConfigSnapshot,
+} from "@mycli/core";
 import Database from "better-sqlite3";
 import { SQLiteSessionStore, StorageFailure } from "../src/index.ts";
 
@@ -31,6 +37,52 @@ test("reserves canonical paths atomically and rejects sibling collisions", async
 	t.after(() => database.close());
 	assert.equal(count(database, "agent_threads"), 1);
 	assert.equal(count(database, "agent_spawn_edges"), 1);
+});
+
+test("round trips every curated provider in durable agent spawn configuration", async (t) => {
+	const fixture = await storeFixture(t);
+	const providers = PROVIDER_IDS.filter((candidate) => ![
+		"openai", "codex", "compatible", "qwen", "deepseek", "anthropic",
+	].includes(candidate));
+	for (const [index, provider] of providers.entries()) {
+		const threadId = `provider-child-${index}`;
+		const reserved = fixture.store.agentThreads.reserve({
+			...reserveInput(threadId, `provider-${index}`),
+			spawnConfig: {
+				...spawnConfig(),
+				provider: { provider, protocol: "chat_completions", model: `${provider}-model` },
+			},
+		});
+		assert.equal(reserved.spawnConfig?.provider.provider, provider);
+		assert.equal(fixture.store.agentThreads.get(threadId)?.spawnConfig?.provider.provider, provider);
+	}
+});
+
+test("round trips dynamic provider routes and rejects malformed agent spawn identities", async (t) => {
+	const fixture = await storeFixture(t);
+	const provider = parseProviderRouteId("cloudflare-ai-gateway");
+	const reserved = fixture.store.agentThreads.reserve({
+		...reserveInput("dynamic-provider-child", "dynamic-provider"),
+		spawnConfig: {
+			...spawnConfig(),
+			provider: { provider, protocol: "chat_completions", model: "dynamic-model" },
+		},
+	});
+	assert.equal(reserved.spawnConfig?.provider.provider, provider);
+	assert.equal(
+		fixture.store.agentThreads.get("dynamic-provider-child")?.spawnConfig?.provider.provider,
+		provider,
+	);
+
+	const malformed = {
+		...reserveInput("malformed-provider-child", "malformed-provider"),
+		spawnConfig: {
+			...spawnConfig(),
+			provider: { provider: "Cloudflare", protocol: "chat_completions", model: "bad" },
+		},
+	} as unknown as Parameters<typeof fixture.store.agentThreads.reserve>[0];
+	assert.throws(() => fixture.store.agentThreads.reserve(malformed), StorageFailure);
+	assert.equal(fixture.store.agentThreads.get("malformed-provider-child"), undefined);
 });
 
 test("rolls back the agent thread when the paired task reservation fails", async (t) => {

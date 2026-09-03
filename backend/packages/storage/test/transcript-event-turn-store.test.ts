@@ -155,6 +155,35 @@ test("writes one canonical event per turn semantic action without legacy transcr
 	assert.equal(payloads.split("unique-full-tool-output-b").length - 1, 1);
 });
 
+test("queued turn reservation stores its queue identity in the canonical user event", async (t) => {
+	const fixture = await repositoryFixture(t);
+	const reservation = fixture.repository.reserveTurn({
+		...submission("session-queued", "client-queued", "turn-queued"),
+		clientUserMessageId: "client-queued",
+		queueId: "queue-next",
+		inputSource: "steer",
+		userText: "continue from the queue",
+	});
+
+	assert.equal(reservation.kind, "reserved");
+	assert.deepEqual([...fixture.repository.loadCommittedQueueIds("session-queued")], ["queue-next"]);
+	const events = fixture.repository.loadEventWindow("session-queued", { limit: 10 }).events;
+	assert.equal(events.length, 1);
+	const user = events[0];
+	assert.equal(user?.eventType, "user_input");
+	if (user?.eventType !== "user_input") assert.fail("expected one canonical user input");
+	assert.deepEqual(user.payload, {
+		text: "continue from the queue",
+		clientUserMessageId: "client-queued",
+		queueId: "queue-next",
+		source: "steer",
+	});
+	assert.deepEqual(fixture.repository.loadConversationItems("session-queued"), [{
+		type: "user",
+		text: "continue from the queue",
+	}]);
+});
+
 test("writes terminal lifecycle events for failures and closes interrupted calls canonically", async (t) => {
 	const fixture = await repositoryFixture(t);
 	fixture.repository.reserveTurn(submission("session-failed", "client-failed", "turn-failed"));

@@ -175,7 +175,7 @@ async function handleProviderCommand(value: unknown): Promise<void> {
 	active.request = request;
 	try {
 		const result = await providerLoop.runStep({
-			provider: providers.create(command.config),
+			provider: providers.create(command.config, command.route),
 			request: command.request,
 			requestMaxRetries: command.requestMaxRetries,
 			maxRetries: command.maxRetries,

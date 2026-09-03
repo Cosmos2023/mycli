@@ -1,7 +1,14 @@
 import { join } from "node:path";
-import type { ProtocolId, ProviderId, ReasoningEffort } from "@mycli/core";
+import {
+	isProviderId,
+	parseProviderRouteId,
+	type CacheRetention,
+	type ProtocolId,
+	type ProviderRouteId,
+	type ReasoningEffort,
+} from "@mycli/core";
 import type { ConfigProfileName } from "./config-profile.ts";
-import { resolveProviderProfile } from "./provider-profiles.ts";
+import { parseProtocol, resolveProviderProfile } from "./provider-profiles.ts";
 import type { WorkspaceTrustState } from "./workspace-trust-store.ts";
 import {
 	applyUserConfigEdits,
@@ -10,13 +17,12 @@ import {
 
 export interface UserProviderConfigInput {
 	readonly homeDir: string;
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
 	readonly model: string;
 	readonly apiBaseUrl: string;
 	readonly authRef: string;
-	readonly promptCacheKeyEnabled: boolean;
-	readonly cacheControlEnabled: boolean;
+	readonly cacheRetention: CacheRetention;
 	readonly thinkingEnabled?: boolean;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly workspaceRoot?: string;
@@ -49,7 +55,9 @@ export async function writeUserProviderConfig(
 		throw new Error("config_write_failed: provider settings must be non-empty");
 	}
 	try {
-		resolveProviderProfile(input.provider, input.protocol);
+		const provider = parseProviderRouteId(input.provider);
+		const protocol = parseProtocol(input.protocol);
+		if (isProviderId(provider)) resolveProviderProfile(provider, protocol);
 		const directory = join(input.homeDir, ".mycli");
 		await applyUserConfigEdits({
 			homeDir: input.homeDir,
@@ -75,14 +83,14 @@ function providerConfigEdits(input: UserProviderConfigInput): readonly UserConfi
 			.filter((key) => key !== "model")
 			.map((key) => clear(key)),
 		...LEGACY_REQUEST_KEYS.map((key) => clear(key)),
+		...LEGACY_REQUEST_KEYS.map((key) => ({ action: "clear" as const, path: ["request", key] })),
 		{ action: "clear", path: ["model", "api_key"] },
 		set(["model", "provider"], input.provider),
 		set(["model", "protocol"], input.protocol),
 		set(["model", "name"], input.model.trim()),
 		set(["model", "api_base_url"], input.apiBaseUrl.trim().replace(/\/+$/u, "")),
 		set(["model", "auth_ref"], input.authRef.trim()),
-		set(["request", "prompt_cache_key_enabled"], input.promptCacheKeyEnabled),
-		set(["request", "cache_control_enabled"], input.cacheControlEnabled),
+		set(["request", "cache_retention"], input.cacheRetention),
 	];
 	if (input.thinkingEnabled !== undefined || input.reasoningEffort !== undefined) {
 		if (input.thinkingEnabled !== undefined) {

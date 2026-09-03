@@ -1,74 +1,87 @@
 import type { NodeRuntimeConfig } from "@mycli/config";
-import Anthropic from "@anthropic-ai/sdk";
-import type { MessageStreamParams } from "@anthropic-ai/sdk/resources/messages/messages";
-import { AnthropicProvider } from "./anthropic-provider.ts";
 import { ProviderFailure } from "./errors.ts";
-import type { AnthropicMessagesClient, ModelProvider } from "./model-provider.ts";
-import {
-	OpenAIProviderRegistry,
-	type OpenAIClientFactory,
-} from "./openai-provider-registry.ts";
-
-export interface AnthropicClientOptions {
-	readonly apiKey: string;
-	readonly baseURL: string;
-	readonly maxRetries: number;
-}
-
-export type AnthropicClientFactory = (
-	options: AnthropicClientOptions,
-) => AnthropicMessagesClient;
+import type { ModelProvider } from "./model-provider.ts";
+import { PiAiProvider } from "./pi-ai-provider.ts";
+import { mergePiAiCompatOverrides } from "./pi-ai-compat.ts";
+import type { ProviderRouteDescriptor } from "./provider-directory-types.ts";
 
 export interface ProviderRegistryOptions {
-	readonly openAIClientFactory?: OpenAIClientFactory;
-	readonly anthropicClientFactory?: AnthropicClientFactory;
+	readonly fetch?: typeof globalThis.fetch;
 }
 
 export type ProviderTransportConfig = Pick<
 	NodeRuntimeConfig,
-	"apiBaseUrl" | "apiKey" | "protocol" | "provider"
+	| "apiBaseUrl"
+	| "apiKey"
+	| "maxOutputTokens"
+	| "maxPromptTokens"
+	| "model"
+	| "modelContextWindowTokens"
+	| "protocol"
+	| "provider"
+	| "supportsImages"
 >;
 
 export class ProviderRegistry {
-	readonly #openAI: OpenAIProviderRegistry;
-	readonly #anthropicClientFactory: AnthropicClientFactory;
+	readonly #fetch: typeof globalThis.fetch | undefined;
 
 	constructor(options: ProviderRegistryOptions = {}) {
-		this.#openAI = new OpenAIProviderRegistry({
-			...(options.openAIClientFactory ? { clientFactory: options.openAIClientFactory } : {}),
-		});
-		this.#anthropicClientFactory = options.anthropicClientFactory ?? createOfficialClient;
+		this.#fetch = options.fetch;
 	}
 
-	create(config: ProviderTransportConfig): ModelProvider {
-		if (!config.apiKey) {
+	create(
+		config: ProviderTransportConfig,
+		route?: ProviderRouteDescriptor,
+	): ModelProvider {
+		const apiKey = config.apiKey;
+		if (!apiKey) {
 			throw new ProviderFailure({
 				code: "auth_error",
 				message: "provider API key is not configured",
 			});
 		}
-		switch (config.protocol) {
-			case "responses":
-			case "chat_completions":
-				return this.#openAI.create(config);
-			case "anthropic_messages":
-				return new AnthropicProvider({
-					client: this.#anthropicClientFactory({
-						apiKey: config.apiKey,
-						baseURL: config.apiBaseUrl,
-						maxRetries: 0,
-					}),
-				});
-		}
+		const routeConfig = routeTransportConfig({ ...config, apiKey }, route);
+		return new PiAiProvider({
+			config: routeConfig,
+			...(this.#fetch ? { fetch: this.#fetch } : {}),
+		});
 	}
 }
 
-function createOfficialClient(options: AnthropicClientOptions): AnthropicMessagesClient {
-	const client = new Anthropic(options);
-	return {
-		stream: async (body, streamOptions) => client.messages.stream(
-			body as unknown as MessageStreamParams,
-			{ signal: streamOptions.signal },
-		),
-	};
+function routeTransportConfig(
+	config: ProviderTransportConfig & { readonly apiKey: string },
+	route: ProviderRouteDescriptor | undefined,
+): ProviderTransportConfig & {
+	readonly apiKey: string;
+	readonly routeSource?: ProviderRouteDescriptor["source"];
+	readonly catalogProviderId?: ProviderRouteDescriptor["catalogProviderId"];
+	readonly compat?: Readonly<Record<string, unknown>>;
+} {
+	if (route === undefined) return config;
+	if (route.activation !== "active"
+		|| route.routeId !== config.provider
+		|| route.protocol !== config.protocol
+		|| normalizedBaseUrl(route.apiBaseUrl) !== normalizedBaseUrl(config.apiBaseUrl)) {
+		throw new ProviderFailure({
+			code: "config_error",
+			message: "provider route snapshot does not match transport configuration",
+		});
+	}
+	const compat = mergePiAiCompatOverrides(
+		config.protocol,
+		route.compat,
+		route.modelCompat?.[config.model],
+	);
+	return Object.freeze({
+		...config,
+		routeSource: route.source,
+		...(route.catalogProviderId === undefined
+			? {}
+			: { catalogProviderId: route.catalogProviderId }),
+		...(compat === undefined ? {} : { compat }),
+	});
+}
+
+function normalizedBaseUrl(value: string): string {
+	return value.trim().replace(/\/+$/u, "");
 }

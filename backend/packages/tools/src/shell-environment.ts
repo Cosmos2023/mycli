@@ -29,6 +29,7 @@ export interface ShellEnvironmentInput {
 	readonly architecture?: string;
 	readonly homeDir?: string;
 	readonly packageRoot?: string;
+	readonly platformPackageRoot?: string | null;
 }
 
 export interface ShellEnvironmentDiagnostics {
@@ -63,6 +64,9 @@ export function createShellEnvironment(input: ShellEnvironmentInput): ShellEnvir
 		architecture: input.architecture ?? process.arch,
 		homeDir: input.homeDir ?? env.HOME ?? env.USERPROFILE,
 		...(input.packageRoot ? { packageRoot: input.packageRoot } : {}),
+		...(input.platformPackageRoot !== undefined
+			? { platformPackageRoot: input.platformPackageRoot }
+			: {}),
 		pathValue: env.PATH,
 	});
 	env.PATH = ripgrep.path;

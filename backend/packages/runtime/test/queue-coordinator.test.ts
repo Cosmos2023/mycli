@@ -29,6 +29,43 @@ test("does not publish or mutate a queue revision before persistence", () => {
 	assert.deepEqual(fixture.events, []);
 });
 
+test("persists restoration claims before exposing them and retires only after ack", () => {
+	const fixture = coordinatorFixture();
+	fixture.coordinator.enqueueFollowUp({
+		clientTurnId: "client-restore",
+		text: "restore me",
+	});
+
+	const claim = fixture.coordinator.claimForRestoration("restore_rpc_1");
+	assert.equal(claim.records[0]?.text, "restore me");
+	assert.equal(claim.snapshot.followUps[0]?.state, "claimed");
+	assert.equal(fixture.coordinator.next(), undefined);
+	assert.deepEqual(fixture.savedRevisions, [1, 2]);
+
+	const retry = fixture.coordinator.claimForRestoration("restore_rpc_1");
+	assert.strictEqual(retry.snapshot, claim.snapshot);
+	assert.deepEqual(fixture.savedRevisions, [1, 2]);
+
+	const acknowledged = fixture.coordinator.acknowledgeRestoration("restore_rpc_1");
+	assert.equal(acknowledged.followUps.length, 0);
+	assert.deepEqual(fixture.savedRevisions, [1, 2, 3]);
+});
+
+test("releases an unacknowledged restoration claim for recovery", () => {
+	const fixture = coordinatorFixture();
+	fixture.coordinator.enqueueFollowUp({
+		clientTurnId: "client-restore",
+		text: "restore me",
+	});
+	fixture.coordinator.claimForRestoration("restore_rpc_1");
+
+	const released = fixture.coordinator.releaseRestorationClaims();
+	assert.equal(released.followUps[0]?.state, "queued");
+	assert.equal(released.followUps[0]?.claimTurnId, undefined);
+	assert.equal(fixture.coordinator.next()?.text, "restore me");
+	assert.deepEqual(fixture.savedRevisions, [1, 2, 3]);
+});
+
 test("commits accepted steers to canonical history exactly once", () => {
 	const fixture = coordinatorFixture();
 	fixture.coordinator.enqueueSteer({
@@ -99,7 +136,7 @@ test("restore removes committed records and rejects stale pending steers without
 	assert.deepEqual(fixture.events, []);
 });
 
-test("terminal rejection persists while interruption can retain pending steers", () => {
+test("terminal rejection and interrupted steer resubmission persist before publication", () => {
 	const fixture = coordinatorFixture();
 	fixture.coordinator.enqueueSteer({
 		clientTurnId: "client-steer",
@@ -111,11 +148,24 @@ test("terminal rejection persists while interruption can retain pending steers",
 	const beforeInterrupt = fixture.coordinator.snapshot();
 
 	assert.strictEqual(fixture.coordinator.snapshot(), beforeInterrupt);
-	const rejected = fixture.coordinator.rejectPending("turn-1");
+	const prepared = fixture.coordinator.prepareInterruptedSteers("turn-1");
 
+	assert.deepEqual(prepared.records.map((record) => record.clientTurnId), ["client-steer"]);
+	assert.equal(prepared.snapshot.pendingSteers.length, 0);
+	assert.equal(prepared.snapshot.rejectedSteers[0]?.kind, "rejected_steer");
+	assert.equal(prepared.snapshot.revision, beforeInterrupt.revision + 1);
+	assert.equal(fixture.durable().revision, prepared.snapshot.revision);
+
+	fixture.coordinator.enqueueSteer({
+		clientTurnId: "client-next",
+		expectedTurnId: "turn-2",
+		activeTurnId: "turn-2",
+		steerable: true,
+		text: "inspect next",
+	});
+	const rejected = fixture.coordinator.rejectPending("turn-2");
 	assert.equal(rejected.pendingSteers.length, 0);
-	assert.equal(rejected.rejectedSteers[0]?.kind, "rejected_steer");
-	assert.equal(rejected.revision, beforeInterrupt.revision + 1);
+	assert.equal(rejected.rejectedSteers.at(-1)?.kind, "rejected_steer");
 });
 
 test("drains rejected steers before follow-ups and removes only after start", () => {
@@ -134,6 +184,80 @@ test("drains rejected steers before follow-ups and removes only after start", ()
 	assert.equal(fixture.coordinator.snapshot().rejectedSteers.length, 1);
 	fixture.coordinator.markStarted("queue-rejected");
 	assert.equal(fixture.coordinator.next()?.queueId, "queue-follow");
+});
+
+test("persists queued claims and reconciles them against canonical user input", () => {
+	const fixture = coordinatorFixture({
+		initial: Object.freeze({
+			sessionId: "session-1",
+			revision: 1,
+			pendingSteers: Object.freeze([]),
+			rejectedSteers: Object.freeze([]),
+			followUps: Object.freeze([record("queue-follow", "follow_up", null)]),
+		}),
+	});
+
+	const claimed = fixture.coordinator.claim("queue-follow", "turn-queued");
+	assert.equal(claimed.followUps[0]?.state, "claimed");
+	assert.equal(claimed.followUps[0]?.claimTurnId, "turn-queued");
+	assert.equal(fixture.durable().followUps[0]?.state, "claimed");
+	assert.equal(fixture.coordinator.next(), undefined);
+
+	const released = fixture.coordinator.reconcileClaim("queue-follow", "turn-queued");
+	assert.equal(released.committed, false);
+	assert.equal(released.snapshot.followUps[0]?.state, "queued");
+
+	fixture.coordinator.claim("queue-follow", "turn-retry");
+	fixture.committedQueueIds.add("queue-follow");
+	const retired = fixture.coordinator.reconcileClaim("queue-follow", "turn-retry");
+	assert.equal(retired.committed, true);
+	assert.equal(retired.snapshot.followUps.length, 0);
+	assert.equal(fixture.durable().followUps.length, 0);
+});
+
+test("claim persistence failure leaves the queued record dispatchable", () => {
+	const fixture = coordinatorFixture({
+		failSave: true,
+		initial: Object.freeze({
+			sessionId: "session-1",
+			revision: 1,
+			pendingSteers: Object.freeze([]),
+			rejectedSteers: Object.freeze([]),
+			followUps: Object.freeze([record("queue-follow", "follow_up", null)]),
+		}),
+	});
+
+	assert.throws(
+		() => fixture.coordinator.claim("queue-follow", "turn-queued"),
+		StorageFailure,
+	);
+	assert.equal(fixture.coordinator.snapshot().followUps[0]?.state, "queued");
+	assert.equal(fixture.coordinator.next()?.queueId, "queue-follow");
+});
+
+test("restart releases orphaned claims and retires committed claims", () => {
+	const claimedRecord = Object.freeze({
+		...record("queue-follow", "follow_up", null),
+		state: "claimed" as const,
+		claimTurnId: "turn-queued",
+	});
+	const initial = Object.freeze({
+		sessionId: "session-1",
+		revision: 2,
+		pendingSteers: Object.freeze([]),
+		rejectedSteers: Object.freeze([]),
+		followUps: Object.freeze([claimedRecord]),
+	});
+
+	const orphaned = coordinatorFixture({ initial });
+	assert.equal(orphaned.coordinator.snapshot().followUps[0]?.state, "queued");
+	assert.equal(orphaned.coordinator.snapshot().followUps[0]?.claimTurnId, undefined);
+
+	const committed = coordinatorFixture({
+		initial,
+		committedQueueIds: new Set(["queue-follow"]),
+	});
+	assert.equal(committed.coordinator.snapshot().followUps.length, 0);
 });
 
 test("duplicate lost-response retry returns the existing record without another save", () => {
@@ -358,9 +482,10 @@ function coordinatorFixture(options: {
 	const savedRevisions: number[] = [];
 	const history: string[] = [];
 	const committedImages = new Map<string, readonly { readonly mediaType: string; readonly data: string }[]>();
+	const committedQueueIds = new Set(options.committedQueueIds ?? []);
 	let durable = options.initial ?? emptyQueue();
 	const store: QueueCoordinatorStore = {
-		loadCommittedQueueIds: () => options.committedQueueIds ?? new Set(),
+		loadCommittedQueueIds: () => new Set(committedQueueIds),
 		saveSnapshot: (snapshot) => {
 			if (options.failSave) throw new StorageFailure("queue save failed");
 			durable = snapshot;
@@ -399,7 +524,15 @@ function coordinatorFixture(options: {
 		...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
 		...(options.loadLocalImages ? { loadLocalImages: options.loadLocalImages } : {}),
 	});
-	return { coordinator, events, savedRevisions, history, committedImages };
+	return {
+		coordinator,
+		events,
+		savedRevisions,
+		history,
+		committedImages,
+		committedQueueIds,
+		durable: () => durable,
+	};
 }
 
 function emptyQueue(): QueueSnapshot {

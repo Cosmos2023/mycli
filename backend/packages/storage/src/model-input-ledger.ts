@@ -5,6 +5,7 @@ import type {
 	ModelContextEvent,
 	ProviderInputTimelineEvent,
 	ProviderRequest,
+	ProviderRequestConfig,
 	ProviderRequestManifest,
 	ProviderRequestManifestV3,
 	ToolSetSnapshot,
@@ -725,7 +726,7 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		toolSet: ToolSetSnapshot,
 	): void {
 		if (manifest.schemaVersion === 3) {
-			this.#validatedTimelineItems(manifest, instructions, toolSet);
+			this.#validatedTimelineItems(manifest, instructions, toolSet, manifest.providerConfig);
 			return;
 		}
 		const references = new Set<string>();
@@ -1032,10 +1033,15 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		return event;
 	}
 
-	#manifest(row: ManifestRow): ProviderRequestManifest {
-		const manifest = normalizeProviderRequestManifest(
-			this.#blob(String(row.manifest_blob_id)) as ProviderRequestManifest,
-		);
+	#manifestBlob(row: ManifestRow): ProviderRequestManifest {
+		return this.#blob(String(row.manifest_blob_id)) as ProviderRequestManifest;
+	}
+
+	#manifest(
+		row: ManifestRow,
+		persisted = this.#manifestBlob(row),
+	): ProviderRequestManifest {
+		const manifest = normalizeProviderRequestManifest(persisted);
 		if (row.request_id !== manifest.requestId || row.session_id !== manifest.sessionId
 			|| row.turn_id !== manifest.turnId || row.provider_step !== manifest.providerStep
 			|| row.request_signature !== manifest.requestSignature
@@ -1052,7 +1058,9 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		this.#requireIdentifier(requestId, "provider request");
 		const row = this.#manifestRow(requestId);
 		if (!row) throw new StorageFailure("provider request manifest does not exist");
-		const manifest = this.#manifest(row);
+		const persistedManifest = this.#manifestBlob(row);
+		const manifest = this.#manifest(row, persistedManifest);
+		const persistedProviderConfig = persistedManifest.providerConfig as ProviderRequestConfig;
 		const instructions = this.#loadSnapshot(
 			"instruction_snapshots",
 			manifest.sessionId,
@@ -1069,19 +1077,38 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 			throw new StorageFailure("provider request snapshots are unavailable");
 		}
 		validateManifestLogicalDigest(manifest, instructions, toolSet);
-		const request = manifest.schemaVersion === 3
-			? normalizeProviderRequest(projectProviderRequest({
+		let persistedRequest: ProviderRequest | undefined;
+		let request: ProviderRequest;
+		const requestHashCandidates: string[] = [];
+		if (manifest.schemaVersion === 3) {
+			const history = this.#validatedTimelineItems(
+				manifest,
+				instructions,
+				toolSet,
+				persistedProviderConfig,
+			);
+			request = normalizeProviderRequest(projectProviderRequest({
 				config: manifest.providerConfig,
 				instructions: instructions.content,
-				history: this.#validatedTimelineItems(manifest, instructions, toolSet),
+				history,
 				tools: toolSet.tools,
-			}))
-			: normalizeProviderRequest(
-				this.#blob(String(row.logical_request_blob_id)) as ProviderRequest,
-			);
+			}));
+			requestHashCandidates.push(modelInputSha256(projectProviderRequest({
+				config: persistedProviderConfig,
+				instructions: instructions.content,
+				history,
+				tools: toolSet.tools,
+			})));
+		} else {
+			persistedRequest = this.#blob(String(row.logical_request_blob_id)) as ProviderRequest;
+			request = normalizeProviderRequest(persistedRequest);
+			requestHashCandidates.push(modelInputSha256(persistedRequest));
+		}
 		const requestSha256 = modelInputSha256(request);
-		if (row.logical_request_sha256 !== requestSha256
-			|| (manifest.schemaVersion !== 3 && row.logical_request_blob_id !== requestSha256)) {
+		requestHashCandidates.push(requestSha256);
+		if (!requestHashCandidates.includes(String(row.logical_request_sha256))
+			|| (manifest.schemaVersion !== 3
+				&& row.logical_request_blob_id !== modelInputSha256(persistedRequest))) {
 			throw new StorageFailure("logical provider request row does not match its committed hash");
 		}
 		assertRequestMatchesSnapshots(request, manifest, instructions, toolSet);
@@ -1195,18 +1222,20 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 		manifest: ProviderRequestManifestV3,
 		instructions: InstructionSnapshot,
 		toolSet: ToolSetSnapshot,
+		persistedProviderConfig: ProviderRequestConfig,
 	): readonly CanonicalConversationItem[] {
 		const events = this.#validatedTimelinePrefix(manifest);
 		const items = Object.freeze(events.flatMap((event) => event.item ? [event.item] : []));
 		if (modelInputSha256(items) !== manifest.timelineSha256) {
 			throw new StorageFailure("provider request timeline hash does not match its prefix");
 		}
-		const configurationSha256 = modelInputSha256({
-			provider_config: manifest.providerConfig,
-			instruction_snapshot_sha256: instructions.contentSha256,
-			tool_set_snapshot_sha256: toolSet.contentSha256,
-		});
-		if (configurationSha256 !== manifest.requestConfigurationSha256) {
+		const configurationMatches = [manifest.providerConfig, persistedProviderConfig]
+			.some((providerConfig) => modelInputSha256({
+				provider_config: providerConfig,
+				instruction_snapshot_sha256: instructions.contentSha256,
+				tool_set_snapshot_sha256: toolSet.contentSha256,
+			}) === manifest.requestConfigurationSha256);
+		if (!configurationMatches) {
 			throw new StorageFailure("provider request configuration hash does not match");
 		}
 		const bootstrapPrefixSha256 = modelInputSha256({

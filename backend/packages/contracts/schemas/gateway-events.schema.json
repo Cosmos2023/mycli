@@ -1211,6 +1211,9 @@
             "follow_ups": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -1255,6 +1258,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -1279,6 +1283,9 @@
             "pending_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -1323,6 +1330,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -1347,6 +1355,9 @@
             "rejected_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -1391,6 +1402,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -1552,7 +1564,20 @@
     "status.update": {
       "name": "status.update",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
+          "type": "string"
+        },
+        "turn_id": {
           "type": "string"
         },
         "kind": {
@@ -1820,6 +1845,16 @@
     "turn.completed": {
       "name": "turn.completed",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "activity_events": {
           "type": "array"
         },
@@ -1940,6 +1975,16 @@
     "turn.failed": {
       "name": "turn.failed",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "additional_details": {
           "maxLength": 1000,
           "type": "string"
@@ -1987,6 +2032,16 @@
     "turn.interrupted": {
       "name": "turn.interrupted",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
           "type": "string"
         },
@@ -2120,6 +2175,9 @@
             "follow_ups": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -2164,6 +2222,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -2188,6 +2247,9 @@
             "pending_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -2232,6 +2294,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -2256,6 +2319,9 @@
             "rejected_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -2300,6 +2366,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -2384,6 +2451,16 @@
     "turn.started": {
       "name": "turn.started",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
           "type": "string"
         },
@@ -2400,6 +2477,16 @@
     "turn.status": {
       "name": "turn.status",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
           "type": "string"
         },

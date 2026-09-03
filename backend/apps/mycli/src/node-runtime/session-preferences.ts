@@ -3,7 +3,13 @@ import {
 	resolveProviderProfile,
 	type NodeRuntimeConfig,
 } from "@mycli/config";
-import type { ProtocolId, ProviderId, ReasoningEffort } from "@mycli/core";
+import {
+	isProviderId,
+	parseProviderRouteId,
+	type ProtocolId,
+	type ProviderRouteId,
+	type ReasoningEffort,
+} from "@mycli/core";
 import { SessionTransitionError } from "@mycli/runtime";
 import type { RuntimeSessionStore } from "@mycli/storage";
 import type { PermissionProfile } from "@mycli/tools";
@@ -11,7 +17,7 @@ import type { PermissionProfile } from "@mycli/tools";
 export const SESSION_PREFERENCES_STATE_KEY = "session_preferences" as const;
 
 export interface SessionPreferences {
-	readonly provider: ProviderId;
+	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
 	readonly model: string;
 	readonly apiBaseUrl: string;
@@ -121,9 +127,9 @@ export function sameSessionPreferences(
 
 export function parseSessionPreferences(value: unknown): SessionPreferences {
 	if (!isRecord(value) || value.state_version !== 1) throw new Error("invalid session preferences");
-	const provider = boundedIdentity(value.provider, "provider") as ProviderId;
+	const provider = parseProviderRouteId(value.provider);
 	const protocol = parseProtocol(boundedIdentity(value.protocol, "protocol"));
-	resolveProviderProfile(provider, protocol);
+	if (isProviderId(provider)) resolveProviderProfile(provider, protocol);
 	const model = boundedIdentity(value.model, "model");
 	const apiBaseUrl = normalizedBaseUrl(value.api_base_url);
 	const authRef = boundedIdentity(value.auth_ref, "auth ref");

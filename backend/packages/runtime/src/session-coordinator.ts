@@ -142,7 +142,7 @@ export class SessionCoordinator<Binding> {
 
 	markExecuting(context: SessionGenerationContext, executing: boolean): boolean {
 		if (!this.isCurrent(context)) return false;
-		if (executing && this.#transitioning) return false;
+		if (executing && (this.#transitioning || this.#executing)) return false;
 		this.#executing = executing;
 		return true;
 	}

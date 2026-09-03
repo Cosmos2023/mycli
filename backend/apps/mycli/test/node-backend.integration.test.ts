@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { ConfigError, WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
-import { fingerprintSubmission, rootAgentPath } from "@mycli/core";
+import { fingerprintSubmission, PROVIDER_IDS, rootAgentPath } from "@mycli/core";
 import {
 	encodeSessionContentBlob,
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
@@ -27,6 +27,11 @@ import {
 	reduceRuntimeEvent,
 } from "../../../../tui/mycli-shell/src/adapters/runtime-state.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import {
+	responsesAuthorityText,
+	writeResponsesText,
+	writeResponsesTool,
+} from "./support/responses-sse.ts";
 
 function finalMessageCount(messages: readonly Record<string, unknown>[]): number {
 	return messages.filter((message) => {
@@ -35,6 +40,101 @@ function finalMessageCount(messages: readonly Record<string, unknown>[]): number
 		return params?.final === true;
 	}).length;
 }
+
+test("Node backend round trips curated provider readiness rows and trace identities", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-curated-providers-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(home, ".mycli", "traces"), { recursive: true }),
+		mkdir(workspace, { recursive: true }),
+	]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const providers = [
+		["openrouter", "OpenRouter", "openrouter/auto"],
+		["groq", "Groq", "openai/gpt-oss-120b"],
+		["together", "Together", "moonshotai/Kimi-K2.7-Code"],
+		["moonshotai", "Moonshot AI", "kimi-k2.7-code"],
+		["nvidia", "NVIDIA", "openai/gpt-oss-120b"],
+		["cerebras", "Cerebras", "gpt-oss-120b"],
+	] as const;
+	const curatedIds = PROVIDER_IDS.filter((provider) => providers.some(([id]) => id === provider));
+
+	for (const [index, [provider, displayName, defaultModel]] of providers.entries()) {
+		const sessionId = `curated-provider-${provider}`;
+		const secret = `${provider}-gateway-secret`;
+		await writeFile(join(home, ".mycli", "config.toml"), [
+			"[model]",
+			`provider = "${provider}"`,
+			"",
+		].join("\n"), "utf8");
+		await writeFile(join(home, ".mycli", "auth.json"), `${JSON.stringify({
+			[provider]: { type: "api_key", key: secret },
+		}, null, 2)}\n`, "utf8");
+		if (index === 0) {
+			await writeFile(
+				join(home, ".mycli", "traces", `${sessionId}-trace.jsonl`),
+				`${curatedIds.map((traceProvider, traceIndex) => JSON.stringify({
+					kind: "model_stream_diagnostics",
+					turn_id: `trace-turn-${traceIndex}`,
+					payload: {
+						provider: traceProvider,
+						protocol: "chat_completions",
+						model: `${traceProvider}-model`,
+						attempt: 1,
+						success: true,
+						secret,
+					},
+				})).join("\n")}\n`,
+				"utf8",
+			);
+		}
+
+		const backend = await startNodeBackend({
+			cwd: workspace,
+			args: ["--session", sessionId],
+			env: { HOME: home },
+		});
+		const messages: Array<Record<string, unknown>> = [];
+		createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+			messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+		});
+		await waitFor(() => event(messages, "runtime.ready"));
+		writeRequest(backend, `bootstrap-${provider}`, "session.bootstrap", { protocol_version: 1 });
+		const bootstrap = await waitFor(() => response(messages, `bootstrap-${provider}`));
+		assert.deepEqual(resultValue(bootstrap, "auth_status"), {
+			ready: true,
+			provider_id: provider,
+			auth_ref: provider,
+			source: "stored",
+		});
+		const rows = resultValue(bootstrap, "auth_providers") as Array<Record<string, unknown>>;
+		assert.equal(new Set(rows.map((row) => row.id)).size, PROVIDER_IDS.length);
+		assert.deepEqual(rows.find((row) => row.id === provider), {
+			id: provider,
+			name: displayName,
+			configured: true,
+			credential_source: "stored",
+			auth_ref: provider,
+			default_model: defaultModel,
+		});
+		assert.equal(JSON.stringify(bootstrap).includes(secret), false);
+
+		if (index === 0) {
+			writeRequest(backend, "curated-trace", "trace.export", { tail: 20 });
+			const trace = await waitFor(() => response(messages, "curated-trace"));
+			const traceRows = (resultValue(trace, "rows") as readonly string[]).map((row) => (
+				JSON.parse(row) as Record<string, unknown>
+			));
+			assert.deepEqual(traceRows.map((row) => (
+				(row.payload as Record<string, unknown>).provider
+			)), curatedIds);
+			assert.equal(JSON.stringify(traceRows).includes(secret), false);
+		}
+		writeRequest(backend, `shutdown-${provider}`, "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	}
+});
 
 test("Node backend rejects invalid lane-specific agent execution adapters before startup", async () => {
 	for (const environmentKey of [
@@ -416,8 +516,11 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 			requests += 1;
 			capture.requestBody = JSON.parse(body) as Record<string, unknown>;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello from node\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_node\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n");
+			writeResponsesText(response, "hello from node", "resp_node", {
+				input_tokens: 2,
+				output_tokens: 3,
+				total_tokens: 5,
+			});
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -444,6 +547,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 			MYCLI_REQUEST_PERMISSIONS_TOOL: "true",
 		},
 	});
+	t.after(() => backend.close().catch(() => undefined));
 	const messages: Array<Record<string, unknown>> = [];
 	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
@@ -495,6 +599,8 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 			method: message.method,
 			code: paramValue(message, "code") ?? errorValue(message, "code"),
 			state: paramValue(message, "state"),
+			message: paramValue(message, "message") ?? errorValue(message, "message"),
+			additional_details: paramValue(message, "additional_details"),
 		}))));
 	}
 	const submitResponse = await waitFor(() => response(messages, "1"));
@@ -643,25 +749,15 @@ test("Node backend executes update_plan and restores its model-hidden transcript
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-plan",
-						name: "update_plan",
-						arguments: JSON.stringify({
-							explanation: "Start implementation",
-							plan: [
-								{ step: "Inspect runtime", status: "completed" },
-								{ step: "Wire plan updates", status: "in_progress" },
-							],
-						}),
-					},
-				})}\n\n`);
-				response.write('data: {"type":"response.completed","response":{"id":"resp-plan"}}\n\n');
+				writeResponsesTool(response, "call-plan", "update_plan", {
+					explanation: "Start implementation",
+					plan: [
+						{ step: "Inspect runtime", status: "completed" },
+						{ step: "Wire plan updates", status: "in_progress" },
+					],
+				}, "resp-plan");
 			} else {
-				response.write('data: {"type":"response.output_text.delta","delta":"Plan recorded."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-final"}}\n\n');
+				writeResponsesText(response, "Plan recorded.", "resp-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -773,8 +869,11 @@ test("Node backend Plan mode adds structured clarification after /plan", async (
 		request.on("end", () => {
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Plan inspected.\"}\n\n");
-			response.write(`data: {"type":"response.completed","response":{"id":"resp_plan_exposure_${requestBodies.length}"}}\n\n`);
+			writeResponsesText(
+				response,
+				"Plan inspected.",
+				`resp_plan_exposure_${requestBodies.length}`,
+			);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -864,25 +963,23 @@ test("Root adapters preserve canonical persistence, provider, usage, and gateway
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (providerStep === 0) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-root-parity-plan",
-						name: "update_plan",
-						arguments: JSON.stringify({
-							explanation: "Record adapter parity",
-							plan: [
-								{ step: "Commit canonical input", status: "completed" },
-								{ step: "Compare adapters", status: "in_progress" },
-							],
-						}),
-					},
-				})}\n\n`);
-				response.write('data: {"type":"response.completed","response":{"id":"resp-root-parity-tools","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n');
+				writeResponsesTool(response, "call-root-parity-plan", "update_plan", {
+					explanation: "Record adapter parity",
+					plan: [
+						{ step: "Commit canonical input", status: "completed" },
+						{ step: "Compare adapters", status: "in_progress" },
+					],
+				}, "resp-root-parity-tools", {
+					input_tokens: 2,
+					output_tokens: 3,
+					total_tokens: 5,
+				});
 			} else {
-				response.write('data: {"type":"response.output_text.delta","delta":"Root parity complete."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-root-parity-final","usage":{"input_tokens":7,"output_tokens":11,"total_tokens":18}}}\n\n');
+				writeResponsesText(response, "Root parity complete.", "resp-root-parity-final", {
+					input_tokens: 7,
+					output_tokens: 11,
+					total_tokens: 18,
+				});
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -1021,25 +1118,24 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-worker-rollback-plan",
-						name: "update_plan",
-						arguments: JSON.stringify({
-							explanation: "Persist before rollback",
-							plan: [{ step: "Persist Worker state", status: "completed" }],
-						}),
-					},
-				})}\n\n`);
-				response.write('data: {"type":"response.completed","response":{"id":"resp-worker-rollback-tools","usage":{"total_tokens":4}}}\n\n');
+				writeResponsesTool(response, "call-worker-rollback-plan", "update_plan", {
+					explanation: "Persist before rollback",
+					plan: [{ step: "Persist Worker state", status: "completed" }],
+				}, "resp-worker-rollback-tools", { total_tokens: 4 });
 			} else if (requestBodies.length === 2) {
-				response.write('data: {"type":"response.output_text.delta","delta":"Worker state persisted."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-worker-rollback-final","usage":{"total_tokens":6}}}\n\n');
+				writeResponsesText(
+					response,
+					"Worker state persisted.",
+					"resp-worker-rollback-final",
+					{ total_tokens: 6 },
+				);
 			} else {
-				response.write('data: {"type":"response.output_text.delta","delta":"In-process rollback resumed."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-in-process-rollback","usage":{"total_tokens":8}}}\n\n');
+				writeResponsesText(
+					response,
+					"In-process rollback resumed.",
+					"resp-in-process-rollback",
+					{ total_tokens: 8 },
+				);
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -1191,8 +1287,7 @@ test("Node backend sends and persists local image attachments", async (t) => {
 		request.on("end", () => {
 			requestBody = JSON.parse(body) as Record<string, unknown>;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write('data: {"type":"response.output_text.delta","delta":"described"}\n\n');
-			response.write('data: {"type":"response.completed","response":{"id":"resp_image","usage":{}}}\n\n');
+			writeResponsesText(response, "described", "resp_image");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -1216,6 +1311,7 @@ test("Node backend sends and persists local image attachments", async (t) => {
 			MYCLI_PROTOCOL: "responses",
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_SUPPORTS_IMAGES: "true",
 		},
 	});
 	t.after(() => backend.close().catch(() => undefined));
@@ -1250,6 +1346,7 @@ test("Node backend sends and persists local image attachments", async (t) => {
 		{ type: "input_text", text: "describe" },
 		{
 			type: "input_image",
+			detail: "auto",
 			image_url: `data:image/png;base64,${imageData.toString("base64")}`,
 		},
 	]);
@@ -1292,36 +1389,32 @@ test("Worker-backed root projects steering and follow-up input into TUI transcri
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
 				void firstResponseReleased.then(() => {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-read-steering",
-							name: "Read",
-							arguments: JSON.stringify({ file_path: "README.md", offset: 1, limit: 20 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-steering-tools\"}}\n\n");
+					writeResponsesTool(response, "call-read-steering", "Read", {
+						file_path: "README.md",
+						offset: 1,
+						limit: 20,
+					}, "resp-steering-tools");
 					response.end("data: [DONE]\n\n");
 				});
 				return;
 			}
 			if (requestBodies.length === 2) {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Steering received.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-steering-final\"}}\n\n");
+				writeResponsesText(response, "Steering received.", "resp-steering-final");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 			if (requestBodies.length === 3) {
 				void deferredParentResponseReleased.then(() => {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent finished without tools.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-deferred-parent\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Parent finished without tools.",
+						"resp-deferred-parent",
+					);
 					response.end("data: [DONE]\n\n");
 				});
 				return;
 			}
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Deferred steering received.\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-deferred-steering\"}}\n\n");
+			writeResponsesText(response, "Deferred steering received.", "resp-deferred-steering");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -1475,24 +1568,14 @@ test("Node backend restores and resolves a durable clarification without a new t
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			requestBodies.push(payload);
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-question",
-						name: "AskUserQuestion",
-						arguments: JSON.stringify({
-							question: "Which runtime?",
-							options: [{ label: "Node" }, { label: "Python" }],
-							header: "Runtime",
-							multi_select: false,
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-question\"}}\n\n");
+				writeResponsesTool(response, "call-question", "AskUserQuestion", {
+					question: "Which runtime?",
+					options: [{ label: "Node" }, { label: "Python" }],
+					header: "Runtime",
+					multi_select: false,
+				}, "resp-question");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Node selected.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-final\"}}\n\n");
+				writeResponsesText(response, "Node selected.", "resp-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -1763,28 +1846,20 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 		request.on("data", (chunk) => { body += chunk; });
 		request.on("end", () => {
 				const payload = JSON.parse(body) as Record<string, unknown>;
-				response.writeHead(200, { "content-type": "text/event-stream" });
-				if (isSubagentRequest(payload)) {
-					childRequests.push(payload);
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child inspected repository.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n\n");
-				} else if (parentRequests.push(payload) === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-spawn-1",
-						name: "spawn_agent",
-						arguments: JSON.stringify({
-							task_name: "explore",
-							message: "Inspect the repository.",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-tools\"}}\n\n");
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (isSubagentRequest(payload)) {
+				childRequests.push(payload);
+				writeResponsesText(response, "Child inspected repository.", "resp-child", {
+					input_tokens: 3,
+					output_tokens: 4,
+				});
+			} else if (parentRequests.push(payload) === 1) {
+				writeResponsesTool(response, "call-spawn-1", "spawn_agent", {
+					task_name: "explore",
+					message: "Inspect the repository.",
+				}, "resp-parent-tools");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received child report.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-final\"}}\n\n");
+				writeResponsesText(response, "Parent received child report.", "resp-parent-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -1865,20 +1940,22 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 		"tool_search", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
-	assert.match(String(childRequests[0]?.instructions), /^# Identity\n/u);
-	assert.match(String(childRequests[0]?.instructions), /until their goal is genuinely handled/u);
+	const childAuthority = responsesAuthorityText(childRequests[0] ?? {});
+	assert.match(childAuthority, /^# Identity\n/u);
+	assert.match(childAuthority, /until their goal is genuinely handled/u);
 	const childInput = childRequests[0]?.input as readonly Record<string, unknown>[];
-	const childDeveloperContext = childInput.filter((item) => item.role === "developer")
-		.map((item) => String(item.content)).join("\n");
-	assert.match(childDeveloperContext, /Agent path: \/root\/explore/u);
-	assert.match(childDeveloperContext, /Assigned task: explore/u);
+	assert.match(childAuthority, /Agent path: \/root\/explore/u);
+	assert.match(childAuthority, /Assigned task: explore/u);
 	assert.match(
-		childDeveloperContext,
+		childAuthority,
 		/Tool scope: Edit, Patch, Read, Skill, Write, tool_search, update_plan, web_fetch/u,
 	);
-	assert.match(childDeveloperContext, /Permission profile: workspace/u);
-	assert.match(childDeveloperContext, /Sandbox mode: workspace-write/u);
-	assert.deepEqual(childInput.at(-1), { role: "user", content: "Inspect the repository." });
+	assert.match(childAuthority, /Permission profile: workspace/u);
+	assert.match(childAuthority, /Sandbox mode: workspace-write/u);
+	assert.deepEqual(childInput.at(-1), {
+		role: "user",
+		content: [{ type: "input_text", text: "Inspect the repository." }],
+	});
 	const subagentEvents = messages.filter((message) => message.method === "subagent.updated");
 	assert.deepEqual(subagentEvents.map((message) => (
 		(message.params as { subagent: { status: string } }).subagent.status
@@ -1970,30 +2047,11 @@ test("Node backend interrupts one Worker-backed child while root and sibling com
 				name: string,
 				argumentsValue: Readonly<Record<string, unknown>>,
 			): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(argumentsValue),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: `resp-${callId}` },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, argumentsValue, `resp-${callId}`);
 				response.end("data: [DONE]\n\n");
 			};
 			const finishText = (text: string, responseId: string): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_text.delta",
-					delta: text,
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId },
-				})}\n\n`);
+				writeResponsesText(response, text, responseId);
 				response.end("data: [DONE]\n\n");
 			};
 			if (isSubagentRequest(payload)) {
@@ -2098,8 +2156,11 @@ test("Node backend interrupts one Worker-backed child while root and sibling com
 			?.status === "completed"
 	)), false);
 	assert.ok(siblingResponse);
-	siblingResponse.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Sibling completed independently.\"}\n\n");
-	siblingResponse.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-interrupt-sibling-complete\"}}\n\n");
+	writeResponsesText(
+		siblingResponse,
+		"Sibling completed independently.",
+		"resp-interrupt-sibling-complete",
+	);
 	siblingResponse.end("data: [DONE]\n\n");
 	await waitFor(() => messages.find((message) => (
 		message.method === "subagent.updated"
@@ -2167,55 +2228,36 @@ test("Node backend rejects AskUserQuestion from a Default-mode Worker child", {
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
 				if (childRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-child-question",
-							name: "AskUserQuestion",
-							arguments: JSON.stringify({
-								question: "Which file should the child inspect?",
-								options: [{ label: "README" }, { label: "package.json" }],
-								header: "File",
-								multi_select: false,
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-question\"}}\n\n");
+					writeResponsesTool(response, "call-child-question", "AskUserQuestion", {
+						question: "Which file should the child inspect?",
+						options: [{ label: "README" }, { label: "package.json" }],
+						header: "File",
+						multi_select: false,
+					}, "resp-child-question");
 				} else {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child continued without clarification.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-clarified\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Child continued without clarification.",
+						"resp-child-clarified",
+					);
 				}
 			} else {
 				parentRequests.push(payload);
 				if (parentRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-spawn-clarification-child",
-							name: "spawn_agent",
-							arguments: JSON.stringify({
-								task_name: "clarify-worker",
-								message: "Ask which file to inspect.",
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-clarify-spawn\"}}\n\n");
+					writeResponsesTool(response, "call-spawn-clarification-child", "spawn_agent", {
+						task_name: "clarify-worker",
+						message: "Ask which file to inspect.",
+					}, "resp-parent-clarify-spawn");
 				} else if (parentRequests.length === 2) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-wait-clarification-child",
-							name: "wait_agent",
-							arguments: JSON.stringify({ timeout_ms: 5_000 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-clarify-wait\"}}\n\n");
+					writeResponsesTool(response, "call-wait-clarification-child", "wait_agent", {
+						timeout_ms: 5_000,
+					}, "resp-parent-clarify-wait");
 				} else {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received child report.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-clarified\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Parent received child report.",
+						"resp-parent-clarified",
+					);
 				}
 			}
 			response.end("data: [DONE]\n\n");
@@ -2322,14 +2364,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 				responseId: string,
 				usage: Readonly<Record<string, number>>,
 			): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_text.delta",
-					delta: text,
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId, usage },
-				})}\n\n`);
+				writeResponsesText(response, text, responseId, usage);
 				response.end("data: [DONE]\n\n");
 			};
 			const finishTool = (
@@ -2339,19 +2374,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 				responseId: string,
 				usage: Readonly<Record<string, number>> = {},
 			): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(argumentsValue),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId, usage },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, argumentsValue, responseId, usage);
 				response.end("data: [DONE]\n\n");
 			};
 			const childRequest = isSubagentRequest(payload);
@@ -2595,50 +2618,34 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
 				if (childRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-child-shell",
-							name: "Shell",
-							arguments: JSON.stringify({
-								command,
-								yield_time_ms: 3_000,
-								sandbox_permissions: "require_escalated",
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-shell\"}}\n\n");
+					writeResponsesTool(response, "call-child-shell", "Shell", {
+						command,
+						yield_time_ms: 3_000,
+						sandbox_permissions: "require_escalated",
+					}, "resp-child-shell");
 					response.end("data: [DONE]\n\n");
 					return;
 				}
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child completed after approval.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-approved\"}}\n\n");
+				writeResponsesText(response, "Child completed after approval.", "resp-child-approved");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 
 			parentRequests.push(payload);
 			if (parentRequests.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-spawn-approved-child",
-						name: "spawn_agent",
-						arguments: JSON.stringify({
-							task_name: "approval-worker",
-							message: "Run the command and report after approval.",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-spawn\"}}\n\n");
+				writeResponsesTool(response, "call-spawn-approved-child", "spawn_agent", {
+					task_name: "approval-worker",
+					message: "Run the command and report after approval.",
+				}, "resp-parent-spawn");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 			void parentFinalReleased.then(() => {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent observed child completion.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-approved-final\"}}\n\n");
+				writeResponsesText(
+					response,
+					"Parent observed child completion.",
+					"resp-parent-approved-final",
+				);
 				response.end("data: [DONE]\n\n");
 			});
 		});
@@ -2786,45 +2793,36 @@ test("Node backend gives a Full Access child the frozen parent policy without ap
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
 				if (childRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-child-full-access-shell",
-							name: "Shell",
-							arguments: JSON.stringify({ command, yield_time_ms: 3_000 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-full-access-shell\"}}\n\n");
+					writeResponsesTool(response, "call-child-full-access-shell", "Shell", {
+						command,
+						yield_time_ms: 3_000,
+					}, "resp-child-full-access-shell");
 					response.end("data: [DONE]\n\n");
 					return;
 				}
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Full Access child completed.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-full-access-completed\"}}\n\n");
+				writeResponsesText(
+					response,
+					"Full Access child completed.",
+					"resp-child-full-access-completed",
+				);
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 
 			parentRequests.push(payload);
 			if (parentRequests.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-spawn-full-access-child",
-						name: "spawn_agent",
-						arguments: JSON.stringify({
-							task_name: "full-access-worker",
-							message: "Run the command and report the output.",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-spawn-full-access\"}}\n\n");
+				writeResponsesTool(response, "call-spawn-full-access-child", "spawn_agent", {
+					task_name: "full-access-worker",
+					message: "Run the command and report the output.",
+				}, "resp-parent-spawn-full-access");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent delegated Full Access work.\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-full-access-completed\"}}\n\n");
+			writeResponsesText(
+				response,
+				"Parent delegated Full Access work.",
+				"resp-parent-full-access-completed",
+			);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -2919,38 +2917,24 @@ test("Node backend delivers background subagent completion through wait_agent wi
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Background child report.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-background-child\"}}\n\n");
+				writeResponsesText(response, "Background child report.", "resp-background-child");
 			} else {
 				parentRequests.push(payload);
 				if (parentRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-background-task",
-							name: "spawn_agent",
-							arguments: JSON.stringify({
-								task_name: "inspect",
-								message: "Inspect in the background.",
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-background-task\"}}\n\n");
+					writeResponsesTool(response, "call-background-task", "spawn_agent", {
+						task_name: "inspect",
+						message: "Inspect in the background.",
+					}, "resp-background-task");
 				} else if (parentRequests.length === 2) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-wait-agent",
-							name: "wait_agent",
-							arguments: JSON.stringify({ timeout_ms: 5_000 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-wait-agent\"}}\n\n");
+					writeResponsesTool(response, "call-wait-agent", "wait_agent", {
+						timeout_ms: 5_000,
+					}, "resp-wait-agent");
 				} else {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received automatic background result.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-background-parent-final\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Parent received automatic background result.",
+						"resp-background-parent-final",
+					);
 				}
 			}
 			response.end("data: [DONE]\n\n");
@@ -3109,27 +3093,11 @@ test("Node backend triggers a durable follow-up turn without fabricating child u
 			const payload = JSON.parse(body) as Record<string, unknown>;
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			const finishText = (text: string, responseId: string): void => {
-				response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId },
-				})}\n\n`);
+				writeResponsesText(response, text, responseId);
 				response.end("data: [DONE]\n\n");
 			};
 			const finishTool = (callId: string, name: string, args: Record<string, unknown>): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(args),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: `resp-${callId}` },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, args, `resp-${callId}`);
 				response.end("data: [DONE]\n\n");
 			};
 			if (isSubagentRequest(payload)) {
@@ -3367,24 +3335,11 @@ test("Node backend recovers a stale agent and accepts an explicit follow-up afte
 			const tools = toolNames(payload.tools);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			const completeText = (text: string, id: string): void => {
-				response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\n`);
-				response.write(`data: ${JSON.stringify({ type: "response.completed", response: { id } })}\n\n`);
+				writeResponsesText(response, text, id);
 				response.end("data: [DONE]\n\n");
 			};
 			const completeTool = (callId: string, name: string, args: Record<string, unknown>): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(args),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: `resp-${callId}` },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, args, `resp-${callId}`);
 				response.end("data: [DONE]\n\n");
 			};
 			if (tools.length === 1 && tools[0] === "Read") {
@@ -3543,8 +3498,7 @@ test("Node backend repairs a terminal subagent notification and does not duplica
 		request.on("end", () => {
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Recovered once.\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-subagent-recovery\"}}\n\n");
+			writeResponsesText(response, "Recovered once.", "resp-subagent-recovery");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -3742,19 +3696,11 @@ test("wait_agent wakes for live user steering and commits it before the next pro
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requests.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-wait-steering",
-						name: "wait_agent",
-						arguments: JSON.stringify({ timeout_ms: 5_000 }),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-wait-steering\"}}\n\n");
+				writeResponsesTool(response, "call-wait-steering", "wait_agent", {
+					timeout_ms: 5_000,
+				}, "resp-wait-steering");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Steering received after wait.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-steering-final\"}}\n\n");
+				writeResponsesText(response, "Steering received after wait.", "resp-steering-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -3827,8 +3773,7 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 			const payload = JSON.parse(body) as Record<string, unknown>;
 			requestTools.push(providerToolNames(payload.tools));
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n");
-			response.write(`data: {"type":"response.completed","response":{"id":"resp_${requestTools.length}"}}\n\n`);
+			writeResponsesText(response, "done", `resp_${requestTools.length}`);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -3865,10 +3810,23 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 		client_user_message_id: "message-untrusted",
 	});
 	await waitFor(() => finalMessageCount(messages) === 1);
+	const untrustedCompleted = await waitFor(() => messages.find((message) => (
+		message.method === "turn.completed"
+		&& paramValue(message, "client_turn_id") === "turn-untrusted"
+	)));
+	await waitFor(() => messages.find((message, index) => (
+		index > messages.indexOf(untrustedCompleted)
+		&& message.method === "status.changed"
+		&& paramValue(message, "turn_running") === false
+	)));
 	writeRequest(backend, "trust-shell", "workspace.trust.set", { state: "trusted" });
-	await waitFor(() => response(messages, "trust-shell"));
+	const trusted = await waitFor(() => response(messages, "trust-shell"));
+	assert.equal(resultValue(trusted, "state"), "trusted");
 	writeRequest(backend, "permission-shell", "permissions.update", { profile: "read-only" });
-	await waitFor(() => response(messages, "permission-shell"));
+	const permission = await waitFor(() => response(messages, "permission-shell"));
+	const permissionResult = resultValue(permission, "permissions");
+	assert.ok(permissionResult && typeof permissionResult === "object" && !Array.isArray(permissionResult));
+	assert.equal((permissionResult as Record<string, unknown>).active, "read-only");
 	writeRequest(backend, "turn-trusted", "turn.submit", {
 		message: "second",
 		client_turn_id: "turn-trusted",
@@ -4054,8 +4012,7 @@ test("Node backend excludes workspace instructions until trust is active", async
 		request.on("end", () => {
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n");
-			response.write(`data: {"type":"response.completed","response":{"id":"resp_${requests.length}"}}\n\n`);
+			writeResponsesText(response, "done", `resp_${requests.length}`);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -4125,11 +4082,36 @@ test("provider connectivity validation is bounded, optional, and sanitizes failu
 		request.on("end", () => {
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			if (requests.length === 1) {
+				const item = {
+					type: "message",
+					id: "msg_connectivity",
+					role: "assistant",
+					status: "completed",
+					content: [{ type: "output_text", text: "OK", annotations: [] }],
+				};
 				response.writeHead(200, { "content-type": "text/event-stream" });
 				response.end([
-					'data: {"type":"response.output_text.delta","delta":"OK"}',
+					'data: {"type":"response.created","response":{"id":"resp_connectivity","status":"in_progress"}}',
 					"",
-					'data: {"type":"response.completed","response":{"id":"resp_connectivity"}}',
+					`data: ${JSON.stringify({
+						type: "response.output_item.added",
+						output_index: 0,
+						item: { ...item, status: "in_progress", content: [] },
+					})}`,
+					"",
+					'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"OK"}',
+					"",
+					`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item })}`,
+					"",
+					`data: ${JSON.stringify({
+						type: "response.completed",
+						response: {
+							id: "resp_connectivity",
+							status: "completed",
+							output: [item],
+							usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+						},
+					})}`,
 					"",
 					"data: [DONE]",
 					"",
@@ -4179,7 +4161,7 @@ test("provider connectivity validation is bounded, optional, and sanitizes failu
 	writeRequest(backend, "connectivity-success", "provider.connectivity.validate", {});
 	const success = await waitFor(() => response(messages, "connectivity-success"));
 	assert.deepEqual(success.result, { ok: true, message: "Provider connection verified." });
-	assert.equal(requests[0]?.max_output_tokens, 8);
+	assert.equal(requests[0]?.max_output_tokens, 16);
 	assert.equal(requests[0]?.store, false);
 	assert.deepEqual(providerToolNames(requests[0]?.tools), []);
 	assert.equal(JSON.stringify(requests[0]).includes("connectivity-test-key"), false);
@@ -4345,8 +4327,7 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 		request.on("end", () => {
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"target resumed\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_target\"}}\n\n");
+			writeResponsesText(response, "target resumed", "resp_target");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -4431,6 +4412,13 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 	writeRequest(backend, "target-transcript", "transcript.load", { session_id: "target" });
 	const transcript = await waitFor(() => response(messages, "target-transcript"));
 	assert.match(JSON.stringify(resultValue(transcript, "items")), /target question/);
+	await waitFor(() => messages.find((message) => {
+		if (message.method !== "message.complete") return false;
+		const params = message.params as Record<string, unknown> | undefined;
+		return params?.final === true
+			&& params.text === "target resumed"
+			&& params.client_turn_id === "queue-client-target";
+	}));
 
 	writeRequest(backend, "target-turn", "turn.submit", {
 		message: "continue target",
@@ -4576,7 +4564,7 @@ test("Node backend interrupts an orphaned claimed approval effect without replay
 	}
 });
 
-test("Node backend restores a durably queued follow-up without provider IO", async (t) => {
+test("Node backend drains a durable queued follow-up once after restart", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-queue-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -4621,10 +4609,9 @@ test("Node backend restores a durably queued follow-up without provider IO", asy
 	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
 	const bootstrap = await waitFor(() => response(secondMessages, "bootstrap"));
 	const status = resultValue(bootstrap, "status") as Record<string, unknown>;
-	assert.equal(status.queue_revision, 1);
-	assert.deepEqual(status.queued_follow_up, ["persist across restart"]);
-	const migration = resultValue(bootstrap, "legacy_user_queue_migration") as Record<string, unknown>;
-	assert.equal((migration.records as Array<Record<string, unknown>>)[0]?.text, "persist across restart");
+	assert.equal(status.queue_revision, 3);
+	assert.deepEqual(status.queued_follow_up, []);
+	assert.equal("legacy_user_queue_migration" in (bootstrap.result as Record<string, unknown>), false);
 	writeRequest(second, "shutdown-second", "shutdown", {});
 	assert.equal(await second.completion, 0);
 });
@@ -4865,22 +4852,12 @@ test("Node backend undoes a file created by a real provider tool turn", async (t
 			requests += 1;
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requests === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-write-undo",
-						name: "Write",
-						arguments: JSON.stringify({
-							file_path: "undo-created.txt",
-							content: "created for undo\n",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-write-undo\"}}\n\n");
+				writeResponsesTool(response, "call-write-undo", "Write", {
+					file_path: "undo-created.txt",
+					content: "created for undo\n",
+				}, "resp-write-undo");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Created.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-write-final\"}}\n\n");
+				writeResponsesText(response, "Created.", "resp-write-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -5082,6 +5059,135 @@ test("Node backend gates missing custom credentials and reports bounded readines
 	assert.equal(await legacyBackend.completion, 0);
 });
 
+test("Node backend activates experimental routes and scopes credentials and models by route", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-experimental-provider-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(workspace),
+	]);
+	await writeFile(join(home, ".mycli", "models.json"), `${JSON.stringify({
+		version: 2,
+		providers: {
+			fireworks: {
+				source: "pi_ai_builtin",
+				protocol: "chat_completions",
+				auth_ref: "fireworks-primary",
+			},
+			"fireworks-alt": {
+				catalog_provider: "fireworks",
+				protocol: "chat_completions",
+				auth_ref: "fireworks-alt",
+			},
+		},
+	}, null, 2)}\n`, "utf8");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "experimental-provider-session"],
+		env: { HOME: home },
+	});
+	t.after(async () => {
+		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "experimental-providers", "provider.list", {});
+	const providerList = await waitFor(() => response(messages, "experimental-providers"));
+	const providerRows = resultValue(providerList, "providers") as Array<Record<string, unknown>>;
+	for (const providerId of ["fireworks", "fireworks-alt"]) {
+		const route = providerRows.find((provider) => provider.id === providerId);
+		assert.equal(route?.activation, "active");
+		assert.equal(route?.configured, true);
+		assert.equal(route?.ready, false);
+		assert.equal(route?.source, "pi_ai_builtin");
+	}
+
+	writeRequest(backend, "experimental-models", "model.list", { provider: "fireworks" });
+	const primaryModels = await waitFor(() => response(messages, "experimental-models"));
+	assert.equal("error" in primaryModels, false, JSON.stringify(primaryModels));
+	const primaryCatalog = resultValue(primaryModels, "models") as Array<Record<string, unknown>>;
+	assert.equal(primaryCatalog.length > 0, true);
+	assert.equal(primaryCatalog.every((model) => model.provider === "fireworks"), true);
+
+	writeRequest(backend, "experimental-alt-models", "model.list", { provider: "fireworks-alt" });
+	const altModels = await waitFor(() => response(messages, "experimental-alt-models"));
+	const altCatalog = resultValue(altModels, "models") as Array<Record<string, unknown>>;
+	assert.deepEqual(
+		altCatalog.map((model) => model.model),
+		primaryCatalog.map((model) => model.model),
+	);
+	assert.equal(altCatalog.every((model) => model.provider === "fireworks-alt"), true);
+
+	for (const [id, params] of [
+		["model-list-omitted-provider", {}],
+		["model-list-malformed-provider", { provider: "Fireworks" }],
+		["model-list-inactive-provider", { provider: "cloudflare-ai-gateway" }],
+	] as const) {
+		writeRequest(backend, id, "model.list", params);
+		const rejected = await waitFor(() => response(messages, id));
+		assert.equal(errorValue(rejected, "code"), "invalid_params");
+	}
+
+	const candidate = altCatalog[0]!;
+	writeRequest(backend, "experimental-select-missing-auth", "model.select", {
+		provider: candidate.provider,
+		protocol: candidate.protocol,
+		model: candidate.model,
+		base_url: candidate.base_url,
+	});
+	const missingAuth = await waitFor(() => response(messages, "experimental-select-missing-auth"));
+	assert.equal(errorValue(missingAuth, "code"), "invalid_params");
+	writeRequest(backend, "experimental-status-after-failure", "status.inspect", {});
+	const statusAfterFailure = await waitFor(() => response(messages, "experimental-status-after-failure"));
+	assert.equal(resultValue(statusAfterFailure, "provider"), "openai");
+
+	writeRequest(backend, "experimental-save-wrong-ref", "auth.api_key.save", {
+		provider_id: "fireworks-alt",
+		auth_ref: "unrelated-account",
+		api_key: "rejected-experimental-secret",
+	});
+	const wrongRef = await waitFor(() => response(messages, "experimental-save-wrong-ref"));
+	assert.equal(errorValue(wrongRef, "code"), "invalid_params");
+	assert.equal(JSON.stringify(wrongRef).includes("rejected-experimental-secret"), false);
+
+	writeRequest(backend, "experimental-save-key", "auth.api_key.save", {
+		provider_id: "fireworks-alt",
+		api_key: "stored-experimental-secret",
+	});
+	const saved = await waitFor(() => response(messages, "experimental-save-key"));
+	assert.equal(resultValue(saved, "provider_id"), "fireworks-alt");
+	assert.equal(resultValue(saved, "auth_ref"), "fireworks-alt");
+	assert.equal(JSON.stringify(saved).includes("stored-experimental-secret"), false);
+	const authFile = JSON.parse(await readFile(join(home, ".mycli", "auth.json"), "utf8"));
+	assert.equal(authFile["fireworks-alt"].key, "stored-experimental-secret");
+	assert.equal(authFile["unrelated-account"], undefined);
+
+	writeRequest(backend, "experimental-select", "model.select", {
+		provider: candidate.provider,
+		protocol: candidate.protocol,
+		model: candidate.model,
+		base_url: candidate.base_url,
+	});
+	const selected = await waitFor(() => response(messages, "experimental-select"));
+	assert.equal("error" in selected, false, JSON.stringify(selected));
+	assert.equal((resultValue(selected, "selected") as Record<string, unknown>).provider, "fireworks-alt");
+	assert.equal(resultValue(selected, "provider"), "fireworks-alt");
+
+	writeRequest(backend, "experimental-providers-after-save", "provider.list", {});
+	const readyList = await waitFor(() => response(messages, "experimental-providers-after-save"));
+	const readyRows = resultValue(readyList, "providers") as Array<Record<string, unknown>>;
+	assert.equal(readyRows.find((provider) => provider.id === "fireworks-alt")?.ready, true);
+
+	writeRequest(backend, "experimental-provider-shutdown", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
 test("Node backend persists canonical TUI control state without exposing credentials", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-controls-"));
 	const home = join(root, "home");
@@ -5098,23 +5204,24 @@ test("Node backend persists canonical TUI control state without exposing credent
 		version: 2,
 		providers: {
 			openai: {
-			protocol: "responses",
-			base_url: "https://example.invalid/v1",
-			auth_ref: "catalog-account",
-			options: { store: false },
-			models: {
-				"gpt-selected": {
-					description: "Integration catalog model",
-					limits: {
-						context_window_tokens: 200_000,
-						max_output_tokens: 50_000,
-					},
-					reasoning: {
-						efforts: ["low", "high"],
-						default: "low",
+				protocol: "responses",
+				base_url: "https://example.invalid/v1",
+				auth_ref: "catalog-account",
+				model_policy: "subset",
+				capabilities: { images: false },
+				models: {
+					"gpt-selected": {
+						description: "Integration catalog model",
+						limits: {
+							context_window_tokens: 200_000,
+							max_output_tokens: 50_000,
+						},
+						reasoning: {
+							efforts: ["low", "high"],
+							default: "low",
+						},
 					},
 				},
-			},
 			},
 		},
 	}, null, 2)}\n`, "utf8");
@@ -5146,10 +5253,22 @@ test("Node backend persists canonical TUI control state without exposing credent
 	writeRequest(first, "bootstrap", "session.bootstrap", { protocol_version: 1 });
 	const bootstrap = await waitFor(() => response(firstMessages, "bootstrap"));
 	assert.equal((resultValue(bootstrap, "auth_providers") as unknown[]).length > 0, true);
-	const bootstrapModels = resultValue(bootstrap, "models") as Array<Record<string, unknown>>;
-	assert.deepEqual(bootstrapModels.map((entry) => entry.model), ["gpt-selected"]);
-	assert.equal(bootstrapModels[0]?.context_window_tokens, 200_000);
-	assert.equal(bootstrapModels[0]?.max_output_tokens, 50_000);
+	assert.equal("models" in (bootstrap.result as Record<string, unknown>), false);
+	writeRequest(first, "providers", "provider.list", {});
+	const providerList = await waitFor(() => response(firstMessages, "providers"));
+	assert.equal("error" in providerList, false, JSON.stringify(providerList));
+	assert.equal(
+		(resultValue(providerList, "providers") as Array<Record<string, unknown>>)
+			.some((entry) => entry.id === "openai" && entry.configured === true),
+		true,
+	);
+	writeRequest(first, "models", "model.list", { provider: "openai" });
+	const modelList = await waitFor(() => response(firstMessages, "models"));
+	assert.equal(resultValue(modelList, "provider"), "openai");
+	const listedModels = resultValue(modelList, "models") as Array<Record<string, unknown>>;
+	assert.deepEqual(listedModels.map((entry) => entry.model), ["gpt-5", "gpt-selected"]);
+	assert.equal(listedModels[1]?.context_window_tokens, 200_000);
+	assert.equal(listedModels[1]?.max_output_tokens, 50_000);
 
 	writeRequest(first, "auth", "auth.api_key.save", {
 		provider_id: "openai",
@@ -5243,6 +5362,146 @@ test("Node backend persists canonical TUI control state without exposing credent
 	assert.equal(await second.completion, 0);
 });
 
+test("Node backend filters and selects curated model catalog entries", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-curated-models-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const configPath = join(home, ".mycli", "config.toml");
+	await Promise.all([mkdir(join(home, ".mycli"), { recursive: true }), mkdir(workspace)]);
+	await writeFile(join(home, ".mycli", "auth.json"), `${JSON.stringify({
+		groq: { type: "api_key", key: "groq-catalog-secret" },
+		"openrouter-custom": { type: "api_key", key: "openrouter-catalog-secret" },
+	}, null, 2)}\n`, "utf8");
+	await writeFile(join(home, ".mycli", "models.json"), `${JSON.stringify({
+		version: 2,
+		providers: {
+			openrouter: {
+				protocol: "chat_completions",
+				base_url: "https://custom.openrouter.invalid/v1",
+				auth_ref: "openrouter-custom",
+				model_policy: "subset",
+				capabilities: { images: false },
+				models: {
+					"custom-code": {
+						description: "Explicit OpenRouter catalog entry",
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["none", "medium"], default: "medium" },
+					},
+				},
+			},
+			deepseek: {
+				protocol: "chat_completions",
+				base_url: "https://api.deepseek.com",
+				auth_ref: "deepseek",
+				models: {
+					"deepseek-v4-flash": {},
+					"deepseek-v4-pro": {},
+				},
+			},
+		},
+	}, null, 2)}\n`, "utf8");
+	const initialConfig = [
+		"[model]",
+		'provider = "nvidia"',
+		'protocol = "chat_completions"',
+		'name = "openai/gpt-oss-120b"',
+		'api_base_url = "https://integrate.api.nvidia.com/v1"',
+		'auth_ref = "nvidia"',
+		"",
+		"[reasoning]",
+		"enabled = false",
+		'effort = "none"',
+		'reasoning_effort = "none"',
+		"",
+	].join("\n");
+	await writeFile(configPath, initialConfig, "utf8");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "curated-model-session"],
+		env: { HOME: home },
+	});
+	t.after(async () => {
+		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	for (const provider of ["nvidia", "groq", "openrouter", "deepseek"] as const) {
+		writeRequest(backend, `curated-model-list-${provider}`, "model.list", { provider });
+		const listed = await waitFor(() => response(messages, `curated-model-list-${provider}`));
+		assert.equal("error" in listed, false, JSON.stringify(listed));
+		assert.equal(resultValue(listed, "provider"), provider);
+		const models = resultValue(listed, "models") as Array<Record<string, unknown>>;
+		assert.equal(models.length > 0, true);
+		assert.equal(models.every((entry) => entry.provider === provider), true);
+		if (provider === "nvidia") {
+			assert.equal(models.some((entry) => entry.model === "openai/gpt-oss-120b" && entry.current === true), true);
+		}
+		if (provider === "groq") {
+			assert.equal(models.some((entry) => entry.model === "openai/gpt-oss-120b"), true);
+		}
+		if (provider === "openrouter") {
+			assert.deepEqual(models.map((entry) => entry.model), ["custom-code"]);
+			assert.equal(models.some((entry) => entry.model === "openrouter/auto"), false);
+		}
+		if (provider === "deepseek") {
+			assert.equal(models.some((entry) => (
+				entry.model === "deepseek-v4-flash-vision-exp"
+				&& entry.supports_images === true
+				&& entry.context_window_tokens === 1_000_000
+				&& entry.max_output_tokens === 384_000
+			)), true);
+		}
+	}
+
+	writeRequest(backend, "curated-invalid-reasoning", "model.select", {
+		provider: "groq",
+		protocol: "chat_completions",
+		model: "openai/gpt-oss-120b",
+		base_url: "https://api.groq.com/openai/v1",
+		reasoning_effort: "xhigh",
+	});
+	const invalid = await waitFor(() => response(messages, "curated-invalid-reasoning"));
+	assert.equal(errorValue(invalid, "code"), "invalid_params");
+
+	writeRequest(backend, "curated-session-selection", "model.select", {
+		provider: "groq",
+		protocol: "chat_completions",
+		model: "openai/gpt-oss-120b",
+		base_url: "https://api.groq.com/openai/v1",
+	});
+	const sessionSelection = await waitFor(() => response(messages, "curated-session-selection"));
+	assert.equal(resultValue(sessionSelection, "scope"), "session");
+	const sessionSelected = resultValue(sessionSelection, "selected") as Record<string, unknown>;
+	assert.equal(sessionSelected.reasoning_effort, null);
+	assert.equal(sessionSelected.thinking_enabled, false);
+	assert.equal(await readFile(configPath, "utf8"), initialConfig);
+
+	writeRequest(backend, "curated-user-selection", "model.select", {
+		provider: "openrouter",
+		protocol: "chat_completions",
+		model: "custom-code",
+		base_url: "https://custom.openrouter.invalid/v1",
+		scope: "user",
+	});
+	const userSelection = await waitFor(() => response(messages, "curated-user-selection"));
+	assert.equal(resultValue(userSelection, "scope"), "user");
+	const userSelected = resultValue(userSelection, "selected") as Record<string, unknown>;
+	assert.equal(userSelected.reasoning_effort, "medium");
+	const writtenConfig = await readFile(configPath, "utf8");
+	assert.match(writtenConfig, /provider = "openrouter"/u);
+	assert.match(writtenConfig, /name = "custom-code"/u);
+	assert.match(writtenConfig, /auth_ref = "openrouter-custom"/u);
+	assert.equal(writtenConfig.includes("catalog-secret"), false);
+
+	writeRequest(backend, "curated-model-shutdown", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
 test("Node backend restores model effort and mode from each session preference", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-session-preferences-"));
 	const home = join(root, "home");
@@ -5258,9 +5517,17 @@ test("Node backend restores model effort and mode from each session preference",
 				protocol: "responses",
 				base_url: "https://session.invalid/v1",
 				auth_ref: "session-account",
+				model_policy: "subset",
+				capabilities: { images: false },
 				models: {
-					"gpt-session-a": { reasoning: { efforts: ["low", "high"], default: "low" } },
-					"gpt-session-b": { reasoning: { efforts: ["none"], default: "none" } },
+					"gpt-session-a": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["low", "high"], default: "low" },
+					},
+					"gpt-session-b": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["none"], default: "none" },
+					},
 				},
 			},
 		},
@@ -5425,10 +5692,21 @@ test("Node backend separates session model choices from user defaults", async (t
 				protocol: "responses",
 				base_url: "https://scope.invalid/v1",
 				auth_ref: "scope-account",
+				model_policy: "subset",
+				capabilities: { images: false },
 				models: {
-					"gpt-default": { reasoning: { efforts: ["low"], default: "low" } },
-					"gpt-session": { reasoning: { efforts: ["high"], default: "high" } },
-					"gpt-user": { reasoning: { efforts: ["medium"], default: "medium" } },
+					"gpt-default": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["low"], default: "low" },
+					},
+					"gpt-session": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["high"], default: "high" },
+					},
+					"gpt-user": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["medium"], default: "medium" },
+					},
 				},
 			},
 		},
@@ -5703,7 +5981,7 @@ function providerStepSnapshots(
 
 function normalizeProviderRequest(value: object): unknown {
 	return normalizeValue(value, new Set([
-		"promptCacheKey", "previousResponseId", "sourceId", "supersedesItemId",
+		"previousResponseId", "sourceId", "supersedesItemId",
 	]));
 }
 
@@ -5731,16 +6009,9 @@ function normalizeValue(value: unknown, omittedKeys: ReadonlySet<string>): unkno
 }
 
 function isSubagentRequest(payload: Readonly<Record<string, unknown>>): boolean {
-	if (!Array.isArray(payload.input)) return false;
-	return payload.input.some((item) => (
-		typeof item === "object"
-		&& item !== null
-		&& "role" in item
-		&& item.role === "developer"
-		&& "content" in item
-		&& typeof item.content === "string"
-		&& item.content.includes("You are a subagent operating under the parent agent's delegated authority.")
-	));
+	return responsesAuthorityText(payload).includes(
+		"You are a subagent operating under the parent agent's delegated authority.",
+	);
 }
 
 function errorValue(message: Record<string, unknown>, key: string): unknown {
