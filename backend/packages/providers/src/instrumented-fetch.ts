@@ -47,4 +47,3 @@ export function recordProviderResponse(
 		headers: Object.freeze(safeHeaders),
 	});
 }
-

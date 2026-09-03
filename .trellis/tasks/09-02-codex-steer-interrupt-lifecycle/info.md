@@ -71,4 +71,3 @@ reach an idle state.
 4. Unified terminal finalization and idle scheduling.
 5. Durable claim and restart recovery.
 6. Per-session composer snapshots, compatibility cleanup, specs, and full gates.
-
