@@ -56,6 +56,19 @@ cross-platform configuration and UX contract.
 | 8 Accessibility/terminal/non-TTY | Early | Child 6 is the primary remaining product implementation |
 | 9 Rollout/compatibility | Partial | Child 7 owns artifact and release acceptance |
 
+## Execution Status (2026-09-01)
+
+Children 1-6 are archived with their scoped gates complete. Child 7 has implemented the public
+package identity, compatibility policy, packed and registry journeys, independent platform
+workflow, strict tag gate, release documentation, and the eight-outcome evidence map at
+`docs/parity/configuration-ux-release-evidence.md`.
+
+The roadmap remains `6/7` for completion accounting until the candidate commit runs on the macOS,
+Ubuntu, and Windows GitHub runners. Local macOS and registry evidence is green; the final local
+all-target pack retry recorded `UND_ERR_CONNECT_TIMEOUT` while fetching the fixed Linux x64
+ripgrep release asset and did not waive the failure. Promote the roadmap to `7/7` only after the
+platform matrix uploads its per-platform evidence or records its own specific external blocker.
+
 ## Child Task Plan
 
 ### 1. UX Baseline And Contract Drift Gates
