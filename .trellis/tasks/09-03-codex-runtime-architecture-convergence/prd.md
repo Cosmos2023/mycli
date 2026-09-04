@@ -51,8 +51,8 @@ keeps public RPC and event behavior unchanged.
 
 ### Later Slices
 
-- [ ] Gateway transport is separated from session, turn, interactive, shell, and settings control.
-- [ ] Runtime events are ownership-stamped and mapped through one typed projection boundary.
+- [x] Gateway transport is separated from session, turn, interactive, shell, and settings control.
+- [x] Runtime events are ownership-stamped and mapped through one typed projection boundary.
 - [ ] TUI event decoding, state reduction, transcript projection, and feature presentation are
       separate modules, with native chat using the same action dispatcher.
 - [ ] Terminal storage transitions use focused repositories and one transaction/outbox boundary.

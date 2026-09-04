@@ -1886,6 +1886,124 @@ const { gatewayStartup } = await import("mycli-shell-tui/gateway");
 await gatewayStartup;
 ```
 
+## Scenario: Gateway Controller Ownership And Typed Event Projection
+
+### 1. Scope / Trigger
+- Trigger: changing JSON-RPC transport, Gateway request routing, session or turn admission,
+  interactive presentation, shell/settings control, runtime-event mapping, or Gateway event
+  ownership fields.
+- This boundary keeps `InProcessNodeGateway` as a composition root instead of a second owner of
+  controller lifecycle state. It does not define TUI decoding, reduction, or transcript rendering.
+
+### 2. Signatures
+- Transport: `NodeGatewayRpcTransport` in `node-gateway-rpc-transport.ts`.
+- Protocol projection: `NodeGatewayEventProjector.emitDirect` and
+  `NodeGatewayEventProjector.emitRuntime` in `node-gateway-event-projector.ts`.
+- Session lifecycle: `NodeGatewaySessionController` in `node-gateway-session-controller.ts`.
+- Turn lifecycle: `NodeGatewayTurnController` in `node-gateway-turn-controller.ts`.
+- Interactive FIFO: `NodeGatewayInteractiveController` in
+  `node-gateway-interactive-controller.ts`.
+- Settings and shell ownership: `NodeGatewaySettingsController` and
+  `NodeGatewayShellController`.
+- Shared app-facing types: `node-gateway-types.ts`.
+
+### 3. Contracts
+- `InProcessNodeGateway` constructs controllers, routes canonical RPC methods, composes status and
+  bootstrap payloads, binds integration subscriptions, and owns shutdown order. It must not retain
+  duplicate active-turn, session-transition, session-control, interactive-queue, shell, or settings
+  mutation state.
+- `NodeGatewayRpcTransport` exclusively owns line-oriented JSON-RPC parsing, request/response
+  correlation, request-failure mapping, and transport close. Domain controllers neither parse raw
+  lines nor write unvalidated JSON-RPC objects.
+- `NodeGatewaySessionController` exclusively owns Gateway-local transition/control admission and
+  the active queue subscription. Admission is one discriminated `idle | transitioning |
+  controlling` state; release requires the exact claim and is idempotent. Queue callbacks retain
+  their captured `SessionGenerationContext` and cannot publish after a session switch.
+- `NodeGatewayTurnController` exclusively owns temporary turn admission, `ActiveTurn`, its task and
+  abort controller, the exact session execution claim, continuation resume, durable queue dispatch,
+  interruption, and stateful `RuntimeEvent` handling. Its options expose only the dependencies and
+  session/settings capabilities it consumes, not the complete Gateway object.
+- `NodeGatewayInteractiveController` owns one root/child presentation FIFO. It retains the source
+  ownership snapshot with each queued request so resolving or cancelling one request cannot
+  re-stamp a later presentation with the then-current session.
+- Shell and settings controllers own their mutable projections and side-effect adapters. Session
+  or turn controllers call them through explicit narrow methods; they do not reproduce permission,
+  trust, model, or shell lifecycle decisions.
+- `NodeGatewayEventProjector` is the single schema-validation and ownership-stamping boundary for
+  runtime-owned notifications. It writes the validated compatibility notification first, then one
+  `runtime.event` envelope with the same owned payload and a monotonic sequence.
+- Every runtime-owned direct notification and its `runtime.event` envelope carry the owning root
+  `session_id` and positive `generation`. A notification with an explicit matching `turn_id` keeps
+  it; a notification whose `client_turn_id` matches the active turn inherits that active turn id.
+  An explicit child routing `session_id` remains on the direct payload while the envelope retains
+  root ownership; root generation must never be copied into an unrelated child payload.
+- Stateful runtime-event decisions remain in `NodeGatewayTurnController`, as Codex keeps state
+  checks and side effects at the caller around stateless event mapping. Every resulting public
+  notification still passes through `NodeGatewayEventProjector`; controllers must not bypass it.
+- A pre-activation credential, reservation, turn-id creation, or runtime-configuration failure
+  clears temporary admission and releases only that attempt's execution claim. A late event or
+  completion is accepted only while both the `ActiveTurn` object and captured session generation
+  still own the controller.
+- Gateway close marks the root closed, unsubscribes external producers, aborts the active turn,
+  awaits its tracked task, then closes backend resources and transport. Repeated close calls share
+  the root close promise; no controller event may publish after close completes.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Malformed JSON-RPC line or params | Return one mapped request failure; do not enter a controller |
+| Credential/reservation/configuration fails before active installation | Release admission and the exact execution claim; publish no committed user lifecycle |
+| Runtime callback has an old session generation | Drop it without active-session state or event mutation |
+| Completed turn callback arrives after a successor starts | Drop it; do not clear or terminalize the successor |
+| Interactive request waits across another request's resolution | Preserve its captured ownership and FIFO position |
+| Child payload names another session | Preserve child routing directly; stamp root ownership only on the envelope |
+| Close begins with an active task | Abort first and keep close pending until the task settles |
+| Schema rejects a projected notification | Contain the request/turn failure at the existing boundary; never emit unchecked JSON |
+
+### 5. Good/Base/Bad Cases
+- Good: submit claims execution, reserves durably, installs one active turn, handles typed runtime
+  events, releases the exact claim, publishes idle status, then schedules the next durable item.
+- Good: a queued child approval retains its child session while the mirrored envelope identifies
+  the current root session and generation.
+- Base: a provider-free status event has root session/generation and no turn id when it does not
+  belong to a matching active turn.
+- Bad: pass all `CreateNodeGatewayOptions` into every controller and let each discover unrelated
+  services or mutate shared Gateway fields.
+- Bad: stamp events in controllers and again in the transport, or let a controller write directly
+  to the output stream.
+- Bad: move active-turn mutation into a nominally stateless event mapper merely to shrink a file.
+
+### 6. Tests Required
+- RPC transport tests cover parsing, async response correlation, mapped failures, and close.
+- Event projector tests cover direct-before-mirror order, monotonic sequence, schema validation,
+  explicit stale-source ownership, active turn-id inference, and child/root routing separation.
+- Session controller tests cover transition/control exclusion, identity-based idempotent release,
+  failed-resume admission cleanup, and stale queue callback fencing.
+- Turn controller tests cover pre-activation cleanup, stale-generation event rejection, late-event
+  isolation from a successor, exact active cleanup, close abort-and-await, and ownership resolution.
+- Existing Gateway and backend integration tests remain the payload/order compatibility gate for
+  submit, queue, continuation, interrupt, resume, Worker, and SQLite behavior.
+
+### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+gateway.activeTurn = active;
+gateway.transport.write({ method, params });
+gateway.activeTurn = null;
+```
+
+Correct:
+```typescript
+const controller = new NodeGatewayTurnController({
+  dependencies: narrowTurnDependencies,
+  session,
+  settings,
+  publish: (method, params) => eventProjector.emitRuntime(method, params),
+});
+```
+
 ## Scenario: Atomic Node Session Transitions
 
 ### 1. Scope / Trigger
