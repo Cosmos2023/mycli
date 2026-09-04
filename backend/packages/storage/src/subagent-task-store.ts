@@ -398,13 +398,16 @@ export class SQLiteSubagentTaskRepository implements SubagentTaskStore {
 				}
 				throw invalidTransition(current.status, status);
 			}
-			if (current.status !== "running") throw invalidTransition(current.status, status);
+			if (current.status !== "running"
+				&& !(status === "interrupted" && current.status === "queued")) {
+				throw invalidTransition(current.status, status);
+			}
 			const now = timestamp(this.#clock(), "clock");
 			this.#database.prepare(`
 				UPDATE subagent_tasks
 				SET status = ?, payload_json = ?, updated_at = ?, completed_at = ?
-				WHERE task_id = ? AND status = 'running'
-			`).run(status, stableJson(payload), now, now, owner.taskId);
+				WHERE task_id = ? AND status = ?
+			`).run(status, stableJson(payload), now, now, owner.taskId, current.status);
 			return this.#required(owner.taskId);
 		});
 	}

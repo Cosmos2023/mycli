@@ -1,20 +1,16 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import {
 	parseRuntimeState,
 	parseRuntimeTurnRecord,
 	TURN_INTERRUPTED_NOTICE,
-	turnCompletedDurationId,
-	turnFailedNoticeId,
-	turnFailureNotice,
 	turnInterruptedNoticeId,
 } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	selectAgentForkConversation,
 	TOOL_RESULT_OUTPUT_MAX_CHARS,
-	turnAbortedContextItem,
 } from "@mycli/core";
 import Database from "better-sqlite3";
 import type {
@@ -23,7 +19,6 @@ import type {
 	CanonicalToolCall,
 	QueueSnapshot,
 	QueuedInput,
-	RuntimeErrorCode,
 } from "@mycli/core";
 import {
 	SCHEMA_V2_SQL,
@@ -42,7 +37,6 @@ import {
 import { runtimeErrorStopReason } from "./runtime-error-stop-reason.ts";
 import {
 	MessageIdConflictError,
-	normalizeStoredTurnFailure,
 	projectMutationMetadata,
 	SessionInUseError,
 	SessionMetadataConflictError,
@@ -120,8 +114,12 @@ import { SQLiteAgentThreadRepository } from "./agent-thread-store.ts";
 import type {
 	AgentSpawnStore,
 	AgentThreadStore,
-	ReserveAgentSpawnInput,
 } from "./agent-thread-store.ts";
+import { SQLiteAgentLifecycleRepository } from "./agent-lifecycle-store.ts";
+import type {
+	AgentLifecycleFailpoint,
+	AgentLifecycleStore,
+} from "./agent-lifecycle-store.ts";
 import { SQLiteAgentMailboxRepository } from "./agent-mailbox-store.ts";
 import type { AgentMailboxStore } from "./agent-mailbox-store.ts";
 import { SQLiteModelInputLedger } from "./model-input-ledger.ts";
@@ -150,6 +148,13 @@ import {
 	validateShellOutputChunk,
 	validateShellOutputPageInput,
 } from "./shell-transcript-store.ts";
+import { semanticTranscriptEventId as semanticEventId } from "./transcript-event-id.ts";
+import { SQLiteTurnTerminalizationRepository } from "./turn-terminalization-repository.ts";
+import type { TurnTerminalizationFailpoint } from "./turn-terminalization-repository.ts";
+import type {
+	StoredTurnTerminalization,
+	TurnTerminalizationStore,
+} from "./session-store.ts";
 import type {
 	LoadShellOutputPageInput,
 	ShellOutputChunk,
@@ -219,6 +224,7 @@ export interface TranscriptReadablePage {
 }
 
 export interface TranscriptEventRepository extends SessionLeaseStore {
+	readonly turnTerminalizations: TurnTerminalizationStore;
 	appendEvent(input: TranscriptEventAppendInput): TranscriptEventEnvelope;
 	reserveTurn(input: ReserveTurnInput): TurnReservation;
 	loadTurn(sessionId: string, clientTurnId: string): RuntimeTurnRecord | undefined;
@@ -324,6 +330,8 @@ export interface SQLiteTranscriptEventRepositoryOptions {
 	readonly isProcessAlive?: (processId: number) => boolean;
 	readonly stateFailpoint?: (name: string) => void;
 	readonly modelInputFailpoint?: (name: ModelInputLedgerFailpoint) => void;
+	readonly agentLifecycleFailpoint?: (name: AgentLifecycleFailpoint) => void;
+	readonly turnTerminalizationFailpoint?: (name: TurnTerminalizationFailpoint) => void;
 	readonly reconcileRuntimeState?: boolean;
 }
 
@@ -428,11 +436,13 @@ interface SearchVisibility {
 
 export class SQLiteTranscriptEventRepository implements TranscriptEventRepository {
 	readonly agentEffectLedger: AgentEffectLedgerStore;
+	readonly agentLifecycle: AgentLifecycleStore;
 	readonly agentMailbox: AgentMailboxStore;
 	readonly agentSpawns: AgentSpawnStore;
 	readonly agentThreads: AgentThreadStore;
 	readonly modelInputLedger: ModelInputLedgerStore;
 	readonly subagentTasks: SubagentTaskStore;
+	readonly turnTerminalizations: SQLiteTurnTerminalizationRepository;
 	readonly #database: Database.Database;
 	readonly #clock: () => string;
 	readonly #ownerId: string;
@@ -512,12 +522,15 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				write: <Result>(operation: () => Result) => this.#write(operation),
 				isProcessAlive: this.#isProcessAlive,
 			});
-			this.agentSpawns = Object.freeze({
-				reserve: (input: ReserveAgentSpawnInput) => this.#write(() => Object.freeze({
-					thread: this.agentThreads.reserve(input.thread),
-					task: this.subagentTasks.reserve(input.task),
-				})),
+			this.agentLifecycle = new SQLiteAgentLifecycleRepository({
+				threads: this.agentThreads,
+				tasks: this.subagentTasks,
+				write: <Result>(operation: () => Result) => this.#write(operation),
+				...(options.agentLifecycleFailpoint
+					? { failpoint: options.agentLifecycleFailpoint }
+					: {}),
 			});
+			this.agentSpawns = this.agentLifecycle;
 			this.agentMailbox = new SQLiteAgentMailboxRepository({
 				database: this.#database,
 				clock: this.#clock,
@@ -535,6 +548,17 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			this.agentEffectLedger = new SQLiteAgentEffectLedger({
 				database: this.#database,
 				write: <Result>(operation: () => Result) => this.#write(operation),
+			});
+			this.turnTerminalizations = new SQLiteTurnTerminalizationRepository({
+				database: this.#database,
+				write: <Result>(operation: () => Result) => this.#write(operation),
+				appendEvent: (input) => this.#insertEvent(input),
+				loadEvent: (sessionId, eventId) => this.loadEvent(sessionId, eventId),
+				loadPendingToolCalls: (sessionId, turnId) =>
+					this.loadPendingToolCalls(sessionId, turnId),
+				...(options.turnTerminalizationFailpoint
+					? { failpoint: options.turnTerminalizationFailpoint }
+					: {}),
 			});
 			if (options.reconcileRuntimeState !== false) {
 				this.agentThreads.projectLegacyTasks();
@@ -988,53 +1012,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 
 	completeTurn(input: CompleteStoredTurnInput): RuntimeTurnRecord {
 		try {
-			return this.#write(() => {
-				const turn = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
-				const durationMs = completedTurnDurationMs(turn, input.completedAt);
-				this.#insertEvent(parseTranscriptEventAppendInput({
-					schemaVersion: 1,
-					sessionId: input.sessionId,
-					eventId: semanticEventId(turn.turn_id, "assistant"),
-					turnId: turn.turn_id,
-					eventType: "assistant_output",
-					modelVisible: true,
-					createdAt: input.completedAt,
-					payload: {
-						text: input.assistantText,
-						...(input.responseId ? { responseId: input.responseId } : {}),
-						...(input.providerState ? { providerState: input.providerState } : {}),
-					},
-				}));
-				if (durationMs !== undefined) {
-					this.#appendDisplayActivityEvent({
-						sessionId: input.sessionId,
-						eventId: turnCompletedDurationId(turn.turn_id),
-						turnId: turn.turn_id,
-						activityType: "turn_completed",
-						status: "completed",
-						metadata: { duration_ms: durationMs },
-						createdAt: input.completedAt,
-					});
-				}
-				this.#appendLifecycleEvent(turn, "completed", input.completedAt, {
-					usage: input.usage,
-					...(input.lastTokenUsage ? {
-						diagnostics: { last_token_usage: input.lastTokenUsage },
-					} : {}),
-				});
-				this.#database.prepare(`
-					UPDATE runtime_turns
-					SET status = 'completed', error_code = NULL, result_json = ?, completed_at = ?,
-						owner_id = NULL, owner_pid = NULL
-					WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
-				`).run(stableJson({
-					assistant_text: input.assistantText,
-					...(input.responseId ? { response_id: input.responseId } : {}),
-					usage: input.usage,
-				}), input.completedAt, input.sessionId, input.clientTurnId);
-				this.#touchExistingSession(input.sessionId, input.completedAt);
-				return this.#requiredTurn(input.sessionId, input.clientTurnId);
-			});
+			return this.turnTerminalizations.terminalize({ kind: "completed", ...input }).turn;
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -1042,57 +1020,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 
 	failTurn(input: FailStoredTurnInput): RuntimeTurnRecord {
 		try {
-			return this.#write(() => {
-				const turn = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
-				const status = input.code === "interrupted" ? "interrupted" : "failed";
-				const failureInput = normalizeStoredTurnFailure(input);
-				for (const call of this.loadPendingToolCalls(input.sessionId, turn.turn_id)) {
-					this.#appendSyntheticToolResult(turn, call, status, input.completedAt);
-				}
-				if (status === "interrupted") {
-					this.#appendTurnAbortedEvent(turn, input.completedAt);
-					this.#appendInterruptedTurnDisplay(turn, input.completedAt);
-				} else {
-					this.#appendFailedTurnDisplay(
-						turn,
-						input.code,
-						input.completedAt,
-						failureInput.message,
-						failureInput.additionalDetails,
-					);
-				}
-				this.#appendLifecycleEvent(turn, status, input.completedAt, {
-					errorCode: input.code,
-						message: failureInput.message,
-						...(failureInput.additionalDetails
-							? { additionalDetails: failureInput.additionalDetails }
-							: {}),
-						...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
-				});
-				this.#database.prepare(`
-					UPDATE runtime_turns
-					SET status = ?, error_code = ?, result_json = ?, completed_at = ?,
-						owner_id = NULL, owner_pid = NULL
-					WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
-				`).run(
-					status,
-					input.code,
-						stableJson({
-							message: failureInput.message,
-							...(failureInput.additionalDetails
-								? { additional_details: failureInput.additionalDetails }
-								: {}),
-							...(input.diagnostics && Object.keys(input.diagnostics).length > 0
-							? { diagnostics: input.diagnostics }
-							: {}),
-					}),
-					input.completedAt,
-					input.sessionId,
-					input.clientTurnId,
-				);
-				this.#touchExistingSession(input.sessionId, input.completedAt);
-				return this.#requiredTurn(input.sessionId, input.clientTurnId);
-			});
+			return this.turnTerminalizations.terminalize({ kind: "failed", ...input }).turn;
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -1113,26 +1041,13 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				));
 				for (const { turn } of orphaned) {
 					const completedAt = this.#clock();
-					for (const call of this.loadPendingToolCalls(turn.session_id, turn.turn_id)) {
-						this.#appendSyntheticToolResult(turn, call, "interrupted", completedAt);
-					}
-					this.#appendInterruptedTurnDisplay(turn, completedAt);
-					this.#appendLifecycleEvent(turn, "interrupted", completedAt, {
-						errorCode: "interrupted",
+					this.turnTerminalizations.terminalizeRecoveredInterruption({
+						sessionId: turn.session_id,
+						clientTurnId: turn.client_turn_id,
 						message: "turn interrupted during process restart",
-					});
-					this.#database.prepare(`
-						UPDATE runtime_turns
-						SET status = 'interrupted', error_code = 'interrupted',
-							result_json = ?, completed_at = ?, owner_id = NULL, owner_pid = NULL
-						WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
-					`).run(
-						stableJson({ message: "turn interrupted during process restart" }),
 						completedAt,
-						turn.session_id,
-						turn.client_turn_id,
-					);
-					this.#touchExistingSession(turn.session_id, completedAt);
+						appendAbortMarker: false,
+					});
 				}
 				return orphaned.length;
 			});
@@ -1164,28 +1079,13 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					return turn;
 				}
 				const completedAt = this.#clock();
-				for (const call of this.loadPendingToolCalls(normalizedSessionId, normalizedTurnId)) {
-					this.#appendSyntheticToolResult(turn, call, "interrupted", completedAt);
-				}
-				this.#appendTurnAbortedEvent(turn, completedAt);
-				this.#appendInterruptedTurnDisplay(turn, completedAt);
-				this.#appendLifecycleEvent(turn, "interrupted", completedAt, {
-					errorCode: "interrupted",
+				return this.turnTerminalizations.terminalizeRecoveredInterruption({
+					sessionId: normalizedSessionId,
+					clientTurnId: turn.client_turn_id,
 					message: "turn interrupted by runtime owner",
-				});
-				this.#database.prepare(`
-					UPDATE runtime_turns
-					SET status = 'interrupted', error_code = 'interrupted', result_json = ?,
-						completed_at = ?, owner_id = NULL, owner_pid = NULL
-					WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
-				`).run(
-					stableJson({ message: "turn interrupted by runtime owner" }),
 					completedAt,
-					normalizedSessionId,
-					turn.client_turn_id,
-				);
-				this.#touchExistingSession(normalizedSessionId, completedAt);
-				return this.#requiredTurn(normalizedSessionId, turn.client_turn_id);
+					appendAbortMarker: true,
+				}).turn;
 			});
 		} catch (error) {
 			throw storageError(error);
@@ -1549,6 +1449,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 	}
 
 	interruptAmbiguousApproval(input: InterruptAmbiguousApprovalInput): RuntimeTurnRecord {
+		let terminalization: StoredTurnTerminalization | undefined;
 		this.#stateRepository.interruptAmbiguousApproval(input, () => {
 			const turn = this.#requireRunningTurn(input.sessionId, input.clientTurnId);
 			this.#assertContinuationToolCall(
@@ -1559,42 +1460,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				input.toolName,
 				true,
 			);
-			const completedAt = input.completedAt;
-			this.#appendToolResultEvent(turn, {
-				sessionId: input.sessionId,
-				clientTurnId: input.clientTurnId,
-				result: {
-					callId: input.callId,
-					toolName: input.toolName,
-					output: "Tool effect outcome is unknown after interruption.",
-					success: false,
-				},
-				summary: `${input.toolName.slice(0, 128) || "Tool"} outcome unknown`,
-				errorKind: input.errorKind,
-			}, completedAt);
-			this.#appendTurnAbortedEvent(turn, completedAt);
-			this.#appendInterruptedTurnDisplay(turn, completedAt);
-			this.#appendLifecycleEvent(turn, "interrupted", completedAt, {
-				errorCode: "interrupted",
-				message: "tool effect outcome is unknown",
-				diagnostics: { error_kind: input.errorKind },
-			});
-			this.#database.prepare(`
-				UPDATE runtime_turns
-				SET status = 'interrupted', error_code = 'interrupted', result_json = ?,
-					completed_at = ?, owner_id = NULL, owner_pid = NULL
-				WHERE session_id = ? AND client_turn_id = ? AND status = 'in_progress'
-			`).run(
-				stableJson({
-					message: "tool effect outcome is unknown",
-					error_kind: input.errorKind,
-				}),
-				completedAt,
-				input.sessionId,
-				input.clientTurnId,
-			);
+			terminalization = this.turnTerminalizations.terminalizeUnknownToolOutcome(input);
 		});
-		return this.#requiredTurn(input.sessionId, input.clientTurnId);
+		if (!terminalization) throw new StorageFailure("approval interruption did not terminalize turn");
+		return terminalization.turn;
 	}
 
 	validateRecoveryReferences(sessionId: string): void {
@@ -2943,40 +2812,6 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		}));
 	}
 
-	#appendSyntheticToolResult(
-		turn: RuntimeTurnRecord,
-		call: CanonicalToolCall,
-		status: "failed" | "interrupted",
-		createdAt: string,
-	): void {
-		const interrupted = status === "interrupted";
-		this.#appendToolResultEvent(turn, {
-			sessionId: turn.session_id,
-			clientTurnId: turn.client_turn_id,
-			result: {
-				callId: call.callId,
-				toolName: call.name,
-				output: interrupted
-					? "Tool execution was interrupted before a result was persisted."
-					: "Tool result unavailable because the turn failed before persistence completed.",
-				success: false,
-			},
-			summary: `${call.name.slice(0, 128) || "Tool"} ${interrupted ? "interrupted" : "result unavailable"}`,
-			errorKind: interrupted ? "tool_interrupted" : "tool_result_unavailable",
-			metadata: { synthetic: true, append_only: true },
-		}, createdAt);
-	}
-
-	#appendTurnAbortedEvent(turn: RuntimeTurnRecord, createdAt: string): void {
-		const marker = turnAbortedContextItem(turn.turn_id);
-		this.#appendContextEvent({
-			sessionId: turn.session_id,
-			itemId: marker.itemId,
-			text: marker.item.text,
-			metadata: marker.item.metadata,
-		}, createdAt);
-	}
-
 	#appendInterruptedTurnDisplay(turn: RuntimeTurnRecord, createdAt: string): void {
 		const eventId = turnInterruptedNoticeId(turn.turn_id);
 		const existing = this.#database.prepare(`
@@ -2998,56 +2833,6 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			},
 			createdAt,
 		});
-	}
-
-	#appendFailedTurnDisplay(
-		turn: RuntimeTurnRecord,
-		code: RuntimeErrorCode,
-		createdAt: string,
-		message?: string,
-		additionalDetails?: string,
-	): void {
-		const eventId = turnFailedNoticeId(turn.turn_id);
-		const existing = this.#database.prepare(`
-			SELECT 1 FROM transcript_events
-			WHERE session_id = ? AND event_id = ? LIMIT 1
-		`).get(turn.session_id, eventId);
-		if (existing) return;
-		this.#appendDisplayActivityEvent({
-			sessionId: turn.session_id,
-			eventId,
-			turnId: turn.turn_id,
-			activityType: "error",
-			text: turnFailureNotice(code, message),
-			status: "failed",
-			metadata: {
-				event_kind: "turn_failed",
-				failed_turn_id: turn.turn_id,
-				status: "failed",
-					code,
-					source: "runtime",
-					...(additionalDetails ? { additional_details: additionalDetails } : {}),
-				},
-			createdAt,
-		});
-	}
-
-	#appendLifecycleEvent(
-		turn: RuntimeTurnRecord,
-		phase: "completed" | "failed" | "interrupted",
-		createdAt: string,
-		details: Readonly<Record<string, unknown>>,
-	): void {
-		this.#insertEvent(parseTranscriptEventAppendInput({
-			schemaVersion: 1,
-			sessionId: turn.session_id,
-			eventId: semanticEventId(turn.turn_id, "lifecycle", phase),
-			turnId: turn.turn_id,
-			eventType: "turn_lifecycle",
-			modelVisible: false,
-			createdAt,
-			payload: { phase, ...details },
-		}));
 	}
 
 	#emptySessionCandidates(workspaceRoot?: string): readonly SessionMaintenanceCandidate[] {
@@ -3883,23 +3668,6 @@ function validatedToolActivationNames(value: readonly string[]): readonly string
 		throw new StorageFailure("tool activation names must be unique");
 	}
 	return Object.freeze(names);
-}
-
-function semanticEventId(...parts: readonly string[]): string {
-	const digest = createHash("sha256").update(stableJson(parts)).digest("hex");
-	return `event:${digest}`;
-}
-
-function completedTurnDurationMs(
-	turn: RuntimeTurnRecord,
-	completedAt: string,
-): number | undefined {
-	const startedAtMs = Date.parse(turn.started_at);
-	const completedAtMs = Date.parse(completedAt);
-	if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) {
-		return undefined;
-	}
-	return Math.min(86_400_000, completedAtMs - startedAtMs);
 }
 
 function clarificationResponseEventId(requestId: string): string {

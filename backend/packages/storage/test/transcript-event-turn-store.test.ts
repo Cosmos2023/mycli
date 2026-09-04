@@ -14,6 +14,7 @@ import Database from "better-sqlite3";
 import {
 	SQLiteTranscriptEventRepository,
 	type ReserveTurnInput,
+	type TurnTerminalizationFailpoint,
 } from "../src/index.ts";
 
 const NOW = "2026-08-14T00:00:00.000Z";
@@ -82,7 +83,8 @@ test("writes one canonical event per turn semantic action without legacy transcr
 		text: "Persistent context",
 		metadata: CONTEXT_METADATA,
 	});
-	const completed = fixture.repository.completeTurn({
+	const terminalized = fixture.repository.turnTerminalizations.terminalize({
+		kind: "completed",
 		sessionId: "session-complete",
 		clientTurnId: "client-complete",
 		assistantText: "Repository inspected.",
@@ -91,8 +93,15 @@ test("writes one canonical event per turn semantic action without legacy transcr
 		responseId: "response-complete",
 		completedAt: LATER,
 	});
+	const completed = terminalized.turn;
 
 	assert.equal(completed.status, "completed");
+	assert.equal(terminalized.outbox.eventType, "turn_lifecycle");
+	assert.equal(terminalized.outbox.payload.phase, "completed");
+	assert.deepEqual(
+		fixture.repository.turnTerminalizations.load("session-complete", "client-complete"),
+		terminalized,
+	);
 	const events = fixture.repository.loadEventWindow("session-complete", { limit: 100 }).events;
 	assert.deepEqual(events.map((event) => event.eventType), [
 		"user_input",
@@ -105,6 +114,7 @@ test("writes one canonical event per turn semantic action without legacy transcr
 		"turn_lifecycle",
 	]);
 	assert.equal(events.filter((event) => event.eventType === "user_input").length, 1);
+	assert.deepEqual(events.at(-1), terminalized.outbox);
 	const user = events.find((event) => event.eventType === "user_input");
 	assert.equal(user?.eventType === "user_input" && user.payload.images?.[0]?.data, "aGVsbG8=");
 	const completedDuration = events.find(
@@ -153,6 +163,72 @@ test("writes one canonical event per turn semantic action without legacy transcr
 		.map((row) => row.payload_json).join("\n");
 	assert.equal(payloads.split("unique-full-tool-output-a").length - 1, 1);
 	assert.equal(payloads.split("unique-full-tool-output-b").length - 1, 1);
+});
+
+test("rolls back complete and interrupted terminalization after writing the outbox", async (t) => {
+	let armed: TurnTerminalizationFailpoint | undefined;
+	const fixture = await repositoryFixture(t, {
+		turnTerminalizationFailpoint: (name) => {
+			if (name === armed) throw new Error(`injected ${name}`);
+		},
+	});
+	fixture.repository.reserveTurn(
+		submission("session-complete-rollback", "client-complete-rollback", "turn-complete-rollback"),
+	);
+	armed = "complete_after_outbox";
+	assert.throws(() => fixture.repository.turnTerminalizations.terminalize({
+		kind: "completed",
+		sessionId: "session-complete-rollback",
+		clientTurnId: "client-complete-rollback",
+		assistantText: "must roll back",
+		usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+		completedAt: LATER,
+	}));
+	assert.equal(
+		fixture.repository.loadTurn("session-complete-rollback", "client-complete-rollback")?.status,
+		"in_progress",
+	);
+	assert.deepEqual(
+		fixture.repository.loadEventWindow("session-complete-rollback", { limit: 20 }).events
+			.map((event) => event.eventType),
+		["user_input"],
+	);
+
+	armed = undefined;
+	fixture.repository.reserveTurn(
+		submission("session-interrupt-rollback", "client-interrupt-rollback", "turn-interrupt-rollback"),
+	);
+	fixture.repository.appendAssistantToolCalls({
+		sessionId: "session-interrupt-rollback",
+		clientTurnId: "client-interrupt-rollback",
+		assistantText: "",
+		calls: [{ callId: "call-rollback", name: "Shell", argumentsJson: "{}" }],
+	});
+	armed = "failure_after_outbox";
+	assert.throws(() => fixture.repository.turnTerminalizations.terminalize({
+		kind: "failed",
+		sessionId: "session-interrupt-rollback",
+		clientTurnId: "client-interrupt-rollback",
+		code: "interrupted",
+		message: "turn interrupted",
+		completedAt: LATER,
+	}));
+	assert.equal(
+		fixture.repository.loadTurn("session-interrupt-rollback", "client-interrupt-rollback")?.status,
+		"in_progress",
+	);
+	assert.deepEqual(
+		fixture.repository.loadEventWindow("session-interrupt-rollback", { limit: 20 }).events
+			.map((event) => event.eventType),
+		["user_input", "assistant_tool_call_batch"],
+	);
+	assert.deepEqual(
+		fixture.repository.loadPendingToolCalls(
+			"session-interrupt-rollback",
+			"turn-interrupt-rollback",
+		).map((call) => call.callId),
+		["call-rollback"],
+	);
 });
 
 test("queued turn reservation stores its queue identity in the canonical user event", async (t) => {
@@ -319,12 +395,33 @@ test("recovers orphaned turns once with generated tool results and an interrupte
 		isProcessAlive: () => false,
 	});
 	t.after(() => recovered.close());
-	assert.equal(recovered.loadTurn("session-recovery", "client-recovery")?.status, "interrupted");
-	assert.equal(recovered.recoverInterruptedTurns(), 0);
 	assert.deepEqual(
-		recovered.loadEventWindow("session-recovery", { limit: 20 }).events
-			.map((event) => event.eventType),
+		recovered.loadTurn("session-recovery", "client-recovery"),
+		{
+			schema_version: 1,
+			session_id: "session-recovery",
+			client_turn_id: "client-recovery",
+			turn_id: "turn-recovery",
+			request_fingerprint: `sha256:${"b".repeat(64)}`,
+			status: "interrupted",
+			error_code: "interrupted",
+			result: { message: "turn interrupted during process restart" },
+			started_at: NOW,
+			completed_at: LATER,
+		},
+	);
+	assert.equal(recovered.recoverInterruptedTurns(), 0);
+	const recoveryEvents = recovered.loadEventWindow("session-recovery", { limit: 20 }).events;
+	assert.deepEqual(
+		recoveryEvents.map((event) => event.eventType),
 		["user_input", "assistant_tool_call_batch", "tool_result", "display_activity", "turn_lifecycle"],
+	);
+	const recoveryLifecycle = recoveryEvents.at(-1);
+	assert.equal(
+		recoveryLifecycle?.eventType === "turn_lifecycle"
+			? recoveryLifecycle.payload.message
+			: undefined,
+		"turn interrupted during process restart",
 	);
 	assert.deepEqual(recovered.loadPendingToolCalls("session-recovery", "turn-recovery"), []);
 	assert.deepEqual(
@@ -332,6 +429,28 @@ test("recovers orphaned turns once with generated tool results and an interrupte
 			.filter((item) => item.id === turnInterruptedNoticeId("turn-recovery"))
 			.map((item) => [item.type, item.text]),
 		[["warning", TURN_INTERRUPTED_NOTICE]],
+	);
+});
+
+test("preserves the targeted runtime-owner interruption reason", async (t) => {
+	const fixture = await repositoryFixture(t);
+	fixture.repository.reserveTurn(
+		submission("session-targeted", "client-targeted", "turn-targeted"),
+	);
+
+	const interrupted = fixture.repository.recoverInterruptedTurn(
+		"session-targeted",
+		"turn-targeted",
+		true,
+	);
+
+	assert.equal(interrupted?.status, "interrupted");
+	assert.deepEqual(interrupted?.result, { message: "turn interrupted by runtime owner" });
+	const lifecycle = fixture.repository.loadEventWindow("session-targeted", { limit: 20 }).events
+		.find((event) => event.eventType === "turn_lifecycle");
+	assert.equal(
+		lifecycle?.eventType === "turn_lifecycle" ? lifecycle.payload.message : undefined,
+		"turn interrupted by runtime owner",
 	);
 });
 
@@ -455,7 +574,10 @@ function submission(
 
 async function repositoryFixture(
 	t: test.TestContext,
-	options: Readonly<{ readonly processId?: number }> = {},
+	options: Readonly<{
+		readonly processId?: number;
+		readonly turnTerminalizationFailpoint?: (name: TurnTerminalizationFailpoint) => void;
+	}> = {},
 ): Promise<{
 	readonly dbPath: string;
 	readonly repository: SQLiteTranscriptEventRepository;
@@ -467,6 +589,9 @@ async function repositoryFixture(
 		dbPath,
 		clock: () => NOW,
 		...(options.processId === undefined ? {} : { processId: options.processId }),
+		...(options.turnTerminalizationFailpoint
+			? { turnTerminalizationFailpoint: options.turnTerminalizationFailpoint }
+			: {}),
 	});
 	t.after(() => repository.close());
 	return { dbPath, repository };

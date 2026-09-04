@@ -11,7 +11,11 @@ import {
 	type AgentSpawnConfigSnapshot,
 } from "@mycli/core";
 import Database from "better-sqlite3";
-import { SQLiteSessionStore, StorageFailure } from "../src/index.ts";
+import {
+	type AgentLifecycleFailpoint,
+	SQLiteSessionStore,
+	StorageFailure,
+} from "../src/index.ts";
 
 const CREATED = "2026-08-08T00:00:00.000Z";
 const UPDATED = "2026-08-08T00:00:01.000Z";
@@ -111,6 +115,148 @@ test("rolls back the agent thread when the paired task reservation fails", async
 	const database = new Database(fixture.dbPath, { readonly: true });
 	t.after(() => database.close());
 	assert.equal(count(database, "agent_spawn_edges"), 0);
+});
+
+test("rolls back every paired agent lifecycle transition after the task write", async (t) => {
+	let armed: AgentLifecycleFailpoint | undefined;
+	const fixture = await storeFixture(t, (name) => {
+		if (name === armed) throw new Error(`injected ${name}`);
+	});
+	const reserve = (suffix: string) => fixture.store.agentLifecycle.reserve({
+		thread: reserveInput(`child-${suffix}`, suffix),
+		task: {
+			taskId: `task-${suffix}`,
+			parentSessionId: "parent-session",
+			parentTurnId: "parent-turn",
+			childSessionId: `child-${suffix}`,
+			profileId: "subagent",
+		},
+	});
+	const ownership = (suffix: string) => ({
+		taskId: `task-${suffix}`,
+		parentSessionId: "parent-session",
+		childSessionId: `child-${suffix}`,
+	});
+
+	reserve("activate");
+	armed = "activate_after_task";
+	assert.throws(() => fixture.store.agentLifecycle.activate(ownership("activate")));
+	assert.equal(fixture.store.subagentTasks.get("task-activate")?.status, "queued");
+	assert.equal(fixture.store.agentThreads.get("child-activate")?.status, "queued");
+	armed = "interrupt_after_task";
+	assert.throws(() => fixture.store.agentLifecycle.interruptRun({
+		...ownership("activate"),
+		reason: "cancel before start",
+	}));
+	assert.equal(fixture.store.subagentTasks.get("task-activate")?.status, "queued");
+	assert.equal(fixture.store.agentThreads.get("child-activate")?.status, "queued");
+
+	for (const scenario of [
+		{
+			suffix: "complete",
+			failpoint: "complete_after_task" as const,
+			run: () => fixture.store.agentLifecycle.completeRun({
+				...ownership("complete"),
+				report: "done",
+			}),
+		},
+		{
+			suffix: "fail",
+			failpoint: "fail_after_task" as const,
+			run: () => fixture.store.agentLifecycle.failRun({
+				...ownership("fail"),
+				error: "failed",
+			}),
+		},
+		{
+			suffix: "interrupt",
+			failpoint: "interrupt_after_task" as const,
+			run: () => fixture.store.agentLifecycle.interruptRun({
+				...ownership("interrupt"),
+				reason: "stopped",
+			}),
+		},
+	] as const) {
+		armed = undefined;
+		reserve(scenario.suffix);
+		fixture.store.agentLifecycle.activate(ownership(scenario.suffix));
+		armed = scenario.failpoint;
+		assert.throws(scenario.run);
+		assert.equal(
+			fixture.store.subagentTasks.get(`task-${scenario.suffix}`)?.status,
+			"running",
+		);
+		assert.equal(
+			fixture.store.agentThreads.get(`child-${scenario.suffix}`)?.status,
+			"running",
+		);
+	}
+});
+
+test("interrupts a queued task and thread as one lifecycle transition", async (t) => {
+	const fixture = await storeFixture(t);
+	fixture.store.agentLifecycle.reserve({
+		thread: reserveInput("queued-child", "queued"),
+		task: {
+			taskId: "queued-task",
+			parentSessionId: "parent-session",
+			parentTurnId: "parent-turn",
+			childSessionId: "queued-child",
+			profileId: "subagent",
+		},
+	});
+
+	const interrupted = fixture.store.agentLifecycle.interruptRun({
+		taskId: "queued-task",
+		parentSessionId: "parent-session",
+		childSessionId: "queued-child",
+		reason: "cancel before start",
+	});
+
+	assert.equal(interrupted.task.status, "interrupted");
+	assert.equal(interrupted.thread.status, "interrupted");
+	assert.equal(fixture.store.subagentTasks.get("queued-task")?.status, "interrupted");
+	assert.equal(fixture.store.agentThreads.get("queued-child")?.status, "interrupted");
+});
+
+test("rolls back follow-up reservation and activation as one operation", async (t) => {
+	const armed: AgentLifecycleFailpoint = "follow_up_after_task";
+	const fixture = await storeFixture(t, (name) => {
+		if (name === armed) throw new Error(`injected ${name}`);
+	});
+	const first = fixture.store.agentLifecycle.reserve({
+		thread: reserveInput("follow-up-child", "follow-up"),
+		task: {
+			taskId: "follow-up-task-1",
+			parentSessionId: "parent-session",
+			parentTurnId: "parent-turn-1",
+			childSessionId: "follow-up-child",
+			profileId: "subagent",
+		},
+	});
+	fixture.store.agentLifecycle.activate({
+		taskId: first.task.taskId,
+		parentSessionId: first.task.parentSessionId,
+		childSessionId: first.task.childSessionId,
+	});
+	fixture.store.agentLifecycle.completeRun({
+		taskId: first.task.taskId,
+		parentSessionId: first.task.parentSessionId,
+		childSessionId: first.task.childSessionId,
+		report: "first run complete",
+	});
+
+	assert.throws(() => fixture.store.agentLifecycle.startFollowUp({
+		taskId: "follow-up-task-2",
+		parentSessionId: "parent-session",
+		parentTurnId: "parent-turn-2",
+		childSessionId: "follow-up-child",
+		profileId: "subagent",
+		description: "continue",
+	}));
+
+	assert.equal(fixture.store.subagentTasks.get("follow-up-task-2"), undefined);
+	assert.equal(fixture.store.agentThreads.get("follow-up-child")?.status, "idle");
 });
 
 test("persists legal lifecycle transitions and terminal state", async (t) => {
@@ -331,7 +477,10 @@ function reserveAndStart(store: SQLiteSessionStore, taskId: string, childSession
 	return ownership;
 }
 
-async function storeFixture(t: test.TestContext) {
+async function storeFixture(
+	t: test.TestContext,
+	agentLifecycleFailpoint?: (name: AgentLifecycleFailpoint) => void,
+) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-agent-thread-store-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const dbPath = join(root, "sessions.db");
@@ -340,6 +489,7 @@ async function storeFixture(t: test.TestContext) {
 	const store = new SQLiteSessionStore({
 		dbPath,
 		clock: () => timestamps[Math.min(index++, timestamps.length - 1)] ?? COMPLETED,
+		...(agentLifecycleFailpoint ? { agentLifecycleFailpoint } : {}),
 	});
 	t.after(() => {
 		try {

@@ -25,6 +25,7 @@ import type {
 } from "./shell-transcript-store.ts";
 import type { SubagentTaskStore } from "./subagent-task-store.ts";
 import type { AgentThreadStore } from "./agent-thread-store.ts";
+import type { AgentLifecycleStore } from "./agent-lifecycle-store.ts";
 import type {
 	AppendTranscriptDisplayActivityInput,
 	TranscriptEventEnvelope,
@@ -71,6 +72,21 @@ export interface FailStoredTurnInput {
 	readonly additionalDetails?: string;
 	readonly diagnostics?: Readonly<Record<string, string | number | boolean | null>>;
 	readonly completedAt: string;
+}
+
+export type TerminalizeStoredTurnInput =
+	| (CompleteStoredTurnInput & { readonly kind: "completed" })
+	| (FailStoredTurnInput & { readonly kind: "failed" });
+
+export interface StoredTurnTerminalization {
+	readonly kind: "completed" | "failed" | "interrupted";
+	readonly turn: RuntimeTurnRecord;
+	readonly outbox: TranscriptEventEnvelope<"turn_lifecycle">;
+}
+
+export interface TurnTerminalizationStore {
+	terminalize(input: TerminalizeStoredTurnInput): StoredTurnTerminalization;
+	load(sessionId: string, clientTurnId: string): StoredTurnTerminalization | undefined;
 }
 
 export function normalizeStoredTurnFailure(input: FailStoredTurnInput): FailStoredTurnInput {
@@ -670,12 +686,17 @@ export interface TurnStore {
 	close(): void;
 }
 
+export interface RuntimeTurnStore extends TurnStore {
+	readonly turnTerminalizations: TurnTerminalizationStore;
+}
+
 export interface SessionLeaseStore {
 	acquireSessionLease(sessionId: string): boolean;
 	releaseSessionLease(sessionId: string): void;
 }
 
 export interface SessionStore extends TurnStore, SessionStateStore, ShellTranscriptStore, ShellOutputTranscriptReader {
+	readonly agentLifecycle: AgentLifecycleStore;
 	readonly agentThreads: AgentThreadStore;
 	readonly subagentTasks: SubagentTaskStore;
 	forkAgentConversation(input: ForkAgentConversationInput): ForkAgentConversationResult;

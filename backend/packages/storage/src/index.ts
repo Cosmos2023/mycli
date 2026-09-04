@@ -87,6 +87,7 @@ export type {
 	ProjectedFileChange,
 	ProjectedMutationMetadata,
 	ReserveTurnInput,
+	RuntimeTurnStore,
 	RuntimeStateKey,
 	SaveQueueSnapshotInput,
 	SaveApprovalSuspensionInput,
@@ -119,8 +120,16 @@ export type {
 	SessionVacuumResult,
 	TurnStore,
 	TurnReservation,
+	StoredTurnTerminalization,
+	TerminalizeStoredTurnInput,
+	TurnTerminalizationStore,
 	UpdateSessionMetadataInput,
 } from "./session-store.ts";
+export { SQLiteTurnTerminalizationRepository } from "./turn-terminalization-repository.ts";
+export type {
+	SQLiteTurnTerminalizationRepositoryOptions,
+	TurnTerminalizationFailpoint,
+} from "./turn-terminalization-repository.ts";
 export {
 	BACKFILL_SEARCH_SQL,
 	SCHEMA_V2_SQL,
@@ -222,6 +231,13 @@ export type {
 	SQLiteAgentThreadRepositoryOptions,
 	TransitionAgentThreadInput,
 } from "./agent-thread-store.ts";
+export { SQLiteAgentLifecycleRepository } from "./agent-lifecycle-store.ts";
+export type {
+	AgentLifecycleFailpoint,
+	AgentLifecycleStore,
+	AgentLifecycleTransition,
+	SQLiteAgentLifecycleRepositoryOptions,
+} from "./agent-lifecycle-store.ts";
 export { SQLiteAgentMailboxRepository } from "./agent-mailbox-store.ts";
 export type {
 	AgentMailboxEnqueueResult,

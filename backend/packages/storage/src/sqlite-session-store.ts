@@ -113,8 +113,12 @@ import { SQLiteAgentThreadRepository } from "./agent-thread-store.ts";
 import type {
 	AgentSpawnStore,
 	AgentThreadStore,
-	ReserveAgentSpawnInput,
 } from "./agent-thread-store.ts";
+import { SQLiteAgentLifecycleRepository } from "./agent-lifecycle-store.ts";
+import type {
+	AgentLifecycleFailpoint,
+	AgentLifecycleStore,
+} from "./agent-lifecycle-store.ts";
 import { SQLiteAgentMailboxRepository } from "./agent-mailbox-store.ts";
 import type { AgentMailboxStore } from "./agent-mailbox-store.ts";
 import { SQLiteModelInputLedger } from "./model-input-ledger.ts";
@@ -154,6 +158,7 @@ export interface SQLiteSessionStoreOptions {
 	readonly isProcessAlive?: (processId: number) => boolean;
 	readonly stateFailpoint?: (name: string) => void;
 	readonly modelInputFailpoint?: (name: ModelInputLedgerFailpoint) => void;
+	readonly agentLifecycleFailpoint?: (name: AgentLifecycleFailpoint) => void;
 	readonly reconcileRuntimeState?: boolean;
 }
 
@@ -205,6 +210,7 @@ owner_pid
 
 export class SQLiteSessionStore implements SessionStore {
 	readonly agentEffectLedger: AgentEffectLedgerStore;
+	readonly agentLifecycle: AgentLifecycleStore;
 	readonly agentMailbox: AgentMailboxStore;
 	readonly agentSpawns: AgentSpawnStore;
 	readonly agentThreads: AgentThreadStore;
@@ -254,15 +260,15 @@ export class SQLiteSessionStore implements SessionStore {
 				write: <Result>(operation: () => Result) => this.#write(operation),
 				isProcessAlive: this.#isProcessAlive,
 			});
-			this.agentSpawns = Object.freeze({
-				reserve: (input: ReserveAgentSpawnInput) =>
-					this.#write(() =>
-						Object.freeze({
-							thread: this.agentThreads.reserve(input.thread),
-							task: this.subagentTasks.reserve(input.task),
-						}),
-					),
+			this.agentLifecycle = new SQLiteAgentLifecycleRepository({
+				threads: this.agentThreads,
+				tasks: this.subagentTasks,
+				write: <Result>(operation: () => Result) => this.#write(operation),
+				...(options.agentLifecycleFailpoint
+					? { failpoint: options.agentLifecycleFailpoint }
+					: {}),
 			});
+			this.agentSpawns = this.agentLifecycle;
 			this.agentMailbox = new SQLiteAgentMailboxRepository({
 				database: this.#database,
 				clock: this.#clock,
