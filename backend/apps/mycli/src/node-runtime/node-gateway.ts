@@ -41,6 +41,7 @@ import type {
 	ResolveApprovalInput,
 	ResolveClarificationInput,
 	SessionCoordinator,
+	SessionExecutionClaim,
 	SessionGenerationContext,
 	SubmitTurnOptions,
 	ForceInterruptInput,
@@ -359,6 +360,7 @@ interface ActiveTurn {
 	readonly controller: AbortController;
 	readonly context: SessionGenerationContext;
 	readonly runtime: NodeGatewayRuntime;
+	readonly executionClaim?: SessionExecutionClaim;
 	readonly collaborationMode: "default" | "plan";
 	readonly planStreamFilter?: ProposedPlanStreamFilter;
 	turnId?: string;
@@ -2265,7 +2267,8 @@ class InProcessNodeGateway implements NodeGateway {
 		const runtime = this.#runtime();
 		const coordinator = this.#options.sessionCoordinator;
 		this.#turnAdmissionPending = true;
-		if (coordinator && !coordinator.markExecuting(context, true)) {
+		const executionClaim = coordinator?.claimExecution(context);
+		if (coordinator && !executionClaim) {
 			this.#turnAdmissionPending = false;
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
@@ -2305,6 +2308,7 @@ class InProcessNodeGateway implements NodeGateway {
 				controller: new AbortController(),
 				context,
 				runtime,
+				...(executionClaim ? { executionClaim } : {}),
 				collaborationMode,
 				...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 				turnId,
@@ -2326,7 +2330,7 @@ class InProcessNodeGateway implements NodeGateway {
 				turn_id: turnId,
 			};
 		} catch (error) {
-			if (!activeInstalled) coordinator?.markExecuting(context, false);
+			if (!activeInstalled && executionClaim) coordinator?.releaseExecution(executionClaim);
 			throw error;
 		} finally {
 			this.#turnAdmissionPending = false;
@@ -2394,18 +2398,25 @@ class InProcessNodeGateway implements NodeGateway {
 			throw new GatewayFailure("approval_not_pending", "No pending approval matches the request.");
 		}
 		const context = coordinator.context();
-		if (!coordinator.markExecuting(context, true)) {
+		const executionClaim = coordinator.claimExecution(context);
+		if (!executionClaim) {
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
 		const collaborationMode = this.#collaborationModeByTurn.get(pending.turnId)
 			?? this.#collaborationMode;
-		snapshot.binding.configureRuntimeContext?.({ collaborationMode, turnId: pending.turnId });
+		try {
+			snapshot.binding.configureRuntimeContext?.({ collaborationMode, turnId: pending.turnId });
+		} catch (error) {
+			coordinator.releaseExecution(executionClaim);
+			throw error;
+		}
 		const active: ActiveTurn = {
 			clientTurnId: pending.clientTurnId,
 			clientUserMessageId: pending.clientTurnId,
 			controller: new AbortController(),
 			context,
 			runtime: snapshot.binding,
+			executionClaim,
 			collaborationMode,
 			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId: pending.turnId,
@@ -2481,18 +2492,25 @@ class InProcessNodeGateway implements NodeGateway {
 			);
 		}
 		const context = coordinator.context();
-		if (!coordinator.markExecuting(context, true)) {
+		const executionClaim = coordinator.claimExecution(context);
+		if (!executionClaim) {
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
 		const collaborationMode = this.#collaborationModeByTurn.get(pending.turnId)
 			?? this.#collaborationMode;
-		snapshot.binding.configureRuntimeContext?.({ collaborationMode, turnId: pending.turnId });
+		try {
+			snapshot.binding.configureRuntimeContext?.({ collaborationMode, turnId: pending.turnId });
+		} catch (error) {
+			coordinator.releaseExecution(executionClaim);
+			throw error;
+		}
 		const active: ActiveTurn = {
 			clientTurnId: pending.clientTurnId,
 			clientUserMessageId: pending.clientUserMessageId,
 			controller: new AbortController(),
 			context,
 			runtime: snapshot.binding,
+			executionClaim,
 			collaborationMode,
 			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId: pending.turnId,
@@ -2758,7 +2776,9 @@ class InProcessNodeGateway implements NodeGateway {
 
 	#releaseActiveExecution(active: ActiveTurn, terminalFinalized: boolean): void {
 		if (this.#activeTurn !== active) return;
-		this.#options.sessionCoordinator?.markExecuting(active.context, false);
+		if (active.executionClaim) {
+			this.#options.sessionCoordinator?.releaseExecution(active.executionClaim);
+		}
 		this.#activeTurn = null;
 		this.#activeTurnTask = null;
 		if (this.#closed || !this.#isCurrent(active)) return;
@@ -2795,9 +2815,17 @@ class InProcessNodeGateway implements NodeGateway {
 		const coordinator = this.#options.sessionCoordinator;
 		const session = coordinator?.snapshot();
 		if (session?.pendingApproval || session?.pendingClarification || session?.suspendedTurn) return;
-		if (coordinator && !coordinator.markExecuting(context, true)) return;
-		const reservedTurnId = this.#options.createTurnId?.()
-			?? `turn_${randomUUID().replaceAll("-", "")}`;
+		const executionClaim = coordinator?.claimExecution(context);
+		if (coordinator && !executionClaim) return;
+		let reservedTurnId: string;
+		try {
+			reservedTurnId = this.#options.createTurnId?.()
+				?? `turn_${randomUUID().replaceAll("-", "")}`;
+		} catch {
+			if (executionClaim) coordinator?.releaseExecution(executionClaim);
+			this.#emitQueueWorkerStartFailed();
+			return;
+		}
 		const proposed: TurnSubmission = {
 			clientTurnId: record.clientTurnId,
 			clientUserMessageId: record.clientTurnId,
@@ -2818,11 +2846,15 @@ class InProcessNodeGateway implements NodeGateway {
 			if (reservation.kind === "existing") {
 				const reconciliation = queue.reconcileClaim(record.queueId, reservedTurnId);
 				claimed = false;
-				coordinator?.markExecuting(context, false);
+				if (executionClaim) coordinator?.releaseExecution(executionClaim);
 				if (reconciliation.committed) this.#requestNextQueuedTurn();
 				else this.#emitQueueWorkerStartFailed();
 				return;
 			}
+			runtime.configureRuntimeContext?.({
+				collaborationMode: this.#collaborationMode,
+				turnId: reservation.turn.turn_id,
+			});
 			try {
 				queue.retireClaim(record.queueId, reservedTurnId);
 				claimed = false;
@@ -2841,7 +2873,7 @@ class InProcessNodeGateway implements NodeGateway {
 					// The durable claim remains recoverable on the next runtime load.
 				}
 			}
-			coordinator?.markExecuting(context, false);
+			if (executionClaim) coordinator?.releaseExecution(executionClaim);
 			this.#emitQueueWorkerStartFailed();
 			return;
 		}
@@ -2851,16 +2883,13 @@ class InProcessNodeGateway implements NodeGateway {
 		};
 		const collaborationMode = this.#collaborationMode;
 		this.#collaborationModeByTurn.set(reservation.turn.turn_id, collaborationMode);
-		runtime.configureRuntimeContext?.({
-			collaborationMode,
-			turnId: reservation.turn.turn_id,
-		});
 		const active: ActiveTurn = {
 			clientTurnId: submission.clientTurnId,
 			clientUserMessageId: submission.clientTurnId,
 			controller: new AbortController(),
 			context,
 			runtime,
+			...(executionClaim ? { executionClaim } : {}),
 			collaborationMode,
 			...(collaborationMode === "plan" ? { planStreamFilter: new ProposedPlanStreamFilter() } : {}),
 			turnId: reservation.turn.turn_id,
@@ -2891,23 +2920,52 @@ class InProcessNodeGateway implements NodeGateway {
 	#interrupt(params: JsonObject): JsonObject | Promise<JsonObject> {
 		this.#assertSessionMutationContext(params);
 		let active = this.#activeTurn;
+		const coordinator = this.#options.sessionCoordinator;
+		const pendingClarification = active
+			? undefined
+			: coordinator?.snapshot().pendingClarification;
+		let actualTurnId: string;
+		if (active) {
+			actualTurnId = active.turnId ?? active.clientTurnId;
+		} else if (pendingClarification) {
+			actualTurnId = pendingClarification.turnId;
+		} else {
+			return { accepted: false, requested: false, ...this.#status() };
+		}
+		const expectedTurnId = requiredString(params.turn_id, "turn_id");
+		if (expectedTurnId !== actualTurnId) {
+			throw new GatewayFailure(
+				"turn_id_mismatch",
+				"The active turn changed before interruption.",
+				{ actual_turn_id: actualTurnId },
+			);
+		}
 		if (!active) {
-			const pendingClarification = this.#options.sessionCoordinator?.snapshot().pendingClarification;
-			if (pendingClarification) {
+			if (pendingClarification && coordinator) {
 				const context = this.#sessionContext();
+				const executionClaim = coordinator.claimExecution(context);
+				if (!executionClaim) {
+					return { accepted: false, requested: false, ...this.#status() };
+				}
 				const runtime = this.#runtime();
 				const collaborationMode = this.#collaborationModeByTurn.get(pendingClarification.turnId)
 					?? this.#collaborationMode;
-				runtime.configureRuntimeContext?.({
-					collaborationMode,
-					turnId: pendingClarification.turnId,
-				});
+				try {
+					runtime.configureRuntimeContext?.({
+						collaborationMode,
+						turnId: pendingClarification.turnId,
+					});
+				} catch (error) {
+					coordinator.releaseExecution(executionClaim);
+					throw error;
+				}
 				active = {
 					clientTurnId: pendingClarification.clientTurnId,
 					clientUserMessageId: pendingClarification.clientUserMessageId,
 					controller: new AbortController(),
 					context,
 					runtime,
+					executionClaim,
 					collaborationMode,
 					turnId: pendingClarification.turnId,
 					terminalEmitted: false,
@@ -2917,15 +2975,6 @@ class InProcessNodeGateway implements NodeGateway {
 			}
 		}
 		if (!active) return { accepted: false, requested: false, ...this.#status() };
-		const expectedTurnId = requiredString(params.turn_id, "turn_id");
-		const actualTurnId = active.turnId ?? active.clientTurnId;
-		if (expectedTurnId !== actualTurnId) {
-			throw new GatewayFailure(
-				"turn_id_mismatch",
-				"The active turn changed before interruption.",
-				{ actual_turn_id: actualTurnId },
-			);
-		}
 		if (active.interruptPromise) return active.interruptPromise;
 		active.resubmitPendingSteersAfterInterrupt = this.#queueCoordinator()
 			?.snapshot()

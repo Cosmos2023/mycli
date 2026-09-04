@@ -242,6 +242,10 @@ function gatewayHarness(options: {
 	credentialReadiness?: NodeGatewayCredentialReadiness;
 	credentialReadinessLoader?: () => Promise<NodeGatewayCredentialReadiness>;
 	selectModelLoader?: (input: Readonly<Record<string, unknown>>) => Promise<Readonly<Record<string, unknown>>>;
+	configureRuntimeContext?: (input: Readonly<{
+		readonly collaborationMode: string;
+		readonly turnId?: string;
+	}>) => void;
 	submitStatuses?: readonly RuntimeTurnRecord["status"][];
 	executionPolicySnapshot?: (
 		configuration: GatewayPolicyConfiguration,
@@ -477,6 +481,7 @@ function gatewayHarness(options: {
 		) ?? testExecutionPolicySnapshot(executionPolicyConfiguration),
 		configureRuntimeContext: (input: typeof runtimeContexts[number]) => {
 			runtimeContexts.push(input);
+			options.configureRuntimeContext?.(input);
 		},
 		listCommandAllowances: () => commandAllowances.map((pattern) => [...pattern]),
 		addCommandAllowance: (pattern: string) => {
@@ -2738,11 +2743,13 @@ test("approval respond resumes the owning turn without reserving a new turn", as
 		choice: "approve_once",
 	}]);
 	assert.deepEqual(harness.reservedClientTurnIds, []);
+	assert.equal(harness.sessionCoordinator?.executing(), true);
 	const projected = await waitFor(() => notification(harness.messages, "approval.respond"));
 	assert.equal(projected.params.generation, 1);
 	parseGatewayEvent(projected);
 
 	harness.releaseTurn();
+	await waitFor(() => harness.sessionCoordinator?.executing() === false);
 	await harness.gateway.close();
 });
 
@@ -2786,6 +2793,7 @@ test("clarification bootstrap re-emits the request and response resumes the owni
 	}]);
 	assert.deepEqual(harness.reservedClientTurnIds, []);
 	assert.equal(harness.sessionCoordinator?.snapshot().pendingClarification, undefined);
+	assert.equal(harness.sessionCoordinator?.executing(), true);
 	const projected = await waitFor(() => notification(harness.messages, "clarify.respond"));
 	assert.deepEqual(projected.params, {
 		session_id: "session-node",
@@ -2801,6 +2809,81 @@ test("clarification bootstrap re-emits the request and response resumes the owni
 	parseGatewayEvent(projected);
 
 	harness.releaseTurn();
+	await waitFor(() => harness.sessionCoordinator?.executing() === false);
+	await harness.gateway.close();
+});
+
+test("approval configuration failure releases execution ownership and preserves the request", async () => {
+	let configurationAttempts = 0;
+	const harness = gatewayHarness({
+		sessions: { initialPendingApproval: true },
+		configureRuntimeContext: (input) => {
+			if (!input.turnId) return;
+			configurationAttempts += 1;
+			if (configurationAttempts === 1) throw new Error("runtime context unavailable");
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const failed = await harness.send("approval.respond", {
+		decision_id: "decision-session-node",
+		choice: "approve_once",
+		generation: 1,
+	});
+
+	assert.equal("error" in failed ? failed.error.code : null, "internal_error");
+	assert.equal(harness.sessionCoordinator?.executing(), false);
+	assert.equal(
+		harness.sessionCoordinator?.snapshot().pendingApproval?.decisionId,
+		"decision-session-node",
+	);
+
+	const retried = await harness.send("approval.respond", {
+		decision_id: "decision-session-node",
+		choice: "approve_once",
+		generation: 1,
+	});
+	assert.equal("result" in retried ? retried.result.accepted : false, true);
+	assert.equal(harness.sessionCoordinator?.executing(), true);
+	harness.releaseTurn();
+	await waitFor(() => harness.sessionCoordinator?.executing() === false);
+	await harness.gateway.close();
+});
+
+test("clarification configuration failure releases execution ownership and preserves the request", async () => {
+	let configurationAttempts = 0;
+	const harness = gatewayHarness({
+		sessions: { initialPendingClarification: true },
+		configureRuntimeContext: (input) => {
+			if (!input.turnId) return;
+			configurationAttempts += 1;
+			if (configurationAttempts === 1) throw new Error("runtime context unavailable");
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const failed = await harness.send("clarify.respond", {
+		request_id: "question-session-node",
+		response: "Node",
+		generation: 1,
+	});
+
+	assert.equal("error" in failed ? failed.error.code : null, "internal_error");
+	assert.equal(harness.sessionCoordinator?.executing(), false);
+	assert.equal(
+		harness.sessionCoordinator?.snapshot().pendingClarification?.requestId,
+		"question-session-node",
+	);
+
+	const retried = await harness.send("clarify.respond", {
+		request_id: "question-session-node",
+		response: "Node",
+		generation: 1,
+	});
+	assert.equal("result" in retried ? retried.result.accepted : false, true);
+	assert.equal(harness.sessionCoordinator?.executing(), true);
+	harness.releaseTurn();
+	await waitFor(() => harness.sessionCoordinator?.executing() === false);
 	await harness.gateway.close();
 });
 
@@ -3693,6 +3776,7 @@ test("reserves one queued next turn before removing its queue record", async () 
 test("retains queued input when the next-turn reservation fails", async () => {
 	const harness = gatewayHarness({
 		queue: {},
+		sessions: {},
 		reserve: (submission) => {
 			if (submission.clientTurnId === "queued-client-id") {
 				throw new StorageFailure("private reservation failure");
@@ -3729,6 +3813,46 @@ test("retains queued input when the next-turn reservation fails", async () => {
 	);
 	assert.equal(failure.params.code, "queue_worker_start_failed");
 	assert.equal(JSON.stringify(failure).includes("private reservation failure"), false);
+	assert.equal(harness.sessionCoordinator?.executing(), false);
+	await harness.gateway.close();
+});
+
+test("queued turn configuration failure reconciles queue and execution claims", async () => {
+	let turnConfigurations = 0;
+	const harness = gatewayHarness({
+		queue: {},
+		sessions: {},
+		configureRuntimeContext: (input) => {
+			if (!input.turnId) return;
+			turnConfigurations += 1;
+			if (turnConfigurations === 2) throw new Error("runtime context unavailable");
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", {
+		message: "first turn",
+		client_turn_id: "client-turn",
+		client_user_message_id: "client-message",
+	});
+	await harness.send("turn.follow_up", {
+		message: "configured next turn",
+		client_turn_id: "queued-client-id",
+	});
+
+	harness.releaseTurn();
+	const failure = await waitFor(() => notifications(harness.messages, "gateway.error")
+		.find((message) => message.params.code === "queue_worker_start_failed"));
+
+	assert.equal(failure.params.message, "Queued turn could not be reserved.");
+	assert.deepEqual(harness.reservedClientTurnIds, ["client-turn", "queued-client-id"]);
+	assert.equal(harness.submissions.length, 1);
+	assert.equal(harness.queue?.coordinator.snapshot().followUps[0]?.state, "queued");
+	assert.deepEqual(
+		harness.queue?.persistedSnapshots.map((snapshot) =>
+			snapshot.followUps.map((item) => `${item.queueId}:${item.state}`)),
+		[["queue-1:queued"], ["queue-1:claimed"], ["queue-1:queued"]],
+	);
+	assert.equal(harness.sessionCoordinator?.executing(), false);
 	await harness.gateway.close();
 });
 
@@ -4190,6 +4314,7 @@ test("gateway projects committed steering user item lifecycle", async () => {
 
 test("failed turn reservation publishes no user item lifecycle", async () => {
 	const harness = gatewayHarness({
+		sessions: {},
 		reserve: () => {
 			throw new StorageFailure("private sqlite path");
 		},
@@ -4212,6 +4337,7 @@ test("failed turn reservation publishes no user item lifecycle", async () => {
 		).length,
 		0,
 	);
+	assert.equal(harness.sessionCoordinator?.executing(), false);
 	await harness.gateway.close();
 });
 
@@ -5101,6 +5227,15 @@ test("turn interrupt cancels a pending clarification continuation", async () => 
 		sessions: { initialPendingClarification: true },
 	});
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const mismatch = await harness.send("turn.interrupt", {
+		turn_id: "stale-turn",
+	});
+	assert.equal("error" in mismatch ? mismatch.error.code : null, "turn_id_mismatch");
+	assert.equal(harness.sessionCoordinator?.executing(), false);
+	assert.equal(
+		harness.sessionCoordinator?.snapshot().pendingClarification?.requestId,
+		"question-session-node",
+	);
 
 	const interrupted = await harness.send("turn.interrupt", {
 		turn_id: "turn-session-node",
@@ -5110,8 +5245,40 @@ test("turn interrupt cancels a pending clarification continuation", async () => 
 	assert.equal("result" in interrupted && interrupted.result.requested, true);
 	assert.equal(harness.forcedInterrupts(), 1);
 	assert.equal(harness.sessionCoordinator?.snapshot().pendingClarification, undefined);
+	assert.equal(harness.sessionCoordinator?.executing(), false);
 	assert.equal(notification(harness.messages, "turn.interrupted")?.params.requested, false);
 	assert.equal(notification(harness.messages, "status.changed")?.params.pending_clarification, false);
+	await harness.gateway.close();
+});
+
+test("pending clarification interrupt releases execution when runtime configuration fails", async () => {
+	let configurationAttempts = 0;
+	const harness = gatewayHarness({
+		sessions: { initialPendingClarification: true },
+		configureRuntimeContext: (input) => {
+			if (!input.turnId) return;
+			configurationAttempts += 1;
+			if (configurationAttempts === 1) throw new Error("runtime context unavailable");
+		},
+	});
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const failed = await harness.send("turn.interrupt", {
+		turn_id: "turn-session-node",
+	});
+	assert.equal("error" in failed ? failed.error.code : null, "internal_error");
+	assert.equal(harness.sessionCoordinator?.executing(), false);
+	assert.equal(
+		harness.sessionCoordinator?.snapshot().pendingClarification?.requestId,
+		"question-session-node",
+	);
+
+	const retried = await harness.send("turn.interrupt", {
+		turn_id: "turn-session-node",
+	});
+	assert.equal("result" in retried ? retried.result.accepted : false, true);
+	assert.equal(harness.sessionCoordinator?.executing(), false);
+	assert.equal(harness.sessionCoordinator?.snapshot().pendingClarification, undefined);
 	await harness.gateway.close();
 });
 
