@@ -18,6 +18,7 @@ import type {
 	QueueCoordinator,
 	ResolveApprovalInput,
 	ResolveClarificationInput,
+	RunExecutionSnapshot,
 	SessionCoordinator,
 	SubmitTurnOptions,
 	TurnSubmission,
@@ -79,6 +80,7 @@ export interface NodeGatewayRuntime {
 		readonly permissionProfile?: PermissionProfile;
 	}): SessionPreferences;
 	executionPolicySnapshot?(): ExecutionPolicySnapshot | undefined;
+	runExecutionSnapshot?(turnId: string): RunExecutionSnapshot | undefined;
 	listCommandAllowances?(): readonly (readonly string[])[];
 	addCommandAllowance?(pattern: string): readonly (readonly string[])[];
 	removeCommandAllowance?(pattern: string): readonly (readonly string[])[];

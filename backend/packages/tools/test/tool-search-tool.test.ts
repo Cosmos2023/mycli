@@ -103,6 +103,25 @@ test("tool_search keeps a turn catalog stable across background replacement", as
 	tool.finishTurn("turn-new");
 });
 
+test("tool_search cannot discover additions outside a restored run catalog", async () => {
+	const old = candidate("mcp:docs:old", "docs_old", "Old docs", "mcp", { server: "docs" });
+	const added = candidate("mcp:docs:new", "docs_new", "New docs", "mcp", { server: "docs" });
+	const tool = new ToolSearchTool([old, added]);
+	tool.beginTurn("turn-restored", { deferredTools: [old.definition] });
+
+	const result = await tool.execute({ query: "docs" }, {
+		signal: new AbortController().signal,
+		ownerSessionId: "session",
+		ownerTurnId: "turn-restored",
+		callId: "call-search",
+		publishLifecycle: () => undefined,
+	});
+
+	assert.deepEqual(result.toolActivation, { names: ["docs_old"] });
+	assert.equal(result.modelOutput.includes("docs_new"), false);
+	tool.finishTurn("turn-restored");
+});
+
 function candidate(
 	id: string,
 	name: string,

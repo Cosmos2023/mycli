@@ -132,7 +132,7 @@ export interface CompactionCoordinatorOptions {
 	readonly threadId: string;
 	readonly store: CompactionCoordinatorStore;
 	readonly tokenCounter?: TokenCounter;
-	readonly baseContext?: string;
+	readonly baseContext?: string | (() => string);
 	readonly tokenLimit: number;
 	readonly reservedOutputTokens: number;
 	readonly triggerRatio?: number;
@@ -201,7 +201,13 @@ export class CompactionCoordinator {
 
 	async compact(input: CompactInput): Promise<CompactionResult> {
 		assertNotAborted(input.signal);
-		const baseTokens = this.#tokenCounter.count(this.#options.baseContext ?? "");
+		const baseContext = typeof this.#options.baseContext === "function"
+			? this.#options.baseContext()
+			: this.#options.baseContext ?? "";
+		if (typeof baseContext !== "string") {
+			throw new TypeError("baseContext resolver must return a string");
+		}
+		const baseTokens = this.#tokenCounter.count(baseContext);
 		const beforeTokens = baseTokens + countItems(this.#tokenCounter, input.conversation);
 		const checkpointState = this.#checkpointState();
 		if (checkpointState.interrupted) {

@@ -56,6 +56,7 @@ import { ApprovalPolicy } from "../../tools/src/approval-policy.ts";
 import {
 	NodeTurnRuntime,
 	ContextItemCoordinator,
+	ExecutionPolicyCoordinator,
 	ProviderContinuationCoordinator,
 	QueueCoordinator,
 	type CompactInput,
@@ -66,6 +67,7 @@ import {
 	type NodeTurnRuntimeOptions,
 	type PersistedProviderContinuation,
 	type QueueCoordinatorStore,
+	type RunExecutionSnapshot,
 	type RuntimeDiagnosticEvent,
 } from "../src/index.ts";
 import { fakeTurnTerminalizationStore } from "./support/fake-turn-terminalization.ts";
@@ -2010,14 +2012,82 @@ test("restores deferred tool exposure when an approval continuation rebuilds con
 	assert.equal(suspended.status, "in_progress");
 	assert.equal(approvals.pending()?.decisionId, "call-docs");
 	assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+	assert.equal(Reflect.has(approvals.pending() ?? {}, "runSnapshot"), true);
+	const resumedRuntime = createRuntime({
+		store,
+		provider,
+		toolRouter: router,
+		toolDefinitions: [TOOL_SEARCH_TOOL_DEFINITION],
+		deferredTools: [{
+			id: "plugin:calendar:list",
+			name: "calendar_list",
+			description: "List calendars",
+			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		}],
+		loadToolActivations: () => ["docs_search", "calendar_list"],
+		approvalPolicy: {
+			evaluate: () => { throw new Error("continued batch must not request another approval"); },
+		},
+		approvalCoordinator: approvals.coordinator,
+	});
 
-	const completed = await resolveApproval(runtime, {
+	const completed = await resolveApproval(resumedRuntime, {
 		decisionId: "call-docs",
 		choice: "approve_once",
 	}, () => undefined, new AbortController().signal);
 
 	assert.equal(completed.status, "completed");
 	assert.deepEqual(requests[2]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+});
+
+test("rejects a continuation snapshot that conflicts with the active run", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const router = new SequencedRouter(trace);
+	const approvals = approvalRuntimeFixture(trace, router, store);
+	const runtime = createRuntime({
+		store,
+		provider: scriptedProvider(trace, [], [[
+			{ type: "tool_call", callId: "call-read", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-read" },
+		]]),
+		toolRouter: router,
+		approvalPolicy: {
+			evaluate: (call) => ({
+				kind: "request",
+				callId: call.callId,
+				toolName: call.name,
+				preview: "Read a file",
+				reason: "Approval required for test",
+				options: ["approve_once", "reject"],
+			}),
+		},
+		approvalCoordinator: approvals.coordinator,
+	});
+
+	const suspended = await runtime.submit(submission(), () => undefined, {
+		signal: new AbortController().signal,
+	});
+	assert.equal(suspended.status, "in_progress");
+	const pending = approvals.pending();
+	assert.ok(pending?.runSnapshot);
+	const conflictingSnapshot: RunExecutionSnapshot = Object.freeze({
+		...pending.runSnapshot,
+		collaborationMode: "plan",
+	});
+	approvals.replacePending(Object.freeze({
+		...pending,
+		runSnapshot: conflictingSnapshot,
+	}));
+
+	await assert.rejects(
+		() => resolveApproval(runtime, {
+			decisionId: pending.decisionId,
+			choice: "approve_once",
+		}, () => undefined, new AbortController().signal),
+		/run execution snapshot does not match active run/u,
+	);
+	assert.equal(trace.includes(`approval:resolve:${pending.decisionId}`), false);
 });
 
 test("strict mutation policy durably suspends before requesting approval", async () => {
@@ -3171,6 +3241,160 @@ test("freezes execution policy tools for the provider loop and releases terminal
 	assert.deepEqual(calls, ["begin:turn-1", "finish:turn-1"]);
 });
 
+test("freezes mode and tool catalogs per run while the next run observes refreshes", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const oldDeferred: ToolDefinition = {
+		id: "mcp:docs:old",
+		name: "docs_old",
+		description: "Search the old docs catalog",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	};
+	const newDeferred: ToolDefinition = {
+		id: "mcp:docs:new",
+		name: "docs_new",
+		description: "Search the refreshed docs catalog",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	};
+	let catalogVersion = 1;
+	let deferred = oldDeferred;
+	let skillCatalog = "- old-skill: Original catalog";
+	let providerStep = 0;
+	let catalogResolutions = 0;
+	const capturedSnapshots: unknown[] = [];
+	const runtimeRef: { current?: NodeTurnRuntime } = {};
+	const provider: ModelProvider = {
+		stream: (request) => {
+			requests.push(request);
+			providerStep += 1;
+			if (providerStep === 1) {
+				capturedSnapshots.push(runtimeRef.current?.runExecutionSnapshot("turn-1"));
+				catalogVersion = 2;
+				deferred = newDeferred;
+				skillCatalog = "- new-skill: Refreshed catalog";
+				runtimeRef.current?.configureRuntimeContext({ collaborationMode: "default" });
+				return providerEvents([
+					{ type: "tool_call", callId: "call-read", name: "Read", argumentsJson: READ_ARGUMENTS },
+					{ type: "completed", responseId: "resp-read" },
+				]);
+			}
+			return providerEvents([
+				{ type: "text_delta", text: "done" },
+				{ type: "completed", responseId: `resp-${providerStep}` },
+			]);
+		},
+	};
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		loadToolActivations: () => ["docs_old", "docs_new"],
+		resolveToolCatalog: ({ collaborationMode }) => {
+			catalogResolutions += 1;
+			return {
+				catalogVersion,
+				directTools: collaborationMode === "plan" ? [READ_TOOL_DEFINITION] : [],
+				deferredTools: [deferred],
+				skillCatalog,
+			};
+		},
+	});
+	runtimeRef.current = runtime;
+	runtime.configureRuntimeContext({ collaborationMode: "plan" });
+
+	await runtime.submit(submission(), () => undefined, { signal: new AbortController().signal });
+	await runtime.submit({
+		clientTurnId: "client-2",
+		clientUserMessageId: "message-2",
+		turnId: "turn-2",
+		message: "Continue",
+	}, () => undefined, { signal: new AbortController().signal });
+
+	assert.deepEqual(requests.map((request) => request.tools.map((tool) => tool.name)), [
+		["Read", "docs_old"],
+		["Read", "docs_old"],
+		["docs_new"],
+	]);
+	assert.match(JSON.stringify(requests[1]), /# Plan Mode/u);
+	assert.doesNotMatch(JSON.stringify(requests[2]), /# Plan Mode/u);
+	assert.equal(catalogResolutions, 2);
+	assert.equal(
+		Reflect.get(Reflect.get(capturedSnapshots[0] ?? {}, "toolCatalog") ?? {}, "skillCatalog"),
+		"- old-skill: Original catalog",
+	);
+});
+
+
+test("freezes trust policy for an active run and applies configuration to the next run", async (t) => {
+	const workspace = await mkdtemp(join(tmpdir(), "mycli-run-policy-"));
+	t.after(async () => rm(workspace, { recursive: true, force: true }));
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const seenPolicies: unknown[] = [];
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace });
+	let providerStep = 0;
+	const runtimeRef: { current?: NodeTurnRuntime } = {};
+	const provider: ModelProvider = {
+		stream: (request) => {
+			requests.push(request);
+			providerStep += 1;
+			if (providerStep === 1) {
+				runtimeRef.current?.configureExecutionPolicy({
+					trust: "untrusted",
+					permission: "read-only",
+				});
+				return providerEvents([
+					{ type: "tool_call", callId: "call-read", name: "Read", argumentsJson: READ_ARGUMENTS },
+					{ type: "completed", responseId: "resp-read" },
+				]);
+			}
+			return providerEvents([
+				{ type: "text_delta", text: "done" },
+				{ type: "completed", responseId: `resp-${providerStep}` },
+			]);
+		},
+	};
+	const runtime = createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		executionPolicyCoordinator: coordinator,
+		planTools: ({ shell }) => shell ? [READ_TOOL_DEFINITION] : [],
+		approvalPolicy: {
+			evaluate: (call, executionPolicy) => {
+				seenPolicies.push(executionPolicy);
+				return {
+					kind: "allow",
+					callId: call.callId,
+					toolName: call.name,
+					preview: "Read allowed",
+					reason: "Allowed for test.",
+				};
+			},
+		},
+	});
+	runtimeRef.current = runtime;
+	runtime.configureExecutionPolicy({ trust: "trusted", permission: "workspace" });
+	const expectedPolicy = coordinator.snapshot().profile;
+
+	await runtime.submit(submission(), () => undefined, { signal: new AbortController().signal });
+	await runtime.submit({
+		clientTurnId: "client-2",
+		clientUserMessageId: "message-2",
+		turnId: "turn-2",
+		message: "Continue",
+	}, () => undefined, { signal: new AbortController().signal });
+
+	assert.deepEqual(requests.map((request) => request.tools.map((tool) => tool.name)), [
+		["Read"],
+		["Read"],
+		[],
+	]);
+	assert.deepEqual(seenPolicies, [expectedPolicy]);
+});
+
 test("Plan mode keeps stable tool exposure and rejects update_plan without side effects", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
@@ -3667,6 +3891,7 @@ function createRuntime(options: {
 	readonly runtimeConfig?: NodeRuntimeConfig;
 	readonly executionPolicyCoordinator?: NodeTurnRuntimeOptions["executionPolicyCoordinator"];
 	readonly planTools?: NonNullable<NodeTurnRuntimeOptions["planTools"]>;
+	readonly resolveToolCatalog?: NonNullable<NodeTurnRuntimeOptions["resolveToolCatalog"]>;
 	readonly deferredTools?: NodeTurnRuntimeOptions["deferredTools"];
 	readonly loadToolActivations?: NodeTurnRuntimeOptions["loadToolActivations"];
 	readonly hookRunner?: HookRunnerContract;
@@ -3696,6 +3921,7 @@ function createRuntime(options: {
 		sleep: async () => {},
 		random: () => 0.5,
 		planTools: options.planTools ?? (() => options.toolDefinitions ?? [READ_TOOL_DEFINITION]),
+		...(options.resolveToolCatalog ? { resolveToolCatalog: options.resolveToolCatalog } : {}),
 		...(options.deferredTools ? { deferredTools: options.deferredTools } : {}),
 		...(options.loadToolActivations ? { loadToolActivations: options.loadToolActivations } : {}),
 		toolRouter: options.toolRouter,
@@ -3845,6 +4071,7 @@ interface ApprovalRequestFixture {
 	readonly preview: string;
 	readonly reason: string;
 	readonly preparedMutationGuard?: PreparedMutationGuard;
+	readonly runSnapshot?: RunExecutionSnapshot;
 }
 
 interface ApprovalCoordinatorFixture {
@@ -4012,15 +4239,19 @@ function approvalRuntimeFixture(
 				status: input.choice === "approve_once" ? "completed" : "rejected",
 				continuation,
 				toolResult,
-				};
+			};
 		},
 		finish: (decisionId) => {
 			trace.push(`approval:finish:${decisionId}`);
 			if (options.finishFailure) throw new StorageFailure("approval finalization failed");
 			if (current?.decisionId === decisionId) current = undefined;
 		},
-		};
-	return { coordinator, pending: () => current };
+	};
+	return {
+		coordinator,
+		pending: () => current,
+		replacePending: (pending: ApprovalRequestFixture) => { current = pending; },
+	};
 }
 
 async function resolveApproval(

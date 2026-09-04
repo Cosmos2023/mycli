@@ -170,10 +170,14 @@ export interface DeferredToolCandidate {
 	readonly originMetadata: Readonly<Record<string, string>>;
 }
 
+export interface ToolTurnCatalog {
+	readonly deferredTools: readonly ToolDefinition[];
+}
+
 export interface ToolAdapter {
 	readonly definition: ToolDefinition;
 	readonly supportsParallelToolCalls?: boolean;
-	beginTurn?(turnId: string): void;
+	beginTurn?(turnId: string, catalog?: ToolTurnCatalog): void;
 	finishTurn?(turnId: string): void;
 	prepare?(
 		argumentsValue: Readonly<Record<string, unknown>>,
@@ -190,7 +194,7 @@ export interface ToolAdapter {
 }
 
 export interface ToolRouterContract {
-	beginTurn?(turnId: string): void;
+	beginTurn?(turnId: string, catalog?: ToolTurnCatalog): void;
 	finishTurn?(turnId: string): void;
 	supportsParallelToolCalls?(call: CanonicalToolCall, turnId?: string): boolean;
 	prepare?(

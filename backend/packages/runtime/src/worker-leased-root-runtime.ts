@@ -27,7 +27,8 @@ type RootTurnRuntimeDelegate = Pick<
 	| "resolveApproval"
 	| "resolveClarification"
 	| "submit"
-> & Pick<NodeTurnRuntime, "queueCoordinator">;
+	> & Pick<NodeTurnRuntime, "queueCoordinator">
+	& Partial<Pick<NodeTurnRuntime, "runExecutionSnapshot">>;
 
 interface RootAgentWorkerPool {
 	acquire(input: Parameters<AgentWorkerPool["acquire"]>[0]): Promise<AgentWorkerLease>;
@@ -110,6 +111,10 @@ export class WorkerLeasedRootTurnRuntime {
 
 	executionPolicySnapshot(): ReturnType<NodeTurnRuntime["executionPolicySnapshot"]> {
 		return this.#runtime.executionPolicySnapshot();
+	}
+
+	runExecutionSnapshot(turnId: string): ReturnType<NodeTurnRuntime["runExecutionSnapshot"]> {
+		return this.#runtime.runExecutionSnapshot?.(turnId);
 	}
 
 	reserve(submission: TurnSubmission): TurnReservation {

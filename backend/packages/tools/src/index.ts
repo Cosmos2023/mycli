@@ -360,6 +360,7 @@ export type {
 	ToolPermissionGrant,
 	ToolPreviewOptions,
 	ToolRouterContract,
+	ToolTurnCatalog,
 } from "./types.ts";
 export {
 	EXTENSION_ORIGIN_MAX_ENTRIES,

@@ -1,9 +1,11 @@
+import { stableModelInputJson } from "@mycli/core";
 import { TOOL_SEARCH_TOOL_DEFINITION } from "./manifest.ts";
 import type {
 	DeferredToolCandidate,
 	ToolAdapter,
 	ToolAdapterResult,
 	ToolExecutionOptions,
+	ToolTurnCatalog,
 } from "./types.ts";
 
 const DEFAULT_RESULT_LIMIT = 8;
@@ -26,8 +28,19 @@ export class ToolSearchTool implements ToolAdapter {
 		this.#candidates = Object.freeze(candidates.map(indexCandidate));
 	}
 
-	beginTurn(turnId: string): void {
-		if (!this.#turnCandidates.has(turnId)) this.#turnCandidates.set(turnId, this.#candidates);
+	beginTurn(turnId: string, catalog?: ToolTurnCatalog): void {
+		if (this.#turnCandidates.has(turnId)) return;
+		if (!catalog) {
+			this.#turnCandidates.set(turnId, this.#candidates);
+			return;
+		}
+		const expected = new Map(catalog.deferredTools.map((definition) => [
+			definition.name,
+			stableModelInputJson(definition),
+		]));
+		this.#turnCandidates.set(turnId, Object.freeze(this.#candidates.filter((candidate) => (
+			expected.get(candidate.definition.name) === stableModelInputJson(candidate.definition)
+		))));
 	}
 
 	finishTurn(turnId: string): void {

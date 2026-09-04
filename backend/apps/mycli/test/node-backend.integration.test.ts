@@ -2906,6 +2906,119 @@ test("Node backend gives a Full Access child the frozen parent policy without ap
 	await shutdown();
 });
 
+test("Node backend preserves a disabled parent run profile without marking the child trusted", {
+	timeout: 10_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-restricted-child-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const parentRequests: Record<string, unknown>[] = [];
+	const childRequests: Record<string, unknown>[] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			const payload = JSON.parse(body) as Record<string, unknown>;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (isSubagentRequest(payload)) {
+				childRequests.push(payload);
+				writeResponsesText(
+					response,
+					"Restricted child completed.",
+					"resp-restricted-child-completed",
+				);
+				response.end("data: [DONE]\n\n");
+				return;
+			}
+
+			parentRequests.push(payload);
+			if (parentRequests.length === 1) {
+				writeResponsesTool(response, "call-spawn-restricted-child", "spawn_agent", {
+					task_name: "restricted-worker",
+					message: "Report the inherited execution policy.",
+				}, "resp-parent-spawn-restricted");
+				response.end("data: [DONE]\n\n");
+				return;
+			}
+			writeResponsesText(
+				response,
+				"Parent completed after restricted delegation.",
+				"resp-parent-restricted-completed",
+			);
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "restricted-child-parent", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	let closed = false;
+	const shutdown = async (): Promise<void> => {
+		if (closed) return;
+		closed = true;
+		writeRequest(backend, "shutdown-restricted-child", "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	};
+	t.after(async () => {
+		await shutdown();
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "start-restricted-child", "turn.submit", {
+		message: "Delegate within the current untrusted workspace.",
+		client_turn_id: "restricted-child-parent-turn",
+		client_user_message_id: "restricted-child-parent-message",
+	});
+
+	await waitFor(() => messages.find((message) => (
+		message.method === "subagent.updated"
+		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status
+			=== "completed"
+	)), 6_000);
+	assert.equal(childRequests.length, 1);
+	assert.match(JSON.stringify(childRequests[0]?.input), /Permission profile: workspace/u);
+	assert.match(JSON.stringify(childRequests[0]?.input), /Sandbox mode: workspace-write/u);
+	assert.match(JSON.stringify(childRequests[0]?.input), /Filesystem policy: workspace_write/u);
+	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		const task = store.subagentTasks.list("restricted-child-parent")[0];
+		assert.equal(task?.status, "completed");
+		const child = task ? store.agentThreads.get(task.childSessionId) : undefined;
+		assert.deepEqual(child?.spawnConfig?.executionPolicy, {
+			trusted: false,
+			permission: "workspace",
+			sandboxMode: "workspace-write",
+			filesystem: "workspace_write",
+			network: "disabled",
+			writableRoots: [await realpath(workspace)],
+		});
+	} finally {
+		store.close();
+	}
+	await shutdown();
+});
+
 test("Node backend delivers background subagent completion through wait_agent without polling", {
 	timeout: 10_000,
 }, async (t) => {

@@ -3,7 +3,7 @@ import type {
 	FileMutationPreviewChange,
 	ToolDefinition,
 } from "@mycli/core";
-import { TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
+import { stableModelInputJson, TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
 import type { ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type {
@@ -13,6 +13,7 @@ import type {
 	ToolPreviewOptions,
 	ToolExecutionResult,
 	ToolRouterContract,
+	ToolTurnCatalog,
 } from "./types.ts";
 
 export interface ToolRouterOptions {
@@ -38,12 +39,15 @@ export class ToolRouter implements ToolRouterContract {
 		this.#routes = this.#staticRoutes;
 	}
 
-	beginTurn(turnId: string): void {
+	beginTurn(turnId: string, catalog?: ToolTurnCatalog): void {
 		if (this.#turnRoutes.has(turnId)) return;
-		const routes = this.#routes;
+		const dynamicRoutes = catalog
+			? matchingDynamicRoutes(this.#dynamicRoutes, catalog.deferredTools)
+			: this.#dynamicRoutes;
+		const routes = new Map([...this.#staticRoutes, ...dynamicRoutes]);
 		this.#turnRoutes.set(turnId, routes);
-		this.#turnDynamicRoutes.set(turnId, this.#dynamicRoutes);
-		for (const adapter of uniqueAdapters(routes)) adapter.beginTurn?.(turnId);
+		this.#turnDynamicRoutes.set(turnId, dynamicRoutes);
+		for (const adapter of uniqueAdapters(routes)) adapter.beginTurn?.(turnId, catalog);
 	}
 
 	finishTurn(turnId: string): void {
@@ -160,6 +164,19 @@ const EMPTY_PREPARATION: PreparedToolCall = Object.freeze({
 
 function uniqueAdapters(routes: ReadonlyMap<string, Route>): readonly ToolAdapter[] {
 	return [...new Set([...routes.values()].map((route) => route.adapter))];
+}
+
+function matchingDynamicRoutes(
+	routes: ReadonlyMap<string, Route>,
+	definitions: readonly ToolDefinition[],
+): ReadonlyMap<string, Route> {
+	const expected = new Map(definitions.map((definition) => [
+		definition.name,
+		stableModelInputJson(definition),
+	]));
+	return new Map([...routes].filter(([name, route]) => (
+		expected.get(name) === stableModelInputJson(route.adapter.definition)
+	)));
 }
 
 function parseArguments(value: string): Readonly<Record<string, unknown>> | undefined {

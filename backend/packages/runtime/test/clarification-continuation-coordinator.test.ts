@@ -31,6 +31,7 @@ test("clarification continuation survives coordinator recreation and commits the
 		assistantText: "",
 		responseId: "resp-question",
 		usage: { input_tokens: 3 },
+		runSnapshot: runSnapshot(),
 		question: "Which runtime?",
 		options: [{ label: "Node" }, { label: "Python" }, { label: "Other" }],
 		header: "Runtime",
@@ -47,6 +48,7 @@ test("clarification continuation survives coordinator recreation and commits the
 		clock: () => "2026-08-06T00:00:01.000Z",
 	});
 	assert.deepEqual(recovered.pending(), pending);
+	assert.deepEqual(Reflect.get(recovered.pending() ?? {}, "runSnapshot"), runSnapshot());
 	assert.throws(
 		() => recovered.resolve({ requestId: "wrong", response: "Node" }),
 		(error: unknown) => error instanceof Error
@@ -183,4 +185,20 @@ class MemoryClarificationStore {
 		this.suspended = undefined;
 		this.turnRecord = undefined;
 	}
+}
+
+function runSnapshot() {
+	return runtime.createRunExecutionSnapshot({
+		turnId: "turn-1",
+		collaborationMode: "plan",
+		toolCatalog: {
+			catalogVersion: 2,
+			directTools: [{
+				id: "builtin:AskUserQuestion",
+				name: "AskUserQuestion",
+				description: "Ask the user a question",
+				inputSchema: { type: "object", properties: {}, additionalProperties: false },
+			}],
+		},
+	});
 }

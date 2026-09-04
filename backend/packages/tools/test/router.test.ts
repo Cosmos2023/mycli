@@ -217,6 +217,37 @@ test("dynamic routes are versioned at turn boundaries", async () => {
 	router.finishTurn("turn-new");
 });
 
+test("restored turns route only dynamic tools from their frozen catalog", async () => {
+	const ToolRouter = Reflect.get(tools, "ToolRouter") as unknown as new (options: {
+		readonly adapters: readonly Adapter[];
+		readonly exposure: readonly unknown[];
+	}) => Router & {
+		beginTurn(turnId: string, catalog?: {
+			readonly deferredTools: readonly Adapter["definition"][];
+		}): void;
+		finishTurn(turnId: string): void;
+		replaceDynamicAdapters(adapters: readonly Adapter[]): void;
+	};
+	const router = new ToolRouter({ adapters: [adapterThatMustNotRun()], exposure: [readDefinition] });
+	const old = dynamicAdapter("McpDocsOld", "old");
+	const added = dynamicAdapter("McpDocsNew", "new");
+	router.replaceDynamicAdapters([old, added]);
+	router.beginTurn("turn-restored", { deferredTools: [old.definition] });
+
+	const execute = (name: string) => router.execute({
+		callId: `call-${name}`,
+		name,
+		argumentsJson: "{}",
+	}, {
+		signal: new AbortController().signal,
+		ownerSessionId: "session",
+		ownerTurnId: "turn-restored",
+	});
+	assert.equal((await execute("McpDocsOld")).modelOutput, "old");
+	assert.equal((await execute("McpDocsNew")).errorKind, "unknown_tool");
+	router.finishTurn("turn-restored");
+});
+
 interface Adapter {
 	readonly definition: {
 		readonly id: string;
@@ -252,6 +283,28 @@ interface Router {
 		readonly errorKind?: string;
 		readonly modelOutput: string;
 	}>;
+}
+
+function dynamicAdapter(name: string, label: string): Adapter {
+	return {
+		definition: {
+			id: `mcp:${name}`,
+			name,
+			description: `${label} MCP docs fixture`,
+			inputSchema: {
+				type: "object",
+				properties: {},
+				required: [],
+				additionalProperties: false,
+			},
+		},
+		execute: async () => ({
+			success: true,
+			modelOutput: label,
+			summary: label,
+			metadata: {},
+		}),
+	};
 }
 
 function createRouter(adapter: Adapter): Router {

@@ -58,6 +58,7 @@ export interface ExecutionPolicyCoordinatorOptions {
 
 interface ActivePolicy {
 	readonly turnId: string;
+	readonly baseProfile: ExecutionPolicy;
 	readonly policy: TurnExecutionPolicy;
 }
 
@@ -117,12 +118,33 @@ export class ExecutionPolicyCoordinator {
 			return this.#active.policy;
 		}
 		const snapshot = this.snapshot();
+		const baseProfile = this.#effectiveProfile(turnId);
 		const policy = Object.freeze({
 			toolsEnabled: snapshot.trusted && snapshot.valid,
-			profile: this.#effectiveProfile(turnId),
+			profile: baseProfile,
 		});
-		this.#active = Object.freeze({ turnId, policy });
+		this.#active = Object.freeze({ turnId, baseProfile, policy });
 		return policy;
+	}
+
+	restoreTurn(turnId: string, policy: TurnExecutionPolicy): TurnExecutionPolicy {
+		if (!turnId.trim()) throw new TypeError("turnId must be non-empty");
+		if (this.#active) {
+			if (this.#active.turnId !== turnId) {
+				throw new Error("execution_policy_turn_conflict");
+			}
+			return this.#active.policy;
+		}
+		const restored = Object.freeze({
+			toolsEnabled: policy.toolsEnabled,
+			profile: copyExecutionPolicy(policy.profile),
+		});
+		this.#active = Object.freeze({
+			turnId,
+			baseProfile: restored.profile,
+			policy: restored,
+		});
+		return restored;
 	}
 
 	sandboxOverrideProfile(): ExecutionPolicy {
@@ -139,7 +161,8 @@ export class ExecutionPolicyCoordinator {
 		if (input.scope !== "turn" && input.scope !== "session") {
 			throw new TypeError("permission grant scope is invalid");
 		}
-		if (this.#configuration?.trust !== "trusted" || !this.#profile) {
+		const active = this.#active?.turnId === input.turnId ? this.#active : undefined;
+		if (active ? !active.policy.toolsEnabled : this.#configuration?.trust !== "trusted" || !this.#profile) {
 			throw new Error("permission_grant_not_allowed");
 		}
 		const constrained = this.#constrainGrant(input.permissions);
@@ -151,12 +174,13 @@ export class ExecutionPolicyCoordinator {
 				mergePermissionRequests(this.#turnGrants.get(input.turnId), constrained.permissions),
 			);
 		}
-		if (this.#active?.turnId === input.turnId) {
+		if (active) {
 			this.#active = Object.freeze({
 				turnId: input.turnId,
+				baseProfile: active.baseProfile,
 				policy: Object.freeze({
-					toolsEnabled: this.#active.policy.toolsEnabled,
-					profile: this.#effectiveProfile(input.turnId),
+					toolsEnabled: active.policy.toolsEnabled,
+					profile: this.#effectiveProfile(input.turnId, active.baseProfile),
 				}),
 			});
 		}
@@ -167,8 +191,10 @@ export class ExecutionPolicyCoordinator {
 		});
 	}
 
-	#effectiveProfile(turnId: string | undefined): ExecutionPolicy {
-		const base = this.#profile ?? this.#fallback;
+	#effectiveProfile(
+		turnId: string | undefined,
+		base: ExecutionPolicy = this.#profile ?? this.#fallback,
+	): ExecutionPolicy {
 		const grant = mergePermissionRequests(
 			this.#sessionGrant,
 			turnId ? this.#turnGrants.get(turnId) : undefined,
@@ -358,6 +384,21 @@ function immutablePolicy(
 			readableRoots: Object.freeze([...readableRoots]),
 		}),
 		writableRoots: Object.freeze([...writableRoots]),
+	});
+}
+
+function copyExecutionPolicy(policy: ExecutionPolicy): ExecutionPolicy {
+	return Object.freeze({
+		mode: policy.mode,
+		filesystem: policy.filesystem,
+		network: policy.network,
+		...(policy.networkDomains === undefined ? {} : {
+			networkDomains: Object.freeze([...policy.networkDomains]),
+		}),
+		...(policy.readableRoots === undefined ? {} : {
+			readableRoots: Object.freeze([...policy.readableRoots]),
+		}),
+		writableRoots: Object.freeze([...policy.writableRoots]),
 	});
 }
 

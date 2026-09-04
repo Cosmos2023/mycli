@@ -206,6 +206,21 @@ export type {
 	PermissionGrantInput,
 	TurnExecutionPolicy,
 } from "./execution-policy-coordinator.ts";
+export {
+	createRunExecutionSnapshot,
+	createToolCatalogSnapshot,
+	parseRunExecutionSnapshot,
+	replaceRunPolicySnapshot,
+	RUN_EXECUTION_SNAPSHOT_MAX_BYTES,
+	TOOL_CATALOG_SNAPSHOT_MAX_BYTES,
+	toolExposureForSnapshot,
+} from "./run-execution-snapshot.ts";
+export type {
+	RunExecutionSnapshot,
+	RunPolicySnapshot,
+	RunToolCatalogInput,
+	ToolCatalogSnapshot,
+} from "./run-execution-snapshot.ts";
 export { ShellLifecycleProjector } from "./shell-lifecycle-projector.ts";
 export type {
 	ShellLifecycleProjectorOptions,

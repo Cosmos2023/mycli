@@ -105,6 +105,7 @@ import {
 	ShellLifecycleProjector,
 	summarizeCompactionWithProvider,
 	TokenCounter,
+	toolExposureForSnapshot,
 	WorkerLeasedAgentThreadRuntimeFactory,
 	WorkerLeasedRootTurnRuntime,
 } from "@mycli/runtime";
@@ -115,6 +116,7 @@ import type {
 	PendingSessionApproval,
 	PendingSessionClarification,
 	PreparedSession,
+	RunExecutionSnapshot,
 	RuntimeDiagnosticEvent,
 } from "@mycli/runtime";
 import {
@@ -660,7 +662,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			projectConfigurationEnabled: startupTrustState === "trusted",
 			parentSessionId: config.sessionId,
 			parentTurnId: () => "parent-turn-unavailable",
-			parentTools: () => allToolExposure.map((tool) => tool.name),
+			parentTools: ({ parentSessionId, parentTurnId }) => {
+				const runSnapshot = runtimeBySessionId.get(parentSessionId)
+					?.runExecutionSnapshot?.(parentTurnId);
+				return runSnapshot
+					? toolExposureForSnapshot(
+						runSnapshot.toolCatalog,
+						store.loadToolActivations(parentSessionId, parentTurnId),
+					).map((tool) => tool.name)
+					: Object.freeze([]);
+			},
 			createSubagentSupervisor: (supervisorOptions) => {
 					agentSupervisor = new AgentSupervisor({
 						lifecycleStore: store.agentLifecycle,
@@ -684,8 +695,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const parentThreadId = overview?.threadId ?? input.parentSessionId;
 				const parentAgent = store.agentThreads.get(parentThreadId);
 				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
-				const parentPreferences = runtimeBySessionId.get(input.parentSessionId)
-					?.sessionPreferences?.();
+				const parentRuntime = runtimeBySessionId.get(input.parentSessionId);
+				const parentRunSnapshot = parentRuntime
+					?.runExecutionSnapshot?.(input.parentTurnId);
+				const parentPreferences = parentRuntime?.sessionPreferences?.();
 				const resolved = await resolveWorkspaceModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
@@ -695,9 +708,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						parentPreferences ?? defaultPreferences,
 					),
 				});
-				const executionPolicy = narrowAgentExecutionPolicy(agentExecutionPolicySnapshot(
-					runtimeBySessionId.get(input.parentSessionId)?.executionPolicySnapshot?.(),
-				));
+				const executionPolicy = narrowAgentExecutionPolicy(
+					agentExecutionPolicyForRun(parentRunSnapshot),
+				);
 				return Object.freeze({
 					parentThreadId,
 					rootThreadId: parentAgent?.rootThreadId ?? parentThreadId,
@@ -1061,18 +1074,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			const createCompactionCoordinator = (
 				resolved: NodeRuntimeConfig,
+				runSnapshot?: RunExecutionSnapshot,
 			): CompactionCoordinator => {
 				const compactionThreshold = compactionThresholdForModel(resolved);
+				const compactTools = (): readonly ToolDefinition[] => runSnapshot
+					? toolExposureForSnapshot(
+						runSnapshot.toolCatalog,
+						store.loadToolActivations(sessionId, runSnapshot.turnId),
+					)
+					: allToolExposure;
 				return new CompactionCoordinator({
 					sessionId,
 					workspaceRoot,
 					threadId,
 					store,
 					tokenCounter,
-					baseContext: [
+					baseContext: () => [
 						runtimeInstructions,
 						...developerInstructions,
-						JSON.stringify(allToolExposure),
+						JSON.stringify(compactTools()),
 					].join("\n"),
 					tokenLimit: totalCompactionBudget(
 						compactionThreshold,
@@ -1126,11 +1146,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			modelInputLedger: store.modelInputLedger,
 			agentEffectLedger: store.agentEffectLedger,
 			modelInputTokenCounter: tokenCounter,
-			contextSources: ({ config: activeConfig }) => Object.freeze({
-				skillCatalog: integrationComposition.skillCatalog,
+			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
+				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
 				workspace: workspaceInstructionsForTrust(
 					workspaceRoot,
-					executionPolicyCoordinator.snapshot().trusted,
+					runSnapshot.policy?.configuration
+						? runSnapshot.policy.configuration.trust === "trusted"
+						: runSnapshot.policy?.toolsEnabled === true,
 				),
 				environment: Object.freeze({
 					workspace_root: workspaceRoot,
@@ -1165,7 +1187,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				publishLifecycle,
 			executionPolicyCoordinator,
 			planTools: plannedTools,
-				deferredTools: (turnId) => toolRouter.dynamicDefinitions(turnId),
+			resolveToolCatalog: (capabilities) => {
+				const catalogVersion = integrationComposition.version;
+				const deferred = allowedDeferredRegistrations();
+				return Object.freeze({
+					catalogVersion,
+					directTools: plannedTools(capabilities),
+					deferredTools: Object.freeze(deferred.map(
+						(registration) => registration.definition,
+					)),
+					skillCatalog: integrationComposition.skillCatalog,
+				});
+			},
 			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
 			toolRouter,
 			hookRunner: integrationComposition.hookRunner,
@@ -3871,6 +3904,18 @@ function agentExecutionPolicySnapshot(
 		}),
 		writableRoots: Object.freeze([...(profile?.writableRoots ?? [])]),
 	});
+}
+
+function agentExecutionPolicyForRun(
+	snapshot: RunExecutionSnapshot | undefined,
+): AgentExecutionPolicySnapshot {
+	const policy = snapshot?.policy;
+	if (!policy) return agentExecutionPolicySnapshot(undefined);
+	return agentExecutionPolicySnapshot(Object.freeze({
+		trusted: policy.toolsEnabled,
+		valid: true,
+		profile: policy.profile,
+	}));
 }
 
 function inheritedAgentExecutionPolicyConstraints(

@@ -57,6 +57,7 @@ test("restores an unambiguous waiting approval after restart", () => {
 	assert.equal(reopened.pending()?.decisionId, "call-1");
 	assert.deepEqual(reopened.pending()?.options, ["approve_once", "reject"]);
 	assert.deepEqual(reopened.pending()?.preparedMutationGuard, PREPARED_GUARD);
+	assert.deepEqual(Reflect.get(reopened.pending() ?? {}, "runSnapshot"), runSnapshot());
 });
 
 test("approve once claims executes and commits one effect in order", async () => {
@@ -550,6 +551,7 @@ function suspension(shell = false, escalated = false) {
 		assistantText: "",
 		responseId: "resp-1",
 		usage: Object.freeze({ input_tokens: 10 }),
+		runSnapshot: runSnapshot(),
 		preview: "Write notes.txt",
 		reason: "Workspace mutation requires one-time approval.",
 		...(shell ? {
@@ -557,6 +559,22 @@ function suspension(shell = false, escalated = false) {
 			proposedExecPolicyPattern: ["python", "-m", "pytest"],
 		} : { preparedMutationGuard: PREPARED_GUARD }),
 	};
+}
+
+function runSnapshot() {
+	return runtime.createRunExecutionSnapshot({
+		turnId: "turn-1",
+		collaborationMode: "default",
+		toolCatalog: {
+			catalogVersion: 4,
+			directTools: [{
+				id: "builtin:Write",
+				name: "Write",
+				description: "Write a file",
+				inputSchema: { type: "object", properties: {}, additionalProperties: false },
+			}],
+		},
+	});
 }
 
 function shellCall(escalated = false): CanonicalToolCall {

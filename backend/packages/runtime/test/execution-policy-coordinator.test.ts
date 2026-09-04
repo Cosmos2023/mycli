@@ -101,6 +101,39 @@ test("execution policy coordinator applies turn grants and releases them at turn
 	coordinator.finishTurn("turn-next");
 });
 
+test("restored turns grant against their frozen base policy instead of current configuration", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const exportRoot = await temporaryWorkspace(t);
+	const canonicalExportRoot = await realpath(exportRoot);
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace });
+	coordinator.configure({ trust: "untrusted", permission: "read-only" });
+	coordinator.restoreTurn("turn-restored", {
+		toolsEnabled: true,
+		profile: {
+			mode: "read-only",
+			filesystem: "read_only",
+			network: "disabled",
+			writableRoots: [],
+		},
+	});
+
+	coordinator.grant({
+		turnId: "turn-restored",
+		scope: "turn",
+		permissions: { fileSystem: { read: [], write: [canonicalExportRoot] } },
+	});
+
+	assert.deepEqual(coordinator.beginTurn("turn-restored").profile, {
+		mode: "workspace-write",
+		filesystem: "workspace_write",
+		network: "disabled",
+		writableRoots: [canonicalExportRoot],
+	});
+	coordinator.finishTurn("turn-restored");
+	assert.equal(coordinator.beginTurn("turn-next-restored").toolsEnabled, false);
+	coordinator.finishTurn("turn-next-restored");
+});
+
 test("managed constraints cap full access and permission grants", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const allowed = await temporaryWorkspace(t);

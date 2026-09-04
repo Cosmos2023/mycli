@@ -8,6 +8,8 @@ import type {
 	ReasoningEffort,
 } from "@mycli/core";
 import type { AppendToolResultInput, RuntimeStateKey } from "@mycli/storage";
+import { parseRunExecutionSnapshot } from "./run-execution-snapshot.ts";
+import type { RunExecutionSnapshot } from "./run-execution-snapshot.ts";
 
 export interface ClarificationOption {
 	readonly label: string;
@@ -28,6 +30,7 @@ export interface ClarificationSuspensionInput {
 	readonly usage: ProviderUsage;
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
+	readonly runSnapshot?: RunExecutionSnapshot;
 	readonly question: string;
 	readonly options: readonly ClarificationOption[];
 	readonly header: string;
@@ -212,6 +215,7 @@ function suspendedTurnState(
 				usage: pending.usage,
 				model_override: pending.modelOverride ?? null,
 				reasoning_effort: pending.reasoningEffort ?? null,
+				...(pending.runSnapshot ? { run_snapshot: pending.runSnapshot } : {}),
 			},
 		},
 	};
@@ -226,6 +230,10 @@ function pendingFromState(
 	const clarification = payload.pending_clarification;
 	if (!clarification || payload.session_id !== sessionId) throw new ClarificationNotPendingError();
 	const continuation = record(payload.continuation);
+	const turnId = nonEmpty(String(payload.turn_id ?? ""), "turnId");
+	const runSnapshot = continuation.run_snapshot === undefined
+		? undefined
+		: parseRunExecutionSnapshot(continuation.run_snapshot, turnId);
 	return freezePending({
 		sessionId,
 		requestId: clarification.request_id,
@@ -234,7 +242,7 @@ function pendingFromState(
 			String(payload.client_user_message_id ?? payload.client_turn_id ?? ""),
 			"clientUserMessageId",
 		),
-		turnId: nonEmpty(String(payload.turn_id ?? ""), "turnId"),
+		turnId,
 		userMessage: payload.user_message,
 		providerProtocol: protocol(payload.provider_protocol),
 		call: canonicalCall(clarification.tool_call),
@@ -251,6 +259,7 @@ function pendingFromState(
 		...(reasoningEffort(continuation.reasoning_effort)
 			? { reasoningEffort: reasoningEffort(continuation.reasoning_effort) }
 			: {}),
+		...(runSnapshot ? { runSnapshot } : {}),
 		question: clarification.question,
 		options: clarification.options.map((option) => clarificationOption(record(option))),
 		header: clarification.header ?? "",
@@ -261,6 +270,9 @@ function pendingFromState(
 function freezePending(input: PendingClarificationContinuation): PendingClarificationContinuation {
 	return Object.freeze({
 		...input,
+		...(input.runSnapshot ? {
+			runSnapshot: parseRunExecutionSnapshot(input.runSnapshot, input.turnId),
+		} : {}),
 		call: Object.freeze({ ...input.call }),
 		remainingCalls: Object.freeze(input.remainingCalls.map((call) => Object.freeze({ ...call }))),
 		conversation: Object.freeze(input.conversation.map((message) => Object.freeze({ ...message }))),

@@ -105,7 +105,10 @@ export interface CreateRuntimeIntegrationCompositionOptions {
 	readonly projectConfigurationEnabled?: boolean;
 	readonly parentSessionId: string;
 	readonly parentTurnId: () => string;
-	readonly parentTools: () => readonly string[];
+	readonly parentTools: (input: {
+		readonly parentSessionId: string;
+		readonly parentTurnId: string;
+	}) => readonly string[];
 	readonly createSubagentSupervisor: (
 		options: CreateSubagentSupervisorOptions,
 	) => SubagentSupervisorContract;

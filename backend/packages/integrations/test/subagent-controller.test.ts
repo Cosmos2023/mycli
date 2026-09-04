@@ -290,6 +290,7 @@ test("subagent controller interrupts and bounds shutdown for an unresponsive chi
 test("subagent controller inherits parent tools without profile budgets or model overrides", async (t) => {
 	const fixture = await controllerFixture(t);
 	const creates: ChildRuntimeCreateInput[] = [];
+	const parentIdentities: unknown[] = [];
 	const controller = fixture.controller({
 		create: async (input) => {
 			creates.push(input);
@@ -298,6 +299,10 @@ test("subagent controller inherits parent tools without profile budgets or model
 	}, {
 		createTaskId: () => "task-inherit",
 		createChildSessionId: () => "child-inherit",
+		parentTools: (input) => {
+			parentIdentities.push(input);
+			return ["Read", "Edit", "Patch", "Write", "Shell"];
+		},
 	});
 
 	await controller.start({
@@ -308,6 +313,33 @@ test("subagent controller inherits parent tools without profile budgets or model
 	assert.equal(creates[0]?.budget, undefined);
 	assert.equal(creates[0]?.model, undefined);
 	assert.deepEqual(creates[0]?.tools, ["Read", "Edit", "Patch", "Write", "Shell"]);
+	assert.deepEqual(parentIdentities, [{
+		parentSessionId: "parent-session",
+		parentTurnId: "parent-turn",
+	}]);
+});
+
+test("subagent controller cannot expand the frozen parent tool catalog", async (t) => {
+	const fixture = await controllerFixture(t);
+	const creates: ChildRuntimeCreateInput[] = [];
+	const controller = fixture.controller({
+		create: async (input) => {
+			creates.push(input);
+			return handle();
+		},
+	}, {
+		createTaskId: () => "task-narrow-tools",
+		createChildSessionId: () => "child-narrow-tools",
+		parentTools: () => ["Read"],
+	});
+
+	await controller.start({
+		prompt: "Inspect without widening the parent catalog.",
+		mode: "foreground",
+		allowedTools: ["Write", "Read", "docs_refreshed"],
+	});
+
+	assert.deepEqual(creates[0]?.tools, ["Read"]);
 });
 
 test("subagent controller freezes coordination tools from configured depth", async (t) => {

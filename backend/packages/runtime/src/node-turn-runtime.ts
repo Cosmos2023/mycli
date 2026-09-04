@@ -4,6 +4,7 @@ import {
 	fingerprintSubmission,
 	modelInputSha256,
 	projectProviderRequest,
+	stableModelInputJson,
 } from "@mycli/core";
 import type {
 	AgentBudget,
@@ -109,6 +110,16 @@ import type { ProviderStepExecutor } from "./provider-step-executor.ts";
 import { publishRuntimeDiagnostic } from "./runtime-observability.ts";
 import type { RuntimeDiagnosticEvent } from "./runtime-observability.ts";
 import { projectCommittedTurnTerminalization } from "./turn-terminalization.ts";
+import {
+	createRunExecutionSnapshot,
+	parseRunExecutionSnapshot,
+	replaceRunPolicySnapshot,
+	toolExposureForSnapshot,
+} from "./run-execution-snapshot.ts";
+import type {
+	RunExecutionSnapshot,
+	RunToolCatalogInput,
+} from "./run-execution-snapshot.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -157,6 +168,11 @@ export interface NodeTurnRuntimeOptions {
 		readonly shell: boolean;
 		readonly collaborationMode: string;
 	}) => readonly ToolDefinition[];
+	readonly resolveToolCatalog?: (capabilities: {
+		readonly turnId: string;
+		readonly shell: boolean;
+		readonly collaborationMode: string;
+	}) => RunToolCatalogInput;
 	readonly deferredTools?: readonly ToolDefinition[] | ((turnId: string) => readonly ToolDefinition[]);
 	readonly loadToolActivations?: (turnId: string) => readonly string[];
 	readonly executionPolicyCoordinator?: ExecutionPolicyCoordinatorContract;
@@ -168,6 +184,7 @@ export interface NodeTurnRuntimeOptions {
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: (
 		config: NodeRuntimeConfig,
+		runSnapshot?: RunExecutionSnapshot,
 	) => CompactionCoordinatorContract;
 	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly providerContinuation?: ProviderContinuationContract;
@@ -184,6 +201,8 @@ export interface RuntimeContextSourceInput {
 	readonly config: NodeRuntimeConfig;
 	readonly tools: readonly ToolDefinition[];
 	readonly executionPolicy?: ExecutionPolicy;
+	readonly executionPolicyConfiguration?: ExecutionPolicyConfiguration;
+	readonly runSnapshot: RunExecutionSnapshot;
 	readonly hooks: readonly RuntimeHookContext[];
 	readonly memory?: readonly string[];
 }
@@ -241,6 +260,7 @@ export interface ExecutionPolicyCoordinatorContract {
 	configure(input: ExecutionPolicyConfiguration): void;
 	snapshot(): ExecutionPolicySnapshot;
 	beginTurn(turnId: string): TurnExecutionPolicy;
+	restoreTurn?(turnId: string, policy: TurnExecutionPolicy): TurnExecutionPolicy;
 	grant?(input: PermissionGrantInput): PermissionGrant;
 	sandboxOverrideProfile?(): ExecutionPolicy;
 	finishTurn(turnId: string): void;
@@ -312,6 +332,7 @@ interface TurnExecutionContext {
 	readonly tools: readonly ToolDefinition[];
 	readonly collaborationMode: string;
 	readonly executionPolicy?: ExecutionPolicy;
+	readonly runSnapshot: RunExecutionSnapshot;
 	readonly requestConfig: ProviderRequestConfig;
 	readonly emit: (event: RuntimeEvent) => void;
 	readonly signal: AbortSignal;
@@ -387,6 +408,7 @@ export class NodeTurnRuntime {
 	#executionPolicyConfiguration: ExecutionPolicyConfiguration | undefined;
 	readonly queueCoordinator: QueueCoordinator | undefined;
 	readonly #activeToolExecutions = new Map<string, Map<string, ActiveToolExecution>>();
+	readonly #runSnapshots = new Map<string, RunExecutionSnapshot>();
 
 	constructor(options: NodeTurnRuntimeOptions) {
 		this.#options = options;
@@ -452,6 +474,7 @@ export class NodeTurnRuntime {
 		this.#options.approvalPolicy?.finishTurn?.(turnId);
 		this.#options.executionPolicyCoordinator?.finishTurn(turnId);
 		this.#collaborationModeByTurn.delete(turnId);
+		this.#runSnapshots.delete(turnId);
 	}
 
 	configureRuntimeContext(input: {
@@ -471,6 +494,10 @@ export class NodeTurnRuntime {
 
 	executionPolicySnapshot(): ExecutionPolicySnapshot | undefined {
 		return this.#options.executionPolicyCoordinator?.snapshot();
+	}
+
+	runExecutionSnapshot(turnId: string): RunExecutionSnapshot | undefined {
+		return this.#runSnapshots.get(turnId);
 	}
 
 	reserve(submission: TurnSubmission): TurnReservation {
@@ -623,6 +650,7 @@ export class NodeTurnRuntime {
 			emit,
 			options.signal,
 			pending.providerProtocol,
+			pending.runSnapshot,
 		);
 		let activeTool: ActiveToolExecution | undefined;
 		const resolution = await coordinator.resolve({
@@ -674,13 +702,14 @@ export class NodeTurnRuntime {
 			else emitToolResult(resolution.toolResult, 0, emit);
 		}
 		if (resolution.permissionGrant) {
-			context = await this.#executionContext(
-				submission,
-				pending.turnId,
-				emit,
-				options.signal,
-				pending.providerProtocol,
-			);
+			const runSnapshot = this.#refreshRunPolicySnapshot(pending.turnId);
+			context = Object.freeze({
+				...context,
+				runSnapshot,
+				...(runSnapshot.policy
+					? { executionPolicy: runSnapshot.policy.profile }
+					: {}),
+			});
 		}
 		const continuation = resolution.continuation;
 		const resumed = await this.#runProviderLoop(context, {
@@ -728,6 +757,7 @@ export class NodeTurnRuntime {
 			emit,
 			options.signal,
 			pending.providerProtocol,
+			pending.runSnapshot,
 		);
 		const resolution = coordinator.resolve(input);
 		const continuation = resolution.continuation;
@@ -797,22 +827,19 @@ export class NodeTurnRuntime {
 		emit: (event: RuntimeEvent) => void,
 		signal: AbortSignal,
 		expectedProtocol?: NodeRuntimeConfig["protocol"],
+		restoredSnapshot?: RunExecutionSnapshot,
 	): Promise<TurnExecutionContext> {
 		assertNotAborted(signal);
-		const collaborationMode = this.#collaborationModeByTurn.get(turnId) ?? this.#collaborationMode;
+		const runSnapshot = this.#resolveRunSnapshot(turnId, restoredSnapshot);
+		const collaborationMode = runSnapshot.collaborationMode;
 		this.#collaborationModeByTurn.set(turnId, collaborationMode);
-		const turnPolicy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
-		this.#options.toolRouter?.beginTurn?.(turnId);
+		this.#options.toolRouter?.beginTurn?.(turnId, runSnapshot.toolCatalog);
 		this.#options.approvalPolicy?.beginTurn?.(turnId);
 		const config = await this.#options.resolveConfig(submission);
 		const instructionSnapshot = this.#options.resolveInstructionSnapshot?.()
 			?? this.#fallbackInstructionSnapshot;
 		const instructions = instructionSnapshot.content;
-		const plannedTools = this.#options.planTools?.({
-			shell: turnPolicy?.toolsEnabled ?? false,
-			collaborationMode,
-		}) ?? [];
-		const tools = this.#toolExposureForTurn(plannedTools, turnId);
+		const tools = this.#toolExposureForTurn(runSnapshot, turnId);
 		if (config.sessionId !== this.#options.sessionId) {
 			throw configFailure("resolved session does not match runtime session");
 		}
@@ -831,7 +858,8 @@ export class NodeTurnRuntime {
 			hookContexts: new HookContextAccumulator(),
 			tools,
 			collaborationMode,
-			...(turnPolicy ? { executionPolicy: turnPolicy.profile } : {}),
+			...(runSnapshot.policy ? { executionPolicy: runSnapshot.policy.profile } : {}),
+			runSnapshot,
 			requestConfig: {
 				provider: config.provider,
 				protocol: config.protocol,
@@ -855,7 +883,7 @@ export class NodeTurnRuntime {
 				}),
 			} : {}),
 			...(this.#options.createCompactionCoordinator
-				? { compactionCoordinator: this.#options.createCompactionCoordinator(config) }
+				? { compactionCoordinator: this.#options.createCompactionCoordinator(config, runSnapshot) }
 				: this.#options.compactionCoordinator
 					? { compactionCoordinator: this.#options.compactionCoordinator }
 					: {}),
@@ -916,7 +944,7 @@ export class NodeTurnRuntime {
 					pendingBatch = undefined;
 					completedToolBatch = true;
 					assertNotAborted(signal);
-					const refreshedTools = this.#toolExposureForTurn(tools, turnId);
+					const refreshedTools = this.#toolExposureForTurn(context.runSnapshot, turnId);
 					if (!sameToolExposure(tools, refreshedTools)) {
 						const invalidation = this.#invalidateProviderContinuation("tool_exposure_changed");
 						if (invalidation) return this.#finalizeFailure(submission, invalidation, emit);
@@ -1054,6 +1082,10 @@ export class NodeTurnRuntime {
 						config,
 						tools,
 						...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
+						...(context.runSnapshot.policy?.configuration ? {
+							executionPolicyConfiguration: context.runSnapshot.policy.configuration,
+						} : {}),
+						runSnapshot: context.runSnapshot,
 						hooks: hookContexts,
 						...(memoryItem ? { memory: [memoryItem.text] } : {}),
 					}) ?? {};
@@ -1073,7 +1105,8 @@ export class NodeTurnRuntime {
 							developerInstructions: this.#options.developerInstructions ?? [],
 							collaborationMode,
 							executionPolicy: context.executionPolicy,
-							executionPolicyConfiguration: this.#executionPolicyConfiguration,
+							executionPolicyConfiguration:
+								context.runSnapshot.policy?.configuration,
 						}),
 						maxPromptTokens: config.maxPromptTokens,
 						...(this.#options.modelInputTokenCounter
@@ -1378,20 +1411,79 @@ export class NodeTurnRuntime {
 	}
 
 	#toolExposureForTurn(
-		baseTools: readonly ToolDefinition[],
+		runSnapshot: RunExecutionSnapshot,
 		turnId: string,
 	): readonly ToolDefinition[] {
-		const activated = new Set(this.#options.loadToolActivations?.(turnId) ?? []);
-		const existing = new Set(baseTools.map((tool) => tool.name));
-		const deferredTools = typeof this.#options.deferredTools === "function"
-			? this.#options.deferredTools(turnId)
-			: this.#options.deferredTools ?? [];
-		const additions = deferredTools.filter(
-			(tool) => activated.has(tool.name) && !existing.has(tool.name),
+		return toolExposureForSnapshot(
+			runSnapshot.toolCatalog,
+			this.#options.loadToolActivations?.(turnId) ?? [],
 		);
-		return additions.length === 0
-			? baseTools
-			: Object.freeze([...baseTools, ...additions]);
+	}
+
+	#resolveRunSnapshot(
+		turnId: string,
+		restoredSnapshot: RunExecutionSnapshot | undefined,
+	): RunExecutionSnapshot {
+		const existing = this.#runSnapshots.get(turnId);
+		if (existing) {
+			if (restoredSnapshot !== undefined) {
+				const restored = parseRunExecutionSnapshot(restoredSnapshot, turnId);
+				if (stableModelInputJson(existing) !== stableModelInputJson(restored)) {
+					throw new TypeError("run execution snapshot does not match active run");
+				}
+			}
+			return existing;
+		}
+		if (restoredSnapshot !== undefined) {
+			const parsed = parseRunExecutionSnapshot(restoredSnapshot, turnId);
+			const restoredPolicy = parsed.policy
+				? this.#options.executionPolicyCoordinator?.restoreTurn?.(turnId, parsed.policy)
+					?? parsed.policy
+				: this.#options.executionPolicyCoordinator?.beginTurn(turnId);
+			const snapshot = restoredPolicy
+				? replaceRunPolicySnapshot(parsed, restoredPolicy)
+				: parsed;
+			this.#runSnapshots.set(turnId, snapshot);
+			return snapshot;
+		}
+
+		const collaborationMode = this.#collaborationModeByTurn.get(turnId)
+			?? this.#collaborationMode;
+		const policy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
+		const capabilities = Object.freeze({
+			turnId,
+			shell: policy?.toolsEnabled ?? false,
+			collaborationMode,
+		});
+		const catalog = this.#options.resolveToolCatalog?.(capabilities)
+			?? {
+				catalogVersion: 0,
+				directTools: this.#options.planTools?.(capabilities) ?? [],
+				deferredTools: typeof this.#options.deferredTools === "function"
+					? this.#options.deferredTools(turnId)
+					: this.#options.deferredTools ?? [],
+			};
+		const snapshot = createRunExecutionSnapshot({
+			turnId,
+			collaborationMode,
+			...(policy ? { policy } : {}),
+			...(this.#executionPolicyConfiguration ? {
+				policyConfiguration: this.#executionPolicyConfiguration,
+			} : {}),
+			toolCatalog: catalog,
+		});
+		this.#runSnapshots.set(turnId, snapshot);
+		return snapshot;
+	}
+
+	#refreshRunPolicySnapshot(turnId: string): RunExecutionSnapshot {
+		const snapshot = this.#runSnapshots.get(turnId);
+		if (!snapshot) throw new Error("run_execution_snapshot_missing");
+		const policy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
+		if (!policy) return snapshot;
+		const updated = replaceRunPolicySnapshot(snapshot, policy);
+		this.#runSnapshots.set(turnId, updated);
+		return updated;
 	}
 
 	async #finalizePreparedTurn(
@@ -1656,6 +1748,7 @@ export class NodeTurnRuntime {
 					usage: accumulatedUsage,
 					...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
 					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
+					runSnapshot: context.runSnapshot,
 					preview: policy.preview,
 					reason: policy.reason,
 					options: policy.options,
@@ -1926,6 +2019,7 @@ export class NodeTurnRuntime {
 				usage: accumulatedUsage,
 				...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
 				...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
+				runSnapshot: context.runSnapshot,
 				...clarification,
 			});
 			emit({

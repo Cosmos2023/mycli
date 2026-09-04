@@ -41,6 +41,8 @@ import {
 } from "@mycli/tools";
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
+import { parseRunExecutionSnapshot } from "./run-execution-snapshot.ts";
+import type { RunExecutionSnapshot } from "./run-execution-snapshot.ts";
 
 export type ApprovalChoice = CoreApprovalChoice;
 
@@ -58,6 +60,7 @@ export interface ApprovalSuspensionInput {
 	readonly usage: ProviderUsage;
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
+	readonly runSnapshot?: RunExecutionSnapshot;
 	readonly preview: string;
 	readonly reason: string;
 	readonly options?: readonly ApprovalChoice[];
@@ -91,6 +94,7 @@ export interface PendingApprovalContinuation {
 	readonly usage: ProviderUsage;
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
+	readonly runSnapshot?: RunExecutionSnapshot;
 }
 
 export type ApprovalContinuationResult =
@@ -482,6 +486,9 @@ function pendingFromInput(
 		usage: Object.freeze({ ...input.usage }),
 		...(input.modelOverride ? { modelOverride: bounded(input.modelOverride, 256) } : {}),
 		...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+		...(input.runSnapshot ? {
+			runSnapshot: parseRunExecutionSnapshot(input.runSnapshot, input.turnId),
+		} : {}),
 	});
 }
 
@@ -513,6 +520,10 @@ function pendingFromStates(
 	if (!equalOptionalPatterns(proposedExecPolicyPattern, suspendedProposal)) {
 		throw new ApprovalNotPendingError();
 	}
+	const turnId = nonEmpty(String(payload.turn_id ?? ""), "turnId");
+	const runSnapshot = continuation.run_snapshot === undefined
+		? undefined
+		: parseRunExecutionSnapshot(continuation.run_snapshot, turnId);
 	return Object.freeze({
 		sessionId,
 		clientTurnId: nonEmpty(String(payload.client_turn_id ?? ""), "clientTurnId"),
@@ -520,7 +531,7 @@ function pendingFromStates(
 			String(payload.client_user_message_id ?? payload.client_turn_id ?? ""),
 			"clientUserMessageId",
 		),
-		turnId: nonEmpty(String(payload.turn_id ?? ""), "turnId"),
+		turnId,
 		decisionId: call.callId,
 		callId: call.callId,
 		toolName: call.name,
@@ -551,6 +562,7 @@ function pendingFromStates(
 		...(reasoningEffort(continuation.reasoning_effort)
 			? { reasoningEffort: reasoningEffort(continuation.reasoning_effort) }
 			: {}),
+		...(runSnapshot ? { runSnapshot } : {}),
 	});
 }
 
@@ -614,18 +626,19 @@ function suspendedTurnState(
 			suspend_reason: "approval_required",
 			pending_approval: pendingApproval,
 			session_id: pending.sessionId,
-				client_turn_id: pending.clientTurnId,
-				client_user_message_id: pending.clientUserMessageId,
+			client_turn_id: pending.clientTurnId,
+			client_user_message_id: pending.clientUserMessageId,
 			turn_id: pending.turnId,
 			provider_protocol: pending.providerProtocol,
 			remaining_tool_calls: pending.remainingCalls.map(storedCanonicalCall),
 			continuation: {
 				assistant_text: pending.assistantText,
-					response_id: pending.responseId ?? null,
-					usage: pending.usage,
-					model_override: pending.modelOverride ?? null,
-					reasoning_effort: pending.reasoningEffort ?? null,
-				},
+				response_id: pending.responseId ?? null,
+				usage: pending.usage,
+				model_override: pending.modelOverride ?? null,
+				reasoning_effort: pending.reasoningEffort ?? null,
+				...(pending.runSnapshot ? { run_snapshot: pending.runSnapshot } : {}),
+			},
 		},
 	};
 }

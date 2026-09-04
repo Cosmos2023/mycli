@@ -600,6 +600,55 @@ test("includes stable instructions and tool schemas in the trigger budget", asyn
 	assert.ok(result.beforeTokens > 90);
 });
 
+test("resolves the latest run tool context for every compaction attempt", async () => {
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "first request" },
+		{ type: "assistant", text: "first answer" },
+		{ type: "user", text: "second request" },
+		{ type: "assistant", text: "second answer" },
+		{ type: "user", text: "current" },
+	];
+	const store = new FakeCompactionStore(
+		conversation,
+		historyFixture(conversation, ["u1", "a1", "u2", "a2", "current-user"]),
+	);
+	let baseContext = "";
+	let resolutions = 0;
+	let summaryCalls = 0;
+	const coordinator = createCoordinator({
+		store,
+		tokenLimit: 100,
+		reservedOutputTokens: 10,
+		baseContext: () => {
+			resolutions += 1;
+			return baseContext;
+		},
+		summarize: async () => {
+			summaryCalls += 1;
+			return "summary";
+		},
+	});
+	const input = {
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "pre_turn" as const,
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	};
+
+	const beforeActivation = await coordinator.compact(input);
+	baseContext = "activated tool schema ".repeat(24);
+	const afterActivation = await coordinator.compact(input);
+
+	assert.equal(beforeActivation.status, "not_needed");
+	assert.equal(afterActivation.status, "compressed");
+	assert.ok(afterActivation.beforeTokens > beforeActivation.beforeTokens);
+	assert.equal(resolutions, 2);
+	assert.equal(summaryCalls, 1);
+});
+
 test("summarizes the active tool turn after a context rejection", async () => {
 	const currentCalls = [
 		{ callId: "call-1", name: "Read", argumentsJson: "{\"file_path\":\"a.ts\"}" },
