@@ -10,9 +10,9 @@
 - Trigger: changing turn preparation, collaboration-mode selection, execution policy, direct or
   deferred tool exposure, `tool_search`, extension refresh, approval/clarification continuation,
   compaction budgeting, Worker root wrappers, or subagent spawn inheritance.
-- `NodeTurnRuntime` owns one run snapshot from the first execution-context preparation until the
-  turn becomes terminal. Configuration and extension services remain authorities for the next run,
-  not mutable inputs to an already active run.
+- `RunExecutionCoordinator`, composed by `NodeTurnRuntime`, owns one run snapshot from the first
+  execution-context preparation until the turn becomes terminal. Configuration and extension
+  services remain authorities for the next run, not mutable inputs to an already active run.
 
 ### 2. Signatures
 
@@ -67,8 +67,9 @@
   snapshot. Child-requested tools can narrow that set but cannot expand it. Missing parent snapshot
   state fails closed to an empty tool set and a read-only policy projection instead of consulting the
   current global catalog or policy.
-- Root Worker wrappers forward snapshot lookup without owning a second copy. Terminal cleanup ends
-  tool, approval, and policy turn state and removes the in-memory run snapshot together.
+- Root Worker wrappers forward snapshot lookup without owning a second copy. Terminal cleanup asks
+  `RunExecutionCoordinator` to end policy state and remove the in-memory mode/snapshot state
+  together.
 - Catalogs contain at most 512 total direct and deferred definitions. Each input schema is at most
   512 KiB, the complete catalog is at most 2 MiB, the complete run snapshot is at most 3 MiB, and
   identifiers, roots, domains, descriptions, and skill text retain their local bounds.

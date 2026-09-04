@@ -155,3 +155,37 @@ current mode + effective policy + current integration catalog
   Missing snapshot state fails closed, and child-requested tool lists remain narrowing-only.
 - The Worker-backed root wrapper forwards snapshot lookup; it does not duplicate or reconstruct
   lifecycle truth.
+
+## Slice 6 Runtime And Backend Composition Boundary
+
+```text
+NodeTurnRuntime
+  -> RunExecutionCoordinator        mode, policy, immutable run snapshot
+  -> AgentBudgetTracker             provider/tool/token/time budget state
+  -> ToolBatchCoordinator           approval/hook barriers and ordered tool phases
+       -> ActiveToolExecutionRegistry  exact claims, abort, terminal events
+
+startNodeBackend
+  -> NodeRuntimeRegistry            session-to-runtime identity
+  -> NodeBackendResourceOwner       one ordered idempotent shutdown
+  -> SerializedSessionArtifactQueue accepted-prefix projection drain
+  -> node-session-bootstrap         recovery and derived artifact projection
+  -> node-runtime-trace             bounded best-effort diagnostics
+```
+
+- `NodeTurnRuntime` retains provider-loop, continuation, compaction, and committed terminalization
+  sequencing. It no longer stores collaboration-mode maps, run-snapshot maps, budget counters, or
+  active-tool maps, and it delegates complete durable tool batches to `ToolBatchCoordinator`.
+- `ToolBatchCoordinator` preserves the existing manifest-gated phase rules: safe calls may overlap,
+  barriers flush first, approval/clarification suspend only after earlier results are durable, and
+  all results, hooks, context, and replay remain in provider order.
+- Active calls use identity-bearing claims keyed by the full raw call id. Bounded ids are presentation
+  fields only, so stale completions and colliding display prefixes cannot release newer work.
+- The backend registry conditionally removes only the runtime instance that acquired a binding.
+  Resource shutdown returns one promise, attempts every operation in dependency order, drains
+  accepted projections, and closes SQLite last.
+- Session bootstrap and trace serialization moved out of the app composition file. SQLite remains
+  canonical; snapshots, artifacts, and traces remain derived or diagnostic outputs.
+- This slice changes no Gateway RPC, TUI event, SQLite schema, provider wire format, or local tool
+  behavior. `NodeTurnRuntime` decreased from roughly 2,700 to 2,020 lines and `node-backend.ts` from
+  roughly 4,050 to 2,737 lines while retaining the same characterization suite.

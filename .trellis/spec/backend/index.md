@@ -21,6 +21,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, test gates, and cross-surface drift contracts | Active |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
 | [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
+| [Runtime Composition Contract](./runtime-composition-contract.md) | Turn orchestration, tool batches, runtime registries, projections, and shutdown ownership | Active |
 | [Run Execution Snapshot Contract](./run-execution-snapshot-contract.md) | Per-run policy, mode, tool-catalog, continuation, compaction, and child-inheritance boundaries | Active |
 | [Context Management Contract](./context-management-contract.md) | Project context files, cache classes, fencing, and context diagnostics | Active |
 | [Configuration Trust Contract](./configuration-trust-contract.md) | Config precedence, provenance, project trust gating, and resume workspace ownership | Active |

@@ -1065,3 +1065,45 @@ parent-run inheritance for subagents.
 ### Next Steps
 
 - Stage 6: narrow `NodeTurnRuntime` and `node-backend.ts` into composition/orchestration boundaries.
+
+## Session 28: Complete runtime architecture Stage 6
+
+**Date**: 2026-09-04
+**Task**: Codex-aligned runtime architecture convergence
+**Branch**: `refactor/mycli-runtime-architecture`
+
+### Summary
+
+Completed the final composition-boundary slice by moving process-local run, budget, active-tool,
+tool-batch, runtime-registry, resource-shutdown, trace, and session-bootstrap responsibilities behind
+focused owners while preserving provider, storage, Gateway, and TUI behavior.
+
+### Main Changes
+
+- Added `RunExecutionCoordinator`, `AgentBudgetTracker`, `ActiveToolExecutionRegistry`, and
+  `ToolBatchCoordinator`; `NodeTurnRuntime` now retains only provider/continuation/compaction and
+  terminalization sequencing around those owners.
+- Added `NodeRuntimeRegistry`, `NodeBackendResourceOwner`, and
+  `SerializedSessionArtifactQueue` with exact-instance deletion, stable refresh, idempotent ordered
+  close, first-error cleanup, and accepted-prefix drain behavior.
+- Moved bounded trace serialization and session recovery/derived artifact projection out of
+  `node-backend.ts` without changing SQLite authority or public contracts.
+- Added focused ownership tests and a dedicated runtime composition code-spec; updated run-snapshot
+  and provider tool-batch contracts to name their current owners.
+
+### Testing
+
+- [OK] `npm run build`, `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and
+  `npm run config:check`
+- [OK] Runtime package 430/430 and backend integration 54/54
+- [OK] Extracted-owner tests 14/14
+- [OK] `env -u NO_COLOR TERM=xterm-256color npm test` (310 test files)
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Stage 6 implementation completed; awaiting batched commits and task wrap-up**
+
+### Next Steps
+
+- Review the batched commit plan, commit without push, then archive the completed Trellis task.

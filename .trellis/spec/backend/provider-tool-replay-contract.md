@@ -239,8 +239,9 @@ emit({
 - Responses wire field: top-level `parallel_tool_calls: true`.
 - Execution boundary:
   `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
-- Scheduling boundary: `NodeTurnRuntime` partitions one provider tool-call batch into consecutive
-  parallel-safe phases separated by single-call barriers.
+- Scheduling boundary: `ToolBatchCoordinator.process(input)` partitions one provider tool-call
+  batch into consecutive parallel-safe phases separated by single-call barriers;
+  `NodeTurnRuntime` delegates only after the complete batch is durable.
 
 ### 3. Contracts
 

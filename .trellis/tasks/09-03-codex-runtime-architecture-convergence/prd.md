@@ -57,7 +57,7 @@ keeps public RPC and event behavior unchanged.
       separate modules, with native chat using the same action dispatcher.
 - [x] Terminal storage transitions use focused repositories and one transaction/outbox boundary.
 - [x] Every run owns immutable effective-policy and tool-catalog snapshots.
-- [ ] `NodeTurnRuntime` and `node-backend.ts` become composition/orchestration boundaries rather
+- [x] `NodeTurnRuntime` and `node-backend.ts` become composition/orchestration boundaries rather
       than alternate owners of lifecycle truth.
 
 ## Definition of Done
