@@ -3191,6 +3191,8 @@ test("approval resolution failure restores the pending request without terminati
 		code: "internal_error",
 		message: "Session persistence failed.",
 		method: "approval.respond",
+		session_id: "session-node",
+		generation: 1,
 	});
 	await harness.gateway.close();
 });
@@ -3567,6 +3569,8 @@ test("stale steers are durably deferred instead of losing user input", async () 
 	assert.deepEqual(started.params, {
 		client_turn_id: "stale-steer",
 		turn_id: "turn-node",
+		session_id: "session-node",
+		generation: 1,
 		item: {
 			id: "turn-node:queue:queue-1",
 			type: "user_message",
@@ -3761,6 +3765,8 @@ test("reserves one queued next turn before removing its queue record", async () 
 	assert.deepEqual(started.params, {
 		client_turn_id: "queued-client-id",
 		turn_id: "turn-node",
+		session_id: "session-node",
+		generation: 1,
 		item: {
 			id: "turn-node:queue:queue-1",
 			type: "user_message",
@@ -4236,6 +4242,8 @@ test("turn submission publishes the committed user item lifecycle", async () => 
 	assert.deepEqual(started.params, {
 		client_turn_id: "client-turn",
 		turn_id: "turn-node",
+		session_id: "session-node",
+		generation: 1,
 		item: {
 			id: "turn-node:user:client-message",
 			type: "user_message",
@@ -4294,6 +4302,8 @@ test("gateway projects committed steering user item lifecycle", async () => {
 	assert.deepEqual(started.params, {
 		client_turn_id: "client-turn",
 		turn_id: "turn-node",
+		session_id: "session-node",
+		generation: 1,
 		item: {
 			id: "turn-node:queue:queue-1",
 			type: "user_message",
@@ -4378,6 +4388,9 @@ test("turn submission responds immediately and emits validated direct events bef
 		type: "turn.started",
 		payload: direct.params,
 		timestamp: 1_700_000_000,
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
 	});
 	harness.emit({ type: "text_delta", text: "hello" });
 	const compatibility = await waitFor(() => notification(harness.messages, "turn.event"));
@@ -4415,7 +4428,12 @@ test("gateway resets incomplete assistant output before publishing stream recove
 	parseGatewayEvent(reset);
 	parseGatewayEvent(retrying);
 	assert.ok(harness.messages.indexOf(reset) < harness.messages.indexOf(retrying));
-	assert.deepEqual(reset.params, { client_turn_id: "client-retry" });
+	assert.deepEqual(reset.params, {
+		client_turn_id: "client-retry",
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
+	});
 	assert.equal(retrying.params.recovery_kind, "stream");
 	assert.equal(retrying.params.text, "Reconnecting... 1/5");
 
@@ -4450,6 +4468,8 @@ test("gateway publishes hosted web search as an item lifecycle", async () => {
 	assert.deepEqual(started.params, {
 		client_turn_id: "client-search",
 		turn_id: "turn-search",
+		session_id: "session-node",
+		generation: 1,
 		item: {
 			id: "web-search:ws-1",
 			type: "web_search",
@@ -4459,6 +4479,8 @@ test("gateway publishes hosted web search as an item lifecycle", async () => {
 	assert.deepEqual(completed.params, {
 		client_turn_id: "client-search",
 		turn_id: "turn-search",
+		session_id: "session-node",
+		generation: 1,
 		item: {
 			id: "web-search:ws-1",
 			type: "web_search",
@@ -4816,6 +4838,9 @@ test("projects structured plan updates with Codex explanation and task counts", 
 	parseGatewayEvent(direct);
 	assert.deepEqual(direct.params, {
 		client_turn_id: "client-turn",
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
 		plan_steps: ["completed: Inspect runtime", "in_progress: Wire plan updates"],
 		plan: {
 			items: [
@@ -4876,12 +4901,18 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	]);
 	assert.deepEqual("method" in direct[0]! ? direct[0].params : {}, {
 		client_turn_id: "client-turn",
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
 		source: "mid_turn",
 		before_tokens: 95_000,
 		max_tokens: 100_000,
 	});
 	assert.deepEqual("method" in direct[1]! ? direct[1].params : {}, {
 		client_turn_id: "client-turn",
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
 		source: "mid_turn",
 		status: "compressed",
 		before_tokens: 95_000,
@@ -4912,6 +4943,9 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	parseGatewayEvent(failed);
 	assert.deepEqual(failed.params, {
 		client_turn_id: "client-turn",
+		session_id: "session-node",
+		generation: 1,
+		turn_id: "turn-node",
 		source: "context_overflow",
 		status: "failed",
 		before_tokens: 96_000,
@@ -5347,6 +5381,8 @@ test("unsupported methods return a stable error and observable gateway event", a
 		method: "missing.method",
 		category: "runtime",
 		occurrence_id: undefined,
+		session_id: "session-node",
+		generation: 1,
 	});
 	assert.match(String(event.params.occurrence_id), /^rpc:[a-f0-9]{64}$/u);
 	await harness.gateway.close();

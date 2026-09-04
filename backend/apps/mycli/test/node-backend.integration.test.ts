@@ -578,6 +578,8 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 	assert.deepEqual(userStarted.params, {
 		client_turn_id: "integration-turn",
 		turn_id: (userStarted.params as Record<string, unknown>).turn_id,
+		session_id: "integration-session",
+		generation: 1,
 		item: {
 			id: `${String((userStarted.params as Record<string, unknown>).turn_id)}:user:integration-message`,
 			type: "user_message",
@@ -792,9 +794,14 @@ test("Node backend executes update_plan and restores its model-hidden transcript
 		client_turn_id: "plan-turn",
 		client_user_message_id: "plan-message",
 	});
+	const planSubmission = await waitFor(() => response(messages, "submit-plan"));
+	const planTurnId = resultValue(planSubmission, "turn_id");
 	const update = await waitFor(() => event(messages, "plan.updated"));
 	assert.deepEqual(update.params, {
 		client_turn_id: "plan-turn",
+		session_id: "plan-session",
+		generation: 1,
+		turn_id: planTurnId,
 		plan_steps: ["completed: Inspect runtime", "in_progress: Wire plan updates"],
 		plan: {
 			items: [
@@ -4412,13 +4419,19 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 	writeRequest(backend, "target-transcript", "transcript.load", { session_id: "target" });
 	const transcript = await waitFor(() => response(messages, "target-transcript"));
 	assert.match(JSON.stringify(resultValue(transcript, "items")), /target question/);
-	await waitFor(() => messages.find((message) => {
+	const queuedCompletion = await waitFor(() => messages.find((message) => {
 		if (message.method !== "message.complete") return false;
 		const params = message.params as Record<string, unknown> | undefined;
 		return params?.final === true
 			&& params.text === "target resumed"
 			&& params.client_turn_id === "queue-client-target";
 	}));
+	await waitFor(() => messages.find((message, index) => (
+		index > messages.indexOf(queuedCompletion)
+		&& message.method === "status.changed"
+		&& paramValue(message, "session_id") === "target"
+		&& paramValue(message, "turn_running") === false
+	)));
 
 	writeRequest(backend, "target-turn", "turn.submit", {
 		message: "continue target",
