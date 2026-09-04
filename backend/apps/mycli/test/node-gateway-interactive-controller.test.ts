@@ -60,10 +60,10 @@ test("interactive controller serializes requests and preserves each source owner
 	assert.equal(controller.hasPending(), false);
 });
 
-test("interactive controller removes a cancelled request and presents the next one", () => {
-	const methods: RuntimeGatewayEventMethod[] = [];
+test("interactive controller publishes visible cancellation before presenting the next request", () => {
+	const events: PublishedEvent[] = [];
 	const controller = new NodeGatewayInteractiveController({
-		publish: (method) => { methods.push(method); },
+		publish: (method, params, ownership) => { events.push({ method, params, ownership }); },
 	});
 	const ownership = Object.freeze({ sessionId: "root", generation: 1 });
 	controller.emit("approval.request", {
@@ -79,7 +79,49 @@ test("interactive controller removes a cancelled request and presents the next o
 		options: [],
 	}, ownership);
 
-	assert.equal(controller.cancel({ session_id: "child-a", decision_id: "decision-a" }), true);
-	assert.deepEqual(methods, ["approval.request", "approval.request"]);
+	const cancelled = {
+		session_id: "child-a",
+		child_session_id: "child-a",
+		generation: 1,
+		client_turn_id: "child-client-a",
+		turn_id: "child-turn-a",
+		decision_id: "decision-a",
+	};
+	assert.equal(controller.cancel(cancelled), true);
+	assert.deepEqual(events.map((event) => event.method), [
+		"approval.request",
+		"interactive.cancelled",
+		"approval.request",
+	]);
+	assert.equal(events[1]?.params, cancelled);
+	assert.equal(events[1]?.ownership, ownership);
+	assert.equal(controller.hasPending(), true);
+});
+
+test("interactive controller removes an unseen cancellation without publishing it", () => {
+	const events: PublishedEvent[] = [];
+	const controller = new NodeGatewayInteractiveController({
+		publish: (method, params, ownership) => { events.push({ method, params, ownership }); },
+	});
+	const ownership = Object.freeze({ sessionId: "root", generation: 1 });
+	controller.emit("approval.request", {
+		session_id: "child-a",
+		decision_id: "decision-a",
+		preview: "A",
+		options: [],
+	}, ownership);
+	controller.emit("clarify.request", {
+		session_id: "child-b",
+		request_id: "question-b",
+		tool_id: "tool-b",
+		call_id: "call-b",
+		tool_name: "AskUserQuestion",
+		question: "B?",
+		options: [],
+		multi_select: false,
+	}, ownership);
+
+	assert.equal(controller.cancel({ session_id: "child-b", request_id: "question-b" }), true);
+	assert.deepEqual(events.map((event) => event.method), ["approval.request"]);
 	assert.equal(controller.hasPending(), true);
 });

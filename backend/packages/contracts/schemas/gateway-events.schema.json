@@ -519,6 +519,62 @@
       ],
       "type": "object"
     },
+    "interactive.cancelled": {
+      "name": "interactive.cancelled",
+      "properties": {
+        "child_session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "client_turn_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "request_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "child_session_id",
+        "generation",
+        "client_turn_id",
+        "turn_id"
+      ],
+      "oneOf": [
+        {
+          "required": ["decision_id"]
+        },
+        {
+          "required": ["request_id"]
+        }
+      ],
+      "type": "object"
+    },
     "item.completed": {
       "name": "item.completed",
       "properties": {
@@ -2589,6 +2645,26 @@
         },
         "params": {
           "$ref": "#/$defs/approval.request"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "interactive.cancelled"
+        },
+        "params": {
+          "$ref": "#/$defs/interactive.cancelled"
         }
       },
       "required": [

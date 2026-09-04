@@ -12,6 +12,11 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "interactive.cancelled";
+      params: Interactive;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "subagent.updated";
       params: Subagent;
     }
@@ -215,6 +220,19 @@ export type GatewayEventNotification =
       method: "workspace.trust.changed";
       params: WorkspaceTrust;
     };
+export type Interactive = {
+  child_session_id: string;
+  client_turn_id: string;
+  decision_id?: string;
+  generation: number;
+  request_id?: string;
+  session_id: string;
+  turn_id: string;
+  [k: string]: any;
+} & InteractiveCancelled;
+export type InteractiveCancelled = {
+  [k: string]: any;
+};
 export type ShellCompleted = Shell & {
   [k: string]: any;
 };

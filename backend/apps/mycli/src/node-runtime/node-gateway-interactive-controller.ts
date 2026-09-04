@@ -65,9 +65,13 @@ export class NodeGatewayInteractiveController {
 		const index = this.#requests.findIndex((request) =>
 			interactiveResponseMatchesRequest(request.params, params));
 		if (index < 0) return false;
+		const request = this.#requests[index]!;
 		const wasVisible = index === 0;
 		this.#requests.splice(index, 1);
-		if (wasVisible) this.#publishNext();
+		if (wasVisible) {
+			this.#options.publish("interactive.cancelled", params, request.ownership);
+			this.#publishNext();
+		}
 		return true;
 	}
 

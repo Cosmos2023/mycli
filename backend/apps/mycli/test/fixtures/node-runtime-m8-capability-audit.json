@@ -3,7 +3,7 @@
   "baseline": "python-m7-final",
   "gateway": {
 	"rpc_count": 44,
-    "event_count": 43,
+    "event_count": 44,
     "required_rpc": [
       "session.bootstrap",
 	  "session.new",
@@ -35,6 +35,7 @@
       "item.completed",
       "approval.request",
       "clarify.request",
+	  "interactive.cancelled",
       "turn.queue.updated",
       "shell.started",
 	  "extension.updated",

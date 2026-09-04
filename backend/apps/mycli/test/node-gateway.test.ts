@@ -3126,15 +3126,28 @@ test("gateway removes a broker-cancelled child request before presenting the nex
 			child_session_id: "child-one",
 			generation: 1,
 			client_turn_id: "child-turn-one",
+			turn_id: "child-server-turn-one",
 			decision_id: "child-decision-one",
 		},
 	});
+	const cancellation = await waitFor(() => notificationForSession(
+		harness.messages,
+		"interactive.cancelled",
+		"child-one",
+	));
 	const clarification = await waitFor(() => notificationForSession(
 		harness.messages,
 		"clarify.request",
 		"child-two",
 	));
+	assert.equal(cancellation.params.decision_id, "child-decision-one");
 	assert.equal(clarification.params.request_id, "child-question-two");
+	const directMethods = harness.messages
+		.filter((message) => "method" in message && !("id" in message) && message.method !== "runtime.event")
+		.map((message) => message.method);
+	assert.ok(
+		directMethods.indexOf("interactive.cancelled") < directMethods.lastIndexOf("clarify.request"),
+	);
 	await harness.gateway.close();
 });
 
