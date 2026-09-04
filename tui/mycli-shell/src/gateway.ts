@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { GatewayClient, GatewayRequestError, type GatewayEvent } from "./adapters/gateway-client.ts";
 import {
 	initialRuntimeState,
+	reduceDecodedRuntimeEventWithOutcome,
 	reduceRuntimeEvent,
 	RuntimeStateProjector,
 	runtimeStateFromBootstrap,
@@ -84,6 +85,7 @@ import {
 } from "./plan-implementation.ts";
 import { appendFatalTuiDiagnostic } from "./fatal-error.ts";
 import { safeErrorMessage } from "./safe-ui-text.ts";
+import { createMycliUiActionDispatcher } from "./ui-actions.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -127,11 +129,34 @@ let clientTurnSequence = 0;
 let localDispatchEligible = false;
 let localDispatchScheduled = false;
 let interruptRequested = false;
-let resubmitPendingSteersAfterInterrupt = false;
 let extensionRefreshScheduled = false;
 let fatalTuiHandling = false;
 const runtimeStateProjector = new RuntimeStateProjector();
 const TRANSCRIPT_PAGE_LIMIT = 500;
+const uiActions = createMycliUiActionDispatcher(async (action) => {
+	switch (action.type) {
+		case "submit":
+			return submitTurn(action.text, { localImages: action.localImages ?? [] });
+		case "follow_up":
+			return submitFollowUp(action.text, { localImages: action.localImages ?? [] });
+		case "command":
+			return runCommand(action.command);
+		case "interrupt":
+			return interruptTurn({ rollbackUserInput: action.rollbackUserInput });
+		case "dequeue_queued_input":
+			return popLastQueuedFollowUp();
+		case "approval.respond":
+			return respondApproval(action.approval.decisionId, action.choice, action.approval);
+		case "clarification.respond":
+			return respondClarification(
+				action.clarification.requestId,
+				action.response,
+				action.clarification,
+			);
+		case "exit":
+			return action.reason === "interrupt" ? interruptExit(130) : shutdown(0);
+	}
+});
 
 function currentShellState(transcriptUpdate: "unchanged" | "tail" | "replace" = "unchanged"): MycliShellState {
 	return runtimeStateProjector.project(runtimeState, sessions, transcriptUpdate);
@@ -170,27 +195,26 @@ function refreshRuntime(): void {
 }
 
 function handleGatewayEvent(event: GatewayEvent): void {
-	if (!eventDeduper.shouldConsume(event)) {
-		return;
-	}
 	if (event.method === "extension.updated") {
 		scheduleExtensionRefresh();
 		return;
 	}
+	const decoded = eventDeduper.consume(event);
+	if (!decoded) return;
+	const { method, params } = decoded;
 	if (
-		event.method === "turn.interrupted" &&
-		event.params.requested === true &&
+		method === "turn.interrupted" &&
+		params.requested === true &&
 		!interruptRequested
 	) {
 		return;
 	}
-	let nextState = reduceRuntimeEvent(runtimeState, event.method, event.params);
-	const eventApplied = nextState !== runtimeState;
+	const reduction = reduceDecodedRuntimeEventWithOutcome(runtimeState, decoded);
+	if (!reduction.applied) return;
+	let nextState = reduction.state;
 	const interrupted =
-		eventApplied && (
-			(event.method === "turn.interrupted" && event.params.requested !== true) ||
-			(event.method === "turn.completed" && event.params.turn_state === "interrupted")
-		);
+		(method === "turn.interrupted" && params.requested !== true) ||
+		(method === "turn.completed" && params.turn_state === "interrupted");
 	const shouldResolveInterrupt =
 		interrupted &&
 		(interruptRequested || runtimeState.turnRunning || runtimeState.activeTurnId !== null);
@@ -207,26 +231,29 @@ function handleGatewayEvent(event: GatewayEvent): void {
 				...(input.attachments.length ? { localImages: input.attachments } : {}),
 			})),
 			{
-				restoreSubmittedInput: event.params.input_rolled_back === true,
+				restoreSubmittedInput: params.input_rolled_back === true,
 			},
 		);
 	}
-	setRuntimeState(nextState, { eventType: runtimeEventType(event) });
-	if (event.method === "turn.started" && eventApplied) {
+	setRuntimeState(nextState, { eventType: method });
+	if (method === "session.changed") {
+		backendTurnBusy = false;
+		localDispatchEligible = false;
+		interruptRequested = false;
+	}
+	if (method === "turn.started") {
 		backendTurnBusy = true;
 	}
 	if (
-		eventApplied && (
-			(event.method === "turn.completed" && !interrupted) ||
-			event.method === "turn.failed"
-		)
+		(method === "turn.completed" && !interrupted) ||
+		method === "turn.failed"
 	) {
 		localDispatchEligible = true;
 	}
-	if (event.method === "status.changed" && event.params.turn_running === false) {
+	if (method === "status.changed" && params.turn_running === false) {
 		backendTurnBusy = false;
-		scheduleNextLocalInput();
-	} else if (shouldResolveInterrupt && !interruptRequested && !backendTurnBusy) {
+	}
+	if (!backendTurnBusy && !interruptRequested) {
 		scheduleNextLocalInput();
 	}
 }
@@ -241,12 +268,6 @@ function scheduleExtensionRefresh(): void {
 			loadResources(),
 		]).catch(() => undefined);
 	});
-}
-
-function runtimeEventType(event: GatewayEvent): string {
-	return event.method === "runtime.event" && typeof event.params.type === "string"
-		? event.params.type
-		: event.method;
 }
 
 async function send(
@@ -523,6 +544,7 @@ async function dispatchNextLocalInput(): Promise<void> {
 	if (
 		!localDispatchEligible ||
 		backendTurnBusy ||
+		interruptRequested ||
 		runtimeState.turnRunning ||
 		runtimeState.activeTurnId ||
 		runtimeState.pendingApproval ||
@@ -701,9 +723,6 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 	const clarificationPending = pendingClarification !== null && pendingClarificationTurnId !== null;
 	if (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId || clarificationPending) {
 		interruptRequested = true;
-		resubmitPendingSteersAfterInterrupt = resubmitPendingSteersAfterInterrupt
-			|| runtimeState.localPendingSteers.length > 0
-			|| runtimeState.queuedPendingSteers.length > 0;
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "turn.interrupted", {
 				requested: true,
@@ -716,7 +735,6 @@ async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<b
 	}
 	const clearOptimisticInterrupt = (): void => {
 		interruptRequested = false;
-		resubmitPendingSteersAfterInterrupt = false;
 		if (runtimeState.liveStatus?.state === "interrupting") {
 			setRuntimeState({
 				...runtimeState,
@@ -783,7 +801,6 @@ async function resolveRequestedInterrupt(
 ): Promise<void> {
 	if (!sessionMutationContextIsCurrent(context)) {
 		interruptRequested = false;
-		resubmitPendingSteersAfterInterrupt = false;
 		return;
 	}
 	const resubmitted = result.pending_steers_resubmitted === true;
@@ -803,7 +820,6 @@ async function resolveRequestedInterrupt(
 			}, { recordErrors: false });
 			if (!sessionMutationContextIsCurrent(context)) {
 				interruptRequested = false;
-				resubmitPendingSteersAfterInterrupt = false;
 				return;
 			}
 			durableInputs = clearedQueuedInputs(cleared);
@@ -820,7 +836,6 @@ async function resolveRequestedInterrupt(
 		}
 		if (!sessionMutationContextIsCurrent(context)) {
 			interruptRequested = false;
-			resubmitPendingSteersAfterInterrupt = false;
 			return;
 		}
 		const localInputs: RestorableQueuedInput[] = [
@@ -864,7 +879,6 @@ async function resolveRequestedInterrupt(
 	}
 	localDispatchEligible = false;
 	interruptRequested = false;
-	resubmitPendingSteersAfterInterrupt = false;
 }
 
 async function respondApproval(
@@ -1220,12 +1234,7 @@ async function main(): Promise<void> {
 				output: ttyStreams.output,
 			},
 			columns: () => ttyStreams?.output.columns || Number(process.env.COLUMNS) || 100,
-			onSubmit: submitTurn,
-			onClarificationRespond: respondClarification,
-			onFollowUp: submitFollowUp,
-			onCommandSubmit: runCommand,
-			onExit: () => shutdown(0),
-			onInterruptExit: () => interruptExit(130),
+			actions: uiActions,
 			commands: slashCommands,
 			commandNames: slashCommandNames,
 		});
@@ -1243,19 +1252,11 @@ async function main(): Promise<void> {
 		projectTrusted: runtimeState.trust.state === "trusted",
 		trustSavedDecision: trustDecisionFromState(runtimeState.trust.state),
 		onTrustSelect: saveWorkspaceTrust,
-		onSubmit: submitTurn,
-		onFollowUp: submitFollowUp,
-		onInterrupt: interruptTurn,
-		onInterruptExit: () => interruptExit(130),
-		onDequeueQueuedInput: popLastQueuedFollowUp,
-		onCommandSubmit: runCommand,
-		onExit: () => shutdown(0),
+		actions: uiActions,
 		onSuspend: process.platform === "win32"
 			? undefined
 			: () => process.kill(0, "SIGTSTP"),
 		onFatalError: (error) => { void handleFatalTuiError(error); },
-		onApprovalRespond: respondApproval,
-		onClarificationRespond: respondClarification,
 		onPlanImplementation: startPlanImplementation,
 		onApiKeyLogin: saveApiKey,
 		onConnectivityValidate: validateProviderConnectivity,

@@ -72,6 +72,36 @@ import {
 	commandResultFromTranscriptItem,
 } from "./command-results.ts";
 import { boundedUiText } from "../safe-ui-text.ts";
+import {
+	runtimeEventBelongsToActiveOwner,
+	runtimeEventTargetsChild,
+} from "./runtime-event-ownership.ts";
+import { reduceRuntimeLifecycle } from "./runtime-lifecycle-reducer.ts";
+import {
+	decodeRuntimeEventInput,
+	type DecodedRuntimeEvent,
+} from "./runtime-events.ts";
+import {
+	defaultVisualSettings,
+	initialRuntimeState,
+	type RuntimeLiveStatus,
+	type RuntimeLocalUserInput,
+	type RuntimeQueuedInputPreview,
+	type RuntimeSessionLocalInputs,
+	type RuntimeShellProcess,
+	type RuntimeShellState,
+	type RuntimeTranscriptItem,
+} from "./runtime-state-model.ts";
+import {
+	RuntimeTranscriptProjector,
+	type RuntimeTranscriptProjection,
+} from "./runtime-transcript-projector.ts";
+
+export {
+	initialRuntimeState,
+	type RuntimeLocalUserInput,
+	type RuntimeShellState,
+} from "./runtime-state-model.ts";
 
 const SEMANTIC_TOOL_ROW_NAMES = new Set([
 	"askuserquestion",
@@ -93,440 +123,13 @@ const PROVIDER_ROUTE_URL_MAX_CHARS = 2_048;
 const PROVIDER_ROUTE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const PROVIDER_ROUTE_CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 
-type RuntimeTranscriptItem = {
-	id: string;
-	type: string;
-	text: string;
-	folded?: boolean;
-	metadata?: Record<string, unknown>;
-	call_id?: string;
-	status?: string;
-};
+export type { RuntimeTranscriptUpdateKind } from "./runtime-transcript-projector.ts";
 
-type RuntimeShellProcess = {
-	shellId: string;
-	callId?: string;
-	commandPreview: string;
-	description?: string;
-	background: boolean;
-	processState: string;
-	transport?: string;
-	tty?: boolean;
-	yielded?: boolean;
-	terminalState?: string;
-	exitCode?: number;
-	sequence: number;
-	startedAt?: string;
-	completedAt?: string;
-	outputPreview: string;
-	nextCursor: number;
-	outputChars: number;
-	omittedOutputChars: number;
-	cleanupResult?: string;
-	shellKind?: string;
-	shellEdition?: string;
-};
-
-type RuntimeQueuedInputPreview = {
-	queueId?: string;
-	clientUserMessageId?: string;
-	sessionId?: string;
-	targetTurnId?: string;
-	claimTurnId?: string;
-	kind?: "pending_steer" | "rejected_steer" | "follow_up";
-	state?: string;
-	message: string;
-	attachments: MycliShellLocalImageAttachment[];
-	source?: string;
-};
-
-export type RuntimeLocalUserInput = {
-	clientUserMessageId: string;
-	message: string;
-	attachments: MycliShellLocalImageAttachment[];
-};
-
-type RuntimeSessionLocalInputs = {
-	localPendingSteers: RuntimeLocalUserInput[];
-	localRejectedSteers: RuntimeLocalUserInput[];
-	localFollowUps: RuntimeLocalUserInput[];
-	localSubmittingMessages: RuntimeLocalUserInput[];
-};
-
-type RuntimeLiveStatus = {
-	state: string;
-	text: string;
-	kind?: string;
-	message?: string;
-	durationMs?: number;
-};
-
-export type RuntimeShellState = {
-	sessionId: string | null;
-	sessionGeneration: number | null;
-	sessionTitle: string | null;
-	workspace: string;
-	model: string;
-	collaborationMode: "default" | "plan";
-	provider: string;
-	trust: { state?: string; workspace?: string };
-	trustGateDismissed: boolean;
-	status: Record<string, unknown>;
-	models: MycliShellModel[] | null;
-	modelsProvider: string | null;
-	providerRoutes: MycliShellProviderRoute[];
-	transcript: RuntimeTranscriptItem[];
-	transcriptNextBefore: string | null;
-	turnRunning: boolean;
-	activeTurnId: string | null;
-	activeClientTurnId: string | null;
-	activeAssistantItemId: string | null;
-	queuedInputs: string[];
-	queueRevision: number;
-	queuedPendingSteers: RuntimeQueuedInputPreview[];
-	queuedRejectedSteers: RuntimeQueuedInputPreview[];
-	queuedFollowUpInputs: RuntimeQueuedInputPreview[];
-	localPendingSteers: RuntimeLocalUserInput[];
-	localRejectedSteers: RuntimeLocalUserInput[];
-	localFollowUps: RuntimeLocalUserInput[];
-	localSubmittingMessages: RuntimeLocalUserInput[];
-	sessionLocalInputs: Record<string, RuntimeSessionLocalInputs>;
-	hasPendingInput: boolean;
-	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
-	liveStatus: RuntimeLiveStatus | null;
-	retryRestoreStatus: RuntimeLiveStatus | null;
-	liveReasoning: { text: string; kind: string } | null;
-	viewMode: "default" | "verbose" | "focus";
-	statusbarMode: "off" | "compact" | "full";
-	settings: MycliShellVisualSettings;
-	settingsCatalog: MycliShellSettingsCatalog | null;
-	keymap: MycliShellEffectiveKeymap | null;
-	terminalCapabilities: MycliShellTerminalCapabilities | null;
-	pendingApproval: Record<string, unknown> | null;
-	pendingClarification: Record<string, unknown> | null;
-	taskProgress: { completed: number; total: number } | null;
-	authProviders: MycliShellAuthProvider[];
-	authReadiness: MycliShellCredentialReadiness | null;
-	resources: MycliShellResource[];
-	permissions: MycliShellPermissionState | null;
-	backgroundShells: Record<string, RuntimeShellProcess>;
-	backgroundShellCount: number;
-	shellEventSequences: Record<string, number>;
-};
-
-export function initialRuntimeState(): RuntimeShellState {
-	return {
-		sessionId: null,
-		sessionGeneration: null,
-		sessionTitle: null,
-		workspace: process.cwd(),
-		model: "",
-		collaborationMode: "default",
-		provider: "",
-		trust: { state: "unknown", workspace: process.cwd() },
-		trustGateDismissed: false,
-		status: {},
-		models: null,
-		modelsProvider: null,
-		providerRoutes: [],
-		transcript: [],
-		transcriptNextBefore: null,
-		turnRunning: false,
-		activeTurnId: null,
-		activeClientTurnId: null,
-		activeAssistantItemId: null,
-		queuedInputs: [],
-		queueRevision: 0,
-		queuedPendingSteers: [],
-		queuedRejectedSteers: [],
-		queuedFollowUpInputs: [],
-		localPendingSteers: [],
-		localRejectedSteers: [],
-		localFollowUps: [],
-		localSubmittingMessages: [],
-		sessionLocalInputs: {},
-		hasPendingInput: false,
-		queueActivity: null,
-		liveStatus: null,
-		retryRestoreStatus: null,
-		liveReasoning: null,
-		viewMode: "default",
-		statusbarMode: "full",
-		settings: defaultVisualSettings(),
-		settingsCatalog: null,
-		keymap: null,
-		terminalCapabilities: null,
-		pendingApproval: null,
-		pendingClarification: null,
-		taskProgress: null,
-		authProviders: [],
-		authReadiness: null,
-		resources: [],
-		permissions: null,
-		backgroundShells: {},
-		backgroundShellCount: 0,
-		shellEventSequences: {},
-	};
-}
-
-type RuntimeTranscriptProjection = {
-	messages: MycliShellMessage[];
-	tools: MycliShellTool[];
-	bash: MycliShellBash[];
-	transcript: MycliShellTranscriptBlock[];
-};
-
-type RuntimeProjectionCounts = {
-	messages: number;
-	tools: number;
-	bash: number;
-	transcript: number;
-};
-
-type RuntimeTranscriptProjectionCache = {
-	projection: RuntimeTranscriptProjection;
-	sourceTranscript: RuntimeTranscriptItem[];
-	sourceLength: number;
-	penultimateSourceItem?: RuntimeTranscriptItem;
-	lastSourceItem?: RuntimeTranscriptItem;
-	lastSourcePrefix: RuntimeProjectionCounts;
-	activeAssistantItemId: string | null;
-	activeAssistantSourceIndex: number | null;
-	activeAssistantPrefix: RuntimeProjectionCounts | null;
-	liveReasoningText?: string;
-	liveReasoningKind?: string;
-	workspace: string;
-	turnRunning: boolean;
-	toolDetailsDefault: MycliShellVisualSettings["toolDetailsDefault"];
-};
-
-export type RuntimeTranscriptUpdateKind = "unchanged" | "tail" | "replace";
-
-/** Retains runtime-to-shell transcript work across gateway state projections. */
-export class RuntimeStateProjector {
-	private cache: RuntimeTranscriptProjectionCache | null = null;
-
-	project(
-		state: RuntimeShellState,
-		sessions: MycliShellSession[] = [],
-		transcriptUpdate: RuntimeTranscriptUpdateKind = "replace",
-	): MycliShellState {
-		let projection: RuntimeTranscriptProjection | null = null;
-		let activeAssistantSourceIndex: number | null | undefined;
-		if (this.cache && projectionContextMatches(this.cache, state)) {
-			if (transcriptUpdate === "unchanged" && unchangedProjectionSource(this.cache, state)) {
-				projection = this.cache.projection;
-			} else if (transcriptUpdate === "tail") {
-				const tail = projectRuntimeTranscriptTail(state, this.cache);
-				projection = tail?.projection ?? null;
-				activeAssistantSourceIndex = tail?.activeAssistantSourceIndex;
-			}
-		}
-
-		if (!projection) {
-			projection = projectRuntimeTranscriptRange(state, 0);
-		}
-		if (projection !== this.cache?.projection) {
-			this.cache = runtimeTranscriptProjectionCache(
-				state,
-				projection,
-				activeAssistantSourceIndex,
-			);
-		}
-		return projectRuntimeShellState(state, sessions, projection);
+/** Compatibility facade for callers that previously imported the projector here. */
+export class RuntimeStateProjector extends RuntimeTranscriptProjector {
+	constructor() {
+		super(projectRuntimeShellState);
 	}
-}
-
-function unchangedProjectionSource(
-	cache: RuntimeTranscriptProjectionCache,
-	state: RuntimeShellState,
-): boolean {
-	return cache.sourceTranscript === state.transcript &&
-		cache.activeAssistantItemId === state.activeAssistantItemId &&
-		cache.liveReasoningText === state.liveReasoning?.text &&
-		cache.liveReasoningKind === state.liveReasoning?.kind;
-}
-
-function projectionContextMatches(
-	cache: RuntimeTranscriptProjectionCache,
-	state: RuntimeShellState,
-): boolean {
-	return cache.workspace === state.workspace &&
-		cache.turnRunning === state.turnRunning &&
-		cache.toolDetailsDefault === state.settings.toolDetailsDefault;
-}
-
-function projectRuntimeTranscriptTail(
-	state: RuntimeShellState,
-	cache: RuntimeTranscriptProjectionCache,
-): { projection: RuntimeTranscriptProjection; activeAssistantSourceIndex?: number | null } | null {
-	const source = state.transcript;
-	if (source.length < cache.sourceLength) return null;
-	if (
-		cache.sourceLength > 0 &&
-		source.length > cache.sourceLength &&
-		source[cache.sourceLength - 1] !== cache.lastSourceItem
-	) {
-		return null;
-	}
-	if (
-		source.length === cache.sourceLength &&
-		source.length > 1 &&
-		source[source.length - 2] !== cache.penultimateSourceItem
-	) {
-		return null;
-	}
-
-	let sourceStart = source.length > cache.sourceLength
-		? cache.sourceLength
-		: source.length;
-	let prefix = projectionCounts(cache.projection);
-	if (
-		source.length === cache.sourceLength &&
-		source.length > 0 &&
-		source[source.length - 1] !== cache.lastSourceItem
-	) {
-		sourceStart = source.length - 1;
-		prefix = cache.lastSourcePrefix;
-	}
-
-	const reasoningChanged =
-		cache.liveReasoningText !== state.liveReasoning?.text ||
-		cache.liveReasoningKind !== state.liveReasoning?.kind;
-	const activeAssistantChanged = cache.activeAssistantItemId !== state.activeAssistantItemId;
-	if (reasoningChanged || activeAssistantChanged) {
-		if (
-			activeAssistantChanged ||
-			cache.activeAssistantSourceIndex === null ||
-			cache.activeAssistantPrefix === null
-		) {
-			return null;
-		}
-		if (cache.activeAssistantSourceIndex < sourceStart) {
-			sourceStart = cache.activeAssistantSourceIndex;
-			prefix = cache.activeAssistantPrefix;
-		}
-	}
-
-	if (sourceStart === source.length) {
-		return { projection: cache.projection, activeAssistantSourceIndex: cache.activeAssistantSourceIndex };
-	}
-	const suffix = projectRuntimeTranscriptRange(state, sourceStart);
-	return {
-		projection: combineRuntimeTranscriptProjection(cache.projection, prefix, suffix),
-		activeAssistantSourceIndex: cache.activeAssistantSourceIndex,
-	};
-}
-
-function combineRuntimeTranscriptProjection(
-	previous: RuntimeTranscriptProjection,
-	prefix: RuntimeProjectionCounts,
-	suffix: RuntimeTranscriptProjection,
-): RuntimeTranscriptProjection {
-	return {
-		messages: combineRuntimeProjectionArray(previous.messages, prefix.messages, suffix.messages),
-		tools: combineRuntimeProjectionArray(previous.tools, prefix.tools, suffix.tools),
-		bash: combineRuntimeProjectionArray(previous.bash, prefix.bash, suffix.bash),
-		transcript: combineRuntimeProjectionArray(previous.transcript, prefix.transcript, suffix.transcript),
-	};
-}
-
-function combineRuntimeProjectionArray<T>(previous: T[], prefixLength: number, suffix: T[]): T[] {
-	if (prefixLength === previous.length && suffix.length === 0) return previous;
-	if (prefixLength === previous.length - 1 && suffix.length === 1) {
-		return previous.with(-1, suffix[0]!);
-	}
-	if (prefixLength === previous.length) return previous.concat(suffix);
-	return [...previous.slice(0, prefixLength), ...suffix];
-}
-
-function runtimeTranscriptProjectionCache(
-	state: RuntimeShellState,
-	projection: RuntimeTranscriptProjection,
-	activeAssistantSourceIndexHint?: number | null,
-): RuntimeTranscriptProjectionCache {
-	const source = state.transcript;
-	const total = projectionCounts(projection);
-	const lastSourceSuffix = source.length > 0
-		? projectRuntimeTranscriptRange(state, source.length - 1)
-		: emptyRuntimeTranscriptProjection();
-	const lastSourcePrefix = subtractProjectionCounts(total, projectionCounts(lastSourceSuffix));
-	const activeAssistantSourceIndex = resolveActiveAssistantSourceIndex(
-		state,
-		activeAssistantSourceIndexHint,
-	);
-	const activeAssistantSuffix = activeAssistantSourceIndex === null
-		? null
-		: activeAssistantSourceIndex === source.length - 1
-			? lastSourceSuffix
-			: projectRuntimeTranscriptRange(state, activeAssistantSourceIndex);
-	return {
-		projection,
-		sourceTranscript: source,
-		sourceLength: source.length,
-		penultimateSourceItem: source.length >= 2 ? source[source.length - 2] : undefined,
-		lastSourceItem: source.at(-1),
-		lastSourcePrefix,
-		activeAssistantItemId: state.activeAssistantItemId,
-		activeAssistantSourceIndex,
-		activeAssistantPrefix: activeAssistantSuffix
-			? subtractProjectionCounts(total, projectionCounts(activeAssistantSuffix))
-			: null,
-		liveReasoningText: state.liveReasoning?.text,
-		liveReasoningKind: state.liveReasoning?.kind,
-		workspace: state.workspace,
-		turnRunning: state.turnRunning,
-		toolDetailsDefault: state.settings.toolDetailsDefault,
-	};
-}
-
-function resolveActiveAssistantSourceIndex(
-	state: RuntimeShellState,
-	hint?: number | null,
-): number | null {
-	const activeId = state.activeAssistantItemId;
-	if (!activeId) return null;
-	if (hint !== undefined && hint !== null && state.transcript[hint]?.id === activeId) return hint;
-	const index = state.transcript.findLastIndex((item) => item.id === activeId);
-	return index >= 0 ? index : null;
-}
-
-function projectRuntimeTranscriptRange(
-	state: RuntimeShellState,
-	sourceStart: number,
-): RuntimeTranscriptProjection {
-	const shell = projectRuntimeShellState(state, [], undefined, sourceStart);
-	return {
-		messages: shell.messages,
-		tools: shell.tools,
-		bash: shell.bash,
-		transcript: shell.transcript ?? [],
-	};
-}
-
-function emptyRuntimeTranscriptProjection(): RuntimeTranscriptProjection {
-	return { messages: [], tools: [], bash: [], transcript: [] };
-}
-
-function projectionCounts(projection: RuntimeTranscriptProjection): RuntimeProjectionCounts {
-	return {
-		messages: projection.messages.length,
-		tools: projection.tools.length,
-		bash: projection.bash.length,
-		transcript: projection.transcript.length,
-	};
-}
-
-function subtractProjectionCounts(
-	total: RuntimeProjectionCounts,
-	suffix: RuntimeProjectionCounts,
-): RuntimeProjectionCounts {
-	return {
-		messages: total.messages - suffix.messages,
-		tools: total.tools - suffix.tools,
-		bash: total.bash - suffix.bash,
-		transcript: total.transcript - suffix.transcript,
-	};
 }
 
 export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShellSession[] = []): MycliShellState {
@@ -1009,6 +612,7 @@ function footerLiveState(state: RuntimeShellState): string {
 
 export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
 	const status = recordValue(payload.status);
+	const turnRunning = booleanValue(status.turn_running) ?? false;
 	const trust = trustFromPayload(payload.trust ?? status.trust, String(payload.workspace ?? state.workspace));
 	const welcome = recordValue(payload.welcome);
 	const startupMark = recordValue(welcome.startup_mark);
@@ -1038,8 +642,11 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		status,
 		trust,
 		trustGateDismissed: trust.state === "trusted",
-		activeTurnId: stringValue(status.turn_id),
-		activeClientTurnId: stringValue(status.client_turn_id),
+		turnRunning,
+		activeTurnId: turnRunning ? stringValue(status.turn_id) : null,
+		activeClientTurnId: turnRunning ? stringValue(status.client_turn_id) : null,
+		activeAssistantItemId: turnRunning ? state.activeAssistantItemId : null,
+		liveReasoning: turnRunning ? state.liveReasoning : null,
 		transcript: [
 			...state.transcript,
 			{ id: "welcome", type: "system_notice", text: welcomeText, folded: false, metadata: welcome },
@@ -1085,14 +692,16 @@ export function runtimeStateAfterSessionResume(
 	const eventStatus = stringValue(state.status.session_id) === sessionId
 		? state.status
 		: {};
+	const activationEventsAlreadyApplied = state.sessionId === sessionId
+		&& (generation === null || state.sessionGeneration === generation);
 	let nextState: RuntimeShellState = {
-		...reduceRuntimeEvent(state, "session.changed", {
-			session_id: sessionId,
-			session_title: sessionTitle,
-			...(generation !== null
-				? { generation }
-				: {}),
-		}),
+		...(activationEventsAlreadyApplied
+			? { ...state, sessionTitle }
+			: reduceRuntimeEvent(state, "session.changed", {
+				session_id: sessionId,
+				session_title: sessionTitle,
+				...(generation !== null ? { generation } : {}),
+			})),
 		transcript: [],
 	};
 	if (Object.keys(eventStatus).length > 0) {
@@ -1259,7 +868,43 @@ export function reduceRuntimeEvent(
 	method: string,
 	input: object,
 ): RuntimeShellState {
-	const params = Object.fromEntries(Object.entries(input));
+	const event = decodeRuntimeEventInput(method, input);
+	return event ? reduceDecodedRuntimeEvent(state, event) : state;
+}
+
+export type RuntimeEventReduction = Readonly<{
+	state: RuntimeShellState;
+	applied: boolean;
+}>;
+
+export function reduceDecodedRuntimeEvent(
+	state: RuntimeShellState,
+	event: DecodedRuntimeEvent<string>,
+): RuntimeShellState {
+	return reduceDecodedRuntimeEventWithOutcome(state, event).state;
+}
+
+export function reduceDecodedRuntimeEventWithOutcome(
+	state: RuntimeShellState,
+	event: DecodedRuntimeEvent<string>,
+): RuntimeEventReduction {
+	if (!runtimeEventBelongsToActiveOwner(state, event)) {
+		return { state, applied: false };
+	}
+	const nextState = reduceRuntimeLifecycle(
+		state,
+		reduceRuntimeEventUnchecked(state, event),
+		event,
+	);
+	return { state: nextState, applied: nextState !== state };
+}
+
+function reduceRuntimeEventUnchecked(
+	state: RuntimeShellState,
+	event: DecodedRuntimeEvent<string>,
+): RuntimeShellState {
+	const { method } = event;
+	const params = Object.fromEntries(Object.entries(event.params));
 	if (method === "runtime.event") {
 		const type = stringValue(params.type);
 		const payload = recordValue(params.payload);
@@ -1539,27 +1184,9 @@ export function reduceRuntimeEvent(
 		if (!item) {
 			return state;
 		}
-		const childSessionId = stringValue(subagent.child_session_id)
-			?? stringValue(subagent.childSessionId);
-		const terminal = ["completed", "failed", "interrupted"].includes(
-			stringValue(subagent.status) ?? "",
-		);
-		const clearApproval = terminal
-			&& pendingRequestSessionId(state.pendingApproval) === childSessionId;
-		const clearClarification = terminal
-			&& pendingRequestSessionId(state.pendingClarification) === childSessionId;
 		return {
 			...state,
-			pendingApproval: clearApproval ? null : state.pendingApproval,
-			pendingClarification: clearClarification ? null : state.pendingClarification,
-			transcript: upsertSubagentTranscriptItem(
-				clearClarification
-					? removeTransientClarificationItems(state.transcript)
-					: clearApproval
-						? removeTransientApprovalItems(state.transcript)
-						: state.transcript,
-				item,
-			),
+			transcript: upsertSubagentTranscriptItem(state.transcript, item),
 		};
 	}
 	if (method === "reasoning.delta" || method === "thinking.delta") {
@@ -1614,7 +1241,6 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "turn.completed") {
-		if (!terminalEventBelongsToActiveTurn(state, params)) return state;
 		const turnState = stringValue(params.turn_state);
 		const durationMs = turnDurationMsValue(params.duration_ms);
 		const inputRolledBack = params.input_rolled_back === true;
@@ -1689,7 +1315,6 @@ export function reduceRuntimeEvent(
 			|| ["completed", "failed", "interrupted", "rejected"].includes(
 				stringValue(params.state) ?? "",
 			);
-		if (terminalStatus && !terminalEventBelongsToActiveTurn(state, params)) return state;
 		if (params.state === "failed") {
 			return {
 				...state,
@@ -1740,7 +1365,6 @@ export function reduceRuntimeEvent(
 				retryRestoreStatus: null,
 			};
 		}
-		if (!terminalEventBelongsToActiveTurn(state, params)) return state;
 		return {
 			...state,
 			turnRunning: false,
@@ -1762,9 +1386,6 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "turn.failed" || method === "gateway.error") {
-		if (method === "turn.failed" && !terminalEventBelongsToActiveTurn(state, params)) {
-			return state;
-		}
 		// The response handler reconciles this race with status.inspect; avoid leaving
 		// a misleading error row behind while the selector is being replaced or cleared.
 		const staleInteractiveError = method === "gateway.error"
@@ -1812,10 +1433,10 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "approval.request" || method === "approval.pending") {
-		const transcript = sealActiveAssistantStream(
-			state.transcript,
-			state.activeAssistantItemId,
-		);
+		const childRequest = runtimeEventTargetsChild(event);
+		const transcript = childRequest
+			? state.transcript
+			: sealActiveAssistantStream(state.transcript, state.activeAssistantItemId);
 		const duplicateRequest = interactiveResponseMatches(
 			state.pendingApproval,
 			params,
@@ -1826,9 +1447,11 @@ export function reduceRuntimeEvent(
 		return {
 			...state,
 			pendingApproval: params,
-			turnRunning: false,
-			activeAssistantItemId: null,
-			liveStatus: { state: "waiting_approval", kind: "approval", text: "Waiting approval" },
+			turnRunning: childRequest ? state.turnRunning : false,
+			activeAssistantItemId: childRequest ? state.activeAssistantItemId : null,
+			liveStatus: childRequest
+				? state.liveStatus
+				: { state: "waiting_approval", kind: "approval", text: "Waiting approval" },
 			transcript: duplicateRequest || hasMutationProposal
 				? transcript
 				: [
@@ -1845,12 +1468,17 @@ export function reduceRuntimeEvent(
 			"decisionId",
 		)) return state;
 		const pending = state.pendingApproval;
+		const childResponse = runtimeEventTargetsChild(event);
 		return {
 			...state,
 			pendingApproval: null,
-			turnRunning: true,
-			activeTurnId: interactiveResponseTurnId(state, pending, params),
-			liveStatus: { state: "running", kind: "running", text: "Running" },
+			turnRunning: childResponse ? state.turnRunning : true,
+			activeTurnId: childResponse
+				? state.activeTurnId
+				: interactiveResponseTurnId(state, pending, params),
+			liveStatus: childResponse
+				? state.liveStatus
+				: { state: "running", kind: "running", text: "Running" },
 			transcript: removeTransientApprovalItems(
 				state.transcript,
 				stringValue(params.decision_id) ?? stringValue(params.decisionId) ?? undefined,
@@ -1858,6 +1486,7 @@ export function reduceRuntimeEvent(
 		};
 	}
 	if (method === "clarify.request") {
+		const childRequest = runtimeEventTargetsChild(event);
 		const duplicateRequest = interactiveResponseMatches(
 			state.pendingClarification,
 			params,
@@ -1867,9 +1496,11 @@ export function reduceRuntimeEvent(
 		return {
 			...state,
 			pendingClarification: params,
-			turnRunning: false,
-			activeAssistantItemId: null,
-			liveStatus: { state: "waiting_clarification", kind: "clarification", text: "Waiting clarification" },
+			turnRunning: childRequest ? state.turnRunning : false,
+			activeAssistantItemId: childRequest ? state.activeAssistantItemId : null,
+			liveStatus: childRequest
+				? state.liveStatus
+				: { state: "waiting_clarification", kind: "clarification", text: "Waiting clarification" },
 			transcript: duplicateRequest
 				? state.transcript
 				: [
@@ -1888,6 +1519,7 @@ export function reduceRuntimeEvent(
 		const requestId = stringValue(params.request_id) ?? stringValue(params.requestId);
 		const response = stringValue(params.response);
 		const pending = state.pendingClarification;
+		const childResponse = runtimeEventTargetsChild(event);
 		const question = stringValue(params.question) ?? stringValue(pending?.question);
 		const header = stringValue(params.header) ?? stringValue(pending?.header);
 		const multiSelect = booleanValue(params.multi_select)
@@ -1914,9 +1546,13 @@ export function reduceRuntimeEvent(
 		return {
 			...state,
 			pendingClarification: null,
-			turnRunning: true,
-			activeTurnId: interactiveResponseTurnId(state, pending, params),
-			liveStatus: { state: "running", kind: "running", text: "Running" },
+			turnRunning: childResponse ? state.turnRunning : true,
+			activeTurnId: childResponse
+				? state.activeTurnId
+				: interactiveResponseTurnId(state, pending, params),
+			liveStatus: childResponse
+				? state.liveStatus
+				: { state: "running", kind: "running", text: "Running" },
 			transcript: [
 				...removeTransientClarificationItems(
 					state.transcript,
@@ -1924,6 +1560,39 @@ export function reduceRuntimeEvent(
 				),
 				...(resolved ? [resolved] : []),
 			],
+		};
+	}
+	if (method === "interactive.cancelled") {
+		const approvalCancelled = interactiveResponseMatches(
+			state.pendingApproval,
+			params,
+			"decision_id",
+			"decisionId",
+		);
+		const clarificationCancelled = interactiveResponseMatches(
+			state.pendingClarification,
+			params,
+			"request_id",
+			"requestId",
+		);
+		if (!approvalCancelled && !clarificationCancelled) return state;
+		const childCancellation = runtimeEventTargetsChild(event);
+		return {
+			...state,
+			pendingApproval: approvalCancelled ? null : state.pendingApproval,
+			pendingClarification: clarificationCancelled ? null : state.pendingClarification,
+			turnRunning: childCancellation ? state.turnRunning : false,
+			activeAssistantItemId: childCancellation ? state.activeAssistantItemId : null,
+			liveStatus: childCancellation ? state.liveStatus : null,
+			transcript: approvalCancelled
+				? removeTransientApprovalItems(
+					state.transcript,
+					stringValue(params.decision_id) ?? stringValue(params.decisionId) ?? undefined,
+				)
+				: removeTransientClarificationItems(
+					state.transcript,
+					stringValue(params.request_id) ?? stringValue(params.requestId) ?? undefined,
+				),
 		};
 	}
 	if (method === "status.changed") {
@@ -1992,6 +1661,8 @@ export function reduceRuntimeEvent(
 		}, params.background_shells);
 	}
 	if (method === "workspace.trust.changed") {
+		const workspace = stringValue(params.workspace);
+		if (workspace !== null && workspace !== state.workspace) return state;
 		const trust = trustFromPayload(params, state.workspace);
 		return { ...state, trust, trustGateDismissed: trust.state === "trusted" };
 	}
@@ -2413,21 +2084,6 @@ function statusSnapshotBelongsToActiveSession(
 	return generation === null
 		|| state.sessionGeneration === null
 		|| generation >= state.sessionGeneration;
-}
-
-function terminalEventBelongsToActiveTurn(
-	state: RuntimeShellState,
-	params: Record<string, unknown>,
-): boolean {
-	if (!eventBelongsToActiveSession(state, params)) return false;
-	const turnId = stringValue(params.turn_id);
-	if (turnId !== null && state.activeTurnId !== null && turnId !== state.activeTurnId) {
-		return false;
-	}
-	const clientTurnId = stringValue(params.client_turn_id);
-	return clientTurnId === null
-		|| state.activeClientTurnId === null
-		|| clientTurnId === state.activeClientTurnId;
 }
 
 function appendInterruptedNotice(
@@ -3496,7 +3152,12 @@ function interactiveResponseMatches(
 	if (!pendingId || pendingId !== responseId) return false;
 	const pendingSessionId = pendingRequestSessionId(pending);
 	const responseSessionId = stringValue(response.session_id) ?? stringValue(response.sessionId);
-	return !pendingSessionId || !responseSessionId || pendingSessionId === responseSessionId;
+	if (pendingSessionId && responseSessionId && pendingSessionId !== responseSessionId) return false;
+	const pendingGeneration = generationValue(pending.generation);
+	const responseGeneration = generationValue(response.generation);
+	return pendingGeneration === null
+		|| responseGeneration === null
+		|| pendingGeneration === responseGeneration;
 }
 
 function interactiveResponseTurnId(
@@ -5441,24 +5102,6 @@ function textValue(value: unknown): string | null {
 
 function booleanValue(value: unknown): boolean | null {
 	return typeof value === "boolean" ? value : null;
-}
-
-function defaultVisualSettings(): Required<MycliShellVisualSettings> {
-	return {
-		statusbarMode: "full",
-		viewMode: "default",
-		theme: "dark",
-		hideThinking: true,
-		toolDetailsDefault: "collapsed",
-		hardwareCursor: false,
-		clearOnShrink: true,
-		terminalProgress: true,
-		subagentDensity: "normal",
-		colorMode: "auto",
-		reducedMotion: false,
-		glyphMode: "auto",
-		highContrast: false,
-	};
 }
 
 function normalizeVisualSettings(

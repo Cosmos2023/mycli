@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GatewayEventDeduper } from "../../src/adapters/gateway-events.ts";
 import type { GatewayEvent, RpcMessage } from "../../src/adapters/gateway-client.ts";
-import { initialRuntimeState, reduceRuntimeEvent, type RuntimeShellState } from "../../src/adapters/runtime-state.ts";
+import { initialRuntimeState, reduceDecodedRuntimeEvent, type RuntimeShellState } from "../../src/adapters/runtime-state.ts";
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 
@@ -21,9 +21,8 @@ export function replayGatewayEvents(events: GatewayEvent[]): RuntimeShellState {
 	const deduper = new GatewayEventDeduper();
 	let state = initialRuntimeState();
 	for (const event of events) {
-		if (deduper.shouldConsume(event)) {
-			state = reduceRuntimeEvent(state, event.method, event.params);
-		}
+		const decoded = deduper.consume(event);
+		if (decoded) state = reduceDecodedRuntimeEvent(state, decoded);
 	}
 	return state;
 }

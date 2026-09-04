@@ -1,4 +1,4 @@
-import type { RuntimeShellState } from "./runtime-state.ts";
+import type { RuntimeShellState } from "./runtime-state-model.ts";
 
 export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
 

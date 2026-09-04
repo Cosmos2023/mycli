@@ -116,6 +116,11 @@ import {
 	StartupOnboardingCoordinator,
 	type StartupOnboardingStage,
 } from "./startup-onboarding.ts";
+import {
+	isMycliUiQueuedInput,
+	type MycliUiAction,
+	type MycliUiActionDispatcher,
+} from "./ui-actions.ts";
 
 export type MycliShellRuntimeOptions = {
 	initialState: MycliShellState;
@@ -124,6 +129,7 @@ export type MycliShellRuntimeOptions = {
 	trustSavedDecision?: ProjectTrustDecision;
 	projectTrusted?: boolean;
 	onTrustSelect?: (trusted: boolean) => void | Promise<void>;
+	actions?: MycliUiActionDispatcher;
 	onSubmit?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onFollowUp?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onInterrupt?: (options: { rollbackUserInput: boolean }) => boolean | void | Promise<boolean | void>;
@@ -1444,7 +1450,7 @@ export class MycliShellRuntime {
 			this.started = false;
 		}
 		this.ui.setRenderingPaused(false);
-		await this.options.onExit?.();
+		await this.dispatchAction({ type: "exit", reason: "normal" });
 	}
 
 	refreshTurnStatus(): void {
@@ -2551,12 +2557,17 @@ export class MycliShellRuntime {
 			await this.options.onPlanImplementation(action, planMarkdown);
 			return;
 		}
-		if (!this.options.onCommandSubmit || !this.options.onSubmit) {
+		if (!this.options.actions && (!this.options.onCommandSubmit || !this.options.onSubmit)) {
 			throw new Error("Plan implementation is unavailable.");
 		}
-		if (action === "clear_context") await this.options.onCommandSubmit("/new");
-		await this.options.onCommandSubmit("/mode default");
-		await this.options.onSubmit(planImplementationMessage(action, planMarkdown));
+		if (action === "clear_context") {
+			await this.dispatchAction({ type: "command", command: "/new" });
+		}
+		await this.dispatchAction({ type: "command", command: "/mode default" });
+		await this.dispatchAction({
+			type: "submit",
+			text: planImplementationMessage(action, planMarkdown),
+		});
 	}
 
 	private showApprovalSelector(approval: MycliShellPendingApproval): void {
@@ -2576,7 +2587,7 @@ export class MycliShellRuntime {
 
 	private async respondApproval(approval: MycliShellPendingApproval, choice: string): Promise<void> {
 		try {
-			await this.options.onApprovalRespond?.(approval.decisionId, choice, approval);
+			await this.dispatchAction({ type: "approval.respond", approval, choice });
 		} catch (error) {
 			const message = safeErrorMessage(error, "Unable to submit approval response.");
 			this.addSystemNotice(message);
@@ -2604,11 +2615,7 @@ export class MycliShellRuntime {
 		response: string,
 	): Promise<void> {
 		try {
-			await this.options.onClarificationRespond?.(
-				clarification.requestId,
-				response,
-				clarification,
-			);
+			await this.dispatchAction({ type: "clarification.respond", clarification, response });
 		} catch (error) {
 			const message = safeErrorMessage(error, "Unable to submit clarification response.");
 			this.addSystemNotice(message);
@@ -3219,7 +3226,11 @@ export class MycliShellRuntime {
 		}
 		this.lastCtrlCAtMs = null;
 		try {
-			await this.options.onSubmit?.(submitted.text, { localImages: submitted.localImages });
+			await this.dispatchAction({
+				type: "submit",
+				text: submitted.text,
+				localImages: submitted.localImages,
+			});
 		} catch (error) {
 			if (startsNewTurn) this.userTurnPendingStart = false;
 			this.restoreQueuedInputToEditor({
@@ -3295,7 +3306,9 @@ export class MycliShellRuntime {
 		this.editor.addToHistory(input);
 		this.editor.setText("");
 		try {
-			await (this.options.onFollowUp ?? this.options.onSubmit)?.(submitted.text, {
+			await this.dispatchAction({
+				type: "follow_up",
+				text: submitted.text,
 				localImages: submitted.localImages,
 			});
 		} catch (error) {
@@ -3308,7 +3321,8 @@ export class MycliShellRuntime {
 	}
 
 	private async restoreQueuedInput(): Promise<void> {
-		const queued = await this.options.onDequeueQueuedInput?.();
+		const result = await this.dispatchAction({ type: "dequeue_queued_input" });
+		const queued = isMycliUiQueuedInput(result) ? result : null;
 		if (!queued) {
 			this.addSystemNotice("No queued message to restore.");
 			return;
@@ -3342,7 +3356,8 @@ export class MycliShellRuntime {
 		if (this.interruptRequestPending) return;
 		this.interruptRequestPending = true;
 		try {
-			await this.options.onInterrupt?.({
+			await this.dispatchAction({
+				type: "interrupt",
 				rollbackUserInput: this.lastSubmittedInputEligible,
 			});
 		} finally {
@@ -3356,7 +3371,7 @@ export class MycliShellRuntime {
 			const interrupting = this.state.footer.liveStateKind?.trim().toLowerCase() === "interrupting"
 				|| this.state.footer.liveState?.trim().toLowerCase() === "interrupting";
 			if (interrupting && this.lastCtrlCAtMs !== null && now - this.lastCtrlCAtMs <= 2000) {
-				await (this.options.onInterruptExit ?? this.options.onExit)?.();
+				await this.dispatchAction({ type: "exit", reason: "interrupt" });
 				return;
 			}
 			this.lastCtrlCAtMs = now;
@@ -3372,8 +3387,8 @@ export class MycliShellRuntime {
 		if (this.lastCtrlCAtMs !== null && now - this.lastCtrlCAtMs <= 2000) {
 			const interrupted = this.state.footer.liveStateKind?.trim().toLowerCase() === "interrupted"
 				|| this.state.footer.liveState?.trim().toLowerCase() === "interrupted";
-			if (interrupted && this.options.onInterruptExit) {
-				await this.options.onInterruptExit();
+			if (interrupted && (this.options.actions || this.options.onInterruptExit)) {
+				await this.dispatchAction({ type: "exit", reason: "interrupt" });
 			} else {
 				await this.shutdown();
 			}
@@ -3513,19 +3528,15 @@ export class MycliShellRuntime {
 	}
 
 	private async submitCommand(command: string): Promise<void> {
-		if (this.options.onCommandSubmit) {
-			await this.options.onCommandSubmit(command);
-			return;
-		}
-		await this.options.onSubmit?.(command);
+		await this.dispatchAction({ type: "command", command });
 	}
 
 	private cycleCollaborationMode(): void {
 		const nextMode = this.state.footer.collaborationMode === "plan" ? "default" : "plan";
-		if (!this.options.onCommandSubmit) return;
+		if (!this.options.actions && !this.options.onCommandSubmit) return;
 		this.runAsyncAction(
 			async () => {
-				await this.options.onCommandSubmit!(`/mode ${nextMode}`);
+				await this.dispatchAction({ type: "command", command: `/mode ${nextMode}` });
 			},
 			"Mode switch failed",
 		);
@@ -4007,7 +4018,44 @@ export class MycliShellRuntime {
 			this.addSystemNotice(`No runtime inspect command for ${resource.type} ${resource.name}.`);
 			return;
 		}
-		await this.options.onCommandSubmit?.(command);
+		await this.dispatchAction({ type: "command", command });
+	}
+
+	private async dispatchAction(action: MycliUiAction): Promise<unknown> {
+		if (this.options.actions) return this.options.actions.dispatch(action);
+		switch (action.type) {
+			case "submit":
+				return this.options.onSubmit?.(action.text, { localImages: action.localImages ?? [] });
+			case "follow_up":
+				return (this.options.onFollowUp ?? this.options.onSubmit)?.(
+					action.text,
+					{ localImages: action.localImages ?? [] },
+				);
+			case "command":
+				return this.options.onCommandSubmit
+					? this.options.onCommandSubmit(action.command)
+					: this.options.onSubmit?.(action.command);
+			case "interrupt":
+				return this.options.onInterrupt?.({ rollbackUserInput: action.rollbackUserInput });
+			case "dequeue_queued_input":
+				return this.options.onDequeueQueuedInput?.();
+			case "approval.respond":
+				return this.options.onApprovalRespond?.(
+					action.approval.decisionId,
+					action.choice,
+					action.approval,
+				);
+			case "clarification.respond":
+				return this.options.onClarificationRespond?.(
+					action.clarification.requestId,
+					action.response,
+					action.clarification,
+				);
+			case "exit":
+				return action.reason === "interrupt"
+					? (this.options.onInterruptExit ?? this.options.onExit)?.()
+					: this.options.onExit?.();
+		}
 	}
 }
 

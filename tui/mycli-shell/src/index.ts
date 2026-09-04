@@ -47,6 +47,13 @@ export {
 	type MycliShellStateUpdateOptions,
 	type MycliShellSubmitAttachments,
 } from "./shell-runtime.ts";
+export {
+	createMycliUiActionDispatcher,
+	isMycliUiQueuedInput,
+	type MycliUiAction,
+	type MycliUiActionDispatcher,
+	type MycliUiQueuedInput,
+} from "./ui-actions.ts";
 export { AssistantMessageComponent } from "./components/assistant-message.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
 export { BackgroundTerminalsComponent } from "./components/background-terminals.ts";

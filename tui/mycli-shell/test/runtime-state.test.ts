@@ -4077,11 +4077,32 @@ test("runtime adapter restores structured queue state from bootstrap", () => {
 		},
 	});
 
+	assert.equal(state.turnRunning, true);
 	assert.equal(state.activeTurnId, "turn-1");
 	assert.equal(state.queueRevision, 3);
 	assert.deepEqual(state.queuedPendingSteers.map((item) => item.message), ["inspect"]);
 	assert.deepEqual(state.queuedRejectedSteers.map((item) => item.message), ["after turn"]);
 	assert.deepEqual(state.queuedFollowUpInputs.map((item) => item.message), ["later"]);
+});
+
+test("bootstrap clears stale live ownership from an authoritative idle status", () => {
+	const state = runtimeStateFromBootstrap({
+		...initialRuntimeState(),
+		turnRunning: true,
+		activeTurnId: "turn-stale",
+		activeClientTurnId: "client-stale",
+	}, {
+		session_id: "session-2",
+		status: {
+			session_id: "session-2",
+			turn_running: false,
+			turn_id: null,
+		},
+	});
+
+	assert.equal(state.turnRunning, false);
+	assert.equal(state.activeTurnId, null);
+	assert.equal(state.activeClientTurnId, null);
 });
 
 test("legacy queue migration projects user records without transferring durable ownership", () => {
@@ -4560,6 +4581,43 @@ test("session resume reapplies the target background shell snapshot after sessio
 	assert.equal(state.backgroundShells["shell-target"]?.outputPreview, "ready\n");
 });
 
+test("session resume preserves interactive events already projected during activation", () => {
+	let state: RuntimeShellState = {
+		...initialRuntimeState(),
+		sessionId: "target",
+		sessionGeneration: 2,
+	};
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "target",
+		generation: 2,
+		turn_running: false,
+		pending_decision: true,
+		suspended_turn: true,
+	});
+	state = reduceRuntimeEvent(state, "approval.request", {
+		session_id: "target",
+		generation: 2,
+		client_turn_id: "client-1",
+		turn_id: "turn-1",
+		decision_id: "decision-1",
+		preview: "Run tests",
+		options: [{ choice: "approve_once", label: "Approve once" }],
+	});
+
+	state = runtimeStateAfterSessionResume(state, "target", "Target", {
+		session_id: "target",
+		generation: 2,
+	});
+
+	assert.equal(state.pendingApproval?.decision_id, "decision-1");
+	assert.equal(state.liveStatus?.state, "waiting_approval");
+	assert.equal(
+		state.transcript.some((item) => item.type === "approval"),
+		false,
+		"the transcript is replaced separately after resume",
+	);
+});
+
 test("gateway steering retries a turn mismatch with stable user identity", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const steeringBody = source.match(/async function queueSteeringTurn\([\s\S]*?\n\}/)?.[0] ?? "";
@@ -4578,8 +4636,13 @@ test("gateway steering retries a turn mismatch with stable user identity", () =>
 	assert.match(steeringBody, /throw error/);
 	assert.match(source, /activeTurnId:\s*turnId \?\? runtimeState\.activeTurnId/);
 	assert.match(source, /if \(backendTurnBusy\) \{\s*setRuntimeState\(\{/);
-	assert.match(source, /event\.method === "status\.changed" && event\.params\.turn_running === false/);
-	assert.doesNotMatch(source, /event\.method === "status\.changed" && backendTurnBusy/);
+	assert.match(source, /const decoded = eventDeduper\.consume\(event\)/);
+	assert.match(source, /reduceDecodedRuntimeEventWithOutcome\(runtimeState, decoded\)/);
+	assert.match(source, /if \(!reduction\.applied\) return/);
+	assert.match(source, /method === "status\.changed" && params\.turn_running === false/);
+	assert.doesNotMatch(source, /method === "status\.changed" && backendTurnBusy/);
+	assert.match(source, /if \(!backendTurnBusy && !interruptRequested\) \{\s*scheduleNextLocalInput\(\)/);
+	assert.match(source, /!localDispatchEligible \|\|\s*backendTurnBusy \|\|\s*interruptRequested/);
 	assert.doesNotMatch(source, /queuedSteeringTurns|queuedFollowUpTurns/);
 	assert.match(source, /send\("turn\.follow_up"/);
 });

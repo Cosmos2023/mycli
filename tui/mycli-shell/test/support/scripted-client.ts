@@ -3,6 +3,7 @@ import { GatewayRequestError, GatewayClient, type GatewayEvent } from "../../src
 import { GatewayEventDeduper } from "../../src/adapters/gateway-events.ts";
 import {
 	initialRuntimeState,
+	reduceDecodedRuntimeEvent,
 	reduceRuntimeEvent,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
@@ -106,17 +107,16 @@ export async function runScriptedClient(
 }
 
 function handleGatewayEvent(event: GatewayEvent): void {
-	if (!eventDeduper.shouldConsume(event)) {
-		return;
-	}
-	state = reduceRuntimeEvent(state, event.method, event.params);
+	const decoded = eventDeduper.consume(event);
+	if (!decoded) return;
+	state = reduceDecodedRuntimeEvent(state, decoded);
 	if (
-		event.method === "turn.interrupted" ||
-		(event.method === "turn.completed" && event.params.turn_state === "interrupted")
+		decoded.method === "turn.interrupted" ||
+		(decoded.method === "turn.completed" && decoded.params.turn_state === "interrupted")
 	) {
 		state = restorePendingSteersAfterInterrupt(state);
 	}
-	process.stderr.write(`[mycli-shell-scripted] ${event.method}\n`);
+	process.stderr.write(`[mycli-shell-scripted] ${decoded.method}\n`);
 }
 
 async function send(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {

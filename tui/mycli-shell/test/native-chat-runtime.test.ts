@@ -4,6 +4,7 @@ import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { NativeChatRuntime } from "../src/native-chat-runtime.ts";
 import type { MycliShellState } from "../src/model.ts";
+import type { MycliUiAction, MycliUiActionDispatcher } from "../src/ui-actions.ts";
 
 function stateWithMessages(count: number): MycliShellState {
 	return {
@@ -196,3 +197,196 @@ test("native chat runtime treats Ctrl+C as local interrupt exit", async () => {
 	assert.equal(ordinaryExitCount, 0);
 	assert.equal(interruptExitCount, 1);
 });
+
+test("native chat runtime routes approval and child clarification through typed UI actions", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const actions: MycliUiAction[] = [];
+	const dispatcher = collectingDispatcher(actions);
+	const approval = {
+		decisionId: "decision-1",
+		sessionId: "child-session",
+		generation: 4,
+		preview: "Run tests",
+		options: [
+			{ choice: "approve_once", label: "Approve once" },
+			{ choice: "reject", label: "Reject" },
+		],
+	};
+	const runtime = new NativeChatRuntime({
+		initialState: { ...stateWithMessages(0), pendingApproval: approval },
+		streams: { input, output },
+		columns: () => 100,
+		actions: dispatcher,
+	});
+
+	runtime.start();
+	input.write("1\n");
+	await setTimeout(15);
+
+	assert.deepEqual(actions, [{ type: "approval.respond", approval, choice: "approve_once" }]);
+
+	const clarification = {
+		requestId: "question-1",
+		turnId: "child-turn",
+		sessionId: "child-session",
+		generation: 4,
+		childSessionId: "child-session",
+		agentPath: "/root/reviewer",
+		workerName: "reviewer",
+		question: "Which implementation?",
+		options: [{ label: "Runtime" }, { label: "TUI" }],
+		multiSelect: false,
+	};
+	runtime.setState({
+		...stateWithMessages(0),
+		pendingClarification: clarification,
+	});
+	input.write("Runtime\n");
+	await setTimeout(15);
+
+	assert.deepEqual(actions.at(-1), {
+		type: "clarification.respond",
+		clarification,
+		response: "Runtime",
+	});
+	await runtime.stop({ notifyExit: false });
+});
+
+test("native chat runtime serializes submitted lines and recovers from action failures", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	let captured = "";
+	output.on("data", (chunk) => {
+		captured += String(chunk);
+	});
+	const started: string[] = [];
+	let releaseFirst!: () => void;
+	const firstPending = new Promise<void>((resolve) => {
+		releaseFirst = resolve;
+	});
+	const dispatcher: MycliUiActionDispatcher = {
+		async dispatch(action) {
+			if (action.type !== "submit") return undefined;
+			started.push(action.text);
+			if (action.text === "first") await firstPending;
+			if (action.text === "second") throw new Error("provider unavailable");
+			return undefined;
+		},
+	};
+	const runtime = new NativeChatRuntime({
+		initialState: stateWithMessages(0),
+		streams: { input, output },
+		columns: () => 100,
+		actions: dispatcher,
+	});
+
+	runtime.start();
+	input.write("first\nsecond\nthird\n");
+	await setTimeout(15);
+	assert.deepEqual(started, ["first"]);
+
+	releaseFirst();
+	await setTimeout(30);
+	assert.deepEqual(started, ["first", "second", "third"]);
+	assert.match(captured, /Message submission failed: provider unavailable/);
+	assert.equal(runtime.isStarted(), true);
+	await runtime.stop({ notifyExit: false });
+});
+
+test("native chat runtime interrupts an active turn before using Ctrl+C as exit", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const actions: MycliUiAction[] = [];
+	const runtime = new NativeChatRuntime({
+		initialState: {
+			...stateWithMessages(0),
+			footer: {
+				...stateWithMessages(0).footer,
+				turnRunning: true,
+				liveState: "Running",
+			},
+		},
+		streams: { input, output },
+		columns: () => 100,
+		actions: collectingDispatcher(actions),
+	});
+
+	runtime.start();
+	input.emit("keypress", "", { name: "c", ctrl: true });
+	input.emit("data", "\x03");
+	await setTimeout(15);
+
+	assert.deepEqual(actions, [{ type: "interrupt", rollbackUserInput: false }]);
+	assert.equal(runtime.isStarted(), true);
+	await runtime.stop({ notifyExit: false });
+});
+
+test("native chat runtime renders revised transcript blocks and each pending notice once", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	let captured = "";
+	output.on("data", (chunk) => {
+		captured += String(chunk);
+	});
+	const initial = {
+		...stateWithMessages(1),
+		transcript: [{
+			id: "message-0",
+			kind: "message" as const,
+			message: { id: "message-0", role: "assistant" as const, text: "draft" },
+		}],
+	};
+	const runtime = new NativeChatRuntime({
+		initialState: initial,
+		streams: { input, output },
+		columns: () => 100,
+	});
+
+	runtime.start();
+	captured = "";
+	const revised = {
+		...initial,
+		pendingNotice: "Approval still pending.",
+		transcript: [{
+			id: "message-0",
+			kind: "message" as const,
+			message: { id: "message-0", role: "assistant" as const, text: "final answer" },
+		}],
+	};
+	runtime.setState(revised);
+	runtime.setState({ ...revised, footer: { ...revised.footer, contextPercent: 20 } });
+	await setTimeout(15);
+
+	assert.match(captured, /final answer/);
+	assert.equal(captured.match(/Approval still pending\./g)?.length, 1);
+	await runtime.stop({ notifyExit: false });
+});
+
+test("native chat runtime treats EOF as a normal shutdown action", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const actions: MycliUiAction[] = [];
+	const runtime = new NativeChatRuntime({
+		initialState: stateWithMessages(0),
+		streams: { input, output },
+		columns: () => 100,
+		actions: collectingDispatcher(actions),
+	});
+
+	runtime.start();
+	input.end();
+	await setTimeout(15);
+
+	assert.equal(runtime.isStarted(), false);
+	assert.deepEqual(actions, [{ type: "exit", reason: "normal" }]);
+});
+
+function collectingDispatcher(actions: MycliUiAction[]): MycliUiActionDispatcher {
+	return {
+		dispatch(action) {
+			actions.push(action);
+			return Promise.resolve(undefined);
+		},
+	};
+}
