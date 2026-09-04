@@ -333,6 +333,8 @@ export interface Approval {
   [k: string]: any;
 }
 export interface Subagent {
+  session_id?: string;
+  generation?: number;
   subagent: {
     run_id: string;
     child_session_id: string;

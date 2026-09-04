@@ -1036,6 +1036,16 @@
       "name": "subagent.updated",
       "additionalProperties": false,
       "properties": {
+		"session_id": {
+		  "maxLength": 256,
+		  "minLength": 1,
+		  "type": "string"
+		},
+		"generation": {
+		  "maximum": 9007199254740991,
+		  "minimum": 1,
+		  "type": "integer"
+		},
         "subagent": {
           "additionalProperties": false,
           "properties": {
