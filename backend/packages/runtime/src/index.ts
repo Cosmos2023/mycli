@@ -1,4 +1,39 @@
 export { NodeTurnRuntime } from "./node-turn-runtime.ts";
+export { AgentBudgetTracker } from "./agent-budget-tracker.ts";
+export type {
+	AgentBudgetTrackerOptions,
+	ProviderOutputBudgetInput,
+	ProviderOutputBudgetObservation,
+} from "./agent-budget-tracker.ts";
+export {
+	ActiveToolExecutionRegistry,
+	boundedRuntimeToolName,
+	boundedToolCallId,
+	emitToolExecutionResult,
+} from "./active-tool-execution-registry.ts";
+export type {
+	ActiveToolExecutionClaim,
+	ActiveToolExecutionInput,
+	ActiveToolExecutionRegistryOptions,
+} from "./active-tool-execution-registry.ts";
+export { RunExecutionCoordinator } from "./run-execution-coordinator.ts";
+export type {
+	RunExecutionCapabilities,
+	RunExecutionCoordinatorOptions,
+	RunExecutionPolicyCoordinator,
+} from "./run-execution-coordinator.ts";
+export { ToolBatchCoordinator } from "./tool-batch-coordinator.ts";
+export type {
+	PendingToolBatch,
+	ProcessToolBatchInput,
+	ToolBatchApprovalContinuation,
+	ToolBatchApprovalPolicy,
+	ToolBatchClarificationContinuation,
+	ToolBatchCoordinatorOptions,
+	ToolBatchEffectInput,
+	ToolBatchRuntimeContext,
+	ToolBatchSubmission,
+} from "./tool-batch-coordinator.ts";
 export {
 	AGENT_EXECUTION_ADAPTER_ENV,
 	DEFAULT_AGENT_EXECUTION_ADAPTER,

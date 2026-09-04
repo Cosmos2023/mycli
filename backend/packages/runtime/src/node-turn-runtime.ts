@@ -4,7 +4,6 @@ import {
 	fingerprintSubmission,
 	modelInputSha256,
 	projectProviderRequest,
-	stableModelInputJson,
 } from "@mycli/core";
 import type {
 	AgentBudget,
@@ -35,14 +34,8 @@ import type {
 	ExecutionPolicy,
 	PermissionGrant,
 	PermissionProfile,
-	PreparedMutationGuard,
-	PreparedToolCall,
 	ToolExecutionResult,
 	ToolRouterContract,
-} from "@mycli/tools";
-import {
-	fileMutationApprovalPreview,
-	toolCallRequestsSandboxOverride,
 } from "@mycli/tools";
 import {
 	StorageFailure,
@@ -50,7 +43,6 @@ import {
 import type {
 	AgentRuntimeCheckpoint,
 	AgentEffectLedgerStore,
-	AppendContextItemInput,
 	ModelInputLedgerStore,
 	RuntimeTurnStore,
 	TurnReservation,
@@ -72,7 +64,6 @@ import type {
 } from "./approval-continuation-coordinator.ts";
 import { ApprovalNotPendingError } from "./approval-continuation-coordinator.ts";
 import type {
-	ClarificationOption,
 	ClarificationSuspensionInput,
 	PendingClarificationContinuation,
 } from "./clarification-continuation-coordinator.ts";
@@ -86,7 +77,6 @@ import type {
 	ExecutionPolicyConfiguration,
 	ExecutionPolicySnapshot,
 	PermissionGrantInput,
-	TurnExecutionPolicy,
 } from "./execution-policy-coordinator.ts";
 import {
 	buildProviderRequestSignature,
@@ -111,15 +101,28 @@ import { publishRuntimeDiagnostic } from "./runtime-observability.ts";
 import type { RuntimeDiagnosticEvent } from "./runtime-observability.ts";
 import { projectCommittedTurnTerminalization } from "./turn-terminalization.ts";
 import {
-	createRunExecutionSnapshot,
-	parseRunExecutionSnapshot,
-	replaceRunPolicySnapshot,
 	toolExposureForSnapshot,
 } from "./run-execution-snapshot.ts";
 import type {
 	RunExecutionSnapshot,
 	RunToolCatalogInput,
 } from "./run-execution-snapshot.ts";
+import { AgentBudgetTracker } from "./agent-budget-tracker.ts";
+import {
+	ActiveToolExecutionRegistry,
+	boundedRuntimeToolName as boundedToolName,
+	boundedToolCallId as boundedCallId,
+	emitToolExecutionResult as emitToolResult,
+	type ActiveToolExecutionClaim,
+} from "./active-tool-execution-registry.ts";
+import {
+	RunExecutionCoordinator,
+	type RunExecutionPolicyCoordinator,
+} from "./run-execution-coordinator.ts";
+import {
+	ToolBatchCoordinator,
+	type PendingToolBatch,
+} from "./tool-batch-coordinator.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -256,14 +259,11 @@ export interface ClarificationContinuationContract {
 	};
 }
 
-export interface ExecutionPolicyCoordinatorContract {
+export interface ExecutionPolicyCoordinatorContract extends RunExecutionPolicyCoordinator {
 	configure(input: ExecutionPolicyConfiguration): void;
 	snapshot(): ExecutionPolicySnapshot;
-	beginTurn(turnId: string): TurnExecutionPolicy;
-	restoreTurn?(turnId: string, policy: TurnExecutionPolicy): TurnExecutionPolicy;
 	grant?(input: PermissionGrantInput): PermissionGrant;
 	sandboxOverrideProfile?(): ExecutionPolicy;
-	finishTurn(turnId: string): void;
 }
 
 export interface ProviderContinuationContract {
@@ -341,19 +341,6 @@ interface TurnExecutionContext {
 	readonly hookContexts: HookContextAccumulator;
 }
 
-interface PendingToolBatch {
-	readonly calls: readonly CanonicalToolCall[];
-	readonly assistantText: string;
-	readonly responseId?: string;
-}
-
-interface PreparedParallelToolCall {
-	readonly index: number;
-	readonly call: CanonicalToolCall;
-	readonly executionCall: CanonicalToolCall;
-	readonly sandboxOverrideApproved: boolean;
-}
-
 interface ProviderLoopState {
 	readonly history: readonly CanonicalConversationItem[];
 	readonly freshItemIds: ReadonlySet<string>;
@@ -370,45 +357,17 @@ interface PreparedTurn {
 	readonly initial: ProviderLoopState;
 }
 
-interface ActiveToolExecution {
-	readonly turnId: string;
-	readonly trackingCallId: string;
-	readonly callId: string;
-	readonly toolName: string;
-	readonly abortController: AbortController;
-	readonly startedAt: number;
-	readonly interruptErrorKind: "tool_interrupted" | "effect_outcome_unknown";
-	terminalEmitted: boolean;
-}
-
-interface PendingToolExecutionResult {
-	readonly active: ActiveToolExecution;
-	readonly result: ToolExecutionResult;
-}
-
-interface AgentBudgetState {
-	readonly budget: AgentBudget;
-	readonly startedAt: number;
-	providerSteps: number;
-	toolCalls: number;
-	tokens: number;
-	noProgressTurns: number;
-	exhausted?: AgentBudgetExhaustionKind;
-}
-
 export class NodeTurnRuntime {
 	readonly #options: NodeTurnRuntimeOptions;
 	readonly #fallbackInstructionSnapshot: InstructionSnapshot;
-	readonly #agentBudget: AgentBudgetState;
+	readonly #agentBudget: AgentBudgetTracker;
 	readonly #coordinatorBroker: NodeTurnCoordinatorBroker | undefined;
 	readonly #defaultProviderStepExecutor: ProviderStepExecutor;
 	#providerStepExecutor: ProviderStepExecutor;
-	#collaborationMode = "default";
-	readonly #collaborationModeByTurn = new Map<string, string>();
-	#executionPolicyConfiguration: ExecutionPolicyConfiguration | undefined;
+	readonly #runExecutions: RunExecutionCoordinator;
+	readonly #toolExecutions: ActiveToolExecutionRegistry;
+	readonly #toolBatches: ToolBatchCoordinator;
 	readonly queueCoordinator: QueueCoordinator | undefined;
-	readonly #activeToolExecutions = new Map<string, Map<string, ActiveToolExecution>>();
-	readonly #runSnapshots = new Map<string, RunExecutionSnapshot>();
 
 	constructor(options: NodeTurnRuntimeOptions) {
 		this.#options = options;
@@ -424,17 +383,23 @@ export class NodeTurnRuntime {
 			contentSha256: instructionHash,
 			createdAt: options.clock(),
 		});
-		const budget = validatedAgentBudget(options.agentBudget);
-		this.#agentBudget = {
-			budget,
-			startedAt: budget.wallClockMs === undefined
-				? 0
-				: options.monotonicClock?.() ?? performance.now(),
-			providerSteps: 0,
-			toolCalls: 0,
-			tokens: 0,
-			noProgressTurns: 0,
-		};
+		const monotonicClock = options.monotonicClock ?? (() => performance.now());
+		this.#agentBudget = new AgentBudgetTracker({
+			...(options.agentBudget ? { budget: options.agentBudget } : {}),
+			clock: monotonicClock,
+		});
+		this.#runExecutions = new RunExecutionCoordinator({
+			...(options.executionPolicyCoordinator
+				? { executionPolicyCoordinator: options.executionPolicyCoordinator }
+				: {}),
+			...(options.resolveToolCatalog ? { resolveToolCatalog: options.resolveToolCatalog } : {}),
+			...(options.planTools ? { planTools: options.planTools } : {}),
+			...(options.deferredTools ? { deferredTools: options.deferredTools } : {}),
+		});
+		this.#toolExecutions = new ActiveToolExecutionRegistry({
+			clock: monotonicClock,
+			...(options.recordDiagnostic ? { recordDiagnostic: options.recordDiagnostic } : {}),
+		});
 		this.#coordinatorBroker = options.modelInputLedger
 			? new NodeTurnCoordinatorBroker({
 				sessionId: options.sessionId,
@@ -442,8 +407,55 @@ export class NodeTurnRuntime {
 				...(options.agentEffectLedger ? { effectLedger: options.agentEffectLedger } : {}),
 				clock: options.clock,
 				...(options.createModelInputId ? { createId: options.createModelInputId } : {}),
-			})
+				})
 			: undefined;
+		const coordinatorBroker = this.#coordinatorBroker;
+		this.#toolBatches = new ToolBatchCoordinator({
+			sessionId: options.sessionId,
+			store: options.store,
+			budget: this.#agentBudget,
+			activeTools: this.#toolExecutions,
+			...(options.toolRouter ? { toolRouter: options.toolRouter } : {}),
+			...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
+			...(options.approvalCoordinator
+				? { approvalCoordinator: options.approvalCoordinator }
+				: {}),
+			...(options.clarificationCoordinator
+				? { clarificationCoordinator: options.clarificationCoordinator }
+				: {}),
+			...(options.contextItemCoordinator
+				? { contextItemCoordinator: options.contextItemCoordinator }
+				: {}),
+			...(options.agentCheckpoint ? { agentCheckpoint: options.agentCheckpoint } : {}),
+			...(options.isMutatingTool ? { isMutatingTool: options.isMutatingTool } : {}),
+			...(options.executionPolicyCoordinator?.sandboxOverrideProfile
+				? {
+					sandboxOverrideProfile: () => options.executionPolicyCoordinator
+						?.sandboxOverrideProfile?.(),
+				}
+				: {}),
+			...(coordinatorBroker && options.agentEffectLedger
+				? {
+					executeToolEffect: async (input, execute) => {
+						const attempt = await coordinatorBroker.executeTool({
+							attemptId: `attempt-${modelInputSha256({
+								session_id: options.sessionId,
+								turn_id: input.turnId,
+								call_id: input.call.callId,
+							})}`,
+							jobId: input.turnId,
+							turnId: input.turnId,
+							base: { windowId: input.turnId, version: input.version },
+							call: input.call,
+							mutating: input.mutating,
+						}, execute);
+						return attempt.result;
+					},
+				}
+				: {}),
+			writeTerminalSnapshot: async (turn) => await this.#writeTerminalSnapshot(turn),
+			publishLifecycle: options.publishLifecycle,
+		});
 		this.#defaultProviderStepExecutor = options.providerStepExecutor
 			?? new InProcessProviderStepExecutor();
 		this.#providerStepExecutor = this.#defaultProviderStepExecutor;
@@ -460,11 +472,11 @@ export class NodeTurnRuntime {
 	}
 
 	agentBudgetExhaustion(): AgentBudgetExhaustionKind | undefined {
-		return this.#agentBudget.exhausted;
+		return this.#agentBudget.exhaustion();
 	}
 
 	configureExecutionPolicy(input: ExecutionPolicyConfiguration): void {
-		this.#executionPolicyConfiguration = Object.freeze({ ...input });
+		this.#runExecutions.configurePolicy(input);
 		this.#options.executionPolicyCoordinator?.configure(input);
 		this.#options.approvalPolicy?.configurePermissionProfile?.(input.permission);
 	}
@@ -472,24 +484,14 @@ export class NodeTurnRuntime {
 	#finishTurn(turnId: string): void {
 		this.#options.toolRouter?.finishTurn?.(turnId);
 		this.#options.approvalPolicy?.finishTurn?.(turnId);
-		this.#options.executionPolicyCoordinator?.finishTurn(turnId);
-		this.#collaborationModeByTurn.delete(turnId);
-		this.#runSnapshots.delete(turnId);
+		this.#runExecutions.finish(turnId);
 	}
 
 	configureRuntimeContext(input: {
 		readonly collaborationMode: string;
 		readonly turnId?: string;
 	}): void {
-		const mode = input.collaborationMode.trim();
-		if (!mode || mode.length > 64) throw new TypeError("collaboration mode is invalid");
-		if (input.turnId !== undefined) {
-			const turnId = input.turnId.trim();
-			if (!turnId || turnId.length > 256) throw new TypeError("turn id is invalid");
-			this.#collaborationModeByTurn.set(turnId, mode);
-			return;
-		}
-		this.#collaborationMode = mode;
+		this.#runExecutions.configureCollaborationMode(input);
 	}
 
 	executionPolicySnapshot(): ExecutionPolicySnapshot | undefined {
@@ -497,7 +499,7 @@ export class NodeTurnRuntime {
 	}
 
 	runExecutionSnapshot(turnId: string): RunExecutionSnapshot | undefined {
-		return this.#runSnapshots.get(turnId);
+		return this.#runExecutions.snapshot(turnId);
 	}
 
 	reserve(submission: TurnSubmission): TurnReservation {
@@ -619,7 +621,7 @@ export class NodeTurnRuntime {
 			});
 		interrupted ??= terminalization?.turn;
 		if (!interrupted) throw new StorageFailure("turn interruption did not terminalize the turn");
-		this.#interruptActiveTools(input.turnId, emit);
+		this.#toolExecutions.interruptTurn(input.turnId, emit);
 		await this.#writeTerminalSnapshot(interrupted);
 		this.#finishTurn(input.turnId);
 		emit(terminalization
@@ -652,16 +654,17 @@ export class NodeTurnRuntime {
 			pending.providerProtocol,
 			pending.runSnapshot,
 		);
-		let activeTool: ActiveToolExecution | undefined;
+		let activeTool: ActiveToolExecutionClaim | undefined;
 		const resolution = await coordinator.resolve({
 			...input,
 			signal: options.signal,
 			onExecutionStart: () => {
-				activeTool = this.#beginToolExecution(
-					pending.turnId,
-					pending.callId,
-					pending.toolName,
-					"effect_outcome_unknown",
+				activeTool = this.#toolExecutions.begin({
+					turnId: pending.turnId,
+					callId: pending.callId,
+					toolName: pending.toolName,
+					interruptErrorKind: "effect_outcome_unknown",
+				},
 					emit,
 				);
 			},
@@ -674,7 +677,7 @@ export class NodeTurnRuntime {
 				: {}),
 		});
 		if (resolution.status === "interrupted") {
-			if (activeTool) this.#interruptToolExecution(activeTool, emit);
+			if (activeTool) this.#toolExecutions.interrupt(activeTool, emit);
 			await this.#writeTerminalSnapshot(resolution.turn);
 			const terminalization = this.#options.store.turnTerminalizations.load(
 				this.#options.sessionId,
@@ -698,11 +701,11 @@ export class NodeTurnRuntime {
 			throw new ApprovalNotPendingError();
 		}
 		if (resolution.toolResult) {
-			if (activeTool) this.#completeToolExecution(activeTool, resolution.toolResult, emit);
+			if (activeTool) this.#toolExecutions.complete(activeTool, resolution.toolResult, emit);
 			else emitToolResult(resolution.toolResult, 0, emit);
 		}
 		if (resolution.permissionGrant) {
-			const runSnapshot = this.#refreshRunPolicySnapshot(pending.turnId);
+			const runSnapshot = this.#runExecutions.refreshPolicy(pending.turnId);
 			context = Object.freeze({
 				...context,
 				runSnapshot,
@@ -830,9 +833,8 @@ export class NodeTurnRuntime {
 		restoredSnapshot?: RunExecutionSnapshot,
 	): Promise<TurnExecutionContext> {
 		assertNotAborted(signal);
-		const runSnapshot = this.#resolveRunSnapshot(turnId, restoredSnapshot);
+		const runSnapshot = this.#runExecutions.resolve(turnId, restoredSnapshot);
 		const collaborationMode = runSnapshot.collaborationMode;
-		this.#collaborationModeByTurn.set(turnId, collaborationMode);
 		this.#options.toolRouter?.beginTurn?.(turnId, runSnapshot.toolCatalog);
 		this.#options.approvalPolicy?.beginTurn?.(turnId);
 		const config = await this.#options.resolveConfig(submission);
@@ -923,7 +925,7 @@ export class NodeTurnRuntime {
 		let memoryItem: Extract<CanonicalConversationItem, { readonly type: "user" }> | undefined;
 		while (true) {
 			let completedToolBatch = false;
-			const wallClockExhausted = this.#wallClockExhausted();
+			const wallClockExhausted = this.#agentBudget.wallClockExhaustion();
 			if (wallClockExhausted) {
 				return this.#finalizeAgentBudget(context, wallClockExhausted);
 			}
@@ -933,12 +935,12 @@ export class NodeTurnRuntime {
 			}
 			if (pendingBatch) {
 				try {
-					const suspended = await this.#processToolBatch(
+					const suspended = await this.#toolBatches.process({
 						context,
-						pendingBatch,
+						batch: pendingBatch,
 						accumulatedUsage,
-						tools,
-					);
+						exposedTools: tools,
+					});
 					if (suspended) return suspended;
 					history = this.#options.store.loadConversationItems(this.#options.sessionId);
 					pendingBatch = undefined;
@@ -1065,7 +1067,7 @@ export class NodeTurnRuntime {
 				memoryCollected = true;
 				memoryItem = await this.#collectMemoryItem(context);
 			}
-			const providerBudgetExhausted = this.#beginProviderStep();
+			const providerBudgetExhausted = this.#agentBudget.beginProviderStep();
 			if (providerBudgetExhausted) {
 				return this.#finalizeAgentBudget(context, providerBudgetExhausted);
 			}
@@ -1162,7 +1164,7 @@ export class NodeTurnRuntime {
 				});
 				if (durableRequestId) {
 					this.#coordinatorBroker?.recordProviderStep(durableRequestId, "dispatch_started", {
-						provider_step: durableProviderStep ?? this.#agentBudget.providerSteps,
+						provider_step: durableProviderStep ?? this.#agentBudget.providerStepCount(),
 						continuation: continuation !== undefined,
 					});
 				}
@@ -1181,7 +1183,7 @@ export class NodeTurnRuntime {
 					...(context.providerRoute ? { providerRoute: context.providerRoute } : {}),
 					request,
 					timelineWindowId: durableTimelineWindowId ?? turnId,
-					timelineVersion: durableProviderStep ?? this.#agentBudget.providerSteps,
+					timelineVersion: durableProviderStep ?? this.#agentBudget.providerStepCount(),
 					maxRetries: config.streamMaxRetries,
 					emit,
 					signal,
@@ -1297,32 +1299,26 @@ export class NodeTurnRuntime {
 				}
 			}
 			accumulatedUsage = addUsage(accumulatedUsage, stepResult.usage);
-			this.#agentBudget.tokens = usageTokenTotal(accumulatedUsage);
-			if (stepResult.toolCalls.length > 0
-				&& this.#agentBudget.budget.maxTokens !== undefined
-				&& this.#agentBudget.tokens >= this.#agentBudget.budget.maxTokens) {
-				return this.#finalizeAgentBudget(context, "max_tokens");
+			const budgetObservation = this.#agentBudget.observeProviderOutput({
+				usage: accumulatedUsage,
+				assistantText: stepResult.assistantText,
+				toolCallCount: stepResult.toolCalls.length,
+			});
+			if (budgetObservation.exhaustion) {
+				return this.#finalizeAgentBudget(context, budgetObservation.exhaustion);
 			}
 
 			if (stepResult.toolCalls.length === 0) {
-				if (!stepResult.assistantText.trim()
-					&& this.#agentBudget.budget.noProgressTurnLimit !== undefined) {
-					this.#agentBudget.noProgressTurns += 1;
-					if (this.#agentBudget.noProgressTurns
-						>= this.#agentBudget.budget.noProgressTurnLimit) {
-						return this.#finalizeAgentBudget(context, "no_progress");
-					}
+				if (budgetObservation.retryEmptyOutput) {
 					previousResponseId = stepResult.responseId;
 					continue;
 				}
-				this.#agentBudget.noProgressTurns = 0;
 				return this.#finalizePreparedTurn(context, stepResult, accumulatedUsage, {
 					requestConfig,
 					requestSignature,
 					requestInput: logicalRequest.items ?? history,
 				});
 			}
-			this.#agentBudget.noProgressTurns = 0;
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
@@ -1333,7 +1329,7 @@ export class NodeTurnRuntime {
 			if (!this.#options.toolRouter) {
 				return this.#finalizeFailure(submission, unsupportedToolFailure(), emit);
 			}
-			const toolBudgetExhausted = this.#reserveToolCalls(stepResult.toolCalls.length);
+			const toolBudgetExhausted = this.#agentBudget.reserveToolCalls(stepResult.toolCalls.length);
 			if (toolBudgetExhausted) {
 				return this.#finalizeAgentBudget(context, toolBudgetExhausted);
 			}
@@ -1418,72 +1414,6 @@ export class NodeTurnRuntime {
 			runSnapshot.toolCatalog,
 			this.#options.loadToolActivations?.(turnId) ?? [],
 		);
-	}
-
-	#resolveRunSnapshot(
-		turnId: string,
-		restoredSnapshot: RunExecutionSnapshot | undefined,
-	): RunExecutionSnapshot {
-		const existing = this.#runSnapshots.get(turnId);
-		if (existing) {
-			if (restoredSnapshot !== undefined) {
-				const restored = parseRunExecutionSnapshot(restoredSnapshot, turnId);
-				if (stableModelInputJson(existing) !== stableModelInputJson(restored)) {
-					throw new TypeError("run execution snapshot does not match active run");
-				}
-			}
-			return existing;
-		}
-		if (restoredSnapshot !== undefined) {
-			const parsed = parseRunExecutionSnapshot(restoredSnapshot, turnId);
-			const restoredPolicy = parsed.policy
-				? this.#options.executionPolicyCoordinator?.restoreTurn?.(turnId, parsed.policy)
-					?? parsed.policy
-				: this.#options.executionPolicyCoordinator?.beginTurn(turnId);
-			const snapshot = restoredPolicy
-				? replaceRunPolicySnapshot(parsed, restoredPolicy)
-				: parsed;
-			this.#runSnapshots.set(turnId, snapshot);
-			return snapshot;
-		}
-
-		const collaborationMode = this.#collaborationModeByTurn.get(turnId)
-			?? this.#collaborationMode;
-		const policy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
-		const capabilities = Object.freeze({
-			turnId,
-			shell: policy?.toolsEnabled ?? false,
-			collaborationMode,
-		});
-		const catalog = this.#options.resolveToolCatalog?.(capabilities)
-			?? {
-				catalogVersion: 0,
-				directTools: this.#options.planTools?.(capabilities) ?? [],
-				deferredTools: typeof this.#options.deferredTools === "function"
-					? this.#options.deferredTools(turnId)
-					: this.#options.deferredTools ?? [],
-			};
-		const snapshot = createRunExecutionSnapshot({
-			turnId,
-			collaborationMode,
-			...(policy ? { policy } : {}),
-			...(this.#executionPolicyConfiguration ? {
-				policyConfiguration: this.#executionPolicyConfiguration,
-			} : {}),
-			toolCatalog: catalog,
-		});
-		this.#runSnapshots.set(turnId, snapshot);
-		return snapshot;
-	}
-
-	#refreshRunPolicySnapshot(turnId: string): RunExecutionSnapshot {
-		const snapshot = this.#runSnapshots.get(turnId);
-		if (!snapshot) throw new Error("run_execution_snapshot_missing");
-		const policy = this.#options.executionPolicyCoordinator?.beginTurn(turnId);
-		if (!policy) return snapshot;
-		const updated = replaceRunPolicySnapshot(snapshot, policy);
-		this.#runSnapshots.set(turnId, updated);
-		return updated;
 	}
 
 	async #finalizePreparedTurn(
@@ -1636,484 +1566,11 @@ export class NodeTurnRuntime {
 		}
 	}
 
-	async #processToolBatch(
-		context: TurnExecutionContext,
-		batch: PendingToolBatch,
-		accumulatedUsage: ProviderUsage,
-		exposedTools: readonly ToolDefinition[],
-	): Promise<RuntimeTurnRecord | undefined> {
-		const { submission, turnId, config, emit, signal } = context;
-		const deferredContextItems: Array<Omit<AppendContextItemInput, "sessionId">> = [];
-		const pendingParallelCalls: PreparedParallelToolCall[] = [];
-		const exposedToolNames = new Set(exposedTools.map((tool) => tool.name));
-		const flushParallelCalls = async (): Promise<RuntimeTurnRecord | undefined> => {
-			if (pendingParallelCalls.length === 0) return undefined;
-			const phase = pendingParallelCalls.splice(0);
-			const results = await this.#executeParallelToolPhase(phase, context);
-			for (const [phaseIndex, prepared] of phase.entries()) {
-				const suspended = await this.#applyToolExecutionResult({
-					context,
-					batch,
-					accumulatedUsage,
-					deferredContextItems,
-					index: prepared.index,
-					call: prepared.call,
-					executionCall: prepared.executionCall,
-					result: results[phaseIndex]!,
-					executed: true,
-					allowClarification: false,
-				});
-				if (suspended) return suspended;
-			}
-			return undefined;
-		};
-
-		for (const [index, call] of batch.calls.entries()) {
-			const wallClockExhausted = this.#wallClockExhausted();
-			if (wallClockExhausted) throw new AgentBudgetExhaustedError(wallClockExhausted);
-			assertNotAborted(signal);
-			if (!exposedToolNames.has(call.name)) {
-				const earlierSuspension = await flushParallelCalls();
-				if (earlierSuspension) return earlierSuspension;
-				const suspended = await this.#applyToolExecutionResult({
-					context,
-					batch,
-					accumulatedUsage,
-					deferredContextItems,
-					index,
-					call,
-					executionCall: call,
-					result: unsupportedToolResult(call),
-					executed: false,
-					allowClarification: false,
-				});
-				if (suspended) return suspended;
-				continue;
-			}
-			if (context.collaborationMode === "plan" && call.name === "update_plan") {
-				const earlierSuspension = await flushParallelCalls();
-				if (earlierSuspension) return earlierSuspension;
-				const suspended = await this.#applyToolExecutionResult({
-					context,
-					batch,
-					accumulatedUsage,
-					deferredContextItems,
-					index,
-					call,
-					executionCall: call,
-					result: planModeUpdatePlanResult(call),
-					executed: false,
-					allowClarification: false,
-				});
-				if (suspended) return suspended;
-				continue;
-			}
-			if (!this.#supportsParallelToolCall(call, context.turnId)) {
-				const earlierSuspension = await flushParallelCalls();
-				if (earlierSuspension) return earlierSuspension;
-			}
-			const policy = await this.#options.approvalPolicy?.evaluate(
-				call,
-				context.executionPolicy,
-				context.turnId,
-			);
-			if (policy?.kind === "request") {
-				const earlierSuspension = await flushParallelCalls();
-				if (earlierSuspension) return earlierSuspension;
-				const preparation = await this.#emitFileMutationStarted(
-					call,
-					policy.preview,
-					context,
-					toolCallRequestsSandboxOverride(call),
-				);
-				const coordinator = this.#options.approvalCoordinator;
-				if (!coordinator) {
-					throw new ProviderFailure({
-						code: "unsupported_capability",
-						message: "approval continuation is not configured",
-					});
-				}
-				this.#persistDeferredContextItems(deferredContextItems, signal);
-				const pending = coordinator.suspend({
-					clientTurnId: submission.clientTurnId,
-					clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
-					turnId,
-					userMessage: submission.message,
-					providerProtocol: config.protocol,
-					call,
-					remainingCalls: batch.calls.slice(index + 1),
-					conversation: this.#options.store.loadConversation(this.#options.sessionId),
-					assistantText: batch.assistantText,
-					...(batch.responseId ? { responseId: batch.responseId } : {}),
-					usage: accumulatedUsage,
-					...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
-					...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
-					runSnapshot: context.runSnapshot,
-					preview: policy.preview,
-					reason: policy.reason,
-					options: policy.options,
-					...(policy.commandPattern ? { commandPattern: policy.commandPattern } : {}),
-					...(policy.proposedExecPolicyPattern ? {
-						proposedExecPolicyPattern: policy.proposedExecPolicyPattern,
-					} : {}),
-					...(policy.permissionRequest ? {
-						permissionRequest: policy.permissionRequest,
-					} : {}),
-					...(preparation?.mutationGuard ? {
-						preparedMutationGuard: preparation.mutationGuard,
-					} : {}),
-				});
-				emit({
-					type: "approval_requested",
-					clientTurnId: pending.clientTurnId,
-					turnId: pending.turnId,
-					decisionId: pending.decisionId,
-					callId: boundedCallId(pending.callId),
-					toolName: boundedToolName(pending.toolName),
-					preview: pending.preview,
-					reason: pending.reason,
-					options: pending.options,
-					...(pending.permissionRequest ? {
-						permissionRequest: pending.permissionRequest,
-					} : {}),
-					...fileMutationApprovalPreview(pending.call),
-				});
-				const running = this.#runningTurn(pending.clientTurnId);
-				await this.#writeTerminalSnapshot(running);
-				return running;
-			}
-
-			let executionCall = call;
-			let blockedByHook: ToolExecutionResult | undefined;
-			if (policy?.kind !== "deny" && context.hookCoordinator) {
-				const before = await context.hookCoordinator.beforeTool(call, signal);
-				context.hookContexts.append({
-					point: "pre_tool_use",
-					contexts: before.contexts,
-				});
-				if (before.status === "deny") {
-					blockedByHook = hookDeniedResult(call, before.errorKind);
-				} else {
-					executionCall = before.call;
-				}
-			}
-
-			if (policy?.kind === "deny" || blockedByHook) {
-				const earlierSuspension = await flushParallelCalls();
-				if (earlierSuspension) return earlierSuspension;
-				await this.#emitFileMutationStarted(
-					executionCall,
-					sameToolCall(call, executionCall) ? policy?.preview : undefined,
-					context,
-				);
-				const result = policy?.kind === "deny"
-					? policyDeniedResult(call, policy)
-					: blockedByHook!;
-				const suspended = await this.#applyToolExecutionResult({
-					context,
-					batch,
-					accumulatedUsage,
-					deferredContextItems,
-					index,
-					call,
-					executionCall,
-					result,
-					executed: false,
-					allowClarification: true,
-				});
-				if (suspended) return suspended;
-				continue;
-			}
-
-			const sandboxOverrideApproved = policy?.kind === "allow"
-				&& policy.sandboxOverrideApproved === true
-				&& sameToolCall(call, executionCall);
-			if (this.#supportsParallelToolCall(executionCall, context.turnId)) {
-				await this.#emitFileMutationStarted(
-					executionCall,
-					sameToolCall(call, executionCall) ? policy?.preview : undefined,
-					context,
-					sandboxOverrideApproved,
-				);
-				pendingParallelCalls.push({
-					index,
-					call,
-					executionCall,
-					sandboxOverrideApproved,
-				});
-				continue;
-			}
-
-			const earlierSuspension = await flushParallelCalls();
-			if (earlierSuspension) return earlierSuspension;
-			const preparation = await this.#emitFileMutationStarted(
-				executionCall,
-				sameToolCall(call, executionCall) ? policy?.preview : undefined,
-				context,
-				sandboxOverrideApproved,
-			);
-			const result = await this.#executeTool(
-				executionCall,
-				context,
-				sandboxOverrideApproved,
-				preparation?.mutationGuard,
-			);
-			const suspended = await this.#applyToolExecutionResult({
-				context,
-				batch,
-				accumulatedUsage,
-				deferredContextItems,
-				index,
-				call,
-				executionCall,
-				result,
-				executed: true,
-				allowClarification: true,
-			});
-			if (suspended) return suspended;
-		}
-		const trailingSuspension = await flushParallelCalls();
-		if (trailingSuspension) return trailingSuspension;
-		this.#persistDeferredContextItems(deferredContextItems, signal);
-		return undefined;
-	}
-
-	async #emitFileMutationStarted(
-		call: CanonicalToolCall,
-		preview: string | undefined,
-		context: TurnExecutionContext,
-		sandboxOverrideApproved = false,
-	): Promise<PreparedToolCall | undefined> {
-		const details = fileMutationApprovalPreview(call);
-		const previewOptions = {
-			signal: context.signal,
-			ownerTurnId: context.turnId,
-					...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
-					...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
-					...(sandboxOverrideApproved
-						&& this.#options.executionPolicyCoordinator?.sandboxOverrideProfile
-						? {
-							sandboxOverridePolicy: this.#options.executionPolicyCoordinator
-								.sandboxOverrideProfile(),
-						}
-						: {}),
-		};
-		const prepared: PreparedToolCall = this.#options.toolRouter?.prepare
-			? await this.#options.toolRouter.prepare(call, previewOptions)
-			: Object.freeze({
-				fileChanges: await this.#options.toolRouter?.preview?.(call, previewOptions)
-					?? Object.freeze([]),
-			});
-		const fileChanges = prepared.fileChanges;
-		if (details.contentPreview === undefined && details.diff === undefined && fileChanges.length === 0) {
-			return prepared.mutationGuard ? prepared : undefined;
-		}
-		context.emit({
-			type: "file_mutation_started",
-			clientTurnId: context.submission.clientTurnId,
-			turnId: context.turnId,
-			callId: boundedCallId(call.callId),
-			toolName: boundedToolName(call.name),
-			preview: (preview?.trim() || boundedToolName(call.name)).slice(0, 512),
-			...details,
-			...(fileChanges.length > 0 ? { fileChanges } : {}),
-		});
-		return prepared;
-	}
-
-	#supportsParallelToolCall(call: CanonicalToolCall, turnId: string): boolean {
-		try {
-			return this.#options.toolRouter?.supportsParallelToolCalls?.(call, turnId) === true;
-		} catch {
-			return false;
-		}
-	}
-
-	async #executeParallelToolPhase(
-		phase: readonly PreparedParallelToolCall[],
-		context: TurnExecutionContext,
-	): Promise<readonly ToolExecutionResult[]> {
-		const controller = new AbortController();
-		const phaseContext = Object.freeze({
-			...context,
-			signal: AbortSignal.any([context.signal, controller.signal]),
-		});
-		try {
-			const outcomes = await Promise.all(phase.map(async (prepared) => (
-				await this.#runTool(
-					prepared.executionCall,
-					phaseContext,
-					prepared.sandboxOverrideApproved,
-				)
-			)));
-			if (outcomes.some((outcome) => clarificationRequest(outcome.result) !== undefined)) {
-				throw new ProviderFailure({
-					code: "tool_protocol_error",
-					message: "parallel tool requested clarification",
-				});
-			}
-			for (const outcome of outcomes) {
-				this.#completeToolExecution(outcome.active, outcome.result, context.emit);
-			}
-			return outcomes.map((outcome) => outcome.result);
-		} catch (error) {
-			controller.abort();
-			this.#interruptActiveTools(context.turnId, context.emit);
-			throw error;
-		}
-	}
-
-	async #applyToolExecutionResult(input: {
-		readonly context: TurnExecutionContext;
-		readonly batch: PendingToolBatch;
-		readonly accumulatedUsage: ProviderUsage;
-		readonly deferredContextItems: Array<Omit<AppendContextItemInput, "sessionId">>;
-		readonly index: number;
-		readonly call: CanonicalToolCall;
-		readonly executionCall: CanonicalToolCall;
-		readonly result: ToolExecutionResult;
-		readonly executed: boolean;
-		readonly allowClarification: boolean;
-	}): Promise<RuntimeTurnRecord | undefined> {
-		const {
-			context,
-			batch,
-			accumulatedUsage,
-			deferredContextItems,
-			index,
-			call,
-			executionCall,
-			result,
-			executed,
-			allowClarification,
-		} = input;
-		const { submission, turnId, config, emit, signal } = context;
-		if (!executed) emitToolResult(result, 0, emit);
-		const clarification = clarificationRequest(result);
-		if (clarification) {
-			if (!allowClarification) {
-				throw new ProviderFailure({
-					code: "tool_protocol_error",
-					message: "parallel tool requested clarification",
-				});
-			}
-			const coordinator = this.#options.clarificationCoordinator;
-			if (!coordinator) {
-				throw new ProviderFailure({
-					code: "unsupported_capability",
-					message: "clarification continuation is not configured",
-				});
-			}
-			this.#persistDeferredContextItems(deferredContextItems, signal);
-			const pending = coordinator.suspend({
-				clientTurnId: submission.clientTurnId,
-				clientUserMessageId: submission.clientUserMessageId ?? submission.clientTurnId,
-				turnId,
-				userMessage: submission.message,
-				providerProtocol: config.protocol,
-				call,
-				remainingCalls: batch.calls.slice(index + 1),
-				conversation: this.#options.store.loadConversation(this.#options.sessionId),
-				assistantText: batch.assistantText,
-				...(batch.responseId ? { responseId: batch.responseId } : {}),
-				usage: accumulatedUsage,
-				...(submission.modelOverride ? { modelOverride: submission.modelOverride } : {}),
-				...(submission.reasoningEffort ? { reasoningEffort: submission.reasoningEffort } : {}),
-				runSnapshot: context.runSnapshot,
-				...clarification,
-			});
-			emit({
-				type: "clarification_requested",
-				clientTurnId: pending.clientTurnId,
-				turnId: pending.turnId,
-				requestId: pending.requestId,
-				callId: boundedCallId(pending.call.callId),
-				toolName: boundedToolName(pending.call.name),
-				question: pending.question,
-				options: pending.options,
-				header: pending.header,
-				multiSelect: pending.multiSelect,
-			});
-			const running = this.#runningTurn(pending.clientTurnId);
-			await this.#writeTerminalSnapshot(running);
-			return running;
-		}
-
-		const contextItem = this.#persistToolResult(submission.clientTurnId, turnId, result);
-		if (contextItem) deferredContextItems.push(contextItem);
-		if (executed) {
-			this.#options.approvalPolicy?.recordResult?.(
-				executionCall,
-				result,
-				context.executionPolicy,
-				turnId,
-			);
-		}
-		if (result.success && result.planUpdate) {
-			emit({
-				type: "plan_updated",
-				...(result.planUpdate.explanation
-					? { explanation: result.planUpdate.explanation }
-					: {}),
-				items: result.planUpdate.items,
-			});
-		}
-		if (executed) {
-			this.#options.agentCheckpoint?.({
-				kind: "tool_call",
-				committed: true,
-				turnId,
-				callId: executionCall.callId,
-				mutating: this.#options.isMutatingTool?.(executionCall.name) ?? true,
-			});
-			const after = await context.hookCoordinator?.afterTool(executionCall, result, signal);
-			if (after) {
-				context.hookContexts.append({
-					point: "post_tool_use",
-					contexts: after.contexts,
-				});
-			}
-		}
-		assertNotAborted(signal);
-		return undefined;
-	}
-
-	#beginProviderStep(): AgentBudgetExhaustionKind | undefined {
-		const maxTurns = this.#agentBudget.budget.maxTurns;
-		if (maxTurns !== undefined && this.#agentBudget.providerSteps >= maxTurns) {
-			return this.#markBudgetExhausted("max_turns");
-		}
-		this.#agentBudget.providerSteps += 1;
-		return undefined;
-	}
-
-	#reserveToolCalls(count: number): AgentBudgetExhaustionKind | undefined {
-		const maxToolCalls = this.#agentBudget.budget.maxToolCalls;
-		if (maxToolCalls !== undefined && this.#agentBudget.toolCalls + count > maxToolCalls) {
-			return this.#markBudgetExhausted("max_tool_calls");
-		}
-		this.#agentBudget.toolCalls += count;
-		return undefined;
-	}
-
-	#wallClockExhausted(): AgentBudgetExhaustionKind | undefined {
-		const limit = this.#agentBudget.budget.wallClockMs;
-		if (limit === undefined) return undefined;
-		const elapsed = (this.#options.monotonicClock?.() ?? performance.now())
-			- this.#agentBudget.startedAt;
-		return elapsed >= limit ? this.#markBudgetExhausted("wall_clock") : undefined;
-	}
-
-	#markBudgetExhausted(kind: AgentBudgetExhaustionKind): AgentBudgetExhaustionKind {
-		this.#agentBudget.exhausted ??= kind;
-		return this.#agentBudget.exhausted;
-	}
-
 	async #finalizeAgentBudget(
 		context: TurnExecutionContext,
 		kind: AgentBudgetExhaustionKind,
 	): Promise<RuntimeTurnRecord> {
-		this.#markBudgetExhausted(kind);
+		this.#agentBudget.markExhausted(kind);
 		return this.#finalizeFailure(context.submission, {
 			code: "tool_budget_exceeded",
 			message: `agent budget exhausted: ${kind}`,
@@ -2121,259 +1578,6 @@ export class NodeTurnRuntime {
 		}, context.emit);
 	}
 
-	async #executeTool(
-		call: CanonicalToolCall,
-		context: TurnExecutionContext,
-		sandboxOverrideApproved = false,
-		preparedMutationGuard?: PreparedMutationGuard,
-	): Promise<ToolExecutionResult> {
-		const outcome = await this.#runTool(
-			call,
-			context,
-			sandboxOverrideApproved,
-			preparedMutationGuard,
-		);
-		this.#completeToolExecution(outcome.active, outcome.result, context.emit);
-		return outcome.result;
-	}
-
-	async #runTool(
-		call: CanonicalToolCall,
-		context: TurnExecutionContext,
-		sandboxOverrideApproved = false,
-		preparedMutationGuard?: PreparedMutationGuard,
-	): Promise<PendingToolExecutionResult> {
-		const { emit, signal } = context;
-		const router = this.#options.toolRouter;
-		if (!router) throw new ProviderFailure({
-			code: "unsupported_capability",
-			message: "tool execution is not configured",
-		});
-		assertNotAborted(signal);
-		const mutating = this.#options.isMutatingTool?.(call.name) ?? true;
-		this.#options.agentCheckpoint?.({
-			kind: "tool_call",
-			committed: false,
-			turnId: context.turnId,
-			callId: call.callId,
-			mutating,
-		});
-		const activeTool = this.#beginToolExecution(
-			context.turnId,
-			call.callId,
-			call.name,
-			mutating ? "effect_outcome_unknown" : "tool_interrupted",
-			emit,
-		);
-		const executionSignal = AbortSignal.any([signal, activeTool.abortController.signal]);
-		let result: ToolExecutionResult;
-		try {
-			const execute = async (): Promise<ToolExecutionResult> => await router.execute(call, {
-				signal: executionSignal,
-				ownerSessionId: this.#options.sessionId,
-				ownerTurnId: context.turnId,
-				callId: call.callId,
-				publishLifecycle: this.#options.publishLifecycle,
-				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
-					...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
-					...(sandboxOverrideApproved
-						&& this.#options.executionPolicyCoordinator?.sandboxOverrideProfile
-						? {
-							sandboxOverridePolicy: this.#options.executionPolicyCoordinator
-								.sandboxOverrideProfile(),
-						}
-						: {}),
-				...(preparedMutationGuard ? { preparedMutationGuard } : {}),
-			});
-			if (this.#coordinatorBroker && this.#options.agentEffectLedger) {
-				const attempt = await this.#coordinatorBroker.executeTool({
-					attemptId: `attempt-${modelInputSha256({
-						session_id: this.#options.sessionId,
-						turn_id: context.turnId,
-						call_id: call.callId,
-					})}`,
-					jobId: context.turnId,
-					turnId: context.turnId,
-					base: { windowId: context.turnId, version: this.#agentBudget.toolCalls },
-					call,
-					mutating,
-				}, execute);
-				result = attempt.result;
-			} else {
-				result = await execute();
-			}
-			assertNotAborted(executionSignal);
-		} catch (error) {
-			if (executionSignal.aborted || (error instanceof Error && error.name === "AbortError")) {
-				this.#interruptToolExecution(activeTool, emit);
-				throw error;
-			}
-			this.#failToolExecution(activeTool, "tool_execution_failed", emit);
-			throw new ProviderFailure({
-				code: "provider_error",
-				message: "tool execution failed",
-				diagnostics: { tool_name: boundedToolName(call.name) },
-			});
-		}
-		return { active: activeTool, result };
-	}
-
-	#beginToolExecution(
-		turnId: string,
-		callId: string,
-		toolName: string,
-		interruptErrorKind: ActiveToolExecution["interruptErrorKind"],
-		emit: (event: RuntimeEvent) => void,
-	): ActiveToolExecution {
-		const active: ActiveToolExecution = {
-			turnId,
-			trackingCallId: callId,
-			callId: boundedCallId(callId),
-			toolName: boundedToolName(toolName),
-			abortController: new AbortController(),
-			startedAt: this.#options.monotonicClock?.() ?? performance.now(),
-			interruptErrorKind,
-			terminalEmitted: false,
-		};
-		let activeForTurn = this.#activeToolExecutions.get(turnId);
-		if (!activeForTurn) {
-			activeForTurn = new Map();
-			this.#activeToolExecutions.set(turnId, activeForTurn);
-		}
-		activeForTurn.set(active.trackingCallId, active);
-		emit({
-			type: "tool_execution_started",
-			callId: active.callId,
-			toolName: active.toolName,
-		});
-		return active;
-	}
-
-	#completeToolExecution(
-		active: ActiveToolExecution,
-		result: ToolExecutionResult,
-		emit: (event: RuntimeEvent) => void,
-	): void {
-		if (active.terminalEmitted) return;
-		active.terminalEmitted = true;
-		this.#forgetToolExecution(active);
-		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
-		const durationMs = boundedDurationMs(active.startedAt, finishedAt);
-		publishRuntimeDiagnostic(this.#options.recordDiagnostic, {
-			kind: "tool_execution",
-			turnId: active.turnId,
-			callId: active.callId,
-			toolName: active.toolName,
-			durationMs,
-			success: result.success,
-			outputChars: result.modelOutput.length,
-			outputTruncated: result.metadata.model_output_truncated === true,
-			...(result.success || !result.errorKind
-				? {}
-				: { failureKind: result.errorKind.slice(0, 128) }),
-		});
-		emitToolResult(result, durationMs, emit);
-	}
-
-	#interruptActiveTools(turnId: string, emit: (event: RuntimeEvent) => void): void {
-		const active = this.#activeToolExecutions.get(turnId);
-		if (!active) return;
-		for (const execution of [...active.values()]) {
-			this.#interruptToolExecution(execution, emit);
-		}
-	}
-
-	#interruptToolExecution(
-		active: ActiveToolExecution,
-		emit: (event: RuntimeEvent) => void,
-	): void {
-		active.abortController.abort(new DOMException("tool interrupted", "AbortError"));
-		this.#failToolExecution(active, active.interruptErrorKind, emit);
-	}
-
-	#failToolExecution(
-		active: ActiveToolExecution,
-		errorKind: string,
-		emit: (event: RuntimeEvent) => void,
-	): void {
-		if (active.terminalEmitted) return;
-		active.terminalEmitted = true;
-		this.#forgetToolExecution(active);
-		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
-		const durationMs = boundedDurationMs(active.startedAt, finishedAt);
-		publishRuntimeDiagnostic(this.#options.recordDiagnostic, {
-			kind: "tool_execution",
-			turnId: active.turnId,
-			callId: active.callId,
-			toolName: active.toolName,
-			durationMs,
-			success: false,
-			outputChars: 0,
-			outputTruncated: false,
-			failureKind: errorKind.slice(0, 128),
-		});
-		emit({
-			type: "tool_execution_failed",
-			callId: active.callId,
-			toolName: active.toolName,
-			summary: errorKind === "effect_outcome_unknown"
-				? `${active.toolName} outcome is unknown after interruption`
-				: errorKind === "tool_interrupted"
-					? `${active.toolName} interrupted`
-					: `${active.toolName} failed`,
-			durationMs,
-			errorKind,
-			metadata: Object.freeze({}),
-		});
-	}
-
-	#forgetToolExecution(active: ActiveToolExecution): void {
-		const activeForTurn = this.#activeToolExecutions.get(active.turnId);
-		if (activeForTurn?.get(active.trackingCallId) !== active) return;
-		activeForTurn.delete(active.trackingCallId);
-		if (activeForTurn.size === 0) this.#activeToolExecutions.delete(active.turnId);
-	}
-
-	#persistToolResult(
-		clientTurnId: string,
-		turnId: string,
-		result: ToolExecutionResult,
-	): Omit<AppendContextItemInput, "sessionId"> | undefined {
-		const contextItem = this.#options.contextItemCoordinator?.contextItemFor({ turnId, result });
-		this.#options.store.appendToolResult({
-			sessionId: this.#options.sessionId,
-			clientTurnId,
-			result: toCanonicalResult(result),
-			summary: result.summary,
-			metadata: result.metadata,
-			...(result.errorKind ? { errorKind: result.errorKind } : {}),
-			...(result.planUpdate ? { planUpdate: result.planUpdate } : {}),
-			...(result.toolActivation ? { toolActivation: result.toolActivation } : {}),
-		});
-		return contextItem;
-	}
-
-	#persistDeferredContextItems(
-		items: Array<Omit<AppendContextItemInput, "sessionId">>,
-		signal: AbortSignal,
-	): void {
-		for (const contextItem of items) {
-			assertNotAborted(signal);
-			this.#options.store.appendContextItem({
-				sessionId: this.#options.sessionId,
-				...contextItem,
-			});
-		}
-		items.length = 0;
-	}
-
-	#runningTurn(clientTurnId: string): RuntimeTurnRecord {
-		const turn = this.#options.store.loadTurn(this.#options.sessionId, clientTurnId);
-		if (!turn || turn.status !== "in_progress") {
-			throw new StorageFailure("approval suspension has no running turn");
-		}
-		return turn;
-	}
 
 	#conversationForCurrentSubmission(userText: string): readonly CanonicalConversationItem[] {
 		const conversation = this.#options.store.loadConversationItems(this.#options.sessionId);
@@ -2514,60 +1718,6 @@ export class NodeTurnRuntime {
 			return false;
 		}
 	}
-}
-
-function sameToolCall(left: CanonicalToolCall, right: CanonicalToolCall): boolean {
-	return left.callId === right.callId
-		&& left.name === right.name
-		&& left.argumentsJson === right.argumentsJson;
-}
-
-function clarificationRequest(result: ToolExecutionResult): {
-	readonly question: string;
-	readonly options: readonly ClarificationOption[];
-	readonly header: string;
-	readonly multiSelect: boolean;
-} | undefined {
-	if (!result.success || result.metadata.status !== "awaiting_user_response") return undefined;
-	const question = boundedMetadataString(result.metadata.question, 4_096);
-	const header = boundedMetadataString(result.metadata.header, 256, true);
-	const multiSelect = result.metadata.multi_select;
-	const options = clarificationOptions(result.metadata.options);
-	if (question === undefined || header === undefined || typeof multiSelect !== "boolean" || !options) {
-		throw new ProviderFailure({
-			code: "tool_protocol_error",
-			message: "tool returned an invalid clarification request",
-		});
-	}
-	return Object.freeze({ question, options, header, multiSelect });
-}
-
-function clarificationOptions(value: unknown): readonly ClarificationOption[] | undefined {
-	if (!Array.isArray(value) || value.length < 1 || value.length > 5) return undefined;
-	const options: ClarificationOption[] = [];
-	for (const item of value) {
-		if (!isRecord(item)) return undefined;
-		const label = boundedMetadataString(item.label, 128);
-		const description = boundedMetadataString(item.description, 512, true);
-		if (label === undefined || description === undefined) return undefined;
-		options.push(Object.freeze({ label, ...(description ? { description } : {}) }));
-	}
-	return Object.freeze(options);
-}
-
-function boundedMetadataString(
-	value: unknown,
-	limit: number,
-	optional = false,
-): string | undefined {
-	if (optional && (value === undefined || value === null || value === "")) return "";
-	if (typeof value !== "string") return undefined;
-	const normalized = value.trim();
-	return normalized.length > 0 && normalized.length <= limit ? normalized : undefined;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function continuationRecord(item: CanonicalConversationItem): Readonly<Record<string, unknown>> {
@@ -2771,66 +1921,6 @@ function toolProtocolFailure(): NormalizedFailure {
 	};
 }
 
-function policyDeniedResult(
-	call: CanonicalToolCall,
-	decision: Extract<ApprovalPolicyDecision, { readonly kind: "deny" }>,
-): ToolExecutionResult {
-	const toolName = boundedToolName(call.name) || "Tool";
-	const errorKind = decision.errorKind ?? (decision.reason.includes("outside the workspace")
-		? "workspace_escape"
-		: "approval_rejected");
-	return Object.freeze({
-		callId: call.callId,
-		toolName: call.name,
-		success: false,
-		modelOutput: `${toolName} denied\nError kind: ${errorKind}`,
-		summary: `${toolName} denied`,
-		errorKind,
-		metadata: Object.freeze({}),
-	});
-}
-
-function unsupportedToolResult(call: CanonicalToolCall): ToolExecutionResult {
-	const toolName = boundedToolName(call.name);
-	return Object.freeze({
-		callId: call.callId,
-		toolName: call.name,
-		success: false,
-		modelOutput: `unsupported call: ${toolName}`,
-		summary: `${toolName} unsupported`,
-		errorKind: "unsupported_tool",
-		metadata: Object.freeze({}),
-	});
-}
-
-function planModeUpdatePlanResult(call: CanonicalToolCall): ToolExecutionResult {
-	return Object.freeze({
-		callId: call.callId,
-		toolName: call.name,
-		success: false,
-		modelOutput: "update_plan is a TODO/checklist tool and is not allowed in Plan mode",
-		summary: "update_plan blocked in Plan mode",
-		errorKind: "tool_not_allowed_in_plan_mode",
-		metadata: Object.freeze({}),
-	});
-}
-
-function hookDeniedResult(
-	call: CanonicalToolCall,
-	errorKind: "tool_denied_by_hook" | "tool_hook_error",
-): ToolExecutionResult {
-	const toolName = boundedToolName(call.name);
-	return Object.freeze({
-		callId: call.callId,
-		toolName: call.name,
-		success: false,
-		modelOutput: `${toolName} failed\nError kind: ${errorKind}`,
-		summary: `${toolName} failed`,
-		errorKind,
-		metadata: Object.freeze({}),
-	});
-}
-
 function addUsage(left: ProviderUsage, right: ProviderUsage): ProviderUsage {
 	const accumulated: Record<string, number> = { ...left };
 	for (const [key, value] of Object.entries(right)) {
@@ -2854,69 +1944,9 @@ function providerStepWithReplayTokenEstimate(step: ProviderStepResult): Provider
 	});
 }
 
-function usageTokenTotal(usage: ProviderUsage): number {
-	const total = usage.total_tokens ?? usage.totalTokens;
-	if (typeof total === "number" && Number.isFinite(total) && total >= 0) return total;
-	const input = usage.input_tokens ?? usage.inputTokens ?? 0;
-	const output = usage.output_tokens ?? usage.outputTokens ?? 0;
-	return Math.max(0, input) + Math.max(0, output);
-}
-
-function validatedAgentBudget(value: AgentBudget | undefined): AgentBudget {
-	if (!value) return Object.freeze({});
-	const entries = Object.entries(value).flatMap(([key, limit]) => {
-		if (limit === undefined) return [];
-		if (!Number.isSafeInteger(limit) || limit <= 0) {
-			throw new TypeError(`agent budget ${key} must be a positive integer`);
-		}
-		return [[key, limit] as const];
-	});
-	return Object.freeze(Object.fromEntries(entries));
-}
-
 function hasUniqueCallIds(calls: readonly CanonicalToolCall[]): boolean {
 	const callIds = new Set(calls.map((call) => call.callId));
 	return callIds.size === calls.length;
-}
-
-function toCanonicalResult(result: ToolExecutionResult) {
-	return {
-		callId: result.callId,
-		toolName: result.toolName,
-		output: result.modelOutput,
-		success: result.success,
-	};
-}
-
-function emitToolResult(
-	result: ToolExecutionResult,
-	durationMs: number,
-	emit: (event: RuntimeEvent) => void,
-): void {
-	const shared = {
-		callId: boundedCallId(result.callId),
-		toolName: boundedToolName(result.toolName),
-		summary: result.summary.slice(0, 512),
-		durationMs,
-		metadata: result.metadata,
-	};
-	if (result.success) {
-		emit({ type: "tool_execution_completed", ...shared });
-		return;
-	}
-	emit({
-		type: "tool_execution_failed",
-		...shared,
-		...(result.errorKind ? { errorKind: result.errorKind.slice(0, 128) } : {}),
-	});
-}
-
-function boundedCallId(value: string): string {
-	return value.slice(0, 256);
-}
-
-function boundedToolName(value: string): string {
-	return value.slice(0, 128) || "Tool";
 }
 
 function webSearchPresentation(action: WebSearchAction): Readonly<{
