@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Package ownership and dependency direction for runtime and app composition"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Session ownership, transaction, and recovery constraints"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Lifecycle failure mapping and recoverable-boundary rules"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Repository test taxonomy and required quality gates"}
+{"file":".trellis/spec/backend/runtime-tui-gateway-contract.md","reason":"Canonical session, queue, continuation, interrupt, and gateway behavior"}
+{"file":".trellis/tasks/09-02-codex-steer-interrupt-lifecycle/research/codex-module-boundary-audit.md","reason":"Agreed structural hotspots and refactor ordering"}
+{"file":".trellis/tasks/09-02-codex-steer-interrupt-lifecycle/research/codex-input-lifecycle-parity.md","reason":"Codex observable lifecycle comparison"}
+{"file":".trellis/tasks/09-02-codex-steer-interrupt-lifecycle/research/confirmed-bug-ledger.md","reason":"Regression inventory that the refactor must preserve"}
