@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify session DB and lineage evidence against storage contracts."}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify logs, raw payload buckets, and session rebind evidence."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor/tests/trace diagnostics requirements."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify cross-layer lifecycle consistency."}
-{"file": ".trellis/tasks/05-30-session-resume-compaction-lifecycle-smoke/research/session-lifecycle-smoke-plan.md", "reason": "Verify the implementation follows the agreed smoke plan."}

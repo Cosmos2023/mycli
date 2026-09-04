@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify tool lifecycle payload documentation stays aligned"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify diagnostics are bounded and test-backed"}
-{"file": ".trellis/tasks/05-31-05-31-tool-lifecycle-long-output-diagnostics/research/tool-long-output-gap.md", "reason": "Verify implementation closes the recorded long-output diagnostics gap"}

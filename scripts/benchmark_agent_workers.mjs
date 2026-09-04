@@ -447,6 +447,7 @@ function providerSoakConfig(apiBaseUrl) {
 		protocol: "responses",
 		apiBaseUrl,
 		apiKey: "benchmark-key",
+		requestMaxRetries: 0,
 	});
 }
 
@@ -572,10 +573,17 @@ function delay(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function safeFailureCode(error) {
+	const detail = error instanceof Error ? error.message : "";
+	return /^agent_worker_[a-z0-9_]+(?::[a-z0-9_]+)*(?::\d+)?$/u.test(detail)
+		? detail
+		: "unknown_error";
+}
+
 main().then(
 	(code) => { process.exitCode = code; },
-	() => {
-		process.stderr.write("agent_worker_memory_benchmark_failed\n");
+	(error) => {
+		process.stderr.write(`agent_worker_memory_benchmark_failed:${safeFailureCode(error)}\n`);
 		process.exitCode = 1;
 	},
 );

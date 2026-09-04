@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for runtime/context changes"}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context assembly and request-shape contract"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime diagnostics and redaction requirements"}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Redaction boundary for runtime policy and diagnostics"}
-{"file": ".trellis/tasks/06-07-codex-alignment-p15a-runtime-environment-contract/research/current-environment-context-shape.md", "reason": "Current environment context pipeline research"}

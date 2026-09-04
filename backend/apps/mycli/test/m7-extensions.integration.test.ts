@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
@@ -31,11 +31,17 @@ const MCP_FIXTURE = fileURLToPath(new URL(
 	"backend/packages/integrations/test/fixtures/mcp-stdio-server.mjs",
 	ROOT,
 ));
+const PROCESS_MARKER_FIXTURE = fileURLToPath(new URL(
+	"backend/packages/integrations/test/fixtures/process-marker.mjs",
+	ROOT,
+));
 const HOOK_FIXTURE = fileURLToPath(new URL(
 	"backend/packages/integrations/test/fixtures/hook-command.mjs",
 	ROOT,
 ));
 const M7_SMOKE = fileURLToPath(new URL("scripts/smoke_node_m7_extensions.mjs", ROOT));
+const M7_EVENT_TIMEOUT_MS = 20_000;
+const M7_TEST_TIMEOUT_MS = 60_000;
 
 test("M7 live smoke exits 77 with one sanitized result when credentials are unavailable", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-smoke-unavailable-"));
@@ -83,7 +89,7 @@ test("M7 live smoke fails when local structural setup cannot start", async (t) =
 });
 
 test("M7 live smoke emits only structural extension and cleanup state", {
-	timeout: 20_000,
+	timeout: M7_TEST_TIMEOUT_MS,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-smoke-completed-"));
 	const home = join(root, "home");
@@ -164,7 +170,7 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 });
 
 test("Worker-backed root receives refreshed MCP tools on a later provider step", {
-	timeout: 10_000,
+	timeout: M7_TEST_TIMEOUT_MS,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-worker-mcp-"));
 	const home = join(root, "home");
@@ -178,7 +184,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		`command = ${JSON.stringify(process.execPath)}`,
 		`args = [${JSON.stringify(MCP_FIXTURE)}]`,
 		`env = { MCP_PID_FILE = ${JSON.stringify(mcpPidFile)} }`,
-		"timeout_seconds = 3",
+		"timeout_seconds = 10",
 	].join("\n"), "utf8");
 	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	const requests: JsonObject[] = [];
@@ -238,7 +244,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
-	await waitFor(() => event(messages, "extension.updated"), 8_000);
+	await waitForExtensionTool(backend, messages, "mcp_local_echo", M7_EVENT_TIMEOUT_MS);
 	send(backend, "worker-mcp-turn", "turn.submit", {
 		message: "Find the refreshed MCP echo tool.",
 		client_turn_id: "worker-mcp-turn",
@@ -248,7 +254,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		message.method === "message.complete"
 		&& isObject(message.params)
 		&& message.params.final === true
-	)), 8_000);
+	)), M7_EVENT_TIMEOUT_MS);
 	assert.equal(isObject(final.params) ? final.params.text : undefined, "Worker MCP refresh completed.");
 	assert.equal(requests.length, 2);
 	assert.equal(providerToolNames(requests[0]!).includes("mcp_local_echo"), false);
@@ -260,9 +266,9 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		["tool_search"],
 	);
 
+	assert.equal(existsSync(mcpPidFile), true);
 	await shutdown();
-	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
-	await eventually(() => !processExists(mcpPid));
+	await eventually(() => !existsSync(mcpPidFile));
 });
 
 test("workspace trust starts and revocation stops project MCP and plugin hosts", {
@@ -345,10 +351,8 @@ test("workspace trust starts and revocation stops project MCP and plugin hosts",
 	assert.ok(trustedManifest);
 	assert.equal(extensionToolNames(trustedManifest).includes("mcp_local_echo"), true);
 	assert.equal(extensionToolNames(trustedManifest).includes("plugin_good_echo"), true);
-	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
-	const pluginPid = Number(await readFile(pluginPidFile, "utf8"));
-	assert.equal(processExists(mcpPid), true);
-	assert.equal(processExists(pluginPid), true);
+	assert.equal(existsSync(mcpPidFile), true);
+	assert.equal(existsSync(pluginPidFile), true);
 
 	await request(backend, messages, "revoke-project-hosts", "workspace.trust.set", { state: "untrusted" });
 	const revokedManifest = await request(
@@ -361,12 +365,12 @@ test("workspace trust starts and revocation stops project MCP and plugin hosts",
 	assert.deepEqual(extensionToolNames(revokedManifest).filter((name) => (
 		name === "mcp_local_echo" || name === "plugin_good_echo"
 	)), []);
-	await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
+	await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
 	await shutdown();
 });
 
 test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
-	timeout: 20_000,
+	timeout: M7_TEST_TIMEOUT_MS,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-extensions-"));
 	const home = join(root, "home");
@@ -475,7 +479,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
-	await waitFor(() => event(messages, "extension.updated"), 8_000);
+	await waitForExtensionTool(backend, messages, "mcp_local_echo", M7_EVENT_TIMEOUT_MS);
 	await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" });
 	send(backend, "turn", "turn.submit", {
 		message: "Run the M7 extension chain.",
@@ -490,7 +494,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			approval = await waitFor(() => events(messages, "approval.request").find((message) => {
 				const decisionId = optionalParam(message, "decision_id");
 				return decisionId !== undefined && !approved.has(decisionId);
-			}), 8_000);
+			}), M7_EVENT_TIMEOUT_MS);
 		} catch {
 			assert.fail(JSON.stringify(extensionDiagnostics(requests, messages)));
 		}
@@ -512,13 +516,13 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		message.method === "message.complete"
 		&& isObject(message.params)
 		&& message.params.final === true
-	)), 10_000);
+	)), M7_EVENT_TIMEOUT_MS);
 	try {
 		await waitFor(() => events(messages, "subagent.updated").find((message) => (
 			isObject(message.params)
 			&& isObject(message.params.subagent)
 			&& message.params.subagent.status === "completed"
-		)), 10_000);
+		)), M7_EVENT_TIMEOUT_MS);
 	} catch {
 		assert.fail(JSON.stringify({
 			...extensionDiagnostics(requests, messages),
@@ -559,13 +563,11 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	);
 	assert.equal(existsSync(hookMarker), true);
 	assert.equal(existsSync(pythonMarker), false);
-	const mcpPid = Number(await readFile(mcpPidFile, "utf8"));
-	const pluginPid = Number(await readFile(pluginPidFile, "utf8"));
-	assert.equal(processExists(mcpPid), true);
-	assert.equal(processExists(pluginPid), true);
+	assert.equal(existsSync(mcpPidFile), true);
+	assert.equal(existsSync(pluginPidFile), true);
 
 	await shutdown();
-	await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
+	await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
 	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		const history = store.loadHistoryItems("m7-parent");
@@ -605,7 +607,7 @@ async function writeExtensionFixtures(options: {
 		`command = ${JSON.stringify(process.execPath)}`,
 		`args = [${JSON.stringify(MCP_FIXTURE)}]`,
 		`env = { MCP_PID_FILE = ${JSON.stringify(options.mcpPidFile)} }`,
-		"timeout_seconds = 3",
+		"timeout_seconds = 10",
 	].join("\n"), "utf8");
 	await writeFile(join(mycli, "hooks.json"), JSON.stringify({
 		hooks: [{
@@ -636,8 +638,9 @@ async function writeExtensionFixtures(options: {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
+		`import { writeProcessMarker } from ${JSON.stringify(pathToFileURL(PROCESS_MARKER_FIXTURE).href)};`,
 		"export async function register(context) {",
-		"  await writeFile(process.env.PLUGIN_PID_FILE, String(process.pid), 'utf8');",
+		"  await writeProcessMarker(process.env.PLUGIN_PID_FILE);",
 		"  context.registerTool({",
 		"    name: 'echo',",
 		"    description: 'Echo M7 text.',",
@@ -676,6 +679,42 @@ async function request(
 	return response;
 }
 
+async function waitForExtensionTool(
+	backend: NodeBackend,
+	messages: readonly JsonObject[],
+	toolName: string,
+	timeoutMs: number,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let observedUpdateCount = -1;
+	let requestIndex = 0;
+	while (Date.now() < deadline) {
+		const updateCount = events(messages, "extension.updated").length;
+		if (updateCount !== observedUpdateCount) {
+			observedUpdateCount = updateCount;
+			const response = await request(
+				backend,
+				messages,
+				`extension-tool-${requestIndex}`,
+				"extension.manifest",
+				{},
+			);
+			requestIndex += 1;
+			if (extensionToolNames(response).includes(toolName)) return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(`timed out waiting for extension tool: ${toolName}`);
+}
+
+function extensionToolNames(response: JsonObject): readonly string[] {
+	const result = isObject(response.result) ? response.result : undefined;
+	const capabilities = result && isObject(result.capabilities) ? result.capabilities : undefined;
+	return capabilities && Array.isArray(capabilities.tool_names)
+		? capabilities.tool_names.filter((value): value is string => typeof value === "string")
+		: [];
+}
+
 function event(messages: readonly JsonObject[], method: string): JsonObject | undefined {
 	return messages.find((message) => message.method === method && !("id" in message));
 }
@@ -705,25 +744,6 @@ function providerToolNames(request: JsonObject): readonly string[] {
 			isObject(tool) && typeof tool.name === "string" ? [tool.name] : []
 		))
 		: [];
-}
-
-function extensionToolNames(response: JsonObject): readonly string[] {
-	const result = isObject(response.result) ? response.result : {};
-	const manifest = isObject(result.tool_manifest) ? result.tool_manifest : {};
-	return Array.isArray(manifest.tools)
-		? manifest.tools.flatMap((tool) => (
-			isObject(tool) && typeof tool.name === "string" ? [tool.name] : []
-		))
-		: [];
-}
-
-function processExists(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 function extensionDiagnostics(

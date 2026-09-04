@@ -732,7 +732,7 @@ limited to retired tools being absent from the Node M3 exposure.
 - [ ] **Step 4: Run focused app and parity tests**
 
 ```bash
-npm run test --workspace @mycli/app
+npm run test --workspace @cosmos2023/mycli
 uv run pytest tests/integration/test_node_runtime_m3_parity.py -q
 ```
 

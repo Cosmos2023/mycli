@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TUI_KEYMAP_ACTIONS } from "@mycli/contracts";
 import { setTimeout } from "node:timers/promises";
-import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, relative } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Terminal } from "../src/tui-core/terminal.ts";
 import { Editor } from "../src/tui-core/components/editor.ts";
 import { Text } from "../src/tui-core/components/text.ts";
 import { CURSOR_MARKER, TUI, visibleWidth } from "../src/tui-core/tui.ts";
-import { spawnSync } from "node:child_process";
 import { BashExecutionComponent, FileChangeComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, planImplementationContextUsageLabel, PlanImplementationSelectorComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
 import { ApprovalSelectorComponent } from "../src/components/approval-selector.ts";
@@ -1386,7 +1387,7 @@ test("mycli shell stays width safe at supported accessibility widths", () => {
 
 test("footer renders one quiet idle row with status aligned right", () => {
 	const lines = new FooterComponent({
-		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
+		cwd: join(homedir(), "Desktop", "mycli", ".worktrees", "mycli-termcn-tui-polish"),
 		gitBranch: "feature/tui",
 		sessionName: "现在都有哪些 skill 呢",
 		provider: "deepseek/chat_completions",
@@ -1407,7 +1408,7 @@ test("footer renders one quiet idle row with status aligned right", () => {
 	assert.doesNotMatch(output, /tab follow-up/);
 	assert.match(output, /11\.3% ctx/);
 	assert.match(output, /deepseek-v4-flash/);
-	assert.match(stripAnsi(lines[0] ?? ""), /^~\/Desktop\/mycli\/\.worktrees\/mycli-termcn-tui-polish/);
+	assert.match(stripAnsi(lines[0] ?? ""), /^~[\\/]Desktop[\\/]mycli[\\/]\.worktrees[\\/]mycli-termcn-tui-polish/);
 	assert.match(stripAnsi(lines[0] ?? ""), /11\.3% ctx │ deepseek-v4-flash │ • medium$/);
 	assert.equal(visibleWidth(lines[0] ?? ""), 120);
 	assert.doesNotMatch(output, /deepseek\/chat_completions|trust trusted|mode default|Idle|64k|R53k/);
@@ -1415,7 +1416,7 @@ test("footer renders one quiet idle row with status aligned right", () => {
 
 test("footer statusbar modes preserve hierarchy across terminal widths", () => {
 	const data = {
-		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-agent-worker-pool",
+		cwd: join(homedir(), "Desktop", "mycli", ".worktrees", "mycli-agent-worker-pool"),
 		sessionName: "优化 TUI 显示",
 		model: "gpt-5.6-sol",
 		reasoningLevel: "high",
@@ -1504,7 +1505,7 @@ test("footer keeps exceptional state without restoring permanent action hints", 
 
 test("footer drops git branch before session title on narrow terminals", () => {
 	const data = {
-		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
+		cwd: join(homedir(), "Desktop", "mycli", ".worktrees", "mycli-termcn-tui-polish"),
 		gitBranch: "feature/a-very-long-branch",
 		sessionName: "修复 TUI 底栏",
 		model: "deepseek-v4-flash",
@@ -1530,7 +1531,7 @@ test("footer drops git branch before session title on narrow terminals", () => {
 
 test("footer keeps compact shape width safe", () => {
 	const footer = new FooterComponent({
-		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
+		cwd: join(homedir(), "Desktop", "mycli", ".worktrees", "mycli-termcn-tui-polish"),
 		gitBranch: "feature/a-very-long-branch-name-that-must-not-break-layout",
 		sessionName: "a long session name",
 		provider: "deepseek",
@@ -1557,7 +1558,7 @@ test("footer keeps compact shape width safe", () => {
 	const lines = footer.render(64);
 	const output = stripAnsi(lines.join("\n"));
 	assert.equal(lines.length, 2);
-	assert.match(output, /^~\/\.\.\.\//m);
+	assert.match(output, /^~[\\/]\.\.\.[\\/]/m);
 	assert.match(output, /a long session name/);
 	assert.match(output, /91\.2% ctx/);
 	assert.match(output, /status with control chars/);
@@ -8670,18 +8671,17 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 		"pi" + "-ai",
 		"pi" + "-coding",
 	].join("|");
-	const result = spawnSync(
-		"rg",
-		[
-			forbidden,
-			"src",
-			"test",
-			"-n",
-		],
-		{ cwd: new URL("..", import.meta.url), encoding: "utf8" },
-	);
-	assert.equal(result.status, 1, result.stdout + result.stderr);
-	assert.equal(result.stdout, "");
+	const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+	const forbiddenPattern = new RegExp(forbidden, "u");
+	const violations = ["src", "test"].flatMap((directory) => {
+		const root = join(packageRoot, directory);
+		return readdirSync(root, { recursive: true, withFileTypes: true })
+			.filter((entry) => entry.isFile())
+			.map((entry) => join(entry.parentPath, entry.name))
+			.filter((path) => forbiddenPattern.test(readFileSync(path, "utf8")))
+			.map((path) => relative(packageRoot, path));
+	});
+	assert.deepEqual(violations, []);
 });
 
 test("gateway resolves interrupted inputs after terminal confirmation and durable queue cleanup", () => {

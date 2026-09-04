@@ -64,13 +64,15 @@ test("scans at most 200 newest topics and reads only the first 30 frontmatter li
 	const fixture = await createFixture(t);
 	const memoryDir = await fixture.store.directory();
 	for (let index = 0; index < 201; index += 1) {
+		const path = join(memoryDir, `topic-${String(index).padStart(3, "0")}.md`);
 		await writeFile(
-			join(memoryDir, `topic-${String(index).padStart(3, "0")}.md`),
+			path,
 			index === 200
 				? ["---", ...Array.from({ length: 29 }, () => "ignored: value"), "type: user", "---", "body"].join("\n")
 				: "---\nname: topic\ndescription: desc\ntype: project\n---\nbody\n",
 			"utf8",
 		);
+		await utimes(path, 1_700_000_000 + index, 1_700_000_000 + index);
 	}
 
 	const memories = await fixture.store.scan();

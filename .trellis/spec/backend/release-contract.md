@@ -30,7 +30,7 @@ the registry.
 
 * Root `package.json`: `private: true`.
 * Public application identity: npm package `@cosmos2023/mycli` with
-  `bin.mycli = "dist/cli.js"`.
+  `bin.mycli = "dist/cli.js"`. The package basename and installed command must not drift together.
 * Every published manifest: the coordinated `version`, `private: false`, and
   `publishConfig.access: "public"`.
 * Every vendored workspace manifest: the coordinated `version`, `private: true`, and no
@@ -107,7 +107,8 @@ the registry.
 * Unit: semantic version parsing, manifest/lockfile transformation, publisher argument gates,
   registry 404 classification, credential redaction, and Windows PE validation.
 * Repository contract: seven release manifests are public, nine vendored manifests are private,
-  all are coordinated, and release workflow gates occur before publication.
+  all are coordinated, the application package and `mycli` bin identities are exact, and release
+  workflow gates occur before publication.
 * Package smoke: no `src/`, `test/`, TypeScript config, Python runtime, or embedded generic ripgrep;
   all vendored workspace files are present, and release CI additionally requires the Windows
   sandbox helper inside the app artifact.

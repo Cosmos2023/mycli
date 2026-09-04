@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session DB schema, lineage, migration, and search contracts"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor must be read-only, actionable, and test-backed"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Doctor diagnostics cross service, storage layout, SQLite schema, and CLI rendering boundaries"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing doctor diagnostic patterns and avoid duplicate session schema constants when possible"}
-{"file": ".trellis/tasks/05-31-05-31-session-state-recovery-hardening/research/session-state-gap.md", "reason": "Recorded existing session/recovery coverage and diagnostic gaps"}

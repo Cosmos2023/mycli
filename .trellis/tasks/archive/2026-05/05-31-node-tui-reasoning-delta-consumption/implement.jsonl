@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index routes runtime/TUI gateway contract changes."}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Authoritative cross-layer event and reducer contract for typed runtime notifications."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Shared cross-layer thinking guide for event contract changes."}
-{"file": ".trellis/tasks/05-31-node-tui-reasoning-delta-consumption/research/node-tui-reasoning-delta-notes.md", "reason": "Task research and implementation constraints for reasoning/thinking delta consumption."}

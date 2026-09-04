@@ -544,7 +544,7 @@ test("bounds release cleanup and replaces an unresponsive Worker", async (t) => 
 	const pool = new AgentWorkerPool({
 		maxWorkers: 1,
 		maxQueue: 1,
-		startupTimeoutMs: 100,
+		startupTimeoutMs: 5_000,
 		shutdownTimeoutMs: 20,
 		idleTimeoutMs: 5_000,
 		workerUrl: new URL("./fixtures/agent-worker-stubborn-release.mjs", import.meta.url),

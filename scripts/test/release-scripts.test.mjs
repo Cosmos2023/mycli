@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
+import Database from "better-sqlite3";
 import {
 	APPLICATION_RELEASE_PACKAGE,
 	RELEASE_PACKAGES,
@@ -512,6 +513,7 @@ test("release workflow keeps publication behind the release gates", async () => 
 	assert.match(workflow, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/u);
 	assert.match(workflow, /release:verify -- --tag/u);
 	assert.match(workflow, /release:compatibility/u);
+	assert.match(workflow, /apparmor_restrict_unprivileged_userns=0/u);
 	assert.match(workflow, /smoke:package -- --all-platforms --require-windows-helper/u);
 	assert.match(workflow, /smoke:release-compatibility/u);
 	assert.match(workflow, /release-evidence\/ubuntu-packed\.json/u);
@@ -589,6 +591,64 @@ test("Dependabot checks only the exact pi-ai workspace pin every day", async () 
 	const providerPin = providerManifest.dependencies["@earendil-works/pi-ai"];
 	assert.match(appPin, /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u);
 	assert.equal(providerPin, appPin);
+});
+
+test("cross-platform long-history gate seeds the current session schema", async () => {
+	const workflow = await readFile(
+		new URL("../../.github/workflows/cross-platform.yml", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		workflow,
+		/benchmark:long-history -- --profile compact_stress --storage-schema v12/u,
+	);
+
+	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v12-"));
+	try {
+		await mkdir(join(root, "home"), { recursive: true });
+		await mkdir(join(root, "workspace"), { recursive: true });
+		const script = fileURLToPath(new URL("../benchmark_long_history_resume.mjs", import.meta.url));
+		const result = spawnSync(process.execPath, [
+			"--conditions=mycli-source",
+			"--import",
+			"tsx",
+			"--expose-gc",
+			script,
+			"--profile",
+			"blob_smoke",
+			"--storage-schema",
+			"v12",
+			"--seed-only",
+			"--fixture-root",
+			root,
+		], { encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(typeof JSON.parse(result.stdout).seedMilliseconds, "number");
+
+		const database = new Database(join(root, "home", ".mycli", "sessions.db"), {
+			readonly: true,
+		});
+		try {
+			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 12);
+			assert.equal(database.prepare(`
+				SELECT COUNT(*) FROM transcript_events WHERE session_id = 'target'
+			`).pluck().get(), 195);
+			assert.equal(database.prepare(`
+				SELECT COUNT(*) FROM transcript_events
+				WHERE session_id = 'target' AND event_type = 'compaction'
+			`).pluck().get(), 3);
+			assert.equal(database.prepare(`
+				SELECT COUNT(*) FROM sqlite_master
+				WHERE type = 'table' AND name IN (
+					'conversation_messages', 'history_items', 'turn_rollouts', 'session_summaries'
+				)
+			`).pluck().get(), 0);
+		} finally {
+			database.close();
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("ripgrep package staging reports bounded failures without a Node stack", () => {

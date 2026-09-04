@@ -1,7 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index and active guideline discovery for provider/cache changes."}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Canonical context/cache-class, request-shape, diagnostics, and provider wire-only hint contract."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor, trace, redaction, testing, and quality requirements relevant to diagnostics."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis thinking-guide index."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "P2 spans request shape, adapters, clients, trace, doctor, and smoke boundaries."}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "P2 should reuse existing request-shape, diagnostics, and provider abstractions."}
-{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p2/research/provider-wire-cache-policy.md", "reason": "Task-specific provider wire cache policy chain map and design direction."}

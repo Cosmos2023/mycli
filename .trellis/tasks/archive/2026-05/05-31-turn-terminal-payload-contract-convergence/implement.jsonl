@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines terminal turn event ordering, schema, and reducer compatibility expectations."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Defines contract/doctor quality expectations and test requirements."}
-{"file": ".trellis/tasks/05-31-turn-terminal-payload-contract-convergence/research/current-state.md", "reason": "Captures current turn.completed schema drift and proposed focused slice."}

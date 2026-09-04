@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Defines cache classes, request-fragment metadata preservation, trace redaction, and required tests for context/request-shape work."}
-{"file": "docs/hermes-parity-roadmap.md", "reason": "Roadmap source of truth for slice order, acceptance, completion log, and guardrails."}
-{"file": ".trellis/tasks/06-04-06-04-provider-cache-policy-p1/prd.md", "reason": "Current slice requirements and acceptance criteria."}
-{"file": ".trellis/tasks/06-04-06-04-provider-cache-policy-p1/notes.md", "reason": "Research notes from current request-shape/context diagnostics implementation."}

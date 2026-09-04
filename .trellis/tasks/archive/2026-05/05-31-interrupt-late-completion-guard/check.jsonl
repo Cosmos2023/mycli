@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Check emitted events, manifest schemas, and reducer behavior against the documented contract."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check test and diagnostic requirements for runtime/TUI changes."}
-{"file": ".trellis/tasks/05-31-interrupt-late-completion-guard/prd.md", "reason": "Acceptance criteria for the late-completion guard slice."}

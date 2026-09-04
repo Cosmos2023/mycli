@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify skill diagnostics stay bounded and redacted"}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify skill context persistence and cache class behavior"}
-{"file": ".trellis/tasks/06-07-codex-alignment-p11-skill-context-injection/prd.md", "reason": "Verify implementation against P11 acceptance criteria"}

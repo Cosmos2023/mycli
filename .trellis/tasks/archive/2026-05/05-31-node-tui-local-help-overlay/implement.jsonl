@@ -1,2 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines local TUI interaction expectations and runtime/gateway boundary constraints."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Guides bounded local UI changes and reuse of existing overlay patterns."}

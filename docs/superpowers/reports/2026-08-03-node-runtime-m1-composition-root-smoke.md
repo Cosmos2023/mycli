@@ -35,7 +35,7 @@ provider request.
 | `npm run build` | Passed; contracts, TUI, then app |
 | `npm run lint` | Passed |
 | `npm run typecheck` | Passed for all three workspaces |
-| `npm test --workspace @mycli/app` | 41 passed |
+| `npm test --workspace @cosmos2023/mycli` | 41 passed |
 | Handshake and gateway-client focused tests | 16 passed |
 | Real-process lifecycle integration | 6 passed |
 | `npm test` contracts workspace | 11 passed |
@@ -58,7 +58,7 @@ node apps/mycli/dist/cli.js --help
 node apps/mycli/dist/cli.js --version
 ```
 
-The version output was `0.1.0`. `npm pack --workspace @mycli/app --dry-run --json --cache
+The version output was `0.1.0`. `npm pack --workspace @cosmos2023/mycli --dry-run --json --cache
 .npm-cache` reported 7 files, 4629 packed bytes, and 15777 unpacked bytes:
 
 ```text

@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Verify backend layering and dependency direction remain intact."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify tests and quality gates are adequate."}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify diagnostics do not leak secrets or model-visible state."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify CLI-to-service-to-storage behavior is coherent."}

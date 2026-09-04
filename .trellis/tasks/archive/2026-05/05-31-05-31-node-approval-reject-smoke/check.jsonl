@@ -1,2 +1,0 @@
-{"file": ".trellis/tasks/05-31-05-31-node-approval-reject-smoke/prd.md", "reason": "Verify smoke against acceptance criteria"}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify rejection state follows gateway contract"}

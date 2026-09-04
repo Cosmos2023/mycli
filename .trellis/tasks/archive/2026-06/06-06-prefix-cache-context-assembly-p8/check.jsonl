@@ -1,6 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for quality verification."}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context/cache/recovery diagnostics contracts for P8 verification."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor and diagnostics quality requirements."}
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Trace/log redaction requirements."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Shared verification thinking guides."}
-{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p8/research/recovery-observability-surfaces.md", "reason": "P8 research requirements for verification."}

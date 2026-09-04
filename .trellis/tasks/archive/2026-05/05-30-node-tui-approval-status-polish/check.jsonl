@@ -1,4 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify UI remains aligned with approval/status payload contract"}
-{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer verification checklist for TUI state rendering"}
-{"file": ".trellis/tasks/05-30-node-tui-approval-status-polish/research/node-tui-approval-status-polish.md", "reason": "Acceptance context for approval/status presentation tests"}

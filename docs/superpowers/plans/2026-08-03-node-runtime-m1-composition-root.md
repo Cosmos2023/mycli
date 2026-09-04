@@ -387,7 +387,7 @@ Run:
 
 ```bash
 node --import tsx --test apps/mycli/test/python-sidecar.test.ts
-npm run typecheck --workspace @mycli/app
+npm run typecheck --workspace @cosmos2023/mycli
 ```
 
 Expected: all focused tests pass.
@@ -491,8 +491,8 @@ The package `bin` points to `dist/cli.js`; production never points to source or 
 Run:
 
 ```bash
-npm test --workspace @mycli/app
-npm run typecheck --workspace @mycli/app
+npm test --workspace @cosmos2023/mycli
+npm run typecheck --workspace @cosmos2023/mycli
 ```
 
 Expected: all app tests pass, including the real child-process fixture.
@@ -552,7 +552,7 @@ Root scripts include:
 
 ```json
 {
-  "build": "npm run build --workspace @mycli/contracts && npm run build --workspace mycli-shell-tui && npm run build --workspace @mycli/app",
+  "build": "npm run build --workspace @mycli/contracts && npm run build --workspace mycli-shell-tui && npm run build --workspace @cosmos2023/mycli",
   "pretest": "npm run build"
 }
 ```
@@ -568,7 +568,7 @@ Run:
 npm run build
 node apps/mycli/dist/cli.js --help
 node apps/mycli/dist/cli.js --version
-npm pack --workspace @mycli/app --dry-run
+npm pack --workspace @cosmos2023/mycli --dry-run
 ```
 
 Expected: build succeeds; help/version exit zero without Python; the package contains compiled JS,
@@ -653,7 +653,7 @@ existing macOS, Linux, and Windows matrix. Keep Python regression and shell life
 Run:
 
 ```bash
-npm test --workspace @mycli/app
+npm test --workspace @cosmos2023/mycli
 uv run pytest tests/unit/cli/node_tui tests/unit/cli/test_sidecar.py tests/integration/test_node_tui_gateway.py -q
 npm run typecheck
 uv run ruff check src/mycli tests
@@ -711,7 +711,7 @@ Expected: supported-version gates pass with existing documented skips only.
 Run:
 
 ```bash
-npm pack --workspace @mycli/app --dry-run
+npm pack --workspace @cosmos2023/mycli --dry-run
 ```
 
 Expected: compiled CLI and required package metadata are present; source TypeScript, Python source,

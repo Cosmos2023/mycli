@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline index for relevant active contracts."}
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context metadata, reference fencing, and bounded diagnostics contract."}
-{"file": ".trellis/spec/backend/tool-manifest-contract.md", "reason": "Subagent contributed tools and tool exposure metadata must remain manifest-compatible."}
-{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer and code reuse thinking guide index for runtime/service/domain changes."}
-{"file": ".trellis/tasks/06-04-subagent-context-sharing-fork-p1/research/subagent-context-fork-research.md", "reason": "Task-specific research on current subagent implementation and P1 design."}

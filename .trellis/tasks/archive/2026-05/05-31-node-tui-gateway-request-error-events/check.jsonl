@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify gateway.error fits event envelope and reducer contract."}
-{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify unexpected errors do not escape request handling."}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify the required test coverage and checks are present."}

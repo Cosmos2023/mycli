@@ -52,11 +52,14 @@ test("runtime workspaces expose deterministic build scripts", () => {
 });
 
 test("app production bin targets compiled JavaScript", () => {
+	const applicationPackageName = "@cosmos2023/mycli";
 	const manifest = readManifest(packages[0].root);
+	const rootManifest = readManifest(ROOT);
 
-	assert.equal(manifest.name, "@cosmos2023/mycli");
+	assert.equal(manifest.name, applicationPackageName);
 	assert.deepEqual(manifest.bin, { mycli: "dist/cli.js" });
 	assert.equal(manifest.scripts?.prepack, "node scripts/vendor-internal-packages.mjs");
+	assert.equal(rootManifest.dependencies?.[applicationPackageName], `^${manifest.version}`);
 	assertRuntimeMetadataUsesDist(manifest);
 });
 
@@ -171,6 +174,8 @@ test("cross-platform CI has no Python reference or wheel gate", () => {
 	}
 	assert.match(workflow, /^ {2}node-m8-gate:$/mu);
 	assert.match(workflow, /^ {2}windows-sandbox-helper:$/mu);
+	assert.match(workflow, /os: \[ubuntu-latest, macos-latest, windows-2022\]/u);
+	assert.match(workflow, /apparmor_restrict_unprivileged_userns=0/u);
 });
 
 test("compiled CLI does not load the backend implementation on the supervisor thread", () => {
@@ -256,6 +261,8 @@ test("packed CLI smoke vendors internal workspaces into the application tarball"
 	}
 	assert.equal(root.scripts?.["smoke:package"], "node scripts/smoke_packed_cli.mjs");
 	assert.match(smoke, /APPLICATION_RELEASE_PACKAGE\.name/u);
+	assert.match(smoke, /APPLICATION_PACKAGE_MODULE_PATH/u);
+	assert.doesNotMatch(smoke, /node_modules\/@cosmos2023\/app/u);
 	assert.match(smoke, /VENDORED_WORKSPACE_PACKAGES/u);
 	assert.match(smoke, /FLAGS\.has\("--all-platforms"\)/u);
 	assert.match(smoke, /name === CURRENT_PLATFORM_PACKAGE/u);

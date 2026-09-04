@@ -1,2 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify request errors remain distinct from gateway.error event handling."}
-{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify rejected requests are surfaced and bounded."}

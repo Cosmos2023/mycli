@@ -33,7 +33,7 @@ const PLATFORM_PACKAGES = APP_ONLY
 	: (PACK_ALL_PLATFORMS
 		? ALL_PLATFORM_PACKAGES
 		: ALL_PLATFORM_PACKAGES.filter(({ name }) => name === CURRENT_PLATFORM_PACKAGE));
-const INSTALLED_APPLICATION_ROOT = `./node_modules/${APPLICATION_RELEASE_PACKAGE.name}`;
+const APPLICATION_PACKAGE_MODULE_PATH = `./node_modules/${APPLICATION_RELEASE_PACKAGE.name}`;
 const INSTALLED_APPLICATION_PATH = [
 	"node_modules",
 	...APPLICATION_RELEASE_PACKAGE.name.split("/"),
@@ -44,7 +44,7 @@ import { createRequire } from "node:module";
 import process from "node:process";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { startNodePtyTransport } from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/tools/dist/index.js";
+import { startNodePtyTransport } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/tools/dist/index.js";
 
 const require = createRequire(import.meta.url);
 const nodePtyPackage = require.resolve("node-pty/package.json");
@@ -109,7 +109,7 @@ import {
 	PluginProcessHost,
 	SkillRegistry,
 	SubagentController,
-} from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/integrations/dist/index.js";
+} from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/integrations/dist/index.js";
 
 assert.equal(typeof HookAllowlistStore, "function");
 assert.equal(typeof McpClient, "function");
@@ -119,7 +119,7 @@ assert.equal(typeof SubagentController, "function");
 assert.ok(import.meta.resolve("@anthropic-ai/sdk"));
 assert.ok(import.meta.resolve("@modelcontextprotocol/sdk/server/mcp.js"));
 const integrationsEntry = fileURLToPath(new URL(
-	"${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/integrations/dist/index.js",
+	"${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/integrations/dist/index.js",
 	import.meta.url,
 ));
 const workerBootstrap = join(dirname(integrationsEntry), "plugins", "worker-bootstrap.js");
@@ -135,8 +135,8 @@ import {
 	BUILTIN_MODEL_CATALOG,
 	builtinModelReasoningDefaults,
 	listProviderProfiles,
-} from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/config/dist/index.js";
-import { ProviderRegistry } from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/providers/dist/index.js";
+} from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/config/dist/index.js";
+import { ProviderRegistry } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/providers/dist/index.js";
 
 const curated = [
 	["openrouter", "openrouter/auto", "medium"],
@@ -382,7 +382,7 @@ import {
 	RIPGREP_VERSION,
 	ripgrepOutputPath,
 	ripgrepPlatformKey,
-} from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/tools/dist/index.js";
+} from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/tools/dist/index.js";
 
 const require = createRequire(import.meta.url);
 const target = ripgrepPlatformKey();
@@ -409,9 +409,9 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
-import { fingerprintSubmission } from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/core/dist/index.js";
-import { openRuntimeSessionStore } from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/storage/dist/index.js";
-import { startNodeBackend } from "${INSTALLED_APPLICATION_ROOT}/dist/node-runtime/node-backend.js";
+import { fingerprintSubmission } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/core/dist/index.js";
+import { openRuntimeSessionStore } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/storage/dist/index.js";
+import { startNodeBackend } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node-runtime/node-backend.js";
 
 const homeDir = process.env.HOME;
 const workspaceRoot = process.cwd();
@@ -730,11 +730,11 @@ try {
 	const installedSmoke = sourceSmoke
 		.replace(
 			'../backend/apps/mycli/dist/node-runtime/node-backend.js',
-			`${INSTALLED_APPLICATION_ROOT}/dist/node-runtime/node-backend.js`,
+			`${APPLICATION_PACKAGE_MODULE_PATH}/dist/node-runtime/node-backend.js`,
 		)
 		.replace(
 			'from "@mycli/contracts"',
-			`from "${INSTALLED_APPLICATION_ROOT}/dist/node_modules/@mycli/contracts/dist/index.js"`,
+			`from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/contracts/dist/index.js"`,
 		);
 	if (installedSmoke === sourceSmoke
 		|| installedSmoke.includes('from "@mycli/contracts"')

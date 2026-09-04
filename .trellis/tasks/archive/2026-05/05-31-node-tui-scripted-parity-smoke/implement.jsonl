@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for required contract and quality docs"}
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime-to-Node-TUI event and scripted smoke contract"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Testing and dependency verification expectations"}
-{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer and reuse thinking guide index"}
-{"file": ".trellis/tasks/05-31-node-tui-scripted-parity-smoke/research/scripted-client-current-state.md", "reason": "Current scripted-client test shape and assertions"}

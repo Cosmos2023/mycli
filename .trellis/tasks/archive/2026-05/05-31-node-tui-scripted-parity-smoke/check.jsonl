@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify smoke assertions match runtime/TUI reducer contract"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify test quality and dependency handling"}
-{"file": ".trellis/tasks/05-31-node-tui-scripted-parity-smoke/research/scripted-client-current-state.md", "reason": "Verify implementation covers researched smoke path"}

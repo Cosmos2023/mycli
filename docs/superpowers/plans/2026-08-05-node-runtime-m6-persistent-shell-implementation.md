@@ -687,7 +687,7 @@ projector before any model-visible shell capability is enabled.
 ```bash
 npm run test --workspace @mycli/tools -- --test-name-pattern="Shell|WriteStdin|legacy"
 npm run test --workspace @mycli/runtime -- --test-name-pattern="tool execution|approval"
-npm run test --workspace @mycli/app -- --test-name-pattern="backend"
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="backend"
 npm run typecheck
 ```
 
@@ -815,7 +815,7 @@ Do not add a new component.
 ```bash
 npm run test --workspace @mycli/storage -- --test-name-pattern="shell|transcript"
 npm run test --workspace @mycli/runtime -- --test-name-pattern="shell lifecycle"
-npm run test --workspace @mycli/app -- --test-name-pattern="shell|generation"
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="shell|generation"
 npm run test --workspace mycli-shell-tui -- --test-name-pattern="shell|background terminal"
 npm run contracts:check
 npm run typecheck
@@ -927,7 +927,7 @@ return this.#approveAndClaimOnce(pending, input);
 npm run test --workspace @mycli/config -- --test-name-pattern="exec policy"
 npm run test --workspace @mycli/tools -- --test-name-pattern="command policy|proposal|approval"
 npm run test --workspace @mycli/runtime -- --test-name-pattern="approval"
-npm run test --workspace @mycli/app -- --test-name-pattern="approval"
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="approval"
 npm run test --workspace mycli-shell-tui -- --test-name-pattern="approval"
 npm run typecheck
 ```
@@ -1061,7 +1061,7 @@ during an in-flight provider request.
 ```bash
 npm run test --workspace @mycli/tools -- --test-name-pattern="execution policy|environment|sandbox"
 npm run test --workspace @mycli/runtime -- --test-name-pattern="execution policy"
-npm run test --workspace @mycli/app -- --test-name-pattern="trust|permission|shell"
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="trust|permission|shell"
 npm run typecheck
 npm run lint
 ```

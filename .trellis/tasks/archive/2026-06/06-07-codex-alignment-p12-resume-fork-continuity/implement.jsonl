@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context/request-shape and compact boundary contracts for P12"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor/trace redaction and diagnostics rules for continuity explainability"}
-{"file": ".trellis/tasks/06-07-codex-alignment-p12-resume-fork-continuity/prd.md", "reason": "P12 resume/fork continuity and compact boundary guard requirements"}
-{"file": ".trellis/tasks/06-07-codex-alignment-p12-resume-fork-continuity/research/resume-fork-current-state.md", "reason": "Existing resume/fork and compaction coverage map"}

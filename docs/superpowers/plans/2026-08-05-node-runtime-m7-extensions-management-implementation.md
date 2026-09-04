@@ -11,7 +11,7 @@ retire Python without redesigning providers, extensions, subagents, setup, or di
 
 **Architecture:** Add Anthropic to the existing provider-neutral stream and create one
 `@mycli/integrations` package for skills, MCP, hooks, Plugin API v2, and subagent control. Keep
-`@mycli/app` as the composition/management root and inject neutral extension contracts into
+`@cosmos2023/mycli` as the composition/management root and inject neutral extension contracts into
 `@mycli/runtime`, preventing a runtime-integrations dependency cycle.
 
 **Tech Stack:** TypeScript 5.9, Node 22.19/24, npm workspaces, `@anthropic-ai/sdk@0.115.0`,
@@ -1426,7 +1426,7 @@ the gateway.
 ```bash
 npm run contracts:generate
 npm run contracts:check
-npm run test --workspace @mycli/app -- --test-name-pattern="integration|extension|resource|command|subagent"
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="integration|extension|resource|command|subagent"
 npm run test --workspace mycli-shell-tui -- --test-name-pattern="subagent|resource|command"
 npm run typecheck
 npm run lint
@@ -1542,7 +1542,7 @@ start Python or a model request.
 
 ```bash
 npm run test --workspace @mycli/config -- --test-name-pattern="auth|user config"
-npm run test --workspace @mycli/app -- --test-name-pattern="management|setup|CLI"
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="management|setup|CLI"
 npm run test --workspace mycli-shell-tui -- --test-name-pattern="setup"
 npm run typecheck
 npm run lint
@@ -1642,8 +1642,8 @@ paths.
 - [ ] **Step 6: Run Task 13 verification**
 
 ```bash
-npm run test --workspace @mycli/app -- --test-name-pattern="doctor"
-npm run typecheck --workspace @mycli/app
+npm run test --workspace @cosmos2023/mycli -- --test-name-pattern="doctor"
+npm run typecheck --workspace @cosmos2023/mycli
 npm run lint
 rg -n "sk-[A-Za-z0-9]|Bearer [A-Za-z0-9]" docs README.md
 ```

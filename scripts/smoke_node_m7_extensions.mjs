@@ -2,13 +2,13 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
@@ -27,6 +27,15 @@ const MCP_FIXTURE = join(
 	"test",
 	"fixtures",
 	"mcp-stdio-server.mjs",
+);
+const PROCESS_MARKER_FIXTURE = join(
+	ROOT,
+	"backend",
+	"packages",
+	"integrations",
+	"test",
+	"fixtures",
+	"process-marker.mjs",
 );
 const HOOK_FIXTURE = join(
 	ROOT,
@@ -141,7 +150,7 @@ async function runSmoke(sourceConfig, protocol) {
 			messages.push(parseJsonRpcMessage(JSON.parse(line)));
 		});
 		await waitFor(() => event(messages, "runtime.ready"), deadlineAt);
-		await waitFor(() => event(messages, "extension.updated"), deadlineAt);
+		await waitForExtensionTool(backend, messages, "mcp_local_echo", deadlineAt);
 		await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" }, deadlineAt);
 		send(backend, "turn", "turn.submit", {
 			message: [
@@ -196,14 +205,12 @@ async function runSmoke(sourceConfig, protocol) {
 			return { summary: emptySummary(protocol, "unavailable"), exitCode: SKIP_EXIT_CODE };
 		}
 
-		const mcpPid = await readPid(mcpPidFile);
-		const pluginPid = await readPid(pluginPidFile);
+		const extensionProcessesStarted = existsSync(mcpPidFile) && existsSync(pluginPidFile);
 		const exitCode = await shutdown(backend);
 		backend = undefined;
 		const cleanupCompleted = exitCode === 0
-			&& mcpPid !== undefined
-			&& pluginPid !== undefined
-			&& await eventually(() => !processExists(mcpPid) && !processExists(pluginPid));
+			&& extensionProcessesStarted
+			&& await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
 		const hookCompleted = existsSync(hookMarker);
 		const pythonStarted = existsSync(pythonMarker);
 		const persisted = persistedState(homeDir, sessionId, counts);
@@ -256,7 +263,7 @@ async function writeExtensionFixtures(options) {
 		`command = ${JSON.stringify(process.execPath)}`,
 		`args = [${JSON.stringify(MCP_FIXTURE)}]`,
 		`env = { MCP_PID_FILE = ${JSON.stringify(options.mcpPidFile)} }`,
-		"timeout_seconds = 3",
+		"timeout_seconds = 10",
 	].join("\n"), "utf8");
 	await writeFile(join(mycli, "hooks.json"), JSON.stringify({
 		hooks: [{
@@ -286,8 +293,9 @@ async function writeExtensionFixtures(options) {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
+		`import { writeProcessMarker } from ${JSON.stringify(pathToFileURL(PROCESS_MARKER_FIXTURE).href)};`,
 		"export async function register(context) {",
-		"  await writeFile(process.env.PLUGIN_PID_FILE, String(process.pid), 'utf8');",
+		"  await writeProcessMarker(process.env.PLUGIN_PID_FILE);",
 		"  context.registerTool({",
 		"    name: 'echo', description: 'Echo M7 smoke text.',",
 		"    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },",
@@ -344,6 +352,37 @@ async function request(backend, messages, id, method, params, deadlineAt) {
 	return response;
 }
 
+async function waitForExtensionTool(backend, messages, toolName, deadlineAt) {
+	let observedUpdateCount = -1;
+	let requestIndex = 0;
+	while (Date.now() < deadlineAt) {
+		const updateCount = events(messages, "extension.updated").length;
+		if (updateCount !== observedUpdateCount) {
+			observedUpdateCount = updateCount;
+			const response = await request(
+				backend,
+				messages,
+				`extension-tool-${requestIndex}`,
+				"extension.manifest",
+				{},
+				deadlineAt,
+			);
+			requestIndex += 1;
+			if (extensionToolNames(response).includes(toolName)) return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("smoke_extension_timeout");
+}
+
+function extensionToolNames(response) {
+	const result = isObject(response.result) ? response.result : undefined;
+	const capabilities = result && isObject(result.capabilities) ? result.capabilities : undefined;
+	return capabilities && Array.isArray(capabilities.tool_names)
+		? capabilities.tool_names.filter((value) => typeof value === "string")
+		: [];
+}
+
 async function shutdown(backend) {
 	send(backend, "shutdown", "shutdown", {});
 	return backend.completion;
@@ -377,24 +416,6 @@ function requiredParam(message, name) {
 function optionalParam(message, name) {
 	const value = isObject(message.params) ? message.params[name] : undefined;
 	return typeof value === "string" && value ? value : undefined;
-}
-
-async function readPid(path) {
-	try {
-		const value = Number(await readFile(path, "utf8"));
-		return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function processExists(pid) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 async function eventually(predicate, timeoutMs = 5_000) {

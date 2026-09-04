@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify P12 does not violate context or compact boundary contracts"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify diagnostics stay bounded and redacted"}
-{"file": ".trellis/tasks/06-07-codex-alignment-p12-resume-fork-continuity/prd.md", "reason": "Verify implementation against P12 acceptance criteria"}

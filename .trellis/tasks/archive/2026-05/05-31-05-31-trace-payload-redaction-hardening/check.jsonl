@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify trace export remains sanitized and local-only"}
-{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify diagnostics behavior is test-backed and does not leak secrets"}
-{"file": ".trellis/tasks/05-31-05-31-trace-payload-redaction-hardening/research/trace-redaction-gap.md", "reason": "Verify implementation closes the recorded trace redaction gap"}
