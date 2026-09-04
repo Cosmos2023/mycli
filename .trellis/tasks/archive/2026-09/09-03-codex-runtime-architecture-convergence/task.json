@@ -3,7 +3,7 @@
   "name": "codex-runtime-architecture-convergence",
   "title": "Codex-aligned runtime architecture convergence",
   "description": "",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "cosmos",
   "assignee": "cosmos",
   "createdAt": "2026-09-03",
-  "completedAt": null,
+  "completedAt": "2026-09-04",
   "branch": null,
   "base_branch": "refactor/mycli-runtime-architecture",
   "worktree_path": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Stages 1-5 complete. Stage 5 added immutable per-run mode, policy, direct/deferred tool, and skill snapshots with durable continuation recovery, compaction accounting, and parent-run subagent inheritance; Stage 6 is next.",
+  "notes": "Stages 1-6 complete. Runtime lifecycle, Gateway and TUI projection, transactional terminalization, immutable run snapshots, and runtime/backend composition ownership have converged behind explicit tested boundaries.",
   "meta": {}
 }
