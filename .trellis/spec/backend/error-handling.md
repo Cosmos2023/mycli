@@ -110,6 +110,10 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
 - Retry exhaustion or a non-retryable failure is persisted atomically with the
   terminal turn and its model-hidden display item before `turn.failed` is
   projected.
+- On the normal terminal path, the same transaction also appends the durable
+  `turn_lifecycle` outbox. Runtime projection consumes the committed
+  `{ turn, outbox }` result; it must not rebuild the terminal code, message,
+  safe detail, usage, or kind from request-local values after commit.
 - `turn.failed` owns terminal failure content. `turn.status` and
   `status.update` update state only.
 
@@ -184,6 +188,9 @@ runtime validation is mandatory at Worker and storage trust boundaries.
   appear useful for debugging.
 - Treating a retry notification as a durable terminal error.
 - Letting `gateway.error` terminalize a running turn.
+- Publishing a normal terminal event from pre-commit inputs, which can make the
+  TUI report completion or failure while SQLite still owns an `in_progress`
+  turn.
 
 ## Required Tests
 
@@ -196,7 +203,8 @@ runtime validation is mandatory at Worker and storage trust boundaries.
 - Runtime/Worker tests cover retry versus terminal behavior and validate every
   structured failure field across the Worker boundary.
 - Storage tests prove failed-turn atomicity and identical live/resume main and
-  additional-detail projection.
+  additional-detail projection, including exact reload of the terminal
+  `turn_lifecycle` outbox.
 - Gateway/TUI tests prove request errors remain non-terminal, terminal Provider
   diagnostics render exactly once, hints derive from runtime codes, and live
   and resumed notices remain identical and width-safe.

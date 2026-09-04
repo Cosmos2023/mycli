@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Stages 1-4 complete. Stage 4 added transactional root terminalization/outbox and paired agent lifecycle repositories; Stage 5 is next.",
   "meta": {}
 }

@@ -55,7 +55,7 @@ keeps public RPC and event behavior unchanged.
 - [x] Runtime events are ownership-stamped and mapped through one typed projection boundary.
 - [x] TUI event decoding, state reduction, transcript projection, and feature presentation are
       separate modules, with native chat using the same action dispatcher.
-- [ ] Terminal storage transitions use focused repositories and one transaction/outbox boundary.
+- [x] Terminal storage transitions use focused repositories and one transaction/outbox boundary.
 - [ ] Every run owns immutable effective-policy and tool-catalog snapshots.
 - [ ] `NodeTurnRuntime` and `node-backend.ts` become composition/orchestration boundaries rather
       than alternate owners of lifecycle truth.

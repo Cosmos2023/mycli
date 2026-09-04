@@ -78,3 +78,45 @@ validated GatewayEvent
   `interactive.cancelled`, never by a terminal `subagent.updated` presentation event.
 - Full and native chat clients share `MycliUiActionDispatcher`; their rendering and input adapters
   do not own separate Gateway semantics.
+
+## Slice 4 Transaction And Outbox Boundaries
+
+```text
+turn terminalization command
+  -> one SQLite write transaction
+     -> canonical transcript/display rows
+     -> durable turn_lifecycle outbox row
+     -> runtime_turns terminal state
+     -> session activity timestamp
+  -> committed { turn, outbox } result
+  -> runtime event projection
+
+agent lifecycle command
+  -> one SQLite write transaction
+     -> subagent_tasks transition
+     -> agent_threads + agent_spawn_edges transition
+  -> committed { task, thread } result
+  -> supervisor state and lifecycle projection
+```
+
+- The canonical `turn_lifecycle` transcript event is the durable terminal outbox. Slice 4 does not
+  add a second delivery table or change schema v12.
+- A completed, failed, or interrupted root turn returns its committed turn and exact persisted
+  lifecycle event from the repository transaction. `NodeTurnRuntime` maps that result instead of
+  reconstructing a terminal event from pre-commit inputs.
+- Readable transcript rows, model-visible terminal rows, the lifecycle outbox, `runtime_turns`, and
+  the session activity timestamp either commit together or roll back together. Regenerable JSON
+  artifacts remain post-commit projections and cannot change canonical terminal truth.
+- Agent activation, follow-up activation, completion, failure, and interruption transition their
+  task and thread records through one composite repository using the store's nested transaction
+  helper. The supervisor consumes only the committed pair.
+- Queued cancellation uses the same composite repository and compares the task update against its
+  actual current status, so a pre-start interrupt cannot leave a queued task behind an interrupted
+  thread.
+- Process-restart and targeted runtime-owner recovery retain their distinct fixed persisted reasons;
+  general runtime failures continue through canonical message sanitization.
+- Repository failpoints run between related writes so tests can prove no half-transition survives a
+  thrown error. Failpoints are test-only constructor inputs and do not alter the database schema or
+  public gateway payloads.
+- Compatibility `completeTurn()` and `failTurn()` methods remain for non-runtime callers, but the
+  live runtime uses the terminalization result and its durable outbox directly.

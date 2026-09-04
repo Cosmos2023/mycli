@@ -984,3 +984,41 @@ Added layered terminal capability and keymap contracts, semantic accessible TUI 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 26: Complete runtime architecture Stage 4
+
+**Date**: 2026-09-04
+**Task**: Codex-aligned runtime architecture convergence
+**Branch**: `refactor/mycli-runtime-architecture`
+
+### Summary
+
+Completed the transactional repository slice for root-turn terminalization and paired subagent
+lifecycle changes while preserving schema v12 and existing gateway payloads.
+
+### Main Changes
+
+- Added one transaction boundary for terminal transcript rows, the durable `turn_lifecycle`
+  outbox, `runtime_turns`, and session activity.
+- Projected normal runtime terminal events from committed turn/outbox results and durably handled
+  rejected Worker provider steps.
+- Added one composite repository for paired subagent task/thread transitions, including activation,
+  follow-up, terminalization, interruption, and runtime-creation failure.
+- Fixed queued cancellation's stale SQL predicate and preserved distinct restart/runtime-owner
+  recovery reasons found during final review.
+- Added rollback failpoints, committed-result projection tests, and cross-layer regression coverage.
+
+### Testing
+
+- [OK] `npm run lint`, `npm run typecheck`, and `npm run contracts:check`
+- [OK] `env TERM=xterm-256color NO_COLOR=1 npm test` (305 test files)
+- [OK] Focused storage lifecycle tests and `git diff --check`
+
+### Status
+
+[OK] **Stage 4 completed; overall convergence task remains in progress**
+
+### Next Steps
+
+- Stage 5: immutable effective-policy and tool-catalog snapshots per run.

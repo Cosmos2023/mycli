@@ -1381,3 +1381,105 @@ const sessions = store.listSessions(query);
 const state = store.loadStates(sessions.map((item) => item.sessionId), ["session_preferences"]);
 // listSessions already projects metadata, lease, and pending state in one bounded batch.
 ```
+
+## Scenario: Transactional Turn And Agent Lifecycle Terminalization
+
+### 1. Scope / Trigger
+
+- Trigger: changing root-turn completion/failure/recovery, terminal runtime-event projection,
+  subagent spawn/follow-up/terminal transitions, or the relationship between `runtime_turns`,
+  `transcript_events`, `subagent_tasks`, and `agent_threads`.
+
+### 2. Signatures
+
+- Root terminal repository:
+  `TurnTerminalizationStore.terminalize(input) -> StoredTurnTerminalization` and
+  `TurnTerminalizationStore.load(sessionId, clientTurnId) -> StoredTurnTerminalization | undefined`.
+- Root result: `StoredTurnTerminalization { kind, turn, outbox }`, where `outbox` is the exact
+  persisted `turn_lifecycle` event.
+- Agent repository: `AgentLifecycleStore.reserve`, `activate`, `startFollowUp`, `completeRun`,
+  `failRun`, `interruptRun`, and `failSpawn`.
+- Agent result: `AgentLifecycleTransition { task, thread }` containing the records reloaded after
+  the transaction commits.
+
+### 3. Contracts
+
+- Completing a root turn writes its assistant output, optional duration display, terminal
+  `turn_lifecycle` outbox, `runtime_turns` state, and session activity timestamp in one repository
+  write transaction. Failure and interruption similarly include every pending synthetic tool
+  result plus their display/context rows.
+- The live runtime projects a normal `turn_completed`, `turn_failed`, or `turn_interrupted` event
+  from the committed `{ turn, outbox }` result. It must not reconstruct success, usage, failure
+  detail, or terminal kind from pre-commit inputs.
+- `turn_lifecycle` is the durable terminal outbox; do not add a parallel delivery table while
+  transcript replay already provides crash recovery. Its event id is deterministic from the turn
+  identity and terminal phase.
+- Process-restart and targeted runtime-owner interruption retain their distinct, fixed persisted
+  reasons. General caller-supplied failure text still passes through canonical error sanitization.
+- A subagent task and its thread/spawn edge transition in one write transaction for reservation,
+  activation, follow-up activation, completion, failure, interruption, and runtime-creation
+  failure. Supervisor state and lifecycle events consume only the returned committed pair.
+- A queued task may move directly to `interrupted`, but its compare-and-update predicate must match
+  the actual current status. Never permit the domain transition while leaving an SQL predicate
+  hard-coded to `running`.
+- `completeTurn()` and `failTurn()` remain compatibility adapters over the terminal repository.
+  Live runtime code uses `turnTerminalizations`; live supervisor code uses `agentLifecycle`.
+- These repository boundaries reuse schema v12 and the existing `turn_lifecycle` event. They do
+  not require a schema-version change.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Any root terminal write or session touch fails | Roll back transcript, outbox, turn state, and timestamp together |
+| Terminal turn has no matching lifecycle outbox | `load()` fails with `persistence_error`; do not synthesize committed truth |
+| Provider-step executor rejects after reservation | Persist a failed turn before publishing its normal terminal event |
+| Any paired agent write fails | Roll back both task and thread/spawn-edge state |
+| Queued child is interrupted before activation | Commit both task and thread as `interrupted` |
+| Projection or artifact work fails after commit | Preserve canonical SQLite state; auxiliary work cannot rewrite it |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a Worker provider-step rejection commits one failed turn and one outbox event, then the
+  runtime projects the exact committed failure.
+- Good: a follow-up activation fault leaves no follow-up task and keeps the prior child idle.
+- Base: compatibility callers receive the same `RuntimeTurnRecord` from `completeTurn()` while the
+  repository also retains an outbox available through `load()`.
+- Bad: mark a task running, transition its thread in a later transaction, and compensate after the
+  process can crash between those writes.
+- Bad: emit a terminal runtime event from request-local inputs and only afterwards try to persist
+  the corresponding terminal state.
+
+### 6. Tests Required
+
+- Storage failpoint tests throw after assistant/tool/display/outbox or task writes and assert that
+  no partial row or state transition survives.
+- Storage success tests reload the exact lifecycle outbox and assert the committed turn, event
+  phase, usage/error fields, recovery reason, and session timestamp agree.
+- Agent lifecycle tests cover reservation, activation, follow-up, every terminal result, queued
+  interruption, runtime-creation failure, and rollback of both task and thread/spawn edge.
+- Runtime tests make the provider-step executor reject and assert durable terminal state precedes
+  the projected failure. Projection tests use conflicting input values to prove committed records
+  are authoritative.
+- The complete repository test suite, lint, type-check, contract drift, and `git diff --check` must
+  pass because this boundary spans storage, runtime, integrations, and app composition.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const task = taskStore.complete(input);
+const thread = threadStore.transition({ threadId: input.childSessionId, status: "idle" });
+emitCompleted(task, thread);
+```
+
+#### Correct
+
+```typescript
+const terminal = agentLifecycle.completeRun(input);
+emitCompleted(terminal.task, terminal.thread);
+
+const committed = turnTerminalizations.terminalize({ kind: "completed", ...input });
+emit(projectCommittedTurnTerminalization(committed));
+```
