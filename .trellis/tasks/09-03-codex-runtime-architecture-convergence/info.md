@@ -120,3 +120,38 @@ agent lifecycle command
   public gateway payloads.
 - Compatibility `completeTurn()` and `failTurn()` methods remain for non-runtime callers, but the
   live runtime uses the terminalization result and its durable outbox directly.
+
+## Slice 5 Run Execution Snapshot Boundary
+
+```text
+current mode + effective policy + current integration catalog
+  -> create one immutable run snapshot before provider IO
+     -> direct tools + deferred tools + skill catalog
+     -> policy profile + trust/configuration provenance
+  -> provider steps select durable activations from that catalog only
+  -> approval/clarification persist and restore the same snapshot
+  -> compaction counts the same frozen catalog plus latest run activations
+  -> subagents inherit tools and policy from the exact parent run
+```
+
+- `NodeTurnRuntime` is the sole owner of the process-local run snapshot. Mode, policy, catalog, and
+  skill discovery are resolved once when the execution context is first prepared; terminal cleanup
+  releases the snapshot together with router, approval, and policy turn state.
+- The tool catalog is a deep-frozen validated copy with a deterministic fingerprint. It bounds
+  individual schemas, total definitions, catalog bytes, and continuation bytes before state is kept
+  or restored.
+- `tool_search` remains the only widening mechanism inside a run. It may activate only definitions
+  in the frozen deferred catalog, and both discovery and routing reject current adapters whose full
+  definition no longer matches the frozen definition.
+- Approval and clarification continuations store `run_snapshot` under the existing suspended-turn
+  continuation object. A restart restores it by turn identity; an in-process continuation must match
+  the already active snapshot exactly before executing any resolution effect.
+- Execution-policy restoration uses the frozen effective profile as the active turn base. An
+  explicit user-approved permission grant replaces only the policy portion with another immutable
+  snapshot while retaining the original mode and tool catalog.
+- Compaction base context is lazily resolved for each estimate so newly persisted activations are
+  counted from the frozen catalog. Background extension refreshes cannot enter the active run.
+- Subagent spawn resolves the parent's exposed tools and effective policy by parent session and turn.
+  Missing snapshot state fails closed, and child-requested tool lists remain narrowing-only.
+- The Worker-backed root wrapper forwards snapshot lookup; it does not duplicate or reconstruct
+  lifecycle truth.

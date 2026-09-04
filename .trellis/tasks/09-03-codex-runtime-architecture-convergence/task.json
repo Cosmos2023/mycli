@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Stages 1-4 complete. Stage 4 added transactional root terminalization/outbox and paired agent lifecycle repositories; Stage 5 is next.",
+  "notes": "Stages 1-5 complete. Stage 5 added immutable per-run mode, policy, direct/deferred tool, and skill snapshots with durable continuation recovery, compaction accounting, and parent-run subagent inheritance; Stage 6 is next.",
   "meta": {}
 }

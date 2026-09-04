@@ -1022,3 +1022,46 @@ lifecycle changes while preserving schema v12 and existing gateway payloads.
 ### Next Steps
 
 - Stage 5: immutable effective-policy and tool-catalog snapshots per run.
+
+## Session 27: Complete runtime architecture Stage 5
+
+**Date**: 2026-09-04
+**Task**: Codex-aligned runtime architecture convergence
+**Branch**: `refactor/mycli-runtime-architecture`
+
+### Summary
+
+Completed immutable per-run collaboration-mode, execution-policy, direct/deferred tool, and skill
+catalog snapshots, including durable continuation recovery, compaction accounting, and exact
+parent-run inheritance for subagents.
+
+### Main Changes
+
+- Added bounded, fingerprinted, deeply frozen run and tool-catalog snapshots owned by
+  `NodeTurnRuntime` from first context preparation through terminal cleanup.
+- Kept active runs stable across trust, permission, collaboration-mode, MCP, plugin, and skill
+  refreshes while allowing durable `tool_search` activations from only the frozen deferred catalog.
+- Persisted snapshots through approval and clarification suspension and restored them with turn-id,
+  policy, catalog, and same-process consistency checks before continuation effects.
+- Bound restored dynamic routing to exact frozen definitions and made compaction estimate the active
+  run's latest activated schema set lazily.
+- Changed subagent tool and policy inheritance to resolve the exact parent session/turn snapshot,
+  preserving constrained profiles without accidentally promoting trust or consulting global tools.
+- Forwarded snapshot lookup through Worker-backed root runtimes and added focused runtime, tools,
+  integrations, and backend regression coverage.
+
+### Testing
+
+- [OK] `npm run build`, `npm run lint`, `npm run typecheck`, and `npm run contracts:check`
+- [OK] Runtime, tools (248/248), and integrations (109/109) package suites
+- [OK] Focused backend Full Access and disabled-parent child-policy integration tests
+- [OK] `env -u NO_COLOR TERM=xterm-256color npm test` (306 test files)
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Stage 5 completed; overall convergence task remains in progress**
+
+### Next Steps
+
+- Stage 6: narrow `NodeTurnRuntime` and `node-backend.ts` into composition/orchestration boundaries.
