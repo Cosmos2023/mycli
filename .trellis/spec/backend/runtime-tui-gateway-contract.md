@@ -1897,12 +1897,17 @@ await gatewayStartup;
 ### 2. Signatures
 - `SessionCoordinator.resume(sessionId) -> Promise<ActiveSessionSnapshot>`
 - `SessionCoordinator.startNew() -> Promise<ActiveSessionSnapshot>`
+- `SessionCoordinator.context() -> SessionGenerationContext`
+- `SessionCoordinator.claimExecution(context) -> SessionExecutionClaim | undefined`
+- `SessionCoordinator.releaseExecution(claim) -> boolean`
+- Pure runtime transitions: `createSessionOperationState`, `claimSessionExecution`,
+  `releaseSessionExecution`, `beginSessionTransition`, `commitSessionTransition`, and
+  `abortSessionTransition`.
 - `SessionLeaseStore.acquireSessionLease(sessionId) -> boolean` (`true` only for a newly acquired or
   stale-owner takeover lease; `false` for the same backend owner)
 - `SessionLeaseStore.releaseSessionLease(sessionId) -> void`
-- `SessionCoordinator.markExecuting(context, executing) -> boolean`
 - Gateway RPCs: `session.list`, `session.new`, `session.resume`, `session.tree`,
-  `transcript.load`, and `turn.submit`.
+  `transcript.load`, `turn.submit`, `approval.respond`, `clarify.respond`, and `turn.interrupt`.
 - Gateway events: `session.changed`, `status.changed`, and
   `approval.request`.
 
@@ -1922,6 +1927,13 @@ await gatewayStartup;
 - Fork and subagent-child creation acquire the target session lease in the same SQLite transaction
   that first exposes the target. A live `agent_runtime_leases` owner also blocks root-session
   acquisition of that child, including from another backend in the same OS process.
+- Session operation ownership is one discriminated `idle | executing | transitioning` state. Do
+  not retain independent executing and transitioning booleans in `SessionCoordinator`; they admit
+  impossible combinations and allow one callback to clear another operation.
+- Execution and transition claims are frozen objects created by the pure transition functions.
+  Completion, release, and abort compare the exact object identity, not only session id,
+  generation, kind, or structural equality. A stale callback from an earlier execution in the same
+  generation therefore cannot release a newer execution.
 - New-session creation uses the same transition claim and generation commit. It installs a fresh
   backend runtime binding with an empty transcript and queue; the TUI must not clear local arrays
   or fabricate a session id independently.
@@ -1929,8 +1941,17 @@ await gatewayStartup;
   creating a durable session row. Missing non-current ids and missing `/resume` targets still fail.
 - The coordinator holds a transition claim across the entire asynchronous
   prepare. A gateway turn must acquire the matching generation's execution
-  claim before reserving a durable turn. Reservation failure releases the
-  execution claim.
+  claim before reserving a durable turn. Transition commit advances the operation context by
+  exactly one generation and returns it to idle before any asynchronous source-lease cleanup.
+- Gateway `ActiveTurn` retains the exact execution claim acquired by ordinary submit, queued-turn
+  dispatch, approval continuation, clarification continuation, or reconstructed clarification
+  interrupt. The common terminal finalizer returns that same claim. A reservation or runtime
+  configuration failure before `ActiveTurn` installation returns only the claim acquired by that
+  attempt and leaves a pending approval/clarification available for retry.
+- The Gateway's temporary turn-admission, session-control, and session-activation gates are not a
+  second session-operation owner. They cover request validation and post-commit publication that
+  can outlive the coordinator transition claim; Phase 1 keeps them as compatibility gates until
+  their owning controllers are extracted.
 - Successful resume emits `session.changed` first, one complete
   `status.changed` snapshot second, then the pending `approval.request` when
   present. Failed preparation emits none of these target-session events.
@@ -1961,6 +1982,15 @@ await gatewayStartup;
   `session_state_version_unsupported` with a fixed message.
 - Executing turn, concurrent resume, or turn submission during prepare ->
   `turn_in_progress` before a new reservation is written.
+- Structurally copied, already released, or stale execution/transition claim -> reject the release,
+  commit, or abort without changing the current operation.
+- Stale session id or generation context -> reject execution/transition acquisition and all
+  coordinator snapshot mutations.
+- Approval/clarification turn-context configuration failure -> release the newly acquired execution
+  claim, retain the pending continuation, and return the bounded Gateway request failure.
+- Queued-turn reservation/configuration failure before activation -> reconcile the durable queue
+  claim, release the session execution claim, emit bounded `queue_worker_start_failed`, and start no
+  provider IO.
 - Snapshot-only degraded session turn submission -> `session_state_invalid`.
 - Same-session idle resume -> return the current generation without preparing
   or incrementing it.
@@ -1976,10 +2006,18 @@ await gatewayStartup;
   on its first accepted turn.
 - Good: Claim execution for the current generation, reserve the turn, and
   release the claim if reservation fails.
+- Good: an approval continuation holds its exact execution claim until completion; a failed
+  pre-activation configuration releases it and the same pending decision can be retried.
+- Good: an interrupt first fences the pending clarification turn id, then claims execution and uses
+  the common forced-interrupt finalizer to release ownership.
 - Base: A configured but not-yet-persisted initial session is an empty virtual
   session and becomes durable on its first accepted turn.
 - Bad: Check `executing` before `await prepare` but allow a turn to reserve
   during the await; the resumed generation can then replace a running source.
+- Bad: release execution with only `{sessionId, generation}` or a copied claim; an old completion in
+  the same generation can clear a newer active turn.
+- Bad: acquire a continuation claim before validating its turn id, then leak ownership when the
+  request is rejected.
 - Bad: Merge rejected steers into legacy steering text; the TUI displays a
   deferred input as if it can still steer the active turn.
 - Bad: clear only TUI messages and replace the footer session label while the backend continues to
@@ -1987,12 +2025,14 @@ await gatewayStartup;
 
 ### 6. Tests Required
 - Pure coordinator tests for failed prepare, fresh-session creation, same-session idempotency,
-  monotonic generation, stale context rejection, executing-turn rejection,
-  transition/execution mutual exclusion across an async prepare, and lease cleanup on every
-  pre-commit failure.
+  monotonic generation, stale context rejection, exact claim identity, stale-claim release
+  rejection, executing-turn rejection, transition/execution mutual exclusion across an async
+  prepare, and lease cleanup plus operation rollback on every pre-commit failure.
 - Gateway tests for session catalog/tree/transcript responses, ordered resume
   events, sanitized state errors, read-only turn rejection, stale callback
-  filtering, and no reservation during target preparation.
+  filtering, and no reservation during target preparation. Submit, queued-turn, approval,
+  clarification, and pending-clarification interrupt tests assert execution is held during work and
+  idle after terminal or pre-activation failure paths.
 - Queue projection tests must assert legacy text arrays and counts plus all
   three typed `queue_items` arrays.
 - Backend integration must use real SQLite state to prove target runtime
@@ -2005,27 +2045,29 @@ await gatewayStartup;
 
 Wrong:
 ```typescript
-if (!coordinator.executing()) {
-  const prepared = await prepare(sessionId);
-  coordinator.commit(prepared);
-}
-runtime.reserve(submission);
+if (!coordinator.executing()) runtime.reserve(submission);
 coordinator.markExecuting(context, true);
+
+// A later callback can clear an unrelated execution in the same generation.
+coordinator.markExecuting(context, false);
 ```
 
 Correct:
 ```typescript
-const resume = coordinator.resume(sessionId); // holds the transition claim
-
-if (!coordinator.markExecuting(context, true)) {
+const executionClaim = coordinator.claimExecution(context);
+if (!executionClaim) {
   throw new GatewayFailure("turn_in_progress", "Session transition in progress.");
 }
 try {
-  runtime.reserve(submission);
+  const reservation = runtime.reserve(submission);
+  activeTurn = { ...activeTurnInput, reservation, executionClaim };
 } catch (error) {
-  coordinator.markExecuting(context, false);
+  coordinator.releaseExecution(executionClaim);
   throw error;
 }
+
+// The common terminal finalizer returns the exact claim held by this turn.
+coordinator.releaseExecution(activeTurn.executionClaim);
 ```
 
 ## Scenario: Credential Readiness And Recovery
