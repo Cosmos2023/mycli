@@ -409,7 +409,13 @@ Added provider-free config validate/show commands with secret-safe provenance, f
 
 ### Main Changes
 
-(Add details)
+- Added focused owners for immutable run snapshots, budgets, active tool claims, and ordered tool
+  batches while retaining provider, continuation, compaction, and terminalization sequencing in
+  `NodeTurnRuntime`.
+- Added exact-instance runtime registration, idempotent ordered resource shutdown, accepted-prefix
+  artifact draining, and focused session-bootstrap and trace modules to the Node app composition.
+- Added owner transition tests and synchronized the runtime composition, run snapshot, and provider
+  tool replay architecture contracts.
 
 ### Git Commits
 
@@ -500,7 +506,11 @@ Added one lossless ordered user-config batch editor, migrated provider/model and
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run build`, `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and
+  `npm run config:check`
+- [OK] Runtime package 430/430, backend integration 54/54, and extracted-owner tests 14/14
+- [OK] `env -u NO_COLOR TERM=xterm-256color npm test` (310 test files)
+- [OK] `git diff --check`
 
 ### Status
 
@@ -1066,44 +1076,36 @@ parent-run inheritance for subagents.
 
 - Stage 6: narrow `NodeTurnRuntime` and `node-backend.ts` into composition/orchestration boundaries.
 
-## Session 28: Complete runtime architecture Stage 6
+## Session 26: Complete runtime architecture convergence
 
 **Date**: 2026-09-04
-**Task**: Codex-aligned runtime architecture convergence
+**Task**: Complete runtime architecture convergence
 **Branch**: `refactor/mycli-runtime-architecture`
 
 ### Summary
 
-Completed the final composition-boundary slice by moving process-local run, budget, active-tool,
-tool-batch, runtime-registry, resource-shutdown, trace, and session-bootstrap responsibilities behind
-focused owners while preserving provider, storage, Gateway, and TUI behavior.
+Completed Stage 6 runtime and backend composition ownership, passed all quality gates, and archived the six-stage Codex-aligned architecture convergence task.
 
 ### Main Changes
 
-- Added `RunExecutionCoordinator`, `AgentBudgetTracker`, `ActiveToolExecutionRegistry`, and
-  `ToolBatchCoordinator`; `NodeTurnRuntime` now retains only provider/continuation/compaction and
-  terminalization sequencing around those owners.
-- Added `NodeRuntimeRegistry`, `NodeBackendResourceOwner`, and
-  `SerializedSessionArtifactQueue` with exact-instance deletion, stable refresh, idempotent ordered
-  close, first-error cleanup, and accepted-prefix drain behavior.
-- Moved bounded trace serialization and session recovery/derived artifact projection out of
-  `node-backend.ts` without changing SQLite authority or public contracts.
-- Added focused ownership tests and a dedicated runtime composition code-spec; updated run-snapshot
-  and provider tool-batch contracts to name their current owners.
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `96fdcae8` | (see git log) |
+| `c65ce438` | (see git log) |
+| `e10a124e` | (see git log) |
 
 ### Testing
 
-- [OK] `npm run build`, `npm run lint`, `npm run typecheck`, `npm run contracts:check`, and
-  `npm run config:check`
-- [OK] Runtime package 430/430 and backend integration 54/54
-- [OK] Extracted-owner tests 14/14
-- [OK] `env -u NO_COLOR TERM=xterm-256color npm test` (310 test files)
-- [OK] `git diff --check`
+- [OK] (Add test results)
 
 ### Status
 
-[OK] **Stage 6 implementation completed; awaiting batched commits and task wrap-up**
+[OK] **Completed**
 
 ### Next Steps
 
-- Review the batched commit plan, commit without push, then archive the completed Trellis task.
+- None - task complete
