@@ -56,3 +56,25 @@ claim, including a structurally identical object, is rejected.
 - Replace `markExecuting(context, boolean)` with explicit claim/release methods; do not retain a
   second compatibility mutation path.
 - Keep gateway RPC methods, event names, and status projection unchanged in Slice 1.
+
+## Slice 3 TUI Projection Boundaries
+
+```text
+validated GatewayEvent
+  -> typed decoder + direct/mirror deduper
+  -> session/generation/turn ownership fence
+  -> feature reducer
+  -> lifecycle reducer
+  -> incremental transcript projector
+  -> full TUI or native-chat presenter
+```
+
+- `runtime.event` envelopes retain root ownership separately from a child payload subject.
+- Gateway scheduling flags react only to an applied decoded event; rejected stale events have no
+  lifecycle or dispatch side effects.
+- A terminal event must match at least one known active turn identity, and an explicit mismatch is
+  always rejected.
+- Child interactive ownership is released only by its matching response or
+  `interactive.cancelled`, never by a terminal `subagent.updated` presentation event.
+- Full and native chat clients share `MycliUiActionDispatcher`; their rendering and input adapters
+  do not own separate Gateway semantics.

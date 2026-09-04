@@ -2004,6 +2004,137 @@ const controller = new NodeGatewayTurnController({
 });
 ```
 
+## Scenario: Ownership-Fenced TUI Runtime Projection
+
+### 1. Scope / Trigger
+- Trigger: changing a gateway event, TUI runtime state, session/turn lifecycle projection,
+  transcript projection, interactive selector lifecycle, native chat input, or local follow-up
+  dispatch.
+- The TUI is a projection client. It may keep optimistic presentation state, but it must not
+  accept an event or trigger scheduling side effects before runtime ownership is decoded and
+  validated.
+
+### 2. Signatures
+- Decoder:
+  `decodeGatewayRuntimeEvent(event) -> DecodedRuntimeEvent | null` in `runtime-events.ts`.
+- Ownership fence:
+  `runtimeEventBelongsToActiveOwner(state, event) -> boolean` in
+  `runtime-event-ownership.ts`.
+- Reduction boundary:
+  `reduceDecodedRuntimeEventWithOutcome(state, event) -> {state, applied}`.
+- Lifecycle reduction:
+  `reduceRuntimeLifecycle(previous, reduced, event) -> RuntimeShellState`.
+- Transcript projection:
+  `RuntimeTranscriptProjector.project(state, sessions, updateKind) -> MycliShellState`.
+- Shared input boundary:
+  `MycliUiActionDispatcher.dispatch(action) -> Promise<unknown>`.
+- Child cancellation event:
+  `interactive.cancelled({session_id, child_session_id, generation, client_turn_id, turn_id,
+  decision_id | request_id})`.
+
+### 3. Contracts
+- `GatewayClient` validates the canonical notification schema before the runtime decoder sees an
+  event. The decoder's accepted direct-event method set derives from
+  `gatewayContractCatalog.eventStreams`; it must not be maintained as another handwritten list.
+- A decoded event retains normalized `sessionId`, `generation`, `turnId`, and `clientTurnId`, plus
+  its `direct | envelope | synthetic` source. All reducer and gateway scheduling decisions use
+  this decoded value rather than reading the unchecked transport object again.
+- A mirrored child event has two identities: the `runtime.event` envelope owns the active root
+  session/generation, while its payload names the child subject. The direct child payload is not
+  allowed to mutate root TUI state; the root-owned envelope is. Direct/mirror deduplication includes
+  normalized ownership so rejecting the child direct event does not also discard its valid mirror.
+- Session-scoped events require the active root session and exact generation. A terminal turn event
+  additionally requires at least one explicit identity that equals a known active turn or client
+  turn identity. An anonymous or uncorrelated terminal event cannot release newer work.
+- Feature-specific reduction runs only after ownership validation. `reduceRuntimeLifecycle` is the
+  final authority for `turnRunning`, active turn identities, active assistant cleanup, reasoning
+  cleanup, and retry restoration across lifecycle events. Gateway-local effects run only when the
+  reduction returns `applied=true`.
+- A child approval, clarification, response, or cancellation never changes the root turn lifecycle.
+  It changes only the matching selector/transient row. Matching includes request kind, child
+  session, request/decision id, and child generation when both sides provide it.
+- `subagent.updated` presents task progress only. It must not infer release of pending interactive
+  ownership from a child terminal status; the matching response or `interactive.cancelled` event
+  owns that transition.
+- When the visible child request is cancelled, the Gateway publishes `interactive.cancelled` with
+  the request's captured root ownership before publishing the next FIFO request. Cancelling an
+  unseen queued request emits no TUI cancellation because the client never observed that request.
+- `session.changed` clears prior-session dispatch/interrupt state. Resume reduction must not apply
+  `session.changed` twice after activation events have already restored a concrete approval or
+  clarification.
+- Incremental transcript caching lives in `runtime-transcript-projector.ts`; the runtime state model
+  lives in `runtime-state-model.ts`. Projection must preserve stable prefixes and fall back to a
+  complete projection when transcript identity or presentation context no longer matches.
+- Full-screen TUI and native chat route submit, follow-up, commands, interrupt, approval,
+  clarification, dequeue, and exit through the same `MycliUiAction` dispatcher. Adapter-specific
+  callbacks may remain only as compatibility fallbacks, not as the production Gateway wiring.
+- A local follow-up blocked by an interactive selector remains dispatch-eligible. Any later applied
+  state change may wake the scheduler when the backend is idle and no interrupt is settling; the
+  final dispatch guard rechecks turn, selector, and queue state before sending.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Unknown nested `runtime.event.type` | Decode to `null`; perform no state or scheduling mutation |
+| Session or generation does not own the active root | Return `{state: previous, applied: false}` |
+| Terminal event has no identity while active identity is known | Reject without clearing running state or tools |
+| Terminal event identifies only an uncorrelated turn/client turn | Reject even when the other active identity is unavailable |
+| Direct child event arrives before its mirror | Reject the direct event; accept the root-owned envelope |
+| Child response/cancellation has stale generation or wrong id | Preserve the current selector and transient row |
+| Child emits terminal `subagent.updated` before cancellation | Update task presentation; retain interactive ownership |
+| Stale `status.changed(turn_running=false)` arrives | Do not clear Gateway busy state or dispatch local input |
+| Resume RPC returns after activation events | Preserve the already projected actionable request |
+| Shared action rejects | Restore selector/composer affordances and keep later actions serializable |
+
+### 5. Good/Base/Bad Cases
+- Good: a running root receives a child approval, keeps its root turn identity, then removes only
+  that approval when the root-owned cancellation envelope arrives.
+- Good: an idle root responds to a child clarification and remains idle while the child continues.
+- Good: a local follow-up waits behind a child selector and dispatches after the selector is
+  resolved or cancelled without waiting for an unrelated status event.
+- Base: an envelope-only gateway sends a valid runtime event with no preceding compatibility event;
+  decode and apply it once.
+- Bad: clear `turnRunning` from a terminal event carrying an unrelated identity merely because the
+  corresponding active client id is unknown.
+- Bad: clear a child selector from `subagent.updated(status=failed)` or reconstruct root ownership
+  from the child payload.
+
+### 6. Tests Required
+- Decoder/deduper tests compare the accepted runtime method surface with the canonical catalog,
+  cover direct-plus-mirror and envelope-only delivery, and prove child direct rejection does not
+  suppress the valid mirror.
+- Pure ownership/lifecycle tests cover stale sessions and generations, exact and partial matching
+  terminal identities, anonymous terminals, and uncorrelated partial identities.
+- Reducer tests cover active and idle root state across child request/response/cancellation, stale
+  child generation, exact transient-row removal, status/bootstrap/resume ordering, and workspace
+  trust fencing.
+- Gateway/controller tests cover visible cancellation-before-next ordering, silent removal of an
+  unseen request, preserved captured ownership, and schema-valid direct/mirrored cancellation.
+- Shared action tests exercise every action through the full TUI and native chat, including
+  response rejection, Ctrl+C/EOF, serialized input, and attachment-preserving queue restoration.
+- Transcript projector tests cover unchanged state, tail append/replacement, active assistant and
+  reasoning invalidation, long-history bounded work, and full-projection fallback.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const next = reduceRuntimeEvent(state, event.method, event.params);
+if (event.params.turn_running === false) backendTurnBusy = false;
+```
+
+#### Correct
+
+```typescript
+const decoded = eventDeduper.consume(event);
+if (!decoded) return;
+const reduction = reduceDecodedRuntimeEventWithOutcome(state, decoded);
+if (!reduction.applied) return;
+setRuntimeState(reduction.state, { eventType: decoded.method });
+```
+
 ## Scenario: Atomic Node Session Transitions
 
 ### 1. Scope / Trigger
