@@ -348,9 +348,25 @@ export type {
 	PendingSessionClarification,
 	PreparedSession,
 	SessionCoordinatorOptions,
-	SessionGenerationContext,
 	SessionTransitionErrorCode,
 } from "./session-coordinator.ts";
+export {
+	abortSessionTransition,
+	beginSessionTransition,
+	claimSessionExecution,
+	commitSessionTransition,
+	createSessionOperationState,
+	isSessionOperationContextCurrent,
+	releaseSessionExecution,
+	sessionOperationContext,
+} from "./session-operation-state.ts";
+export type {
+	SessionExecutionClaim,
+	SessionGenerationContext,
+	SessionOperationClaimResult,
+	SessionOperationState,
+	SessionTransitionClaim,
+} from "./session-operation-state.ts";
 export {
 	buildProviderRequestSignature,
 	ProviderContinuationCoordinator,

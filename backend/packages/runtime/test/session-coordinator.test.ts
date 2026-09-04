@@ -20,6 +20,9 @@ test("failed target preparation leaves the source session active", async () => {
 	assert.equal(coordinator.snapshot().sessionId, "source");
 	assert.equal(coordinator.snapshot().generation, 1);
 	assert.equal(coordinator.snapshot().binding.name, "runtime-source");
+	const claim = coordinator.claimExecution(coordinator.context());
+	assert.ok(claim);
+	assert.equal(coordinator.releaseExecution(claim), true);
 });
 
 test("lease conflict rejects resume before target preparation", async () => {
@@ -75,6 +78,9 @@ test("successful resume replaces every session-scoped value in one generation", 
 	assert.ok(Object.isFrozen(result));
 	assert.deepEqual(acquired, ["target"]);
 	assert.deepEqual(released, ["source"]);
+	const claim = coordinator.claimExecution(coordinator.context());
+	assert.ok(claim);
+	assert.equal(coordinator.releaseExecution(claim), true);
 });
 
 test("retained source ownership survives a successful session switch", async () => {
@@ -128,7 +134,8 @@ test("updates queue state only for the active session generation", () => {
 test("rejects cross-session resume while the current generation is executing", async () => {
 	const coordinator = fixture();
 	const context = coordinator.context();
-	assert.equal(coordinator.markExecuting(context, true), true);
+	const claim = coordinator.claimExecution(context);
+	assert.ok(claim);
 
 	await assert.rejects(
 		() => coordinator.resume("target"),
@@ -136,7 +143,7 @@ test("rejects cross-session resume while the current generation is executing", a
 			&& error.code === "turn_in_progress",
 	);
 	assert.equal(coordinator.snapshot().sessionId, "source");
-	assert.equal(coordinator.markExecuting(context, false), true);
+	assert.equal(coordinator.releaseExecution(claim), true);
 	assert.equal((await coordinator.resume("target")).sessionId, "target");
 });
 
@@ -144,10 +151,26 @@ test("execution claims are exclusive until the owning generation releases them",
 	const coordinator = fixture();
 	const context = coordinator.context();
 
-	assert.equal(coordinator.markExecuting(context, true), true);
-	assert.equal(coordinator.markExecuting(context, true), false);
+	const claim = coordinator.claimExecution(context);
+	assert.ok(claim);
+	assert.equal(coordinator.claimExecution(context), undefined);
 	assert.equal(coordinator.executing(), true);
-	assert.equal(coordinator.markExecuting(context, false), true);
+	assert.equal(coordinator.releaseExecution(claim), true);
+	assert.equal(coordinator.executing(), false);
+});
+
+test("a stale execution claim cannot release newer work in the same generation", () => {
+	const coordinator = fixture();
+	const context = coordinator.context();
+	const first = coordinator.claimExecution(context);
+	assert.ok(first);
+	assert.equal(coordinator.releaseExecution(first), true);
+	const second = coordinator.claimExecution(context);
+	assert.ok(second);
+
+	assert.equal(coordinator.releaseExecution(first), false);
+	assert.equal(coordinator.executing(), true);
+	assert.equal(coordinator.releaseExecution(second), true);
 	assert.equal(coordinator.executing(), false);
 });
 
@@ -170,11 +193,11 @@ test("session preparation excludes a turn execution claim until commit", async (
 	const resume = coordinator.resume("target");
 	await started;
 
-	const executionClaimed = coordinator.markExecuting(sourceContext, true);
+	const executionClaim = coordinator.claimExecution(sourceContext);
 	releasePreparation();
 	const resumed = await resume;
 
-	assert.equal(executionClaimed, false);
+	assert.equal(executionClaim, undefined);
 	assert.equal(resumed.sessionId, "target");
 	assert.equal(coordinator.executing(), false);
 });
@@ -185,7 +208,7 @@ test("stale generation contexts cannot mutate the active session", async () => {
 	await coordinator.resume("target");
 
 	assert.equal(coordinator.isCurrent(stale), false);
-	assert.equal(coordinator.markExecuting(stale, true), false);
+	assert.equal(coordinator.claimExecution(stale), undefined);
 	assert.equal(coordinator.executing(), false);
 	assert.equal(coordinator.isCurrent(coordinator.context()), true);
 });
@@ -213,6 +236,9 @@ test("starts a fresh prepared session in a new generation", async () => {
 	assert.equal(result.workspaceRoot, previous.workspaceRoot);
 	assert.deepEqual(result.transcript, [transcriptItem("fresh")]);
 	assert.strictEqual(coordinator.snapshot(), result);
+	const claim = coordinator.claimExecution(coordinator.context());
+	assert.ok(claim);
+	assert.equal(coordinator.releaseExecution(claim), true);
 });
 
 test("retains source ownership when starting a fresh session", async () => {
@@ -232,7 +258,7 @@ test("retains source ownership when starting a fresh session", async () => {
 test("rejects new session creation while the active generation is executing", async () => {
 	const coordinator = fixture({ createSessionId: "fresh" });
 	const context = coordinator.context();
-	assert.equal(coordinator.markExecuting(context, true), true);
+	assert.ok(coordinator.claimExecution(context));
 
 	await assert.rejects(
 		() => coordinator.startNew(),

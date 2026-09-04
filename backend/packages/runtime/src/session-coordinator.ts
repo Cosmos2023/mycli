@@ -12,6 +12,26 @@ import type {
 } from "@mycli/storage";
 import { NO_RUNTIME_FAILPOINT } from "./fault-injection.ts";
 import type { RuntimeFailpointHook } from "./fault-injection.ts";
+import {
+	abortSessionTransition,
+	beginSessionTransition,
+	claimSessionExecution,
+	commitSessionTransition,
+	createSessionOperationState,
+	isSessionOperationContextCurrent,
+	releaseSessionExecution,
+	sessionOperationContext,
+} from "./session-operation-state.ts";
+import type {
+	SessionExecutionClaim,
+	SessionGenerationContext,
+	SessionOperationState,
+} from "./session-operation-state.ts";
+
+export type {
+	SessionExecutionClaim,
+	SessionGenerationContext,
+} from "./session-operation-state.ts";
 
 export type PendingApprovalChoice = ApprovalChoice;
 
@@ -64,11 +84,6 @@ export interface ActiveSessionSnapshot<Binding> extends PreparedSession<Binding>
 	readonly generation: number;
 }
 
-export interface SessionGenerationContext {
-	readonly sessionId: string;
-	readonly generation: number;
-}
-
 export interface SessionCoordinatorOptions<Binding> {
 	readonly initial: PreparedSession<Binding>;
 	readonly prepare: (sessionId: string) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
@@ -105,11 +120,14 @@ export class SessionCoordinator<Binding> {
 	readonly #loadSessionLineage: SessionCoordinatorOptions<Binding>["loadSessionLineage"];
 	readonly #failpoint: RuntimeFailpointHook;
 	#snapshot: ActiveSessionSnapshot<Binding>;
-	#executing = false;
-	#transitioning = false;
+	#operation: SessionOperationState;
 
 	constructor(options: SessionCoordinatorOptions<Binding>) {
 		this.#snapshot = activeSnapshot(options.initial, 1);
+		this.#operation = createSessionOperationState({
+			sessionId: this.#snapshot.sessionId,
+			generation: this.#snapshot.generation,
+		});
 		this.#prepareSession = options.prepare;
 		this.#acquireSession = options.acquireSession ?? (() => undefined);
 		this.#releaseSession = options.releaseSession ?? (() => undefined);
@@ -125,25 +143,28 @@ export class SessionCoordinator<Binding> {
 	}
 
 	context(): SessionGenerationContext {
-		return Object.freeze({
-			sessionId: this.#snapshot.sessionId,
-			generation: this.#snapshot.generation,
-		});
+		return sessionOperationContext(this.#operation);
 	}
 
 	executing(): boolean {
-		return this.#executing;
+		return this.#operation.phase === "executing";
 	}
 
 	isCurrent(context: SessionGenerationContext): boolean {
-		return context.sessionId === this.#snapshot.sessionId
-			&& context.generation === this.#snapshot.generation;
+		return isSessionOperationContextCurrent(this.#operation, context);
 	}
 
-	markExecuting(context: SessionGenerationContext, executing: boolean): boolean {
-		if (!this.isCurrent(context)) return false;
-		if (executing && (this.#transitioning || this.#executing)) return false;
-		this.#executing = executing;
+	claimExecution(context: SessionGenerationContext): SessionExecutionClaim | undefined {
+		const acquired = claimSessionExecution(this.#operation, context);
+		if (!acquired) return undefined;
+		this.#operation = acquired.state;
+		return acquired.claim;
+	}
+
+	releaseExecution(claim: SessionExecutionClaim): boolean {
+		const released = releaseSessionExecution(this.#operation, claim);
+		if (!released) return false;
+		this.#operation = released;
 		return true;
 	}
 
@@ -209,20 +230,21 @@ export class SessionCoordinator<Binding> {
 
 	async resume(sessionId: string): Promise<ActiveSessionSnapshot<Binding>> {
 		const normalized = nonEmptySessionId(sessionId);
-		if (this.#executing || this.#transitioning) {
+		if (this.#operation.phase !== "idle") {
 			throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
 		}
 		if (normalized === this.#snapshot.sessionId) return this.#snapshot;
-		this.#transitioning = true;
+		const transition = beginSessionTransition(this.#operation, this.context());
+		if (!transition) {
+			throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
+		}
+		this.#operation = transition.state;
 		let targetAcquired = false;
 		let committed = false;
 		try {
 			targetAcquired = await this.#acquireSession(normalized) !== false;
 			const prepared = freezePrepared(await this.#prepareSession(normalized));
 			this.#failpoint("session_after_prepare");
-			if (this.#executing) {
-				throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
-			}
 			if (prepared.sessionId !== normalized) {
 				throw new SessionTransitionError(
 					"session_state_invalid",
@@ -233,7 +255,20 @@ export class SessionCoordinator<Binding> {
 				throw new SessionTransitionError("session_state_invalid", "session generation is exhausted");
 			}
 			const sourceSessionId = this.#snapshot.sessionId;
-			this.#snapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			const nextSnapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			const nextOperation = commitSessionTransition(
+				this.#operation,
+				transition.claim,
+				{ sessionId: nextSnapshot.sessionId, generation: nextSnapshot.generation },
+			);
+			if (!nextOperation) {
+				throw new SessionTransitionError(
+					"session_state_invalid",
+					"session transition ownership changed before commit",
+				);
+			}
+			this.#snapshot = nextSnapshot;
+			this.#operation = nextOperation;
 			committed = true;
 			if (!this.#retainSourceSession) await this.#releaseSession(sourceSessionId);
 			this.#failpoint("session_after_commit");
@@ -246,9 +281,11 @@ export class SessionCoordinator<Binding> {
 					// The process still owns the target lease; store shutdown is the final cleanup boundary.
 				}
 			}
+			if (!committed) {
+				const restored = abortSessionTransition(this.#operation, transition.claim);
+				if (restored) this.#operation = restored;
+			}
 			throw error;
-		} finally {
-			this.#transitioning = false;
 		}
 	}
 
@@ -256,19 +293,20 @@ export class SessionCoordinator<Binding> {
 		if (!this.#createSession) {
 			throw new SessionTransitionError("session_state_invalid", "new session creation is unavailable");
 		}
-		if (this.#executing || this.#transitioning) {
+		if (this.#operation.phase !== "idle") {
 			throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
 		}
-		this.#transitioning = true;
+		const transition = beginSessionTransition(this.#operation, this.context());
+		if (!transition) {
+			throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
+		}
+		this.#operation = transition.state;
 		let targetSessionId: string | undefined;
 		let targetAcquired = false;
 		let committed = false;
 		try {
 			const prepared = freezePrepared(await this.#createSession(this.#snapshot));
 			this.#failpoint("session_after_prepare");
-			if (this.#executing) {
-				throw new SessionTransitionError("turn_in_progress", "an active turn owns the session");
-			}
 			if (prepared.sessionId === this.#snapshot.sessionId) {
 				throw new SessionTransitionError(
 					"session_state_invalid",
@@ -281,7 +319,20 @@ export class SessionCoordinator<Binding> {
 				throw new SessionTransitionError("session_state_invalid", "session generation is exhausted");
 			}
 			const sourceSessionId = this.#snapshot.sessionId;
-			this.#snapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			const nextSnapshot = activeSnapshot(prepared, this.#snapshot.generation + 1);
+			const nextOperation = commitSessionTransition(
+				this.#operation,
+				transition.claim,
+				{ sessionId: nextSnapshot.sessionId, generation: nextSnapshot.generation },
+			);
+			if (!nextOperation) {
+				throw new SessionTransitionError(
+					"session_state_invalid",
+					"session transition ownership changed before commit",
+				);
+			}
+			this.#snapshot = nextSnapshot;
+			this.#operation = nextOperation;
 			committed = true;
 			if (!this.#retainSourceSession) await this.#releaseSession(sourceSessionId);
 			this.#failpoint("session_after_commit");
@@ -294,9 +345,11 @@ export class SessionCoordinator<Binding> {
 					// The process still owns the target lease; store shutdown is the final cleanup boundary.
 				}
 			}
+			if (!committed) {
+				const restored = abortSessionTransition(this.#operation, transition.claim);
+				if (restored) this.#operation = restored;
+			}
 			throw error;
-		} finally {
-			this.#transitioning = false;
 		}
 	}
 }
