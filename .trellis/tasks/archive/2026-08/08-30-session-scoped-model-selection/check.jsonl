@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"Backend spec index and compliance routing."}
-{"file":".trellis/spec/backend/runtime-tui-gateway-contract.md","reason":"Verify cross-layer request and session persistence behavior."}
-{"file":".trellis/spec/backend/configuration-trust-contract.md","reason":"Verify user-config writes remain explicit, atomic, and secret-safe."}
-{"file":".trellis/spec/backend/error-handling.md","reason":"Verify failures remain bounded and do not partially apply state."}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify required tests and repository quality gates."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit TUI-to-storage data flow consistency."}
-{"file":".trellis/tasks/08-30-session-scoped-model-selection/research/model-selection-scope.md","reason":"Check implementation against the selected scope contract and edge cases."}

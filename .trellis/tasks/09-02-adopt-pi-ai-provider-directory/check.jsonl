@@ -1,9 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"Backend guideline index"}
-{"file":".trellis/spec/backend/provider-transport-contract.md","reason":"Verify provider transport and replay ownership"}
-{"file":".trellis/spec/backend/runtime-tui-gateway-contract.md","reason":"Verify gateway/TUI cross-layer consistency"}
-{"file":".trellis/spec/backend/configuration-trust-contract.md","reason":"Verify configuration validation and migration"}
-{"file":".trellis/spec/backend/error-handling.md","reason":"Verify bounded provider and gateway failures"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Run required test and drift gates"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit complete data flow"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Audit metadata ownership and duplication"}
-{"file":".trellis/tasks/09-02-adopt-pi-ai-provider-directory/research/dsh-provider-directory-and-model-flow.md","reason":"Compare implementation with researched DSH pattern"}
