@@ -31,7 +31,7 @@ import type {
 	CompleteStoredTurnInput,
 	FailStoredTurnInput,
 	ReserveTurnInput,
-	TurnStore,
+	RuntimeTurnStore,
 	TurnReservation,
 } from "@mycli/storage";
 import { SQLiteTranscriptEventRepository, StorageFailure } from "@mycli/storage";
@@ -68,6 +68,7 @@ import {
 	type QueueCoordinatorStore,
 	type RuntimeDiagnosticEvent,
 } from "../src/index.ts";
+import { fakeTurnTerminalizationStore } from "./support/fake-turn-terminalization.ts";
 
 const ASK_ARGUMENTS = JSON.stringify({
 	question: "Which runtime?",
@@ -492,6 +493,30 @@ test("invalidates Responses continuation after terminal provider rejection", asy
 	assert.equal(result.status, "failed");
 	assert.equal(continuation.states.at(-1)?.eligible, false);
 	assert.equal(continuation.states.at(-1)?.failure_reason, "provider_rejected");
+});
+
+test("durably terminalizes a rejected provider-step executor before publishing failure", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const emitted: RuntimeEvent[] = [];
+	const result = await createRuntime({
+		store,
+		provider: scriptedProvider(trace, [], []),
+		toolRouter: new SequencedRouter(trace),
+		providerStepExecutor: {
+			execute: async () => {
+				throw new Error("worker transport details must stay private");
+			},
+		},
+	}).submit(submission(), emitted.push.bind(emitted), {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.status, "failed");
+	assert.equal(result.error_code, "provider_error");
+	assert.equal(store.turn?.status, "failed");
+	assert.deepEqual(emitted.map((event) => event.type), ["turn_started", "turn_failed"]);
+	assert.doesNotMatch(JSON.stringify(emitted), /worker transport details/u);
 });
 
 test("Chat uses canonical replay and records no eligible response continuation", async () => {
@@ -3623,7 +3648,7 @@ test("enforces explicit token no-progress and wall-clock budgets", async () => {
 });
 
 function createRuntime(options: {
-	readonly store: TurnStore;
+	readonly store: RuntimeTurnStore;
 	readonly provider: ModelProvider;
 	readonly toolRouter: ToolRouterContract;
 	readonly queueCoordinator?: QueueCoordinator;
@@ -3636,6 +3661,7 @@ function createRuntime(options: {
 	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
 	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly providerContinuation?: ProviderContinuationCoordinator;
+	readonly providerStepExecutor?: NodeTurnRuntimeOptions["providerStepExecutor"];
 	readonly writeTerminalSnapshot?: NodeTurnRuntimeOptions["writeTerminalSnapshot"];
 	readonly publishLifecycle?: (event: ShellLifecycleEvent) => void;
 	readonly runtimeConfig?: NodeRuntimeConfig;
@@ -3660,6 +3686,7 @@ function createRuntime(options: {
 		store: options.store,
 		resolveConfig: () => options.runtimeConfig ?? config(),
 		createProvider: () => options.provider,
+		...(options.providerStepExecutor ? { providerStepExecutor: options.providerStepExecutor } : {}),
 		loadLocalImages: options.loadLocalImages ?? ((paths) => paths.map(() => ({
 			mediaType: "image/png" as const,
 			data: "aW1hZ2U=",
@@ -4080,8 +4107,9 @@ function emptyQueue(): QueueSnapshot {
 	});
 }
 
-class FakeStore implements TurnStore {
+class FakeStore implements RuntimeTurnStore {
 	readonly trace: string[];
+	readonly turnTerminalizations = fakeTurnTerminalizationStore(this);
 	readonly items: CanonicalConversationItem[] = [];
 	readonly toolResults: AppendToolResultInput[] = [];
 	readonly reservations: ReserveTurnInput[] = [];
@@ -4133,7 +4161,7 @@ class FakeStore implements TurnStore {
 		});
 	}
 
-	appendContextItem(input: Parameters<TurnStore["appendContextItem"]>[0]): void {
+	appendContextItem(input: Parameters<RuntimeTurnStore["appendContextItem"]>[0]): void {
 		this.trace.push("persist:context");
 		this.items.push({ type: "context", text: input.text, metadata: input.metadata });
 	}

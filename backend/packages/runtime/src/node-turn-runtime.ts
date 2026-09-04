@@ -51,8 +51,8 @@ import type {
 	AgentEffectLedgerStore,
 	AppendContextItemInput,
 	ModelInputLedgerStore,
+	RuntimeTurnStore,
 	TurnReservation,
-	TurnStore,
 } from "@mycli/storage";
 import {
 	isRuntimeErrorCode,
@@ -108,6 +108,7 @@ import {
 import type { ProviderStepExecutor } from "./provider-step-executor.ts";
 import { publishRuntimeDiagnostic } from "./runtime-observability.ts";
 import type { RuntimeDiagnosticEvent } from "./runtime-observability.ts";
+import { projectCommittedTurnTerminalization } from "./turn-terminalization.ts";
 
 export interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -137,7 +138,7 @@ export interface NodeTurnRuntimeOptions {
 		kind: "tools" | "context" | "request" | "lifecycle",
 	) => string;
 	readonly agentBudget?: AgentBudget;
-	readonly store: TurnStore;
+	readonly store: RuntimeTurnStore;
 	readonly resolveConfig: (
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
@@ -576,17 +577,27 @@ export class NodeTurnRuntime {
 				}
 			}
 		}
-		interrupted ??= this.#options.store.failTurn({
-			sessionId: this.#options.sessionId,
-			clientTurnId: input.clientTurnId,
-			code: "interrupted",
-			message: "turn interrupted",
-			completedAt: this.#options.clock(),
-		});
+		const terminalization = interrupted
+			? this.#options.store.turnTerminalizations.load(
+				this.#options.sessionId,
+				input.clientTurnId,
+			)
+			: this.#options.store.turnTerminalizations.terminalize({
+				kind: "failed",
+				sessionId: this.#options.sessionId,
+				clientTurnId: input.clientTurnId,
+				code: "interrupted",
+				message: "turn interrupted",
+				completedAt: this.#options.clock(),
+			});
+		interrupted ??= terminalization?.turn;
+		if (!interrupted) throw new StorageFailure("turn interruption did not terminalize the turn");
 		this.#interruptActiveTools(input.turnId, emit);
 		await this.#writeTerminalSnapshot(interrupted);
 		this.#finishTurn(input.turnId);
-		emit({ type: "turn_interrupted", message: "turn interrupted" });
+		emit(terminalization
+			? projectCommittedTurnTerminalization(terminalization)
+			: { type: "turn_interrupted", message: "turn interrupted" });
 		return interrupted;
 	}
 
@@ -637,7 +648,13 @@ export class NodeTurnRuntime {
 		if (resolution.status === "interrupted") {
 			if (activeTool) this.#interruptToolExecution(activeTool, emit);
 			await this.#writeTerminalSnapshot(resolution.turn);
-			emit({ type: "turn_interrupted", message: "turn interrupted" });
+			const terminalization = this.#options.store.turnTerminalizations.load(
+				this.#options.sessionId,
+				pending.clientTurnId,
+			);
+			emit(terminalization
+				? projectCommittedTurnTerminalization(terminalization)
+				: { type: "turn_interrupted", message: "turn interrupted" });
 			this.#finishTurn(pending.turnId);
 			return resolution.turn;
 		}
@@ -1123,31 +1140,40 @@ export class NodeTurnRuntime {
 					emit,
 				);
 			}
-			const rawStepResult = await this.#providerStepExecutor.execute({
-				config,
-				provider,
-				...(context.providerRoute ? { providerRoute: context.providerRoute } : {}),
-				request,
-				timelineWindowId: durableTimelineWindowId ?? turnId,
-				timelineVersion: durableProviderStep ?? this.#agentBudget.providerSteps,
-				maxRetries: config.streamMaxRetries,
-				emit,
-				signal,
-				toolCallsAllowed: Boolean(this.#options.toolRouter),
-				recordDiagnostic: (diagnostic) => publishRuntimeDiagnostic(
-					this.#options.recordDiagnostic,
-					{
-						kind: "model_stream_diagnostics",
-						turnId,
-						provider: config.provider,
-						protocol: config.protocol,
-						model: config.model,
-						...diagnostic,
-					},
-				),
-				...(this.#options.sleep ? { sleep: this.#options.sleep } : {}),
-				...(this.#options.random ? { random: this.#options.random } : {}),
-			});
+			let rawStepResult;
+			try {
+				rawStepResult = await this.#providerStepExecutor.execute({
+					config,
+					provider,
+					...(context.providerRoute ? { providerRoute: context.providerRoute } : {}),
+					request,
+					timelineWindowId: durableTimelineWindowId ?? turnId,
+					timelineVersion: durableProviderStep ?? this.#agentBudget.providerSteps,
+					maxRetries: config.streamMaxRetries,
+					emit,
+					signal,
+					toolCallsAllowed: Boolean(this.#options.toolRouter),
+					recordDiagnostic: (diagnostic) => publishRuntimeDiagnostic(
+						this.#options.recordDiagnostic,
+						{
+							kind: "model_stream_diagnostics",
+							turnId,
+							provider: config.provider,
+							protocol: config.protocol,
+							model: config.model,
+							...diagnostic,
+						},
+					),
+					...(this.#options.sleep ? { sleep: this.#options.sleep } : {}),
+					...(this.#options.random ? { random: this.#options.random } : {}),
+				});
+			} catch (error) {
+				return this.#finalizeFailure(
+					submission,
+					normalizeFailure(error, signal, "provider_error"),
+					emit,
+				);
+			}
 			if ("failure" in rawStepResult) {
 				if (durableRequestId) {
 					try {
@@ -2282,7 +2308,8 @@ export class NodeTurnRuntime {
 	): Promise<RuntimeTurnRecord> {
 		try {
 			assertNotAborted(signal);
-			const completed = this.#options.store.completeTurn({
+			const terminalization = this.#options.store.turnTerminalizations.terminalize({
+				kind: "completed",
 				sessionId: this.#options.sessionId,
 				clientTurnId: submission.clientTurnId,
 				assistantText,
@@ -2292,6 +2319,7 @@ export class NodeTurnRuntime {
 				...(providerState ? { providerState } : {}),
 				completedAt: this.#options.clock(),
 			});
+			const completed = terminalization.turn;
 			const continuationFailure = this.#recordSafeProviderCompletion({
 				requestConfig: continuation.requestConfig,
 				requestSignature: continuation.requestSignature,
@@ -2314,12 +2342,7 @@ export class NodeTurnRuntime {
 				}
 			}
 			const snapshotWritten = await this.#writeTerminalSnapshot(completed);
-			emit({
-				type: "turn_completed",
-				assistantText,
-				usage,
-				durationMs: completedTurnDurationMs(completed),
-			});
+			emit(projectCommittedTurnTerminalization(terminalization));
 			if (snapshotWritten
 				&& memoryEnabled
 				&& submission.source !== "agent_mailbox"
@@ -2361,7 +2384,8 @@ export class NodeTurnRuntime {
 			} catch {
 				// The terminal turn still has to be closed even if continuation cleanup fails.
 			}
-			const failed = this.#options.store.failTurn({
+			const terminalization = this.#options.store.turnTerminalizations.terminalize({
+				kind: "failed",
 				sessionId: this.#options.sessionId,
 				clientTurnId: submission.clientTurnId,
 					code: failure.code,
@@ -2372,19 +2396,9 @@ export class NodeTurnRuntime {
 					...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}),
 				completedAt: this.#options.clock(),
 			});
+			const failed = terminalization.turn;
 			await this.#writeTerminalSnapshot(failed);
-			if (failure.code === "interrupted") {
-				emit({ type: "turn_interrupted", message: failure.message });
-			} else {
-					emit({
-						type: "turn_failed",
-						code: failure.code,
-						message: failure.message,
-						...(failure.additionalDetails
-							? { additionalDetails: failure.additionalDetails }
-							: {}),
-					});
-			}
+			emit(projectCommittedTurnTerminalization(terminalization));
 			return failed;
 		} catch (error) {
 			const persistence = normalizeFailure(error, undefined, "persistence_error");
@@ -2869,12 +2883,6 @@ function boundedDurationMs(startedAt: number, finishedAt: number): number {
 		return 0;
 	}
 	return Math.min(86_400_000, Math.max(0, Math.round(elapsed)));
-}
-
-function completedTurnDurationMs(turn: RuntimeTurnRecord): number {
-	const startedAt = Date.parse(turn.started_at);
-	const completedAt = turn.completed_at === null ? Number.NaN : Date.parse(turn.completed_at);
-	return boundedDurationMs(startedAt, completedAt);
 }
 
 function isFailureLike(error: unknown): error is {

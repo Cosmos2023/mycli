@@ -19,11 +19,12 @@ import {
 	type CompleteStoredTurnInput,
 	type FailStoredTurnInput,
 	type ReserveTurnInput,
-	type TurnStore,
+	type RuntimeTurnStore,
 	type TurnReservation,
 } from "@mycli/storage";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import { NodeTurnRuntime } from "../src/index.ts";
+import { fakeTurnTerminalizationStore } from "./support/fake-turn-terminalization.ts";
 
 interface TurnSubmission {
 	readonly clientTurnId: string;
@@ -38,7 +39,7 @@ interface NodeTurnRuntimeOptions {
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly instructions: string;
-	readonly store: TurnStore;
+	readonly store: RuntimeTurnStore;
 	readonly resolveConfig: (
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
@@ -441,8 +442,9 @@ test("finalizes an accepted turn when canonical history cannot be loaded", async
 	assert.deepEqual(emitted.map((event) => event.type), ["turn_started", "turn_failed"]);
 });
 
-class FakeStore implements TurnStore {
+class FakeStore implements RuntimeTurnStore {
 	readonly trace: string[];
+	readonly turnTerminalizations = fakeTurnTerminalizationStore(this);
 	readonly conversation: CanonicalMessage[];
 	turn: RuntimeTurnRecord | undefined;
 	completeCalls = 0;
@@ -488,7 +490,7 @@ class FakeStore implements TurnStore {
 		throw new Error("no-tool runtime must not persist tool calls");
 	}
 
-	appendContextItem(input: Parameters<TurnStore["appendContextItem"]>[0]): void {
+	appendContextItem(input: Parameters<RuntimeTurnStore["appendContextItem"]>[0]): void {
 		void input;
 		throw new Error("no-tool runtime must not persist context items");
 	}
@@ -539,7 +541,7 @@ class FakeStore implements TurnStore {
 }
 
 function createRuntime(overrides: {
-	readonly store: TurnStore;
+	readonly store: RuntimeTurnStore;
 	readonly provider: ModelProvider;
 	readonly trace?: string[];
 	readonly config?: NodeRuntimeConfig;

@@ -20,7 +20,10 @@ import type {
 } from "@mycli/core";
 import { manifestLogicalInputSha256, modelInputSha256 } from "@mycli/core";
 import type { ModelProvider } from "@mycli/providers";
-import { SQLiteSessionStore } from "@mycli/storage";
+import {
+	SQLiteSessionStore,
+	type RuntimeTurnStore,
+} from "@mycli/storage";
 import type {
 	ToolExecutionResult,
 	ToolRouterContract,
@@ -31,6 +34,7 @@ import {
 	NodeTurnRuntime,
 	type NodeTurnRuntimeOptions,
 } from "../src/index.ts";
+import { fakeTurnTerminalizationStore } from "./support/fake-turn-terminalization.ts";
 
 const READ_TOOL: ToolDefinition = Object.freeze({
 	id: "Read",
@@ -709,7 +713,7 @@ function createDurableRuntime(
 		modelInputLedger: store.modelInputLedger,
 		agentEffectLedger: store.agentEffectLedger,
 		createModelInputId: (kind) => `${kind}-${++id}`,
-		store,
+		store: legacyRuntimeStore(store),
 		resolveConfig: () => options.config ?? runtimeConfig(),
 		createProvider: () => provider,
 		loadLocalImages: () => [],
@@ -807,6 +811,12 @@ function reserveModelInputSession(store: SQLiteSessionStore, startedAt: string):
 		threadId: "session-1",
 		userText: "U1",
 		startedAt,
+	});
+}
+
+function legacyRuntimeStore(store: SQLiteSessionStore): RuntimeTurnStore {
+	return Object.assign(store, {
+		turnTerminalizations: fakeTurnTerminalizationStore(store),
 	});
 }
 

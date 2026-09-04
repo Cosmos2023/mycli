@@ -9,7 +9,10 @@ import {
 	type AgentCanonicalEvent,
 	type AgentSpawnConfigSnapshot,
 } from "@mycli/core";
-import { SQLiteSessionStore } from "@mycli/storage";
+import {
+	type AgentLifecycleFailpoint,
+	SQLiteSessionStore,
+} from "@mycli/storage";
 import {
 	AgentSupervisor,
 	type AgentThreadRuntimeHandle,
@@ -146,7 +149,7 @@ test("reloads an unloaded agent before its mailbox follow-up", async (t) => {
 	const events: AgentCanonicalEvent[] = [];
 	let mailboxRuns = 0;
 	const supervisor = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: {
@@ -198,7 +201,7 @@ test("rehydrates a durable idle agent that has no process-local resident", async
 	let mailboxRuns = 0;
 	let reloadConfig: AgentSpawnConfigSnapshot | undefined;
 	const restarted = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: {
@@ -240,7 +243,7 @@ test("allows explicit follow-up only for restart-recoverable interruption", asyn
 
 	let mailboxRuns = 0;
 	const restarted = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: {
@@ -271,7 +274,7 @@ test("allows explicit follow-up only for restart-recoverable interruption", asyn
 		terminalSummary: "parent interrupted child",
 	});
 	const anotherRestart = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: { create: async () => handle() },
@@ -335,7 +338,7 @@ test("sends to and interrupts a running background agent", async (t) => {
 test("contains runtime creation failure in durable terminal state", async (t) => {
 	const fixture = await supervisorFixture(t);
 	const supervisor = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: { create: async () => { throw new Error("private failure"); } },
@@ -351,12 +354,84 @@ test("contains runtime creation failure in durable terminal state", async (t) =>
 	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "failed");
 });
 
+test("contains initial activation failure without leaking a resident or split state", async (t) => {
+	let injected = false;
+	const fixture = await supervisorFixture(t, (name) => {
+		if (name === "activate_after_task" && !injected) {
+			injected = true;
+			throw new Error("injected activation failure");
+		}
+	});
+	let closed = 0;
+	const supervisor = fixture.supervisor(handle({
+		close: async () => { closed += 1; },
+	}), { maxResidents: 2 });
+
+	const result = await supervisor.spawn(spawnInput({ mode: "foreground" }));
+
+	assert.equal(result.status, "failed");
+	assert.equal(closed, 1);
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "failed");
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "failed");
+	const replacement = await supervisor.spawn(spawnInput({
+		mode: "foreground",
+		taskId: "task-2",
+		childSessionId: "child-2",
+		taskName: "replacement",
+	}));
+	assert.equal(replacement.status, "completed");
+});
+
+test("rolls back a failed follow-up activation without leaving an orphan task", async (t) => {
+	let armed = false;
+	const fixture = await supervisorFixture(t, (name) => {
+		if (armed && name === "follow_up_after_task") {
+			armed = false;
+			throw new Error("injected follow-up activation failure");
+		}
+	});
+	let taskIndex = 0;
+	let mailboxRuns = 0;
+	const supervisor = fixture.supervisor(handle({
+		runMailbox: async () => {
+			mailboxRuns += 1;
+			return { status: "completed", report: "unexpected", usage: {} };
+		},
+	}), {
+		createTaskId: () => `task-${++taskIndex}`,
+	});
+	await supervisor.spawn(spawnInput({ mode: "foreground" }));
+
+	armed = true;
+	assert.equal(await supervisor.followUp("child-1", "follow-up-turn", "continue"), false);
+	assert.equal(mailboxRuns, 0);
+	assert.equal(fixture.store.subagentTasks.get("task-2"), undefined);
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "idle");
+});
+
+test("recovers a failed paired completion into one durable failed state", async (t) => {
+	let injected = false;
+	const fixture = await supervisorFixture(t, (name) => {
+		if (name === "complete_after_task" && !injected) {
+			injected = true;
+			throw new Error("injected completion failure");
+		}
+	});
+	const supervisor = fixture.supervisor(handle());
+
+	const result = await supervisor.spawn(spawnInput({ mode: "foreground" }));
+
+	assert.equal(result.status, "failed");
+	assert.equal(fixture.store.subagentTasks.get("task-1")?.status, "failed");
+	assert.equal(fixture.store.agentThreads.get("child-1")?.status, "failed");
+});
+
 test("close interrupts running residents and unloads idle residents", async (t) => {
 	const fixture = await supervisorFixture(t);
 	const pending = deferred<AgentThreadRuntimeResult>();
 	let childIndex = 0;
 	const supervisor = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: {
@@ -494,7 +569,7 @@ test("concurrent spawns cannot oversubscribe the final resident slot", async (t)
 	];
 	let index = 0;
 	const supervisor = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: {
@@ -550,7 +625,7 @@ test("capacity pressure unloads an idle resident before starting its replacement
 	let closed = 0;
 	let child = 0;
 	const supervisor = new AgentSupervisor({
-		spawnStore: fixture.store.agentSpawns,
+		lifecycleStore: fixture.store.agentLifecycle,
 		threadStore: fixture.store.agentThreads,
 		taskStore: fixture.store.subagentTasks,
 		runtimeFactory: {
@@ -619,10 +694,17 @@ test("wall-clock budget aborts active work with a typed exhaustion result", asyn
 	assert.deepEqual(trace, ["cleanup", "close"]);
 });
 
-async function supervisorFixture(t: test.TestContext) {
+async function supervisorFixture(
+	t: test.TestContext,
+	agentLifecycleFailpoint?: (name: AgentLifecycleFailpoint) => void,
+) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-agent-supervisor-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
-	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db"), clock: () => NOW });
+	const store = new SQLiteSessionStore({
+		dbPath: join(root, "sessions.db"),
+		clock: () => NOW,
+		...(agentLifecycleFailpoint ? { agentLifecycleFailpoint } : {}),
+	});
 	t.after(() => store.close());
 	return {
 		store,
@@ -630,7 +712,7 @@ async function supervisorFixture(t: test.TestContext) {
 			runtime: AgentThreadRuntimeHandle,
 			overrides: Partial<ConstructorParameters<typeof AgentSupervisor>[0]> = {},
 		) => new AgentSupervisor({
-			spawnStore: store.agentSpawns,
+			lifecycleStore: store.agentLifecycle,
 			threadStore: store.agentThreads,
 			taskStore: store.subagentTasks,
 			runtimeFactory: { create: async () => runtime },

@@ -341,7 +341,7 @@ test("subagent controller freezes coordination tools from configured depth", asy
 		createTaskId: () => "depth-task-2",
 		createChildSessionId: () => "depth-child-2",
 			createSupervisor: (options) => new AgentSupervisor({
-				spawnStore: fixture.store.agentSpawns,
+				lifecycleStore: fixture.store.agentLifecycle,
 				threadStore: fixture.store.agentThreads,
 			taskStore: fixture.store.subagentTasks,
 			runtimeFactory: factory,
@@ -370,7 +370,7 @@ async function controllerFixture(t: TestContext) {
 			overrides: Partial<ConstructorParameters<typeof SubagentController>[0]> = {},
 		) => new SubagentController({
 				createSupervisor: (supervisorOptions) => new AgentSupervisor({
-					spawnStore: store.agentSpawns,
+					lifecycleStore: store.agentLifecycle,
 					threadStore: store.agentThreads,
 				taskStore: store.subagentTasks,
 				runtimeFactory: factory,

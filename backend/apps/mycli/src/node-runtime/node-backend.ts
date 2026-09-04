@@ -663,7 +663,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			parentTools: () => allToolExposure.map((tool) => tool.name),
 			createSubagentSupervisor: (supervisorOptions) => {
 					agentSupervisor = new AgentSupervisor({
-						spawnStore: store.agentSpawns,
+						lifecycleStore: store.agentLifecycle,
 						threadStore: store.agentThreads,
 					taskStore: store.subagentTasks,
 					runtimeFactory: childRuntimeFactory,

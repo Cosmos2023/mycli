@@ -15,9 +15,10 @@ import {
 	parseAgentPath,
 } from "@mycli/core";
 import type {
-		AgentThreadRecord,
-		AgentSpawnStore,
-		AgentThreadStore,
+	AgentLifecycleStore,
+	AgentLifecycleTransition,
+	AgentThreadRecord,
+	AgentThreadStore,
 	SubagentTaskRecord,
 	SubagentTaskStore,
 } from "@mycli/storage";
@@ -152,7 +153,7 @@ export interface SupervisedAgentMessageResult {
 }
 
 export interface AgentSupervisorOptions {
-	readonly spawnStore: AgentSpawnStore;
+	readonly lifecycleStore: AgentLifecycleStore;
 	readonly threadStore: AgentThreadStore;
 	readonly taskStore: SubagentTaskStore;
 	readonly runtimeFactory: AgentThreadRuntimeFactory;
@@ -278,7 +279,7 @@ export class AgentSupervisor {
 		}
 		let thread: AgentThreadRecord;
 		try {
-			const reservation = this.#options.spawnStore.reserve({
+			const reservation = this.#options.lifecycleStore.reserve({
 				thread: {
 					threadId: childSessionId,
 					rootThreadId: input.rootThreadId,
@@ -343,15 +344,17 @@ export class AgentSupervisor {
 				terminalPublished: false,
 				finalizing: false,
 			};
-		this.#pool.add(resident);
-		const runningTask = this.#options.taskStore.markRunning(ownership);
-		const runningThread = this.#options.threadStore.transition({
-			threadId: childSessionId,
-			status: "running",
-		});
-		resident.thread = runningThread;
-		await this.#emit("spawned", runningThread, undefined, runningTask);
-			await this.#emit("started", runningThread, undefined, runningTask);
+		let activation: AgentLifecycleTransition;
+		try {
+			activation = this.#options.lifecycleStore.activate(ownership);
+			resident.thread = activation.thread;
+			this.#pool.add(resident);
+		} catch {
+			await resident.closeOnce().catch(() => undefined);
+			return this.#failSpawn(thread, taskId, input, "child runtime failed");
+		}
+		await this.#emit("spawned", activation.thread, undefined, activation.task);
+		await this.#emit("started", activation.thread, undefined, activation.task);
 		resident.completion = this.#runResident(resident, input.prompt);
 
 		if (mode === "foreground") return resident.completion;
@@ -359,8 +362,8 @@ export class AgentSupervisor {
 			status: "running",
 			taskId,
 			childSessionId,
-			taskName: runningThread.taskName,
-			agentPath: runningThread.path,
+			taskName: activation.thread.taskName,
+			agentPath: activation.thread.path,
 			summary: "Subagent started in background",
 		});
 	}
@@ -409,11 +412,21 @@ export class AgentSupervisor {
 		} else if (thread.status !== "completed"
 			&& thread.status !== "failed"
 			&& thread.status !== "interrupted") {
-			this.#options.threadStore.transition({
-				threadId: childSessionId,
-				status: "interrupted",
-				terminalSummary: boundedSummary(reason),
-			});
+			const task = this.#options.taskStore.getLatestByChildSession(childSessionId);
+			if (task && (task.status === "queued" || task.status === "running")) {
+				this.#options.lifecycleStore.interruptRun({
+					taskId: task.taskId,
+					parentSessionId: task.parentSessionId,
+					childSessionId,
+					reason: boundedSummary(reason),
+				});
+			} else {
+				this.#options.threadStore.transition({
+					threadId: childSessionId,
+					status: "interrupted",
+					terminalSummary: boundedSummary(reason),
+				});
+			}
 		}
 		return true;
 	}
@@ -549,48 +562,36 @@ export class AgentSupervisor {
 				const report = result.report.slice(0, SUBAGENT_TASK_REPORT_MAX_CHARS);
 				const usage = normalizedUsage(result.usage, resident.usage);
 				if (result.status === "completed") {
-					this.#options.taskStore.complete({
+					const terminal = this.#options.lifecycleStore.completeRun({
 						...ownership,
 						report,
 						outputReference: `subagent-task:${resident.taskId}`,
 						usage,
 					});
-						const idle = this.#options.threadStore.transition({
-							threadId: resident.thread.threadId,
-							status: "idle",
-						});
-						resident.thread = idle;
-						await resident.handle.markIdle?.();
-					} else if (result.status === "failed") {
+					resident.thread = terminal.thread;
+					await resident.handle.markIdle?.();
+				} else if (result.status === "failed") {
 					const error = result.budgetExhausted
 						? `agent_budget_exhausted: ${result.budgetExhausted}`
 						: "child runtime failed";
-					this.#options.taskStore.fail({
+					const terminal = this.#options.lifecycleStore.failRun({
 						...ownership,
 						error,
 						report,
 						outputReference: `subagent-task:${resident.taskId}`,
 						usage,
 					});
-						resident.thread = this.#options.threadStore.transition({
-							threadId: resident.thread.threadId,
-							status: "failed",
-							terminalSummary: report || error,
-						});
-					} else {
-					this.#options.taskStore.interrupt({
+					resident.thread = terminal.thread;
+				} else {
+					const terminal = this.#options.lifecycleStore.interruptRun({
 						...ownership,
 						reason: "child runtime interrupted",
 						report,
 						outputReference: `subagent-task:${resident.taskId}`,
 						usage,
 					});
-						resident.thread = this.#options.threadStore.transition({
-							threadId: resident.thread.threadId,
-							status: "interrupted",
-							terminalSummary: report || "child runtime interrupted",
-						});
-					}
+					resident.thread = terminal.thread;
+				}
 			}
 		} catch {
 			if (resident.interruption) {
@@ -603,36 +604,24 @@ export class AgentSupervisor {
 			if (!interruptionCleanupFailed && current?.status === "running") {
 				if (wallClockExhausted) {
 					const error = "agent_budget_exhausted: wall_clock";
-					this.#options.taskStore.fail({
+					const terminal = this.#options.lifecycleStore.failRun({
 						...ownership,
 						error,
 						report: "Subagent budget exhausted: wall_clock",
 					});
-					resident.thread = this.#options.threadStore.transition({
-						threadId: resident.thread.threadId,
-						status: "failed",
-						terminalSummary: error,
-					});
+					resident.thread = terminal.thread;
 				} else if (resident.abortController.signal.aborted) {
-					this.#options.taskStore.interrupt({
+					const terminal = this.#options.lifecycleStore.interruptRun({
 						...ownership,
 						reason: "child runtime interrupted",
 					});
-					const thread = this.#options.threadStore.get(resident.thread.threadId);
-					if (thread && thread.status !== "interrupted") {
-						resident.thread = this.#options.threadStore.transition({
-							threadId: resident.thread.threadId,
-							status: "interrupted",
-							terminalSummary: "child runtime interrupted",
-						});
-					}
+					resident.thread = terminal.thread;
 				} else {
-					this.#options.taskStore.fail({ ...ownership, error: "child runtime failed" });
-					resident.thread = this.#options.threadStore.transition({
-						threadId: resident.thread.threadId,
-						status: "failed",
-						terminalSummary: "child runtime failed",
+					const terminal = this.#options.lifecycleStore.failRun({
+						...ownership,
+						error: "child runtime failed",
 					});
+					resident.thread = terminal.thread;
 				}
 			}
 		} finally {
@@ -738,28 +727,28 @@ export class AgentSupervisor {
 			childSessionId: resident.thread.threadId,
 		};
 		try {
-			this.#options.taskStore.reserve({
+			const activation = this.#options.lifecycleStore.startFollowUp({
 				...ownership,
 				parentTurnId: pending.parentTurnId,
 				profileId: resident.thread.profileId,
 				mode: "background",
 				description: pending.description,
 			});
-			const runningTask = this.#options.taskStore.markRunning(ownership);
-			const runningThread = this.#options.threadStore.transition({
-				threadId: resident.thread.threadId,
-				status: "running",
-			});
 			resident.taskId = taskId;
 			resident.parentTurnId = pending.parentTurnId;
-			resident.thread = runningThread;
+			resident.thread = activation.thread;
 			resident.abortController = new AbortController();
 			resident.progressSequence = 0;
 			resident.usage = Object.freeze({});
 			resident.terminalPublished = false;
 			resident.finalizing = false;
 			resident.interruption = undefined;
-			await this.#emit("started", runningThread, "Subagent follow-up started", runningTask);
+			await this.#emit(
+				"started",
+				activation.thread,
+				"Subagent follow-up started",
+				activation.task,
+			);
 			resident.completion = this.#runResident(resident, "", true);
 			return true;
 		} catch {
@@ -778,17 +767,16 @@ export class AgentSupervisor {
 			parentSessionId: input.parentSessionId,
 			childSessionId: thread.threadId,
 		};
-		this.#options.taskStore.markRunning(ownership);
-		this.#options.threadStore.transition({ threadId: thread.threadId, status: "running" });
-		const failed = this.#options.taskStore.fail({ ...ownership, error });
-		const failedThread = this.#options.threadStore.transition({
-			threadId: thread.threadId,
-			status: "failed",
-			terminalSummary: error,
-		});
-		await this.#emit("failed", failedThread, "Subagent failed", failed);
-		this.#scheduler.release(thread.threadId);
-		return terminalResult(failed, failedThread);
+		try {
+			const failed = this.#options.lifecycleStore.failSpawn({ ...ownership, error });
+			await this.#emit("failed", failed.thread, "Subagent failed", failed.task);
+			return terminalResult(failed.task, failed.thread);
+		} catch {
+			return spawnFailure(taskId, thread.threadId, input.taskName, input.parentPath, error);
+		} finally {
+			this.#pool.remove(thread.threadId);
+			this.#scheduler.release(thread.threadId);
+		}
 	}
 
 	async #evictIdle(threadId: string): Promise<void> {
@@ -852,12 +840,13 @@ export class AgentSupervisor {
 		if (!resident) return;
 		const task = this.#options.taskStore.get(resident.taskId);
 		if (task?.status !== "running") return;
-		this.#options.taskStore.interrupt({
+		const terminal = this.#options.lifecycleStore.interruptRun({
 			taskId: resident.taskId,
 			parentSessionId: resident.parentSessionId,
 			childSessionId: resident.thread.threadId,
 			reason: boundedSummary(reason),
 		});
+		resident.thread = terminal.thread;
 	}
 
 	#beginResidentInterruption(resident: ResidentAgent, reason: string): ResidentInterruption {
@@ -889,16 +878,6 @@ export class AgentSupervisor {
 
 	#terminalizeResidentInterruption(resident: ResidentAgent, reason: string): void {
 		this.#interruptTask(resident, reason);
-		const thread = this.#options.threadStore.get(resident.thread.threadId);
-		if (thread && thread.status !== "completed"
-			&& thread.status !== "failed"
-			&& thread.status !== "interrupted") {
-			resident.thread = this.#options.threadStore.transition({
-				threadId: resident.thread.threadId,
-				status: "interrupted",
-				terminalSummary: reason,
-			});
-		}
 	}
 
 	async #publishResidentTerminal(resident: ResidentAgent): Promise<void> {
