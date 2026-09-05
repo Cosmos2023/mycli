@@ -464,6 +464,12 @@ export class TranscriptViewportComponent implements Component {
 	private committedWidth: number | undefined;
 	private committedContentLineage: number | undefined;
 	private committedLogicalEnd = 0;
+	private committedAnchor: {
+		readonly section: Container;
+		readonly component: Component;
+		readonly componentIndex: number;
+		readonly rowOffset: number;
+	} | undefined;
 	private pendingScrollbackLineage: number | undefined;
 	private pendingScrollbackStart = 0;
 	private pendingScrollbackLines: string[] = [];
@@ -598,10 +604,10 @@ export class TranscriptViewportComponent implements Component {
 		if (this.scrollOffset !== 0 || (!refreshLines && this.lastRenderedWidth !== width)) return [];
 		const height = Math.max(1, this.heightForWidth(width));
 		const previousLines = this.lastRenderedLines;
-		const previousStart = this.visibleStart(previousLines, height);
+		const previousStart = this.visibleStart(previousLines, height, this.committedStart(previousLines, width));
 		const lines = refreshLines ? this.renderContent(width) : this.lastRenderedLines;
 		this.lastLineCount = lines.length;
-		const start = this.visibleStart(lines, height);
+		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
 		const boundedWindowRolled =
 			this.maxRenderedRows !== undefined &&
 			previousLines.length >= this.maxRenderedRows &&
@@ -670,7 +676,7 @@ export class TranscriptViewportComponent implements Component {
 		this.lastLineCount = lines.length;
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
-		const start = this.visibleStart(lines, height);
+		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
 		const visible = lines.slice(start, start + height);
 		while (visible.length < height) {
 			visible.push("");
@@ -678,14 +684,29 @@ export class TranscriptViewportComponent implements Component {
 		return visible;
 	}
 
-	private visibleStart(lines: string[], height: number): number {
+	private committedStart(lines: string[], width: number): number {
+		if (this.scrollOffset !== 0 || this.committedWidth !== width) return 0;
+		if (
+			this.lastRenderedContentLineage !== undefined &&
+			this.lastRenderedContentLineage === this.committedContentLineage
+		) {
+			return Math.max(0, Math.min(lines.length, this.committedLogicalEnd - this.lastRenderedLineOrigin));
+		}
+		return this.committedAnchor === undefined && this.committedPrefixLength > 0 &&
+			lines[this.committedPrefixLength - 1] === this.committedPrefixBoundary
+			? this.committedPrefixLength
+			: 0;
+	}
+
+	private visibleStart(lines: string[], height: number, committedStart: number = 0): number {
 		let start = Math.max(0, lines.length - height - this.scrollOffset);
 		if (this.scrollOffset === 0) {
 			while (start > 0 && lines.slice(start, start + height).every(isVisuallyBlankLine)) {
 				start -= 1;
 			}
 		}
-		return start;
+		// Native history cannot move back into the live frame when shell chrome shrinks.
+		return Math.max(start, committedStart);
 	}
 
 	private renderContent(width: number): string[] {
@@ -734,7 +755,33 @@ export class TranscriptViewportComponent implements Component {
 		this.lastRenderedContentLineage = this.maxRenderedRows === undefined
 			? undefined
 			: this.retainedContentLineage;
+		this.rebaseCommittedPrefix(width, lines);
 		return lines;
+	}
+
+	private rebaseCommittedPrefix(width: number, lines: string[]): void {
+		// A bounded rebuild can change the logical origin while retaining the source component.
+		const anchor = this.committedAnchor;
+		if (
+			!anchor || this.committedWidth !== width ||
+			this.lastRenderedContentLineage === undefined ||
+			this.lastRenderedContentLineage === this.committedContentLineage ||
+			anchor.section.children[anchor.componentIndex] !== anchor.component
+		) return;
+		const chunk = this.retainedContentChunks.find((candidate) =>
+			candidate.section === anchor.section && candidate.componentIndex === anchor.componentIndex);
+		if (!chunk || anchor.rowOffset > chunk.totalLines) return;
+		const logicalEnd = chunk.sourceStart + anchor.rowOffset;
+		const start = logicalEnd - this.lastRenderedLineOrigin;
+		if (start < 0 || start > lines.length) return;
+		if (start > 0 && lines[start - 1] !== this.committedPrefixBoundary) return;
+		if (this.pendingScrollbackLineage === this.committedContentLineage) {
+			this.pendingScrollbackStart += logicalEnd - this.committedLogicalEnd;
+			this.pendingScrollbackLineage = this.lastRenderedContentLineage;
+		}
+		this.committedPrefixLength = start;
+		this.committedLogicalEnd = logicalEnd;
+		this.committedContentLineage = this.lastRenderedContentLineage;
 	}
 
 	private renderContentTail(width: number, maxRows: number): TranscriptTailRender {
@@ -1059,6 +1106,27 @@ export class TranscriptViewportComponent implements Component {
 		this.committedWidth = width;
 		this.committedContentLineage = this.lastRenderedContentLineage;
 		this.committedLogicalEnd = this.lastRenderedLineOrigin + start;
+		this.committedAnchor = undefined;
+		if (start > 0 && this.lastRenderedContentLineage !== undefined) {
+			// Locate the boundary without scanning stable chunks on every streaming delta.
+			let lower = this.retainedContentChunkOffset;
+			let upper = this.retainedContentChunks.length;
+			while (lower < upper) {
+				const middle = Math.floor((lower + upper) / 2);
+				if (this.retainedContentChunks[middle]!.start < this.committedLogicalEnd) lower = middle + 1;
+				else upper = middle;
+			}
+			const chunk = this.retainedContentChunks[lower - 1];
+			const component = chunk?.section.children[chunk.componentIndex];
+			if (chunk && component) {
+				this.committedAnchor = {
+					section: chunk.section,
+					component,
+					componentIndex: chunk.componentIndex,
+					rowOffset: this.committedLogicalEnd - chunk.sourceStart,
+				};
+			}
+		}
 		this.clearPendingScrollbackLines();
 	}
 }

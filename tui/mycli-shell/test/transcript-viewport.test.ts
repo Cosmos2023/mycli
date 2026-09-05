@@ -279,6 +279,75 @@ test("logical row origins disambiguate repeated native scrollback lines", () => 
 	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), ["same"]);
 });
 
+test("native viewport expansion does not redraw or recommit owned history rows", () => {
+	const content = new Container();
+	const transcript = new Container();
+	content.addChild(transcript);
+	const original = Array.from({ length: 8 }, (_, index) => `line ${index}`);
+	for (const line of original) transcript.addChild(new CountingComponent(line));
+	let height = 4;
+	let revision = 0;
+	const viewport = new TranscriptViewportComponent(content, () => height, 8, () => revision);
+	const history = viewport.scrollbackPrefix(80);
+	height = 2;
+	history.push(...viewport.takeNewScrollbackLines(80, true));
+	height = 4;
+
+	assert.deepEqual([...history, ...viewport.render(80).filter(Boolean)], original);
+	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), []);
+	height = 2;
+	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), []);
+	height = 4;
+	for (let index = 8; index < 12; index += 1) {
+		const prefixLength = transcript.children.length;
+		transcript.addChild(new CountingComponent(`line ${index}`));
+		revision += 1;
+		viewport.markSectionTailChanged(transcript, prefixLength);
+		history.push(...viewport.takeNewScrollbackLines(80, true));
+		assert.deepEqual(
+			[...history, ...viewport.render(80).filter(Boolean)],
+			Array.from({ length: index + 1 }, (_, line) => `line ${line}`),
+		);
+	}
+});
+
+test("native viewport preserves equal-text rows when its height grows", () => {
+	const content = new Container();
+	const transcript = new Container();
+	content.addChild(transcript);
+	for (let index = 0; index < 8; index += 1) transcript.addChild(new CountingComponent("same"));
+	let height = 2;
+	const viewport = new TranscriptViewportComponent(content, () => height, 8, () => 0);
+	const history = viewport.scrollbackPrefix(80);
+	height = 4;
+	assert.equal([...history, ...viewport.render(80).filter(Boolean)].length, 8);
+	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), []);
+});
+
+test("native history anchors survive a full rebuild of a rolled bounded window", () => {
+	const content = new Container();
+	const transcript = new Container();
+	content.addChild(transcript);
+	for (let index = 0; index < 8; index += 1) transcript.addChild(new CountingComponent(`line ${index}`));
+	let height = 4;
+	let revision = 0;
+	const viewport = new TranscriptViewportComponent(content, () => height, 8, () => revision);
+	const history = viewport.scrollbackPrefix(80);
+	transcript.addChild(new CountingComponent("line 8"));
+	revision += 1;
+	viewport.markSectionTailChanged(transcript, 8);
+	history.push(...viewport.takeNewScrollbackLines(80, true));
+	viewport.render(80);
+	height = 8;
+	revision += 1;
+	viewport.markContentChanged();
+	assert.deepEqual(
+		[...history, ...viewport.render(80).filter(Boolean)],
+		Array.from({ length: 9 }, (_, index) => `line ${index}`),
+	);
+	assert.deepEqual(viewport.takeNewScrollbackLines(80, true), []);
+});
+
 test("rendered bounded rolls retain displaced rows until native scrollback collects them", () => {
 	const components = Array.from({ length: 5 }, (_, index) => new CountingComponent(`line ${index}`));
 	let revision = 1;

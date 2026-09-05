@@ -4775,9 +4775,18 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 - Native scrollback watermarks use the same logical lineage and absolute row coordinates. When a
   validated bounded update retains that lineage, scrollback derives the exact uncommitted interval
   instead of inferring overlap from line text. Equal adjacent rows remain distinct history rows.
+- The native live viewport and scrollback delta collection share the committed history boundary.
+  A shorter approval, composer, pending-input, or footer surface must not move already committed
+  rows back into the live frame or make them eligible for another append. Released space is padded
+  until later transcript output fills it; ordinary chrome changes never clear native scrollback.
+- A bounded committed boundary also retains its source component, section/index, and intra-component
+  row offset. A full cache rebuild may reset logical row origins without replacing that component.
+  Rebase the committed and pending coordinates only when the source identity and boundary row still
+  match. Locate anchors by logical row with binary search during ordinary streaming; do not scan
+  the stable chunk prefix on each delta or use equal text as a message identity.
 - A rendered roll may displace uncommitted rows before the next scrollback collection. Retain that
   contiguous interval with its lineage until collection, then append the still-retained prefix.
-  Width changes, full bounded rebuilds, and lineage disagreement keep the content-overlap fallback
+  Width changes and rebuilds without a surviving source anchor keep the content-overlap fallback
   and reset the logical watermark after collection or source-backed scrollback replacement.
 - Shell chrome containers may reuse rendered lines between viewport-height measurement and their
   later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
@@ -4949,6 +4958,8 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 | One changed component's bounded tail fills the row cap | Use its retained source start plus current `totalLines` to advance the line origin without resetting lineage |
 | Full-height tail no longer overlaps the prior retained window | Start a new logical lineage; do not claim rows omitted by both bounded renders |
 | Native scrollback collects a retained-lineage roll | Emit the absolute interval between its committed watermark and current visible start without comparing stable line text |
+| Native viewport grows after an approval or multiline draft closes | Keep the live start at or after the committed boundary; preserve history and pad released space |
+| Full bounded rebuild retains the committed source component and row | Rebase the committed watermark and pending interval to the new logical origin |
 | Several bounded rolls render before scrollback collection | Retain displaced uncommitted rows as one contiguous pending interval, then emit them before the current retained prefix |
 | Full render, width change, or logical-lineage disagreement | Use the content-overlap compatibility path and establish a new logical watermark after collection/replacement |
 | Tail shrinks and retained rows cannot fill the cap | Recompute from earlier components to expose the correct older rows |
@@ -5211,6 +5222,12 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 - Native scrollback coordinate tests roll repeated equal strings and assert one physical history row
   is emitted. Delayed-collection tests render several bounded rolls, then assert displaced and
   still-retained history rows are emitted exactly once in logical order.
+- Native history boundary tests compare the complete xterm buffer against canonical message order
+  after repeated approvals, multiline follow-up submission, blocked/coalesced chrome changes,
+  bounded and unbounded transcript growth, and resize. Inspect a genuinely scrolled viewport as
+  well as the physical buffer, and require no scrollback clear during ordinary chrome changes.
+  Unit tests grow the viewport after commits and rebase full-cache rebuilds after a bounded roll;
+  preserve legitimate equal-text rows as distinct entries.
 - Full-height component tests grow one tail beyond the row cap with both repeated and distinct
   lines. They assert `totalLines` preserves one-row lineage, repeated rows remain distinct, and
   several rendered rolls can be collected later in exact logical order.
@@ -5351,6 +5368,25 @@ return overlapFallback(previousLines, nextLines);
 Text overlap is a compatibility fallback for coordinate resets. It cannot identify repeated rows
 inside a retained logical lineage, and rendered-but-uncollected displaced rows must be preserved
 until the logical interval is committed.
+
+#### Wrong
+
+```typescript
+const start = Math.max(0, lines.length - currentViewportHeight);
+committedPrefixLength = start;
+return lines.slice(start);
+```
+
+#### Correct
+
+```typescript
+rebaseCommittedPrefix(width, lines);
+const start = Math.max(desiredVisibleStart, committedStart(lines, width));
+return padViewport(lines.slice(start, start + currentViewportHeight));
+```
+
+Physical history remains committed when shell chrome shrinks. Only an explicit source-backed
+history replacement establishes an earlier boundary; cache origins are not terminal history IDs.
 
 #### Wrong
 

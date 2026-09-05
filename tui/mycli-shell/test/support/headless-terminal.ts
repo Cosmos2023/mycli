@@ -98,6 +98,17 @@ export class HeadlessTerminal implements Terminal {
 		this.inputHandler?.(data);
 	}
 
+	scrollLines(lines: number): void {
+		this.emulator.scrollLines(lines);
+	}
+
+	bufferLines(): string[] {
+		const buffer = this.emulator.buffer.active;
+		return Array.from({ length: buffer.length }, (_, row) =>
+			buffer.getLine(row)?.translateToString(true) ?? "",
+		);
+	}
+
 	visibleLines(): string[] {
 		const buffer = this.emulator.buffer.active;
 		return Array.from({ length: this.rows }, (_, row) =>
