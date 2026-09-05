@@ -1,9 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"Backend guideline index and pre-development routing"}
-{"file":".trellis/spec/backend/provider-transport-contract.md","reason":"Pi-ai routing, retry, replay, and hosted-search ownership"}
-{"file":".trellis/spec/backend/runtime-tui-gateway-contract.md","reason":"Gateway payload and TUI reducer consistency"}
-{"file":".trellis/spec/backend/configuration-trust-contract.md","reason":"Configuration precedence, validation, and persistence boundaries"}
-{"file":".trellis/spec/backend/error-handling.md","reason":"Provider and request failure taxonomy"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Required tests and repository quality gates"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Provider/config/gateway/TUI data-flow checklist"}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Avoid duplicated provider and catalog metadata"}
-{"file":".trellis/tasks/09-02-adopt-pi-ai-provider-directory/research/dsh-provider-directory-and-model-flow.md","reason":"DSH reference behavior and current mycli gap analysis"}
