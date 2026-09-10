@@ -1,4 +1,6 @@
+import type { ErrorContext } from "@mycli/contracts";
 import type {
+	CanonicalImage,
 	CanonicalToolCall,
 	FileMutationPreviewChange,
 	PermissionRequestProfile,
@@ -6,7 +8,7 @@ import type {
 	ShellLifecycleEvent,
 	ToolDefinition,
 } from "@mycli/core";
-import type { ExecutionPolicy } from "./execution-policy.ts";
+import type { ExecutionPolicy } from "./policy/execution-policy.ts";
 
 export interface ToolPermissionGrant {
 	readonly scope: PermissionGrantScope;
@@ -83,6 +85,10 @@ export interface CombinedToolManifest {
 }
 
 export interface ToolExecutionOptions {
+	readonly imageDetailOriginalSupported?: boolean;
+	readonly imageInputSupported?: boolean;
+	readonly errorContextVersion?: 1;
+	readonly mutating?: boolean;
 	readonly signal: AbortSignal;
 	readonly ownerSessionId: string;
 	readonly ownerTurnId?: string;
@@ -134,8 +140,10 @@ export interface ToolExecutionResult {
 	readonly toolName: string;
 	readonly success: boolean;
 	readonly modelOutput: string;
+	readonly images?: readonly CanonicalImage[];
 	readonly summary: string;
 	readonly errorKind?: string;
+	readonly errorContext?: ErrorContext;
 	readonly metadata: Readonly<Record<string, unknown>>;
 	readonly planUpdate?: PlanUpdateEffect;
 	readonly toolActivation?: ToolActivationEffect;
@@ -144,8 +152,10 @@ export interface ToolExecutionResult {
 export interface ToolAdapterResult {
 	readonly success: boolean;
 	readonly modelOutput: string;
+	readonly images?: readonly CanonicalImage[];
 	readonly summary: string;
 	readonly errorKind?: string;
+	readonly errorContext?: ErrorContext;
 	readonly metadata: Readonly<Record<string, unknown>>;
 	readonly planUpdate?: PlanUpdateEffect;
 	readonly toolActivation?: ToolActivationEffect;
@@ -176,6 +186,8 @@ export interface ToolTurnCatalog {
 
 export interface ToolAdapter {
 	readonly definition: ToolDefinition;
+	/** Accepted only by dispatch for persisted calls; never exposed to the model. */
+	readonly legacyInputSchemas?: readonly Readonly<Record<string, unknown>>[];
 	readonly supportsParallelToolCalls?: boolean;
 	beginTurn?(turnId: string, catalog?: ToolTurnCatalog): void;
 	finishTurn?(turnId: string): void;

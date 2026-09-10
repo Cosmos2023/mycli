@@ -1,4 +1,5 @@
 import { createIntegrationId } from "../foundation/ids.ts";
+import { deepFreezeCopy } from "./deep-freeze-copy.ts";
 import { PluginHostError } from "./process-host.ts";
 import type {
 	PluginHostContract,
@@ -201,14 +202,6 @@ function commandId(pluginId: string, name: string): string | undefined {
 
 function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function deepFreezeCopy<Value>(value: Value): Value {
-	if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeCopy)) as Value;
-	if (!isRecord(value)) return value;
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).map(([key, child]) => [key, deepFreezeCopy(child)]),
-	)) as Value;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

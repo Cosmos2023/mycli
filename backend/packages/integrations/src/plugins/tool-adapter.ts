@@ -7,6 +7,7 @@ import type {
 import { createIntegrationId, providerSafeToolName } from "../foundation/ids.ts";
 import { defineIntegrationRegistration } from "../foundation/registration.ts";
 import type { IntegrationRegistration } from "../foundation/registration.ts";
+import { deepFreezeCopy } from "./deep-freeze-copy.ts";
 import { PluginHostError } from "./process-host.ts";
 import type {
 	PluginHostContract,
@@ -119,14 +120,6 @@ function safeText(value: unknown, fallback: string, maximum: number): string {
 
 function safeErrorKind(value: unknown): string | undefined {
 	return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(value) ? value : undefined;
-}
-
-function deepFreezeCopy<Value>(value: Value): Value {
-	if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeCopy)) as Value;
-	if (!isRecord(value)) return value;
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).map(([key, child]) => [key, deepFreezeCopy(child)]),
-	)) as Value;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

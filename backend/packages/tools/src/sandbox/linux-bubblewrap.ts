@@ -2,8 +2,8 @@ import {
 	hasUnrestrictedFilesystem,
 	hasUnrestrictedNetwork,
 	type SandboxProfile,
-} from "../execution-policy.ts";
-import type { SandboxedProcessLaunch } from "../process-sandbox.ts";
+} from "../policy/execution-policy.ts";
+import type { SandboxedProcessLaunch } from "./process-sandbox.ts";
 
 export const LINUX_BUBBLEWRAP_EXECUTABLES = ["/usr/bin/bwrap", "/bin/bwrap"] as const;
 

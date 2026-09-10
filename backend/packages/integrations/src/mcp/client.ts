@@ -18,6 +18,8 @@ import type {
 	McpProtocolClient,
 	McpResourceContent,
 	McpResourceDescriptor,
+	McpResourcePage,
+	McpResourceTemplatePage,
 	McpServerConfig,
 	McpToolCallResult,
 	McpToolDescriptor,
@@ -80,8 +82,21 @@ export class McpClient implements McpClientContract {
 
 	async listResources(signal: AbortSignal): Promise<readonly McpResourceDescriptor[]> {
 		return this.#run(signal, async () => {
-			const result = await this.#protocol.listResources(signal);
-			return Object.freeze(result.resources.flatMap((item) => {
+			const resources: Readonly<Record<string, unknown>>[] = [];
+			const seen = new Set<string>();
+			let cursor: string | undefined;
+			do {
+				signal.throwIfAborted();
+				const page = await this.#protocol.listResources(signal, cursor);
+				resources.push(...page.resources);
+				cursor = page.nextCursor;
+				if (resources.length > 10_000 || seen.size >= 100
+					|| (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursor.length > 4_096 || seen.has(cursor)))) {
+					throw new Error("invalid_mcp_resource_pagination");
+				}
+				if (cursor) seen.add(cursor);
+			} while (cursor !== undefined);
+			return Object.freeze(resources.flatMap((item) => {
 				const uri = stringValue(item.uri);
 				if (!uri) return [];
 				return [Object.freeze({
@@ -109,6 +124,36 @@ export class McpClient implements McpClientContract {
 					...(stringValue(item.blob) !== undefined ? { blob: stringValue(item.blob) } : {}),
 				})];
 			}));
+		});
+	}
+
+	async listResourcesPage(signal: AbortSignal, cursor?: string): Promise<McpResourcePage> {
+		return this.#run(signal, async () => {
+			validateCursor(cursor);
+			const page = await this.#protocol.listResources(signal, cursor);
+			validateCursor(page.nextCursor, cursor);
+			if (page.resources.length > 10_000) throw new Error("invalid_mcp_resource_pagination");
+			return { resources: page.resources.flatMap((item) => {
+				const uri = stringValue(item.uri);
+				return uri ? [{ serverId: this.config.id, uri, name: stringValue(item.name) ?? uri,
+					description: stringValue(item.description) ?? "",
+					...(stringValue(item.mimeType) ? { mimeType: stringValue(item.mimeType) } : {}) }] : [];
+			}), ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+		});
+	}
+
+	async listResourceTemplates(signal: AbortSignal, cursor?: string): Promise<McpResourceTemplatePage> {
+		return this.#run(signal, async () => {
+			validateCursor(cursor);
+			const page = await this.#protocol.listResourceTemplates?.(signal, cursor) ?? { resourceTemplates: [] };
+			validateCursor(page.nextCursor, cursor);
+			if (page.resourceTemplates.length > 10_000) throw new Error("invalid_mcp_resource_pagination");
+			return { resourceTemplates: page.resourceTemplates.flatMap((item) => {
+				const uriTemplate = stringValue(item.uriTemplate);
+				return uriTemplate ? [{ serverId: this.config.id, uriTemplate,
+					name: stringValue(item.name) ?? uriTemplate, description: stringValue(item.description) ?? "",
+					...(stringValue(item.mimeType) ? { mimeType: stringValue(item.mimeType) } : {}) }] : [];
+			}), ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
 		});
 	}
 
@@ -167,6 +212,7 @@ class SdkProtocolClient implements McpProtocolClient {
 	async listTools(signal: AbortSignal): Promise<{
 		readonly tools: readonly Readonly<Record<string, unknown>>[];
 	}> {
+		if (!this.#client.getServerCapabilities()?.tools) return { tools: [] };
 		const result = await this.#client.listTools({}, this.#requestOptions(signal));
 		return { tools: result.tools as readonly Readonly<Record<string, unknown>>[] };
 	}
@@ -183,11 +229,14 @@ class SdkProtocolClient implements McpProtocolClient {
 		) as Readonly<Record<string, unknown>>;
 	}
 
-	async listResources(signal: AbortSignal): Promise<{
+	async listResources(signal: AbortSignal, cursor?: string): Promise<{
 		readonly resources: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
 	}> {
-		const result = await this.#client.listResources({}, this.#requestOptions(signal));
-		return { resources: result.resources as readonly Readonly<Record<string, unknown>>[] };
+		if (!this.#client.getServerCapabilities()?.resources) return { resources: [] };
+		const result = await this.#client.listResources(cursor === undefined ? {} : { cursor }, this.#requestOptions(signal));
+		return { resources: result.resources as readonly Readonly<Record<string, unknown>>[],
+			...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }) };
 	}
 
 	async readResource(uri: string, signal: AbortSignal): Promise<{
@@ -197,12 +246,28 @@ class SdkProtocolClient implements McpProtocolClient {
 		return { contents: result.contents as readonly Readonly<Record<string, unknown>>[] };
 	}
 
+	async listResourceTemplates(signal: AbortSignal, cursor?: string): Promise<{
+		readonly resourceTemplates: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
+	}> {
+		if (!this.#client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
+		const result = await this.#client.listResourceTemplates(cursor === undefined ? {} : { cursor }, this.#requestOptions(signal));
+		return { resourceTemplates: result.resourceTemplates,
+			...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }) };
+	}
+
 	close(): Promise<void> {
 		return this.#client.close();
 	}
 
 	#requestOptions(signal: AbortSignal): { readonly signal: AbortSignal; readonly timeout: number } {
 		return { signal, timeout: this.#timeoutMs };
+	}
+}
+
+function validateCursor(cursor: string | undefined, previous?: string): void {
+	if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursor.length > 4_096 || cursor === previous)) {
+		throw new Error("invalid_mcp_resource_pagination");
 	}
 }
 

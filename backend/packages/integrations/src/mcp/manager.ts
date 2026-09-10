@@ -5,6 +5,10 @@ import type {
 	McpManagedClient,
 	McpResourceContent,
 	McpResourceDescriptor,
+	McpResourceListing,
+	McpResourcePage,
+	McpResourceTemplateDescriptor,
+	McpResourceTemplateListing,
 	McpServerConfig,
 	McpServerDiscovery,
 	McpToolDescriptor,
@@ -45,6 +49,8 @@ export class McpManager {
 	#currentDiscovery?: McpManagerDiscovery;
 	#closePromise?: Promise<void>;
 	#closed = false;
+	readonly #resourceController = new AbortController();
+	readonly #resourceOperations = new Set<Promise<unknown>>();
 
 	constructor(options: McpManagerOptions) {
 		this.#configs = Object.freeze([...options.configs].sort((left, right) => (
@@ -78,20 +84,108 @@ export class McpManager {
 		return this.#refreshPromise;
 	}
 
-	async readResource(
+	listResources(signal: AbortSignal, serverId?: string): Promise<McpResourceListing> {
+		return this.#runResource(signal, async (activeSignal) => {
+			const configs = this.#configs.filter((config) => config.enabled && (serverId === undefined || config.id === serverId));
+			if (serverId && configs.length === 0) throw new Error("unknown_mcp_server");
+			const resources: McpResourceDescriptor[] = [];
+			const failures: { server: string; errorKind: string }[] = [];
+			const settled = await Promise.allSettled(configs.map(async (config) => {
+				const client = this.#clients.get(config.id);
+				if (!client) throw new Error("mcp_server_unavailable");
+				return client.listResources(activeSignal);
+			}));
+			activeSignal.throwIfAborted();
+			settled.forEach((result, index) => {
+				if (result.status === "fulfilled") resources.push(...result.value);
+				else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason) });
+			});
+			return Object.freeze({ resources: Object.freeze(resources), failures: Object.freeze(failures) });
+		});
+	}
+
+	readResource(
 		serverId: string,
 		uri: string,
 		signal: AbortSignal,
 	): Promise<readonly McpResourceContent[]> {
-		await this.discover(signal);
-		const client = this.#clients.get(serverId);
-		if (!client) throw new Error("unknown_mcp_server");
-		return client.readResource(uri, signal);
+		return this.#runResource(signal, async (activeSignal) => {
+			const client = this.#clients.get(serverId);
+			if (!client) throw new Error("unknown_mcp_server");
+			return client.readResource(uri, activeSignal);
+		});
+	}
+
+	listResourcesPage(serverId: string, signal: AbortSignal, cursor?: string): Promise<McpResourcePage> {
+		return this.#runResource(signal, async (activeSignal) => {
+			const client = this.#clients.get(serverId);
+			if (!client) throw new Error("unknown_mcp_server");
+			if (client.listResourcesPage) return client.listResourcesPage(activeSignal, cursor);
+			if (cursor !== undefined) throw new Error("invalid_mcp_resource_pagination");
+			return { resources: await client.listResources(activeSignal) };
+		});
+	}
+
+	listResourceTemplates(signal: AbortSignal, serverId?: string, cursor?: string): Promise<McpResourceTemplateListing> {
+		return this.#runResource(signal, async (activeSignal) => {
+			if (cursor !== undefined && serverId === undefined) throw new Error("invalid_mcp_resource_pagination");
+			const configs = this.#configs.filter((config) => config.enabled && (serverId === undefined || config.id === serverId));
+			if (serverId && configs.length === 0) throw new Error("unknown_mcp_server");
+			const resourceTemplates: McpResourceTemplateDescriptor[] = [];
+			const failures: { server: string; errorKind: string }[] = [];
+			const settled = await Promise.allSettled(configs.map(async (config) => {
+				const client = this.#clients.get(config.id);
+				if (!client) throw new Error("mcp_server_unavailable");
+				const templates: McpResourceTemplateDescriptor[] = [];
+				const seen = new Set<string>();
+				let next = cursor;
+				do {
+					activeSignal.throwIfAborted();
+					const page = await client.listResourceTemplates?.(activeSignal, next) ?? { resourceTemplates: [] };
+					if (serverId !== undefined) return page;
+					templates.push(...page.resourceTemplates);
+					next = page.nextCursor;
+					if (templates.length > 10_000 || seen.size >= 100
+						|| (next !== undefined && (typeof next !== "string" || !next || next.length > 4_096 || seen.has(next)))) {
+						throw new Error("invalid_mcp_resource_pagination");
+					}
+					if (next) seen.add(next);
+				} while (next !== undefined);
+				return { resourceTemplates: templates };
+			}));
+			activeSignal.throwIfAborted();
+			let nextCursor: string | undefined;
+			settled.forEach((result, index) => {
+				if (result.status === "fulfilled") {
+					resourceTemplates.push(...result.value.resourceTemplates);
+					nextCursor = result.value.nextCursor;
+				} else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason) });
+			});
+			return { resourceTemplates, failures, ...(nextCursor === undefined ? {} : { nextCursor }) };
+		});
+	}
+
+	async #runResource<Value>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<Value>): Promise<Value> {
+		if (this.#closed) throw new Error("mcp_manager_closed");
+		const activeSignal = AbortSignal.any([signal, this.#resourceController.signal]);
+		activeSignal.throwIfAborted();
+		// Discovery owns startup cleanup; only track resource IO after it completes.
+		await this.discover(activeSignal);
+		const pending = Promise.resolve().then(async () => {
+			activeSignal.throwIfAborted();
+			const value = await operation(activeSignal);
+			activeSignal.throwIfAborted();
+			return value;
+		});
+		this.#resourceOperations.add(pending);
+		void pending.then(() => this.#resourceOperations.delete(pending), () => this.#resourceOperations.delete(pending));
+		return pending;
 	}
 
 	close(): Promise<void> {
 		if (!this.#closePromise) {
 			this.#closed = true;
+			this.#resourceController.abort();
 			this.#closePromise = this.#closeAll();
 		}
 		return this.#closePromise;
@@ -263,6 +357,7 @@ export class McpManager {
 
 	async #closeAll(): Promise<void> {
 		await Promise.allSettled([
+			...this.#resourceOperations,
 			...(this.#cachePromise ? [this.#cachePromise] : []),
 			...(this.#refreshPromise ? [this.#refreshPromise] : []),
 		]);

@@ -250,3 +250,6 @@ export {
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS,
 } from "./subagents/task-notification.ts";
+export { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool } from "./mcp/resource-tools.ts";
+export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
+	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";

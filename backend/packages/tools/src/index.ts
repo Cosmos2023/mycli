@@ -9,9 +9,10 @@ export {
 	UPDATE_PLAN_TOOL_DEFINITION,
 	WEB_FETCH_TOOL_DEFINITION,
 	WRITE_TOOL_DEFINITION,
-} from "./manifest.ts";
-export { RequestPermissionsTool } from "./request-permissions-tool.ts";
-export type { RequestPermissionsToolOptions } from "./request-permissions-tool.ts";
+} from "./registry/manifest.ts";
+export { RequestPermissionsTool } from "./policy/request-permissions-tool.ts";
+export { toolErrorContext, imageInputUnsupportedResult } from "./registry/tool-error-context.ts";
+export type { RequestPermissionsToolOptions } from "./policy/request-permissions-tool.ts";
 export {
 	freezePermissionRequest,
 	parsePermissionRequest,
@@ -21,14 +22,14 @@ export {
 	permissionRequestPreview,
 	permissionRequestSatisfied,
 	REQUEST_PERMISSIONS_TOOL_NAME,
-} from "./permission-grants.ts";
+} from "./policy/permission-grants.ts";
 export type {
 	PermissionGrant,
 	PermissionRequestParseResult,
-} from "./permission-grants.ts";
-export { AskUserQuestionTool } from "./ask-user-question-tool.ts";
-export { UpdatePlanTool } from "./update-plan-tool.ts";
-export { ToolSearchTool } from "./tool-search-tool.ts";
+} from "./policy/permission-grants.ts";
+export { AskUserQuestionTool } from "./interaction/ask-user-question-tool.ts";
+export { UpdatePlanTool } from "./interaction/update-plan-tool.ts";
+export { ToolSearchTool } from "./registry/tool-search-tool.ts";
 export {
 	isPublicIpAddress,
 	normalizePublicUrl,
@@ -49,18 +50,18 @@ export {
 	MAX_LOCAL_IMAGE_BYTES,
 	MAX_LOCAL_IMAGE_COUNT,
 	MAX_LOCAL_IMAGE_TOTAL_BYTES,
-} from "./local-image-loader.ts";
-export type { LoadLocalImagesOptions } from "./local-image-loader.ts";
-export { combinedToolManifest } from "./combined-manifest.ts";
-export { planToolExposure } from "./exposure-planner.ts";
-export type { ToolExposureCapabilities } from "./exposure-planner.ts";
+} from "./files/local-image-loader.ts";
+export type { LoadLocalImagesOptions } from "./files/local-image-loader.ts";
+export { combinedToolManifest } from "./registry/combined-manifest.ts";
+export { planToolExposure } from "./registry/exposure-planner.ts";
+export type { ToolExposureCapabilities } from "./registry/exposure-planner.ts";
 export {
 	executionPolicy,
 	hasUnrestrictedFilesystem,
 	hasUnrestrictedNetwork,
 	networkDomainAllowed,
 	normalizeNetworkDomains,
-} from "./execution-policy.ts";
+} from "./policy/execution-policy.ts";
 export type {
 	ExecutionPolicy,
 	FilesystemPolicy,
@@ -68,60 +69,60 @@ export type {
 	PermissionProfile,
 	SandboxMode,
 	SandboxProfile,
-} from "./execution-policy.ts";
-export { createShellEnvironment } from "./shell-environment.ts";
+} from "./policy/execution-policy.ts";
+export { createShellEnvironment } from "./shell/shell-environment.ts";
 export type {
 	ShellEnvironmentDiagnostics,
 	ShellEnvironmentInput,
 	ShellEnvironmentResult,
-} from "./shell-environment.ts";
+} from "./shell/shell-environment.ts";
 export {
 	defaultUserRipgrepRoot,
 	downloadRipgrepArchive,
 	extractRipgrepMember,
 	prepareUserRipgrep,
 	verifyRipgrepArchive,
-} from "./ripgrep-prepare.ts";
+} from "./ripgrep/ripgrep-prepare.ts";
 export type {
 	PrepareUserRipgrepOptions,
 	RipgrepPrepareResult,
-} from "./ripgrep-prepare.ts";
+} from "./ripgrep/ripgrep-prepare.ts";
 export {
 	initializeRipgrepEnvironment,
 	prependRipgrepToPath,
 	resolveRipgrep,
-} from "./ripgrep-runtime.ts";
+} from "./ripgrep/ripgrep-runtime.ts";
 export type {
 	InitializeRipgrepEnvironmentOptions,
 	ResolveRipgrepOptions,
 	RipgrepPathResult,
-} from "./ripgrep-runtime.ts";
+} from "./ripgrep/ripgrep-runtime.ts";
 export {
 	RIPGREP_TARGETS,
 	RIPGREP_VERSION,
 	isRipgrepTarget,
 	ripgrepOutputPath,
 	ripgrepPlatformKey,
-} from "./ripgrep-targets.ts";
+} from "./ripgrep/ripgrep-targets.ts";
 export type {
 	RipgrepTarget,
 	RipgrepTargetInfo,
-} from "./ripgrep-targets.ts";
+} from "./ripgrep/ripgrep-targets.ts";
 export {
 	prepareSandboxedProcess,
 	ProcessSandboxError,
-} from "./process-sandbox.ts";
+} from "./sandbox/process-sandbox.ts";
 export type {
 	ProcessIsolation,
 	ProcessSandboxProbes,
 	SandboxedProcessLaunch,
-} from "./process-sandbox.ts";
+} from "./sandbox/process-sandbox.ts";
 export {
 	inspectSandboxReadiness,
 	packagedWindowsSandboxHelper,
 	sandboxExecutableExists,
 	sandboxNotRequired,
-} from "./sandbox-readiness.ts";
+} from "./sandbox/sandbox-readiness.ts";
 export type {
 	SandboxReadiness,
 	SandboxReadinessCode,
@@ -129,11 +130,11 @@ export type {
 	SandboxReadinessProbes,
 	SandboxReadinessState,
 	WindowsSandboxHandshake,
-} from "./sandbox-readiness.ts";
+} from "./sandbox/sandbox-readiness.ts";
 export {
 	planSandboxRecovery,
 	runSandboxRecovery,
-} from "./sandbox-recovery.ts";
+} from "./sandbox/sandbox-recovery.ts";
 export type {
 	SandboxRecoveryAction,
 	SandboxRecoveryCode,
@@ -145,7 +146,7 @@ export type {
 	SandboxRecoveryStatus,
 	WindowsSandboxOperationInput,
 	WindowsSandboxOperationOutcome,
-} from "./sandbox-recovery.ts";
+} from "./sandbox/sandbox-recovery.ts";
 export { MACOS_SEATBELT_EXECUTABLE } from "./sandbox/macos-seatbelt.ts";
 export { LINUX_BUBBLEWRAP_EXECUTABLES } from "./sandbox/linux-bubblewrap.ts";
 export { WINDOWS_SANDBOX_PROTOCOL_VERSION } from "./sandbox/windows-restricted-token.ts";
@@ -157,23 +158,24 @@ export {
 	SHELL_OUTPUT_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
 	WRITE_STDIN_TOOL_DEFINITION,
-} from "./shell-manifest.ts";
-export { FileSnapshotStore } from "./file-snapshot-store.ts";
-export { FileHistoryStore } from "./file-history-store.ts";
-export { ShellOutputBuffer } from "./shell-output-buffer.ts";
-export type { ShellOutputRead } from "./shell-output-buffer.ts";
-export { TerminalOutputNormalizer } from "./terminal-output-normalizer.ts";
-export type { NormalizedOutput } from "./terminal-output-normalizer.ts";
+} from "./shell/shell-manifest.ts";
+export { FileSnapshotStore } from "./files/file-snapshot-store.ts";
+export { FileHistoryStore } from "./files/file-history-store.ts";
+export { ShellOutputBuffer } from "./shell/shell-output-buffer.ts";
+export type { ShellOutputRead } from "./shell/shell-output-buffer.ts";
+export { TerminalOutputNormalizer } from "./shell/terminal-output-normalizer.ts";
+export type { NormalizedOutput } from "./shell/terminal-output-normalizer.ts";
 export {
 	DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS,
 	DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS,
+	SHELL_MODEL_OUTPUT_MAX_TOKENS,
 	formatShellResult,
-} from "./shell-result.ts";
+} from "./shell/shell-result.ts";
 export type {
 	FormattedShellResult,
 	ShellResultInput,
-} from "./shell-result.ts";
-export { ShellTransportError } from "./shell-transport.ts";
+} from "./shell/shell-result.ts";
+export { ShellTransportError } from "./shell/shell-transport.ts";
 export type {
 	ProcessCleanupResult,
 	ProcessCleanupState,
@@ -185,71 +187,71 @@ export type {
 	ShellTransportFactory,
 	ShellTransportKind,
 	ShellTransportStartRequest,
-} from "./shell-transport.ts";
-export { createProcessController } from "./process-controller.ts";
+} from "./shell/shell-transport.ts";
+export { createProcessController } from "./shell/process-controller.ts";
 export type {
 	ManagedProcess,
 	ProcessController,
 	ProcessControllerOptions,
 	WindowsTaskkillRequest,
-} from "./process-controller.ts";
-export { startPipeTransport } from "./pipe-transport.ts";
-export type { StartPipeTransportOptions } from "./pipe-transport.ts";
-export { startNodePtyTransport } from "./node-pty-transport.ts";
-export type { StartNodePtyTransportOptions } from "./node-pty-transport.ts";
-export { ShellSessionManager } from "./shell-session-manager.ts";
+} from "./shell/process-controller.ts";
+export { startPipeTransport } from "./shell/pipe-transport.ts";
+export type { StartPipeTransportOptions } from "./shell/pipe-transport.ts";
+export { startNodePtyTransport } from "./shell/node-pty-transport.ts";
+export type { StartNodePtyTransportOptions } from "./shell/node-pty-transport.ts";
+export { ShellSessionManager } from "./shell/shell-session-manager.ts";
 export type {
 	ShellInteractionRequest,
 	ShellSessionManagerOptions,
 	ShellSessionSnapshot,
 	ShellStartRequest,
-} from "./shell-session-manager.ts";
-export { resolveShellProfile } from "./shell-profile.ts";
+} from "./shell/shell-session-manager.ts";
+export { resolveShellProfile } from "./shell/shell-profile.ts";
 export type {
 	ResolveShellProfileOptions,
 	ShellProfile,
 	ShellProfileName,
-} from "./shell-profile.ts";
-export { ShellTool } from "./shell-tool.ts";
+} from "./shell/shell-profile.ts";
+export { ShellTool } from "./shell/shell-tool.ts";
 export type {
 	ShellStartManager,
 	ShellToolOptions,
-} from "./shell-tool.ts";
+} from "./shell/shell-tool.ts";
 export {
 	parseShellSandboxPermissions,
 	shellCallRequestsSandboxOverride,
-} from "./shell-sandbox-permissions.ts";
-export type { ShellSandboxPermissions } from "./shell-sandbox-permissions.ts";
-export { toolCallRequestsSandboxOverride } from "./sandbox-override.ts";
-export { WriteStdinTool } from "./write-stdin-tool.ts";
+} from "./shell/shell-sandbox-permissions.ts";
+export type { ShellSandboxPermissions } from "./shell/shell-sandbox-permissions.ts";
+export { toolCallRequestsSandboxOverride } from "./sandbox/sandbox-override.ts";
+export { WriteStdinTool } from "./shell/write-stdin-tool.ts";
 export type {
 	ShellInteractionManager,
 	WriteStdinToolOptions,
-} from "./write-stdin-tool.ts";
+} from "./shell/write-stdin-tool.ts";
 export {
 	BashOutputTool,
 	BashTool,
 	KillShellTool,
 	ShellOutputTool,
-} from "./legacy-shell-tools.ts";
+} from "./shell/legacy-shell-tools.ts";
 export type {
 	BashToolOptions,
 	KillShellToolOptions,
-} from "./legacy-shell-tools.ts";
-export type { FileSnapshot } from "./file-snapshot-store.ts";
+} from "./shell/legacy-shell-tools.ts";
+export type { FileSnapshot } from "./files/file-snapshot-store.ts";
 export type {
 	FileHistoryCapture,
 	FileHistorySnapshot,
 	FileHistoryStoreOptions,
 	FileHistoryUndoResult,
-} from "./file-history-store.ts";
-export { createBoundedUnifiedDiff } from "./file-diff.ts";
-export type { BoundedFileDiff, FileDiffLimits } from "./file-diff.ts";
+} from "./files/file-history-store.ts";
+export { createBoundedUnifiedDiff } from "./files/file-diff.ts";
+export type { BoundedFileDiff, FileDiffLimits } from "./files/file-diff.ts";
 export {
 	FileMutationError,
 	FileMutationRuntime,
 	isAbortError,
-} from "./file-mutation-runtime.ts";
+} from "./files/file-mutation-runtime.ts";
 export type {
 	FileMutationRuntimeOptions,
 	MutationErrorKind,
@@ -257,7 +259,7 @@ export type {
 	PatchOperation,
 	PreparedMutationPreview,
 	PreparedPatchPreview,
-} from "./file-mutation-runtime.ts";
+} from "./files/file-mutation-runtime.ts";
 export {
 	displayMutationPath,
 	fallbackMutationPreviewChanges,
@@ -266,48 +268,49 @@ export {
 	mutationSuccess,
 	patchMutationPreviewChanges,
 	patchMutationSuccess,
-} from "./mutation-result.ts";
-export { EditTool } from "./edit-tool.ts";
-export { PatchTool } from "./patch-tool.ts";
+} from "./files/mutation-result.ts";
+export { EditTool } from "./files/edit-tool.ts";
+export { PatchTool } from "./files/patch-tool.ts";
 export type {
 	MutationStatus,
 	MutationToolName,
-} from "./mutation-result.ts";
+} from "./files/mutation-result.ts";
 export {
 	resolveReadableWorkspaceFile,
 	resolveWritableWorkspaceFile,
 	revalidateWritableWorkspaceFile,
 	WorkspacePathError,
-} from "./path-policy.ts";
+} from "./files/path-policy.ts";
 export type {
 	WorkspacePathResolutionOptions,
 	WritableWorkspaceFile,
-} from "./path-policy.ts";
+} from "./files/path-policy.ts";
 export {
 	ReadContentError,
 	readTextWindow,
-} from "./read-text.ts";
+} from "./files/read-text.ts";
 export type {
 	ReadTextWindowOptions,
 	TextReadResult,
-} from "./read-text.ts";
+} from "./files/read-text.ts";
 export {
 	DelimitedReadError,
 	readDelimitedFile,
-} from "./read-delimited.ts";
+} from "./files/read-delimited.ts";
 export type {
 	DelimitedReadResult,
 	NumericColumnSummary,
-} from "./read-delimited.ts";
-export { ReadTool } from "./read-tool.ts";
-export type { ReadToolOptions } from "./read-tool.ts";
-export { WriteTool } from "./write-tool.ts";
-export type { WriteToolOptions } from "./write-tool.ts";
-export { ToolRouter } from "./router.ts";
+} from "./files/read-delimited.ts";
+export { ReadTool } from "./files/read-tool.ts";
+export type { ReadToolOptions } from "./files/read-tool.ts";
+export { WriteTool } from "./files/write-tool.ts";
+export type { WriteToolOptions } from "./files/write-tool.ts";
+export { ToolRouter } from "./registry/router.ts";
 export {
 	ApprovalPolicy,
 	fileMutationApprovalPreview,
-} from "./approval-policy.ts";
+} from "./policy/approval-policy.ts";
+export { shellApprovalPreview } from "./policy/shell-approval-preview.ts";
 export type {
 	ApprovalPolicyAllow,
 	ApprovalPolicyDecision,
@@ -315,31 +318,31 @@ export type {
 	ApprovalPolicyOptions,
 	ApprovalPolicyRequest,
 	ExtensionToolApprovalPolicy,
-} from "./approval-policy.ts";
+} from "./policy/approval-policy.ts";
 export {
 	classifyShellArgv,
 	classifyShellCommand,
 	isKnownSafeShellSegment,
 	parseShellArgv,
 	parseShellCommand,
-} from "./shell-command-policy.ts";
+} from "./policy/shell-command-policy.ts";
 export type {
 	ShellCommandClassification,
 	ShellCommandKind,
 	ShellParseResult,
 	ShellSegment,
-} from "./shell-command-policy.ts";
+} from "./policy/shell-command-policy.ts";
 export {
 	matchExecPolicyRule,
 	validateExecPolicyProposal,
-} from "./exec-policy-proposal.ts";
+} from "./policy/exec-policy-proposal.ts";
 export type {
 	ExecPolicyDecision,
 	ExecPolicyProposalInput,
 	ExecPolicyProposalValidation,
 	ExecPolicyRule,
 	ExecPolicySource,
-} from "./exec-policy-proposal.ts";
+} from "./policy/exec-policy-proposal.ts";
 export type {
 	BuiltInToolManifest,
 	CombinedToolManifest,
@@ -367,3 +370,11 @@ export {
 	EXTENSION_ORIGIN_MAX_KEY_LENGTH,
 	EXTENSION_ORIGIN_MAX_VALUE_LENGTH,
 } from "./types.ts";
+export { ViewImageTool } from "./files/view-image-tool.ts";
+export type { ViewImageToolOptions } from "./files/view-image-tool.ts";
+export {
+	VIEW_IMAGE_TOOL_DEFINITION,
+	LIST_MCP_RESOURCES_TOOL_DEFINITION,
+	LIST_MCP_RESOURCE_TEMPLATES_TOOL_DEFINITION,
+	READ_MCP_RESOURCE_TOOL_DEFINITION,
+} from "./registry/context-manifest.ts";

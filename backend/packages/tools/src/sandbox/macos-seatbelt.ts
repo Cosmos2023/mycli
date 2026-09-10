@@ -2,8 +2,8 @@ import {
 	hasUnrestrictedFilesystem,
 	hasUnrestrictedNetwork,
 	type SandboxProfile,
-} from "../execution-policy.ts";
-import type { SandboxedProcessLaunch } from "../process-sandbox.ts";
+} from "../policy/execution-policy.ts";
+import type { ProcessNetworkProxy, SandboxedProcessLaunch } from "./process-sandbox.ts";
 
 export const MACOS_SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
 
@@ -11,6 +11,7 @@ export function macosSeatbeltLaunch(
 	argv: readonly string[],
 	profile: SandboxProfile,
 	protectedRoots: Readonly<Record<string, string>>,
+	networkProxy?: ProcessNetworkProxy,
 ): SandboxedProcessLaunch {
 	const definitions: string[] = [];
 	const rules = [
@@ -43,6 +44,8 @@ export function macosSeatbeltLaunch(
 	}
 	if (hasUnrestrictedNetwork(profile)) {
 		rules.push("(allow network-outbound)", "(allow network-inbound)", "(allow system-socket)");
+	} else if (networkProxy && profile.network === "enabled" && profile.networkDomains?.length) {
+		rules.push(`(allow network-outbound (remote tcp "localhost:${networkProxy.port}"))`);
 	}
 	return Object.freeze({
 		executable: MACOS_SEATBELT_EXECUTABLE,
