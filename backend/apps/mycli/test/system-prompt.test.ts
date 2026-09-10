@@ -38,11 +38,19 @@ test("complete Node system prompt contains the workflow contract", () => {
 	]) {
 		assert.ok(prompt.includes(section), `missing ${section}`);
 	}
-	assert.ok(prompt.length > 8_000);
+	assert.doesNotMatch(prompt, /Do not repeat the same tool call with the same arguments/u);
 	assert.match(prompt, /Use `update_plan` to publish the complete current plan/u);
 	assert.match(prompt, /issue them together in the same response/u);
 	assert.match(prompt, /Built-in `Read`, `Shell`, `web_fetch`, and `tool_search` calls support parallel execution/u);
-	assert.match(prompt, /Never parallelize `Write`, `Edit`, `Patch`, `WriteStdin`, planning, permission, or user-interaction calls/u);
+	assert.match(prompt, /Never parallelize `Write`, `Edit`, `Patch`, `WriteStdin`, `update_plan`, `request_permissions`, or `AskUserQuestion` calls/u);
+	assert.match(prompt, /Independent `Shell` calls may be submitted together in the same response, including calls with `sandbox_permissions="require_escalated"`/u);
+	assert.match(prompt, /include a concise `justification` in the user's language/u);
+	assert.match(prompt, /When a Shell call uses `sandbox_permissions="require_escalated"`/u);
+	assert.match(prompt, /Omit `justification` for ordinary Shell calls/u);
+	assert.match(prompt, /do not issue extra calls solely to add or improve this display text/u);
+	assert.match(prompt, /Answering one approval advances to the next without waiting for the approved command to finish/u);
+	assert.match(prompt, /Do not combine them into one command merely to obtain a single approval/u);
+	assert.match(prompt, /Each command that requires approval must wait for its own approval before executing/u);
 	assert.match(prompt, /remain responsible for its lifecycle and track it as outstanding/u);
 	assert.match(prompt, /call `wait_agent`; do not poll with shell commands/u);
 	assert.match(prompt, /Read and integrate each relevant report before giving the final answer/u);

@@ -3,7 +3,7 @@ import type { ConfigDiagnostic, WorkspaceTrustState } from "@mycli/config";
 import { redactDoctorText } from "./redaction.ts";
 import type { DoctorCheck } from "./types.ts";
 
-export interface ConfigDoctorOptions {
+interface ConfigDoctorOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: NodeJS.ProcessEnv;

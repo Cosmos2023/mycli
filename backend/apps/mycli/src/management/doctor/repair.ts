@@ -20,7 +20,7 @@ export interface DoctorConfigMigrationContract {
 	applyMigration(expectedVersion: string, signal: AbortSignal): MaybePromise<ConfigMigrationResponse>;
 }
 
-export interface DoctorRepairHandler {
+interface DoctorRepairHandler {
 	readonly id: DoctorRepairActionId;
 	preview(signal: AbortSignal): MaybePromise<DoctorRepairAction | undefined>;
 	apply(action: DoctorRepairAction, signal: AbortSignal): MaybePromise<DoctorRepairResult>;

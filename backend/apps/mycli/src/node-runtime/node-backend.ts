@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { GatewayTransport, JsonObject } from "@mycli/gateway";
+import { GitReviewReadTool } from "../review/git-read-tool.ts";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -17,6 +19,7 @@ import {
 	parseConfigProfileName,
 	parseProtocol,
 	readApiKey,
+	readProviderCredential,
 	resolveConfig,
 	resolveProviderProfile,
 	resolveShellSettingsState,
@@ -58,6 +61,9 @@ import {
 } from "@mycli/core";
 import {
 	skillInvocationArtifactFromMetadata,
+	ListMcpResourcesTool,
+	ReadMcpResourceTool,
+	ListMcpResourceTemplatesTool,
 	type IntegrationRegistration,
 	type ChildRuntimeCreateInput,
 	type ChildRuntimeEvent,
@@ -68,10 +74,14 @@ import {
 } from "@mycli/integrations";
 import {
 	ProviderRegistry,
+	captureProviderNativeEnvironment,
+	inspectNativeProviderAuth,
+	resolveProviderNativeTransport,
 	type ProviderRouteDescriptor,
 } from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
+	ParallelApprovalCoordinator,
 	AgentActivityBus,
 	AgentMailbox,
 	AgentSupervisor,
@@ -91,6 +101,7 @@ import {
 	SessionTransitionError,
 	ShellLifecycleProjector,
 	summarizeCompactionWithProvider,
+	CompactionModelJournal,
 	TokenCounter,
 	toolExposureForSnapshot,
 	WorkerLeasedAgentThreadRuntimeFactory,
@@ -137,6 +148,7 @@ import {
 	startPipeTransport,
 	ToolRouter,
 	ToolSearchTool,
+	ViewImageTool,
 	KillShellTool,
 	type BuiltInToolManifest,
 	type CombinedToolManifest,
@@ -157,7 +169,6 @@ import {
 } from "./integration-composition.ts";
 import {
 	createNodeGateway,
-	type NodeGateway,
 	type NodeGatewayCredentialReadiness,
 	type NodeGatewayIntegrationCommands,
 	type NodeGatewayIntegrations,
@@ -235,7 +246,7 @@ import {
 } from "./node-session-bootstrap.ts";
 
 export interface NodeBackend {
-	readonly transport: NodeGateway["transport"];
+	readonly transport: GatewayTransport;
 	readonly completion: Promise<number>;
 	close(): Promise<void>;
 	kill(): void;
@@ -243,7 +254,7 @@ export interface NodeBackend {
 	startupProfile?(): StartupProfileSnapshot | undefined;
 }
 
-export interface RecoverInterruptedTurnOptions {
+interface RecoverInterruptedTurnOptions {
 	readonly sessionId: string;
 	readonly turnId: string;
 	readonly inputRolledBack?: boolean;
@@ -251,6 +262,10 @@ export interface RecoverInterruptedTurnOptions {
 }
 
 export interface StartNodeBackendOptions {
+	readonly signal?: AbortSignal;
+	readonly approvalMode?: "live" | "suspend";
+	readonly executionMode?: "review";
+	readonly reviewRevision?: string;
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly args: readonly string[];
@@ -383,6 +398,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const captureProviderRoute = async (
 		resolved: NodeRuntimeConfig,
 		resolveWithModelLimit?: (inputTokenLimit: number) => Promise<NodeRuntimeConfig>,
+		environment: Readonly<NodeJS.ProcessEnv> = options.env,
 	): Promise<NodeRuntimeConfig> => {
 		const snapshot = await providerModelDirectory.load(resolved);
 		const route = snapshot.route(resolved.provider);
@@ -399,10 +415,26 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		const modelAwareConfig = inputTokenLimit === undefined || resolveWithModelLimit === undefined
 			? resolved
 			: await resolveWithModelLimit(inputTokenLimit);
-		const effective = entry === undefined
+		const selected = entry === undefined
 			? modelAwareConfig
 			: applyProviderScopedModelConfig(modelAwareConfig, entry);
-		providerRoutesByConfig.set(effective, route);
+		const nativeTransport = route.source === "pi_ai_builtin" && route.catalogProviderId
+			? await resolveProviderNativeTransport({
+				catalogProviderId: route.catalogProviderId,
+				modelId: selected.model,
+				protocol: selected.protocol,
+				apiBaseUrl: selected.apiBaseUrl,
+				allowDeclaredModel: entry?.origin !== "pi_ai_catalog",
+				environment,
+			})
+			: undefined;
+		const providerEnv = nativeTransport ? await captureProviderNativeEnvironment({
+			catalogProviderId: nativeTransport.catalogProviderId,
+			environment,
+			...(selected.apiKey ? { apiKey: selected.apiKey } : {}),
+		}) : undefined;
+		const effective = nativeTransport ? Object.freeze({ ...selected, nativeTransport, providerEnv }) : selected;
+		providerRoutesByConfig.set(effective, nativeTransport ? Object.freeze({ ...route, nativeTransport }) : route);
 		return effective;
 	};
 	const resolveCapturedProviderModelConfig = async (
@@ -419,12 +451,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					protocol: preliminary.protocol,
 					model: preliminary.model,
 					apiBaseUrl: preliminary.apiBaseUrl,
-					authRef: preliminary.authRef,
+					...(preliminary.allowAmbientAuth === false ? { authRef: preliminary.authRef } : {}),
 				},
 				defaultMaxPromptTokens: inputTokenLimit,
 				maxPromptTokensCeiling: inputTokenLimit,
 			}, workspaceTrust)
-		));
+		), input.env);
 	};
 	const providerRouteForConfig = (resolved: NodeRuntimeConfig): ProviderRouteDescriptor => {
 		const route = providerRoutesByConfig.get(resolved);
@@ -665,6 +697,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	let integrationComposition: RuntimeIntegrationComposition;
 	try {
 		integrationComposition = await createRuntimeIntegrationComposition({
+			disabled: options.executionMode === "review",
 			builtinManifest: toolManifest,
 			workspaceRoot: config.workspaceRoot,
 			homeDir,
@@ -807,6 +840,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
 		): ComposedNodeRuntime => {
+			const allowedTools = options.executionMode === "review" ? ["Read"] : runtimeOptions.allowedTools;
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
 				: loadSessionPreferences(store, sessionId);
@@ -829,7 +863,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							provider: preferences.provider,
 							protocol: preferences.protocol,
 							apiBaseUrl: preferences.apiBaseUrl,
-							authRef: preferences.authRef,
+							...(preferences.authRef !== preferences.provider || config.allowAmbientAuth === false
+								? { authRef: preferences.authRef } : {}),
 							reasoningEffort: preferences.reasoningEffort,
 							thinkingEnabled: preferences.reasoningEffort !== "none",
 						} : {}),
@@ -858,7 +893,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						thinkingEnabled: (runtimeOptions.provider.reasoningEffort ?? "none") !== "none",
 					});
 				};
-				return captureProviderRoute(await resolveEffective(), resolveEffective);
+				return captureProviderRoute(await resolveEffective(), resolveEffective, runtimeEnvironment);
 			};
 			const fileSnapshots = new FileSnapshotStore();
 			const fileHistory = new FileHistoryStore({ homeDir, workspaceRoot });
@@ -910,8 +945,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			profile: shellProfile,
 		});
 			const allowedDeferredRegistrations = () => {
-				const allowedNames = runtimeOptions.allowedTools
-					? new Set(runtimeOptions.allowedTools)
+				const allowedNames = allowedTools
+					? new Set(allowedTools)
 					: undefined;
 				return currentDeferredRegistrations().filter(
 					(registration) => !allowedNames || allowedNames.has(registration.definition.name),
@@ -919,7 +954,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
 			const staticAdapters = [
-				new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
+				new ViewImageTool({ workspaceRoot, homeDir }),
+				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
+				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
+				new ReadMcpResourceTool(integrationComposition.mcpResourceService),
+				options.executionMode === "review" && options.reviewRevision
+					? new GitReviewReadTool(workspaceRoot, options.reviewRevision)
+					: new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
@@ -959,7 +1000,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				}),
 				...directExtensionDefinitions,
 			]),
-			runtimeOptions.allowedTools,
+			allowedTools,
 		);
 				const toolRouter = new ToolRouter({
 					adapters: staticAdapters,
@@ -995,6 +1036,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
 			grantPermissions: (input) => executionPolicyCoordinator.grant(input),
 		});
+		const parallelApprovals = new ParallelApprovalCoordinator({
+			sessionId, workspaceRoot, threadId, store, approval: approvalCoordinator,
+		});
+		parallelApprovals.recover();
 		approvalCoordinator.recover();
 			const clarificationCoordinator = new ClarificationContinuationCoordinator({
 			sessionId,
@@ -1071,6 +1116,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				resolved: NodeRuntimeConfig,
 				runSnapshot?: RunExecutionSnapshot,
 			): CompactionCoordinator => {
+				const journal = new CompactionModelJournal({ sessionId, store, clock: () => new Date().toISOString() });
 				const compactionThreshold = compactionThresholdForModel(resolved);
 				const compactTools = (): readonly ToolDefinition[] => runSnapshot
 					? toolExposureForSnapshot(
@@ -1103,21 +1149,22 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					rehydrationMaxFiles: resolved.compactionRehydrationMaxFiles,
 					rehydrationMaxItemTokens: resolved.compactionRehydrationFileMaxItemTokens,
 					rehydrationMaxTotalTokens: resolved.compactionRehydrationFileMaxTotalTokens,
-					summarize: (input) => {
-						const summaryConfig = {
+					summarize: async (input) => {
+						const summaryConfig = await captureProviderRoute({
 							...resolved,
 							model: input.model ?? resolved.model,
-						};
+						}, undefined, runtimeEnvironment);
 						return summarizeCompactionWithProvider(
-							registry.create(summaryConfig, providerRouteForConfig(resolved)),
-							{
-								provider: summaryConfig.provider,
-								protocol: summaryConfig.protocol,
-								model: summaryConfig.model,
-							},
+							registry.create(summaryConfig, providerRouteForConfig(summaryConfig)),
+							summaryConfig,
 							input,
+							{ recordDiagnostic: (diagnostic) => tryAppendNodeTrace(homeDir, sessionId,
+								runtimeDiagnosticTraceEvent({ ...diagnostic, kind: "model_stream_diagnostics",
+									turnId: `compaction:${input.operationId}`, provider: summaryConfig.provider,
+									protocol: summaryConfig.protocol, model: summaryConfig.model })) },
 						);
 					},
+					recordModelEvent: (input) => journal.record(input),
 					createCheckpointId: randomUUID,
 					clock: () => new Date().toISOString(),
 				});
@@ -1140,6 +1187,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			}),
 			modelInputLedger: store.modelInputLedger,
 			agentEffectLedger: store.agentEffectLedger,
+			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
@@ -1218,6 +1266,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 			},
 			approvalCoordinator,
+			...(options.approvalMode !== "suspend" ? { parallelApprovals } : {}),
 			clarificationCoordinator,
 			queueCoordinator,
 			providerContinuation,
@@ -1365,6 +1414,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						status: result.status,
 						beforeTokens: result.beforeTokens,
 						afterTokens: result.afterTokens,
+						...(result.failure ? { failure: result.failure } : {}),
+						...(result.usage ? { usage: result.usage } : {}),
 						maxTokens: resolved.maxPromptTokens,
 						durationMs: elapsedMonotonicMs(startedAt, performance.now()),
 					}));
@@ -1372,6 +1423,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						status: result.status,
 						beforeTokens: result.beforeTokens,
 						afterTokens: result.afterTokens,
+						...(result.failure ? { failure: result.failure } : {}),
+						...(result.usage ? { usage: result.usage } : {}),
 					};
 				},
 			});
@@ -1580,8 +1633,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		};
 		try {
 			startupProfiler.mark("session_prepare_started");
-			const prepare = (sessionId: string) => prepareStoredSession({
+			const prepare = (sessionId: string, intent: "resume" | "inspect" = "resume") => prepareStoredSession({
 			sessionId,
+			intent,
 			store,
 			transcriptSnapshots,
 			sessionArtifacts,
@@ -1639,21 +1693,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					env: options.env,
 					overrides: sessionPreferenceOverrides(active.sessionId, preferences),
 				});
-				const environmentApiKey = options.env.MYCLI_API_KEY?.trim();
-				const storedApiKey = await readApiKey({ homeDir, authRef: resolved.authRef });
-				return Object.freeze({
-					ready: Boolean(resolved.apiKey),
-					providerId: resolved.provider,
-					authRef: resolved.authRef,
-					source: environmentApiKey
-						? "environment"
-						: storedApiKey
-							? "stored"
-							: resolved.apiKey
-								? "legacy_config"
-								: "missing",
-				});
+				return providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute);
 			};
+			const providerDirectory = async (): Promise<readonly JsonObject[]> => providerDirectoryPayload(
+				await providerModelDirectory.load(controlConfig),
+				homeDir,
+				await credentialReadiness(),
+			);
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
 		const gatewayIntegrations = integrationGateway(
@@ -1684,8 +1730,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					return snapshot.models(preferences.provider);
 				},
 				hasCredential: async (preferences) => {
-					if (preferences.authRef === controlConfig.authRef && controlConfig.apiKey) return true;
-					return Boolean(await readApiKey({ homeDir, authRef: preferences.authRef }));
+					const active = sessionCoordinator.snapshot();
+					const resolved = await resolveWorkspaceModelRuntimeConfig({ homeDir, workspaceRoot: active.workspaceRoot,
+						env: options.env, overrides: sessionPreferenceOverrides(active.sessionId, preferences) });
+					return (await providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute)).ready;
 				},
 				...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
 			});
@@ -1711,6 +1759,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			runtime: initial.binding,
 			agentInteractiveRequests,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
+			loadProviderAttempts: (input) => store.providerAttemptLedger.list(input),
 			loadTranscript: (sessionId) => {
 				const active = sessionCoordinator.snapshot();
 				if (!active.readOnly
@@ -1847,22 +1896,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					},
 					controlCommands: {
 						authProviders: async () => {
-							const current = await credentialReadiness();
-							return await Promise.all(listProviderProfiles().map(async (profile) => {
-								const isCurrent = profile.provider === current.providerId;
-								const authRef = isCurrent ? current.authRef : profile.provider;
-								const stored = isCurrent && current.source === "stored"
-									? true
-									: Boolean(await readApiKey({ homeDir, authRef }));
-								return {
-									id: profile.provider,
-									name: profile.displayName,
-									configured: isCurrent ? current.ready : stored,
-									credential_source: isCurrent ? current.source : stored ? "stored" : "missing",
-									...(isCurrent ? { auth_ref: current.authRef } : {}),
-									...(profile.defaultModel ? { default_model: profile.defaultModel } : {}),
-								};
-							}));
+							const profiles = listProviderProfiles();
+							return (await providerDirectory())
+								.filter((route) => route.activation === "active")
+								.map((route) => {
+									const profile = profiles.find((entry) => entry.provider === route.id);
+									return {
+										id: route.id,
+										name: profile?.displayName ?? route.name,
+										configured: route.ready,
+										credential_source: route.credential_source,
+										auth_ref: route.auth_ref,
+										...(profile?.defaultModel ? { default_model: profile.defaultModel } : {}),
+									};
+								});
 						},
 						credentialReadiness,
 						saveApiKey: async (providerId, apiKey, requestedAuthRef) => {
@@ -1880,7 +1927,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							const profile = isProviderId(provider)
 								? resolveProviderProfile(provider, route.protocol)
 								: undefined;
-							const authRef = requestedAuthRef ?? profile?.provider ?? route.authRef;
+							const authRef = requestedAuthRef ?? route.authRef;
 							if (authRef !== route.authRef && authRef !== profile?.provider) {
 								throw controlRequestError("Credential reference is not active for this provider.");
 							}
@@ -1892,11 +1939,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								message: `Saved API key for ${route.displayName}.`,
 							};
 						},
-						providers: async () => providerDirectoryPayload(
-							await providerModelDirectory.load(controlConfig),
-							homeDir,
-							controlConfig,
-						),
+						providers: providerDirectory,
 						models: async (providerValue) => {
 							let provider;
 							try {
@@ -2179,39 +2222,70 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	}
 }
 
+async function providerCredentialReadiness(
+	config: NodeRuntimeConfig,
+	homeDir: string,
+	environment: Readonly<NodeJS.ProcessEnv>,
+	captureNative?: (config: NodeRuntimeConfig) => Promise<NodeRuntimeConfig>,
+): Promise<NodeGatewayCredentialReadiness> {
+	const stored = await readProviderCredential({ homeDir, authRef: config.authRef });
+	const captured = !config.apiKey && !config.nativeTransport && (stored || config.allowAmbientAuth) && captureNative
+		? await captureNative(config) : config;
+	const native = !captured.apiKey && captured.nativeTransport ? await inspectNativeProviderAuth({
+		provider: captured.nativeTransport.catalogProviderId, homeDir, authRef: captured.authRef,
+		...(captured.providerEnv ? { providerEnv: captured.providerEnv } : {}),
+		...(captured.allowAmbientAuth === undefined ? {} : { allowAmbientAuth: captured.allowAmbientAuth }),
+	}) : undefined;
+	return Object.freeze({
+		ready: Boolean(config.apiKey) || native?.configured === true,
+		providerId: config.provider,
+		authRef: config.authRef,
+		source: config.apiKey
+			? environment.MYCLI_API_KEY?.trim() ? "environment" : stored ? "stored" : "legacy_config"
+			: native?.source ?? "missing",
+	});
+}
+
 async function providerDirectoryPayload(
 	snapshot: ProviderModelDirectorySnapshot,
 	homeDir: string,
-	config: NodeRuntimeConfig,
-): Promise<readonly Readonly<Record<string, unknown>>[]> {
+	currentCredential: NodeGatewayCredentialReadiness,
+): Promise<readonly JsonObject[]> {
 	const storedCredentials = new Map(await Promise.all(
 		[...new Set(snapshot.routes.map((route) => route.authRef))].map(async (authRef) => [
 			authRef,
-			Boolean(await readApiKey({ homeDir, authRef })),
+			Boolean(await readProviderCredential({ homeDir, authRef })),
 		] as const),
 	));
 	const activeRouteIds = new Set(snapshot.routes.map((route) => route.routeId));
-	const active = snapshot.routes.map((route) => Object.freeze({
-		id: route.routeId,
-		name: route.displayName,
-		support_tier: route.supportTier,
-		source: route.source,
-		...(route.catalogProviderId === undefined
-			? {}
-			: { catalog_provider_id: route.catalogProviderId }),
-		protocols: Object.freeze([route.protocol]),
-		protocol: route.protocol,
-		base_url: route.apiBaseUrl,
-		auth_ref: route.authRef,
-		activation: route.activation,
-		configured: true,
-		ready: storedCredentials.get(route.authRef) === true
-			|| (route.routeId === config.provider
-				&& route.authRef === config.authRef
-				&& Boolean(config.apiKey)),
-		current: route.routeId === config.provider,
-		model_count: snapshot.models(route.routeId).length,
-	}));
+	const active = snapshot.routes.map((route) => {
+		const current = route.routeId === currentCredential.providerId;
+		const credential = current && route.authRef === currentCredential.authRef
+			? currentCredential
+			: {
+				ready: storedCredentials.get(route.authRef) === true,
+				source: storedCredentials.get(route.authRef) ? "stored" : "missing",
+			};
+		return Object.freeze({
+			id: route.routeId,
+			name: route.displayName,
+			support_tier: route.supportTier,
+			source: route.source,
+			...(route.catalogProviderId === undefined
+				? {}
+				: { catalog_provider_id: route.catalogProviderId }),
+			protocols: Object.freeze([route.protocol]),
+			protocol: route.protocol,
+			base_url: route.apiBaseUrl,
+			auth_ref: route.authRef,
+			activation: route.activation,
+			configured: true,
+			ready: credential.ready,
+			credential_source: credential.source,
+			current,
+			model_count: snapshot.models(route.routeId).length,
+		});
+	});
 	const dormant = snapshot.catalog.providers
 		.filter((provider) => !activeRouteIds.has(provider.catalogProviderId))
 		.map((provider) => Object.freeze({
@@ -2239,7 +2313,7 @@ async function validateProviderConnectivity(
 	config: NodeRuntimeConfig,
 	route: ProviderRouteDescriptor,
 ): Promise<Record<string, unknown>> {
-	if (!config.apiKey) {
+	if (!config.apiKey && !config.nativeTransport) {
 		return { ok: false, message: "No API key is configured for the selected provider." };
 	}
 	const controller = new AbortController();
@@ -2249,6 +2323,7 @@ async function validateProviderConnectivity(
 		provider: config.provider,
 		protocol: config.protocol,
 		model: config.model,
+		...(config.nativeTransport ? { nativeTransport: config.nativeTransport } : {}),
 		reasoningEffort: "none",
 		instructions: "This is a connectivity check.",
 		messages: [{ role: "user", content: "Reply with OK." }],
@@ -2285,7 +2360,7 @@ function sessionPreferenceOverrides(
 		protocol: preferences.protocol,
 		model: preferences.model,
 		apiBaseUrl: preferences.apiBaseUrl,
-		authRef: preferences.authRef,
+		...(preferences.authRef !== preferences.provider ? { authRef: preferences.authRef } : {}),
 		reasoningEffort: preferences.reasoningEffort,
 		thinkingEnabled: preferences.reasoningEffort !== "none",
 	};

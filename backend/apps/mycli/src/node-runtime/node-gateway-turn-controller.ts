@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
 	runtimeErrorPublicMessage,
+	errorSummary,
+	readErrorContext,
+	DIAGNOSTIC_RECOVERY_ACTION_IDS,
+	type ErrorContext,
 	runtimeRetryStatusText,
 	sanitizeRuntimeErrorDetail,
+	projectTerminalInteraction,
 	type RuntimeErrorCode,
 	type RuntimeTurnRecord,
 } from "@mycli/contracts";
@@ -27,6 +32,7 @@ import type {
 	TurnSubmission,
 } from "@mycli/runtime";
 import { projectMutationMetadata } from "@mycli/storage";
+import { resolveErrorRecovery, UserTurnCancellation } from "@mycli/runtime";
 import type { TurnReservation } from "@mycli/storage";
 import {
 	approvalPreviewDetails,
@@ -34,6 +40,7 @@ import {
 	fileMutationChangesPayload,
 } from "./approval-preview.ts";
 import { GatewayFailure, gatewayFailure } from "./node-gateway-errors.ts";
+import { requiredTrimmedString as requiredString } from "./node-gateway-validation.ts";
 import type {
 	GatewayEventOwnership,
 	RuntimeGatewayEventMethod,
@@ -62,6 +69,8 @@ type JsonObject = Record<string, unknown>;
 const GRACEFUL_INTERRUPT_TIMEOUT_MS = 100;
 
 interface ActiveTurn {
+	persistenceFailureReported?: boolean;
+	durableProviderAttempts?: boolean;
 	readonly clientTurnId: string;
 	readonly clientUserMessageId: string;
 	readonly controller: AbortController;
@@ -74,7 +83,9 @@ interface ActiveTurn {
 	terminalEmitted: boolean;
 	terminalState?: "completed" | "failed" | "interrupted";
 	visibleAgentOutput?: boolean;
+	toolEffectsObserved?: boolean;
 	pendingProposedPlan?: string;
+	pendingApprovalRequest?: PendingSessionApproval;
 	inputRolledBack?: boolean;
 	interruptionFinalizedLogged?: boolean;
 	resubmitPendingSteersAfterInterrupt?: boolean;
@@ -89,7 +100,16 @@ interface ActiveTurn {
 	}>;
 }
 
-export interface NodeGatewayTurnControllerOptions {
+interface PendingAdmission {
+	reserved: boolean;
+	readonly clientTurnId: string;
+	readonly clientUserMessageId: string;
+	readonly turnId: string;
+	readonly controller: AbortController;
+	readonly settled: Promise<void>;
+}
+
+interface NodeGatewayTurnControllerOptions {
 	readonly dependencies: NodeGatewayTurnDependencies;
 	readonly session: NodeGatewayTurnSession;
 	readonly settings: NodeGatewayTurnSettings;
@@ -143,7 +163,8 @@ export class NodeGatewayTurnController {
 	readonly #publish: (method: RuntimeGatewayEventMethod, params: JsonObject) => void;
 	#active: ActiveTurn | null = null;
 	#activeTask: Promise<void> | null = null;
-	#admissionPending = false;
+	#admission: PendingAdmission | null = null;
+	#closed = false;
 
 	constructor(options: NodeGatewayTurnControllerOptions) {
 		this.#dependencies = options.dependencies;
@@ -155,15 +176,15 @@ export class NodeGatewayTurnController {
 	}
 
 	hasActiveTurn(): boolean {
-		return this.#active !== null;
+		return this.#active !== null || this.#admission !== null;
 	}
 
 	isAdmissionPending(): boolean {
-		return this.#admissionPending;
+		return this.#admission !== null;
 	}
 
 	activeTurnId(): string | null {
-		return this.#active?.turnId ?? null;
+		return this.#active?.turnId ?? this.#admission?.turnId ?? null;
 	}
 
 	currentOwnership(params: Readonly<JsonObject>): GatewayEventOwnership {
@@ -187,7 +208,11 @@ export class NodeGatewayTurnController {
 	}
 
 	async close(): Promise<void> {
+		this.#closed = true;
+		const admission = this.#admission;
+		admission?.controller.abort();
 		this.#active?.controller.abort();
+		await admission?.settled;
 		await this.#activeTask;
 	}
 
@@ -222,9 +247,10 @@ export class NodeGatewayTurnController {
 	}
 
 	async submit(params: JsonObject): Promise<JsonObject> {
+		if (this.#closed || this.#isClosed()) throw new GatewayFailure("gateway_closed", "Gateway is closed.");
 		if (
 			this.#active !== null
-			|| this.#admissionPending
+			|| this.#admission !== null
 			|| this.#session.transitionActive
 			|| this.#session.controlActive
 		) {
@@ -252,15 +278,30 @@ export class NodeGatewayTurnController {
 			?? this.#settings.collaborationMode;
 		const runtime = this.#session.runtime();
 		const coordinator = this.#dependencies.sessionCoordinator;
-		this.#admissionPending = true;
+		const proposedTurnId = this.#dependencies.createTurnId?.() ?? `turn_${randomUUID().replaceAll("-", "")}`;
 		const executionClaim = coordinator?.claimExecution(context);
 		if (coordinator && !executionClaim) {
-			this.#admissionPending = false;
 			throw new GatewayFailure("turn_in_progress", "A session transition is in progress.");
 		}
+		let settleAdmission!: () => void;
+		const admission: PendingAdmission = {
+			reserved: false,
+			clientTurnId,
+			clientUserMessageId,
+			turnId: proposedTurnId,
+			controller: new AbortController(),
+			settled: new Promise<void>((resolve) => { settleAdmission = resolve; }),
+		};
+		this.#admission = admission;
 		let activeInstalled = false;
+		let reservation: TurnReservation | undefined;
+		let active: ActiveTurn | undefined;
 		try {
-			const readiness = await this.#settings.credentialReadiness();
+			const readiness = await awaitAdmission(this.#settings.credentialReadiness(), admission.controller.signal);
+			if (this.#closed || this.#isClosed() || !this.#session.isCurrent(context)) {
+				admission.controller.abort();
+			}
+			admission.controller.signal.throwIfAborted();
 			if (readiness && !readiness.ready) {
 				throw new GatewayFailure(
 					"auth_required",
@@ -272,8 +313,7 @@ export class NodeGatewayTurnController {
 			const submission: TurnSubmission = {
 				clientTurnId,
 				clientUserMessageId,
-				turnId: this.#dependencies.createTurnId?.()
-					?? `turn_${randomUUID().replaceAll("-", "")}`,
+				turnId: admission.turnId,
 				message,
 				localImages,
 				modelOverride: this.#settings.model,
@@ -281,7 +321,8 @@ export class NodeGatewayTurnController {
 					? { reasoningEffort: this.#settings.reasoningEffort }
 					: {}),
 			};
-			const reservation = runtime.reserve(submission);
+			reservation = runtime.reserve(submission);
+			admission.reserved = true;
 			const turnId = reservation.turn.turn_id;
 			const collaborationModeChanged = collaborationMode !== this.#settings.collaborationMode;
 			if (collaborationModeChanged) {
@@ -289,10 +330,10 @@ export class NodeGatewayTurnController {
 			}
 			this.#settings.rememberTurnMode(turnId, collaborationMode);
 			runtime.configureRuntimeContext?.({ collaborationMode, turnId });
-			const active: ActiveTurn = {
+			active = {
 				clientTurnId,
 				clientUserMessageId,
-				controller: new AbortController(),
+				controller: admission.controller,
 				context,
 				runtime,
 				...(executionClaim ? { executionClaim } : {}),
@@ -305,13 +346,15 @@ export class NodeGatewayTurnController {
 			};
 			this.#emitUserMessageLifecycle(active, message, "submit");
 			this.#active = active;
-			activeInstalled = true;
 			if (collaborationModeChanged) this.#publish("status.changed", this.#status());
+			const installed = active;
+			const reserved = reservation;
 			this.#activeTask = new Promise<void>((resolve) => {
 				queueMicrotask(() => {
-					void this.#runTurn(active, submission, reservation).then(resolve);
+					void this.#runTurn(installed, submission, reserved).then(resolve, resolve);
 				});
 			});
+			activeInstalled = true;
 			return {
 				accepted: true,
 				client_turn_id: clientTurnId,
@@ -319,10 +362,29 @@ export class NodeGatewayTurnController {
 				turn_id: turnId,
 			};
 		} catch (error) {
-			if (!activeInstalled && executionClaim) coordinator?.releaseExecution(executionClaim);
+			if (!activeInstalled && reservation) {
+				if (this.#active === active) this.#active = null;
+				try {
+					if (runtime.failReservedTurn) {
+						await runtime.failReservedTurn(reservation, error, () => undefined, admission.controller.signal);
+					} else {
+						await runtime.forceInterrupt({
+							clientTurnId, turnId: reservation.turn.turn_id,
+						}, () => undefined);
+					}
+				} finally {
+					this.#settings.forgetTurnMode(reservation.turn.turn_id);
+				}
+			}
+			if (!reservation && admission.controller.signal.aborted) {
+				return { accepted: false, admission_cancelled: true, client_turn_id: clientTurnId,
+					client_user_message_id: clientUserMessageId, turn_id: admission.turnId };
+			}
 			throw error;
 		} finally {
-			this.#admissionPending = false;
+			if (!activeInstalled && executionClaim) coordinator?.releaseExecution(executionClaim);
+			if (this.#admission === admission) this.#admission = null;
+			settleAdmission();
 		}
 	}
 
@@ -332,9 +394,6 @@ export class NodeGatewayTurnController {
 		const coordinator = this.#dependencies.sessionCoordinator;
 		if (!coordinator) {
 			throw new GatewayFailure("approval_not_pending", "No pending approval is available.");
-		}
-		if (this.#active !== null) {
-			throw new GatewayFailure("turn_in_progress", "A turn is already running.");
 		}
 		const snapshot = coordinator.snapshot();
 		const pending = snapshot.pendingApproval;
@@ -357,6 +416,24 @@ export class NodeGatewayTurnController {
 			|| requestedSessionId !== undefined && requestedSessionId !== snapshot.sessionId
 			|| requestedGeneration !== snapshot.generation) {
 			throw new GatewayFailure("approval_not_pending", "No pending approval matches the request.");
+		}
+		const running = this.#active;
+		if (running) {
+			if (!running.runtime.hasActiveApproval?.(decisionId) || !running.runtime.respondActiveApproval) {
+				throw new GatewayFailure("turn_in_progress", "A turn is already running.");
+			}
+			running.runtime.respondActiveApproval({ decisionId, choice });
+			coordinator.updatePendingApproval(running.context, undefined);
+			this.#publish("approval.respond", {
+				session_id: snapshot.sessionId, generation: snapshot.generation,
+				client_turn_id: pending.clientTurnId, turn_id: pending.turnId,
+				decision_id: decisionId, choice,
+			});
+			this.#publish("status.update", statusPayload("running", pending.clientTurnId));
+			return {
+				accepted: true, decision_id: decisionId, client_turn_id: pending.clientTurnId,
+				turn_id: pending.turnId, session_id: snapshot.sessionId, generation: snapshot.generation,
+			};
 		}
 		const context = coordinator.context();
 		const executionClaim = coordinator.claimExecution(context);
@@ -601,6 +678,27 @@ export class NodeGatewayTurnController {
 
 	interrupt(params: JsonObject): JsonObject | Promise<JsonObject> {
 		this.#session.assertMutationContext(params);
+		const requestedClientTurnId = params.client_turn_id === undefined
+			? undefined : requiredString(params.client_turn_id, "client_turn_id");
+		const admission = this.#admission;
+		if (!this.#active && admission) {
+			const expected = requiredString(params.turn_id, "turn_id");
+			if (expected !== admission.turnId
+				|| (requestedClientTurnId !== undefined && requestedClientTurnId !== admission.clientTurnId)) {
+				throw new GatewayFailure("turn_id_mismatch", "The active turn changed before interruption.", {
+					actual_turn_id: admission.turnId,
+				});
+			}
+			admission.controller.abort(new UserTurnCancellation());
+			return admission.settled.then(() => admission.reserved
+				? { accepted: false, requested: false, ...this.#status() }
+				: ({
+				...this.#status(),
+				accepted: true, requested: true, admission_cancelled: true,
+				client_turn_id: admission.clientTurnId, client_user_message_id: admission.clientUserMessageId,
+				turn_id: admission.turnId, input_rolled_back: params.rollback_user_input === true,
+			}));
+		}
 		let active = this.#active;
 		const coordinator = this.#dependencies.sessionCoordinator;
 		const pendingClarification = active
@@ -615,7 +713,8 @@ export class NodeGatewayTurnController {
 			return { accepted: false, requested: false, ...this.#status() };
 		}
 		const expectedTurnId = requiredString(params.turn_id, "turn_id");
-		if (expectedTurnId !== actualTurnId) {
+		if (expectedTurnId !== actualTurnId || (requestedClientTurnId !== undefined
+			&& requestedClientTurnId !== (active?.clientTurnId ?? pendingClarification?.clientTurnId))) {
 			throw new GatewayFailure(
 				"turn_id_mismatch",
 				"The active turn changed before interruption.",
@@ -666,7 +765,7 @@ export class NodeGatewayTurnController {
 			requested: true,
 			input_rolled_back: active.inputRolledBack === true,
 		});
-		active.controller.abort();
+		active.controller.abort(new UserTurnCancellation());
 		active.interruptPromise = this.#awaitInterrupt(active);
 		return active.interruptPromise;
 	}
@@ -689,6 +788,7 @@ export class NodeGatewayTurnController {
 			}
 			terminalFinalized = record.status !== "in_progress";
 		} catch {
+			if (active.persistenceFailureReported) return;
 			if (active.controller.signal.aborted && !active.terminalEmitted) {
 				try {
 					const record = await this.#forceInterruptActive(active);
@@ -725,6 +825,7 @@ export class NodeGatewayTurnController {
 			}
 			terminalFinalized = record.status !== "in_progress";
 		} catch (error) {
+			if (active.persistenceFailureReported) return;
 			if (active.controller.signal.aborted) {
 				try {
 					const record = await this.#forceInterruptActive(active);
@@ -745,14 +846,7 @@ export class NodeGatewayTurnController {
 					message: failure.message,
 					method: "approval.respond",
 				});
-				this.#publish(
-					"approval.request",
-					approvalRequestPayload(pending, active.context.generation),
-				);
-				this.#publish(
-					"status.update",
-					statusPayload("waiting_approval", active.clientTurnId),
-				);
+				active.pendingApprovalRequest = pending;
 			}
 		} finally {
 			this.#releaseActiveExecution(active, terminalFinalized);
@@ -777,6 +871,7 @@ export class NodeGatewayTurnController {
 			}
 			terminalFinalized = record.status !== "in_progress";
 		} catch (error) {
+			if (active.persistenceFailureReported) return;
 			if (active.controller.signal.aborted) {
 				try {
 					const record = await this.#forceInterruptActive(active);
@@ -822,7 +917,16 @@ export class NodeGatewayTurnController {
 		}
 		this.#active = null;
 		this.#activeTask = null;
-		if (this.#isClosed() || !this.#isCurrent(active)) return;
+		if (this.#closed || this.#isClosed() || !this.#isCurrent(active)) return;
+		// A published approval must be answerable after the suspension releases its claim.
+		const approval = active.pendingApprovalRequest;
+		if (approval && !active.controller.signal.aborted && !active.terminalState) {
+			this.#publish(
+				"approval.request",
+				approvalRequestPayload(approval, active.context.generation),
+			);
+			this.#publish("status.update", statusPayload("waiting_approval", active.clientTurnId));
+		}
 		this.#publish("status.changed", this.#status());
 		this.#emitPendingProposedPlan(active);
 		if (
@@ -837,8 +941,9 @@ export class NodeGatewayTurnController {
 
 	#scheduleNextQueuedTurn(): void {
 		if (
-			this.#active !== null
-			|| this.#admissionPending
+			this.#closed || this.#isClosed()
+			|| this.#active !== null
+			|| this.#admission !== null
 			|| this.#session.transitionActive
 			|| this.#session.controlActive
 		) return;
@@ -874,6 +979,7 @@ export class NodeGatewayTurnController {
 				? { reasoningEffort: this.#settings.reasoningEffort }
 				: {}),
 		};
+		const collaborationMode = this.#settings.collaborationMode;
 		let reservation: TurnReservation;
 		let claimed = false;
 		try {
@@ -887,20 +993,6 @@ export class NodeGatewayTurnController {
 				if (reconciliation.committed) this.requestNextQueuedTurn();
 				else this.#emitQueueWorkerStartFailed();
 				return;
-			}
-			runtime.configureRuntimeContext?.({
-				collaborationMode: this.#settings.collaborationMode,
-				turnId: reservation.turn.turn_id,
-			});
-			try {
-				queue.retireClaim(record.queueId, reservedTurnId);
-				claimed = false;
-			} catch {
-				const reconciliation = queue.reconcileClaim(record.queueId, reservedTurnId);
-				claimed = false;
-				if (!reconciliation.committed) {
-					throw new Error("queued turn reservation was not committed");
-				}
 			}
 		} catch {
 			if (claimed) {
@@ -918,8 +1010,6 @@ export class NodeGatewayTurnController {
 			...proposed,
 			turnId: reservation.turn.turn_id,
 		};
-		const collaborationMode = this.#settings.collaborationMode;
-		this.#settings.rememberTurnMode(reservation.turn.turn_id, collaborationMode);
 		const active: ActiveTurn = {
 			clientTurnId: submission.clientTurnId,
 			clientUserMessageId: submission.clientTurnId,
@@ -934,18 +1024,38 @@ export class NodeGatewayTurnController {
 			turnId: reservation.turn.turn_id,
 			terminalEmitted: false,
 		};
-		this.#emitUserMessageLifecycle(
-			active,
-			record.text,
-			record.kind === "rejected_steer" ? "steer" : "submit",
-			`${reservation.turn.turn_id}:queue:${record.queueId}`,
-		);
 		this.#active = active;
-		this.#activeTask = new Promise<void>((resolve) => {
-			queueMicrotask(() => {
-				void this.#runTurn(active, submission, reservation).then(resolve);
-			});
-		});
+		this.#activeTask = Promise.resolve().then(async () => {
+			try {
+				runtime.configureRuntimeContext?.({ collaborationMode, turnId: reservation.turn.turn_id });
+				this.#settings.rememberTurnMode(reservation.turn.turn_id, collaborationMode);
+				try {
+					queue.retireClaim(record.queueId, reservedTurnId);
+					claimed = false;
+				} catch (error) {
+					const reconciliation = queue.reconcileClaim(record.queueId, reservedTurnId);
+					claimed = false;
+					if (!reconciliation.committed) throw error;
+				}
+				this.#emitUserMessageLifecycle(active, record.text,
+					record.kind === "rejected_steer" ? "steer" : "submit",
+					`${reservation.turn.turn_id}:queue:${record.queueId}`);
+			} catch (error) {
+				try {
+					const terminal = runtime.failReservedTurn
+						? await runtime.failReservedTurn(reservation, error, () => undefined, active.controller.signal)
+						: await runtime.forceInterrupt({ clientTurnId: active.clientTurnId, turnId: active.turnId! }, () => undefined);
+					if (claimed) queue.reconcileClaim(record.queueId, reservedTurnId);
+					this.#emitQueueWorkerStartFailed();
+					this.#projectStoredTerminal(active, terminal);
+				} finally {
+					this.#settings.forgetTurnMode(reservation.turn.turn_id);
+					this.#releaseActiveExecution(active, false);
+				}
+				return;
+			}
+			await this.#runTurn(active, submission, reservation);
+		}).catch(() => undefined);
 	}
 
 	#emitQueueWorkerStartFailed(): void {
@@ -961,7 +1071,7 @@ export class NodeGatewayTurnController {
 		const settledGracefully = task
 			? await settlesWithin(task, GRACEFUL_INTERRUPT_TIMEOUT_MS)
 			: active.terminalEmitted;
-		if (!settledGracefully && this.#ownsActiveTurn(active) && !active.terminalEmitted) {
+		if (!settledGracefully && this.#ownsActiveTurn(active)) {
 			const record = await this.#forceInterruptActive(active);
 			this.#projectForcedInterrupt(active, record);
 			const pendingClarification = this.#dependencies.sessionCoordinator
@@ -1011,6 +1121,14 @@ export class NodeGatewayTurnController {
 
 	#handleRuntimeEvent(active: ActiveTurn, event: RuntimeEvent): void {
 		switch (event.type) {
+			case "runtime_error":
+				active.persistenceFailureReported = true;
+				this.#publish("gateway.error", {
+					client_turn_id: active.clientTurnId, turn_id: active.turnId ?? active.clientTurnId,
+					code: "internal_error", message: event.message, occurrence_id: event.errorContext?.id ?? `error:${randomUUID()}`,
+					...(event.errorContext ? { error_context: event.errorContext, recovery_actions: ["inspect_execution", "run_doctor"] } : {}),
+				});
+				break;
 			case "turn_started":
 				active.turnId = event.turnId;
 				this.#publish("turn.started", {
@@ -1036,6 +1154,12 @@ export class NodeGatewayTurnController {
 						},
 					},
 				);
+				break;
+			case "compaction_progress":
+				this.#publish("status.update", {
+					client_turn_id: event.clientTurnId, turn_id: active.turnId,
+					state: "running", kind: "compaction", text: `Compressing context: ${event.text}`,
+				});
 				break;
 			case "compaction_started":
 				active.contextWindow = Object.freeze({
@@ -1065,6 +1189,8 @@ export class NodeGatewayTurnController {
 					after_tokens: event.afterTokens,
 					max_tokens: event.maxTokens,
 					duration_s: event.durationSeconds,
+					...(event.failure ? { failure: event.failure } : {}),
+					...(event.usage ? { usage: event.usage } : {}),
 				});
 				this.#publish("status.changed", this.#status());
 				break;
@@ -1091,8 +1217,21 @@ export class NodeGatewayTurnController {
 				);
 				this.#publish("status.changed", this.#status());
 				break;
+			case "provider_attempt":
+				active.durableProviderAttempts = true;
+				if (event.record.state === "scheduled" && event.record.resetOutput) {
+					active.planStreamFilter?.reset();
+					this.#publish("message.reset", { client_turn_id: active.clientTurnId });
+				}
+				this.#publish("provider.attempt.updated", {
+					client_turn_id: active.clientTurnId,
+					session_id: event.record.sessionId,
+					turn_id: event.record.turnId,
+					record: event.record,
+				});
+				break;
 			case "stream_retrying":
-				if (event.resetOutput) {
+				if (event.resetOutput && !active.durableProviderAttempts) {
 					active.planStreamFilter?.reset();
 					this.#publish("message.reset", {
 						client_turn_id: active.clientTurnId,
@@ -1195,14 +1334,12 @@ export class NodeGatewayTurnController {
 					?.updatePendingApproval(active.context, approval) === false) {
 					break;
 				}
-				this.#publish(
-					"approval.request",
-					approvalRequestPayload(approval, active.context.generation),
-				);
-				this.#publish(
-					"status.update",
-					statusPayload("waiting_approval", active.clientTurnId),
-				);
+				if (active.runtime.hasActiveApproval?.(approval.decisionId)) {
+					this.#publish("approval.request", approvalRequestPayload(approval, active.context.generation));
+					this.#publish("status.update", statusPayload("waiting_approval", active.clientTurnId));
+				} else {
+					active.pendingApprovalRequest = approval;
+				}
 				break;
 			}
 			case "clarification_requested": {
@@ -1239,6 +1376,7 @@ export class NodeGatewayTurnController {
 				break;
 			}
 			case "tool_execution_started": {
+				active.toolEffectsObserved = true;
 				active.visibleAgentOutput = true;
 				const callId = boundedString(event.callId, 256);
 				const toolName = boundedString(event.toolName, 128) || "Tool";
@@ -1248,6 +1386,7 @@ export class NodeGatewayTurnController {
 					call_id: callId,
 					name: toolName,
 					context: `Executing ${toolName}`,
+					...(event.terminalInteraction ? { terminal_interaction: projectTerminalInteraction(event.terminalInteraction) } : {}),
 				});
 				this.#emitTurnEvent(active, "tool_execution", "tool_start", "", {
 					call_id: callId,
@@ -1285,27 +1424,18 @@ export class NodeGatewayTurnController {
 					break;
 				}
 				active.terminalEmitted = true;
-				if (active.controller.signal.aborted) {
-					this.#publish("turn.completion_suppressed", {
-						client_turn_id: active.clientTurnId,
-						reason: "interrupt_requested",
-						suppressed_state: "completed",
-					});
-					this.#emitInterrupted(active);
-				} else {
-					this.#emitCompleted(active, event.assistantText, event.usage, event.durationMs);
-				}
+				this.#emitCompleted(active, event.assistantText, event.usage, event.durationMs);
 				break;
 			case "turn_failed":
 				if (active.terminalEmitted) break;
 				active.terminalEmitted = true;
-				this.#emitTurnFailure(active, event.code, event.message, event.additionalDetails);
+				this.#emitTurnFailure(active, event.code, event.message, event.additionalDetails, event.errorContext);
 				break;
 			case "turn_interrupted":
 				this.#recordInterruptFinalized(active);
 				if (active.terminalEmitted) break;
 				active.terminalEmitted = true;
-				this.#emitInterrupted(active);
+				this.#emitInterrupted(active, event.errorContext);
 				break;
 		}
 	}
@@ -1404,6 +1534,7 @@ export class NodeGatewayTurnController {
 
 	#projectStoredTerminal(active: ActiveTurn, record: RuntimeTurnRecord): void {
 		active.terminalEmitted = true;
+		active.toolEffectsObserved = true;
 		active.turnId ??= record.turn_id;
 		if (record.status === "completed") {
 			const result = isObject(record.result) ? record.result : {};
@@ -1414,7 +1545,7 @@ export class NodeGatewayTurnController {
 				completedTurnDurationMs(record),
 			);
 		} else if (record.status === "interrupted") {
-			this.#emitInterrupted(active);
+			this.#emitInterrupted(active, readErrorContext(record.result?.error_context));
 		} else if (record.status === "failed") {
 			const result = isObject(record.result) ? record.result : {};
 			this.#emitTurnFailure(
@@ -1422,6 +1553,7 @@ export class NodeGatewayTurnController {
 				record.error_code ?? "provider_error",
 				typeof result.message === "string" ? result.message : "Turn failed.",
 				typeof result.additional_details === "string" ? result.additional_details : undefined,
+				readErrorContext(result.error_context),
 			);
 		}
 	}
@@ -1482,6 +1614,7 @@ export class NodeGatewayTurnController {
 		code: RuntimeErrorCode,
 		message: string,
 		additionalDetails?: string,
+		errorContext?: ErrorContext,
 	): void {
 		this.#prepareFailedSteers(active);
 		active.terminalState = "failed";
@@ -1491,14 +1624,19 @@ export class NodeGatewayTurnController {
 			client_turn_id: active.clientTurnId,
 			turn_id: active.turnId ?? active.clientTurnId,
 			code,
-			message,
+			message: errorContext ? errorSummary(errorContext) : message,
+			...(errorContext ? { error_context: errorContext, recovery_actions: resolveErrorRecovery(errorContext, {
+				ownershipCurrent: this.#session.isCurrent(active.context), connected: true, activeOperation: false,
+				effects: active.toolEffectsObserved ? "unknown" : "none", imageInput: "unknown",
+				availableActions: DIAGNOSTIC_RECOVERY_ACTION_IDS,
+			}).map((action) => action.id) } : {}),
 			...(safeAdditionalDetails ? { additional_details: safeAdditionalDetails } : {}),
 		});
 		this.#publish("turn.status", terminalStatus("failed", active, "Failed"));
 		this.#publish("status.update", statusPayload("failed", active.clientTurnId));
 	}
 
-	#emitInterrupted(active: ActiveTurn): void {
+	#emitInterrupted(active: ActiveTurn, errorContext?: ErrorContext): void {
 		active.terminalState = "interrupted";
 		this.#prepareInterruptedSteers(active);
 		this.#settings.forgetTurnMode(active.turnId ?? active.clientTurnId);
@@ -1508,6 +1646,7 @@ export class NodeGatewayTurnController {
 			code: "interrupted",
 			requested: false,
 			message: "Turn interrupted",
+			...(errorContext ? { error_context: errorContext } : {}),
 			input_rolled_back: active.inputRolledBack === true,
 		});
 		this.#publish(
@@ -1686,7 +1825,7 @@ export function queueEventPayload(
 	};
 }
 
-export function queueProjection(snapshot: QueueSnapshot): JsonObject {
+function queueProjection(snapshot: QueueSnapshot): JsonObject {
 	const pending = snapshot.pendingSteers.filter(isVisibleQueueItem);
 	const deferred = [...snapshot.rejectedSteers, ...snapshot.followUps].filter(isVisibleQueueItem);
 	const hasPendingInput = pending.length + deferred.length > 0;
@@ -1777,13 +1916,6 @@ function localImagePaths(value: unknown): readonly string[] {
 		if (isObject(item) && typeof item.path === "string" && item.path.trim()) return item.path;
 		throw new GatewayFailure("invalid_params", "local_images contains an invalid path.");
 	});
-}
-
-function requiredString(value: unknown, name: string): string {
-	if (typeof value !== "string" || value.trim() === "") {
-		throw new GatewayFailure("invalid_params", `${name} is required.`);
-	}
-	return value;
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -1935,6 +2067,10 @@ function safeToolMetadata(
 	success: boolean,
 ): JsonObject {
 	const safe: JsonObject = {};
+	const errorContext = success ? undefined : readErrorContext(metadata.error_context);
+	if (errorContext) safe.error_context = errorContext;
+	const interaction = projectTerminalInteraction(metadata.terminal_interaction);
+	if (interaction) safe.terminal_interaction = interaction;
 	const skillName = skillNameFromMetadata(metadata);
 	if (skillName) safe.skill_name = skillName;
 	const mutation = projectMutationMetadata(metadata, success);
@@ -2019,4 +2155,18 @@ async function settlesWithin(task: Promise<void>, timeoutMs: number): Promise<bo
 
 function boundedString(value: string, limit: number): string {
 	return value.slice(0, limit);
+}
+
+async function awaitAdmission<Value>(operation: Promise<Value>, signal: AbortSignal): Promise<Value> {
+	let onAbort!: () => void;
+	try {
+		return await new Promise<Value>((resolve, reject) => {
+			onAbort = () => { reject(signal.reason); };
+			operation.then(resolve, reject);
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
+		});
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
 }

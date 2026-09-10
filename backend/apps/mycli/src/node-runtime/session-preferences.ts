@@ -14,7 +14,7 @@ import { SessionTransitionError } from "@mycli/runtime";
 import type { RuntimeSessionStore } from "@mycli/storage";
 import type { PermissionProfile } from "@mycli/tools";
 
-export const SESSION_PREFERENCES_STATE_KEY = "session_preferences" as const;
+const SESSION_PREFERENCES_STATE_KEY = "session_preferences" as const;
 
 export interface SessionPreferences {
 	readonly provider: ProviderRouteId;

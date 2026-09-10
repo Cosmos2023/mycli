@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { GatewayEventNotification } from "@mycli/contracts";
+import { parseGatewayToolRecord, type GatewayEventNotification } from "@mycli/contracts";
 import {
 	NodeGatewayEventProjector,
 	type GatewayEventOwnership,
@@ -140,4 +140,31 @@ test("runtime projection preserves a child routing session while the envelope ow
 	assert.equal(request.params.generation, undefined);
 	assert.equal(mirrored.params.session_id, "root-session");
 	assert.equal(mirrored.params.generation, 6);
+});
+
+test("tool lifecycle projection shares one validated allowlisted record with its runtime mirror", () => {
+	for (const [method, status] of [["tool.start", "running"], ["tool.complete", "success"], ["tool.failed", "error"]] as const) {
+		const notifications: GatewayEventNotification[] = [];
+		const projector = new NodeGatewayEventProjector({
+			clock: () => 0,
+			currentOwnership: () => ({ sessionId: "session", generation: 1 }),
+			write: (notification) => { notifications.push(notification); },
+		});
+		projector.emitRuntime(method, {
+			client_turn_id: "client", call_id: "call", tool_id: "call", name: "Read", context: "source.ts",
+			duration_s: 0.125, summary: "preview", summary_chars: 7, summary_truncated: false,
+			success: method !== "tool.failed", error: "failed", error_chars: 6, error_truncated: false,
+			arguments: { token: "private-argument" }, raw_payload: { credentials: "private-payload" }, rationale: "private-rationale",
+		});
+		const direct = notifications[0]!;
+		const mirror = notifications[1]!;
+		assert.equal(direct.method, method);
+		assert.ok(mirror.method === "runtime.event");
+		const record = parseGatewayToolRecord(direct.params.tool_record);
+		assert.equal(record.status, status);
+		assert.equal(record.call_id, "call");
+		assert.equal(record.duration_ms, 125);
+		assert.equal(mirror.params.payload.tool_record, record);
+		assert.doesNotMatch(JSON.stringify(record), /private-|arguments|raw_payload|rationale/);
+	}
 });

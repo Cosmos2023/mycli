@@ -2,8 +2,8 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 44,
-    "event_count": 44,
+	"rpc_count": 45,
+    "event_count": 45,
     "required_rpc": [
       "session.bootstrap",
 	  "session.new",
@@ -26,6 +26,7 @@
       "extension.manifest",
 	  "provider.connectivity.validate",
 	  "provider.list",
+	  "provider.attempts.load",
 	  "settings.keymap.reset",
       "shutdown"
     ],
@@ -41,13 +42,14 @@
 	  "extension.updated",
       "subagent.updated",
       "turn.completed",
-      "turn.status"
+      "turn.status",
+      "provider.attempt.updated"
     ]
   },
   "slash_commands": {
-	"command_count": 36,
-	"prefixed_alias_count": 13,
-	"sha256": "e21b28b12b8837b44348c55f52525b3c53d24ce93f2fceeaf506f5d8dabcf403"
+	"command_count": 35,
+	"retired_command_count": 37,
+	"sha256": "574ed8292cf6d32be364093de1069ab0202c8c6d4e68dab3c43f727031bd988b"
   },
   "tools": {
     "retained": [

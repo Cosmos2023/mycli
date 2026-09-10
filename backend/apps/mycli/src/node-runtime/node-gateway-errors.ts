@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { isConfigError } from "@mycli/config";
 import {
+	errorDefinition,
+	createErrorContext,
+	legacyGatewayReason,
 	type DiagnosticCategory,
 	type DiagnosticRecoveryActionId,
 } from "@mycli/contracts";
@@ -20,14 +24,15 @@ export class GatewayFailure extends Error {
 	}
 }
 
-export interface GatewayFailureDiagnostic {
+interface GatewayFailureDiagnostic {
 	readonly category: DiagnosticCategory;
 	readonly recoveryActions: readonly DiagnosticRecoveryActionId[];
 }
 
 export function gatewayFailureDiagnostic(code: string): GatewayFailureDiagnostic {
-	const category = gatewayFailureCategory(code);
-	const recoveryActions = gatewayFailureRecoveryActionIds(code);
+	const definition = errorDefinition(legacyGatewayReason(code));
+	const category = definition.category;
+	const recoveryActions = definition.recovery;
 	return Object.freeze({ category, recoveryActions });
 }
 
@@ -37,8 +42,15 @@ export function gatewayRequestOccurrenceId(): string {
 
 export function gatewayFailure(error: unknown): GatewayFailure {
 	if (error instanceof GatewayFailure) return error;
+	if (isConfigError(error)) return new GatewayFailure("config_error", errorDefinition(error.errorContext.reason).summary,
+		{ error_context: error.errorContext });
+	if (isObject(error) && (error.code === "gateway_overloaded" || error.code === "gateway_message_too_large")) {
+		const data = isObject(error.data) && error.data.dispatched === false ? { dispatched: false } : {};
+		return new GatewayFailure(error.code, errorDefinition(legacyGatewayReason(error.code, data.dispatched)).summary, data);
+	}
 	if (error instanceof SlashCommandError) {
-		return new GatewayFailure(error.code, error.message);
+		return new GatewayFailure(error.code, error.message,
+			error.replacement ? { additional_details: error.message } : {});
 	}
 	if (error instanceof SessionServiceError) return sessionServiceFailure(error);
 	if (isObject(error) && error.code === "model_catalog_error") {
@@ -83,7 +95,18 @@ export function gatewayFailure(error: unknown): GatewayFailure {
 	if (isObject(error) && error.code === "invalid_params") {
 		return new GatewayFailure("invalid_params", "Request parameters are invalid.");
 	}
-	if (error instanceof StorageFailure || (isObject(error) && error.code === "persistence_error")) {
+	if (error instanceof StorageFailure) {
+		const errorContext = createErrorContext({ reason: error.reason, source: "storage",
+			scope: { kind: "request", id: gatewayRequestOccurrenceId() }, outcome: { state: "unknown", effects: "possible" },
+			details: {
+				...(typeof error.diagnostics.sqlite_code === "string" ? { storage_code: error.diagnostics.sqlite_code } : {}),
+				...(typeof error.diagnostics.expected_version === "number" ? { expected_version: error.diagnostics.expected_version } : {}),
+				...(typeof error.diagnostics.actual_version === "number" ? { actual_version: error.diagnostics.actual_version } : {}),
+			},
+		});
+		return new GatewayFailure("persistence_error", "Session persistence failed.", { error_context: errorContext });
+	}
+	if (isObject(error) && error.code === "persistence_error") {
 		return new GatewayFailure("persistence_error", "Session persistence failed.");
 	}
 	if (isObject(error) && error.code === "queue_conflict") {
@@ -143,24 +166,4 @@ function sessionServiceFailure(error: SessionServiceError): GatewayFailure {
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function gatewayFailureCategory(code: string): DiagnosticCategory {
-	if (code === "auth_required") return "auth";
-	if (code === "model_catalog_error") return "config";
-	if (code === "unavailable_platform") return "sandbox";
-	if (code === "persistence_error" || code.startsWith("session_")
-		|| code.startsWith("repair_")) return "storage";
-	return "runtime";
-}
-
-function gatewayFailureRecoveryActionIds(code: string): readonly DiagnosticRecoveryActionId[] {
-	let ids: readonly DiagnosticRecoveryActionId[];
-	if (code === "auth_required") ids = ["configure_credentials"];
-	else if (code === "model_catalog_error") ids = ["inspect_configuration"];
-	else if (code === "persistence_error" || code === "internal_error"
-		|| code === "session_state_invalid" || code === "session_state_version_unsupported"
-		|| code === "repair_failed") ids = ["run_doctor"];
-	else ids = [];
-	return Object.freeze([...ids]);
 }

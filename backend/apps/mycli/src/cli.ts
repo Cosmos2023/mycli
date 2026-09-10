@@ -11,7 +11,7 @@ import {
 	configureGatewayTransport,
 	type GatewayTransport,
 } from "mycli-shell-tui/gateway-transport";
-import { renderRootHelp } from "./management/cli-command-catalog.ts";
+import { renderCommandHelp, renderRootHelp } from "./management/cli-command-catalog.ts";
 import { renderShellCompletion } from "./management/completion.ts";
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
@@ -29,10 +29,11 @@ import {
 	writeStartupProfile,
 } from "./node-runtime/startup-profile.ts";
 import { MYCLI_VERSION } from "./version.ts";
+import type { HeadlessInput } from "./headless/io.ts";
 
 export const ROOT_HELP = renderRootHelp();
 
-type InputStream = { isTTY?: boolean };
+type InputStream = { isTTY?: boolean; on?: NodeJS.ReadableStream["on"] };
 type OutputStream = { isTTY?: boolean; write(value: string): unknown };
 type ProcessHooks = {
 	once(event: "exit", listener: (code: number) => void): unknown;
@@ -41,7 +42,7 @@ type ProcessHooks = {
 	off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 };
 
-export type RunCliOptions = {
+type RunCliOptions = {
 	argv?: readonly string[];
 	env?: NodeJS.ProcessEnv;
 	cwd?: string;
@@ -71,11 +72,12 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	const stdout = options.stdout ?? process.stdout;
 	const stderr = options.stderr ?? process.stderr;
 
-	if (argv.includes("--help") || argv.includes("-h")) {
-		stdout.write(ROOT_HELP);
+	const optionArguments = argv.slice(0, argv.indexOf("--") < 0 ? argv.length : argv.indexOf("--"));
+	if (optionArguments.includes("--help") || optionArguments.includes("-h")) {
+		stdout.write(argv[0] === "exec" || argv[0] === "review" || argv[0] === "app-server" ? renderCommandHelp(argv[0]) : ROOT_HELP);
 		return 0;
 	}
-	if (argv.includes("--version") || argv.includes("-V")) {
+	if (optionArguments.includes("--version") || optionArguments.includes("-V")) {
 		stdout.write(`${MYCLI_VERSION}\n`);
 		return 0;
 	}
@@ -91,7 +93,35 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		stdout.write(renderShellCompletion(mode.shell));
 		return 0;
 	}
+	if (mode.kind === "headless") {
+		const { runHeadlessCommand } = await import("./headless/run.ts");
+		return runHeadlessCommand({
+			command: mode.command, cwd, env,
+			stdin: stdin as HeadlessInput,
+			stdout, stderr, processHooks: options.processHooks ?? process,
+			...(options.startNodeBackend ? { startBackend: options.startNodeBackend } : {}),
+		});
+	}
+	if (mode.kind === "app-server") {
+		let args: readonly string[];
+		try { args = parseRuntimeArguments(mode.runtimeArgs); }
+		catch (error) {
+			stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
+			return 2;
+		}
+		const { runStdioAppServer } = await import("./app-server/stdio.ts");
+		return runStdioAppServer({
+			cwd, env, args, input: stdin as NodeJS.ReadableStream, output: stdout as NodeJS.WritableStream,
+			stderr, processHooks: options.processHooks ?? process,
+			...(options.startNodeBackend ? { startBackend: options.startNodeBackend } : {}),
+		});
+	}
 	if (mode.kind === "management") {
+		const managementController = new AbortController();
+		const managementHooks = options.processHooks ?? process;
+		const abortManagement = (): void => managementController.abort();
+		managementHooks.once("SIGINT", abortManagement);
+		managementHooks.once("SIGTERM", abortManagement);
 		try {
 			const homeDir = options.homeDir ?? homedir();
 			const management = options.management ?? await (async () => {
@@ -106,9 +136,10 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 					};
 					return executor;
 				}
-				const [{ createDefaultManagementServices }, { runSetupCommand }] = await Promise.all([
+				const [{ createDefaultManagementServices }, { runSetupCommand }, { createNativeAuthInteraction }] = await Promise.all([
 					import("./management/services.ts"),
 					import("./management/setup.ts"),
+					import("./management/auth-interaction.ts"),
 				]);
 				return createDefaultManagementServices({
 					workspaceRoot: cwd,
@@ -135,14 +166,20 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 							: {}),
 					}),
 					readApiKeyInput: (signal) => readApiKeyFromStdin(stdin as AuthInputStream, signal),
+					...(stdin.isTTY === true ? {
+						createAuthInteraction: (signal: AbortSignal) => createNativeAuthInteraction({ input: stdin as AuthInputStream, output: stderr, signal }),
+					} : {}),
 				});
 			})();
-			const response = await management.execute(mode.command, new AbortController().signal);
+			const response = await management.execute(mode.command, managementController.signal);
 			stdout.write(renderManagementResponse(mode.command, response));
 			return response.exitCode ?? (response.ok ? 0 : 1);
 		} catch {
 			stderr.write("[mycli] management_start_failed: unable to run management command\n");
 			return 1;
+		} finally {
+			managementHooks.off("SIGINT", abortManagement);
+			managementHooks.off("SIGTERM", abortManagement);
 		}
 	}
 
@@ -187,6 +224,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	const transport: GatewayTransport = {
 		input: deferredInput,
 		output: deferredOutput,
+		diagnostic: () => resolvedBackend?.diagnostic() ?? "",
 		close: async () => {
 			expectedShutdown = true;
 			const running = await backendStart.catch(() => undefined);

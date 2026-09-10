@@ -14,21 +14,30 @@ import {
 	encodeSessionContentBlob,
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
 	openRuntimeSessionStore,
-	SCHEMA_V12_VERSION,
+	SCHEMA_V14_VERSION,
 	subagentRunId,
 	type RuntimeSessionStore,
 } from "@mycli/storage";
 import { renderMycliShell } from "mycli-shell-tui";
-import type { GatewayEvent } from "../../../../tui/mycli-shell/src/adapters/gateway-client.ts";
-import { GatewayEventDeduper } from "../../../../tui/mycli-shell/src/adapters/gateway-events.ts";
+import type { GatewayEvent } from "../../../../tui/mycli-shell/src/transport/gateway-client.ts";
+import { GatewayEventDeduper } from "../../../../tui/mycli-shell/src/transport/gateway-events.ts";
 import {
 	initialRuntimeState,
+} from "../../../../tui/mycli-shell/src/state/runtime-state-model.ts";
+import {
 	projectRuntimeState,
+} from "../../../../tui/mycli-shell/src/state/runtime-projection.ts";
+import {
 	reduceRuntimeEvent,
-} from "../../../../tui/mycli-shell/src/adapters/runtime-state.ts";
+} from "../../../../tui/mycli-shell/src/state/runtime-event-reducer.ts";
+import {
+	runtimeStateFromTranscript,
+} from "../../../../tui/mycli-shell/src/state/transcript-history.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 import {
 	responsesAuthorityText,
+	responsesTextEvents,
+	writeResponsesEvents,
 	writeResponsesText,
 	writeResponsesTool,
 } from "./support/responses-sse.ts";
@@ -102,6 +111,7 @@ test("Node backend round trips curated provider readiness rows and trace identit
 		await waitFor(() => event(messages, "runtime.ready"));
 		writeRequest(backend, `bootstrap-${provider}`, "session.bootstrap", { protocol_version: 1 });
 		const bootstrap = await waitFor(() => response(messages, `bootstrap-${provider}`));
+		assert.equal(bootstrap.error, undefined);
 		assert.deepEqual(resultValue(bootstrap, "auth_status"), {
 			ready: true,
 			provider_id: provider,
@@ -109,7 +119,9 @@ test("Node backend round trips curated provider readiness rows and trace identit
 			source: "stored",
 		});
 		const rows = resultValue(bootstrap, "auth_providers") as Array<Record<string, unknown>>;
-		assert.equal(new Set(rows.map((row) => row.id)).size, PROVIDER_IDS.length);
+		assert.deepEqual(new Set(rows.map((row) => row.id)), new Set([
+			...PROVIDER_IDS, "qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual",
+		]));
 		assert.deepEqual(rows.find((row) => row.id === provider), {
 			id: provider,
 			name: displayName,
@@ -333,7 +345,7 @@ test("Node backend advertises a refreshed update only on the next startup", asyn
 	await second.close();
 });
 
-test("fresh schema-v12 bootstrap loads the virtual session transcript without persisting it", async (t) => {
+test("fresh schema-v14 bootstrap loads the virtual session transcript without persisting it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-virtual-session-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -375,6 +387,9 @@ test("fresh schema-v12 bootstrap loads the virtual session transcript without pe
 		items: [],
 		next_before: null,
 		read_only: false,
+		provider_attempts: [],
+		provider_attempts_truncated: false,
+		provider_attempts_next_before: null,
 	});
 	writeRequest(backend, "resume-missing", "session.resume", { session_id: "missing-session" });
 	const missingResume = await waitFor(() => response(messages, "resume-missing"));
@@ -385,7 +400,7 @@ test("fresh schema-v12 bootstrap loads the virtual session transcript without pe
 
 	const database = new DatabaseSync(join(home, ".mycli", "sessions.db"), { readOnly: true });
 	try {
-		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V12_VERSION);
+		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
 		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
 	} finally {
 		database.close();
@@ -498,6 +513,74 @@ test("Node backend gives one live window exclusive ownership of a session", asyn
 	});
 	additionalBackends.push(releasedSource);
 	await releasedSource.close();
+});
+
+test("native Azure environment auth reaches in-process and Worker requests with durable transport snapshots", { timeout: 30_000 }, async (t) => {
+	for (const adapter of ["in_process", "worker"] as const) await t.test(adapter, async (context) => {
+		const root = await mkdtemp(join(tmpdir(), "mycli-native-azure-"));
+		const home = join(root, "home");
+		const workspace = join(root, "workspace");
+		await mkdir(home);
+		await mkdir(workspace);
+		const captured: Array<{ url: string; key: string | undefined; model: unknown }> = [];
+		const server = createServer((request, response) => {
+			let body = "";
+			request.setEncoding("utf8");
+			request.on("data", (chunk) => { body += chunk; });
+			request.on("end", () => {
+				captured.push({ url: request.url ?? "", key: request.headers["api-key"] as string | undefined,
+					model: (JSON.parse(body) as Record<string, unknown>).model });
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				if (captured.length === 1) {
+					response.end('event: error\ndata: {"type":"error","error":{"code":"stream_read_error","type":"upstream_error","message":"Upstream request failed"}}\n\n');
+					return;
+				}
+				writeResponsesText(response, "native azure complete", "response-native-azure");
+				response.end();
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		context.after(async () => {
+			await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+			await rm(root, { recursive: true, force: true });
+		});
+		const address = server.address();
+		assert(address && typeof address === "object");
+		const sessionId = `azure-${adapter}`;
+		const backend = await startNodeBackend({ cwd: workspace, args: ["--session", sessionId], env: {
+			HOME: home, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
+			MYCLI_THINKING_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
+			AZURE_OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/openai/v1`, AZURE_OPENAI_API_KEY: "fixture-azure-key",
+			AZURE_OPENAI_API_VERSION: "2025-04-01-preview", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.5=fixture-deployment",
+		} });
+		context.after(() => backend.close().catch(() => undefined));
+		const messages: Array<Record<string, unknown>> = [];
+		createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+			messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+		});
+		await waitFor(() => event(messages, "runtime.ready"));
+		writeRequest(backend, "azure-submit", "turn.submit", { message: "hello", client_turn_id: "azure-turn", client_user_message_id: "azure-user" });
+		const submitted = await waitFor(() => response(messages, "azure-submit"));
+		assert.equal(submitted.error, undefined);
+		await waitFor(() => event(messages, "turn.completed") ?? event(messages, "turn.failed"));
+		assert.equal(event(messages, "turn.failed"), undefined);
+		assert.equal(captured.length, 2);
+		assert.equal(captured[0]?.key, "fixture-azure-key");
+		assert.equal(captured[0]?.model, "fixture-deployment");
+		assert.equal(new URL(captured[0]!.url, "http://fixture.invalid").searchParams.get("api-version"), "2025-04-01-preview");
+		await backend.close();
+		const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+		try {
+			const manifest = store.modelInputLedger.loadLatestProviderRequestManifest(sessionId);
+			assert(manifest);
+			const request = store.modelInputLedger.reconstructProviderStep(manifest.requestId).request;
+			assert.equal(request.nativeTransport?.api, "azure-openai-responses");
+			assert.deepEqual(request.nativeTransport?.azure, { apiVersion: "2025-04-01-preview", deploymentName: "fixture-deployment" });
+			const attempts = store.providerAttemptLedger.list({ sessionId });
+			assert.deepEqual(attempts.map((attempt) => attempt.state), ["started", "failed", "scheduled", "started", "recovered"]);
+			assert.doesNotMatch(JSON.stringify({ manifest, request, attempts, messages }), /fixture-azure-key|127\.0\.0\.1/u);
+		} finally { store.close(); }
+	});
 });
 
 test("Worker-backed root composes sessions, provider streaming, transcripts, and SQLite", async (t) => {
@@ -631,7 +714,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		providerToolNames(capture.requestBody?.tools),
 			[
 				"Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch",
-				"tool_search", "Skill",
+				"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent", "web_search",
 			],
@@ -836,6 +919,22 @@ test("Node backend executes update_plan and restores its model-hidden transcript
 	);
 	assert.equal(JSON.stringify(streamDiagnostics).includes("Plan the implementation."), false);
 	assert.equal(JSON.stringify(streamDiagnostics).includes("Plan recorded."), false);
+	const timing = streamDiagnostics.at(-1)?.payload as Record<string, unknown>;
+	for (const field of ["last_text_delta_ms", "response_terminal_ms", "sdk_terminal_ms",
+		"completed_event_ms", "stream_settled_ms", "terminal_persist_ms", "text_tail_ms"]) {
+		assert.equal(typeof timing[field], "number", field);
+		assert.ok((timing[field] as number) >= 0, field);
+	}
+	assert.ok((timing.response_terminal_ms as number) <= (timing.sdk_terminal_ms as number));
+	assert.ok((timing.sdk_terminal_ms as number) <= (timing.completed_event_ms as number));
+	assert.ok((timing.completed_event_ms as number) <= (timing.stream_settled_ms as number));
+	const completionTiming = traceRows.map((row) => JSON.parse(row) as Record<string, unknown>)
+		.find((row) => row.kind === "turn_completion_diagnostics")?.payload as Record<string, unknown>;
+	assert.equal(completionTiming.snapshot_written, true);
+	for (const field of ["commit_ms", "continuation_ms", "snapshot_ms", "publish_ms", "elapsed_ms"]) {
+		assert.equal(typeof completionTiming[field], "number", field);
+		assert.ok((completionTiming[field] as number) >= 0, field);
+	}
 
 	writeRequest(backend, "plan-transcript", "transcript.load", { session_id: "plan-session" });
 	const transcript = await waitFor(() => response(messages, "plan-transcript"));
@@ -1169,21 +1268,28 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		args: ["--session", "root-adapter-rollback", "--model", "gpt-test"],
 		env: baseEnv,
 	});
+	t.after(() => first.close());
 	const firstMessages: Array<Record<string, unknown>> = [];
 	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
 	});
 	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "bootstrap-errors", "session.bootstrap", { protocol_version: 1, supported_error_context_versions: [1] });
+	await waitFor(() => response(firstMessages, "bootstrap-errors"));
 	writeRequest(first, "worker-turn", "turn.submit", {
 		message: "Persist this turn before adapter rollback.",
 		client_turn_id: "worker-rollback-turn",
 		client_user_message_id: "worker-rollback-message",
 	});
-	const workerFinal = await waitFor(() => firstMessages.find((message) => (
-		message.method === "message.complete"
-		&& paramValue(message, "final") === true
-		&& paramValue(message, "client_turn_id") === "worker-rollback-turn"
-	)), 8_000);
+	const workerFinal = await waitFor(() => {
+		const failure = firstMessages.find((message) => message.method === "turn.failed" || message.method === "gateway.error");
+		assert.equal(failure, undefined, JSON.stringify(failure));
+		return firstMessages.find((message) => (
+			message.method === "message.complete"
+			&& paramValue(message, "final") === true
+			&& paramValue(message, "client_turn_id") === "worker-rollback-turn"
+		));
+	}, 8_000);
 	await waitFor(() => firstMessages.find((message, index) => (
 		index > firstMessages.indexOf(workerFinal)
 		&& message.method === "status.changed"
@@ -1207,6 +1313,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		args: ["--session", "root-adapter-rollback", "--model", "gpt-test"],
 		env: { ...baseEnv, MYCLI_AGENT_EXECUTION_ADAPTER: "in_process" },
 	});
+	t.after(() => second.close());
 	const secondMessages: Array<Record<string, unknown>> = [];
 	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
@@ -1252,7 +1359,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		reopened.close();
 	}
 	const database = new DatabaseSync(dbPath, { readOnly: true });
-	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V12_VERSION);
+	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
 	const ownerCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blobs").get()?.count);
 	const referenceCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blob_refs").get()?.count);
 	assert.ok(ownerCount > 0);
@@ -1560,7 +1667,7 @@ test("Worker-backed root projects steering and follow-up input into TUI transcri
 	assert.equal(await backend.completion, 0);
 });
 
-test("Node backend restores and resolves a durable clarification without a new turn", async (t) => {
+test("Node backend interrupts a historical clarification and waits for a new user turn", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-clarification-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -1640,14 +1747,20 @@ test("Node backend restores and resolves a durable clarification without a new t
 	});
 	await waitFor(() => event(secondMessages, "runtime.ready"));
 	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
-	const restored = await waitFor(() => event(secondMessages, "clarify.request"));
-	assert.equal(paramValue(restored, "request_id"), "call-question");
+	await waitFor(() => response(secondMessages, "bootstrap"));
+	assert.equal(secondMessages.some((message) => message.method === "clarify.request"), false);
+	assert.equal(requestBodies.length, 1);
 	writeRequest(second, "answer", "clarify.respond", {
 		request_id: "call-question",
 		response: "Node",
 	});
 	const accepted = await waitFor(() => response(secondMessages, "answer"));
-	assert.equal(resultValue(accepted, "accepted"), true);
+	assert.equal(errorValue(accepted, "code"), "clarification_not_pending");
+	writeRequest(second, "new-turn", "turn.submit", {
+		message: "Use Node for the new task.",
+		client_turn_id: "new-clarification-turn",
+		client_user_message_id: "new-clarification-user",
+	});
 	let final: Record<string, unknown>;
 	try {
 		final = await waitFor(() => secondMessages.find((message) =>
@@ -1662,14 +1775,16 @@ test("Node backend restores and resolves a durable clarification without a new t
 	}
 	assert.equal(paramValue(final, "text"), "Node selected.");
 	assert.equal(requestBodies.length, 2);
-	assert.equal(JSON.stringify(requestBodies[1]?.input).includes("User response: Node"), true);
+	assert.equal(JSON.stringify(requestBodies[1]?.input).includes("User response: Node"), false);
+	assert.match(JSON.stringify(requestBodies[1]?.input), /Use Node for the new task/);
 
 	writeRequest(second, "shutdown-second", "shutdown", {});
 	assert.equal(await second.completion, 0);
 	const reopened = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		assert.equal(reopened.loadState("clarification-session", "suspended_turn"), undefined);
-		assert.equal(reopened.loadTurn("clarification-session", "clarification-client-turn")?.status, "completed");
+		assert.equal(reopened.loadTurn("clarification-session", "clarification-client-turn")?.status, "interrupted");
+		assert.equal(reopened.loadTurn("clarification-session", "new-clarification-turn")?.status, "completed");
 	} finally {
 		reopened.close();
 	}
@@ -1734,6 +1849,7 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 	const resourceResponse = await waitFor(() => response(messages, "resources"));
 	const resources = resultValue(resourceResponse, "resources") as readonly Record<string, unknown>[];
 	assert.equal(resources.some((resource) => resource.id === "skill:review"), true);
+	assert.equal(resources.find((resource) => resource.id === "skill:review")?.command, "/skills");
 	assert.equal(JSON.stringify(resources).includes("PRIVATE SKILL BODY"), false);
 
 	writeRequest(backend, "shutdown-integrations", "shutdown", {});
@@ -1945,7 +2061,7 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.equal(childRequests.length, 1);
 	assert.deepEqual(toolNames(childRequests[0]?.tools), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "Skill",
+		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
 	const childAuthority = responsesAuthorityText(childRequests[0] ?? {});
@@ -1956,7 +2072,7 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.match(childAuthority, /Assigned task: explore/u);
 	assert.match(
 		childAuthority,
-		/Tool scope: Edit, Patch, Read, Skill, Write, tool_search, update_plan, web_fetch/u,
+		/Tool scope: Edit, Patch, Read, Skill, Write, list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, tool_search, update_plan, view_image, web_fetch/u,
 	);
 	assert.match(childAuthority, /Permission profile: workspace/u);
 	assert.match(childAuthority, /Sandbox mode: workspace-write/u);
@@ -2408,11 +2524,20 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 								command,
 								yield_time_ms: 3_000,
 								sandbox_permissions: "require_escalated",
+								justification: "Run the child command with the access required by the approval test.",
 							},
 							"resp-concurrent-shell-tool",
 							{ input_tokens: 1, output_tokens: 2, total_tokens: 3 },
 						);
 					});
+					return;
+				}
+				const shellId = runningShellId(payload.input);
+				if (shellId) {
+					finishTool(
+						`call-concurrent-poll-${askerRequests.length}`, "WriteStdin", { session_id: shellId },
+						`resp-concurrent-poll-${askerRequests.length}`,
+					);
 					return;
 				}
 				finishText(
@@ -2552,9 +2677,9 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)
 			?.status === "completed"
 	)).length === 2, 10_000);
-	assert.equal(askerRequests.length, 2);
+	assert.ok(askerRequests.length >= 2);
 	assert.equal(readerRequests.length, 2);
-	assertApprovedShellOutcome(askerRequests[1]?.input, "concurrent-shell-ok");
+	assertApprovedShellOutcome(askerRequests.at(-1)?.input, "concurrent-shell-ok");
 	assert.doesNotMatch(JSON.stringify(askerRequests), /reader-only-content/u);
 	assert.match(JSON.stringify(readerRequests[1]?.input), /reader-only-content/u);
 	assert.doesNotMatch(JSON.stringify(readerRequests), /concurrent-shell-ok/u);
@@ -2610,6 +2735,7 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		"utf8",
 	);
 	const command = `"${process.execPath}" child-command.cjs`;
+	const justification = "Run the requested child command with the required access.";
 	const parentRequests: Record<string, unknown>[] = [];
 	const childRequests: Record<string, unknown>[] = [];
 	let releaseParentFinal!: () => void;
@@ -2628,9 +2754,19 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 				if (childRequests.length === 1) {
 					writeResponsesTool(response, "call-child-shell", "Shell", {
 						command,
+						justification,
 						yield_time_ms: 3_000,
 						sandbox_permissions: "require_escalated",
 					}, "resp-child-shell");
+					response.end("data: [DONE]\n\n");
+					return;
+				}
+				const shellId = runningShellId(payload.input);
+				if (shellId) {
+					writeResponsesTool(
+						response, `call-child-poll-${childRequests.length}`, "WriteStdin", { session_id: shellId },
+						`resp-child-poll-${childRequests.length}`,
+					);
 					response.end("data: [DONE]\n\n");
 					return;
 				}
@@ -2716,6 +2852,13 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 	assert.equal(paramValue(approval, "child_session_id"), childSessionId);
 	assert.equal(typeof generation, "number");
 	assert.equal(decisionId, "call-child-shell");
+	assert.equal(paramValue(approval, "command_preview"), command);
+	assert.equal(paramValue(approval, "justification"), justification);
+	const approvalState = projectRuntimeState(reduceRuntimeEvent(
+		initialRuntimeState(), "approval.request", approval.params as Record<string, unknown>,
+	));
+	assert.equal(approvalState.pendingApproval?.commandPreview, command);
+	assert.equal(approvalState.pendingApproval?.justification, justification);
 	await waitFor(() => messages.find((message) => (
 		message.method === "subagent.updated"
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status === "waiting"
@@ -2749,8 +2892,8 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		message.method === "subagent.updated"
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status === "completed"
 	)), 8_000);
-	assert.equal(childRequests.length, 2);
-	assertApprovedShellOutcome(childRequests[1]?.input, "child-approved");
+	assert.ok(childRequests.length >= 2);
+	assertApprovedShellOutcome(childRequests.at(-1)?.input, "child-approved");
 	assert.equal(messages.some((message) => (
 		message.method === "approval.respond"
 		&& paramValue(message, "session_id") === childSessionId
@@ -3957,13 +4100,13 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 
 	assert.deepEqual(requestTools[0], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "Skill",
+		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent", "web_search",
 	]);
 	assert.deepEqual(requestTools[1], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
+		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
 		"followup_task", "interrupt_agent", "list_agents", "wait_agent", "web_search",
 	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
@@ -4482,28 +4625,14 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 	writeRequest(backend, "approval-resume", "session.resume", { session_id: "approval" });
 	const approvalResume = await waitFor(() => response(messages, "approval-resume"));
 	assert.equal(resultValue(approvalResume, "session_id"), "approval");
-	const approvalEvent = await waitFor(() => sessionEvent(messages, "approval.request", "approval"));
-	assert.equal(paramValue(approvalEvent, "decision_id"), "call-approval");
-	assert.deepEqual(paramValue(approvalEvent, "permission_request"), {
-		network: { enabled: true },
-	});
+	assert.equal(sessionEvent(messages, "approval.request", "approval"), undefined);
 	writeRequest(backend, "approval-reject", "approval.respond", {
 		decision_id: "call-approval",
 		choice: "reject",
 	});
 	const approvalRejected = await waitFor(() => response(messages, "approval-reject"));
-	assert.equal(resultValue(approvalRejected, "accepted"), true);
-	const approvalCompleted = await waitFor(() => messages.find((message) => {
-		if (message.method !== "turn.completed") return false;
-		const params = message.params as Record<string, unknown> | undefined;
-		return params?.client_turn_id === "approval-client-approval";
-	}));
-	await waitFor(() => messages.find((message, index) => (
-		index > messages.indexOf(approvalCompleted)
-		&& message.method === "status.changed"
-		&& paramValue(message, "session_id") === "approval"
-		&& paramValue(message, "turn_running") === false
-	)));
+	assert.equal(errorValue(approvalRejected, "code"), "approval_not_pending");
+	assert.equal(requests.length, 0);
 
 	writeRequest(backend, "invalid-resume", "session.resume", { session_id: "invalid" });
 	const invalidResume = await waitFor(() => response(messages, "invalid-resume"));
@@ -4559,11 +4688,10 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 			&& params.text === "target resumed"
 			&& params.client_turn_id === "target-client-turn";
 	}));
-	const resumedRequests = requests.slice(1);
-	assert.ok(resumedRequests.some((request) => (
+	assert.ok(requests.some((request) => (
 		JSON.stringify(request.input).includes("target question")
 	)));
-	assert.equal(resumedRequests.some((request) => (
+	assert.equal(requests.some((request) => (
 		JSON.stringify(request.input).includes("source question")
 	)), false);
 
@@ -4815,10 +4943,10 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
 	let requestNumber = 0;
-	const runCommand = async (command: string): Promise<Record<string, unknown>> => {
+	const runCommand = async (command: string, surface = "tui"): Promise<Record<string, unknown>> => {
 		requestNumber += 1;
 		const id = `command-${requestNumber}`;
-		writeRequest(backend, id, "command.run", { command, surface: "tui" });
+		writeRequest(backend, id, "command.run", { command, surface });
 		return await waitFor(() => response(messages, id));
 	};
 
@@ -4847,7 +4975,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 		"traces",
 		"command-session-trace.jsonl.1",
 	)), true);
-	const tasks = await runCommand("/tasks agents");
+	const tasks = await runCommand("/agents", "cli");
 	assert.equal(displayValue(tasks, "title"), "Background agents");
 	assert.equal(displayValue(tasks, "total_rows"), 0);
 
@@ -4875,7 +5003,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	assert.equal(displayValue(normalizedResult, "kind"), "notice");
 	assert.equal(resultValue(normalizedResult, "phase"), "complete");
 	assert.equal(resultValue(normalizedResult, "status"), "already_normalized");
-	assert.equal(resultValue(normalizedResult, "schema_version"), 12);
+	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V14_VERSION);
 	writeRequest(backend, "provider-free-shutdown", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	const normalized = openRuntimeSessionStore({ dbPath });
@@ -4886,7 +5014,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	}
 });
 
-test("Node backend reports v12 content blobs complete and collects explicit orphans", async (t) => {
+test("Node backend reports v14 content blobs complete and collects explicit orphans", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-content-blob-maintenance-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -4936,7 +5064,7 @@ test("Node backend reports v12 content blobs complete and collects explicit orph
 	const complete = await runCommand("/session maintenance --apply-content-blobs");
 	assert.equal(resultValue(complete, "phase"), "complete");
 	assert.equal(resultValue(complete, "status"), "already_blob_backed");
-	assert.equal(resultValue(complete, "schema_version"), 12);
+	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V14_VERSION);
 	assert.doesNotMatch(JSON.stringify(complete), /private backend content|content-event/u);
 
 	const orphan = encodeSessionContentBlob("private backend orphan ".repeat(500));
@@ -5979,6 +6107,115 @@ test("Node backend separates session model choices from user defaults", async (t
 	assert.equal(await second.completion, 0);
 });
 
+test("hosted search reaches live TUI and restored history through both root adapters", { timeout: 30_000 }, async (t) => {
+	for (const adapter of ["in_process", "worker"] as const) {
+		for (const retryFirst of [false, true]) await t.test(`${adapter}, retry=${retryFirst}`, async (context) => {
+			const root = await mkdtemp(join(tmpdir(), "mycli-search-history-"));
+			const home = join(root, "home");
+			const workspace = join(root, "workspace");
+			await Promise.all([mkdir(home), mkdir(workspace)]);
+			const pending = Promise.withResolvers<ServerResponse>();
+			let requests = 0;
+			const search = {
+				type: "web_search_call", id: "ws-search", status: "completed",
+				action: { type: "search", queries: ["mycli docs", "mycli releases"] },
+			};
+			const finish = (response: ServerResponse): void => {
+				const done = { type: "response.output_item.done", output_index: 0, item: search };
+				writeResponsesEvents(response, [done, done, ...responsesTextEvents("Found the documentation.", "resp-search")
+					.slice(1).map((event) => typeof event.output_index === "number" ? { ...event, output_index: 1 } : event)]);
+				response.end();
+			};
+			const server = createServer((request, response) => {
+				request.resume();
+				request.on("end", () => {
+					requests += 1;
+					response.writeHead(200, { "content-type": "text/event-stream" });
+					writeResponsesEvents(response, [
+						{ type: "response.created", response: { id: "resp-search", status: "in_progress" } },
+						{ type: "response.output_item.added", output_index: 0,
+							item: { type: "web_search_call", id: requests === 1 && retryFirst ? "ws-retry" : search.id, status: "in_progress" } },
+					]);
+					if (requests === 1) pending.resolve(response);
+					else finish(response);
+				});
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const address = server.address();
+			assert.ok(address && typeof address !== "string");
+			const backends: Array<Awaited<ReturnType<typeof startNodeBackend>>> = [];
+			context.after(async () => {
+				for (const backend of backends) await backend.close();
+				server.closeAllConnections();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+				await rm(root, { recursive: true, force: true });
+			});
+			const options = {
+				cwd: workspace, args: ["--session", "search-history", "--model", "gpt-test"],
+				env: {
+					HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+					MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false",
+					MYCLI_MEMORY_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
+					MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
+				},
+			};
+			const backend = await startNodeBackend(options);
+			backends.push(backend);
+			const messages: Array<Record<string, unknown>> = [];
+			let tuiState = initialRuntimeState();
+			const lines = createInterface({ input: backend.transport.input, crlfDelay: Infinity });
+			context.after(() => lines.close());
+			lines.on("line", (line) => {
+				const message = parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>;
+				messages.push(message);
+				if (typeof message.method === "string") {
+					tuiState = reduceRuntimeEvent(tuiState, message.method, message.params as Record<string, unknown>);
+				}
+			});
+			await waitFor(() => event(messages, "runtime.ready"));
+			writeRequest(backend, "search-submit", "turn.submit", {
+				message: "Find the mycli documentation.", client_turn_id: "search-turn", client_user_message_id: "search-message",
+			});
+			await waitFor(() => tuiState.transcript.some((item) => item.type === "web_search"), 5_000);
+			assert.match(renderMycliShell(projectRuntimeState(tuiState), 120).join("\n"), /Searching the web/u);
+			assert.equal(messages.some((message) => message.method === "message.delta"), false);
+			const responseStream = await pending.promise;
+			if (retryFirst) {
+				writeResponsesEvents(responseStream, [{ type: "error", code: "stream_read_error", message: "fixture stream interrupted" }]);
+				responseStream.end();
+			} else finish(responseStream);
+			await waitFor(() => event(messages, "turn.completed"), 8_000);
+			const searches = tuiState.transcript.filter((item) => item.type === "web_search");
+			assert.equal(searches.length, 1);
+			assert.equal(searches[0]?.call_id, search.id);
+			assert.equal(searches[0]?.status, "completed");
+			assert.deepEqual(searches[0]?.metadata?.queries, search.action.queries);
+			const rendered = renderMycliShell(projectRuntimeState(tuiState), 120).join("\n");
+			assert.match(rendered, /Searched the web for mycli docs \.\.\./u);
+			assert.equal((rendered.match(/Searched the web/gu) ?? []).length, 1);
+			assert.equal(requests, retryFirst ? 2 : 1);
+			await backend.close();
+
+			const restored = await startNodeBackend(options);
+			backends.push(restored);
+			const restoredMessages: Array<Record<string, unknown>> = [];
+			const restoredLines = createInterface({ input: restored.transport.input, crlfDelay: Infinity });
+			context.after(() => restoredLines.close());
+			restoredLines.on("line", (line) => restoredMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>));
+			await waitFor(() => event(restoredMessages, "runtime.ready"));
+			writeRequest(restored, "search-transcript", "transcript.load", { session_id: "search-history" });
+			const transcript = await waitFor(() => response(restoredMessages, "search-transcript"));
+			const restoredState = runtimeStateFromTranscript(initialRuntimeState(), transcript.result as Record<string, unknown>);
+			const restoredSearches = restoredState.transcript.filter((item) => item.type === "web_search");
+			assert.equal(restoredSearches.length, 1);
+			assert.equal(restoredSearches[0]?.text, searches[0]?.text);
+			assert.equal(restoredSearches[0]?.metadata?.call_id, search.id);
+			assert.deepEqual(restoredSearches[0]?.metadata?.queries, search.action.queries);
+			assert.match(renderMycliShell(projectRuntimeState(restoredState), 120).join("\n"), /Searched the web for mycli docs \.\.\./u);
+		});
+	}
+});
+
 function writeRequest(
 	backend: Awaited<ReturnType<typeof startNodeBackend>>,
 	id: string,
@@ -6041,6 +6278,21 @@ function providerToolNames(value: unknown): string[] {
 		}
 		return [];
 	});
+}
+
+function runningShellId(input: unknown): string | undefined {
+	if (!Array.isArray(input)) return undefined;
+	const call = input.findLast((item: unknown) => (
+		typeof item === "object" && item !== null && "type" in item && item.type === "function_call"
+	)) as { readonly call_id?: unknown } | undefined;
+	if (typeof call?.call_id !== "string") return undefined;
+	const output = input.find((item: unknown) => (
+		typeof item === "object" && item !== null && "type" in item && item.type === "function_call_output"
+		&& "call_id" in item && item.call_id === call.call_id
+	)) as { readonly output?: unknown } | undefined;
+	return typeof output?.output === "string"
+		? /Process running with session ID ([0-9a-f]{8})/u.exec(output.output)?.[1]
+		: undefined;
 }
 
 function assertApprovedShellOutcome(value: unknown, successMarker: string): void {

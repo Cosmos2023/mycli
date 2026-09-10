@@ -2,16 +2,20 @@ import type { Readable } from "node:stream";
 import {
 	deleteApiKey,
 	inspectApiKey,
+	loadModelProviderDeclarations,
+	readProviderCredential,
 	resolveConfig,
-	resolveProviderProfile,
 	writeApiKey,
 	type WorkspaceTrustState,
 } from "@mycli/config";
+import { parseProviderRouteId } from "@mycli/core";
+import type { NativeAuthInteraction, NativeAuthStatus, NativeAuthTarget } from "@mycli/providers";
+import { abortable, abortError } from "./abort.ts";
 import type { AuthManagementCommand, ManagementResponse } from "./types.ts";
 
 const MAX_STDIN_SECRET_BYTES = 64 * 1024;
 
-export type AuthCredentialSource = "environment" | "stored" | "legacy_config" | "missing";
+type AuthCredentialSource = "environment" | "stored" | "legacy_config" | "missing";
 
 export interface AuthManagementResponse extends ManagementResponse {
 	readonly action: "status" | "login" | "logout";
@@ -21,6 +25,7 @@ export interface AuthManagementResponse extends ManagementResponse {
 	readonly source: AuthCredentialSource;
 	readonly stored: boolean;
 	readonly removed?: boolean;
+	readonly credentialType?: "api_key" | "oauth";
 }
 
 export interface AuthInputStream extends NodeJS.ReadableStream {
@@ -29,15 +34,17 @@ export interface AuthInputStream extends NodeJS.ReadableStream {
 
 export type ApiKeyInputReader = (signal: AbortSignal) => Promise<string>;
 
-export interface AuthManagementServiceOptions {
+interface AuthManagementServiceOptions {
 	readonly homeDir: string;
 	readonly workspaceRoot: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly workspaceTrust: WorkspaceTrustState;
 	readonly readApiKeyInput?: ApiKeyInputReader;
+	readonly createAuthInteraction?: (signal: AbortSignal) => NativeAuthInteraction;
+	readonly nativeLogin?: (input: NativeAuthTarget & { readonly interaction: NativeAuthInteraction }) => Promise<NativeAuthStatus>;
 }
 
-export class AuthInputError extends Error {
+class AuthInputError extends Error {
 	constructor(readonly code: "auth_stdin_required" | "auth_input_empty" | "auth_input_too_large") {
 		super(code);
 		this.name = "AuthInputError";
@@ -52,11 +59,13 @@ export class AuthManagementService {
 	}
 
 	async execute(command: AuthManagementCommand, signal: AbortSignal): Promise<AuthManagementResponse> {
+		signal.throwIfAborted();
 		const target = await this.#target(command.provider, command.authRef);
 		if (command.kind === "login" && command.action === "status") {
 			return this.#status(target, "status");
 		}
-		if (command.kind === "logout") return this.#logout(target);
+		if (command.kind === "logout") return this.#logout(target, command, signal);
+		if (command.action === "oauth") return this.#oauthLogin(target, signal);
 		return this.#login(target, signal);
 	}
 
@@ -69,20 +78,41 @@ export class AuthManagementService {
 		});
 		const provider = providerValue?.trim() || config.provider;
 		try {
-			resolveProviderProfile(provider);
+			parseProviderRouteId(provider);
 		} catch {
 			throw new Error("auth_provider_invalid");
 		}
 		const authRef = authRefValue?.trim()
 			|| (provider === config.provider ? config.authRef : provider);
 		const status = await inspectApiKey({ homeDir: this.#options.homeDir, authRef });
+		const credential = status.storeState === "valid"
+			? await readProviderCredential({ homeDir: this.#options.homeDir, authRef })
+			: undefined;
 		const current = provider === config.provider && authRef === config.authRef;
-		const environment = current && Boolean(this.#options.env.MYCLI_API_KEY?.trim());
-		const legacyConfig = current && Boolean(config.apiKey) && !environment && !status.configured;
+		let environment = current && Boolean(this.#options.env.MYCLI_API_KEY?.trim());
+		const stored = credential !== undefined;
+		const legacyConfig = current && Boolean(config.apiKey) && !environment && !stored;
+		if (current && !environment && !stored && !legacyConfig && config.allowAmbientAuth && authRefValue === undefined
+			&& status.storeState !== "malformed") {
+			const declarations = await loadModelProviderDeclarations(this.#options.homeDir);
+			const declaration = declarations.find((candidate) => candidate.provider === provider);
+			if (declaration?.source !== "pi_ai_declared") {
+				const { captureProviderNativeEnvironment, inspectNativeProviderAuth, loadPiAiProviderDirectory } = await import("@mycli/providers");
+				const catalogProvider = parseProviderRouteId(declaration?.catalogProvider ?? provider);
+				const entry = (await loadPiAiProviderDirectory()).providers.find((candidate) => candidate.catalogProviderId === catalogProvider);
+				if (entry && entry.status !== "unsupported") {
+					const providerEnv = await captureProviderNativeEnvironment({ catalogProviderId: catalogProvider, environment: this.#options.env });
+					const native = await inspectNativeProviderAuth({ provider: catalogProvider, homeDir: this.#options.homeDir,
+						authRef, allowAmbientAuth: true, providerEnv });
+					environment = native.source === "environment";
+				}
+			}
+		}
 		return Object.freeze({
 			provider,
 			authRef: status.authRef,
-			stored: status.configured,
+			stored,
+			...(credential ? { credentialType: credential.type } : {}),
 			storeMalformed: status.storeState === "malformed",
 			environment,
 			legacyConfig,
@@ -114,6 +144,7 @@ export class AuthManagementService {
 			configured,
 			source,
 			stored: target.stored,
+			...(configured ? { credentialType: source === "stored" ? target.credentialType ?? "api_key" : "api_key" as const } : {}),
 			...(removed === undefined ? {} : { removed }),
 			message: authMessage(action, configured, source, removed),
 		});
@@ -129,22 +160,45 @@ export class AuthManagementService {
 			return failure(target, "login", authInputMessage(issue), issue);
 		}
 		try {
+			signal.throwIfAborted();
 			await writeApiKey({ homeDir: this.#options.homeDir, authRef: target.authRef, apiKey });
 		} catch {
 			return failure(target, "login", "Unable to store the credential.", "auth_write_failed");
 		}
-		return this.#status({ ...target, stored: true }, "login");
+		return this.#status(await this.#target(target.provider, target.authRef), "login");
 	}
 
-	async #logout(target: AuthTarget): Promise<AuthManagementResponse> {
+	async #oauthLogin(target: AuthTarget, signal: AbortSignal): Promise<AuthManagementResponse> {
+		if (target.storeMalformed) return this.#status(target, "login");
+		try {
+			if (!this.#options.createAuthInteraction) return failure(target, "login", "OAuth login requires an interactive terminal.", "auth_interactive_required");
+			const declarations = await loadModelProviderDeclarations(this.#options.homeDir);
+			const declaration = declarations.find((candidate) => candidate.provider === target.provider);
+			if (declaration?.source === "pi_ai_declared") return failure(target, "login", "This provider route does not support native OAuth login.", "auth_oauth_unavailable");
+			const login = this.#options.nativeLogin ?? (await import("@mycli/providers")).loginNativeProvider;
+			await login({
+				provider: declaration?.catalogProvider ?? target.provider,
+				homeDir: this.#options.homeDir, authRef: target.authRef, signal,
+				interaction: this.#options.createAuthInteraction(signal),
+			});
+			return this.#status(await this.#target(target.provider, target.authRef), "login");
+		} catch (error) {
+			if (signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+				return Object.freeze({ ...failure(target, "login", "Login interrupted.", "interrupted"), exitCode: 130 });
+			}
+			return failure(target, "login", "OAuth login could not be completed for this provider.", "auth_oauth_failed");
+		}
+	}
+
+	async #logout(target: AuthTarget, command: AuthManagementCommand, signal: AbortSignal): Promise<AuthManagementResponse> {
 		if (target.storeMalformed) return this.#status(target, "logout", false);
 		let removed: boolean;
 		try {
-			removed = await deleteApiKey({ homeDir: this.#options.homeDir, authRef: target.authRef });
+			removed = await deleteApiKey({ homeDir: this.#options.homeDir, authRef: target.authRef, signal });
 		} catch {
 			return failure(target, "logout", "Unable to remove the stored credential.", "auth_delete_failed");
 		}
-		return this.#status({ ...target, stored: false }, "logout", removed);
+		return this.#status(await this.#target(command.provider, command.authRef), "logout", removed);
 	}
 }
 
@@ -177,6 +231,7 @@ interface AuthTarget {
 	readonly storeMalformed: boolean;
 	readonly environment: boolean;
 	readonly legacyConfig: boolean;
+	readonly credentialType?: "api_key" | "oauth";
 }
 
 function credentialSource(target: AuthTarget): AuthCredentialSource {
@@ -235,27 +290,4 @@ function authInputMessage(issue: string): string {
 
 async function missingInputReader(): Promise<never> {
 	throw new AuthInputError("auth_stdin_required");
-}
-
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const onAbort = (): void => reject(abortError());
-		signal.addEventListener("abort", onAbort, { once: true });
-		promise.then(
-			(value) => {
-				signal.removeEventListener("abort", onAbort);
-				resolve(value);
-			},
-			(error: unknown) => {
-				signal.removeEventListener("abort", onAbort);
-				reject(error);
-			},
-		);
-	});
-}
-
-function abortError(): Error {
-	const error = new Error("interrupted");
-	error.name = "AbortError";
-	return error;
 }

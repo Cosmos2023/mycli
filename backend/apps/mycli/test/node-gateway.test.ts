@@ -9,8 +9,15 @@ import {
 } from "@mycli/config";
 import {
 	parseGatewayEvent,
+	createErrorContext,
+	readErrorContext,
+	errorSummary,
+	parseGatewayResult,
+	parseGatewayToolRecord,
 	parseJsonRpcMessage,
 	TUI_KEYMAP_ACTIONS,
+	TURN_INTERRUPTED_NOTICE,
+	turnInterruptedNoticeId,
 } from "@mycli/contracts";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
@@ -29,7 +36,7 @@ import {
 	type QueueCoordinatorStore,
 	type TurnSubmission,
 } from "@mycli/runtime";
-import { StorageFailure } from "@mycli/storage";
+import { projectTranscript, StorageFailure } from "@mycli/storage";
 import type {
 	LoadShellOutputPageInput,
 	SessionOverview,
@@ -37,6 +44,23 @@ import type {
 	TranscriptItem,
 } from "@mycli/storage";
 import type { SandboxReadiness, ShellSessionSnapshot } from "@mycli/tools";
+import {
+	initialRuntimeState,
+} from "../../../../tui/mycli-shell/src/state/runtime-state-model.ts";
+import {
+	projectRuntimeState,
+} from "../../../../tui/mycli-shell/src/state/runtime-projection.ts";
+import {
+	reduceRuntimeEvent,
+} from "../../../../tui/mycli-shell/src/state/runtime-event-reducer.ts";
+import {
+	runtimeStateFromTranscript,
+	runtimeStateFromOlderTranscriptPage,
+} from "../../../../tui/mycli-shell/src/state/transcript-history.ts";
+import {
+	renderTranscriptBlocks,
+} from "../../../../tui/mycli-shell/src/components/transcript/transcript-renderer.ts";
+import { HeadlessTerminal } from "../../../../tui/mycli-shell/test/support/headless-terminal.ts";
 import {
 	createNodeGateway,
 	type CreateNodeGatewayOptions,
@@ -54,8 +78,98 @@ import type {
 	SessionQuery,
 	SessionSummary,
 } from "../src/node-runtime/session-service.ts";
+import { GatewayFailure } from "../src/node-runtime/node-gateway-errors.ts";
 
 type RpcMessage = ReturnType<typeof parseJsonRpcMessage>;
+
+for (const versions of [undefined, [1], [2]]) for (const code of ["model_catalog_error", "gateway_overloaded", "future_error"]) {
+	test(`RPC-only error code ${code} produces a valid notification and leaves the gateway usable (${JSON.stringify(versions)})`, async (t) => {
+		const harness = gatewayHarness({ control: true, selectModelLoader: async () => { throw new GatewayFailure(code, "Model selection failed."); } });
+		t.after(() => harness.gateway.close());
+		await harness.send("session.bootstrap", { protocol_version: 1, ...(versions ? { supported_error_context_versions: versions } : {}) });
+		const response = await harness.send("model.select", { provider: "openai", protocol: "responses", model: "gpt-test", base_url: "https://offline.invalid/v1" });
+		assert.ok("error" in response);
+		assert.equal(response.error.code, code);
+		if (versions?.includes(1)) assert.ok(readErrorContext(response.error.data?.error_context));
+		else {
+			assert.equal(response.error.data?.error_context, undefined);
+			assert.doesNotMatch(JSON.stringify(response.error.data), /inspect_execution|select_compatible_model/u);
+		}
+		const event = await waitFor(() => notification(harness.messages, "gateway.error"));
+		parseGatewayEvent(event);
+		assert.equal(event.params.code, "internal_error");
+		assert.deepEqual(event.params.error_context, response.error.data?.error_context);
+		assert.ok("result" in await harness.send("status.get"));
+	});
+}
+
+test("malformed RPC error extensions stay quarantined in notifications without stale recovery actions", async (t) => {
+	const harness = gatewayHarness({ control: true, selectModelLoader: async () => {
+		throw new GatewayFailure("invalid_params", "Model selection failed.", {
+			error_context: { version: 2, reason: "future.reason" }, recovery_actions: ["retry"],
+		});
+	} });
+	t.after(() => harness.gateway.close());
+	await harness.send("session.bootstrap", { protocol_version: 1, supported_error_context_versions: [1] });
+	const response = await harness.send("model.select", { provider: "openai", protocol: "responses", model: "gpt-test", base_url: "https://offline.invalid/v1" });
+	assert.ok("error" in response);
+	assert.equal(response.error.data?.error_context, undefined);
+	assert.equal(response.error.data?.error_context_invalid, true);
+	assert.deepEqual(response.error.data?.recovery_actions, []);
+	const event = await waitFor(() => notification(harness.messages, "gateway.error"));
+	assert.equal(event.params.error_context_invalid, true);
+	assert.deepEqual(event.params.recovery_actions, []);
+	assert.ok("result" in await harness.send("status.get"));
+});
+
+for (const versions of [undefined, [1], [2]]) {
+	test(`gateway negotiates optional error facts for live, history, and request failures (${JSON.stringify(versions)})`, async (t) => {
+		const context = createErrorContext({ reason: "capability.image_input_unsupported", source: "provider",
+			scope: { kind: "turn", id: "turn-node" }, outcome: { state: "failed", effects: "none" },
+			details: { model: "text-only-model", input_origin: "history" },
+		});
+		const harness = gatewayHarness({ transcript: [{ id: "error:history", type: "error", text: errorSummary(context),
+			metadata: { code: "unsupported_capability", error_context: context },
+		}] });
+		t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+		await waitFor(() => notification(harness.messages, "runtime.ready"));
+		const bootstrap = await harness.send("session.bootstrap", {
+			protocol_version: 1,
+			...(versions ? { supported_error_context_versions: versions } : {}),
+		});
+		assert.ok("result" in bootstrap);
+		const enriched = versions?.includes(1) === true;
+		assert.equal(bootstrap.result.error_context_version, enriched ? 1 : undefined);
+		const page = await harness.send("transcript.load");
+		assert.ok("result" in page);
+		const history = parseGatewayResult("transcript.load", page.result);
+		const item = (history.items as readonly TranscriptItem[]).find((value) => value.id === "error:history");
+		assert.deepEqual(readErrorContext(item?.metadata?.error_context), enriched ? context : undefined);
+		const rejected = await harness.send("unsupported.method");
+		assert.ok("error" in rejected);
+		assert.equal(readErrorContext(rejected.error.data?.error_context)?.reason, enriched ? "gateway.invalid_request" : undefined);
+		await harness.send("turn.submit", { client_turn_id: "client:error", client_user_message_id: "user:error", message: "test" });
+		harness.emit({ type: "turn_failed", code: "unsupported_capability", message: errorSummary(context), errorContext: context });
+		const live = await waitFor(() => notification(harness.messages, "turn.failed"));
+		assert.deepEqual(readErrorContext(live.params.error_context), enriched ? context : undefined);
+		assert.equal(live.params.message, item?.text);
+	});
+}
+
+test("an uncommitted storage failure reports uncertainty without publishing a terminal turn", async (t) => {
+	const harness = gatewayHarness();
+	t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+	await harness.send("session.bootstrap", { protocol_version: 1, supported_error_context_versions: [1] });
+	await harness.send("turn.submit", { client_turn_id: "client:error", client_user_message_id: "user:error", message: "test" });
+	const context = createErrorContext({ reason: "storage.write_failed", source: "storage",
+		scope: { kind: "turn", id: "turn-node" }, outcome: { state: "unknown", effects: "possible" }, details: { operation: "commit" },
+	});
+	harness.emit({ type: "runtime_error", code: "persistence_error", message: errorSummary(context), errorContext: context });
+	const event = await waitFor(() => notification(harness.messages, "gateway.error"));
+	assert.deepEqual(readErrorContext(event.params.error_context), context);
+	assert.equal(notification(harness.messages, "turn.failed"), undefined);
+	assert.equal(notification(harness.messages, "turn.completed"), undefined);
+});
 
 const TUI_BUILTIN_COMMAND_NAMES = [
 	"/model",
@@ -214,6 +328,7 @@ function gatewayHarness(options: {
 	workspaceTrustAdapter?: NonNullable<CreateNodeGatewayOptions["workspaceTrust"]>;
 	integrations?: boolean;
 	integrationCommands?: readonly Record<string, unknown>[];
+	integrationResources?: readonly Record<string, unknown>[];
 	memory?: boolean;
 	backgroundTasks?: boolean;
 	control?: boolean;
@@ -227,6 +342,7 @@ function gatewayHarness(options: {
 		readonly beforeTokens: number;
 		readonly afterTokens: number;
 	};
+	compact?: NodeGatewayRuntime["compact"];
 	loadTranscriptPage?: (
 		sessionId: string,
 		input: { readonly before?: string; readonly limit?: number },
@@ -400,12 +516,13 @@ function gatewayHarness(options: {
 			source: "combined",
 			toolsets: [{ id: "external", tool_count: 2 }, { id: "file", tool_count: 1 }],
 			tools: [
-				{ id: "builtin:Read", name: "Read", source: "builtin", toolset: "file" },
+				{ id: "builtin:Read", name: "Read", source: "builtin", toolset: "file",
+					description: "Read a bounded file range.", availability: { status: "available" } },
 				{ id: "skill:Skill", name: "Skill", source: "skill", toolset: "external" },
 				{ id: "mcp:docs:search", name: "McpSearch", source: "mcp", toolset: "external" },
 			],
 		},
-		listResources: () => [{
+		listResources: () => options.integrationResources ?? [{
 			id: "skill:review",
 			type: "skill",
 			name: "review",
@@ -413,7 +530,7 @@ function gatewayHarness(options: {
 			enabled: true,
 			status: "enabled",
 			detail: "Review changes",
-			command: "/tools skills",
+			command: "/skills",
 		}, {
 			id: "mcp:docs:file:///README.md",
 			type: "plugin",
@@ -497,8 +614,8 @@ function gatewayHarness(options: {
 			commandAllowances = [];
 			return count;
 		},
-		compact: async () => options.compactResult
-			?? ({ status: "compressed" as const, beforeTokens: 900, afterTokens: 300 }),
+		compact: options.compact ?? (async () => options.compactResult
+			?? ({ status: "compressed" as const, beforeTokens: 900, afterTokens: 300 })),
 		resolveApproval: async (
 			input: { readonly decisionId: string; readonly choice: PendingApprovalChoice },
 			emit: (event: RuntimeEvent) => void,
@@ -967,6 +1084,114 @@ test("transcript load restores persisted turn durations as structured completion
 	await harness.gateway.close();
 });
 
+test("resumed TUI renders each repeated user input followed by its recovered interruption", async (t) => {
+	const turnIds = ["turn-1", "turn-2", "turn-3"];
+	const transcript = projectTranscript([
+		...turnIds.map((turn_id) => ({ id: `${turn_id}:user`, turn_id, type: "user_message", text: "repeated request" })),
+		...turnIds.map((turn_id) => ({
+			id: turnInterruptedNoticeId(turn_id), turn_id, type: "warning", text: TURN_INTERRUPTED_NOTICE,
+			metadata: { event_kind: "turn_interrupted", interrupted_turn_id: turn_id, status: "interrupted" },
+		})),
+	], turnIds.map((turn_id) => ({ turn_id, status: "interrupted" })));
+	const harness = gatewayHarness({ transcript });
+	t.after(async () => { await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	let state = initialRuntimeState();
+	let before: string | null = null;
+	for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
+		const response = await harness.send("transcript.load", { session_id: "session-node", before, limit: 2 });
+		assert.ok("result" in response);
+		const page = parseGatewayResult("transcript.load", response.result);
+		state = pageIndex === 0
+			? runtimeStateFromTranscript(state, page)
+			: runtimeStateFromOlderTranscriptPage(state, page);
+		before = page.next_before;
+	}
+	assert.equal(before, null);
+	assert.deepEqual(state.transcript.map((item) => item.turn_id), turnIds.flatMap((turnId) => [turnId, turnId]));
+	const shell = projectRuntimeState(state);
+	assert.deepEqual(shell.messages.map((message) => message.id), turnIds.flatMap((turnId) => [
+		`${turnId}:user`, turnInterruptedNoticeId(turnId),
+	]));
+	for (const width of [60, 100]) {
+		const terminal = new HeadlessTerminal({ columns: width, rows: 30 });
+		try {
+			terminal.write(renderTranscriptBlocks(shell.transcript ?? [], width).join("\r\n"));
+			await terminal.flush();
+			const rows = terminal.visibleLines().flatMap((line) => line.includes("repeated request")
+				? ["user"] : line.includes("Turn interrupted.") ? ["interrupted"] : []);
+			assert.deepEqual(rows, ["user", "interrupted", "user", "interrupted", "user", "interrupted"]);
+		} finally {
+			terminal.dispose();
+		}
+	}
+});
+
+test("gateway live tool completion and stored history carry equivalent typed records into the TUI", async (t) => {
+	const harness = gatewayHarness({ transcript: [{
+		id: "stored-tool", type: "tool", tool_name: "Read", call_id: "call", status: "completed",
+		text: "public preview", output: "public preview", duration_ms: 125,
+		metadata: { path: "source.ts", arguments: { token: "private-argument" }, rationale: "private-rationale" },
+	}] });
+	t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	await harness.send("turn.submit", { message: "read source", client_turn_id: "client", client_user_message_id: "user", local_images: [] });
+	harness.emit({ type: "tool_execution_completed", toolName: "Read", callId: "call", summary: "public preview", durationMs: 125,
+		metadata: { path: "source.ts", argumentsJson: "private-arguments", rationale: "private-rationale" },
+	});
+	const live = parseGatewayEvent(await waitFor(() => notification(harness.messages, "tool.complete")));
+	assert.ok(live.method === "tool.complete");
+	const response = await harness.send("transcript.load", { session_id: "session-node", before: null, limit: 500 });
+	assert.ok("result" in response);
+	const restored = parseGatewayResult("transcript.load", response.result);
+	const record = parseGatewayToolRecord(restored.items[0]?.tool_record);
+	assert.deepEqual(record, live.params.tool_record);
+	assert.doesNotMatch(JSON.stringify(record), /private-|arguments|rationale/);
+	const liveTool = projectRuntimeState(reduceRuntimeEvent(initialRuntimeState(), live.method, live.params)).tools[0];
+	const restoredTool = projectRuntimeState(runtimeStateFromTranscript(initialRuntimeState(), restored)).tools[0];
+	assert.deepEqual({ ...liveTool, id: null }, { ...restoredTool, id: null });
+});
+
+test("typed transcript pages fit the frame budget without losing storage cursor coverage", async (t) => {
+	const transcript = Array.from({ length: 500 }, (_value, index): TranscriptItem => ({
+		id: `tool-${index}`, type: "tool", tool_name: "Read", call_id: `call-${index}`, status: "completed",
+		metadata: { display: { status: "success", summary: "s".repeat(2048), detail: "x".repeat(8192), presentation: "context" } },
+	}));
+	for (const canonical of [true, false]) {
+		const harness = gatewayHarness({ transcript, ...(canonical ? { loadTranscriptPage: (_sessionId, input) => {
+			const end = input.before ? Number(input.before.slice(3)) : transcript.length;
+			const start = Math.max(0, end - (input.limit ?? 500));
+			return { hasCanonicalHistory: true, items: transcript.slice(start, end), nextBefore: start > 0 ? `v1.${start}` : null };
+		} } : {}) });
+		t.after(async () => { await harness.gateway.close(); });
+		await waitFor(() => notification(harness.messages, "runtime.ready"));
+		const ids: string[] = [];
+		let before: string | null = null;
+		do {
+			const response = await harness.send("transcript.load", { session_id: "session-node", before, limit: 500 });
+			assert.ok("result" in response);
+			assert.ok(Buffer.byteLength(JSON.stringify(response)) < 8 * 1024 * 1024);
+			const page = parseGatewayResult("transcript.load", response.result);
+			assert.ok(page.items.length > 0 && page.items.length < 500);
+			ids.unshift(...page.items.map((item) => item.id));
+			before = page.next_before;
+			assert.ok(ids.length <= transcript.length);
+		} while (before !== null);
+		assert.deepEqual(ids, transcript.map((item) => item.id));
+		await harness.gateway.close();
+	}
+});
+
+test("an oversized transcript item returns a bounded RPC error and keeps the connection usable", async (t) => {
+	const harness = gatewayHarness({ transcript: [{ id: "large", type: "assistant_message", text: "x".repeat(8 * 1024 * 1024) }] });
+	t.after(async () => { await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const response = await harness.send("transcript.load", { session_id: "session-node", before: null, limit: 1 });
+	assert.ok("error" in response);
+	assert.equal(response.error.code, "gateway_message_too_large");
+	assert.ok("result" in await harness.send("status.get", {}));
+});
+
 test("transcript load restores proposed plans without emitting a live proposal event", async () => {
 	const harness = gatewayHarness({
 		transcript: [{
@@ -1359,7 +1584,7 @@ test("canonical control RPCs use injected Node services and update active state"
 	const discoveredRows = "result" in discoveredCommands ? discoveredCommands.result.commands : [];
 	const statusCommand = discoveredRows.find((command: { id?: string }) => command.id === "status");
 	const statsCommand = discoveredRows.find((command: { id?: string }) => command.id === "stats");
-	assert.deepEqual(statusCommand?.aliases, ["/session show"]);
+	assert.deepEqual(statusCommand?.aliases, []);
 	assert.equal(statusCommand?.category, "diagnostics");
 	assert.equal(statusCommand?.search_only, false);
 	assert.equal(statusCommand?.available, true);
@@ -1725,7 +1950,7 @@ test("shell bootstrap and control RPCs stay scoped to the active owner", async (
 	await harness.gateway.close();
 });
 
-test("shell command routes expose ps and stop through the active owner manager", async () => {
+test("shell command routes expose ps and stop-all through the active owner manager", async () => {
 	const harness = gatewayHarness({ shell: true });
 	assert.ok(harness.shell);
 	harness.shell.snapshots.push(shellSnapshot());
@@ -1746,6 +1971,7 @@ test("shell command routes expose ps and stop through the active owner manager",
 	]);
 	const stopped = await harness.send("command.run", { command: "/ps stop-all", surface: "tui" });
 	assert.equal("result" in stopped ? stopped.result.command_kind : null, "shell_stop");
+	assert.equal("result" in stopped ? stopped.result.display.command : null, "/ps stop-all");
 	assert.deepEqual("result" in stopped ? stopped.result.lines : [], [
 		"Stopping all background terminals.",
 	]);
@@ -1759,13 +1985,13 @@ test("built-in TUI slash commands resolve to their canonical client actions", as
 		["/help", "help", "open_help", "", "none"],
 		["/model", "model", "open_model_selector", "", "transcript"],
 		["/permissions", "permissions", "open_permissions", "", "overlay"],
-		["/session", "resume", "open_session_selector", "", "transcript"],
+		["/resume", "resume", "open_session_selector", "", "transcript"],
 		["/agents", "agents", "open_agents", "", "transcript"],
-		["/tasks", "agents", "open_agents", "", "transcript"],
 		["/settings", "settings", "open_settings", "", "none"],
 		["/resources", "resources", "open_resources", "", "none"],
 		["/details", "details", "toggle_details", "", "none"],
 		["/view focus", "view", "set_view_mode", "focus", "none"],
+		["/view\tfocus", "view", "set_view_mode", "focus", "none"],
 		["/hotkeys", "hotkeys", "open_hotkeys", "", "none"],
 		["/copy", "copy", "copy_last_response", "", "none"],
 		["/clear", "clear", "clear_transcript", "", "none"],
@@ -1799,7 +2025,51 @@ test("built-in slash validation returns stable local errors", async () => {
 	await harness.gateway.close();
 });
 
-test("integration commands are additive and cannot override built-in names or aliases", async () => {
+test("retired slash commands fail locally with replacements and no side effects", async (t) => {
+	const harness = gatewayHarness({ integrations: true, backgroundTasks: true, shell: true });
+	t.after(() => harness.gateway.close());
+	await harness.send("session.bootstrap", { protocol_version: 1, supported_error_context_versions: [1] });
+	for (const [command, replacement] of [
+		["/session resume private-session", "/resume"],
+		["/tasks agents kill child-1", "/agents kill"],
+		["/jobs kill-subagents", "/agents kill-all"],
+		["/agents kill-agents", "/agents kill-all"],
+		["/tools\tskills", "/skills"],
+		["/plugin demo status {}", "/tools plugins"],
+		["/stop", "/ps stop-all"],
+		["/session-maintenance --apply-empty", "/session maintenance"],
+	]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("error" in response, command);
+		assert.equal(response.error.code, "invalid_arguments");
+		const detail = response.error.data?.additional_details;
+		assert.equal(typeof detail, "string");
+		assert.ok((detail as string).endsWith(`Use ${replacement} instead.`));
+		assert.doesNotMatch(JSON.stringify(response.error), /private-session/);
+		assert.equal(readErrorContext(response.error.data?.error_context)?.reason, "gateway.invalid_request");
+		const mirrored = await waitFor(() => notifications(harness.messages, "gateway.error")
+			.find((message) => message.params.occurrence_id === response.error.data?.occurrence_id));
+		assert.equal(mirrored.params.additional_details, detail);
+	}
+	assert.deepEqual(harness.taskInterruptions, []);
+	assert.deepEqual(harness.shell?.terminatedOwners, []);
+	assert.deepEqual(harness.sessionCommandCalls, []);
+	assert.equal(notification(harness.messages, "turn.started"), undefined);
+	const listed = await harness.send("command.list", { surface: "tui" });
+	assert.ok("result" in listed);
+	const names = listed.result.commands.map((command: { name: string }) => command.name);
+	assert.equal(names.includes("/tasks"), false);
+	assert.ok(listed.result.routing_names.includes("/tasks"));
+	assert.ok(listed.result.commands.every((command: { aliases?: string[] }) => !command.aliases?.length));
+	const completion = await harness.send("completion.slash", { prefix: "/", surface: "tui" });
+	assert.ok("result" in completion);
+	const completions = completion.result.items.map((item: { value: string }) => item.value);
+	assert.equal(completions.includes("/tasks"), false);
+	assert.equal(completions.includes("/model"), false, "unavailable commands must not be completed");
+	assert.ok(completions.includes("/agents"));
+});
+
+test("integration commands cannot reclaim built-in or retired command routes", async () => {
 	const harness = gatewayHarness({
 		integrations: true,
 		integrationCommands: [{
@@ -1811,7 +2081,13 @@ test("integration commands are additive and cannot override built-in names or al
 		}, {
 			id: "plugin:override:session",
 			name: "/session",
-			description: "Override resume alias",
+			description: "Reclaim retired resume alias",
+			argument_policy: "none",
+			available_during_turn: true,
+		}, {
+			id: "plugin:override:tasks",
+			name: "/tasks\tcustom",
+			description: "Reclaim retired command namespace",
 			argument_policy: "none",
 			available_during_turn: true,
 		}, {
@@ -1833,6 +2109,10 @@ test("integration commands are additive and cannot override built-in names or al
 	);
 	const help = await harness.send("command.run", { command: "/help", surface: "tui" });
 	assert.equal("result" in help ? help.result.client_action : null, "open_help");
+	for (const command of ["/session", "/tasks\tcustom"]) {
+		const retired = await harness.send("command.run", { command, surface: "tui" });
+		assert.equal("error" in retired ? retired.error.code : null, "invalid_arguments");
+	}
 	await harness.gateway.close();
 });
 
@@ -1920,6 +2200,7 @@ test("mode sandbox resume and quit slash commands mutate their owning runtime st
 	});
 	assert.equal("result" in resumed ? resumed.result.mutated_session : false, true);
 	assert.equal("result" in resumed ? resumed.result.session_id : null, "target");
+	assert.equal("result" in resumed ? resumed.result.generation : null, harness.sessionCoordinator?.snapshot().generation);
 	const status = await harness.send("status.get");
 	assert.equal("result" in status ? status.result.collaboration_mode : null, "plan");
 	const quit = await harness.send("command.run", { command: "/quit", surface: "cli" });
@@ -2007,6 +2288,7 @@ test("new slash command switches to a fresh backend session generation", async (
 
 	assert.equal("result" in created ? created.result.mutated_session : false, true);
 	assert.equal("result" in created ? created.result.session_id : null, "fresh-1");
+	assert.equal("result" in created ? created.result.generation : null, harness.sessionCoordinator?.snapshot().generation);
 	const status = await harness.send("status.get");
 	assert.equal("result" in status ? status.result.session_id : null, "fresh-1");
 	const sessions = await harness.send("session.list");
@@ -2033,8 +2315,7 @@ test("context stats and task slash commands project existing Node runtime state"
 	for (const [command, kind, title] of [
 		["/context", "diagnostic", "Context"],
 		["/stats", "diagnostic", "Runtime stats"],
-		["/agents runs", "list", "Background agents"],
-		["/tasks agents", "list", "Background agents"],
+		["/agents child-1", "list", "Background agents"],
 	] as const) {
 		const response = await harness.send("command.run", { command, surface: "tui" });
 		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
@@ -2190,11 +2471,11 @@ test("permission slash mutations update session command allowances", async () =>
 	await harness.gateway.close();
 });
 
-test("task slash commands list and interrupt only current-session background agents", async () => {
+test("agent slash commands list and interrupt only current-session background agents", async () => {
 	const harness = gatewayHarness({ backgroundTasks: true });
 	const listed = await harness.send("command.run", {
-		command: "/tasks agents",
-		surface: "tui",
+		command: "/agents",
+		surface: "cli",
 	});
 	assert.deepEqual(
 		"result" in listed
@@ -2203,12 +2484,12 @@ test("task slash commands list and interrupt only current-session background age
 		["child-1"],
 	);
 	const one = await harness.send("command.run", {
-		command: "/tasks agents kill child-1",
+		command: "/agents\tkill\nchild-1",
 		surface: "tui",
 	});
 	assert.equal("result" in one ? one.result.interrupted : null, true);
 	const all = await harness.send("command.run", {
-		command: "/tasks kill-agents",
+		command: "/agents kill-all",
 		surface: "tui",
 	});
 	assert.equal("result" in all ? all.result.interrupted : null, 1);
@@ -2240,6 +2521,23 @@ test("compact slash command runs the Node manual compaction boundary", async () 
 		assert.deepEqual(response.result.tokens, { before: 900, after: 300 });
 	}
 	await harness.gateway.close();
+});
+
+test("gateway close cancels manual compaction before closing its resources", async () => {
+	let compactSignal: AbortSignal | undefined;
+	let settled = false;
+	const harness = gatewayHarness({ compact: async ({ signal }) => {
+		compactSignal = signal;
+		await new Promise<void>((resolve) => { signal.addEventListener("abort", () => resolve(), { once: true }); });
+		settled = true;
+		return { status: "interrupted", beforeTokens: 900, afterTokens: 900 };
+	} });
+	const command = harness.send("command.run", { command: "/compact", surface: "tui" });
+	await waitFor(() => compactSignal);
+	await harness.gateway.close();
+	await command;
+	assert.equal(compactSignal?.aborted, true);
+	assert.equal(settled, true);
 });
 
 test("compact slash command explains when only retained context remains", async () => {
@@ -2294,6 +2592,7 @@ test("fork search and maintenance slash commands use Node session storage", asyn
 	});
 	assert.equal("result" in forked ? forked.result.mutated_session : false, true);
 	assert.equal("result" in forked ? forked.result.session_id : null, "branch");
+	assert.equal("result" in forked ? forked.result.generation : null, harness.sessionCoordinator?.snapshot().generation);
 	assert.equal(harness.sessionCoordinator?.snapshot().sessionId, "branch");
 
 	const searched = await harness.send("command.run", {
@@ -2408,7 +2707,42 @@ test("tools subactions and trace commands return filtered bounded displays", asy
 			: null,
 		"demo ready",
 	);
+	for (const command of ["/tools\tplugins\tdemo\tstatus\t{}", "/tools plugins\ndemo\nstatus {}"]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response);
+		assert.equal((response.result.display as { preformatted?: string }).preformatted, "demo ready");
+	}
 	await harness.gateway.close();
+});
+
+test("skill and tool inspection retain descriptions, availability, and configured hooks", async (t) => {
+	const hooks = [true, false].map((enabled, index) => ({
+		id: `hook:check-${index}`, type: "hook", name: `check-${index}`, source: "repo",
+		enabled, status: enabled ? "enabled" : "disabled", detail: "pre_tool_use",
+	}));
+	const harness = gatewayHarness({ integrations: true, integrationResources: [...hooks, {
+		id: "skill:review", type: "skill", name: "review", source: "repo", status: "enabled", detail: "Review changes",
+	}] });
+	t.after(() => harness.gateway.close());
+	for (const command of ["/skills", "/skills\t", "/skills\n"]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response);
+		const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
+		assert.deepEqual(display.rows.map((row) => [row.label, row.status, row.detail]), [["review", "enabled", "Review changes"]]);
+	}
+	for (const command of ["/tools hooks", "/tools\thooks"]) {
+		const response = await harness.send("command.run", { command, surface: "tui" });
+		assert.ok("result" in response);
+		const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
+		assert.deepEqual(display.rows.map((row) => [row.label, row.status, row.detail]), [
+			["check-0", "enabled", "pre_tool_use"], ["check-1", "disabled", "pre_tool_use"],
+		]);
+	}
+	const response = await harness.send("command.run", { command: "/tools", surface: "tui" });
+	assert.ok("result" in response);
+	const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
+	assert.equal(display.rows[0]?.detail, "Read a bounded file range.");
+	assert.equal(display.rows[0]?.status, "available");
 });
 
 test("malformed backend slash subactions return structured bounded errors", async () => {
@@ -2420,6 +2754,11 @@ test("malformed backend slash subactions return structured bounded errors", asyn
 		"/session maintenance --delete-all",
 		"/trace raw",
 		"/tools unknown",
+		"/ps stop",
+		"/ps stop-all extra",
+		"/agents kill",
+		"/agents\tkill\tchild-1\tchild-2",
+		"/agents unknown\taction",
 	]) {
 		const response = await harness.send("command.run", { command, surface: "tui" });
 		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
@@ -2460,7 +2799,7 @@ test("gateway exposes bounded integration manifests resources commands and subag
 		enabled: true,
 		status: "enabled",
 		detail: "Review changes",
-		command: "/tools skills",
+		command: "/skills",
 	}, {
 		id: "mcp:docs:file:///README.md",
 		type: "plugin",
@@ -4574,7 +4913,7 @@ test("gateway publishes provider diagnostics only through turn.failed", async ()
 });
 
 test("gateway projects live file approval previews to the canonical snake-case payload", async () => {
-	const harness = gatewayHarness();
+	const harness = gatewayHarness({ sessions: {}, submitStatuses: ["in_progress"] });
 	await waitFor(() => notification(harness.messages, "runtime.ready"));
 	await harness.send("turn.submit", {
 		message: "write notes",
@@ -4647,6 +4986,10 @@ test("gateway projects live file approval previews to the canonical snake-case p
 		},
 	});
 
+	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
+	assert.ok("result" in bootstrap);
+	assert.equal(notificationCount(harness.messages, "approval.request"), 0);
+	harness.releaseTurn();
 	const request = await waitFor(() => notification(harness.messages, "approval.request"));
 	assert.equal(request.params.content_preview, "first\nsecond\n");
 	assert.equal(request.params.content_line_count, 2);
@@ -4660,7 +5003,6 @@ test("gateway projects live file approval previews to the canonical snake-case p
 	assert.ok(harness.messages.indexOf(proposal) < harness.messages.indexOf(request));
 	parseGatewayEvent(request);
 
-	harness.releaseTurn();
 	await harness.gateway.close();
 });
 
@@ -5345,6 +5687,7 @@ test("turn interrupt fences stale turn ids and returns the active id", async () 
 		actual_turn_id: "turn-node",
 		category: "runtime",
 		occurrence_id: undefined,
+		recovery_actions: [],
 	});
 	assert.match(String(mismatchData?.occurrence_id), /^rpc:[a-f0-9]{64}$/u);
 	assert.equal(harness.signal()?.aborted, false);

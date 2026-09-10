@@ -9,20 +9,22 @@ import {
 } from "@mycli/storage";
 import type { ShellSessionSnapshot } from "@mycli/tools";
 import { GatewayFailure } from "./node-gateway-errors.ts";
+import { requiredBoundedString as requiredString } from "./node-gateway-validation.ts";
+import { GATEWAY_SHELL_OUTPUT_MAX_CHARS } from "./node-gateway-shell-output.ts";
 
 type JsonObject = Record<string, unknown>;
 
-export interface NodeGatewayShellManager {
+interface NodeGatewayShellManager {
 	list(ownerSessionId: string): readonly ShellSessionSnapshot[];
 	terminate(ownerSessionId: string, shellId: string): Promise<ShellSessionSnapshot>;
 	terminateOwner(ownerSessionId: string): Promise<readonly ShellSessionSnapshot[]>;
 }
 
-export interface NodeGatewayShellLifecycle {
+interface NodeGatewayShellLifecycle {
 	subscribe(listener: (event: ShellLifecycleEvent) => void): () => void;
 }
 
-export interface NodeGatewayShellControllerOptions {
+interface NodeGatewayShellControllerOptions {
 	readonly manager?: NodeGatewayShellManager;
 	readonly lifecycle?: NodeGatewayShellLifecycle;
 	readonly loadOutput?: (input: LoadShellOutputPageInput) => ShellOutputPage;
@@ -168,7 +170,7 @@ function shellStopCommandResult(stopped: JsonObject): JsonObject {
 		stopped: stopped.stopped ?? 0,
 		display: shellCommandDisplay({
 			kind: "notice",
-			command: "/stop",
+			command: "/ps stop-all",
 			title: "Background terminals",
 			severity: "success",
 			summary: "Stopping all background terminals.",
@@ -270,7 +272,7 @@ function shellLifecyclePayload(
 	}, event.shellId);
 	const outputDelta = event.outputDelta === undefined
 		? undefined
-		: event.outputDelta.slice(-10_000);
+		: event.outputDelta.slice(-GATEWAY_SHELL_OUTPUT_MAX_CHARS);
 	const discardedOutputChars = event.outputDelta === undefined
 		? 0
 		: Math.max(0, event.outputDelta.length - (outputDelta?.length ?? 0));
@@ -325,13 +327,6 @@ function shellOutputPagePayload(page: ShellOutputPage): JsonObject {
 		captured_chars: page.capturedChars,
 		output_chars: page.outputChars,
 	};
-}
-
-function requiredString(value: unknown, name: string): string {
-	if (typeof value !== "string" || !value || value.length > 4096 || value.includes("\0")) {
-		throw new GatewayFailure("invalid_params", `${name} must be a non-empty string.`);
-	}
-	return value;
 }
 
 function optionalString(value: unknown): string | undefined {

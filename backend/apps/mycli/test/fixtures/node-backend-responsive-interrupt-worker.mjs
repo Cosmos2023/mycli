@@ -5,10 +5,12 @@ const { generation, options } = workerData;
 const sessionId = flagValue(options.args, "--session") ?? "supervisor-session";
 const recovery = options.recoverInterruptedTurns?.[0];
 let input = "";
+let sequence = 0;
 
 function send(message) {
 	parentPort.postMessage({
 		type: "output",
+		sequence: ++sequence,
 		generation,
 		chunk: `${JSON.stringify(message)}\n`,
 	});
@@ -31,6 +33,7 @@ parentPort.on("message", (message) => {
 		return;
 	}
 	if (message.type !== "input") return;
+	parentPort.postMessage({ type: "input_ack", generation, sequence: message.sequence });
 	input += message.chunk;
 	let newline = input.indexOf("\n");
 	while (newline >= 0) {

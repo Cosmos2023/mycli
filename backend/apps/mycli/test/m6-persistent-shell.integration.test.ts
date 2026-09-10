@@ -9,11 +9,11 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { parseJsonRpcMessage } from "@mycli/contracts";
+import { parseGatewayResult, parseJsonRpcMessage } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
-import { responsesTextEvents, responsesToolEvents } from "./support/responses-sse.ts";
+import { responsesTextEvents, responsesToolBatchEvents, responsesToolEvents } from "./support/responses-sse.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -82,6 +82,7 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
 			MYCLI_CACHE_RETENTION: "none",
+			MYCLI_MAX_PROMPT_TOKENS: "128000",
 		},
 	});
 	const messages: JsonObject[] = [];
@@ -143,6 +144,120 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 	} finally {
 		store.close();
 	}
+});
+
+test("parallel Shell approvals advance while the first invocation still waits for output", { timeout: 30_000 }, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-approval-progress-"));
+	const homeDir = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(homeDir), mkdir(workspace)]);
+	await writeFile(join(workspace, "first.cjs"), [
+		"const fs = require('node:fs');",
+		"process.stdout.write('first-ready\\n');",
+		"const timer = setInterval(() => {",
+		"  if (!fs.existsSync('finish-first')) return;",
+		"  clearInterval(timer);",
+		"  process.stdout.write('first-finished\\n');",
+		"}, 10);",
+	].join("\n"));
+	await writeFile(join(workspace, "second.cjs"), "require('node:fs').writeFileSync('second-ran', 'done');\n");
+	const bodies: JsonObject[] = [];
+	const server = createServer((request, response) => {
+		let raw = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { raw += chunk; });
+		request.on("end", () => {
+			bodies.push(JSON.parse(raw) as JsonObject);
+			writeSse(response, bodies.length === 1 ? responsesToolBatchEvents(
+				["first", "second"].map((name) => ({
+					callId: `call-${name}`, name: "Shell",
+					argumentsValue: {
+						command: `"${process.execPath}" ${name}.cjs`,
+						yield_time_ms: 30_000, sandbox_permissions: "require_escalated",
+						justification: `Run the ${name} command with the access required by the approval test.`,
+					},
+				})), "resp-two-shells",
+			) : responsesFinal("Both commands completed."));
+		});
+	});
+	let backend: NodeBackend | null = null;
+	t.after(async () => {
+		try { await backend?.close(); }
+		finally {
+			server.closeAllConnections();
+			if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "approval-progress", "--model", "gpt-test"],
+		env: {
+			...process.env, HOME: homeDir, USERPROFILE: homeDir,
+			MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false",
+			MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_CACHE_RETENTION: "none",
+		},
+	});
+	const messages: JsonObject[] = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	await request(backend, messages, "trust", "workspace.trust.set", { state: "trusted" });
+	await request(backend, messages, "permission", "permissions.update", { profile: "workspace" });
+	send(backend, "turn", "turn.submit", {
+		message: "Launch both independent commands with separate approvals.",
+		client_turn_id: "approval-progress-turn", client_user_message_id: "approval-progress-user",
+	});
+	const approvalFor = (callId: string): JsonObject | undefined => events(messages, "approval.request").find(
+		(message) => isObject(message.params) && message.params.call_id === callId,
+	);
+	const shellEventFor = (method: string, callId: string): JsonObject | undefined => events(messages, method).find(
+		(message) => isObject(message.params) && message.params.call_id === callId,
+	);
+	await waitFor(() => approvalFor("call-first"));
+	await request(backend, messages, "approve-first", "approval.respond", { decision_id: "call-first", choice: "approve_once" });
+	await waitFor(() => approvalFor("call-second"), 5_000);
+	await waitFor(() => shellEventFor("shell.started", "call-first"));
+	assert.ok(shellEventFor("shell.started", "call-first"), JSON.stringify(events(messages, "tool.failed")));
+	assert.equal(shellEventFor("shell.completed", "call-first"), undefined);
+	assert.equal(shellEventFor("shell.started", "call-second"), undefined);
+	assert.equal(existsSync(join(workspace, "second-ran")), false);
+	assert.equal(bodies.length, 1);
+	assert.equal(shellEventFor("tool.complete", "call-first"), undefined);
+	await waitFor(() => events(messages, "shell.output").find((message) => (
+		isObject(message.params) && String(message.params.output_delta).includes("first-ready")
+	)));
+
+	await request(backend, messages, "approve-second", "approval.respond", { decision_id: "call-second", choice: "approve_once" });
+	await waitFor(() => shellEventFor("shell.completed", "call-second"));
+	assert.equal(existsSync(join(workspace, "second-ran")), true);
+	assert.equal(shellEventFor("shell.completed", "call-first"), undefined);
+	await waitFor(() => shellEventFor("tool.complete", "call-second"));
+	assert.equal(shellEventFor("tool.complete", "call-first"), undefined);
+	assert.equal(event(messages, "turn.completed"), undefined);
+	assert.equal(bodies.length, 1);
+
+	await writeFile(join(workspace, "finish-first"), "go");
+	await waitFor(() => shellEventFor("shell.completed", "call-first"));
+	await waitFor(() => event(messages, "turn.completed"));
+	const outputs = Array.isArray(bodies[1]?.input) ? bodies[1].input.filter((item) => (
+		isObject(item) && item.type === "function_call_output"
+	)) : [];
+	assert.deepEqual(outputs.map((item) => isObject(item) ? item.call_id : undefined), ["call-first", "call-second"]);
+	const historyResponse = await request(backend, messages, "history", "transcript.load", { session_id: "approval-progress" });
+	const history = parseGatewayResult("transcript.load", historyResponse.result);
+	const records = history.items.filter((item) => item.tool_record?.call_id === "call-first");
+	assert.equal(records.length, 1, JSON.stringify(records));
+	assert.equal(records[0]?.tool_record?.shell?.terminal_state, "completed");
+	assert.match(JSON.stringify(records[0]?.tool_record), /first-finished/u);
+
+	assert.equal(events(messages, "shell.started").length, 2);
+	assert.equal(events(messages, "approval.request").length, 2);
 });
 
 test("M6 live smoke exits 77 with one sanitized result when credentials are unavailable", async (t) => {

@@ -5,10 +5,12 @@ const sessionId = flagValue(options.args, "--session") ?? "supervisor-session";
 const configProfile = flagValue(options.args, "--profile");
 const recovery = options.recoverInterruptedTurns?.[0];
 let input = "";
+let sequence = 0;
 
 function send(message) {
 	parentPort.postMessage({
 		type: "output",
+		sequence: ++sequence,
 		generation,
 		chunk: `${JSON.stringify(message)}\n`,
 	});
@@ -19,7 +21,8 @@ send({
 	method: "runtime.ready",
 	params: { session_id: sessionId, config_profile: configProfile },
 });
-if (recovery) {
+if (recovery && !options.args.includes("--omit-recovery")) {
+	if (options.args.includes("--delay-recovery")) await new Promise((resolve) => setTimeout(resolve, 150));
 	send({
 		jsonrpc: "2.0",
 		method: "turn.interrupted",
@@ -54,6 +57,7 @@ parentPort.on("message", (message) => {
 		return;
 	}
 	if (message.type !== "input") return;
+	parentPort.postMessage({ type: "input_ack", generation, sequence: message.sequence });
 	input += message.chunk;
 	let newline = input.indexOf("\n");
 	while (newline >= 0) {
@@ -66,6 +70,10 @@ parentPort.on("message", (message) => {
 
 function handleLine(line) {
 	const request = JSON.parse(line);
+	if (request.method === "probe") {
+		send({ jsonrpc: "2.0", id: request.id, result: { generation } });
+		return;
+	}
 	if (request.method !== "turn.submit") return;
 	send({
 		jsonrpc: "2.0",

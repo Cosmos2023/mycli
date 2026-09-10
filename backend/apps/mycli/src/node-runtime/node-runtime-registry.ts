@@ -1,4 +1,4 @@
-export interface RefreshableNodeRuntime {
+interface RefreshableNodeRuntime {
 	refreshExtensions?(): void;
 }
 

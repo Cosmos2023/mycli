@@ -1,6 +1,6 @@
 type ResourceOperation = () => void | Promise<void>;
 
-export interface NodeBackendResourceOwnerOptions {
+interface NodeBackendResourceOwnerOptions {
 	readonly closeUpdateCache: ResourceOperation;
 	readonly closeAgentWorkers?: ResourceOperation;
 	readonly closeShellManager: ResourceOperation;

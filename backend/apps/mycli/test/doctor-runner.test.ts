@@ -25,9 +25,9 @@ import {
 	createV10SessionDatabase,
 	createV11SessionDatabase,
 	SQLiteTranscriptEventRepository,
-} from "../../../packages/storage/src/transcript-event-repository.ts";
-import { applyV9TranscriptNormalizationCutover } from "../../../packages/storage/src/v9-normalization-cutover.ts";
-import { V9_TRANSCRIPT_NORMALIZATION_STAGING_SQL } from "../../../packages/storage/src/v9-normalization-staging.ts";
+} from "../../../packages/storage/src/transcript/transcript-event-repository.ts";
+import { applyV9TranscriptNormalizationCutover } from "../../../packages/storage/src/migrations/v9/v9-normalization-cutover.ts";
+import { V9_TRANSCRIPT_NORMALIZATION_STAGING_SQL } from "../../../packages/storage/src/migrations/v9/v9-normalization-staging.ts";
 import { renderManagementResponse } from "../src/management/render.ts";
 import { collectConfigChecks } from "../src/management/doctor/check-config.ts";
 import { collectProcessChecks } from "../src/management/doctor/check-process.ts";
@@ -1126,15 +1126,24 @@ test("storage doctor accepts a reconstructable persisted provider step", async (
 		clock: () => now,
 		createId: (kind) => `${kind}-${++sequence}`,
 	});
+	store.completeTurn({
+		sessionId: "healthy-ledger-session",
+		clientTurnId: "healthy-client-turn",
+		assistantText: "README inspected.",
+		usage: {},
+		completedAt: now,
+	});
 	store.close();
 	const before = await stat(databasePath);
 
-	const ledger = (await collectStorageChecks(root)).find(
-		(check) => check.name === "model_input_ledger",
-	);
+	const checks = await collectStorageChecks(root);
+	const ledger = checks.find((check) => check.name === "model_input_ledger");
+	const sessions = checks.find((check) => check.name === "sessions_db");
 
 	assert.equal(ledger?.status, "ok");
 	assert.match(ledger?.message ?? "", /manifests=1 issues=0/u);
+	assert.equal(sessions?.status, "ok", sessions?.detail ?? sessions?.message);
+	assert.match(sessions?.message ?? "", /schema_version=14 integrity=ok/u);
 	assert.equal((await stat(databasePath)).mtimeMs, before.mtimeMs);
 });
 

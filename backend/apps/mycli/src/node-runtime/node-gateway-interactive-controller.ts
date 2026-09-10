@@ -7,6 +7,7 @@ import type {
 	PendingSessionClarification,
 } from "@mycli/runtime";
 import { permissionRequestJson } from "@mycli/tools";
+import { approvalChoiceLabel } from "./agent-interactive-requests.ts";
 import { approvalPreviewPayload } from "./approval-preview.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -21,7 +22,7 @@ interface QueuedInteractiveRequest {
 	readonly ownership: GatewayEventOwnership;
 }
 
-export interface NodeGatewayInteractiveControllerOptions {
+interface NodeGatewayInteractiveControllerOptions {
 	readonly publish: (
 		method: RuntimeGatewayEventMethod,
 		params: JsonObject,
@@ -39,6 +40,13 @@ export class NodeGatewayInteractiveController {
 
 	hasPending(): boolean {
 		return this.#requests.length > 0;
+	}
+
+	reemitVisibleRequest(): boolean {
+		const current = this.#requests[0];
+		if (!current) return false;
+		this.#options.publish(current.method, current.params, current.ownership);
+		return true;
 	}
 
 	clear(): void {
@@ -167,15 +175,6 @@ export function isApprovalChoice(
 		|| value === "reject"
 		|| value === "allow_session"
 		|| value === "always_allow";
-}
-
-function approvalChoiceLabel(choice: PendingSessionApproval["options"][number]): string {
-	return {
-		approve_once: "Approve once",
-		reject: "Reject",
-		allow_session: "Allow for session",
-		always_allow: "Always allow",
-	}[choice];
 }
 
 function isInteractiveRequestMethod(method: string): method is InteractiveRequestMethod {

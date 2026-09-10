@@ -1,8 +1,10 @@
+import { slashCommandArguments } from "@mycli/contracts";
+
 export type SlashCommandSurface = "cli" | "tui";
-export type SlashArgumentPolicy = "none" | "optional" | "required";
-export type SlashCommandOwner = "backend" | "tui";
+type SlashArgumentPolicy = "none" | "optional" | "required";
+type SlashCommandOwner = "backend" | "tui";
 export type SlashCommandPresentation = "none" | "overlay" | "transcript";
-export type SlashCommandCategory =
+type SlashCommandCategory =
 	| "diagnostics"
 	| "interface"
 	| "model"
@@ -10,7 +12,7 @@ export type SlashCommandCategory =
 	| "session"
 	| "tools";
 
-export interface SlashCommandManifestItem {
+interface SlashCommandManifestItem {
 	readonly id: string;
 	readonly name: `/${string}`;
 	readonly description: string;
@@ -39,24 +41,23 @@ type SlashDispatchPolicy = {
 };
 
 type SlashCommandSpec = Omit<SlashCommandManifestItem, "aliases" | "category" | "search_only"> & {
-	readonly aliases: readonly `/${string}`[];
 	readonly dispatch: Readonly<Partial<Record<SlashCommandSurface, SlashDispatchPolicy>>>;
 	readonly presentation: SlashCommandPresentation;
 	readonly surfaces: readonly SlashCommandSurface[];
 	readonly visible: boolean;
 };
 
-type PrefixedAlias = {
-	readonly prefix: `/${string}`;
-	readonly commandId: string;
-	readonly argsPrefix?: string;
-};
+interface RetiredSlashCommand {
+	readonly name: `/${string}`;
+	readonly replacement: `/${string}`;
+}
 
-type ResolutionCandidate = PrefixedAlias & { readonly canonical: boolean };
+type ResolutionCandidate =
+	| { readonly name: `/${string}`; readonly command: SlashCommandSpec }
+	| RetiredSlashCommand;
 
 type SpecOptions = {
 	readonly argumentHint?: string;
-	readonly aliases?: readonly `/${string}`[];
 	readonly argumentPolicy?: SlashArgumentPolicy;
 	readonly tuiPolicy?: SlashDispatchPolicy;
 	readonly cliPolicy?: SlashDispatchPolicy;
@@ -70,6 +71,7 @@ export class SlashCommandError extends Error {
 	constructor(
 		readonly code: string,
 		message: string,
+		readonly replacement?: `/${string}`,
 	) {
 		super(message);
 		this.name = "SlashCommandError";
@@ -116,7 +118,6 @@ function spec(
 		...(options.argumentHint ? { argument_hint: options.argumentHint } : {}),
 		argument_policy: argumentPolicy,
 		available_during_turn: options.availableDuringTurn ?? true,
-		aliases: options.aliases ?? [],
 		dispatch: {
 			...(surfaces.includes("cli")
 				? { cli: options.cliPolicy ?? backendPolicy(inline) }
@@ -150,7 +151,6 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	}),
 	spec("permissions", "/permissions", "Inspect or update command permissions", {
 		argumentHint: "[allow|revoke|clear]",
-		aliases: ["/tools permissions"],
 		argumentPolicy: "optional",
 		tuiPolicy: hybridPolicy("open_permissions"),
 		presentation: "overlay",
@@ -174,36 +174,31 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	}),
 	spec("resume", "/resume", "Resume a saved session", {
 		argumentHint: "[session-id]",
-		aliases: ["/session", "/session list", "/sessions", "/session resume"],
 		argumentPolicy: "optional",
 		tuiPolicy: hybridPolicy("open_session_selector"),
 		availableDuringTurn: false,
 	}),
 	spec("fork", "/fork", "Fork a saved session", {
 		argumentHint: "[source] [new-session] [message-index]",
-		aliases: ["/session fork"],
 		argumentPolicy: "optional",
 		availableDuringTurn: false,
 	}),
-	spec("status", "/status", "Show runtime status", { aliases: ["/session show"] }),
+	spec("status", "/status", "Show runtime status"),
 	spec("update", "/update", "Inspect cached updates or dismiss a version", {
 		argumentHint: "[check|dismiss <version>]",
 		argumentPolicy: "optional",
 	}),
-	spec("usage", "/usage", "Show token usage", { aliases: ["/status usage"] }),
+	spec("usage", "/usage", "Show token usage"),
 	spec("context", "/context", "Show context-window diagnostics", {
-		aliases: ["/status context"],
 		visible: false,
 	}),
 	spec("compact", "/compact", "Compact the active model context", {
 		availableDuringTurn: false,
 	}),
 	spec("stats", "/stats", "Show aggregate runtime stats", {
-		aliases: ["/status stats"],
 		visible: false,
 	}),
 	spec("skills", "/skills", "Inspect available skills", {
-		aliases: ["/skill", "/tools skills"],
 		presentation: "overlay",
 	}),
 	spec("tools", "/tools", "Inspect tools, hooks, extensions, and plugins", {
@@ -225,22 +220,15 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	}),
 	spec("agents", "/agents", "Inspect or stop background agents", {
 		argumentHint: "[child-session-id|kill <child-session-id>|kill-all]",
-		aliases: ["/tasks", "/jobs"],
 		argumentPolicy: "optional",
 		tuiPolicy: hybridPolicy("open_agents"),
 	}),
 	spec("ps", "/ps", "List background terminals", {
 		argumentHint: "[stop-all]",
-		aliases: ["/tasks bashes", "/bashes", "/jobs bashes"],
 		argumentPolicy: "optional",
-	}),
-	spec("stop", "/stop", "Stop all background terminals", {
-		presentation: "none",
-		visible: false,
 	}),
 	spec("changes", "/changes", "Inspect file changes"),
 	spec("undo", "/undo", "Undo the last recoverable file change", {
-		aliases: ["/changes undo"],
 		visible: false,
 	}),
 	spec("trace", "/trace", "Inspect runtime trace or logs", {
@@ -303,54 +291,61 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	}),
 	spec("session_search", "/session search", "Search saved sessions", {
 		argumentHint: "[query]",
-		aliases: ["/search"],
 		argumentPolicy: "optional",
 		visible: false,
 	}),
 	spec("session_maintenance", "/session maintenance", "Maintain session storage", {
 		argumentHint: "[--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]",
-		aliases: ["/session-maintenance"],
 		argumentPolicy: "optional",
 		availableDuringTurn: false,
 		visible: false,
 	}),
 ]);
 
-const PREFIXED_ALIASES: readonly PrefixedAlias[] = Object.freeze([
-	{ prefix: "/hooks", commandId: "tools", argsPrefix: "hooks" },
-	{ prefix: "/toolsets", commandId: "tools", argsPrefix: "sets" },
-	{ prefix: "/extensions", commandId: "tools", argsPrefix: "extensions" },
-	{ prefix: "/plugin", commandId: "tools", argsPrefix: "plugins" },
-	{ prefix: "/tasks agents", commandId: "agents", argsPrefix: "agents" },
-	{ prefix: "/tasks kill-agents", commandId: "agents", argsPrefix: "kill-all" },
-	{ prefix: "/jobs subagents", commandId: "agents", argsPrefix: "agents" },
-	{ prefix: "/jobs kill-subagents", commandId: "agents", argsPrefix: "kill-all" },
-	{ prefix: "/subagents", commandId: "agents", argsPrefix: "agents" },
-	{ prefix: "/agents runs", commandId: "agents", argsPrefix: "agents" },
-	{ prefix: "/agents kill", commandId: "agents", argsPrefix: "kill" },
-	{ prefix: "/trace-jsonl", commandId: "trace", argsPrefix: "export" },
-	{ prefix: "/logs", commandId: "trace", argsPrefix: "logs" },
+const RETIRED_SLASH_COMMANDS: readonly RetiredSlashCommand[] = Object.freeze([
+	{ name: "/tools permissions", replacement: "/permissions" },
+	{ name: "/session", replacement: "/resume" },
+	{ name: "/session list", replacement: "/resume" },
+	{ name: "/sessions", replacement: "/resume" },
+	{ name: "/session resume", replacement: "/resume" },
+	{ name: "/session fork", replacement: "/fork" },
+	{ name: "/session show", replacement: "/status" },
+	{ name: "/status usage", replacement: "/usage" },
+	{ name: "/status context", replacement: "/context" },
+	{ name: "/status stats", replacement: "/stats" },
+	{ name: "/skill", replacement: "/skills" },
+	{ name: "/tools skills", replacement: "/skills" },
+	{ name: "/hooks", replacement: "/tools hooks" },
+	{ name: "/toolsets", replacement: "/tools sets" },
+	{ name: "/extensions", replacement: "/tools extensions" },
+	{ name: "/plugin", replacement: "/tools plugins" },
+	{ name: "/tasks", replacement: "/agents" },
+	{ name: "/jobs", replacement: "/agents" },
+	{ name: "/tasks agents kill", replacement: "/agents kill" },
+	{ name: "/tasks agents", replacement: "/agents" },
+	{ name: "/tasks kill-agents", replacement: "/agents kill-all" },
+	{ name: "/jobs subagents kill", replacement: "/agents kill" },
+	{ name: "/jobs subagents", replacement: "/agents" },
+	{ name: "/jobs kill-subagents", replacement: "/agents kill-all" },
+	{ name: "/subagents", replacement: "/agents" },
+	{ name: "/agents runs", replacement: "/agents" },
+	{ name: "/agents agents", replacement: "/agents" },
+	{ name: "/agents kill-agents", replacement: "/agents kill-all" },
+	{ name: "/tasks bashes", replacement: "/ps" },
+	{ name: "/bashes", replacement: "/ps" },
+	{ name: "/jobs bashes", replacement: "/ps" },
+	{ name: "/stop", replacement: "/ps stop-all" },
+	{ name: "/changes undo", replacement: "/undo" },
+	{ name: "/trace-jsonl", replacement: "/trace export" },
+	{ name: "/logs", replacement: "/trace logs" },
+	{ name: "/search", replacement: "/session search" },
+	{ name: "/session-maintenance", replacement: "/session maintenance" },
 ]);
 
-const SPEC_BY_ID = new Map(BUILTIN_SLASH_COMMANDS.map((command) => [command.id, command]));
-
-function matchesPrefix(text: string, prefix: string): boolean {
-	return text === prefix || text.startsWith(`${prefix} `);
-}
-
-function resolutionCandidates(): ResolutionCandidate[] {
-	return [
-		...BUILTIN_SLASH_COMMANDS.flatMap((command) => [
-			{ prefix: command.name, commandId: command.id, canonical: true },
-			...command.aliases.map((prefix) => ({
-				prefix,
-				commandId: command.id,
-				canonical: false,
-			})),
-		]),
-		...PREFIXED_ALIASES.map((alias) => ({ ...alias, canonical: false })),
-	];
-}
+const RESOLUTION_CANDIDATES: readonly ResolutionCandidate[] = [
+	...BUILTIN_SLASH_COMMANDS.map((command) => ({ name: command.name, command })),
+	...RETIRED_SLASH_COMMANDS,
+].sort((left, right) => right.name.length - left.name.length);
 
 function usage(command: SlashCommandSpec): string {
 	return `Usage: ${command.name}${command.argument_hint ? ` ${command.argument_hint}` : ""}`;
@@ -377,11 +372,9 @@ export function commandDiscoveryManifest(surface: SlashCommandSurface): SlashCom
 		.map((command) => commandManifestItem(command));
 }
 
-export function builtinCommandNames(): ReadonlySet<string> {
-	return new Set([
-		...BUILTIN_SLASH_COMMANDS.flatMap((command) => [command.name, ...command.aliases]),
-		...PREFIXED_ALIASES.map((alias) => alias.prefix),
-	]);
+// Retired names remain reserved so input is rejected locally, never sent as a model turn.
+export function builtinCommandRoutingNames(): ReadonlySet<string> {
+	return new Set(RESOLUTION_CANDIDATES.map((candidate) => candidate.name));
 }
 
 export function slashCommandParityMatrix(): Readonly<Record<string, unknown>> {
@@ -391,7 +384,7 @@ export function slashCommandParityMatrix(): Readonly<Record<string, unknown>> {
 			name: command.name,
 			description: command.description,
 			argument_hint: command.argument_hint ?? null,
-			aliases: [...command.aliases],
+			aliases: [],
 			argument_policy: command.argument_policy,
 			dispatch: Object.fromEntries([...command.surfaces].sort().map((surface) => {
 				const policy = command.dispatch[surface]!;
@@ -409,11 +402,7 @@ export function slashCommandParityMatrix(): Readonly<Record<string, unknown>> {
 			surfaces: [...command.surfaces].sort(),
 			visible: command.visible,
 		})),
-		prefixed_aliases: PREFIXED_ALIASES.map((alias) => Object.freeze({
-			prefix: alias.prefix,
-			command_id: alias.commandId,
-			args_prefix: alias.argsPrefix ?? "",
-		})),
+		retired_commands: RETIRED_SLASH_COMMANDS.map((command) => Object.freeze({ ...command })),
 	});
 }
 
@@ -425,10 +414,7 @@ function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestIte
 		...(command.argument_hint ? { argument_hint: command.argument_hint } : {}),
 		argument_policy: command.argument_policy,
 		available_during_turn: command.available_during_turn,
-		aliases: Object.freeze([
-			...command.aliases,
-			...PREFIXED_ALIASES.filter((alias) => alias.commandId === command.id).map((alias) => alias.prefix),
-		]),
+		aliases: Object.freeze([]),
 		category: commandCategory(command.id),
 		search_only: !command.visible,
 	});
@@ -440,7 +426,7 @@ function commandCategory(id: string): SlashCommandCategory {
 	if (["new", "resume", "fork", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
 		return "session";
 	}
-	if (["skills", "tools", "resources", "memory", "agents", "ps", "stop", "changes", "undo"].includes(id)) {
+	if (["skills", "tools", "resources", "memory", "agents", "ps", "changes", "undo"].includes(id)) {
 		return "tools";
 	}
 	if (["status", "usage", "context", "stats", "trace"].includes(id)) return "diagnostics";
@@ -456,22 +442,20 @@ export function resolveSlashCommand(input: {
 	if (!normalized.startsWith("/")) {
 		throw new SlashCommandError("not_slash_command", "command must start with '/'.");
 	}
-	const candidate = resolutionCandidates()
-		.filter((item) => matchesPrefix(normalized, item.prefix))
-		.sort((left, right) =>
-			right.prefix.length - left.prefix.length || Number(right.canonical) - Number(left.canonical))[0];
+	const candidate = RESOLUTION_CANDIDATES.find((item) => slashCommandArguments(normalized, item.name) !== null);
 	if (!candidate) {
 		const name = normalized.split(/\s+/, 1)[0] ?? normalized;
 		throw new SlashCommandError("unknown_command", `Unknown command: ${name}`);
 	}
-	const command = SPEC_BY_ID.get(candidate.commandId);
-	if (!command) {
-		throw new Error(`Invalid slash command alias target: ${candidate.commandId}`);
+	if ("replacement" in candidate) {
+		throw new SlashCommandError(
+			"invalid_arguments",
+			`${candidate.name} has been removed. Use ${candidate.replacement} instead.`,
+			candidate.replacement,
+		);
 	}
-	let args = normalized.slice(candidate.prefix.length).trim();
-	if (candidate.argsPrefix) {
-		args = [candidate.argsPrefix, args].filter(Boolean).join(" ");
-	}
+	const command = candidate.command;
+	const args = slashCommandArguments(normalized, candidate.name) ?? "";
 	checkSurface(command, input.surface);
 	if (args && command.argument_policy === "none") {
 		throw new SlashCommandError("invalid_arguments", usage(command));
@@ -510,23 +494,22 @@ export function resolveSlashCommand(input: {
 function validateRegistry(): void {
 	const ids = new Set<string>();
 	const names = new Set<string>();
-	const aliases = new Set<string>();
 	for (const command of BUILTIN_SLASH_COMMANDS) {
 		if (ids.has(command.id)) throw new Error(`Duplicate slash command id: ${command.id}`);
 		if (names.has(command.name)) throw new Error(`Duplicate slash command name: ${command.name}`);
 		ids.add(command.id);
 		names.add(command.name);
-		for (const alias of command.aliases) {
-			if (aliases.has(alias) || names.has(alias)) throw new Error(`Duplicate slash command alias: ${alias}`);
-			aliases.add(alias);
-		}
 	}
-	for (const alias of PREFIXED_ALIASES) {
-		if (aliases.has(alias.prefix) || names.has(alias.prefix)) {
-			throw new Error(`Duplicate slash command alias: ${alias.prefix}`);
+	for (const retired of RETIRED_SLASH_COMMANDS) {
+		if (names.has(retired.name)) {
+			throw new Error(`Duplicate retired slash command: ${retired.name}`);
 		}
-		if (!ids.has(alias.commandId)) throw new Error(`Unknown slash command alias target: ${alias.commandId}`);
-		aliases.add(alias.prefix);
+		names.add(retired.name);
+		const replacement = RESOLUTION_CANDIDATES.find((item) =>
+			slashCommandArguments(retired.replacement, item.name) !== null);
+		if (!replacement || !("command" in replacement)) {
+			throw new Error(`Invalid replacement for retired slash command: ${retired.name}`);
+		}
 	}
 }
 

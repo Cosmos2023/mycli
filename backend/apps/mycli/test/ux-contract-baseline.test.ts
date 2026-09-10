@@ -196,7 +196,7 @@ test("slash commands, settings, and gateway evidence stay aligned", () => {
 	const docs = readFileSync(repositoryPath("docs/commands.md"), "utf8");
 	const matrix = slashCommandParityMatrix();
 	assert.ok(Array.isArray(matrix.commands));
-	assert.ok(Array.isArray(matrix.prefixed_aliases));
+	assert.ok(Array.isArray(matrix.retired_commands));
 	for (const value of matrix.commands) {
 		assertRecord(value, "slash command");
 		assert.equal(typeof value.name, "string");
@@ -207,10 +207,10 @@ test("slash commands, settings, and gateway evidence stay aligned", () => {
 			assert.ok(docs.includes(`\`${alias}\``), alias);
 		}
 	}
-	for (const value of matrix.prefixed_aliases) {
-		assertRecord(value, "prefixed slash alias");
-		assert.equal(typeof value.prefix, "string");
-		assert.ok(docs.includes(`\`${value.prefix}\``), String(value.prefix));
+	for (const value of matrix.retired_commands) {
+		assertRecord(value, "retired slash command");
+		assert.equal(typeof value.name, "string");
+		assert.ok(docs.includes(`\`${value.name}\``), String(value.name));
 	}
 	for (const descriptor of SHELL_SETTING_DESCRIPTORS) {
 		assert.ok(docs.includes(`\`${descriptor.key}\``), descriptor.key);

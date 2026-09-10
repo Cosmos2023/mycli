@@ -1,5 +1,7 @@
 import type {
 	RuntimeTurnRecord,
+	ProviderAttemptRecord,
+	RuntimeFailure,
 } from "@mycli/contracts";
 import type {
 	CachedUpdateStatus,
@@ -10,6 +12,7 @@ import type {
 	CanonicalMessage,
 	ReasoningEffort,
 	RuntimeEvent,
+	ProviderUsage,
 	ShellLifecycleEvent,
 } from "@mycli/core";
 import type {
@@ -34,7 +37,7 @@ import type {
 	SandboxReadiness,
 	ShellSessionSnapshot,
 } from "@mycli/tools";
-import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
+import type { GatewayTransport } from "@mycli/gateway";
 import type { AgentInteractiveRequestGateway } from "./agent-interactive-requests.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
 import type {
@@ -61,6 +64,8 @@ export interface NodeGatewayCredentialReadiness {
 }
 
 export interface NodeGatewayCompactionResult {
+	readonly failure?: RuntimeFailure;
+	readonly usage?: ProviderUsage;
 	readonly status: "compressed" | "skipped" | "not_needed" | "failed" | "interrupted";
 	readonly beforeTokens: number;
 	readonly afterTokens: number;
@@ -99,6 +104,14 @@ export interface NodeGatewayRuntime {
 	}): void;
 	refreshExtensions?(): void;
 	reserve(submission: TurnSubmission): TurnReservation;
+	failReservedTurn?(
+		reservation: TurnReservation,
+		error: unknown,
+		emit: (event: RuntimeEvent) => void,
+		signal: AbortSignal,
+	): Promise<RuntimeTurnRecord>;
+	hasActiveApproval?(decisionId: string): boolean;
+	respondActiveApproval?(input: ResolveApprovalInput): void;
 	resolveApproval(
 		input: ResolveApprovalInput,
 		emit: (event: RuntimeEvent) => void,
@@ -241,6 +254,14 @@ export interface CreateNodeGatewayOptions {
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
 	readonly loadTranscript?: (sessionId: string) => readonly TranscriptItem[];
+	readonly loadProviderAttempts?: (input: {
+		readonly sessionId: string;
+		readonly turnId?: string;
+		readonly requestId?: string;
+		readonly afterSequence?: number;
+		readonly beforeEventId?: string;
+		readonly limit?: number;
+	}) => readonly ProviderAttemptRecord[];
 	readonly loadTranscriptPage?: (
 		sessionId: string,
 		input: { readonly before?: string; readonly limit?: number },

@@ -9,15 +9,18 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { isProviderRouteId } from "@mycli/core";
+import { readErrorContext, RUNTIME_RETRY_AFTER_MAX_SECONDS, sanitizeRuntimeErrorDetail } from "@mycli/contracts";
 import type { RuntimeDiagnosticEvent } from "@mycli/runtime";
 import type { RuntimeSessionStore } from "@mycli/storage";
 
 const NODE_TRACE_MAX_BYTES = 5 * 1024 * 1024;
 
 type NodeTraceKind =
+	| "runtime_error"
 	| "turn_interrupt_requested"
 	| "turn_interrupted"
 	| "model_stream_diagnostics"
+	| "turn_completion_diagnostics"
 	| "tool_execution"
 	| "compaction"
 	| "subagent_lifecycle";
@@ -82,6 +85,10 @@ export function appendNodeTrace(
 export function runtimeDiagnosticTraceEvent(
 	event: RuntimeDiagnosticEvent,
 ): Readonly<Record<string, unknown>> {
+	if (event.kind === "runtime_error") return Object.freeze({
+		kind: event.kind, turn_id: event.errorContext?.scope.id ?? "unavailable",
+		payload: { operation: event.operation, ...(event.errorContext ? { error_context: event.errorContext } : {}) },
+	});
 	if (event.kind === "model_stream_diagnostics") {
 		return Object.freeze({
 			kind: event.kind,
@@ -96,6 +103,13 @@ export function runtimeDiagnosticTraceEvent(
 				...(event.ttftMs === undefined ? {} : { ttft_ms: event.ttftMs }),
 				...(event.tbtMs === undefined ? {} : { tbt_ms: event.tbtMs }),
 				...(event.maxTbtMs === undefined ? {} : { max_tbt_ms: event.maxTbtMs }),
+				...(event.lastTextDeltaMs === undefined ? {} : { last_text_delta_ms: event.lastTextDeltaMs }),
+				...(event.responseTerminalMs === undefined ? {} : { response_terminal_ms: event.responseTerminalMs }),
+				...(event.sdkTerminalMs === undefined ? {} : { sdk_terminal_ms: event.sdkTerminalMs }),
+				...(event.completedEventMs === undefined ? {} : { completed_event_ms: event.completedEventMs }),
+				...(event.streamSettledMs === undefined ? {} : { stream_settled_ms: event.streamSettledMs }),
+				...(event.terminalPersistMs === undefined ? {} : { terminal_persist_ms: event.terminalPersistMs }),
+				...(event.textTailMs === undefined ? {} : { text_tail_ms: event.textTailMs }),
 				text_delta_interval_count: event.textDeltaIntervalCount,
 				provider_event_count: event.providerEventCount,
 				reasoning_event_count: event.reasoningEventCount,
@@ -108,6 +122,32 @@ export function runtimeDiagnosticTraceEvent(
 				text_bytes: event.textBytes,
 				success: event.success,
 				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
+				...(event.failure ? modelFailureTracePayload({
+					retryable: event.failure.retryable,
+					retry_after_seconds: event.failure.retryAfterSeconds,
+					additional_details: event.failure.additionalDetails,
+					status: event.failure.diagnostics?.status,
+					request_id: event.failure.diagnostics?.request_id,
+					provider_error_code: event.failure.diagnostics?.provider_error_code,
+					provider_error_type: event.failure.diagnostics?.provider_error_type,
+					transport_error_code: event.failure.diagnostics?.transport_error_code,
+					transport_error_name: event.failure.diagnostics?.transport_error_name,
+					error_source: event.failure.diagnostics?.error_source,
+				}) : {}),
+			},
+		});
+	}
+	if (event.kind === "turn_completion_diagnostics") {
+		return Object.freeze({
+			kind: event.kind,
+			turn_id: event.turnId,
+			payload: {
+				commit_ms: event.commitMs,
+				continuation_ms: event.continuationMs,
+				snapshot_ms: event.snapshotMs,
+				publish_ms: event.publishMs,
+				elapsed_ms: event.elapsedMs,
+				snapshot_written: event.snapshotWritten,
 			},
 		});
 	}
@@ -219,9 +259,11 @@ function traceSessionId(value: string): string {
 
 function nodeTraceKind(value: unknown): NodeTraceKind | undefined {
 	return [
+		"runtime_error",
 		"turn_interrupt_requested",
 		"turn_interrupted",
 		"model_stream_diagnostics",
+		"turn_completion_diagnostics",
 		"tool_execution",
 		"compaction",
 		"subagent_lifecycle",
@@ -234,7 +276,19 @@ function nodeTracePayload(
 	kind: NodeTraceKind,
 	value: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
+	if (kind === "runtime_error") return {
+		...(value.operation === "terminal_commit" || value.operation === "terminal_projection" ? { operation: value.operation } : {}),
+		...(readErrorContext(value.error_context) ? { error_context: readErrorContext(value.error_context) } : {}),
+	};
 	if (kind === "model_stream_diagnostics") return modelStreamTracePayload(value);
+	if (kind === "turn_completion_diagnostics") return compactTracePayload({
+		commit_ms: boundedTraceNumber(value.commit_ms),
+		continuation_ms: boundedTraceNumber(value.continuation_ms),
+		snapshot_ms: boundedTraceNumber(value.snapshot_ms),
+		publish_ms: boundedTraceNumber(value.publish_ms),
+		elapsed_ms: boundedTraceNumber(value.elapsed_ms),
+		snapshot_written: typeof value.snapshot_written === "boolean" ? value.snapshot_written : undefined,
+	});
 	if (kind === "tool_execution") return toolExecutionTracePayload(value);
 	if (kind === "compaction") return compactionTracePayload(value);
 	if (kind === "subagent_lifecycle") return subagentLifecycleTracePayload(value);
@@ -262,6 +316,13 @@ function modelStreamTracePayload(
 		ttft_ms: boundedTraceNumber(value.ttft_ms),
 		tbt_ms: boundedTraceNumber(value.tbt_ms),
 		max_tbt_ms: boundedTraceNumber(value.max_tbt_ms),
+		last_text_delta_ms: boundedTraceNumber(value.last_text_delta_ms),
+		response_terminal_ms: boundedTraceNumber(value.response_terminal_ms),
+		sdk_terminal_ms: boundedTraceNumber(value.sdk_terminal_ms),
+		completed_event_ms: boundedTraceNumber(value.completed_event_ms),
+		stream_settled_ms: boundedTraceNumber(value.stream_settled_ms),
+		terminal_persist_ms: boundedTraceNumber(value.terminal_persist_ms),
+		text_tail_ms: boundedTraceNumber(value.text_tail_ms),
 		text_delta_interval_count: boundedTraceCount(value.text_delta_interval_count),
 		provider_event_count: boundedTraceCount(value.provider_event_count),
 		reasoning_event_count: boundedTraceCount(value.reasoning_event_count),
@@ -274,6 +335,25 @@ function modelStreamTracePayload(
 		text_bytes: boundedTraceCount(value.text_bytes),
 		success: typeof value.success === "boolean" ? value.success : undefined,
 		failure_kind: boundedTraceToken(value.failure_kind, 64),
+		...modelFailureTracePayload(value),
+	});
+}
+
+function modelFailureTracePayload(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		retryable: typeof value.retryable === "boolean" ? value.retryable : undefined,
+		retry_after_seconds: typeof value.retry_after_seconds === "number"
+			&& Number.isFinite(value.retry_after_seconds) && value.retry_after_seconds >= 0
+			&& value.retry_after_seconds <= RUNTIME_RETRY_AFTER_MAX_SECONDS ? value.retry_after_seconds : undefined,
+		additional_details: sanitizeRuntimeErrorDetail(value.additional_details),
+		status: Number.isInteger(value.status) && (value.status as number) >= 100
+			&& (value.status as number) <= 599 ? value.status : undefined,
+		request_id: boundedTraceToken(value.request_id, 128),
+		provider_error_code: boundedTraceToken(value.provider_error_code, 128),
+		provider_error_type: boundedTraceToken(value.provider_error_type, 128),
+		transport_error_code: boundedTraceToken(value.transport_error_code, 128),
+		transport_error_name: boundedTraceToken(value.transport_error_name, 128),
+		error_source: traceEnum(value.error_source, ["http", "response_stream", "transport"]),
 	});
 }
 

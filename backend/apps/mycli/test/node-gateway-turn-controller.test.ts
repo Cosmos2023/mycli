@@ -28,6 +28,24 @@ interface ControlledRun {
 	readonly resolve: (record: RuntimeTurnRecord) => void;
 }
 
+test("terminal interaction metadata reaches start and completion with bounded previews", async () => {
+	const fixture = controllerFixture();
+	await fixture.controller.submit(submitParams("client-terminal"));
+	const run = await waitForRun(fixture.runs);
+	const interaction = { shell_id: "shell-1", kind: "input" as const, input_preview: '"token=private-input"' };
+	run.emit({ type: "tool_execution_started", callId: "input-1", toolName: "WriteStdin", terminalInteraction: interaction });
+	const start = fixture.events.find((event) => event.method === "tool.start");
+	assert.equal((start?.params.terminal_interaction as JsonObject).shell_id, "shell-1");
+	assert.doesNotMatch(JSON.stringify(start), /private-input/u);
+	run.emit({ type: "tool_execution_completed", callId: "input-1", toolName: "WriteStdin", summary: "Shell is running", durationMs: 10,
+		metadata: { terminal_interaction: { ...interaction, process_running: true, interaction_succeeded: true }, raw_stdin: "private-input" } });
+	const finish = fixture.events.find((event) => event.method === "tool.complete");
+	assert.equal((finish?.params.terminal_interaction as JsonObject).interaction_succeeded, true);
+	assert.doesNotMatch(JSON.stringify(finish), /private-input|raw_stdin/u);
+	run.resolve(completedTurn("session-a", "client-terminal", "turn-1"));
+	await waitFor(() => !fixture.controller.hasActiveTurn());
+});
+
 test("turn admission releases its exact execution claim after pre-activation failures", async (t) => {
 	await t.test("credential readiness", async () => {
 		const readiness = deferred<null>();
@@ -134,6 +152,136 @@ test("close aborts the active turn and remains pending until its task settles", 
 	assert.equal(fixture.coordinator.executing(), false);
 });
 
+test("interrupt acknowledgment waits for cleanup even after a terminal event was published", async () => {
+	const fixture = controllerFixture();
+	await fixture.controller.submit(submitParams("client-first"));
+	const first = await waitForRun(fixture.runs);
+	first.emit({ type: "turn_interrupted", message: "turn interrupted" });
+	assert.equal(fixture.controller.hasActiveTurn(), true);
+
+	const result = await fixture.controller.interrupt({ turn_id: "turn-1" });
+	assert.equal(result.accepted, true);
+	assert.equal(fixture.controller.hasActiveTurn(), false);
+	assert.equal(fixture.coordinator.executing(), false);
+	assert.equal(eventCount(fixture.events, "turn.interrupted"), 1);
+
+	await fixture.controller.submit(submitParams("client-second"));
+	const second = await waitForRun(fixture.runs, 1);
+	first.resolve(interruptedTurn("session-a", "client-first", "turn-1"));
+	await new Promise<void>((resolve) => { setImmediate(resolve); });
+	assert.equal(fixture.controller.activeTurnId(), "turn-2");
+	assert.equal(fixture.coordinator.executing(), true);
+	second.resolve(completedTurn("session-a", "client-second", "turn-2"));
+	await waitFor(() => !fixture.controller.hasActiveTurn());
+});
+
+test("approval publication waits for suspension and accepts an immediate response", async () => {
+	let readyAtPublication = false;
+	let executions = 0;
+	const fixture = controllerFixture({
+		onPublish: (event) => {
+			if (event.method === "approval.request") {
+				readyAtPublication = !fixture.controller.hasActiveTurn() && !fixture.coordinator.executing();
+			}
+		},
+		resolveApproval: async () => {
+			executions += 1;
+			return completedTurn("session-a", "client-approval", "turn-1");
+		},
+	});
+	await fixture.controller.submit(submitParams("client-approval"));
+	const run = await waitForRun(fixture.runs);
+	run.emit({
+		type: "approval_requested", clientTurnId: "client-approval", turnId: "turn-1",
+		decisionId: "call-shell", callId: "call-shell", toolName: "Shell",
+		preview: "run command", reason: "approval required", options: ["approve_once", "reject"],
+		commandPreview: "npm run build --workspace app\n  npm test", commandTruncated: false,
+		justification: "Build the app and run its tests.",
+	});
+	assert.equal(eventCount(fixture.events, "approval.request"), 0);
+	assert.equal(fixture.coordinator.executing(), true);
+	run.resolve(inProgressTurn("session-a", "client-approval", "turn-1"));
+	await waitFor(() => eventCount(fixture.events, "approval.request") === 1);
+	assert.equal(readyAtPublication, true);
+	assert.equal(fixture.events.find((event) => event.method === "approval.request")?.params.command_preview,
+		"npm run build --workspace app\n  npm test");
+	assert.equal(fixture.events.find((event) => event.method === "approval.request")?.params.command_truncated, false);
+	assert.equal(fixture.events.find((event) => event.method === "approval.request")?.params.justification,
+		"Build the app and run its tests.");
+	const response = fixture.controller.respondApproval({ decision_id: "call-shell", choice: "approve_once" });
+	assert.equal(response.accepted, true);
+	assert.throws(
+		() => fixture.controller.respondApproval({ decision_id: "call-shell", choice: "approve_once" }),
+		{ code: "approval_not_pending" },
+	);
+	await waitFor(() => !fixture.controller.hasActiveTurn());
+	assert.equal(executions, 1);
+	assert.equal(eventCount(fixture.events, "approval.request"), 1);
+});
+
+test("live approvals advance on the active turn without releasing ownership or starting a continuation", async () => {
+	const decisions: string[] = [];
+	const fixture = controllerFixture({
+		hasActiveApproval: (decisionId) => !decisions.includes(decisionId),
+		respondActiveApproval: (input) => { decisions.push(input.decisionId); },
+		resolveApproval: async () => { assert.fail("live approval must not start a continuation"); },
+	});
+	await fixture.controller.submit(submitParams("client-live"));
+	const run = await waitForRun(fixture.runs);
+	for (const decisionId of ["call-first", "call-second"]) {
+		run.emit({
+			type: "approval_requested", clientTurnId: "client-live", turnId: "turn-1",
+			decisionId, callId: decisionId, toolName: "Shell", preview: decisionId,
+			reason: "approval required", options: ["approve_once", "reject"],
+			commandPreview: `echo ${decisionId}`, commandTruncated: false,
+			justification: `Verify ${decisionId}.`,
+		});
+		assert.equal(fixture.coordinator.snapshot().pendingApproval?.decisionId, decisionId);
+		assert.equal(fixture.coordinator.snapshot().pendingApproval?.commandPreview, `echo ${decisionId}`);
+		assert.equal(fixture.coordinator.snapshot().pendingApproval?.justification, `Verify ${decisionId}.`);
+		assert.equal(fixture.events.filter((event) => event.method === "approval.request").at(-1)?.params.command_preview,
+			`echo ${decisionId}`);
+		assert.equal(fixture.events.filter((event) => event.method === "approval.request").at(-1)?.params.justification,
+			`Verify ${decisionId}.`);
+		assert.equal(fixture.controller.hasActiveTurn(), true);
+		for (const stale of [{ generation: 2 }, { session_id: "different-session" }]) {
+			assert.throws(() => fixture.controller.respondApproval({
+				decision_id: decisionId, choice: "approve_once", ...stale,
+			}), { code: "approval_not_pending" });
+		}
+		assert.equal(fixture.controller.respondApproval({
+			decision_id: decisionId, choice: "approve_once", session_id: "session-a", generation: 1,
+		}).accepted, true);
+		assert.equal(fixture.coordinator.executing(), true);
+		assert.equal(fixture.controller.activeTurnId(), "turn-1");
+		assert.equal(fixture.runs.length, 1);
+		assert.throws(() => fixture.controller.respondApproval({
+			decision_id: decisionId, choice: "approve_once",
+		}), { code: "approval_not_pending" });
+	}
+	assert.deepEqual(decisions, ["call-first", "call-second"]);
+	run.resolve(completedTurn("session-a", "client-live", "turn-1"));
+	await waitFor(() => !fixture.controller.hasActiveTurn());
+	assert.equal(fixture.coordinator.executing(), false);
+	assert.equal(eventCount(fixture.events, "approval.request"), 2);
+});
+
+test("an approval staged during suspension is not published after cancellation", async () => {
+	const fixture = controllerFixture();
+	await fixture.controller.submit(submitParams("client-cancel"));
+	const run = await waitForRun(fixture.runs);
+	run.emit({
+		type: "approval_requested", clientTurnId: "client-cancel", turnId: "turn-1",
+		decisionId: "call-shell", callId: "call-shell", toolName: "Shell",
+		preview: "run command", reason: "approval required", options: ["approve_once", "reject"],
+	});
+	const closing = fixture.controller.close();
+	run.resolve(interruptedTurn("session-a", "client-cancel", "turn-1"));
+	await closing;
+	assert.equal(eventCount(fixture.events, "approval.request"), 0);
+	assert.equal(fixture.coordinator.executing(), false);
+});
+
 test("ownership resolution prefers explicit turn ids and matches active client turns", async () => {
 	const fixture = controllerFixture();
 	assert.deepEqual(fixture.controller.currentOwnership({}), {
@@ -167,6 +315,10 @@ function controllerFixture(options: {
 	readonly reserve?: NodeGatewayRuntime["reserve"];
 	readonly configureRuntimeContext?: NonNullable<NodeGatewayRuntime["configureRuntimeContext"]>;
 	readonly isClosed?: () => boolean;
+	readonly resolveApproval?: NodeGatewayRuntime["resolveApproval"];
+	readonly hasActiveApproval?: NodeGatewayRuntime["hasActiveApproval"];
+	readonly respondActiveApproval?: NodeGatewayRuntime["respondActiveApproval"];
+	readonly onPublish?: (event: PublishedEvent) => void;
 } = {}): {
 	readonly controller: NodeGatewayTurnController;
 	readonly coordinator: SessionCoordinator<NodeGatewayRuntime>;
@@ -179,6 +331,9 @@ function controllerFixture(options: {
 		...(options.configureRuntimeContext
 			? { configureRuntimeContext: options.configureRuntimeContext }
 			: {}),
+		...(options.resolveApproval ? { resolveApproval: options.resolveApproval } : {}),
+		...(options.hasActiveApproval ? { hasActiveApproval: options.hasActiveApproval } : {}),
+		...(options.respondActiveApproval ? { respondActiveApproval: options.respondActiveApproval } : {}),
 	});
 	const coordinator = new SessionCoordinator<NodeGatewayRuntime>({
 		initial: preparedSession(controlled.runtime),
@@ -197,7 +352,10 @@ function controllerFixture(options: {
 		settings: settingsStub(options.credentialReadiness),
 		isClosed: options.isClosed ?? (() => false),
 		status: () => ({ state: "idle" }),
-		publish: (method, params) => { events.push({ method, params }); },
+		publish: (method, params) => {
+			events.push({ method, params });
+			options.onPublish?.({ method, params });
+		},
 	});
 	return { controller, coordinator, events, runs: controlled.runs };
 }
@@ -205,9 +363,14 @@ function controllerFixture(options: {
 function controlledRuntime(options: {
 	readonly reserve?: NodeGatewayRuntime["reserve"];
 	readonly configureRuntimeContext?: NonNullable<NodeGatewayRuntime["configureRuntimeContext"]>;
+	readonly resolveApproval?: NodeGatewayRuntime["resolveApproval"];
+	readonly hasActiveApproval?: NodeGatewayRuntime["hasActiveApproval"];
+	readonly respondActiveApproval?: NodeGatewayRuntime["respondActiveApproval"];
 } = {}): { readonly runtime: NodeGatewayRuntime; readonly runs: ControlledRun[] } {
 	const runs: ControlledRun[] = [];
 	const runtime: NodeGatewayRuntime = {
+		...(options.hasActiveApproval ? { hasActiveApproval: options.hasActiveApproval } : {}),
+		...(options.respondActiveApproval ? { respondActiveApproval: options.respondActiveApproval } : {}),
 		...(options.configureRuntimeContext
 			? { configureRuntimeContext: options.configureRuntimeContext }
 			: {}),
@@ -216,7 +379,7 @@ function controlledRuntime(options: {
 			submission.clientTurnId,
 			submission.turnId ?? "turn-missing",
 		)),
-		resolveApproval: async () => { throw new Error("approval is not used by this test"); },
+		resolveApproval: options.resolveApproval ?? (async () => { throw new Error("approval is not used by this test"); }),
 		resolveClarification: async () => { throw new Error("clarification is not used by this test"); },
 		submit: (_submission, emit, submitOptions) => {
 			const result = deferred<RuntimeTurnRecord>();

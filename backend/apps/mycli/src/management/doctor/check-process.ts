@@ -8,7 +8,7 @@ import {
 } from "../sandbox.ts";
 import type { DoctorCheck } from "./types.ts";
 
-export interface ProcessDoctorOptions extends SandboxReadinessProbes {
+interface ProcessDoctorOptions extends SandboxReadinessProbes {
 	readonly workspaceRoot: string;
 }
 

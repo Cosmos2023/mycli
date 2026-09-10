@@ -10,13 +10,13 @@ const MAX_ROWS = 100;
 const MAX_FIELDS = 100;
 const MAX_VALUE_CHARS = 2_048;
 
-export interface CommandField {
+interface CommandField {
 	readonly label: string;
 	readonly value: string;
 	readonly tone?: string;
 }
 
-export interface CommandRow {
+interface CommandRow {
 	readonly key: string;
 	readonly label: string;
 	readonly values?: readonly string[];

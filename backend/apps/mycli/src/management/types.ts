@@ -1,4 +1,5 @@
 import type { ConfigPathScope } from "@mycli/config/paths";
+import type { HeadlessCommand } from "../headless/types.ts";
 import type { CompletionShell } from "./cli-command-catalog.ts";
 
 export type HooksManagementCommand =
@@ -105,7 +106,7 @@ export type SandboxManagementCommand =
 export type AuthManagementCommand =
 	| {
 		readonly kind: "login";
-		readonly action: "status" | "api_key";
+		readonly action: "status" | "api_key" | "oauth";
 		readonly provider?: string;
 		readonly authRef?: string;
 		readonly json: boolean;
@@ -118,7 +119,7 @@ export type AuthManagementCommand =
 		readonly json: boolean;
 	};
 
-export type UpdateManagementCommand =
+type UpdateManagementCommand =
 	| { readonly kind: "update"; readonly action: "status" | "check"; readonly json: boolean }
 	| {
 		readonly kind: "update";
@@ -221,6 +222,8 @@ export type ManagementCommand =
 	| SessionManagementCommand;
 
 export type CliMode =
+	| { readonly kind: "app-server"; readonly runtimeArgs: readonly string[] }
+	| { readonly kind: "headless"; readonly command: HeadlessCommand }
 	| { readonly kind: "interactive"; readonly runtimeArgs: readonly string[] }
 	| { readonly kind: "completion"; readonly shell: CompletionShell }
 	| { readonly kind: "management"; readonly command: ManagementCommand };

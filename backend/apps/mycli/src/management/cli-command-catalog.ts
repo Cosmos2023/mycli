@@ -6,7 +6,7 @@ export const COMPLETION_SHELLS = Object.freeze([
 ] as const);
 
 export type CompletionShell = typeof COMPLETION_SHELLS[number];
-export type CliCommandExecution = "management" | "completion";
+type CliCommandExecution = "management" | "completion" | "headless" | "app-server";
 
 export interface CliArgumentDescriptor {
 	readonly name: string;
@@ -75,7 +75,38 @@ export const ROOT_CLI_OPTIONS = Object.freeze([
 	{ flags: ["-V", "--version"], description: "Show version" },
 ] satisfies readonly CliOptionDescriptor[]);
 
-export const CLI_COMMAND_CATALOG = Object.freeze([
+export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freeze([
+	{
+		name: "app-server", usage: "app-server [--session id] [--model model] [--profile name]",
+		description: "Serve the agent protocol over stdio", execution: "app-server",
+		options: ROOT_CLI_OPTIONS.slice(0, 3),
+	},
+	{
+		name: "exec", usage: "exec [options] [prompt|-]",
+		description: "Run one task without a terminal", execution: "headless",
+		arguments: [{ name: "prompt", description: "Task text, or - for stdin" }],
+		options: [
+			...ROOT_CLI_OPTIONS.slice(0, 3),
+			{ flags: ["--json"], description: "Write versioned JSONL task events" },
+			valueOption("--output-schema", "file", "Validate the final JSON answer against a schema"),
+			{ flags: ["-o", "--output-last-message"], description: "Write the validated final answer", value: { name: "file", description: "Output file" } },
+			valueOption("--timeout", "seconds", "Stop after this duration (default: 600)"),
+		],
+	},
+	{
+		name: "review", usage: "review [--uncommitted|--base ref|--commit ref] [instructions]",
+		description: "Review Git changes with a read-only agent", execution: "headless",
+		arguments: [{ name: "instructions", description: "Optional review focus" }],
+		options: [
+			{ flags: ["--uncommitted"], description: "Review staged, unstaged, and untracked changes (default)" },
+			valueOption("--base", "ref", "Review HEAD changes since the merge base"),
+			valueOption("--commit", "ref", "Review one commit"),
+			...ROOT_CLI_OPTIONS.slice(1, 3),
+			{ flags: ["--json"], description: "Write versioned JSONL review events and findings" },
+			{ flags: ["-o", "--output-last-message"], description: "Write validated findings as JSON", value: { name: "file", description: "Output file" } },
+			valueOption("--timeout", "seconds", "Stop after this duration (default: 600)"),
+		],
+	},
 	{
 		name: "setup",
 		usage: "setup [options]",
@@ -106,14 +137,15 @@ export const CLI_COMMAND_CATALOG = Object.freeze([
 	},
 	{
 		name: "login",
-		usage: "login status [--json] | --with-api-key",
-		description: "Inspect credentials or store an API key from stdin",
+		usage: "login status [--json] | --with-api-key | --oauth",
+		description: "Inspect credentials, store an API key, or sign in with OAuth",
 		execution: "management",
 		options: [
 			{
 				flags: ["--with-api-key"],
 				description: "Read an API key from standard input",
 			},
+			{ flags: ["--oauth"], description: "Sign in through the native provider OAuth flow" },
 			PROVIDER_OPTION,
 			AUTH_REF_OPTION,
 			JSON_OPTION,
@@ -129,7 +161,7 @@ export const CLI_COMMAND_CATALOG = Object.freeze([
 	{
 		name: "logout",
 		usage: "logout [--json]",
-		description: "Remove a locally stored API key",
+		description: "Remove a locally stored API key or OAuth credential",
 		execution: "management",
 		options: [PROVIDER_OPTION, AUTH_REF_OPTION, JSON_OPTION],
 	},
@@ -437,6 +469,16 @@ export function renderRootHelp(): string {
 			option.description,
 		)),
 		"",
+	].join("\n");
+}
+
+export function renderCommandHelp(name: string): string {
+	const command = findCliCommand(name);
+	if (!command) return renderRootHelp();
+	return [
+		`Usage: mycli ${command.usage}`, "", command.description, "", "Options:",
+		...(command.options ?? []).flatMap((option) => formatHelpEntry(optionUsage(option), option.description)),
+		"  -h, --help                          Show help", "",
 	].join("\n");
 }
 

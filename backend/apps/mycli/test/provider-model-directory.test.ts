@@ -6,6 +6,7 @@ import {
 	type ModelProviderDeclaration,
 } from "@mycli/config";
 import { parseProviderRouteId } from "@mycli/core";
+import { loadPiAiProviderDirectory } from "@mycli/providers";
 import type {
 	ProviderDirectoryEntry,
 	ProviderDirectorySnapshot,
@@ -166,6 +167,66 @@ test("keeps stable fallback models and the exact uncatalogued DeepSeek current m
 		"qwen3.6-plus",
 		"qwen3-coder-plus",
 	]);
+});
+
+test("activates the complete pinned pi-ai Qwen catalogs without local declarations", async () => {
+	const upstream = await loadPiAiProviderDirectory();
+	const snapshot = assemble([], upstream);
+	for (const id of ["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"]) {
+		const routeId = parseProviderRouteId(id);
+		const provider = upstream.providers.find((entry) => entry.catalogProviderId === routeId);
+		assert.ok(provider && provider.models.length > 0);
+		const route = snapshot.route(routeId);
+		assert.equal(route?.activation, "active");
+		assert.equal(route?.source, "pi_ai_builtin");
+		assert.equal(route?.supportTier, "experimental");
+		assert.equal(route?.catalogProviderId, routeId);
+		assert.equal(route?.apiBaseUrl, provider.baseUrl);
+		assert.equal(route?.authRef, routeId);
+		assert.deepEqual(route?.modelPolicy, { kind: "catalog" });
+		const models = snapshot.models(routeId);
+		assert.deepEqual(models.map((entry) => entry.model), provider.models.map((entry) => entry.id));
+		for (const expected of provider.models) {
+			const actual = models.find((entry) => entry.model === expected.id);
+			assert.equal(actual?.origin, "pi_ai_catalog");
+			assert.equal(actual?.provider, routeId);
+			assert.equal(actual?.contextWindowTokens, expected.contextWindowTokens);
+			assert.equal(actual?.maxOutputTokens, expected.maxOutputTokens);
+			assert.equal(actual?.supportsImages, expected.input.includes("image"));
+			assert.deepEqual(actual?.supportedReasoningEfforts, expected.reasoningEfforts);
+		}
+	}
+	assert.equal(snapshot.route(parseProviderRouteId("fireworks")), undefined);
+	assert.equal(snapshot.route("qwen")?.source, "pi_ai_declared");
+	assert.equal(snapshot.models("qwen").length, 2);
+});
+
+test("Qwen catalog activation preserves route overrides and explicit subsets", () => {
+	const tokenPlan = parseProviderRouteId("qwen-token-plan-cn");
+	const upstream = catalog([
+		provider(tokenPlan, "Qwen Token Plan CN", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", [
+			model(tokenPlan, "qwen-configured", "chat_completions"),
+			model(tokenPlan, "qwen-new-in-sdk", "chat_completions"),
+		]),
+	]);
+	const declaration: ModelProviderDeclaration = {
+		provider: tokenPlan,
+		protocol: "chat_completions",
+		baseUrl: "https://qwen-relay.example/v1",
+		authRef: "qwen-work",
+		models: [{ model: "qwen-configured", displayName: "Work Qwen", supportedReasoningEfforts: ["high"] }],
+	};
+	const snapshot = assemble([declaration], upstream);
+	assert.equal(snapshot.routes.filter((route) => route.routeId === tokenPlan).length, 1);
+	assert.equal(snapshot.route(tokenPlan)?.apiBaseUrl, declaration.baseUrl);
+	assert.equal(snapshot.route(tokenPlan)?.authRef, declaration.authRef);
+	const models = snapshot.models(tokenPlan);
+	assert.deepEqual(models.map((entry) => entry.model), ["qwen-configured", "qwen-new-in-sdk"]);
+	assert.equal(models[0]?.displayName, "Work Qwen");
+	assert.deepEqual(models[0]?.supportedReasoningEfforts, ["high"]);
+	assert.ok(models.every((entry) => entry.baseUrl === declaration.baseUrl && entry.authRef === "qwen-work"));
+	const restricted = assemble([{ ...declaration, modelPolicy: "subset" }], upstream);
+	assert.deepEqual(restricted.models(tokenPlan).map((entry) => entry.model), ["qwen-configured"]);
 });
 
 test("fills a sparse uncatalogued current model from its exact runtime config", () => {

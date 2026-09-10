@@ -38,7 +38,7 @@ const MAX_REMEDIATION_CHARS = 512;
 const DEFAULT_COLLECTOR_TIMEOUT_MS = 30_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 2_000;
 
-export interface DoctorRunnerOptions {
+interface DoctorRunnerOptions {
 	readonly collectorTimeoutMs?: number;
 	readonly cleanupTimeoutMs?: number;
 }
@@ -50,7 +50,7 @@ class DoctorCollectorTimeoutError extends Error {
 	}
 }
 
-export type DoctorRunOptions = ExtensionDoctorOptions & {
+type DoctorRunOptions = ExtensionDoctorOptions & {
 	readonly workspaceTrust?: WorkspaceTrustState;
 	readonly updateStatus?: Parameters<typeof collectUpdateChecks>[0];
 };
@@ -189,7 +189,7 @@ export function reportFromChecks(checks: readonly DoctorCheck[]): DoctorReport {
 	});
 }
 
-export interface DoctorResponseOptions {
+interface DoctorResponseOptions {
 	readonly operation?: DoctorManagementResponse["operation"];
 	readonly repair?: DoctorRepairExecution;
 	readonly bundle?: DoctorSupportBundleReceipt;

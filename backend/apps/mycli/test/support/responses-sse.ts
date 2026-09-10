@@ -50,35 +50,48 @@ export function responsesToolEvents(
 	responseId = `resp-${callId}`,
 	usage: Readonly<Record<string, number>> = {},
 ): readonly ResponsesSseEvent[] {
-	const argumentsJson = JSON.stringify(argumentsValue);
-	const item = {
+	return responsesToolBatchEvents([{ callId, name, argumentsValue }], responseId, usage);
+}
+
+export function responsesToolBatchEvents(
+	calls: readonly {
+		readonly callId: string;
+		readonly name: string;
+		readonly argumentsValue: Readonly<Record<string, unknown>>;
+	}[],
+	responseId: string,
+	usage: Readonly<Record<string, number>> = {},
+): readonly ResponsesSseEvent[] {
+	const items = calls.map(({ callId, name, argumentsValue }) => ({
 		type: "function_call",
 		id: `fc-${callId}`,
 		call_id: callId,
 		name,
-		arguments: argumentsJson,
+		arguments: JSON.stringify(argumentsValue),
 		status: "completed",
-	};
+	}));
 	return [
 		{ type: "response.created", response: { id: responseId, status: "in_progress" } },
+		...items.flatMap((item, index) => [
 		{
 			type: "response.output_item.added",
-			output_index: 0,
+			output_index: index,
 			item: { ...item, arguments: "", status: "in_progress" },
 		},
-		{ type: "response.function_call_arguments.delta", output_index: 0, delta: argumentsJson },
+		{ type: "response.function_call_arguments.delta", output_index: index, delta: item.arguments },
 		{
 			type: "response.function_call_arguments.done",
-			output_index: 0,
-			arguments: argumentsJson,
+			output_index: index,
+			arguments: item.arguments,
 		},
-		{ type: "response.output_item.done", output_index: 0, item },
+		{ type: "response.output_item.done", output_index: index, item },
+		]),
 		{
 			type: "response.completed",
 			response: {
 				id: responseId,
 				status: "completed",
-				output: [item],
+				output: items,
 				usage: responsesUsage(usage),
 			},
 		},

@@ -26,18 +26,18 @@ import type {
 
 type MaybePromise<T> = T | Promise<T>;
 
-export interface DoctorConfigContract extends DoctorConfigMigrationContract {
+interface DoctorConfigContract extends DoctorConfigMigrationContract {
 	show(signal: AbortSignal): MaybePromise<ConfigShowResponse>;
 }
 
-export interface DoctorSandboxContract {
+interface DoctorSandboxContract {
 	execute(
 		command: Readonly<{ kind: "sandbox"; action: "status"; json: boolean }>,
 		signal: AbortSignal,
 	): MaybePromise<SandboxManagementResponse>;
 }
 
-export interface DoctorManagementServiceOptions {
+interface DoctorManagementServiceOptions {
 	readonly homeDir: string;
 	readonly workspaceTrust: WorkspaceTrustState;
 	readonly config: DoctorConfigContract;

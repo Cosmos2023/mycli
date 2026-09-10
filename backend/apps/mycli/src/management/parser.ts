@@ -1,4 +1,5 @@
 import { CONFIG_PATH_SCOPES, type ConfigPathScope } from "@mycli/config/paths";
+import { parseHeadlessCommand } from "../headless/arguments.ts";
 import {
 	COMPLETION_SHELLS,
 	findCliCommand,
@@ -27,6 +28,13 @@ const DOCTOR_PLAN_ID = /^doctor-plan-v1-[a-f0-9]{64}$/u;
 export function parseCliMode(argv: readonly string[]): CliMode {
 	const root = argv[0];
 	const descriptor = findCliCommand(root);
+	if (root === "app-server") {
+		validateInteractiveArguments(argv.slice(1));
+		return Object.freeze({ kind: "app-server", runtimeArgs: Object.freeze(argv.slice(1)) });
+	}
+	if (root === "exec" || root === "review") {
+		return Object.freeze({ kind: "headless", command: parseHeadlessCommand(root, argv.slice(1)) });
+	}
 	if (descriptor?.execution === "completion") {
 		return Object.freeze({ kind: "completion", shell: parseCompletionShell(argv.slice(1)) });
 	}
@@ -199,7 +207,7 @@ function parseAuth(
 			"invalid_arguments: --api-key is not supported; pipe the key to mycli login --with-api-key",
 		);
 	}
-	let action: "status" | "api_key" | "logout";
+	let action: "status" | "api_key" | "oauth" | "logout";
 	let remaining: readonly string[];
 	if (root === "logout") {
 		action = "logout";
@@ -209,9 +217,10 @@ function parseAuth(
 		remaining = args.slice(1);
 	} else {
 		const withApiKey = extractFlag(args, "--with-api-key");
-		if (!withApiKey.json) throw authUsage();
-		action = "api_key";
-		remaining = withApiKey.args;
+		const oauth = extractFlag(withApiKey.args, "--oauth");
+		if (withApiKey.json === oauth.json) throw authUsage();
+		action = oauth.json ? "oauth" : "api_key";
+		remaining = oauth.args;
 	}
 	let provider: string | undefined;
 	let authRef: string | undefined;
@@ -308,7 +317,7 @@ function parseSessionList(args: readonly string[], json: boolean): SessionManage
 	let status: "active" | "archived" | "deleted" | "waiting_approval"
 		| "waiting_clarification" | "interrupted" | undefined;
 	let limit: number | undefined;
-	const option = (name: string, value: string | undefined): string => {
+	const option = (value: string | undefined): string => {
 		if (!value || value.startsWith("--")) throw sessionUsage();
 		return nonEmpty(value);
 	};
@@ -324,7 +333,7 @@ function parseSessionList(args: readonly string[], json: boolean): SessionManage
 			last = true;
 			continue;
 		}
-		const value = option(argument ?? "", args[index + 1]);
+		const value = option(args[index + 1]);
 		index += 1;
 		if (argument === "--workspace") workspaceRoot = singleOption(workspaceRoot, value);
 		else if (argument === "--search") search = singleOption(search, value);
@@ -607,7 +616,7 @@ function sessionUsage(): Error {
 
 function authUsage(): Error {
 	return usage(
-		"login status|--with-api-key [--provider <id>] [--auth-ref <ref>] [--json] | logout [--provider <id>] [--auth-ref <ref>] [--json]",
+		"login status|--with-api-key|--oauth [--provider <id>] [--auth-ref <ref>] [--json] | logout [--provider <id>] [--auth-ref <ref>] [--json]",
 	);
 }
 

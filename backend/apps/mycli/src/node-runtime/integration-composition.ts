@@ -19,6 +19,7 @@ import {
 	McpCatalogCache,
 	McpManager,
 	type McpManagerDiscovery,
+	type McpResourceService,
 	PluginRuntime,
 	renderSkillCatalog,
 	SEND_AGENT_MESSAGE_TOOL_DEFINITION,
@@ -54,9 +55,9 @@ import {
 	workspaceSandboxProfile,
 } from "./integration-sandbox.ts";
 
-export type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
+type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
 
-export interface IntegrationCompositionContribution {
+interface IntegrationCompositionContribution {
 	readonly registrations?: readonly IntegrationRegistration[];
 	readonly hooks?: readonly HookRegistration[];
 	readonly resources?: readonly Readonly<Record<string, unknown>>[];
@@ -79,14 +80,14 @@ export interface IntegrationCompositionSource {
 	start(signal: AbortSignal): Promise<IntegrationCompositionContribution>;
 }
 
-export interface CreateIntegrationCompositionOptions {
+interface CreateIntegrationCompositionOptions {
 	readonly builtinManifest: BuiltInToolManifest;
 	readonly sources: readonly IntegrationCompositionSource[];
 	readonly closeTimeoutMs?: number;
 	readonly signal?: AbortSignal;
 }
 
-export interface IntegrationComposition {
+interface IntegrationComposition {
 	readonly registrations: readonly IntegrationRegistration[];
 	readonly hooks: readonly HookRegistration[];
 	readonly resources: readonly Readonly<Record<string, unknown>>[];
@@ -97,7 +98,8 @@ export interface IntegrationComposition {
 	close(): Promise<void>;
 }
 
-export interface CreateRuntimeIntegrationCompositionOptions {
+interface CreateRuntimeIntegrationCompositionOptions {
+	readonly disabled?: boolean;
 	readonly builtinManifest: BuiltInToolManifest;
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
@@ -125,7 +127,7 @@ export interface CreateRuntimeIntegrationCompositionOptions {
 	readonly onStartupStage?: (stage: IntegrationStartupStage) => void;
 }
 
-export type IntegrationStartupStage =
+type IntegrationStartupStage =
 	| "integration_discovery_started"
 	| "hooks_ready"
 	| "skills_ready"
@@ -134,6 +136,7 @@ export type IntegrationStartupStage =
 	| "subagents_ready";
 
 export interface RuntimeIntegrationComposition extends IntegrationComposition {
+	readonly mcpResourceService: McpResourceService;
 	readonly version: number;
 	readonly hookRunner: HookRunnerContract;
 	readonly skillCatalog: string;
@@ -149,7 +152,7 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	}): Promise<void>;
 }
 
-export interface RuntimeToolRegistrationPartition {
+interface RuntimeToolRegistrationPartition {
 	readonly direct: readonly IntegrationRegistration[];
 	readonly deferred: readonly (IntegrationRegistration & { readonly source: "mcp" | "plugin" })[];
 }
@@ -249,6 +252,27 @@ export async function createIntegrationComposition(
 export async function createRuntimeIntegrationComposition(
 	options: CreateRuntimeIntegrationCompositionOptions,
 ): Promise<RuntimeIntegrationComposition> {
+	if (options.disabled) {
+		const composition = await createIntegrationComposition({ builtinManifest: options.builtinManifest, sources: [] });
+		return Object.freeze({
+			...composition, version: 1, skillCatalog: "",
+			mcpResourceService: {
+				listResources: async (signal: AbortSignal) => { signal.throwIfAborted(); return { resources: [], failures: [] }; },
+				listResourcesPage: async () => { throw new Error("unknown_mcp_server"); },
+				listResourceTemplates: async (signal: AbortSignal, serverId?: string) => {
+					signal.throwIfAborted();
+					if (serverId !== undefined) throw new Error("unknown_mcp_server");
+					return { resourceTemplates: [], failures: [] };
+				},
+				readResource: async () => { throw new Error("unknown_mcp_server"); },
+			},
+			hookRunner: { run: async () => Object.freeze([]) },
+			subscribeSubagents: () => () => undefined,
+			publishSubagent: () => undefined,
+			subscribeExtensions: () => () => undefined,
+			reloadProjectConfiguration: async () => undefined,
+		});
+	}
 	const subagentListeners = new Set<(
 		subagent: Readonly<Record<string, unknown>>,
 	) => void>();
@@ -413,6 +437,19 @@ export async function createRuntimeIntegrationComposition(
 	};
 
 	const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
+		mcpResourceService: {
+			listResources: (signal: AbortSignal, serverId?: string) => content.mcpResourceService.listResources(signal, serverId),
+			listResourcesPage: async (serverId: string, signal: AbortSignal, cursor?: string) => {
+				if (content.mcpResourceService.listResourcesPage) return content.mcpResourceService.listResourcesPage(serverId, signal, cursor);
+				if (cursor !== undefined) throw new Error("invalid_mcp_resource_pagination");
+				const listing = await content.mcpResourceService.listResources(signal, serverId);
+				if (listing.failures.length) throw new Error("mcp_resource_error");
+				return { resources: listing.resources };
+			},
+			listResourceTemplates: async (signal: AbortSignal, serverId?: string, cursor?: string) =>
+				content.mcpResourceService.listResourceTemplates?.(signal, serverId, cursor) ?? { resourceTemplates: [], failures: [] },
+			readResource: (serverId: string, uri: string, signal: AbortSignal) => content.mcpResourceService.readResource(serverId, uri, signal),
+		},
 		get version() { return snapshot.version; },
 		get registrations() { return snapshot.registrations; },
 		get hooks() { return content.composition.hooks; },
@@ -467,6 +504,7 @@ export async function createRuntimeIntegrationComposition(
 }
 
 interface RuntimeIntegrationContent {
+	readonly mcpResourceService: McpResourceService;
 	readonly workspaceRoot: string;
 	readonly composition: IntegrationComposition;
 	readonly hookDiscovery: Awaited<ReturnType<typeof discoverHookConfig>>;
@@ -487,6 +525,7 @@ async function createRuntimeIntegrationContent(input: {
 	const { options } = input;
 	const mcpRefreshController = new AbortController();
 	let skillRegistry: SkillRegistry | undefined;
+	let mcpManager: McpManager | undefined;
 	let startMcpRefresh: ((
 		publish: (contribution: IntegrationCompositionContribution) => void,
 	) => void) | undefined;
@@ -542,6 +581,7 @@ async function createRuntimeIntegrationContent(input: {
 								sandboxProfile: workspaceSandboxProfile(input.workspaceRoot),
 							}),
 						});
+						mcpManager = manager;
 						const cached = await manager.loadCached(discoverySignal);
 						if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
 						startMcpRefresh = (publish) => {
@@ -598,13 +638,14 @@ async function createRuntimeIntegrationContent(input: {
 		mcpRefreshController.abort();
 		throw error;
 	}
-	if (!skillRegistry) {
+	if (!skillRegistry || !mcpManager) {
 		mcpRefreshController.abort();
 		await composition.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
 	}
 	return Object.freeze({
 		workspaceRoot: input.workspaceRoot,
+		mcpResourceService: mcpManager,
 		composition,
 		hookDiscovery,
 		skillRegistry,
@@ -801,7 +842,7 @@ function skillResources(registry: SkillRegistry): readonly Readonly<Record<strin
 		enabled: true,
 		status: "enabled",
 		detail: skill.description,
-		command: "/tools skills",
+		command: "/skills",
 	}));
 }
 

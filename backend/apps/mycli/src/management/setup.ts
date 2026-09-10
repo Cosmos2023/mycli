@@ -20,6 +20,7 @@ import {
 	type SetupWizardResult,
 	type SetupWizardState,
 } from "mycli-shell-tui";
+import { abortable, abortError } from "./abort.ts";
 import type { ApiKeyInputReader } from "./auth.ts";
 import type { ManagementResponse } from "./types.ts";
 
@@ -385,23 +386,6 @@ function promptRawSecret(
 	});
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const onAbort = (): void => reject(abortError());
-		signal.addEventListener("abort", onAbort, { once: true });
-		promise.then(
-			(value) => {
-				signal.removeEventListener("abort", onAbort);
-				resolve(value);
-			},
-			(error: unknown) => {
-				signal.removeEventListener("abort", onAbort);
-				reject(error);
-			},
-		);
-	});
-}
-
 function cancelled(): SetupCommandResponse {
 	return Object.freeze({
 		ok: false,
@@ -420,12 +404,6 @@ function failure(message: string, issue: string, exitCode?: number): SetupComman
 		issues: Object.freeze([issue]),
 		...(exitCode === undefined ? {} : { exitCode }),
 	});
-}
-
-function abortError(): Error {
-	const error = new Error("interrupted");
-	error.name = "AbortError";
-	return error;
 }
 
 function isAbortError(error: unknown): boolean {

@@ -4,7 +4,63 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test, { type TestContext } from "node:test";
+import { modifyProviderCredential, readProviderCredential } from "@mycli/config";
 import { AuthManagementService, readApiKeyFromStdin } from "../src/management/auth.ts";
+
+test("OAuth login, local status and logout honor the selected credential reference", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	let nativeLogins = 0;
+	const service = new AuthManagementService({ homeDir, workspaceRoot: homeDir, env: {}, workspaceTrust: "untrusted",
+		createAuthInteraction: () => ({ prompt: async () => "offline-code", notify: () => undefined }),
+		nativeLogin: async (input) => {
+			nativeLogins += 1;
+			assert.equal(input.provider, "anthropic");
+			assert.equal(input.authRef, "work");
+			await modifyProviderCredential({ homeDir, authRef: input.authRef }, async () => ({ type: "oauth", access: "private-access", refresh: "private-refresh", expires: 1 }));
+			return { configured: true, source: "stored", credentialType: "oauth" };
+		},
+	});
+	const signal = new AbortController().signal;
+	const login = await service.execute({ kind: "login", action: "oauth", provider: "anthropic", authRef: "work", json: true }, signal);
+	assert.equal(login.ok, true);
+	assert.equal(login.credentialType, "oauth");
+	assert.equal(login.source, "stored");
+	const status = await service.execute({ kind: "login", action: "status", provider: "anthropic", authRef: "work", json: true }, signal);
+	assert.equal(status.credentialType, "oauth");
+	assert.equal(nativeLogins, 1);
+	assert.doesNotMatch(JSON.stringify([login, status]), /private-access|private-refresh/u);
+	const logout = await service.execute({ kind: "logout", action: "logout", provider: "anthropic", authRef: "work", json: true }, signal);
+	assert.equal(logout.removed, true);
+	assert.equal(logout.source, "missing");
+	assert.equal(await readProviderCredential({ homeDir, authRef: "work" }), undefined);
+});
+
+test("dynamic route API-key login works and noninteractive OAuth fails before invoking SDK", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const service = new AuthManagementService({ homeDir, workspaceRoot: homeDir, env: {}, workspaceTrust: "untrusted",
+		readApiKeyInput: async () => "offline-key",
+		nativeLogin: async () => assert.fail("noninteractive login must not invoke OAuth"),
+	});
+	const signal = new AbortController().signal;
+	const login = await service.execute({ kind: "login", action: "api_key", provider: "team-native", json: true }, signal);
+	assert.equal(login.ok, true);
+	assert.equal(login.authRef, "team-native");
+	const oauth = await service.execute({ kind: "login", action: "oauth", provider: "anthropic", json: true }, signal);
+	assert.deepEqual(oauth.issues, ["auth_interactive_required"]);
+});
+
+test("OAuth cancellation returns exit code 130 without exposing provider failure details", async (t) => {
+	const homeDir = await temporaryDirectory(t);
+	const controller = new AbortController();
+	const service = new AuthManagementService({ homeDir, workspaceRoot: homeDir, env: {}, workspaceTrust: "untrusted",
+		createAuthInteraction: () => ({ prompt: async () => "", notify: () => undefined }),
+		nativeLogin: async () => { controller.abort(); throw new Error("private-oauth-token"); },
+	});
+	const response = await service.execute({ kind: "login", action: "oauth", provider: "anthropic", json: true }, controller.signal);
+	assert.equal(response.exitCode, 130);
+	assert.deepEqual(response.issues, ["interrupted"]);
+	assert.doesNotMatch(JSON.stringify(response), /private-oauth-token/u);
+});
 
 test("curated providers share the provider-free login status and logout lifecycle", async (t) => {
 	const providers = [
@@ -41,7 +97,7 @@ test("curated providers share the provider-free login status and logout lifecycl
 		}, signal);
 		assert.equal(missing.provider, provider);
 		assert.equal(missing.authRef, provider);
-		assert.equal(missing.source, "missing");
+		assert.equal(missing.source, "environment");
 
 		const loggedIn = await service.execute({
 			kind: "login",
@@ -75,7 +131,7 @@ test("curated providers share the provider-free login status and logout lifecycl
 			json: true,
 		}, signal);
 		assert.equal(loggedOut.removed, true);
-		assert.equal(loggedOut.source, "missing");
+		assert.equal(loggedOut.source, "environment");
 		assert.equal(JSON.stringify(loggedOut).includes(secret), false);
 	}
 });

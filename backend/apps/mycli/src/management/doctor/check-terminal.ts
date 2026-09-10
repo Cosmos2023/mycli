@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { DoctorCheck } from "./types.ts";
 
-export interface TerminalDoctorOptions {
+interface TerminalDoctorOptions {
 	readonly env?: NodeJS.ProcessEnv;
 	readonly isTty?: boolean;
 	readonly columns?: number;

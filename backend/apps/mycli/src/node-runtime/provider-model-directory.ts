@@ -24,13 +24,19 @@ import {
 	type ProviderRouteDescriptor,
 } from "@mycli/providers";
 
-export type ProviderModelOrigin =
+type ProviderModelOrigin =
 	| "current_custom"
 	| "pi_ai_catalog"
 	| "stable_fallback"
 	| "user";
 
-export interface ProviderScopedModelEntry extends ModelCatalogEntry {
+const DEFAULT_ACTIVE_CATALOG_PROVIDERS: ReadonlySet<string> = new Set([
+	"qwen-token-plan",
+	"qwen-token-plan-cn",
+	"qwen-token-plan-individual",
+]);
+
+interface ProviderScopedModelEntry extends ModelCatalogEntry {
 	readonly origin: ProviderModelOrigin;
 }
 
@@ -57,7 +63,7 @@ export interface ProviderModelDirectorySnapshot {
 	models(routeId: ProviderRouteId): readonly ProviderScopedModelEntry[];
 }
 
-export interface ProviderModelDirectoryOptions {
+interface ProviderModelDirectoryOptions {
 	readonly homeDir: string;
 	readonly loadDeclarations?: (
 		homeDir: string,
@@ -65,7 +71,7 @@ export interface ProviderModelDirectoryOptions {
 	readonly loadCatalog?: () => Promise<ProviderDirectorySnapshot>;
 }
 
-export interface AssembleProviderModelDirectoryInput {
+interface AssembleProviderModelDirectoryInput {
 	readonly version: number;
 	readonly currentConfig: ProviderModelCurrentConfig;
 	readonly profiles: readonly ProviderProfile[];
@@ -74,7 +80,7 @@ export interface AssembleProviderModelDirectoryInput {
 	readonly stableFallbackModels: readonly ModelCatalogEntry[];
 }
 
-export class ProviderModelDirectoryError extends Error {
+class ProviderModelDirectoryError extends Error {
 	readonly code = "provider_model_directory_error";
 
 	constructor(message: string) {
@@ -141,14 +147,26 @@ export function assembleProviderModelDirectory(
 	if (declarationsByRoute.size !== input.declarations.length) {
 		throw directoryError("The configured provider routes are not unique.");
 	}
+	for (const provider of input.catalog.providers) {
+		const protocol = provider.protocols[0];
+		if (!DEFAULT_ACTIVE_CATALOG_PROVIDERS.has(provider.catalogProviderId)
+			|| provider.status !== "serviceable"
+			|| protocol === undefined
+			|| declarationsByRoute.has(provider.catalogProviderId)) continue;
+		declarationsByRoute.set(provider.catalogProviderId, Object.freeze({
+			provider: provider.catalogProviderId,
+			protocol,
+			authRef: provider.catalogProviderId,
+			source: "pi_ai_builtin",
+		}));
+	}
 	const profilesByRoute = new Map<ProviderRouteId, ProviderProfile>(input.profiles.map((profile) => [
 		profile.provider,
 		profile,
 	]));
 	const routeIds: ProviderRouteId[] = [
 		...input.profiles.map((profile) => profile.provider),
-		...input.declarations
-			.map((declaration) => declaration.provider)
+		...[...declarationsByRoute.keys()]
 			.filter((routeId) => !profilesByRoute.has(routeId)),
 	];
 	if (!routeIds.includes(input.currentConfig.provider)) routeIds.push(input.currentConfig.provider);

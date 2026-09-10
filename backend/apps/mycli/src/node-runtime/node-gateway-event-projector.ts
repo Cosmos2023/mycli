@@ -1,5 +1,8 @@
 import {
 	parseGatewayEvent,
+	parseProviderAttemptRecord,
+	gatewayToolLifecycleRecord,
+	projectGatewayErrorPayload,
 	type GatewayEventNotification,
 } from "@mycli/contracts";
 
@@ -17,7 +20,8 @@ export interface GatewayEventOwnership {
 	readonly turnId?: string;
 }
 
-export interface NodeGatewayEventProjectorOptions {
+interface NodeGatewayEventProjectorOptions {
+	readonly errorContextVersion?: () => 1 | undefined;
 	readonly clock: () => number;
 	readonly currentOwnership: (
 		method: RuntimeGatewayEventMethod,
@@ -35,7 +39,7 @@ export class NodeGatewayEventProjector {
 	}
 
 	emitDirect(method: GatewayEventMethod, params: JsonObject): void {
-		this.#write(method, params);
+		this.#write(method, toolRecordPayload(method, params));
 	}
 
 	emitRuntime(
@@ -43,7 +47,7 @@ export class NodeGatewayEventProjector {
 		params: JsonObject,
 		ownership: GatewayEventOwnership = this.#options.currentOwnership(method, params),
 	): void {
-		const ownedParams = ownershipPayload(params, ownership);
+		const ownedParams = ownershipPayload(toolRecordPayload(method, params), ownership);
 		this.#write(method, ownedParams);
 		this.#sequence += 1;
 		this.#write("runtime.event", {
@@ -59,9 +63,23 @@ export class NodeGatewayEventProjector {
 	}
 
 	#write(method: GatewayEventMethod, params: JsonObject): void {
-		const notification = parseGatewayEvent({ jsonrpc: "2.0", method, params });
+		const projected = projectGatewayErrorPayload(method, params, this.#options.errorContextVersion?.() === 1 ? "read" : "legacy");
+		const notification = parseGatewayEvent({ jsonrpc: "2.0", method, params: projected });
 		this.#options.write(notification);
 	}
+}
+
+function toolRecordPayload(method: GatewayEventMethod, params: JsonObject): JsonObject {
+	if (method === "provider.attempt.updated") {
+		const record = parseProviderAttemptRecord(params.record);
+		if (record.sessionId !== params.session_id || record.turnId !== params.turn_id) {
+			throw new Error("Provider attempt event ownership mismatch.");
+		}
+		return { ...params, record };
+	}
+	return method === "tool.start" || method === "tool.complete" || method === "tool.failed"
+		? { ...params, tool_record: gatewayToolLifecycleRecord(method, params) }
+		: params;
 }
 
 function ownershipPayload(

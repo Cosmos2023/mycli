@@ -33,7 +33,7 @@ const REQUIRED_VENDORED_PACKAGES = Object.freeze([
 const REQUIRED_RPC_METHODS = Object.freeze(["extension.manifest", "trace.export", "turn.submit"]);
 const REQUIRED_EVENT_STREAMS = Object.freeze(["runtime.event", "subagent.updated", "turn.status"]);
 
-export interface RuntimeDoctorOptions {
+interface RuntimeDoctorOptions {
 	readonly packageRoot?: string;
 	readonly appPackageRoot?: string;
 	readonly nodeVersion?: string;

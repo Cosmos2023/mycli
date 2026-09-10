@@ -28,6 +28,7 @@ import type {
 	SetupManagementCommand,
 } from "./types.ts";
 import { AuthManagementService, type ApiKeyInputReader } from "./auth.ts";
+import type { NativeAuthInteraction } from "@mycli/providers";
 import type { ConfigPathScope } from "@mycli/config/paths";
 import {
 	ConfigManagementError,
@@ -132,6 +133,7 @@ export interface DefaultManagementServicesOptions {
 		signal: AbortSignal,
 	) => MaybePromise<ManagementResponse>;
 	readonly readApiKeyInput?: ApiKeyInputReader;
+	readonly createAuthInteraction?: (signal: AbortSignal) => NativeAuthInteraction;
 }
 
 export class ManagementServices implements ManagementExecutor {

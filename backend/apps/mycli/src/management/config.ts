@@ -24,11 +24,11 @@ import {
 import { redactDoctorText } from "./doctor/redaction.ts";
 import type { ManagementResponse } from "./types.ts";
 
-export const CONFIG_MANAGEMENT_RESPONSE_VERSION = 1 as const;
+const CONFIG_MANAGEMENT_RESPONSE_VERSION = 1 as const;
 
-export type ConfigManagementAction = "get" | "migrate" | "path" | "set" | "show" | "unset" | "validate";
+type ConfigManagementAction = "get" | "migrate" | "path" | "set" | "show" | "unset" | "validate";
 
-export type ConfigSettingSource = ConfigLayerId | "default";
+type ConfigSettingSource = ConfigLayerId | "default";
 export type ConfigSettingValue = string | number | boolean | null | Readonly<Record<string, number>>;
 
 export interface ConfigSettingRow {
@@ -46,7 +46,7 @@ export interface ConfigLayerRow {
 	readonly disabledReason?: ConfigLayerDisabledReason;
 }
 
-export interface ConfigCredentialState {
+interface ConfigCredentialState {
 	readonly apiKey: "present" | "missing";
 }
 
@@ -56,7 +56,7 @@ interface ConfigManagementResponseBase extends ManagementResponse {
 	readonly diagnostics: readonly ConfigDiagnostic[];
 }
 
-export interface ConfigValidateResponse extends ConfigManagementResponseBase {
+interface ConfigValidateResponse extends ConfigManagementResponseBase {
 	readonly ok: true;
 	readonly action: "validate";
 	readonly strict: boolean;
@@ -71,7 +71,7 @@ export interface ConfigShowResponse extends ConfigManagementResponseBase {
 	readonly settings: readonly ConfigSettingRow[];
 }
 
-export interface ConfigGetResponse extends ConfigManagementResponseBase {
+interface ConfigGetResponse extends ConfigManagementResponseBase {
 	readonly ok: true;
 	readonly action: "get";
 	readonly setting: ConfigSettingRow;
@@ -85,7 +85,7 @@ export interface ConfigPathResponse extends ConfigManagementResponseBase {
 	readonly writable: boolean;
 }
 
-export interface ConfigMutationResponse extends ConfigManagementResponseBase {
+interface ConfigMutationResponse extends ConfigManagementResponseBase {
 	readonly ok: true;
 	readonly action: "set" | "unset";
 	readonly key: string;
@@ -110,7 +110,7 @@ export interface ConfigMigrationResponse extends ConfigManagementResponseBase {
 	readonly truncated?: boolean;
 }
 
-export interface ConfigFailureResponse extends ConfigManagementResponseBase {
+interface ConfigFailureResponse extends ConfigManagementResponseBase {
 	readonly ok: false;
 	readonly action: ConfigManagementAction;
 }
@@ -124,7 +124,7 @@ export type ConfigManagementResponse =
 	| ConfigMigrationResponse
 	| ConfigFailureResponse;
 
-export interface ConfigManagementServiceOptions {
+interface ConfigManagementServiceOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: NodeJS.ProcessEnv;

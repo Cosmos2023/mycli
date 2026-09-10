@@ -25,7 +25,7 @@ const SESSION_QUERY_LIMIT = 1_000;
 const SESSION_EXPORT_ITEM_LIMIT = 200;
 const SESSION_EXPORT_TEXT_LIMIT = 200_000;
 
-export type SessionLifecycleStatus =
+type SessionLifecycleStatus =
 	| "active"
 	| "archived"
 	| "deleted"
@@ -72,7 +72,7 @@ export interface SessionQuery {
 	readonly offset?: number;
 }
 
-export type ResumeRepairIssueCode =
+type ResumeRepairIssueCode =
 	| "missing_workspace"
 	| "missing_credential"
 	| "unsupported_model"
@@ -84,7 +84,7 @@ export type ResumeRepairIssueCode =
 	| "archived_session"
 	| "deleted_session";
 
-export interface ResumeRepairIssue {
+interface ResumeRepairIssue {
 	readonly code: ResumeRepairIssueCode;
 	readonly blocking: boolean;
 	readonly message: string;
@@ -130,7 +130,7 @@ export interface SessionExport {
 	readonly truncated: boolean;
 }
 
-export interface SessionServiceOptions {
+interface SessionServiceOptions {
 	readonly store: RuntimeSessionStore;
 	readonly currentConfig: () => SessionPreferenceConfig;
 	readonly currentPermissionProfile?: () => PermissionProfile;

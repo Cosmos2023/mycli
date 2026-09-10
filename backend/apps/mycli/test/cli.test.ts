@@ -102,6 +102,24 @@ test("help and version are local and never start the Node backend", async (t) =>
 	}
 });
 
+test("management commands receive process cancellation and remove signal hooks", async () => {
+	const entered = deferred<void>();
+	const harness = cliHarness({ argv: ["login", "--oauth", "--provider", "anthropic", "--json"],
+		management: { execute: async (_command: ManagementCommand, signal: AbortSignal) => {
+			entered.resolve();
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+			return { ok: false, action: "login", exitCode: 130, issues: ["interrupted"] };
+		} },
+		startNodeBackend: () => assert.fail("login must not start backend"),
+	});
+	const result = runCli(harness.options);
+	await entered.promise;
+	harness.hooks.emit("SIGINT");
+	assert.equal(await result, 130);
+	assert.equal(harness.hooks.listenerCount("SIGINT"), 0);
+	assert.equal(harness.hooks.listenerCount("SIGTERM"), 0);
+});
+
 test("app version rejects an invalid package manifest", () => {
 	assert.throws(() => parseAppVersion({}), /package_version_invalid/u);
 });
@@ -650,6 +668,24 @@ test("unexpected Node backend exit returns one without printing its diagnostic",
 
 	assert.equal(await runCli(harness.options), 1);
 	assert.doesNotMatch(harness.stderr.join(""), /api_key/);
+});
+
+test("interactive transport exposes the latest backend diagnostic after close", async () => {
+	const fake = fakeBackend();
+	let diagnostic = "";
+	let configured: GatewayTransport | undefined;
+	const harness = cliHarness({
+		startNodeBackend: () => ({ ...fake.backend, diagnostic: () => diagnostic }),
+		configureTransport: (transport: GatewayTransport) => { configured = transport; },
+		importTui: async () => {
+			assert.equal(configured?.diagnostic?.(), "");
+			diagnostic = "gateway_overloaded";
+			await configured?.close?.();
+			assert.equal(configured?.diagnostic?.(), "gateway_overloaded");
+			fake.completion.resolve(1);
+		},
+	});
+	assert.equal(await runCli(harness.options), 1);
 });
 
 test("abnormal parent exit synchronously kills a running Node backend", async () => {

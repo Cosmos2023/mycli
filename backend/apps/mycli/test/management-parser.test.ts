@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCliMode } from "../src/management/parser.ts";
 
+test("OAuth login parses independently of API-key stdin login", () => {
+	assert.deepEqual(parseCliMode(["login", "--oauth", "--provider", "anthropic", "--auth-ref", "work", "--json"]), {
+		kind: "management", command: { kind: "login", action: "oauth", provider: "anthropic", authRef: "work", json: true },
+	});
+	for (const argv of [
+		["login", "--oauth", "--with-api-key"], ["login", "--oauth", "--oauth"],
+		["login", "status", "--oauth"], ["logout", "--oauth"],
+	]) assert.throws(() => parseCliMode(argv));
+});
+
 test("parser recognizes provider-free management commands before interactive flags", () => {
 	assert.deepEqual(parseCliMode(["doctor", "--json"]), {
 		kind: "management",

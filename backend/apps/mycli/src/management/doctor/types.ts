@@ -53,9 +53,9 @@ export interface DoctorReport {
 }
 
 export type DoctorRepairActionId = "migrate_user_config";
-export type DoctorRepairResultStatus = "applied" | "failed" | "not_needed" | "version_conflict";
+type DoctorRepairResultStatus = "applied" | "failed" | "not_needed" | "version_conflict";
 
-export interface DoctorRepairChange {
+interface DoctorRepairChange {
 	readonly kind: "import" | "normalize";
 	readonly key: string;
 	readonly source: "legacy_user" | "user";
@@ -108,7 +108,7 @@ export interface DoctorSupportDiagnostic {
 	readonly recoveryActionIds: readonly string[];
 }
 
-export interface DoctorSupportConfigLayer {
+interface DoctorSupportConfigLayer {
 	readonly id: ConfigLayerId;
 	readonly scope: ConfigLayerScope;
 	readonly enabled: boolean;

@@ -29,7 +29,7 @@ import {
 	type SubagentTaskRecord,
 	type WriteSubagentSnapshotInput,
 } from "@mycli/storage";
-import { permissionRequestFromJson } from "@mycli/tools";
+import { permissionRequestFromJson, shellApprovalPreview } from "@mycli/tools";
 import type { NodeGatewayRuntime } from "./node-gateway.ts";
 import {
 	projectReadableSessionTranscript,
@@ -39,6 +39,7 @@ import type { SerializedSessionArtifactQueue } from "./node-runtime-resources.ts
 
 interface PrepareStoredSessionOptions {
 	readonly sessionId: string;
+	readonly intent: "resume" | "inspect";
 	readonly store: RuntimeSessionStore;
 	readonly transcriptSnapshots: TranscriptSnapshotStore;
 	readonly sessionArtifacts: SessionArtifactStore;
@@ -127,9 +128,10 @@ export async function prepareStoredSession(
 	}
 
 	const queue = loadQueue(store, sessionId);
-	const approvalState = loadApprovalState(store, sessionId);
 	const compactionState = store.loadState(sessionId, "compact_checkpoint");
 	const responsesContinuation = loadResponsesContinuation(store, sessionId);
+	if (options.intent === "resume") store.interruptSessionForResume(sessionId);
+	overview = store.loadSession(sessionId) ?? overview;
 	const binding = createRuntime(
 		sessionId,
 		overview.workspaceRoot,
@@ -137,6 +139,7 @@ export async function prepareStoredSession(
 		queue,
 		responsesContinuation,
 	);
+	const approvalState = loadApprovalState(store, sessionId);
 	const records = store.subagentTasks.list(sessionId, 1_000);
 	let transcript;
 	try {
@@ -810,6 +813,11 @@ export function loadApprovalState(
 			callId: call.call_id,
 			toolName: call.name,
 			preview: pending.payload.preview,
+			...shellApprovalPreview({
+				callId: call.call_id,
+				name: call.name,
+				argumentsJson: JSON.stringify(call.arguments),
+			}),
 			reason: pending.payload.reason,
 			options: Object.freeze([...pending.payload.options]),
 			...(permissionRequest ? { permissionRequest } : {}),

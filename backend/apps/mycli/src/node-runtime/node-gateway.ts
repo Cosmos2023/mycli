@@ -1,9 +1,17 @@
 import {
 	gatewayContractCatalog,
+	createErrorContext,
+	errorDefinition,
+	errorSummary,
+	legacyGatewayReason,
+	projectGatewayErrorPayload,
+	projectGatewayErrorData,
+	isGatewayErrorCode,
+	readErrorContext,
+	DIAGNOSTIC_RECOVERY_ACTION_IDS,
+	slashCommandArguments,
 } from "@mycli/contracts";
-import {
-	type CachedUpdateStatus,
-} from "@mycli/config";
+import { loadGatewayProviderAttempts } from "./node-gateway-provider-attempts.ts";
 import type {
 	RuntimeTurnRecord,
 } from "@mycli/contracts";
@@ -11,9 +19,11 @@ import {
 	type ReasoningEffort,
 } from "@mycli/core";
 import type { TranscriptItem } from "@mycli/storage";
-import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
+import { DEFAULT_GATEWAY_LIMITS, type GatewayTransport } from "@mycli/gateway";
+import { resolveErrorRecovery } from "@mycli/runtime";
+import { projectGatewayToolRecord, type GatewayTranscriptItem, type GatewayResult } from "@mycli/contracts";
 import {
-	builtinCommandNames,
+	builtinCommandRoutingNames,
 	commandDiscoveryManifest,
 	commandManifest,
 	resolveSlashCommand,
@@ -60,10 +70,12 @@ import {
 } from "./node-gateway-interactive-controller.ts";
 import { NodeGatewayShellController } from "./node-gateway-shell-controller.ts";
 import {
+	cachedUpdateStatusPayload,
 	credentialReadinessPayload,
 	NodeGatewaySettingsController,
 	sandboxForPermission as settingsSandboxForPermission,
 } from "./node-gateway-settings-controller.ts";
+import { requiredTrimmedString as requiredString } from "./node-gateway-validation.ts";
 import type {
 	CreateNodeGatewayOptions,
 	NodeGateway,
@@ -89,6 +101,7 @@ export type {
 } from "./node-gateway-types.ts";
 
 type JsonObject = Record<string, unknown>;
+const TRANSCRIPT_PAGE_MAX_BYTES = Math.floor(DEFAULT_GATEWAY_LIMITS.maxFrameBytes * 0.75);
 
 class InProcessNodeGateway implements NodeGateway {
 	readonly transport: GatewayTransport;
@@ -103,7 +116,9 @@ class InProcessNodeGateway implements NodeGateway {
 	readonly #settingsController: NodeGatewaySettingsController;
 	readonly #resolveCompletion: (code: number) => void;
 	#closed = false;
+	#errorContextVersion: 1 | undefined;
 	#closePromise: Promise<void> | null = null;
+	#manualCompaction: { readonly controller: AbortController; readonly task: Promise<NodeGatewayCompactionResult> } | null = null;
 	#unsubscribeSubagents: (() => void) | null = null;
 	#unsubscribeExtensions: (() => void) | null = null;
 	#unsubscribeAgentInteractiveRequests: (() => void) | null = null;
@@ -115,6 +130,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.completion = new Promise<number>((resolve) => { resolveCompletion = resolve; });
 		this.#resolveCompletion = resolveCompletion;
 		this.#eventProjector = new NodeGatewayEventProjector({
+			errorContextVersion: () => this.#errorContextVersion,
 			clock: options.clock ?? (() => Date.now() / 1000),
 			currentOwnership: (_method, params) => this.#turnController.currentOwnership(params),
 			write: (notification) => { this.#rpcTransport.writeNotification(notification); },
@@ -181,6 +197,7 @@ class InProcessNodeGateway implements NodeGateway {
 			publish: (method, params) => { this.#emitRuntime(method, params); },
 		});
 		this.#rpcTransport = new NodeGatewayRpcTransport({
+			projectResult: (method, result) => projectGatewayErrorPayload(method, result, this.#errorContextVersion === 1 ? "read" : "legacy") as JsonObject,
 			dispatch: (request) => this.#handleRequest(request),
 			mapFailure: (request, error) => this.#mapRpcFailure(request, error),
 			onRequestFailed: (request, failure) => {
@@ -203,6 +220,8 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#closePromise ??= (async () => {
 			if (this.#closed) return;
 			this.#closed = true;
+			const manualCompaction = this.#manualCompaction;
+			manualCompaction?.controller.abort();
 			this.#sessionController.close();
 			this.#shellController.close();
 				this.#unsubscribeSubagents?.();
@@ -215,11 +234,12 @@ class InProcessNodeGateway implements NodeGateway {
 			let exitCode = 0;
 			try {
 				await this.#turnController.close();
+				await manualCompaction?.task.catch(() => undefined);
 				await this.#options.close();
 			} catch {
 				exitCode = 1;
 			} finally {
-				this.#rpcTransport.close();
+				if (!await this.#rpcTransport.close()) exitCode = 1;
 				this.#resolveCompletion(exitCode);
 			}
 		})();
@@ -231,7 +251,7 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	diagnostic(): string {
-		return "";
+		return this.#rpcTransport.diagnostic();
 	}
 
 	publishRecoveredInterrupt(record: RuntimeTurnRecord, options: {
@@ -244,7 +264,7 @@ class InProcessNodeGateway implements NodeGateway {
 		switch (request.method) {
 			case "initialize":
 				return this.#bootstrap(
-					{ protocol_version: request.params.protocol_version ?? 1 },
+					{ ...request.params, protocol_version: request.params.protocol_version ?? 1 },
 					false,
 				);
 			case "status.get":
@@ -269,6 +289,15 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#bootstrap(request.params, true);
 			case "transcript.load":
 				return this.#transcript(request.params);
+			case "provider.attempts.load":
+				return loadGatewayProviderAttempts(this.#options.loadProviderAttempts, {
+					sessionId: optionalString(request.params.session_id) ?? this.#sessionController.sessionId(),
+					...(typeof request.params.turn_id === "string" ? { turnId: request.params.turn_id } : {}),
+					...(typeof request.params.request_id === "string" ? { requestId: request.params.request_id } : {}),
+					...(typeof request.params.after_sequence === "number" ? { afterSequence: request.params.after_sequence } : {}),
+					...(typeof request.params.before_event_id === "string" ? { beforeEventId: request.params.before_event_id } : {}),
+					...(typeof request.params.limit === "number" ? { limit: request.params.limit } : {}),
+				});
 			case "command.list":
 				return this.#commandList(request.params);
 			case "command.run":
@@ -353,19 +382,35 @@ class InProcessNodeGateway implements NodeGateway {
 			return { code: "invalid_params", message: "Invalid JSON-RPC request." };
 		}
 		const failure = gatewayFailure(error);
-		const occurrenceId = gatewayRequestOccurrenceId();
+		const data = { ...projectGatewayErrorData(failure.data, this.#errorContextVersion === 1 ? "read" : "legacy") as JsonObject };
+		delete data.recovery_actions;
+		const existingContext = readErrorContext(data.error_context);
+		const occurrenceId = existingContext?.id ?? gatewayRequestOccurrenceId();
 		const diagnostic = gatewayFailureDiagnostic(failure.code);
+		const errorContext = this.#errorContextVersion === 1 && data.error_context_invalid !== true ? existingContext
+			?? createErrorContext({
+				id: occurrenceId, reason: legacyGatewayReason(failure.code, failure.data.dispatched === false ? false : undefined),
+				source: "gateway", scope: { kind: "request", id: occurrenceId },
+				outcome: failure.data.dispatched === false || ["invalid_params", "invalid_arguments", "turn_in_progress", "queue_conflict", "approval_not_pending", "clarification_not_pending"].includes(failure.code)
+					? { state: "not_started", effects: "none" } : { state: "unknown", effects: "possible" },
+			}) : undefined;
+		const recoveryActions = errorContext ? resolveErrorRecovery(errorContext, {
+			ownershipCurrent: true, connected: true, activeOperation: this.#turnController.hasActiveTurn(),
+			effects: errorContext.outcome.effects === "none" ? "none" : "unknown", imageInput: "unknown",
+			availableActions: DIAGNOSTIC_RECOVERY_ACTION_IDS,
+		}).map((action) => action.id) : data.error_context_invalid === true ? [] : diagnostic.recoveryActions;
 		return {
 			code: failure.code,
-			message: failure.message,
-			data: {
-				...failure.data,
+			message: errorContext ? errorSummary(errorContext) : failure.message,
+			data: projectGatewayErrorData({
+				...data,
 				occurrence_id: occurrenceId,
-				category: diagnostic.category,
-				...(diagnostic.recoveryActions.length > 0
-					? { recovery_actions: diagnostic.recoveryActions }
+				category: errorContext ? errorDefinition(errorContext.reason).category : diagnostic.category,
+				...(errorContext ? { error_context: errorContext } : {}),
+				...(this.#errorContextVersion === 1 || recoveryActions.length > 0
+					? { recovery_actions: recoveryActions }
 					: {}),
-			},
+			}, this.#errorContextVersion === 1 ? "read" : "legacy") as JsonObject,
 		};
 	}
 
@@ -376,9 +421,12 @@ class InProcessNodeGateway implements NodeGateway {
 		if (failure.code === "auth_required") return;
 		const data = failure.data ?? {};
 		this.#emitRuntime("gateway.error", {
-			code: failure.code === "persistence_error" ? "internal_error" : failure.code,
+			code: isGatewayErrorCode(failure.code) ? failure.code : "internal_error",
 			message: failure.message,
 			method: request.method,
+			...(typeof data.additional_details === "string" ? { additional_details: data.additional_details } : {}),
+			...(data.error_context ? { error_context: data.error_context } : {}),
+			...(data.error_context_invalid === true ? { error_context_invalid: true } : {}),
 			...(typeof data.occurrence_id === "string"
 				? { occurrence_id: data.occurrence_id }
 				: {}),
@@ -397,8 +445,11 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#settingsController.authProviders(),
 			this.#settingsController.credentialReadiness(),
 		]);
+		this.#errorContextVersion = Array.isArray(params.supported_error_context_versions)
+			&& params.supported_error_context_versions.includes(1) ? 1 : undefined;
 		const payload: JsonObject = {
 			protocol_version: 1,
+			...(this.#errorContextVersion ? { error_context_version: this.#errorContextVersion } : {}),
 			session_id: this.#sessionController.sessionId(),
 			workspace: this.#sessionController.workspaceRoot(),
 			provider: this.#settingsController.provider,
@@ -422,13 +473,16 @@ class InProcessNodeGateway implements NodeGateway {
 			records: migration.records.map(legacyMigrationRecord),
 		};
 		const session = this.#options.sessionCoordinator?.snapshot();
-		if (reemitPendingState && session?.pendingApproval) {
+		const restorePendingState = reemitPendingState && !this.#interactiveController.reemitVisibleRequest();
+		if (restorePendingState && session?.pendingApproval
+			&& (!this.#turnController.hasActiveTurn()
+				|| session.binding.hasActiveApproval?.(session.pendingApproval.decisionId))) {
 			this.#emitRuntime(
 				"approval.request",
 				approvalRequestPayload(session.pendingApproval, session.generation),
 			);
 		}
-		if (reemitPendingState && session?.pendingClarification) {
+		if (restorePendingState && session?.pendingClarification) {
 			this.#emitRuntime(
 				"clarify.request",
 				clarificationRequestPayload(session.pendingClarification, session.generation),
@@ -438,6 +492,53 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #transcript(params: JsonObject): Promise<JsonObject> {
+		const sessionId = optionalString(params.session_id) ?? this.#sessionController.sessionId();
+		const attempts = this.#options.loadProviderAttempts && !optionalString(params.before)
+			? loadGatewayProviderAttempts(this.#options.loadProviderAttempts, { sessionId, limit: 200 })
+			: undefined;
+		let limit = transcriptPageLimit(params.limit);
+		for (;;) {
+			let result = {
+				...await this.#transcriptPage({ ...params, session_id: sessionId, limit }),
+				...(attempts ? { provider_attempts: attempts.records, provider_attempts_truncated: attempts.has_more,
+					provider_attempts_next_before: attempts.next_before_event_id } : {}),
+			};
+			if (this.#errorContextVersion === 1) result = await this.#refreshErrorRecovery(result, sessionId);
+			if (Buffer.byteLength(JSON.stringify(result), "utf8") <= TRANSCRIPT_PAGE_MAX_BYTES) return result;
+			if (limit === 1) {
+				throw new GatewayFailure("gateway_message_too_large", "Transcript item exceeds the gateway page budget.");
+			}
+			// Reload with the same cursor so storage owns the shortened page's continuation.
+			limit = Math.max(1, Math.floor(limit / 2));
+		}
+	}
+
+	async #refreshErrorRecovery<Result extends JsonObject>(result: Result, sessionId: string): Promise<Result> {
+		if (!Array.isArray(result.items)) return result;
+		const items = result.items;
+		const contexts = items.map((item) => isObject(item) && isObject(item.metadata) ? readErrorContext(item.metadata.error_context) : undefined);
+		let imageInput: "supported" | "unsupported" | "unknown" = "unknown";
+		if (contexts.some((context) => context?.reason === "capability.image_input_unsupported")) {
+			try {
+				const models = await this.#settingsController.models(this.#settingsController.provider);
+				const selected = models.find((model) => model.current === true && model.model === this.#settingsController.model);
+				imageInput = selected?.supports_images === true ? "supported" : selected?.supports_images === false ? "unsupported" : "unknown";
+			} catch { /* History remains readable when the model catalog is unavailable. */ }
+		}
+		return { ...result, items: items.map((item, index) => {
+			const context = contexts[index];
+			if (!isObject(item) || !isObject(item.metadata) || !context) return item;
+			const actions = resolveErrorRecovery(context, {
+				ownershipCurrent: sessionId === this.#sessionController.sessionId(), connected: true,
+				activeOperation: this.#turnController.hasActiveTurn(),
+				effects: context.scope.kind === "provider_attempt" || context.outcome.effects !== "none" ? "unknown" : "none",
+				imageInput, availableActions: DIAGNOSTIC_RECOVERY_ACTION_IDS,
+			});
+			return { ...item, metadata: { ...item.metadata, recovery_actions: actions.map((action) => action.id) } };
+		}) };
+	}
+
+	async #transcriptPage(params: JsonObject): Promise<JsonObject> {
 		const sessionId = optionalString(params.session_id) ?? this.#sessionController.sessionId();
 		const before = optionalString(params.before);
 		const limit = transcriptPageLimit(params.limit);
@@ -526,15 +627,15 @@ class InProcessNodeGateway implements NodeGateway {
 			folded: false,
 			metadata: {},
 		}));
-		return { session_id: sessionId, items, next_before: null };
+		return paginatedTranscript(sessionId, items, params);
 	}
 
 	#commandList(params: JsonObject): JsonObject {
 		const surface = slashCommandSurface(params.surface);
-		const builtInNames = builtinCommandNames();
+		const builtInNames = builtinCommandRoutingNames();
 		const integrationCommands = (this.#options.integrations?.commands?.list() ?? [])
-			.filter((command) =>
-				typeof command.name === "string" && !builtInNames.has(command.name.trim()));
+			.filter(({ name }) => typeof name === "string"
+				&& ![...builtInNames].some((reserved) => slashCommandArguments(name, reserved) !== null));
 		const commands = [
 			...commandDiscoveryManifest(surface).map((command) => {
 				const unavailableReason = this.#commandUnavailableReason(command.id);
@@ -549,7 +650,7 @@ class InProcessNodeGateway implements NodeGateway {
 		return {
 			commands,
 			routing_names: [
-				...builtinCommandNames(),
+				...builtInNames,
 				...integrationCommands.flatMap((command) =>
 					typeof command.name === "string" ? [command.name.trim()] : []),
 			],
@@ -570,7 +671,7 @@ class InProcessNodeGateway implements NodeGateway {
 		if (["changes", "undo"].includes(id) && !this.#options.fileHistoryCommands) {
 			return "File history is unavailable";
 		}
-		if (["ps", "stop"].includes(id) && !this.#options.shellManager) {
+		if (id === "ps" && !this.#options.shellManager) {
 			return "Background terminals are unavailable";
 		}
 		if (id === "resources" && !this.#options.integrations?.listResources) {
@@ -588,6 +689,7 @@ class InProcessNodeGateway implements NodeGateway {
 				if (
 					!isObject(value)
 					|| value.search_only === true
+					|| value.available === false
 					|| typeof value.name !== "string"
 					|| !value.name.startsWith(prefix)
 				) {
@@ -653,10 +755,10 @@ class InProcessNodeGateway implements NodeGateway {
 			if (invocation.args === "stop-all") {
 				return this.#shellController.stopAllCommandResult();
 			}
+			if (invocation.args) {
+				return errorCommandResult(invocation, "Unsupported terminals action", "/ps [stop-all]");
+			}
 			return this.#shellController.psCommandResult();
-		}
-		if (invocation.commandId === "stop") {
-			return this.#shellController.stopAllCommandResult();
 		}
 		const coreResult = await this.#coreCommand(invocation);
 		if (coreResult) return coreResult;
@@ -666,9 +768,12 @@ class InProcessNodeGateway implements NodeGateway {
 	async #coreCommand(invocation: ReturnType<typeof resolveSlashCommand>): Promise<JsonObject | undefined> {
 		if (invocation.commandId === "new") {
 			const created = await this.#sessionController.startNew();
-			return noticeCommandResult(invocation, "New session", `session=${created.session_id}`, {
-				extra: { mutated_session: true, session_id: created.session_id },
-			});
+			return {
+				...created,
+				...noticeCommandResult(invocation, "New session", `session=${created.session_id}`, {
+					extra: { mutated_session: true },
+				}),
+			};
 		}
 		if (invocation.commandId === "status") {
 			const status = this.#status();
@@ -755,10 +860,13 @@ class InProcessNodeGateway implements NodeGateway {
 			const tools = isObject(manifest) && Array.isArray(manifest.tools) ? manifest.tools : [];
 			const toolRows = tools.flatMap((value, index) => {
 				if (!isObject(value)) return [];
+				const availability = isObject(value.availability) ? value.availability : {};
 				return [{
-					key: `tool:${index}`,
+					key: String(value.id ?? `tool:${index}`),
 					label: String(value.name ?? value.id ?? "Tool"),
 					values: [String(value.source ?? "runtime"), String(value.toolset ?? "")].filter(Boolean),
+					...(typeof availability.status === "string" ? { status: availability.status } : {}),
+					...(typeof value.description === "string" ? { detail: value.description } : {}),
 				}];
 			});
 			if (!invocation.args || invocation.args === "list") {
@@ -778,11 +886,10 @@ class InProcessNodeGateway implements NodeGateway {
 				}));
 			}
 			if (invocation.args === "hooks") {
-				const diagnostics = integrationDiagnostics(this.#options.integrations);
-				const hooks = diagnostics.filter((value) =>
-					String(value.source ?? value.type ?? value.kind ?? "").toLocaleLowerCase().includes("hook"));
+				const resources = await this.#options.integrations?.listResources?.() ?? [];
+				const hooks = resources.filter((value) => value.type === "hook");
 				return listCommandResult(invocation, "Hooks", hooks.map((value, index) => ({
-					key: `hook:${index}`,
+					key: String(value.id ?? `hook:${index}`),
 					label: String(value.name ?? value.id ?? "Hook"),
 					values: [String(value.source ?? "runtime")],
 					status: String(value.status ?? "configured"),
@@ -816,8 +923,9 @@ class InProcessNodeGateway implements NodeGateway {
 					}));
 				return listCommandResult(invocation, "Plugins", [...resourceRows, ...commandRows]);
 			}
-			if (invocation.args.startsWith("plugins ")) {
-				const match = /^plugins\s+(\S+)\s+(\S+)(?:\s+([\s\S]*))?$/u.exec(invocation.args);
+			const pluginArguments = slashCommandArguments(invocation.args, "plugins");
+			if (pluginArguments) {
+				const match = /^(\S+)\s+(\S+)(?:\s+([\s\S]*))?$/u.exec(pluginArguments);
 				if (!match) {
 					return errorCommandResult(
 						invocation,
@@ -873,17 +981,13 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		if (invocation.commandId === "agents") {
 			const tasks = this.#options.backgroundTaskCommands;
-			const args = invocation.args === "agents"
-				? ""
-				: invocation.args.startsWith("agents ")
-					? invocation.args.slice("agents ".length).trim()
-					: invocation.args;
-			if (args.startsWith("kill ")) {
-				if (!tasks) throw new GatewayFailure("method_not_found", "Background task controls are unavailable.");
-				const childSessionId = args.slice("kill ".length).trim();
-				if (!childSessionId) {
+			const args = invocation.args;
+			const childSessionId = slashCommandArguments(args, "kill");
+			if (childSessionId !== null) {
+				if (!childSessionId || /\s/u.test(childSessionId)) {
 					return errorCommandResult(invocation, "Child session ID is required", "/agents kill <child-session-id>");
 				}
+				if (!tasks) throw new GatewayFailure("method_not_found", "Background task controls are unavailable.");
 				const interrupted = await tasks.interrupt(
 					this.#sessionController.sessionId(),
 					childSessionId,
@@ -895,14 +999,14 @@ class InProcessNodeGateway implements NodeGateway {
 					{ extra: { interrupted } },
 				);
 			}
-			if (args === "kill-all" || args === "kill-agents") {
+			if (args === "kill-all") {
 				if (!tasks) throw new GatewayFailure("method_not_found", "Background task controls are unavailable.");
 				const interrupted = await tasks.interruptAll(this.#sessionController.sessionId());
 				return noticeCommandResult(invocation, "Background agents", `interrupted=${interrupted}`, {
 					extra: { interrupted },
 				});
 			}
-			if (!args || !args.includes(" ")) {
+			if (!/\s/u.test(args)) {
 				const requested = args;
 				const records = tasks?.list(this.#sessionController.sessionId()) ?? [];
 				const selected = requested
@@ -1034,19 +1138,21 @@ class InProcessNodeGateway implements NodeGateway {
 				return errorCommandResult(invocation, "Unable to fork session");
 			}
 			const resumed = await this.#sessionController.resume({ session_id: result.targetSessionId });
-			return noticeCommandResult(
-				invocation,
-				"Session forked",
-				`forked=${result.sourceSessionId}->${result.targetSessionId}; fork_point=${result.forkPoint}; messages=${result.messageCount}`,
-				{
-					extra: {
-						mutated_session: true,
-						session_id: resumed.session_id,
-						fork_point: result.forkPoint,
-						message_count: result.messageCount,
+			return {
+				...resumed,
+				...noticeCommandResult(
+					invocation,
+					"Session forked",
+					`forked=${result.sourceSessionId}->${result.targetSessionId}; fork_point=${result.forkPoint}; messages=${result.messageCount}`,
+					{
+						extra: {
+							mutated_session: true,
+							fork_point: result.forkPoint,
+							message_count: result.messageCount,
+						},
 					},
-				},
-			);
+				),
+			};
 		}
 		if (invocation.commandId === "session_search") {
 			if (!invocation.args) {
@@ -1302,10 +1408,18 @@ class InProcessNodeGateway implements NodeGateway {
 		if (invocation.commandId === "compact") {
 			const compact = this.#sessionController.runtime().compact;
 			if (!compact) throw new GatewayFailure("method_not_found", "Manual compaction is unavailable.");
-			const result = await compact({
-				modelOverride: this.#settingsController.model,
-				signal: new AbortController().signal,
-			});
+			if (this.#closed) throw new GatewayFailure("gateway_closed", "Gateway is closed.");
+			const controller = new AbortController();
+			const operation = { controller, task: Promise.resolve().then(() => compact({
+				modelOverride: this.#settingsController.model, signal: controller.signal,
+			})) };
+			this.#manualCompaction = operation;
+			let result: NodeGatewayCompactionResult;
+			try {
+				result = await operation.task;
+			} finally {
+				if (this.#manualCompaction === operation) this.#manualCompaction = null;
+			}
 			const presentation = compactionCommandPresentation(result);
 			return noticeCommandResult(
 				invocation,
@@ -1317,6 +1431,8 @@ class InProcessNodeGateway implements NodeGateway {
 						command_kind: "compact",
 						compaction_status: result.status,
 						tokens: { before: result.beforeTokens, after: result.afterTokens },
+						...(result.failure ? { failure: result.failure } : {}),
+						...(result.usage ? { usage: result.usage } : {}),
 					},
 				},
 			);
@@ -1326,9 +1442,12 @@ class InProcessNodeGateway implements NodeGateway {
 				return errorCommandResult(invocation, "Session ID is required", "/resume [session-id]");
 			}
 			const resumed = await this.#sessionController.resume({ session_id: invocation.args });
-			return noticeCommandResult(invocation, "Session resumed", `session=${resumed.session_id}`, {
-				extra: { mutated_session: true, session_id: resumed.session_id },
-			});
+			return {
+				...resumed,
+				...noticeCommandResult(invocation, "Session resumed", `session=${resumed.session_id}`, {
+					extra: { mutated_session: true },
+				}),
+			};
 		}
 		if (invocation.commandId === "quit") {
 			return noticeCommandResult(invocation, "Exit", "Bye.", {
@@ -1472,7 +1591,9 @@ function compactionCommandPresentation(
 		case "failed":
 			return {
 				title: "Compaction failed",
-				summary: `Compaction failed. Context remains at ${result.beforeTokens} tokens.`,
+				summary: result.failure
+					? [result.failure.message, result.failure.additionalDetails].filter(Boolean).join("\n")
+					: `Compaction failed. Context remains at ${result.beforeTokens} tokens.`,
 				severity: "error",
 			};
 		case "interrupted":
@@ -1484,30 +1605,11 @@ function compactionCommandPresentation(
 	}
 }
 
-function cachedUpdateStatusPayload(status: CachedUpdateStatus): JsonObject {
-	return {
-		schema_version: status.schemaVersion,
-		package_name: status.packageName,
-		current_version: status.currentVersion,
-		check_on_startup: status.checkOnStartup,
-		availability: status.availability,
-		cache_state: status.cacheState,
-		install: {
-			method: status.install.method,
-			command: status.install.command,
-			fallback: status.install.fallback,
-		},
-		...(status.latestVersion ? { latest_version: status.latestVersion } : {}),
-		...(status.lastCheckedAt ? { last_checked_at: status.lastCheckedAt } : {}),
-		...(status.dismissedVersion ? { dismissed_version: status.dismissedVersion } : {}),
-	};
-}
-
 export function createNodeGateway(options: CreateNodeGatewayOptions): NodeGateway {
 	return new InProcessNodeGateway(options);
 }
 
-function gatewayTranscriptItem(item: TranscriptItem): JsonObject {
+function gatewayTranscriptItem(item: TranscriptItem): GatewayTranscriptItem {
 	const type = {
 		user_message: "user",
 		assistant_message: "assistant_final",
@@ -1544,24 +1646,29 @@ function gatewayTranscriptItem(item: TranscriptItem): JsonObject {
 		if (item.call_id) metadata.call_id = item.call_id;
 		if (item.status) metadata.status = item.status;
 	}
-	return {
+	const projected: GatewayTranscriptItem = {
 		id: item.id,
+		...(item.turn_id ? { turn_id: item.turn_id } : {}),
 		type,
 		text: item.text ?? (item.type === "tool" ? item.tool_name ?? "Tool" : ""),
 		created_at: item.created_at ?? "",
 		folded: false,
 		metadata,
 	};
+	return item.type === "tool"
+		? { ...projected, tool_record: projectGatewayToolRecord({ text: projected.text, metadata }) }
+		: projected;
 }
 
-function gatewayTranscriptItems(item: TranscriptItem): readonly JsonObject[] {
+function gatewayTranscriptItems(item: TranscriptItem): readonly GatewayTranscriptItem[] {
 	const projected = gatewayTranscriptItem(item);
 	if (item.type !== "assistant_message") return [projected];
 	const proposedPlan = extractProposedPlan(item.text ?? "");
 	if (!proposedPlan) return [projected];
 
-	const plan: JsonObject = {
+	const plan: GatewayTranscriptItem = {
 		id: `${item.id}:proposed-plan`,
+		...(item.turn_id ? { turn_id: item.turn_id } : {}),
 		type: "proposed_plan",
 		text: proposedPlan.planText,
 		created_at: item.created_at ?? "",
@@ -1578,10 +1685,10 @@ function gatewayTranscriptItems(item: TranscriptItem): readonly JsonObject[] {
 
 function paginatedTranscript(
 	sessionId: string,
-	projected: readonly JsonObject[],
+	projected: readonly GatewayTranscriptItem[],
 	params: JsonObject,
 	readOnly = false,
-): JsonObject {
+): GatewayResult<"transcript.load"> {
 	const before = optionalString(params.before);
 	const beforeIndex = before
 		? projected.findIndex((item) => item.id === before)
@@ -1636,14 +1743,6 @@ function integrationToolManifest(
 	return typeof integrations?.toolManifest === "function"
 		? integrations.toolManifest()
 		: integrations?.toolManifest;
-}
-
-function integrationDiagnostics(
-	integrations: NodeGatewayIntegrations | undefined,
-): readonly JsonObject[] {
-	return typeof integrations?.diagnostics === "function"
-		? integrations.diagnostics()
-		: integrations?.diagnostics ?? [];
 }
 
 function boundedResource(value: JsonObject): JsonObject {
@@ -1747,13 +1846,6 @@ function boundedRequiredValue(value: unknown, limit: number): string | undefined
 
 function boundedOptionalValue(value: unknown, limit: number): string | undefined {
 	return boundedRequiredValue(value, limit);
-}
-
-function requiredString(value: unknown, name: string): string {
-	if (typeof value !== "string" || value.trim() === "") {
-		throw new GatewayFailure("invalid_params", `${name} is required.`);
-	}
-	return value;
 }
 
 function slashCommandSurface(value: unknown): SlashCommandSurface {

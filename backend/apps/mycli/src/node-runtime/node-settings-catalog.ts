@@ -7,9 +7,9 @@ import { TUI_KEYMAP_ACTIONS } from "@mycli/contracts";
 
 type JsonObject = Record<string, unknown>;
 
-export const SETTINGS_CATALOG_VERSION = 1 as const;
+const SETTINGS_CATALOG_VERSION = 1 as const;
 
-export type SettingsCategoryId =
+type SettingsCategoryId =
 	| "appearance"
 	| "diagnostics"
 	| "integrations"
@@ -18,7 +18,7 @@ export type SettingsCategoryId =
 	| "providers"
 	| "sessions";
 
-export interface BuildNodeSettingsCatalogInput {
+interface BuildNodeSettingsCatalogInput {
 	readonly settings: Readonly<JsonObject>;
 	readonly sources?: Readonly<Record<string, ShellSettingSource>>;
 	readonly keymap?: Readonly<JsonObject>;

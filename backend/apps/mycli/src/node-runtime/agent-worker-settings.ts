@@ -1,4 +1,4 @@
-export interface AgentWorkerSettings {
+interface AgentWorkerSettings {
 	readonly maxWorkers: number;
 	readonly idleTimeoutMs: number;
 }

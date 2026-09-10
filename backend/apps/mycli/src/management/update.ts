@@ -6,9 +6,9 @@ import {
 } from "@mycli/config";
 import type { ManagementResponse } from "./types.ts";
 
-export const UPDATE_MANAGEMENT_RESPONSE_VERSION = 1 as const;
+const UPDATE_MANAGEMENT_RESPONSE_VERSION = 1 as const;
 
-export type UpdateManagementAction = "check" | "dismiss" | "status";
+type UpdateManagementAction = "check" | "dismiss" | "status";
 
 export interface UpdateManagementResponse extends ManagementResponse {
 	readonly version: typeof UPDATE_MANAGEMENT_RESPONSE_VERSION;
@@ -18,7 +18,7 @@ export interface UpdateManagementResponse extends ManagementResponse {
 	readonly refreshOutcome?: UpdateRefreshOutcome;
 }
 
-export interface UpdateManagementServiceOptions {
+interface UpdateManagementServiceOptions {
 	readonly cache: CachedUpdateService;
 	readonly checkOnStartup: () => boolean | Promise<boolean>;
 }

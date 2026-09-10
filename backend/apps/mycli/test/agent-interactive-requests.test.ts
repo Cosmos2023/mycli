@@ -100,6 +100,43 @@ test("child approval preserves proposed file mutation details", () => {
 	controller.abort();
 });
 
+test("child live approvals advance while its initial execution remains active", async () => {
+	const broker = new AgentInteractiveRequestBroker();
+	const decisions: string[] = [];
+	const lifecycle: string[] = [];
+	const notifications: string[] = [];
+	broker.subscribe((notification) => { notifications.push(notification.method); });
+	const interactive = broker.openTurn({
+		sessionId: "child-live", agentPath: "/root/live", workerName: "live",
+		runtime: {
+			hasActiveApproval: (id) => !decisions.includes(id),
+			respondActiveApproval: ({ decisionId }) => {
+				decisions.push(decisionId);
+				if (decisionId === "decision-1") queueMicrotask(() => {
+					interactive.onRuntimeEvent(approvalRequest("decision-2", "child-live-turn"));
+				});
+			},
+			resolveApproval: async () => { assert.fail("must keep the initial execution active"); },
+			resolveClarification: async () => turn("completed", "child-live"),
+		},
+		signal: new AbortController().signal, emitRuntime: () => undefined,
+		emitLifecycle: (event) => { lifecycle.push(event.type); },
+	});
+	interactive.onRuntimeEvent(approvalRequest("decision-1", "child-live-turn"));
+	for (const decisionId of ["decision-1", "decision-2"]) {
+		assert.equal(broker.pending()[0]?.requestId, decisionId);
+		assert.equal(broker.respondApproval({
+			session_id: "child-live", generation: 1, decision_id: decisionId, choice: "approve_once",
+		})?.accepted, true);
+		await Promise.resolve();
+	}
+	assert.deepEqual(broker.pending(), []);
+	assert.deepEqual(decisions, ["decision-1", "decision-2"]);
+	assert.deepEqual(lifecycle, ["waiting", "resumed", "waiting", "resumed"]);
+	assert.deepEqual(notifications, ["approval.request", "approval.respond", "approval.request", "approval.respond"]);
+	assert.equal((await interactive.waitForTerminal(turn("completed", "child-live"))).status, "completed");
+});
+
 test("child approval may resolve before the initial suspended submit returns", async () => {
 	const broker = new AgentInteractiveRequestBroker();
 	const resume = deferred<RuntimeTurnRecord>();

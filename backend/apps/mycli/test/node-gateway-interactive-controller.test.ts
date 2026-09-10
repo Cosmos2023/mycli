@@ -98,6 +98,32 @@ test("interactive controller publishes visible cancellation before presenting th
 	assert.equal(controller.hasPending(), true);
 });
 
+test("bootstrap re-emits only the current interactive request without requeuing resolved decisions", () => {
+	const events: PublishedEvent[] = [];
+	const controller = new NodeGatewayInteractiveController({
+		publish: (method, params, ownership) => { events.push({ method, params, ownership }); },
+	});
+	const ownership = Object.freeze({ sessionId: "root", generation: 2 });
+	const approval = { session_id: "child", decision_id: "decision", preview: "Action", options: [] };
+	const clarification = { session_id: "root", request_id: "question", question: "Continue?" };
+	assert.equal(controller.reemitVisibleRequest(), false);
+	controller.emit("approval.request", approval, ownership);
+	controller.emit("clarify.request", clarification, ownership);
+	controller.emit("approval.request", approval, ownership);
+	assert.equal(events.length, 1);
+	assert.equal(controller.reemitVisibleRequest(), true);
+	assert.deepEqual(events[1], events[0]);
+	controller.emit("approval.respond", { session_id: "child", decision_id: "decision", choice: "approve_once" }, ownership);
+	assert.equal(controller.reemitVisibleRequest(), true);
+	assert.deepEqual(events.map((event) => event.method), [
+		"approval.request", "approval.request", "approval.respond", "clarify.request", "clarify.request",
+	]);
+	controller.cancel({ session_id: "root", request_id: "question" });
+	assert.equal(controller.reemitVisibleRequest(), false);
+	assert.equal(events.at(-1)?.method, "interactive.cancelled");
+	assert.equal(controller.hasPending(), false);
+});
+
 test("interactive controller removes an unseen cancellation without publishing it", () => {
 	const events: PublishedEvent[] = [];
 	const controller = new NodeGatewayInteractiveController({

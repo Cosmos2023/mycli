@@ -9,6 +9,10 @@ import type {
 import type { PermissionProfile } from "@mycli/tools";
 import { GatewayFailure, gatewayFailure } from "./node-gateway-errors.ts";
 import {
+	optionalBoundedIdentity,
+	requiredBoundedString as requiredString,
+} from "./node-gateway-validation.ts";
+import {
 	approvalRequestPayload,
 	clarificationRequestPayload,
 } from "./node-gateway-interactive-controller.ts";
@@ -42,7 +46,7 @@ type SessionAdmissionState =
 	| { readonly kind: "transitioning"; readonly claim: SessionAdmissionClaim }
 	| { readonly kind: "controlling"; readonly claim: SessionAdmissionClaim };
 
-export interface NodeGatewaySessionControllerOptions {
+interface NodeGatewaySessionControllerOptions {
 	readonly initialSessionId: string;
 	readonly initialWorkspaceRoot: string;
 	readonly initialRuntime: NodeGatewayRuntime;
@@ -543,23 +547,8 @@ function positiveInteger(value: unknown): number | undefined {
 		: undefined;
 }
 
-function requiredString(value: unknown, name: string): string {
-	if (typeof value !== "string" || !value || value.length > 4096 || value.includes("\0")) {
-		throw new GatewayFailure("invalid_params", `${name} must be a non-empty string.`);
-	}
-	return value;
-}
-
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined;
-}
-
-function optionalBoundedIdentity(value: unknown, name: string): string | undefined {
-	if (value === undefined || value === null || value === "") return undefined;
-	if (typeof value !== "string" || value.length > 512 || value.includes("\0")) {
-		throw new GatewayFailure("invalid_params", `${name} must be a bounded string.`);
-	}
-	return value;
 }
 
 function collaborationModeParameter(value: unknown): "default" | "plan" | undefined {

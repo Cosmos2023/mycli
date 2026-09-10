@@ -10,6 +10,20 @@
     "mycli": "dist/cli.js"
   },
   "types": "./dist/cli.d.ts",
+  "exports": {
+    "./backend": {
+      "mycli-source": "./src/backend.ts",
+      "types": "./dist/backend.d.ts",
+      "import": "./dist/backend.js"
+    },
+    "./gateway": {
+      "mycli-source": "./src/gateway.ts",
+      "types": "./dist/gateway.d.ts",
+      "import": "./dist/gateway.js"
+    },
+    "./package.json": "./package.json",
+    "./dist/*": "./dist/*"
+  },
   "files": ["dist"],
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -33,12 +47,16 @@
     "cli-highlight": "2.1.11",
     "csv-parse": "^6.1.0",
     "diff": "^9.0.0",
+    "eventsource-parser": "3.1.0",
     "get-east-asian-width": "1.6.0",
 		"js-tiktoken": "^1.0.21",
+		"linebreak": "1.1.0",
 		"marked": "15.0.12",
 		"node-pty": "1.2.0-beta.15",
 		"parse-diff": "0.12.0",
     "parse5": "^7.3.0",
+    "sharp": "^0.35.4",
+    "shell-quote": "1.10.0",
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "yaml": "^2.9.0"

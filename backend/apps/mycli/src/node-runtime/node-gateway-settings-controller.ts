@@ -23,6 +23,10 @@ import {
 } from "./node-slash-command-results.ts";
 import type { ResolvedSlashCommand } from "./node-slash-command-registry.ts";
 import { GatewayFailure } from "./node-gateway-errors.ts";
+import {
+	optionalBoundedIdentity,
+	requiredBoundedString as requiredString,
+} from "./node-gateway-validation.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
 import type {
 	CreateNodeGatewayOptions,
@@ -41,7 +45,7 @@ interface SettingsSnapshot {
 	readonly terminalCapabilities: JsonObject;
 }
 
-export interface NodeGatewaySettingsControllerOptions {
+interface NodeGatewaySettingsControllerOptions {
 	readonly provider: string;
 	readonly model: string;
 	readonly reasoningEffort?: ReasoningEffort;
@@ -157,6 +161,7 @@ export class NodeGatewaySettingsController {
 			const readiness = await this.credentialReadiness();
 			return {
 				...saved,
+				auth_providers: await this.authProviders(),
 				...(readiness ? { auth_status: credentialReadinessPayload(readiness) } : {}),
 			};
 		} finally {
@@ -198,6 +203,7 @@ export class NodeGatewaySettingsController {
 			const authStatus = await this.credentialReadiness();
 			return {
 				selected,
+				auth_providers: await this.authProviders(),
 				provider: selectedProvider,
 				scope,
 				status,
@@ -576,7 +582,7 @@ export function sandboxForPermission(
 			: "danger-full-access";
 }
 
-function cachedUpdateStatusPayload(status: CachedUpdateStatus): JsonObject {
+export function cachedUpdateStatusPayload(status: CachedUpdateStatus): JsonObject {
 	return {
 		schema_version: status.schemaVersion,
 		package_name: status.packageName,
@@ -849,21 +855,6 @@ function permissionForSandbox(
 		: value === "workspace-write"
 			? "workspace"
 			: "full-access";
-}
-
-function requiredString(value: unknown, name: string): string {
-	if (typeof value !== "string" || !value || value.length > 4096 || value.includes("\0")) {
-		throw new GatewayFailure("invalid_params", `${name} must be a non-empty string.`);
-	}
-	return value;
-}
-
-function optionalBoundedIdentity(value: unknown, name: string): string | undefined {
-	if (value === undefined || value === null || value === "") return undefined;
-	if (typeof value !== "string" || value.length > 512 || value.includes("\0")) {
-		throw new GatewayFailure("invalid_params", `${name} must be a bounded string.`);
-	}
-	return value;
 }
 
 function isObject(value: unknown): value is JsonObject {

@@ -16,6 +16,8 @@ import {
 	SCHEMA_V10_VERSION,
 	SCHEMA_V11_VERSION,
 	SCHEMA_V12_VERSION,
+	SCHEMA_V13_VERSION,
+	SCHEMA_V14_VERSION,
 	SCHEMA_VERSION,
 	V10_CONTENT_BLOB_MIGRATION_STAGING_COLUMNS,
 	V10_CONTENT_BLOB_MIGRATION_STAGING_TABLES,
@@ -33,7 +35,7 @@ import type {
 import { scanDoctorFiles } from "./redaction.ts";
 import type { DoctorCheck } from "./types.ts";
 
-export interface StorageDoctorOptions {
+interface StorageDoctorOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 }
@@ -112,6 +114,15 @@ const V11_REQUIRED_SCHEMA_OBJECTS = Object.freeze(new Map<string, string>([
 	["idx_model_input_blob_refs_content", "index"],
 ]));
 const V12_REQUIRED_SCHEMA_OBJECTS = V11_REQUIRED_SCHEMA_OBJECTS;
+const V13_REQUIRED_SCHEMA_OBJECTS = Object.freeze(new Map<string, string>([
+	...V12_REQUIRED_SCHEMA_OBJECTS,
+	["provider_retry_chains", "table"],
+	["provider_attempt_events", "table"],
+	["provider_retry_chains_no_update", "trigger"],
+	["provider_retry_chains_no_delete", "trigger"],
+	["provider_attempt_events_no_update", "trigger"],
+	["provider_attempt_events_no_delete", "trigger"],
+]));
 const V10_REMOVED_LEGACY_OBJECTS = Object.freeze([
 	"conversation_messages",
 	"conversation_messages_fts",
@@ -245,8 +256,9 @@ function inspectModelInputLedger(database: DatabaseSyncType): LedgerInspection {
 		if (count > 0) issues.set(code, (issues.get(code) ?? 0) + count);
 	};
 	const version = Number(database.prepare("SELECT version FROM schema_version").get()?.version);
-	const blobBacked = version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION;
-	const hashOnlyRequests = version === SCHEMA_V12_VERSION;
+	const blobBacked = version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION
+		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION;
+	const hashOnlyRequests = version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION;
 	const blobRows = rows(database, blobBacked ? `
 		SELECT owner.blob_id, owner.payload_json, reference.content_blob_id,
 		       content.codec, content.raw_bytes, content.stored_bytes, content.payload_blob
@@ -572,12 +584,13 @@ async function checkSessionsDatabase(path: string): Promise<DoctorCheck> {
 			? versions[0].version
 			: undefined;
 		if (version !== SCHEMA_VERSION && version !== SCHEMA_V10_VERSION
-			&& version !== SCHEMA_V11_VERSION && version !== SCHEMA_V12_VERSION) {
+			&& version !== SCHEMA_V11_VERSION && version !== SCHEMA_V12_VERSION
+			&& version !== SCHEMA_V13_VERSION && version !== SCHEMA_V14_VERSION) {
 			return check(
 				"sessions_db",
 				"failed",
 				`schema_version expected=${SCHEMA_VERSION}|${SCHEMA_V10_VERSION}|${
-					SCHEMA_V11_VERSION}|${SCHEMA_V12_VERSION
+					SCHEMA_V11_VERSION}|${SCHEMA_V12_VERSION}|${SCHEMA_V13_VERSION}|${SCHEMA_V14_VERSION
 				} actual=${
 					version ?? "invalid"
 				}`,
@@ -589,7 +602,7 @@ async function checkSessionsDatabase(path: string): Promise<DoctorCheck> {
 				? V10_REQUIRED_SCHEMA_OBJECTS
 				: version === SCHEMA_V11_VERSION
 					? V11_REQUIRED_SCHEMA_OBJECTS
-					: V12_REQUIRED_SCHEMA_OBJECTS;
+					: version === SCHEMA_V12_VERSION ? V12_REQUIRED_SCHEMA_OBJECTS : V13_REQUIRED_SCHEMA_OBJECTS;
 		const missing = missingSchemaObjects(present, versionObjects);
 		if (missing.length > 0) {
 			return missingSchemaCheck(missing);
@@ -886,9 +899,9 @@ function inspectV10SessionsDatabase(
 function inspectBlobBackedSessionsDatabase(
 	database: DatabaseSyncType,
 	present: ReadonlyMap<string, string>,
-	version: typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION,
+	version: typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION,
 ): DoctorCheck {
-	if (version === SCHEMA_V12_VERSION) {
+	if (version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION) {
 		const columns = new Set(rows(database, "PRAGMA table_info(provider_request_manifests)")
 			.flatMap((row) => typeof row.name === "string" ? [row.name] : []));
 		if (columns.has("logical_request_blob_id") || !columns.has("logical_request_sha256")) {
