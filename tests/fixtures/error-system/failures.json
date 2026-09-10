@@ -1,0 +1,84 @@
+[
+  {
+    "name": "text-only-model-tool-image",
+    "code": "unsupported_capability",
+    "context": {
+      "version": 1,
+      "id": "error:image-tool",
+      "reason": "capability.image_input_unsupported",
+      "source": "tool",
+      "scope": { "kind": "tool_call", "id": "call:image" },
+      "outcome": { "state": "not_started", "effects": "none" },
+      "details": { "model": "deepseek-v4-flash", "input_origin": "tool" }
+    },
+    "summary": "The selected model cannot read images.",
+    "recovery": ["select_compatible_model"]
+  },
+  {
+    "name": "unknown-shell-effect",
+    "code": "interrupted",
+    "context": {
+      "version": 1,
+      "id": "error:shell-unknown",
+      "reason": "runtime.effect_outcome_unknown",
+      "source": "runtime",
+      "scope": { "kind": "tool_call", "id": "call:shell" },
+      "outcome": { "state": "unknown", "effects": "possible" }
+    },
+    "summary": "The operation's execution outcome is unknown.",
+    "recovery": ["inspect_execution"]
+  },
+  {
+    "name": "retry-exhaustion-keeps-timeout",
+    "code": "retry_exhausted",
+    "context": {
+      "version": 1,
+      "id": "error:retry-exhausted",
+      "reason": "runtime.retry_exhausted",
+      "source": "runtime",
+      "scope": { "kind": "turn", "id": "turn:retry" },
+      "outcome": { "state": "failed", "effects": "none" },
+      "causes": [
+        {
+          "id": "error:timeout",
+          "reason": "transport.timed_out",
+          "source": "provider",
+          "scope": { "kind": "provider_attempt", "id": "attempt:last" },
+          "outcome": { "state": "unknown", "effects": "none" },
+          "details": { "transport_code": "ETIMEDOUT", "phase": "connect" }
+        }
+      ]
+    },
+    "summary": "The provider retry budget was exhausted: The connection timed out.",
+    "recovery": []
+  },
+  {
+    "name": "gateway-admission-rejected",
+    "code": "gateway_overloaded",
+    "context": {
+      "version": 1,
+      "id": "error:admission",
+      "reason": "gateway.admission_rejected",
+      "source": "gateway",
+      "scope": { "kind": "request", "id": "request:submit" },
+      "outcome": { "state": "not_started", "effects": "none" },
+      "details": { "method": "turn.submit" }
+    },
+    "summary": "The runtime could not accept this request yet.",
+    "recovery": ["wait_and_retry"]
+  },
+  {
+    "name": "gateway-delivery-capacity-exceeded",
+    "code": "gateway_overloaded",
+    "context": {
+      "version": 1,
+      "id": "error:output",
+      "reason": "gateway.output_capacity_exceeded",
+      "source": "gateway",
+      "scope": { "kind": "connection", "id": "connection:runtime" },
+      "outcome": { "state": "unknown", "effects": "possible" }
+    },
+    "summary": "Runtime output exceeded the delivery capacity.",
+    "recovery": ["inspect_execution", "run_doctor"]
+  }
+]

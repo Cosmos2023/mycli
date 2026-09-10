@@ -2,8 +2,9 @@
 
 mycli uses the provider and model directory from the exact `@earendil-works/pi-ai` version pinned in
 both workspace manifests. Dependabot checks for a newer release every day and updates the manifests
-and root lockfile through a tested pull request. Stable product routes are active by default. Other
-catalog routes remain dormant until they are explicitly declared, so upgrading pi-ai never silently
+and root lockfile through a tested pull request. Stable product routes and the three Qwen Token Plan
+catalog routes below are active by default. Other catalog routes remain dormant until they are
+explicitly declared, so upgrading pi-ai never silently
 activates a new network destination. New models on an already active catalog route become available
 after the dependency update passes. Credentials remain owned by mycli through `MYCLI_API_KEY` or the
 private `~/.mycli/auth.json` store; pi-ai ambient credentials and OAuth are not used.
@@ -11,7 +12,7 @@ private `~/.mycli/auth.json` store; pi-ai ambient credentials and OAuth are not 
 The three route tiers are:
 
 - `stable`: product-supported routes with backward-compatible defaults.
-- `experimental`: explicitly activated pi-ai catalog routes. Catalog metadata is authoritative,
+- `experimental`: pi-ai catalog routes enabled by the product or a user declaration. Catalog metadata is authoritative,
   but live service support is not claimed without recorded verification.
 - `compatible`: explicitly declared routes whose endpoint or model is not supplied by pi-ai.
 
@@ -35,8 +36,7 @@ reasoning disabled.
 
 All six profiles support the deterministic baseline of streamed text, tools, usage, canonical
 provider state, replay validation, and mycli-owned retries. Pi-ai receives `maxRetries: 0`; the
-runtime's `request.request_max_retries` and `request.stream_max_retries` remain the only retry
-budgets visible to users.
+runtime owns the global and per-provider request/stream retry budgets.
 
 Known models use pi-ai's pinned role, token-field, strict-tool, cache, storage, reasoning, and input
 metadata. Mycli does not duplicate those wire facts in provider profiles. An uncatalogued model needs
@@ -48,6 +48,47 @@ Request caching is expressed once as `request.cache_retention = "none" | "short"
 `short` as the default. Mycli passes that preference and the stable session id to pi-ai. Pi-ai maps
 them to provider-specific fields, and the provider decides whether a cache entry is stored or hit.
 The setting is therefore not a cache-hit guarantee.
+
+## Retry Budgets
+
+Global defaults remain four request retries and five stream retries. Each provider route can
+override either budget independently in `config.toml`:
+
+```toml
+[request]
+request_max_retries = 4
+stream_max_retries = 5
+
+[request.request_max_retries_by_provider]
+openai = 2
+private-relay = 0
+
+[request.stream_max_retries_by_provider]
+openai = 3
+private-relay = 0
+```
+
+Keys identify mycli provider routes, including declared routes, rather than model names or upstream
+catalog identities. Each table accepts at most 128 routes with integer values from 0 to 100. An
+omitted route uses its corresponding resolved global setting, including environment overrides.
+The highest-priority file layer containing a table replaces that whole table; an empty table
+clears lower-layer overrides. Project tables participate only for trusted workspaces. `config show`
+and `config get` expose these tables and their source; structured tables are not writable through
+`config set` or `config unset`.
+
+The effective budgets are copied at provider-step dispatch with the committed request identity.
+Changing configuration during backoff cannot affect that step. Request and stream counters persist
+across all attempts in the step, so at most `1 + request retries + stream retries` dispatches are
+possible. Before output, eligible request failures use the request budget first; eligible failures
+can then consume the stream budget. Stream recovery discards incomplete output. Both budgets set
+to zero disable retries. Authentication, permission, quota, invalid requests, and context overflow
+remain fatal to this retry loop regardless of the configured budget.
+
+Retry-After changes only the cancellable delay, capped at one hour, and never adds budget. Without
+Retry-After, the existing jittered exponential backoff grows from 200 ms to a 4-second base delay.
+Cancellation during backoff stops recovery before another request. Context compaction is a separate
+recovery action that explicitly commits a new logical request and starts its own budgets; ordinary
+retries keep the same provider, model, and request and never replay committed tools.
 
 ## Setup And Credentials
 
@@ -96,6 +137,30 @@ one activated route the provider list is skipped.
 model with the same name. Use `[`/`]` or the searchable provider list to switch routes. A model
 selection is validated by route, protocol, model id, and normalized endpoint before session or user
 defaults are changed.
+
+### Pi-AI Qwen Catalogs
+
+These pi-ai Qwen routes are available in `/model` without a `models.json` declaration:
+
+| Provider | Route ID | Models in pi-ai 0.84.4 |
+| --- | --- | --- |
+| Qwen Token Plan | `qwen-token-plan` | 18 |
+| Qwen Token Plan CN | `qwen-token-plan-cn` | 18 |
+| Qwen Token Plan Individual | `qwen-token-plan-individual` | 8 |
+
+Open `/model`, use Esc to open the provider list, and choose the appropriate Qwen Token Plan route.
+The first selection opens login when its API key is missing. The full matching-protocol pi-ai
+catalog supplies the model IDs, reasoning levels, image support, token limits, and endpoint.
+These routes retain the `experimental` support tier; enabling the directory does not assert live
+account access to every catalog model.
+
+Each route defaults to its own credential reference. Existing v2 declarations can override that
+reference, endpoint, or model metadata; only `model_policy: "subset"` restricts the catalog.
+Directory loading does not write `models.json`. New models follow pi-ai dependency updates.
+
+The existing `qwen` route remains ordinary DashScope, with its original endpoint, credentials, and
+fallback models. Token Plan routes use the SDK's separate endpoints and do not reuse ordinary
+DashScope credentials automatically.
 
 ## Experimental Catalog Routes
 
@@ -233,6 +298,13 @@ Mycli still owns API-key lookup, base URL routing, model selection, session stat
 retries. Pi-ai owns developer/system role selection, cache and storage fields, reasoning dialect,
 output-token field names, strict-tool behavior, and session-affinity headers. The only request-body
 hook mycli retains is insertion of the native `web_search` tool for live Responses search.
+
+Native searches appear in the TUI as `Searching the web` while running and
+`Searched the web for ...` when complete. Mycli observes these activities alongside pi-ai's
+assistant events; they are not local function calls. Completed searches from successful provider
+steps are saved with session history. Multiple queries retain their bounded metadata while the
+compact row displays the first query followed by an ellipsis. Failed-attempt searches are removed
+when the provider retries.
 
 ## Rollback
 

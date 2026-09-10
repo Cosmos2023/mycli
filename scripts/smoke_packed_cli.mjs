@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
 	RIPGREP_TARGETS,
 	ripgrepPlatformKey,
-} from "../backend/packages/tools/dist/ripgrep-targets.js";
+} from "../backend/packages/tools/dist/ripgrep/ripgrep-targets.js";
 import {
 	APPLICATION_RELEASE_PACKAGE,
 	VENDORED_WORKSPACE_PACKAGES,
@@ -38,6 +38,163 @@ const INSTALLED_APPLICATION_PATH = [
 	"node_modules",
 	...APPLICATION_RELEASE_PACKAGE.name.split("/"),
 ];
+const HEADLESS_CLI_SMOKE = String.raw`
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { runCli } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/cli.js";
+import { readProviderCredential, WorkspaceTrustStore } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/config/dist/index.js";
+import { openRuntimeSessionStore } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/storage/dist/index.js";
+import { GatewayClient, parseGatewayToolRecord } from "@cosmos2023/mycli/gateway";
+import { startBackend, startBackendService } from "@cosmos2023/mycli/backend";
+
+assert.equal(typeof startBackend, "function");
+assert.equal(parseGatewayToolRecord({ version: 1, kind: "tool_execution", name: "Read", status: "success", mutating: false }).status, "success");
+
+const home = join(process.cwd(), "headless-home");
+const workspace = join(process.cwd(), "headless-workspace");
+await mkdir(join(home, ".mycli"), { recursive: true });
+await mkdir(workspace, { recursive: true });
+await writeFile(join(home, ".mycli", "config.toml"), "[updates]\ncheck_on_startup = false\n");
+await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
+let requests = 0;
+let nativeRetry = false;
+const server = createServer((request, response) => {
+	request.resume();
+	request.on("end", () => {
+		requests += 1;
+		response.writeHead(200, { "content-type": "text/event-stream" });
+		if (request.url.startsWith("/openai/")) assert.equal(request.headers["api-key"], "packed-azure-key");
+		if (nativeRetry) {
+			nativeRetry = false;
+			response.end('event: error\ndata: {"type":"error","error":{"code":"stream_read_error","type":"upstream_error","message":"Upstream request failed token=packed-private"}}\n\n');
+			return;
+		}
+		const text = "packed headless answer";
+		const item = { id: "msg-headless", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
+		for (const event of [
+			{ type: "response.created", response: { id: "resp-headless", status: "in_progress" } },
+			{ type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", content: [] } },
+			{ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
+			{ type: "response.output_item.done", output_index: 0, item },
+			{ type: "response.completed", response: { id: "resp-headless", status: "completed", output: [item], usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 } } },
+		]) response.write("data: " + JSON.stringify(event) + "\n\n");
+		response.end("data: [DONE]\n\n");
+	});
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+	const output = [];
+	const errors = [];
+	const executionEnv = { ...process.env, HOME: home, USERPROFILE: home, MYCLI_API_KEY: "test-key", MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_BASE_URL: "http://127.0.0.1:" + server.address().port + "/v1" };
+	const code = await runCli({
+		argv: ["exec", "--json", "--model", "gpt-test", "--timeout", "15", "-"],
+		cwd: workspace, stdin: Readable.from(["Respond to this task"]),
+		stdout: { write: (text) => output.push(text) }, stderr: { write: (text) => errors.push(text) },
+		env: executionEnv,
+		importTui: async () => assert.fail("headless command must not import the TUI"),
+	});
+	assert.equal(code, 0, errors.join(""));
+	const result = JSON.parse(output.at(-1));
+	assert.equal(result.type, "exec.result");
+	assert.equal(result.version, 1);
+	assert.equal(result.status, "completed");
+	assert.equal(result.final_message, "packed headless answer");
+	assert.equal(result.usage.total_tokens, 5);
+	assert.equal(requests, 1);
+	const daemon = spawn(process.execPath, [join(process.cwd(), "${APPLICATION_PACKAGE_MODULE_PATH}/dist/cli.js"), "app-server", "--session", "packed-stdio"], { cwd: workspace, env: executionEnv, stdio: ["pipe", "pipe", "pipe"] });
+	const exited = new Promise((resolve, reject) => { daemon.once("exit", resolve); daemon.once("error", reject); });
+	const timer = setTimeout(() => daemon.kill("SIGKILL"), 15_000);
+	daemon.stderr.resume();
+	const client = new GatewayClient({ input: daemon.stdout, output: daemon.stdin });
+	try {
+		client.start();
+		await client.waitForEvent("runtime.ready");
+		const bootstrap = await client.request("session.bootstrap", { protocol_version: 1 });
+		assert.equal(bootstrap.session_id, "packed-stdio");
+		client.expectClose();
+		await client.request("shutdown", {});
+		assert.equal(await exited, 0);
+		assert.equal(requests, 1);
+	} finally {
+		client.stop();
+		if (daemon.exitCode === null && daemon.signalCode === null) daemon.kill("SIGKILL");
+		await exited;
+		clearTimeout(timer);
+	}
+	const service = await startBackendService({ cwd: workspace, env: executionEnv, args: ["--session", "packed-service"] });
+	const clients = [];
+	const connect = (role) => {
+		const attachment = service.attach({ role });
+		const client = new GatewayClient(attachment.transport);
+		clients.push(client);
+		client.start();
+		return { attachment, client };
+	};
+	try {
+		const controller = connect("controller");
+		const observer = connect("observer");
+		await Promise.all(clients.map((client) => client.waitForEvent("runtime.ready")));
+		for (const client of clients) {
+			assert.equal((await client.request("session.bootstrap", { protocol_version: 1 })).session_id, "packed-service");
+		}
+		await assert.rejects(observer.client.request("session.new", {}), { code: "read_only_client" });
+		await controller.attachment.close();
+		const replacement = connect("controller");
+		await replacement.client.waitForEvent("runtime.ready");
+		const created = await replacement.client.request("session.new", {});
+		assert.equal((await observer.client.request("session.bootstrap", { protocol_version: 1 })).session_id, created.session_id);
+		for (const client of clients) client.expectClose();
+		assert.deepEqual(await replacement.client.request("shutdown", {}), { ok: true });
+		assert.equal(await service.completion, 0);
+		assert.equal(requests, 1);
+	} finally {
+		await service.close();
+		for (const client of clients) client.stop();
+	}
+	output.length = 0;
+	errors.length = 0;
+	nativeRetry = true;
+	const nativeEnv = { ...executionEnv, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_API_KEY: undefined,
+		MYCLI_BASE_URL: undefined, MYCLI_STREAM_MAX_RETRIES: "1", MYCLI_REQUEST_MAX_RETRIES: "0",
+		AZURE_OPENAI_BASE_URL: "http://127.0.0.1:" + server.address().port + "/openai/v1", AZURE_OPENAI_API_KEY: "packed-azure-key" };
+	assert.equal(await runCli({ argv: ["exec", "--json", "--session", "packed-native", "--model", "gpt-5.5", "--timeout", "15", "-"],
+		cwd: workspace, stdin: Readable.from(["Respond to this task"]), env: nativeEnv,
+		stdout: { write: (text) => output.push(text) }, stderr: { write: (text) => errors.push(text) },
+		importTui: async () => assert.fail("headless command must not import the TUI"),
+	}), 0, errors.join(""));
+	assert.equal(JSON.parse(output.at(-1)).status, "completed");
+	assert.equal(requests, 3);
+	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		const attempts = store.providerAttemptLedger.list({ sessionId: "packed-native" });
+		assert.deepEqual(attempts.map((attempt) => attempt.state), ["started", "failed", "scheduled", "started", "recovered"]);
+		assert.doesNotMatch(JSON.stringify({ attempts, output, errors }), /packed-azure-key|packed-private/u);
+		const manifest = store.modelInputLedger.loadLatestProviderRequestManifest("packed-native");
+		assert.equal(store.modelInputLedger.reconstructProviderStep(manifest.requestId).request.nativeTransport.api, "azure-openai-responses");
+	} finally { store.close(); }
+	await writeFile(join(home, ".mycli", "auth.json"), JSON.stringify({ openrouter: {
+		type: "oauth", access: "packed-oauth-access", refresh: "", expires: Number.MAX_SAFE_INTEGER,
+	} }));
+	const authEnv = { ...executionEnv, MYCLI_PROVIDER: "openrouter", MYCLI_PROTOCOL: "chat_completions", MYCLI_API_KEY: undefined };
+	for (const argv of [["login", "status", "--json"], ["logout", "--json"]]) {
+		output.length = 0;
+		assert.equal(await runCli({ argv, cwd: workspace, homeDir: home, stdin: Readable.from([]), env: authEnv,
+			stdout: { write: (text) => output.push(text) }, stderr: { write: (text) => errors.push(text) },
+		}), 0, errors.join(""));
+		assert.doesNotMatch(output.join(""), /packed-oauth-access/u);
+	}
+	assert.equal(await readProviderCredential({ homeDir: home, authRef: "openrouter" }), undefined);
+	assert.equal(requests, 3);
+} finally {
+	server.closeAllConnections();
+	await new Promise((resolve) => server.close(resolve));
+}
+process.stdout.write("headless-cli-ok\n");
+`;
 const NATIVE_PTY_SMOKE = String.raw`
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -615,6 +772,14 @@ try {
 			throw new Error(`packed_cli_smoke_failed: ${shell} completion is invalid`);
 		}
 	}
+	for (const command of ["exec", "review"]) {
+		const output = await run(bin, [command, "--help"], installDir, true, guardedEnv, [0], 5_000);
+		if (!output.includes("--timeout")) throw new Error("packed_cli_smoke_failed: missing headless command help");
+	}
+	const headlessSmoke = join(installDir, "headless-cli-smoke.mjs");
+	await writeFile(headlessSmoke, HEADLESS_CLI_SMOKE, "utf8");
+	const headlessOutput = await runStage("headless_cli", process.execPath, [headlessSmoke], installDir, true);
+	if (!headlessOutput.includes("headless-cli-ok")) throw new Error("packed_cli_smoke_failed: installed headless execution is incomplete");
 	const nativeSmoke = join(installDir, "native-pty-smoke.mjs");
 	await writeFile(nativeSmoke, NATIVE_PTY_SMOKE, "utf8");
 	const nativeOutput = await runStage(
@@ -764,7 +929,7 @@ try {
 		packed_applications: 1,
 		packed_platforms: PLATFORM_PACKAGES.length,
 		platform_scope: APP_ONLY ? "none" : PACK_ALL_PLATFORMS ? "all" : "current",
-		installed_journeys: 9,
+		installed_journeys: 10,
 		curated_provider_routes: 6,
 		custom_provider_models: 1,
 		pi_ai_version: PINNED_PI_AI_VERSION,
@@ -1055,9 +1220,11 @@ function run(
 				return;
 			}
 			const missingModule = commandFailureModule(stderr);
+			const headlessLine = /headless-cli-smoke\.mjs:(\d+):\d+/u.exec(stderr)?.[1];
 			reject(new Error(
 				`command_failed: ${command} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`
-				+ (missingModule ? ` module=${missingModule}` : ""),
+				+ (missingModule ? ` module=${missingModule}` : "")
+				+ (headlessLine ? ` headless_line=${headlessLine}` : ""),
 			));
 		});
 	});

@@ -418,6 +418,16 @@
       "restartRequired": false
     },
     {
+      "key": "request.request_max_retries_by_provider",
+      "description": "Overrides request retry budgets by provider route with integers from 0 to 100; omitted routes use the global budget. Read-only through config commands.",
+      "valueKind": "number_map",
+      "writable": false,
+      "canonicalPath": "request.request_max_retries_by_provider",
+      "legacyPaths": [],
+      "defaultValue": {},
+      "restartRequired": false
+    },
+    {
       "key": "request.stream_max_retries",
       "description": "Limits retries for interrupted model response streams.",
       "valueKind": "integer",
@@ -428,6 +438,16 @@
         "transport_retry_limit"
       ],
       "defaultValue": 5,
+      "restartRequired": false
+    },
+    {
+      "key": "request.stream_max_retries_by_provider",
+      "description": "Overrides stream retry budgets by provider route with integers from 0 to 100; omitted routes use the global budget. Read-only through config commands.",
+      "valueKind": "number_map",
+      "writable": false,
+      "canonicalPath": "request.stream_max_retries_by_provider",
+      "legacyPaths": [],
+      "defaultValue": {},
       "restartRequired": false
     },
     {

@@ -1,0 +1,19 @@
+{
+  "id": "layered-guidance",
+  "title": "Repair pricing while inheriting three instruction layers",
+  "cwd": "backend/service",
+  "prompt": "Fix price.mjs so calculateTotal(unitPrice, quantity) returns the rounded integer total in cents. Produce the compliance.json required by project guidance in the current service directory. Preserve the exported function.",
+  "files": {
+    "AGENTS.md": "For pricing tasks, write compliance.json in the service working directory. Its JSON object must include currency with value USD. Do not edit any AGENTS.md file.\n",
+    "backend/AGENTS.md": "The pricing compliance.json must also include rounding with value half-up.\n",
+    "backend/service/AGENTS.md": "The pricing compliance.json must also include package with value service.\n",
+    "backend/service/price.mjs": "export function calculateTotal(unitPrice, quantity) {\n  return unitPrice * quantity;\n}\n"
+  },
+  "immutable": ["AGENTS.md", "backend/AGENTS.md", "backend/service/AGENTS.md"],
+  "checks": [
+    { "id": "cents", "kind": "export", "path": "backend/service/price.mjs", "name": "calculateTotal", "args": [2.5, 3], "expected": 750 },
+    { "id": "rounding", "kind": "export", "path": "backend/service/price.mjs", "name": "calculateTotal", "args": [1.236, 1], "expected": 124 },
+    { "id": "zero", "kind": "export", "path": "backend/service/price.mjs", "name": "calculateTotal", "args": [8, 0], "expected": 0 },
+    { "id": "inherited-guidance", "kind": "json", "path": "backend/service/compliance.json", "expected": { "currency": "USD", "rounding": "half-up", "package": "service" } }
+  ]
+}

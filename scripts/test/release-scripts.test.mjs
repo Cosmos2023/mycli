@@ -390,7 +390,7 @@ test("current repository release metadata is valid", async () => {
 	const result = await verifyReleaseState();
 	assert.equal(result.packageCount, RELEASE_PACKAGES.length);
 	assert.equal(result.packageCount, 7);
-	assert.equal(result.vendoredPackageCount, 9);
+	assert.equal(result.vendoredPackageCount, 10);
 	assert.equal(isReleaseVersion(result.version), true);
 	await assert.rejects(
 		verifyReleaseState({ tag: "v99.0.0" }),
@@ -600,10 +600,10 @@ test("cross-platform long-history gate seeds the current session schema", async 
 	);
 	assert.match(
 		workflow,
-		/benchmark:long-history -- --profile compact_stress --storage-schema v12/u,
+		/benchmark:long-history -- --profile compact_stress --storage-schema v14/u,
 	);
 
-	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v12-"));
+	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v14-"));
 	try {
 		await mkdir(join(root, "home"), { recursive: true });
 		await mkdir(join(root, "workspace"), { recursive: true });
@@ -617,7 +617,7 @@ test("cross-platform long-history gate seeds the current session schema", async 
 			"--profile",
 			"blob_smoke",
 			"--storage-schema",
-			"v12",
+			"v14",
 			"--seed-only",
 			"--fixture-root",
 			root,
@@ -629,7 +629,7 @@ test("cross-platform long-history gate seeds the current session schema", async 
 			readonly: true,
 		});
 		try {
-			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 12);
+			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 14);
 			assert.equal(database.prepare(`
 				SELECT COUNT(*) FROM transcript_events WHERE session_id = 'target'
 			`).pluck().get(), 195);

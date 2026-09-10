@@ -14,8 +14,8 @@ async function main() {
 	if (!target) throw new Error("ripgrep_platform_target_required");
 	const [{ prepareUserRipgrep }, { RIPGREP_TARGETS, isRipgrepTarget, ripgrepOutputPath }] = (
 		await Promise.all([
-			import("../backend/packages/tools/dist/ripgrep-prepare.js"),
-			import("../backend/packages/tools/dist/ripgrep-targets.js"),
+			import("../backend/packages/tools/dist/ripgrep/ripgrep-prepare.js"),
+			import("../backend/packages/tools/dist/ripgrep/ripgrep-targets.js"),
 		])
 	);
 	if (!isRipgrepTarget(target)) throw new Error("ripgrep_platform_target_unsupported");

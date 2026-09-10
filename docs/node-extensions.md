@@ -127,6 +127,29 @@ MCP tool still requires one-time approval before execution.
 the same timeout, sandbox, cancellation, and cleanup path as runtime startup and close every client
 before returning.
 
+## Images And MCP Resources
+
+`view_image` accepts a local `path`. It decodes PNG, JPEG, GIF and WebP by their actual content,
+checks the current file-read permissions, and scales large images to fit within 2048 x 2048.
+When the selected model supports original image detail, the schema also exposes
+`detail: "high" | "original"`; `original` retains the source dimensions. The tool does not crop,
+render SVG, run OCR, or call Quick Look. Image bytes and detail survive session recovery.
+Input/output files are bounded to 10 MB and decoding to 64 million pixels.
+Image decoding requires the platform binaries installed with npm optional dependencies. These load
+only when viewing an image; installations without them can still start and use other tools.
+
+`list_mcp_resources` and `list_mcp_resource_templates` accept optional `server` and `cursor`.
+Omitting `server` aggregates configured servers; a server-specific request returns one native MCP
+page. Send its `nextCursor` back as `cursor` with the same server. Templates return `uriTemplate`
+values such as `data:///notes/{name}`. Instantiate that template and pass the resulting URI to
+`read_mcp_resource({server, uri})`. These tools do not require MCP tool activation.
+
+Resource results remain bounded JSON and explicitly mark truncation. Image resources are attached
+as images rather than base64 text. Previously persisted `offset` calls still execute through a
+dispatch-only compatibility schema; new provider requests use the Codex-style parameters.
+
+See [the Codex comparison](parity/2026-09-09-image-resource-tools.md) for scope and differences.
+
 ## Skills
 
 A skill is either `<root>/<name>.md` or `<root>/<name>/SKILL.md` with TOML or YAML frontmatter:

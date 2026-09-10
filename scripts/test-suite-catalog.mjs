@@ -50,6 +50,13 @@ export const TEST_TARGETS = Object.freeze([
 		defaultSuite: "unit",
 	},
 	{
+		id: "gateway",
+		label: "@mycli/gateway",
+		root: "backend/packages/gateway",
+		testRoot: "test",
+		defaultSuite: "unit",
+	},
+	{
 		id: "providers",
 		label: "@mycli/providers",
 		root: "backend/packages/providers",
@@ -109,19 +116,19 @@ export const TEST_SUITE_OVERRIDES = Object.freeze({
 	"backend/apps/mycli/test/node-runtime-m8-capability-audit.test.ts": "contract",
 	"backend/apps/mycli/test/package.test.ts": "contract",
 	"backend/apps/mycli/test/ux-contract-baseline.test.ts": "contract",
-	"backend/packages/config/test/config-reference.test.ts": "contract",
+	"backend/packages/config/test/configuration/config-reference.test.ts": "contract",
 	"backend/packages/core/test/parity-fixtures.test.ts": "contract",
-	"backend/packages/providers/test/pi-ai-module-loading.test.ts": "integration",
-	"backend/packages/runtime/test/worker-provider-step-executor.test.ts": "integration",
-	"backend/packages/storage/test/session-content-blob-repository.test.ts": "integration",
-	"backend/packages/storage/test/v10-content-blob-migration-cutover-resilience.test.ts":
+	"backend/packages/providers/test/pi-ai/pi-ai-module-loading.test.ts": "integration",
+	"backend/packages/runtime/test/workers/worker-provider-step-executor.test.ts": "integration",
+	"backend/packages/storage/test/artifacts/session-content-blob-repository.test.ts": "integration",
+	"backend/packages/storage/test/migrations/v10/v10-content-blob-migration-cutover-resilience.test.ts":
 		"integration",
-	"backend/packages/storage/test/v10-content-blob-migration-staging-resilience.test.ts":
+	"backend/packages/storage/test/migrations/v10/v10-content-blob-migration-staging-resilience.test.ts":
 		"integration",
-	"backend/packages/storage/test/v9-normalization-staging-resilience.test.ts": "integration",
-	"backend/packages/tools/test/node-pty-transport.integration.test.ts": "platform",
-	"backend/packages/tools/test/pipe-transport.integration.test.ts": "platform",
-	"backend/packages/tools/test/shell-environment.integration.test.ts": "platform",
+	"backend/packages/storage/test/migrations/v9/v9-normalization-staging-resilience.test.ts": "integration",
+	"backend/packages/tools/test/shell/node-pty-transport.integration.test.ts": "platform",
+	"backend/packages/tools/test/shell/pipe-transport.integration.test.ts": "platform",
+	"backend/packages/tools/test/shell/shell-environment.integration.test.ts": "platform",
 	"scripts/test/release-scripts.test.mjs": "release",
 });
 

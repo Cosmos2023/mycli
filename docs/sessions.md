@@ -51,8 +51,11 @@ An active owner cannot be displaced. Missing or incompatible session state witho
 remains blocked with one actionable diagnostic. Press Esc in the repair selector to cancel without
 changing the source session.
 
-Pending approvals and questions resume on their owning turn. Interrupted turns and recoverable tool
-results are rebuilt from canonical transcript events, so the resumed TUI shows each notice once.
+Activating a stored session in a new runtime interrupts unfinished turns and clears old approval
+and question waits. It preserves committed tool results, never reruns tools, and cannot restore
+background process handles. The resumed TUI rebuilds history from canonical transcript events and
+shows each interruption notice once. Reconnecting a client to a backend that is still running
+retains that backend's valid requests and processes; it does not perform cold recovery.
 
 ## Manage Sessions
 

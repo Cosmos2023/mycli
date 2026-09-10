@@ -20,6 +20,7 @@ backend/
     config/                  Provider, auth, policy, and user configuration
     contracts/               Versioned schemas shared by Node runtime and TUI
     core/                    Provider-neutral domain state and decisions
+    gateway/                 Shared RPC client and client-independent stream interfaces
     integrations/            MCP, plugins, skills, hooks, and subagents
     providers/               Model-provider transports and protocol adapters
     runtime/                 Turn orchestration and recovery workflows
@@ -50,6 +51,40 @@ docs/                        User, architecture, migration, and parity documenta
 - Do not add an alternate product runtime, sidecar, or fallback implementation.
 - Tests must use framework temporary directories. They must not create `.tmp-*`, session homes,
   databases, or generated artifacts at repository root.
+
+### Package Internals
+
+Group source files by responsibility inside each package; mirror those groups under `test/`.
+Keep `src/index.ts` as the public facade and use direct relative module imports internally.
+Subdirectories do not need their own barrel exports. Shared package primitives may stay at the
+source root; avoid catch-all `utils/`, `common/`, or `misc/` directories.
+
+| Package | Source responsibility directories |
+| --- | --- |
+| config | `configuration/`, `providers/`, `policy/`, `terminal/` |
+| contracts | `gateway/`, `generated/` |
+| core | `conversation/`, `lifecycle/`, `policy/` |
+| integrations | `foundation/`, `hooks/`, `mcp/`, `plugins/`, `skills/`, `subagents/` |
+| providers | `pi-ai/`, `registry/` |
+| runtime | `agents/`, `context/`, `hooks/`, `memory/`, `providers/`, `sessions/`, `tools/`, `turns/`, `workers/` |
+| storage | `agents/`, `artifacts/`, `migrations/v9/`, `migrations/v10/`, `projections/`, `sessions/`, `transcript/` |
+| tools | `files/`, `interaction/`, `network/`, `policy/`, `registry/`, `ripgrep/`, `sandbox/`, `shell/` |
+| mycli-shell-tui | `application/`, `state/`, `transcript/`, `components/{transcript,selectors,composer,shared}/`, `interaction/`, `transport/`, `platform/`, `theme/`, `tui-core/` |
+
+- Add a directory for a cohesive group of modules, not for each individual file. Keep existing
+  descriptive filenames so search and stack traces remain useful.
+- Keep package-wide tests at `test/`, shared helpers at `test/support/`, and shared fixture assets
+  at `test/fixtures/`. Generated contracts stay in `src/generated/`; do not hand-move generator output.
+- A file move must update all imports, public export conditions, Worker URLs, native-resource paths,
+  test-suite overrides, and active documentation/evidence references. Package names and public
+  subpath names remain stable.
+- Resolve native resources relative to the package root in both source and compiled layouts.
+  Co-locate Worker entrypoints with their launchers when they use relative module URLs.
+- Audit template URLs separately from static imports: `agent-worker-pool.ts` constructs
+  `./agent-worker-entrypoint${extension}` in `workers/`. Preserve both the `.ts` source and `.js`
+  compiled targets; a filename prefix without its extension is not a complete relocation key.
+- Validate moves with a clean build, source/compiled/declaration entry checks, full test catalog,
+  and packaged smoke. An existing `dist/` can hide obsolete paths after a move.
 
 ## Scenario: Node Backend Workspace Layout
 
@@ -242,7 +277,7 @@ counter.count(modelInput);
 
 ## Examples
 
-- `backend/packages/tools/src/ripgrep-targets.ts` owns cross-platform ripgrep metadata.
-- `backend/packages/runtime/src/node-turn-runtime.ts` is the Node turn orchestration boundary.
+- `backend/packages/tools/src/ripgrep/ripgrep-targets.ts` owns cross-platform ripgrep metadata.
+- `backend/packages/runtime/src/turns/node-turn-runtime.ts` is the Node turn orchestration boundary.
 - `backend/apps/mycli/src/management/` keeps provider-free CLI commands separate from runtime startup.
 - `npm/ripgrep/README.md` documents why native release packages are outside workspaces.

@@ -11,7 +11,7 @@ content, tool payloads, or provider payloads are recorded here.
 - Frozen manifest SHA-256: `b5828dd11cbb84cd40db62079eb79637825fa557e24eba8dfa02e20947328a70`
 - Coverage: provider window, complete readable transcript, search documents and
   legacy message-index mapping, lineage, recovery state, and provider ledger
-- The exact hash is enforced by `backend/packages/storage/test/v9-projection-manifest.test.ts`.
+- The exact hash is enforced by `backend/packages/storage/test/migrations/v9/v9-projection-manifest.test.ts`.
 
 ### Copied Real Storage
 

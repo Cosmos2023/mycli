@@ -42,7 +42,9 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `request.cache_retention` | `string` | `"short"` | yes | `request.cache_retention` | Selects the provider-neutral prompt-cache retention preference passed to pi-ai. |
 | `request.max_prompt_tokens` | `integer` | `12000` | yes | `request.max_prompt_tokens` | Caps the prompt tokens assembled for each model request. |
 | `request.request_max_retries` | `integer` | `4` | yes | `request.request_max_retries` | Limits retries for failures that occur before model output begins. |
+| `request.request_max_retries_by_provider` | `number_map` | `{}` | no | `request.request_max_retries_by_provider` | Overrides request retry budgets by provider route with integers from 0 to 100; omitted routes use the global budget. Read-only through config commands. |
 | `request.stream_max_retries` | `integer` | `5` | yes | `request.stream_max_retries` | Limits retries for interrupted model response streams. |
+| `request.stream_max_retries_by_provider` | `number_map` | `{}` | no | `request.stream_max_retries_by_provider` | Overrides stream retry budgets by provider route with integers from 0 to 100; omitted routes use the global budget. Read-only through config commands. |
 | `tui.clear_on_shrink` | `boolean` | `true` | yes | `tui_clear_on_shrink` | Clears stale terminal cells after the viewport becomes smaller |
 | `tui.color_mode` | `string` | `"auto"` | yes | `tui_color_mode` | Selects automatic, truecolor, 256-color, 16-color, or no-color output |
 | `tui.glyph_mode` | `string` | `"auto"` | yes | `tui_glyph_mode` | Selects automatic, Unicode, or ASCII-only interface glyphs |

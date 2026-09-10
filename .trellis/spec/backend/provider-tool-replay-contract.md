@@ -14,6 +14,8 @@
 - Shared limit: `TOOL_RESULT_OUTPUT_MAX_CHARS = 8_000` from `@mycli/core`.
 - Shell default model-output limit: `DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS = 2_000` and
   `DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS = 500` from `@mycli/tools`.
+- Shell model-output maximum: `SHELL_MODEL_OUTPUT_MAX_TOKENS = 2_000`, derived from the
+  shared 8,000-character limit using the existing four-characters-per-token estimate.
 - Execution boundary: `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
 - Persistence boundary: `SQLiteSessionStore.appendToolResult(input) -> void`.
 - Terminal failure: `SQLiteSessionStore.failTurn(input) -> RuntimeTurnRecord`.
@@ -33,8 +35,10 @@
   persistence contract. `SQLiteSessionStore.appendToolResult` rejects output above the shared limit
   as defense in depth.
 - `Shell`, `Bash`, `WriteStdin`, `ShellOutput`, and `BashOutput` use the shared Shell default of
-  2,000 model-visible characters per call. A requested `max_output_tokens` may lower that budget but
-  cannot raise it above the tool instance's configured maximum. Multiple incremental results remain
+  2,000 model-visible characters per call. `Shell` and `WriteStdin` accept a requested
+  `max_output_tokens` above or below the default, bounded by both the tool instance's configured
+  maximum and the shared persistence maximum. Omitted budgets use the default or a lower
+  configured maximum. Multiple incremental results remain
   separate replay items until compaction; there is no process-wide cumulative output budget.
 - Calls and results are persisted in provider order. Each persisted call id has at most one result,
   and a result must match the pending call id and tool name.
@@ -83,6 +87,7 @@
 | --- | --- |
 | Adapter output exceeds 8,000 characters | Truncate in `ToolRouter` and record omitted count |
 | Default Shell or WriteStdin model output exceeds 2,000 characters | Preserve bounded head/tail output and truncation metadata within 2,000 characters |
+| Shell or WriteStdin requests a larger output budget | Honor it up to 2,000 estimated tokens and any lower runtime maximum; preserve head/tail output before the shared router limit |
 | Oversized result reaches storage directly | Reject with bounded `persistence_error` |
 | Result call id or tool name differs from next pending call | Reject without changing call order |
 | Provider calls a name outside the frozen exposure | Persist `unsupported_tool` and continue without adapter execution |
@@ -121,8 +126,10 @@
 ### 6. Tests Required
 
 - Tool-router unit test asserts exact 8,000-character output, truncation flag, and omitted count.
-- Shell and WriteStdin unit tests assert their default 2,000-character result cannot be raised by a
-  larger model-requested `max_output_tokens` value.
+- Shell and WriteStdin unit tests distinguish default, smaller, larger, and excessive requested
+  budgets, including runtime overrides above and below the default and the persistence maximum.
+- App integration verifies that a larger Shell result survives Worker execution, router bounding,
+  storage, the next provider request, and session resume without losing its retained tail.
 - Storage test rejects a directly supplied oversized result.
 - Storage test asserts `failTurn` closes every pending call before later replay.
 - Replay regression asserts terminal legacy calls receive exactly one synthetic result while active
@@ -254,9 +261,10 @@ emit({
   capability metadata, unknown tools, clarification tools, planning tools, file mutations, and
   unclassified extensions are sequential. `Shell` opts into parallel phases; its approval and
   sandbox decision is still evaluated independently for every call.
-- Pending safe calls flush before a sequential call, approval suspension, denied call, or hook
-  barrier. The barrier runs alone before collection of the next safe phase.
-- Calls in one safe phase may execute concurrently, but lifecycle completion, result persistence,
+- Pending safe calls flush before a sequential call, legacy approval suspension, denied call, or
+  hook barrier. Compatible per-call approvals stay in the phase and independently await decisions;
+  see [Runtime Composition Contract](runtime-composition-contract.md).
+- Calls in one safe phase may execute concurrently and emit live completion immediately, but result persistence,
   post-tool hooks, checkpoints, generated context, and provider replay are applied in the original
   provider order.
 - Every parallel call carries only its own exact-call `sandboxOverrideApproved` decision. A hook
@@ -280,7 +288,8 @@ emit({
 | Consecutive manifest-approved calls | Start concurrently and apply results in provider order |
 | Consecutive allowed Shell calls | Start concurrently with independent execution options |
 | Sequential call after safe calls | Flush the safe phase, then run the barrier alone |
-| Approval request after safe calls | Flush and persist prior results before durable suspension |
+| Parallel approval request beside safe calls | Register the phase durably and await each call's own decision |
+| Sequential approval request after safe calls | Flush and persist prior results before durable suspension |
 | Hook changes a safe call to a sequential route | Reclassify the modified call as a barrier |
 | Missing or throwing capability query | Fail closed to sequential execution |
 | Parallel call unexpectedly requests clarification | Fail with bounded `tool_protocol_error` |

@@ -20,6 +20,7 @@ export const PLATFORM_RELEASE_PACKAGES = Object.freeze([
 
 export const VENDORED_WORKSPACE_PACKAGES = Object.freeze([
 	releasePackage("@mycli/contracts", "backend/packages/contracts", true),
+	releasePackage("@mycli/gateway", "backend/packages/gateway", true),
 	releasePackage("@mycli/core", "backend/packages/core", true),
 	releasePackage("@mycli/config", "backend/packages/config", true),
 	releasePackage("@mycli/tools", "backend/packages/tools", true),

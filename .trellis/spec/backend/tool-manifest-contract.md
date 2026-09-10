@@ -17,7 +17,7 @@ provider-visible tool schema.
 
 Apply this contract when changing:
 
-- `backend/packages/tools/src/manifest.ts`
+- `backend/packages/tools/src/registry/manifest.ts`
 - `backend/packages/tools/src/tool-router.ts`
 - built-in tool specs under `backend/packages/tools/src/`
 - approval/safety behavior for built-in tools
@@ -78,6 +78,10 @@ Each tool entry must include:
   one to 64 ordered `add`, `update`, `delete`, or `move` objects. Each variant
   rejects additional properties. The only other top-level Patch fields are the
   optional shared `sandbox_permissions` and `justification` fields.
+- The provider-visible `Shell` schema and manifest parameters omit `description`.
+  `ShellTool.legacyInputSchemas` accepts existing calls carrying that optional bounded
+  field without exposing it to new model requests. Both schemas retain required-command
+  validation, unknown-field rejection, and the same approval and execution policy.
 - Patch operations express semantic intent only: add carries `file_path` and
   complete `content`; update carries `file_path`, `old_string`, `new_string`,
   and optional `replace_all`; delete carries `file_path`; move carries
@@ -128,6 +132,36 @@ Each tool entry must include:
   file contents, command strings, headers, or secret-like values.
 
 ## Validation
+
+### MCP Resource Tools
+
+- Built-in `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` use the active integration composition's
+  `McpResourceService`. They remain available without activating an individual MCP tool through
+  `tool_search`; ordinary MCP tool calls keep their existing discovery and approval behavior.
+- Listing optionally filters by configured server and always queries live clients, including after
+  cached startup. Native MCP `nextCursor` pages are consumed with repeated-cursor rejection and
+  bounds of 100 continuation pages and 10,000 resources per server.
+- Resource-only and tool-only MCP servers are valid. The SDK boundary checks declared capabilities
+  before calling an unsupported list method.
+- List tools expose Codex's optional `server` and opaque `cursor`; a cursor requires a server.
+  Single-server calls return one native MCP page with `nextCursor`. Unscoped calls aggregate all
+  enabled servers and pages in stable server order. Template entries retain exact `uriTemplate`
+  values, and read accepts instantiated URIs without requiring a static resource-list entry.
+- Read exposes only `server` and `uri`. Results use `{server, uri, contents}` with supported image
+  data carried separately as canonical image blocks. List results use `resources` or
+  `resourceTemplates` with a `server` on every entry. Oversized content is explicitly marked
+  `truncated`; JSON remains valid within 8,000 characters. Identifiers/cursors are never shortened.
+- Dispatch-only `ToolAdapter.legacyInputSchemas` accepts persisted numeric `offset` calls on the
+  old list/read routes. They keep the old `next_offset` behavior without advertising that schema
+  to new turns. Router validation keeps required fields and unknown-field rejection on both routes.
+- Supported image resources are canonical images on the first text page. Other binary blobs are
+  omitted with a MIME-type marker; they are not sent as ordinary text or display metadata.
+- Individual server listing failures are reported alongside available resources. Upstream exception
+  text stays out of model and display diagnostics. Cancellation propagates through the manager,
+  shutdown aborts active resource IO, and close waits for outstanding operations.
+- Resource tools resolve the active composition after project configuration reload; retired managers
+  reject new IO. Tests cover live listing after cached startup, pagination, mixed text/images,
+  partial failure, malformed payloads, cancellation, and real backend resume.
 
 Required tests for manifest changes:
 

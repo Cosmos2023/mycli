@@ -203,11 +203,14 @@ both new and resumed sessions with `--profile <name>` whenever those overrides s
 Inside the TUI, `/settings` provides the same visual allowlist together with model, credential,
 permission, session, integration, and diagnostic navigation. Visual changes are previewed before
 application: session scope changes only the active TUI, while user-default scope writes
-`~/.mycli/config.toml` atomically. `Ctrl+P` searches commands, aliases, and settings terminology;
+`~/.mycli/config.toml` atomically. `Ctrl+P` searches commands and settings terminology;
 unavailable commands remain non-executable and show a bounded reason.
 
 `/model` opens the current provider's models directly: Enter applies a session selection, Tab opens
 reasoning and scope options, `[`/`]` cycles providers, and Esc opens the provider list.
+Provider lists in `/model` and `/login` show `ready` or `login required` for the route's actual
+credential reference. When `/model` opens login, Esc returns to the same provider search and
+selection; saving credentials refreshes that provider's models.
 `/model <name>` searches the current provider only. See
 [Provider Support](docs/providers.md#provider-scoped-model-selection) for activation and switching.
 
@@ -301,6 +304,8 @@ declare `capabilities.images`, while the active compatible route can still use
 `[model].supports_images` or `MYCLI_SUPPORTS_IMAGES`. The Node TUI accepts PNG, JPEG, GIF, and WebP
 attachments, up to 16 files, 10 MB per file, and 15 MB total per submitted input. Canonical image
 data is retained in SQLite so a resumed provider turn does not depend on the original local file.
+In-session prompt history and undo restore image attachments with their placeholders. Removing
+an image updates the remaining labels; the submitted attachments match those still in the draft.
 
 ## Runtime Capabilities
 
@@ -311,9 +316,19 @@ data is retained in SQLite so a resumed provider turn does not depend on the ori
 - Local image attachments across initial, steering, and follow-up input, with provider-specific
   Chat Completions, Responses, and Anthropic serialization.
 - Approval and clarification suspension that survives restart and resumes the owning turn once.
+- Shell approvals show the proposed command and arguments, including multiline commands. `Ctrl+A`
+  opens the scrollable details; credential values are redacted, and previews beyond 12,000 characters
+  are explicitly marked as truncated.
 - Structured context compaction, memory extraction, context diagnostics, and usage accounting.
 - `Read`, `Edit`, `Patch`, `Write`, `AskUserQuestion`, `Shell`, `WriteStdin`, `web_fetch`, and
-  `tool_search`, with hidden compatibility routes for shell polling and control.
+  `tool_search`, plus `view_image`, `list_mcp_resources`, and `read_mcp_resource`, with hidden
+  compatibility routes for shell polling and control.
+- `view_image` reads a local PNG, JPEG, GIF, or WebP within the active readable filesystem scope,
+  up to 10 MB. MCP tool results and image resources also deliver image blocks to capable models.
+  Tool images survive session resume without reopening the original file; the TUI shows a summary.
+- `list_mcp_resources` queries configured MCP servers, optionally filtered by `server`.
+  `read_mcp_resource` accepts the exact `server` and `uri`; both return `next_offset` when more
+  resources or text remain. Other binary resource formats are identified but are not decoded.
 - `Edit`, `Patch`, and `Write` keep the active turn filesystem policy by default. In a restricted
   turn, `danger-full-access` is accepted only as a justified, one-time retry of the same operation
   after workspace confinement returned `workspace_escape`, and still requires user approval.
@@ -325,7 +340,7 @@ data is retained in SQLite so a resumed provider turn does not depend on the ori
 - MCP and plugin schemas are discovered through `tool_search` and become visible only after the
   search result is durably persisted for the current turn. Their adapters, approvals, and sandbox
   policy remain active throughout.
-- Persistent PTY/ConPTY shells, background jobs, `/ps`, `/stop`, output cursors, interruption, and
+- Persistent PTY/ConPTY shells, background jobs, `/ps`, `/ps stop-all`, output cursors, interruption, and
   owner-scoped cleanup.
 - Managed Shell processes resolve `rg` from the current optional platform package, the legacy
   `@mycli/tools` vendor directory, the user vendor directory, then the inherited system `PATH`.
@@ -354,7 +369,7 @@ families are:
 - Model and control: `/model`, `/plan`, `/mode`, `/permissions`, `/sandbox`.
 - Sessions and runtime: `/new`, `/resume`, `/fork`, `/status`, `/usage`, `/context`, `/compact`,
   `/stats`.
-- Extensions and resources: `/skills`, `/tools`, `/resources`, `/agents` (`/tasks` is a compatibility alias).
+- Extensions and resources: `/skills`, `/tools`, `/resources`, `/agents`.
 - Memory and changes: `/memory`, `/changes`, `/undo`, `/trace`.
 - Shell and UI: `/ps [stop-all]`, `/details`, `/view`, `/hotkeys`, `/copy`, `/clear`.
 - Account and exit: `/login`, `/trust`, `/help`, `/quit`.
@@ -363,12 +378,14 @@ families are:
 Aliases, argument policies, running-turn availability, and TUI/backend ownership are documented in
 [docs/commands.md](docs/commands.md). Interactive input routes only registry-known names as
 commands, so absolute paths such as `/tmp` remain ordinary user input. Direct `command.run` calls
-with unknown names and malformed known commands fail locally.
+with unknown names and malformed known commands fail locally. Historical aliases are retired:
+typing one shows its canonical replacement without executing it or submitting a model turn.
 
 Provider-free management commands:
 
 ```bash
 npm run mycli -- login status --json
+npm run mycli -- login --oauth --provider openrouter
 npm run mycli -- logout --json
 npm run mycli -- config validate --json
 npm run mycli -- config validate --strict --json

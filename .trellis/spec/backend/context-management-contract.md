@@ -29,11 +29,18 @@
 
 ### 3. Contracts
 
-- Context file priority:
-  1. `.mycli.md` or `MYCLI.md`, searched upward from cwd to git/workspace root.
-  2. `AGENTS.md` or `agents.md`, cwd first, then workspace root.
-  3. `CLAUDE.md` or `claude.md`, cwd first, then workspace root.
-  4. `.cursorrules`, cwd first, then workspace root.
+- Primary context files compose from Git/workspace root through every directory
+  to cwd. Each directory contributes `AGENTS.md` (alias `agents.md`) followed by
+  `.mycli.md` (alias `MYCLI.md`). The first existing alias wins; canonical files
+  are deduplicated. More local guidance takes precedence within its scope.
+- If no primary file exists, use the first `CLAUDE.md`/`claude.md`, then
+  `.cursorrules`, searching cwd then workspace root. Symlinks outside the search
+  boundary are blocked. Launching within a repository includes its ancestors
+  through the Git root, never beyond it.
+- All layers share the 24,000 Unicode-character budget, including source labels.
+  A blocked file does not suppress other valid layers. Optional `files`
+  diagnostics identify each source, original length, blocked status, and issues;
+  aggregate source is `layered` when multiple files contribute.
 - Loader is read-only and provider-free. It must not create config, memory,
   trace, session, or context files.
 - Loader diagnostics include selected source, selected path presence, search
@@ -154,6 +161,29 @@
 - Once `compaction_started` is emitted, summary-generation failure or interruption
   must emit a terminal `compaction_completed(status=failed)` event with unchanged
   before/after token counts. A failed summary must not replace canonical history.
+- Checkpoint acquisition, cleanup, and replacement commitment must compare the expected
+  checkpoint inside the storage write transaction, on both normalized and legacy stores.
+  A canceled or late compaction cannot delete or install over another window. Recheck
+  cancellation after file rehydration and before committing replacement history.
+- An in-progress checkpoint prevents resending that same turn's uncertain summary request.
+  A new turn may replace abandoned work and advance its window identity. Failed or skipped
+  work restores the previous completed checkpoint only while still owning the current one.
+- Compaction uses `InProcessProviderStepExecutor` with the configured route's request and
+  stream retry budgets. Summary text, reasoning, message completion, and output resets stay
+  internal. Only compaction progress, safe failure, and reported usage cross the UI boundary.
+- Each summary request owns its checkpoint ID and fingerprint. `CompactionModelJournal`
+  commits common `ProviderAttemptUpdate` records and per-attempt usage as append-only,
+  non-model-visible display activities before dispatch/retry. The storage transaction checks
+  the checkpoint's session, turn, window, fingerprint, and in-progress status. Manual commands
+  use this operation owner without fabricating a user turn or a normal request manifest.
+- Failed summary details use `parseRuntimeFailure`; final error notices survive transcript
+  replay. Known usage from failed and successful attempts is counted once per attempt, retained
+  separately in the journal, and added to successful owning-turn totals without changing the
+  last ordinary provider step's context-window measurement. Unreported upstream usage cannot
+  be inferred. Journal failures must prevent the unrecorded summary attempt from dispatching.
+- Raw attempt starts, usage updates, and success bookkeeping remain hidden from the readable
+  transcript; retry notices and final failures remain visible. Per-attempt timing diagnostics
+  use an explicit `compaction:<checkpoint-id>` trace identity.
 - Doctor with no traces -> context check still reports loader and session summary
   state without creating traces.
 - Doctor with context traces -> report counts and token maxima only.
@@ -389,9 +419,9 @@ const section = {
 - Doctor check:
   `DoctorCheck.name == "session_continuity"`
 - Protected compact boundary modules:
-  `backend/packages/runtime/src/compaction-coordinator.ts`
-  `backend/packages/runtime/src/model-input-pipeline.ts`
-  `backend/packages/runtime/src/memory-context-service.ts`
+  `backend/packages/runtime/src/context/compaction-coordinator.ts`
+  `backend/packages/runtime/src/context/model-input-pipeline.ts`
+  `backend/packages/runtime/src/memory/memory-context-service.ts`
 
 ### 3. Contracts
 
@@ -482,7 +512,7 @@ const section = {
 - Cache stability regression proving compaction rehydration stays dynamic and does not affect the
   stable prefix hash or configured cache-retention intent.
 - Compact boundary diff audit before completion:
-  `git diff -- backend/packages/runtime/src/compaction-coordinator.ts backend/packages/runtime/src/model-input-pipeline.ts backend/packages/runtime/src/memory-context-service.ts`
+  `git diff -- backend/packages/runtime/src/context/compaction-coordinator.ts backend/packages/runtime/src/context/model-input-pipeline.ts backend/packages/runtime/src/memory/memory-context-service.ts`
   must be empty for runtime-continuity-only work.
 
 ### 7. Wrong vs Correct

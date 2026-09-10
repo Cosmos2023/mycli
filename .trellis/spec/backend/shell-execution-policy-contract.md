@@ -21,12 +21,16 @@
   `ApprovalPolicy.evaluate(call, executionPolicy?) -> allow | request | deny`.
 - Provider argument:
   `sandbox_permissions?: "use_default" | "require_escalated"` on `Shell` only.
-- Display-only provider argument:
-  `description?: string` on `Shell`, bounded to 512 characters.
+- Legacy display-only argument accepted by dispatch, absent from the provider schema:
+  `description?: string` on existing `Shell` calls, bounded to 512 characters.
+- Model-provided approval argument:
+  `justification?: string` on `Shell`, bounded to 512 characters.
 - Host-only execution option:
   `ToolExecutionOptions.sandboxOverrideApproved?: boolean`.
 - Host-only upper bound:
   `ToolExecutionOptions.sandboxOverridePolicy?: ExecutionPolicy`.
+- Approval scheduling: `ParallelApprovalCoordinator.respond({ decisionId, choice })` wakes only
+  the matching invocation; Shell arguments retain their ordinary yield semantics.
 - Recovery derivation:
   `shellCallRequestsSandboxOverride(call) -> boolean` from the exact canonical call.
 - Windows helper setup: `mycli-windows-sandbox.exe --ensure-setup`.
@@ -48,21 +52,53 @@
   `sandboxOverrideApproved=true` only for the exact evaluated call.
 - Pre-tool hooks cannot inherit escalation authority after changing a call. Runtime forwards the
   authorization bit only when `callId`, tool name, and canonical argument JSON are unchanged.
-- Consecutive allowed `Shell` calls may execute concurrently. Approval evaluation remains per call;
-  an approval request flushes earlier parallel work and suspends before the requested call starts.
-  Each running call receives only its own exact-call sandbox authorization.
+- Consecutive parallel-capable `Shell` calls independently await their own approvals and execute.
+  All pending requests in the phase are durable before the first prompt. Responding advances the
+  prompt without waiting for that invocation's result. Each call keeps its exact-call authority.
+- The system prompt explicitly permits independent `Shell` calls in the same response, including
+  `require_escalated`, and distinguishes their approval queue from sequential-only
+  `request_permissions` and `AskUserQuestion` calls. Keep commands separate for individual decisions;
+  do not merge them merely to obtain one approval. Approval and completion dependencies still gate
+  execution. Prompt revisions apply to new session snapshots; existing sessions retain their frozen
+  instructions.
+- Approved Shell calls use normal clamped `yield_time_ms`; there is no host-only zero-yield hint.
+  Completion or the yield deadline returns the invocation result. Early completion cancels the
+  unused deadline timer. A running handle is not a successful exit, and provider continuation waits
+  for ordered phase results. Sequential/legacy tools retain their existing barriers.
+- The shell manager owns yielded processes, output, timeout, stop, and shutdown cleanup. Process
+  completion dependencies use `WriteStdin`; independent calls may advance while it runs.
 - The Shell adapter requires both the provider request and host authorization before applying the
   runtime-owned override policy. Without managed/runtime constraints that policy is full access;
   otherwise it remains capped. Model arguments and the approval boolean alone never select host
   execution.
-- A policy with `networkDomains` is not unrestricted network access. `web_fetch` can enforce the
-  domains directly, while Shell remains network-disabled until a domain-filtering proxy is present.
-- `description` is optional user-facing metadata. It does not alter the command, working directory,
+- A policy with `networkDomains` is not unrestricted network access. `web_fetch` checks domains
+  directly. Enabled, non-empty domain policies on macOS Shell use a process-owned proxy; Seatbelt
+  permits only its loopback TCP port. Linux/Windows return `network_proxy_unavailable`. Empty or
+  disabled policies and raw launches without a proxy remain offline.
+- The model's escalation request never discards policy without host authorization. Full filesystem
+  access alone cannot remove network bounds; an approved fallback without an explicit runtime
+  override preserves the current domain list and its network-enabled state.
+- `ShellStartRequest.processResource` transfers an idempotent infrastructure lease to the manager.
+  Yield does not close it. Start rejection/failure, process exit, timeout, stop, and manager shutdown
+  close it, including inconclusive process termination. See [Network Proxy Contract](./network-proxy-contract.md).
+- Legacy `description` is optional user-facing metadata. It does not alter the command, working directory,
   classification, approval decision, sandbox policy, or execution result, and it never substitutes
   for an escalation justification.
 - A valid description is trimmed before it enters the in-memory Shell session and live lifecycle.
   Approval previews and policy evaluation continue to use the canonical command rather than this
   display label.
+- The model includes a concrete user-facing `justification` in the original `Shell` call with
+  `sandbox_permissions="require_escalated"`, phrased as an approval question explaining the action
+  and additional access need in the user's language. Ordinary calls omit it. This is optional
+  display metadata: missing reasons enter the normal approval flow without another provider request,
+  forced correction, or fabricated reason. Legacy `description` remains an ordinary command summary.
+  Supplied empty, non-string, or over-limit reasons fail existing argument validation. The text never
+  grants authority, and its absence does not change policy decisions, approval choices, or recovery.
+- Shell approvals render one optional `Reason` line: sanitized model justification first, then the
+  runtime policy reason, then no line. The generic policy summary must not hide the model's question.
+  There is no separate `Approval` line or description fallback. Preserve both fields in gateway
+  records and their original storage locations; apply the same display selection to live and
+  restored requests without changing the policy decision.
 - Durable approval continuation stores the canonical call as before. On approval, it fingerprints
   and executes that exact call, deriving the authorization bit from the persisted call rather than
   adding mutable approval state. A recovered `executing` effect is interrupted as unknown and is
@@ -77,8 +113,20 @@
   credential plus setup markers; it never deletes the dedicated account, removes firewall/WFP
   restrictions, or grants broader access. UAC cancellation exits through the stable helper code `2`
   and the Node recovery adapter projects it as `operation_canceled` without native stderr.
-- Approval persistence and TUI events contain bounded previews and structural reasons only. Do not
-  persist raw model justification, command output, credentials, or arbitrary provider text.
+- Durable policy summaries retain structural reasons. Canonical tool-call arguments retain the
+  model's user-facing justification as part of the exact call. Interactive events expose only its
+  trimmed, credential-redacted, control-escaped, 512-character projection through
+  `shellApprovalPreview`; bound after escaping and mark truncation with an ellipsis. Recompute the
+  same projection after restart/session resume, without copying raw reasons into diagnostic output.
+- Shell approval reasons explain the permission check in plain language. Do not expose internal
+  override terminology or raw parser categories, substitute the command description, or infer a
+  specific network/filesystem need or an earlier execution failure from an escalation request.
+- Interactive Shell/Bash approvals additionally project the canonical `command` through
+  `shellApprovalPreview` into `command_preview` (up to 12,000 characters) and `command_truncated`.
+  Preserve command syntax and whitespace, redact common credential values, escape terminal controls,
+  and mark truncation explicitly. Apply the same projection to live and recovered requests. The
+  durable 512-character policy summary and canonical execution input keep their existing roles;
+  display fields must never become execution input or change approval choices.
 
 ### 4. Validation & Error Matrix
 
@@ -88,6 +136,12 @@
 | Missing description | Execute normally |
 | Empty, non-string, or over-512-character description | Reject as invalid arguments; start no process |
 | Valid description | Execute the exact same command under the same policy |
+| Shell call needs approval but justification is missing | Publish the normal approval with its policy explanation; do not request another model response for a reason |
+| Allowed call or previously persisted approval lacks justification | Preserve existing execution/recovery behavior |
+| Runtime reason and valid justification | Show the sanitized model question under `Reason`; preserve the runtime policy reason separately in state |
+| Valid justification without runtime reason | Show the sanitized model question under `Reason` |
+| Neither runtime reason nor justification | Omit the reason line; preserve command and approval choices |
+| Empty, non-string, or over-512-character justification | Reject as invalid arguments; start no process |
 | Unknown non-dangerous Shell command in workspace mode | Allow; keep restricted sandbox |
 | Dangerous or complex Shell command in workspace mode | Suspend for durable approval |
 | Invalid `sandbox_permissions` | Policy denies; direct adapter returns `invalid_sandbox_permissions` |
@@ -95,14 +149,19 @@
 | Restricted adapter call with model escalation but no host bit | Return `sandbox_override_not_approved`; start no process |
 | Exact allow/session rule plus escalation | Allow and forward the host authorization bit |
 | Approved escalation under managed constraints | Apply the runtime override policy without exceeding it |
-| Domain-constrained Shell policy | Keep the sandbox network disabled |
+| Enabled, non-empty domain-constrained Shell on macOS | Use the frozen proxy lease and keep direct egress denied |
+| Enabled, non-empty domain-constrained Shell on Linux/Windows | Fail before process start with `network_proxy_unavailable` |
+| Disabled or empty domain-constrained Shell policy | Keep the sandbox network disabled |
 | First valid restricted Windows request without setup | Request UAC elevation once, verify setup, then run |
 | Invalid Windows sandbox request | Reject before requesting elevation |
 | Windows setup canceled, failed, or incomplete | Fail closed; start no requested command |
 | Confirmed Windows reset | Clear setup state under the setup mutex; retain account and network restrictions |
 | Pre-tool hook changes an authorized call | Withhold the host authorization bit |
 | Consecutive allowed Shell calls | Execute concurrently and persist results in provider order |
-| Shell call requests approval after allowed parallel calls | Finish and persist the earlier phase, then suspend |
+| Shell call requests approval beside allowed parallel calls | Await only that approval while allowed siblings execute |
+| Approved modern Shell requests a long foreground wait | Keep its normal wait while later approvals independently advance |
+| Shell startup fails | Commit a failed tool result; do not report a running handle |
+| Legacy Bash or a sequential barrier | Preserve its existing wait and ordering |
 | Approved persisted escalation after coordinator recreation | Derive the bit and run once with full-access isolation |
 | Full Access valid Shell call | Run without approval |
 | Full Access call matching `ask` or `deny` | Deny without surfacing an approval prompt |
@@ -141,12 +200,17 @@
 - Runtime tests assert the normal allow path forwards the bit only for an unchanged canonical call.
 - Runtime tests assert allowed Shell calls overlap while preserving per-call sandbox authorization
   and provider-order result persistence.
+- Regression tests assert approved Shell and the earlier parallel Shell phase yield promptly,
+  argument validation remains enforced, and ordinary/legacy waits remain unchanged.
 - Approval continuation tests recreate the coordinator from persisted state and assert that an
   approved escalation derives and forwards the bit.
-- Provider and manifest tests assert the optional enum and description are projected while
-  `command` remains the only required Shell field.
+- Provider and manifest tests assert the optional permission enum is projected and `description`
+  is omitted while `command` remains the only required Shell field. Router tests prove that legacy
+  descriptions remain executable without relaxing required fields or unknown-field rejection.
 - App integration drives a real Shell escalation through approval and resumes the original agent
   turn. Tools, runtime, provider, app, and TUI regression suites remain green.
+- A local-provider backend test keeps the first command alive while approving and executing the
+  second, checks output during pending approval, then verifies one final persisted process record.
 
 ### 7. Wrong vs Correct
 

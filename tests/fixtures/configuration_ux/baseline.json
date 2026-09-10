@@ -15,11 +15,11 @@
           "test": "setup builds all provider rows, persists a successful result, and never returns the key"
         },
         {
-          "file": "tui/mycli-shell/test/setup-wizard.test.ts",
+          "file": "tui/mycli-shell/test/components/selectors/setup-wizard.test.ts",
           "test": "setup wizard collects provider endpoint model and api key"
         },
         {
-          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "file": "tui/mycli-shell/test/application/shell-app.test.ts",
           "test": "mycli shell runtime enters main UI only after trust selection"
         }
       ]
@@ -33,7 +33,7 @@
           "test": "credential readiness is projected at bootstrap and blocks turn acceptance without side effects"
         },
         {
-          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "file": "tui/mycli-shell/test/application/shell-app.test.ts",
           "test": "submit-time auth recovery preserves one draft and custom credential reference"
         }
       ]
@@ -43,7 +43,7 @@
       "platforms": ["darwin", "linux", "win32"],
       "evidence": [
         {
-          "file": "backend/packages/config/test/settings.test.ts",
+          "file": "backend/packages/config/test/configuration/settings.test.ts",
           "test": "malformed TOML raises a bounded config error"
         },
         {
@@ -81,7 +81,7 @@
           "test": "gateway owns permission selection and reconfigures runtime trust policy"
         },
         {
-          "file": "tui/mycli-shell/test/permission-selector.test.ts",
+          "file": "tui/mycli-shell/test/components/selectors/permission-selector.test.ts",
           "test": "permission selector confirms Full Access before applying"
         }
       ]
@@ -105,11 +105,11 @@
       "platforms": ["darwin", "linux", "win32"],
       "evidence": [
         {
-          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "file": "tui/mycli-shell/test/application/shell-app.test.ts",
           "test": "settings catalog renders seven categories width-safe with CJK and Windows values"
         },
         {
-          "file": "tui/mycli-shell/test/shell-app.test.ts",
+          "file": "tui/mycli-shell/test/application/shell-app.test.ts",
           "test": "slash autocomplete keeps the hardware cursor anchored to the editor for IME"
         }
       ]
@@ -123,7 +123,7 @@
           "test": "sandbox status maps incomplete Windows setup to bounded actionable state"
         },
         {
-          "file": "backend/packages/tools/test/process-sandbox.test.ts",
+          "file": "backend/packages/tools/test/sandbox/process-sandbox.test.ts",
           "test": "Windows sandbox readiness validates bounded handshake states"
         }
       ]
@@ -160,7 +160,7 @@
     {
       "id": "slash_registry_docs",
       "file": "backend/apps/mycli/test/node-slash-command-registry.test.ts",
-      "test": "documented commands and aliases stay aligned with the canonical slash registry"
+      "test": "documented commands and retirements stay aligned with the canonical slash registry"
     },
     {
       "id": "settings_catalog",

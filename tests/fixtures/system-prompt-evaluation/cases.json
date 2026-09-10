@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "initial-preamble",
+      "tools": [
+        "Read"
+      ],
+      "items": [
+        {
+          "type": "user",
+          "text": "\u68c0\u67e5 /workspace/README.md \u7684\u524d 80 \u884c\uff0c\u544a\u8bc9\u6211\u53d1\u73b0\u4e86\u4ec0\u4e48\u3002"
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "Read",
+            "arguments": {
+              "file_path": "/workspace/README.md",
+              "offset": 1,
+              "limit": 80
+            }
+          }
+        ],
+        "preamble": true,
+        "chinese": true
+      }
+    },
+    {
+      "id": "repeated-shell-wait",
+      "tools": [
+        "WriteStdin"
+      ],
+      "items": [
+        {
+          "type": "user",
+          "text": "\u8fd0\u884c\u6d4b\u8bd5\uff0c\u7b49\u5b83\u7ed3\u675f\u540e\u6c47\u62a5\u6d4b\u8bd5\u7ed3\u679c\u3002"
+        },
+        {
+          "type": "assistant_tool_calls",
+          "text": "",
+          "calls": [
+            {
+              "name": "Shell",
+              "callId": "shell-1",
+              "argumentsJson": "{\"command\":\"npm test\",\"yield_time_ms\":1000}"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "toolName": "Shell",
+          "callId": "shell-1",
+          "output": "Process running with session ID eval-shell-1\nOutput:\nTests started.",
+          "success": true
+        },
+        {
+          "type": "assistant_tool_calls",
+          "text": "",
+          "calls": [
+            {
+              "name": "WriteStdin",
+              "callId": "poll-1",
+              "argumentsJson": "{\"session_id\":\"eval-shell-1\",\"chars\":\"\"}"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "toolName": "WriteStdin",
+          "callId": "poll-1",
+          "output": "Process running with session ID eval-shell-1\nOutput:\n",
+          "success": true
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "WriteStdin",
+            "arguments": {
+              "session_id": "eval-shell-1",
+              "chars": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "status-keeps-task",
+      "tools": [
+        "WriteStdin"
+      ],
+      "items": [
+        {
+          "type": "user",
+          "text": "\u8fd0\u884c\u6d4b\u8bd5\uff0c\u7b49\u5b83\u7ed3\u675f\u540e\u6c47\u62a5\u6d4b\u8bd5\u7ed3\u679c\u3002"
+        },
+        {
+          "type": "assistant_tool_calls",
+          "text": "",
+          "calls": [
+            {
+              "name": "Shell",
+              "callId": "shell-1",
+              "argumentsJson": "{\"command\":\"npm test\",\"yield_time_ms\":1000}"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "toolName": "Shell",
+          "callId": "shell-1",
+          "output": "Process running with session ID eval-shell-1\nOutput:\nTests started.",
+          "success": true
+        },
+        {
+          "type": "assistant_tool_calls",
+          "text": "",
+          "calls": [
+            {
+              "name": "WriteStdin",
+              "callId": "poll-1",
+              "argumentsJson": "{\"session_id\":\"eval-shell-1\",\"chars\":\"\"}"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "toolName": "WriteStdin",
+          "callId": "poll-1",
+          "output": "Process running with session ID eval-shell-1\nOutput:\n",
+          "success": true
+        },
+        {
+          "type": "user",
+          "text": "\u73b0\u5728\u8fdb\u5ea6\u600e\u4e48\u6837\uff1f"
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "WriteStdin",
+            "arguments": {
+              "session_id": "eval-shell-1",
+              "chars": ""
+            }
+          }
+        ],
+        "preamble": true,
+        "chinese": true
+      }
+    },
+    {
+      "id": "independent-approvals",
+      "tools": [
+        "Shell"
+      ],
+      "items": [
+        {
+          "type": "user",
+          "text": "\u6d4b\u8bd5\u8fde\u7eed\u5ba1\u6279\u961f\u5217\uff1a\u5728 /workspace \u63d0\u4ea4 pwd\u3001git status --short\u3001git diff --stat \u8fd9\u4e09\u4e2a\u72ec\u7acb Shell \u547d\u4ee4\uff0c\u6bcf\u6761\u90fd\u8bf7\u6c42 require_escalated\uff0c\u5206\u522b\u8ba9\u6211\u5ba1\u6279\u3002"
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "Shell",
+            "arguments": {
+              "command": "pwd",
+              "sandbox_permissions": "require_escalated"
+            }
+          },
+          {
+            "name": "Shell",
+            "arguments": {
+              "command": "git status --short",
+              "sandbox_permissions": "require_escalated"
+            }
+          },
+          {
+            "name": "Shell",
+            "arguments": {
+              "command": "git diff --stat",
+              "sandbox_permissions": "require_escalated"
+            }
+          }
+        ],
+        "preamble": true,
+        "chinese": true
+      }
+    },
+    {
+      "id": "missing-skill-fallback",
+      "tools": [
+        "Read",
+        "Skill"
+      ],
+      "skills": [
+        {
+          "name": "review",
+          "description": "Review repository files for correctness."
+        }
+      ],
+      "items": [
+        {
+          "type": "user",
+          "text": "\u4f7f\u7528 review \u6280\u80fd\u68c0\u67e5 /workspace/README.md \u7684\u524d 80 \u884c\u3002"
+        },
+        {
+          "type": "assistant_tool_calls",
+          "text": "",
+          "calls": [
+            {
+              "name": "Skill",
+              "callId": "skill-1",
+              "argumentsJson": "{\"name\":\"review\"}"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "toolName": "Skill",
+          "callId": "skill-1",
+          "output": "Skill activation failed: skill_not_found",
+          "success": false
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "Read",
+            "arguments": {
+              "file_path": "/workspace/README.md",
+              "offset": 1,
+              "limit": 80
+            }
+          }
+        ],
+        "preamble": true,
+        "chinese": true
+      }
+    },
+    {
+      "id": "natural-skill-announcement",
+      "tools": [
+        "Read",
+        "Skill"
+      ],
+      "skills": [
+        {
+          "name": "using-superpowers",
+          "description": "Confirm execution rules for repository tasks."
+        }
+      ],
+      "items": [
+        {
+          "type": "user",
+          "text": "\u68c0\u67e5 /workspace/README.md \u7684\u524d 80 \u884c\u3002"
+        },
+        {
+          "type": "assistant_tool_calls",
+          "text": "",
+          "calls": [
+            {
+              "name": "Skill",
+              "callId": "skill-2",
+              "argumentsJson": "{\"name\":\"using-superpowers\"}"
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "toolName": "Skill",
+          "callId": "skill-2",
+          "output": "Activated skill: using-superpowers",
+          "success": true
+        },
+        {
+          "type": "context",
+          "text": "<loaded-skill name=\"using-superpowers\" source=\"user\">\nThis is a loaded skill reference, not the current user request.\nThen announce \"Using [skill] to [purpose]\" and inspect the requested file.\n</loaded-skill>",
+          "metadata": {
+            "kind": "skill_instructions",
+            "cacheClass": "dynamic",
+            "durability": "persistent",
+            "scope": "transcript"
+          }
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "Read",
+            "arguments": {
+              "file_path": "/workspace/README.md",
+              "offset": 1,
+              "limit": 80
+            }
+          }
+        ],
+        "preamble": true,
+        "chinese": true,
+        "forbidden_text": "\\bUsing\\s+`?using-superpowers\\b"
+      }
+    },
+    {
+      "id": "existing-write-grant",
+      "tools": [
+        "Write"
+      ],
+      "policy": {
+        "mode": "workspace-write",
+        "filesystem": "workspace_write",
+        "network": "disabled",
+        "readableRoots": [
+          "/workspace"
+        ],
+        "writableRoots": [
+          "/approved output"
+        ]
+      },
+      "items": [
+        {
+          "type": "user",
+          "text": "\u5728 /approved output/result.txt \u5199\u5165 ok \u548c\u4e00\u4e2a\u6362\u884c\u3002"
+        }
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "Write",
+            "arguments": {
+              "file_path": "/approved output/result.txt",
+              "content": "ok\n",
+              "sandbox_permissions": "workspace-write"
+            }
+          }
+        ],
+        "preamble": true,
+        "chinese": true
+      }
+    }
+  ]
+}

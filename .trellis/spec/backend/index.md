@@ -21,13 +21,17 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, test gates, and cross-surface drift contracts | Active |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
 | [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
+| [Shared Gateway API Contract](./gateway-api-contract.md) | Typed RPC, shared client, stdio app-server, and backend dependency boundaries | Active |
 | [Runtime Composition Contract](./runtime-composition-contract.md) | Turn orchestration, tool batches, runtime registries, projections, and shutdown ownership | Active |
 | [Run Execution Snapshot Contract](./run-execution-snapshot-contract.md) | Per-run policy, mode, tool-catalog, continuation, compaction, and child-inheritance boundaries | Active |
 | [Context Management Contract](./context-management-contract.md) | Project context files, cache classes, fencing, and context diagnostics | Active |
+| [System Prompt Contract](./system-prompt-contract.md) | Prompt lifecycle, communication, skills, permission context, and behavior evaluation | Active |
+| [Headless Workflow Contract](./headless-workflow-contract.md) | Noninteractive exec, Git review, local output validation, and fixed coding evaluations | Active |
 | [Configuration Trust Contract](./configuration-trust-contract.md) | Config precedence, provenance, project trust gating, and resume workspace ownership | Active |
 | [Tool Manifest Contract](./tool-manifest-contract.md) | Built-in local tool registry and manifest metadata | Active |
 | [Shell Execution Policy Contract](./shell-execution-policy-contract.md) | Sandbox-first Shell classification, approval, escalation, and recovery | Active |
 | [Permission Grant Contract](./permission-grant-contract.md) | Runtime-owned permission grants, managed upper bounds, and domain enforcement | Active |
+| [Network Proxy Contract](./network-proxy-contract.md) | Process-owned HTTP/CONNECT proxy, pinned destinations, platform enforcement, and cleanup | Active |
 | [Plugin Runtime Contract](./plugin-runtime-contract.md) | Minimal local plugin manifest, loading, hook/tool registration, and diagnostics | Active |
 | [Read-only Tool Output Contract](./read-only-tool-output-contract.md) | Model-visible LS/Glob/Grep/Read discovery output | Active |
 | [File Mutation Tool Contract](./file-mutation-tool-contract.md) | Write/Edit/Patch safety, diffs, and diagnostics | Active |

@@ -1,5 +1,15 @@
 # Database Guidelines
 
+## Error Context Format Fence
+
+Runtime stores now write format 14. The v12/v13 upgrade preserves transcript
+bytes and uses the existing transactional migration boundary. Enriched failures
+are gated by `store.errorContextVersion === 1`; pre-14 writers reject them.
+The same occurrence must survive tool results, completed effects, provider
+attempts, terminalization and its lifecycle outbox. Provider-visible conversation
+content must not acquire diagnostic metadata. See `error-handling.md` and
+`docs/errors.md` for rollback requirements and uncommitted-storage diagnostics.
+
 > Database patterns and conventions for this project.
 
 ---
@@ -67,6 +77,16 @@ Questions to answer:
   `user_message`, a waiting-clarification `turn_record` with `user_message`, or
   a waiting-clarification rollout plus matching user history item. Doctor
   reports missing evidence read-only instead of clearing suspended state.
+- Cold session activation calls `interruptSessionForResume(sessionId)` only after acquiring
+  the session runtime lease. In one write transaction, validate recovery references, interrupt
+  unfinished turns, close pending tool calls, and clear approval/clarification continuation
+  state. Opening storage, inspecting history, or attaching to an existing live backend must
+  not invoke this transition. Repeated activation must not duplicate interruption records.
+- Recovery preserves committed tool results, including a crash between approval-result commit
+  and continuation cleanup. A matching completed effect checkpoint permits the continuation
+  to reference its already-completed canonical call. An unknown claimed effect closes all
+  remaining calls in its turn; reuse completed sibling results and never execute tools during
+  recovery. Cover these crash boundaries and transaction rollback in storage regression tests.
 - Session maintenance "empty session" detection must treat runtime state as
   durable session content. A session is empty only when it has no
   `conversation_messages`, no `session_summaries`, no `history_items`, no
@@ -94,6 +114,51 @@ Questions to answer:
   latest valid replacement plus canonical conversation rows after that boundary. Never reuse the
   bounded artifact snapshot or the complete UI transcript as provider input; prompt-cache keys,
   model-input manifests, and Responses continuation follow the effective provider window.
+
+---
+
+## Scenario: Delayed Interruption Display Order
+
+### Scope And Entry Points
+
+- Trigger: recovery appends interruption records after newer user inputs, or a late Shell
+  lifecycle snapshot is persisted after subsequent turns.
+- `projectTranscript(historyItems, turnRollouts, options): readonly TranscriptItem[]` owns
+  interruption placement after merging tool calls, results, and Shell snapshots.
+- `SQLiteTranscriptEventRepository.loadReadableTranscriptPage(sessionId, options)` returns
+  `TranscriptReadablePage` with ordered `items` and an exclusive `nextBeforeSequence` cursor.
+
+### Contracts
+
+- Identify interruption notices by `turnInterruptedNoticeId(turnId)` or
+  `metadata.event_kind === "turn_interrupted"`. Associate them by turn identity; repeated
+  user text and recovery timestamps are not ordering keys.
+- Place one terminal notice immediately after the last visible item belonging to its turn,
+  after tool result merging. Apply this to both persisted and synthesized notices before
+  slicing projected items. Preserve unanchored notices and ordinary warning positions.
+- Readable pagination must keep overlapping turn intervals together, even when intervening
+  events belong to other turns. A delayed record extends its group back to the earliest
+  event of its originating turn. Legacy call-scoped Shell activity also extends the group
+  back to its originating assistant tool call. Carry pending groups across raw event windows.
+- Use the same grouping rule for inherited fork history, with session-scoped identity
+  lookups. An exceptional complete group may exceed the requested item limit. Its cursor
+  advances past every event needed to build that group, without dropping older groups.
+- These are read projection rules. Preserve append-only event sequence, provider input
+  order, and database rows; no schema migration or transcript rewrite is required.
+- Cache originating turn/call lookups within a page load. Use the existing turn index for
+  turn boundaries, and resolve legacy call-scoped Shell references only when needed.
+
+### Cases And Verification
+
+- Three equal-text inputs followed by delayed recovery display as
+  `user 1, interrupted 1, user 2, interrupted 2, user 3, interrupted 3`.
+- A late Shell snapshot updates its original tool row. It does not create a detached tool
+  result between newer inputs and their interruption notices.
+- Cover persisted/synthesized and duplicate notices, ordinary warnings, and unchanged raw
+  history in projector tests. Verify complete history, recent history, paginated history,
+  inherited forks, and groups crossing the 2,000-event raw window.
+- Exercise gateway serialization, TUI page reducers, and headless terminal rendering at
+  narrow and wide terminal widths. Keep provider projection regression coverage passing.
 
 ---
 
@@ -837,12 +902,12 @@ return matches.map(formatMatch);
   db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
 - Candidate payload:
   `SessionMaintenanceCandidate(session_id, last_active_at, status)`
-- CLI slash command: `/session-maintenance`
+- CLI slash command: `/session maintenance`
 - Explicit cleanup commands:
-  - `/session-maintenance --apply-empty`
-  - `/session-maintenance --apply-payloads`
-  - `/session-maintenance --apply-orphans`
-  - `/session-maintenance --apply-vacuum`
+  - `/session maintenance --apply-empty`
+  - `/session maintenance --apply-payloads`
+  - `/session maintenance --apply-orphans`
+  - `/session maintenance --apply-vacuum`
 
 ### 3. Contracts
 
@@ -872,7 +937,7 @@ return matches.map(formatMatch);
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `/session-maintenance` reports `dry_run=true`, workspace counts, empty counts, bounded empty candidates, and SQLite page counters.
+- Good: `/session maintenance` reports `dry_run=true`, workspace counts, empty counts, bounded empty candidates, and SQLite page counters.
 - Base: A fresh DB reports zero workspace sessions without mutating data beyond normal store initialization.
 - Bad: Running `VACUUM`, deleting rows, or repairing orphaned state from the maintenance report path.
 - Bad: Cleaning orphan child rows from the default dry-run command. Orphan
@@ -886,7 +951,7 @@ return matches.map(formatMatch);
 - Two-repository store test proving live leases are preserved while stale and unowned empty sessions
   remain reclaimable.
 - Service/application test for formatted `key=value` lines.
-- CLI/TUI completion or command-routing tests for `/session-maintenance`.
+- CLI/TUI completion or command-routing tests for `/session maintenance`.
 
 ### 7. Wrong vs Correct
 
@@ -975,11 +1040,11 @@ this.#write(() => {
   repository write transaction.
 - Domain payload:
   `SessionOrphanCleanupResult(deleted_rows_by_table, total_deleted_rows, dry_run=False)`
-- CLI slash command: `/session-maintenance --apply-orphans`
+- CLI slash command: `/session maintenance --apply-orphans`
 
 ### 3. Contracts
 
-- Default `/session-maintenance` remains read-only.
+- Default `/session maintenance` remains read-only.
 - Orphan cleanup may delete rows only from known session child tables.
 - Orphan cleanup must not delete rows from `sessions`.
 - Orphan cleanup must not repair missing lineage parents or run `VACUUM`.
@@ -1012,7 +1077,7 @@ this.#write(() => {
 - Store test proving empty sessions are not deleted by orphan cleanup.
 - Two-repository test proving a live leased virtual session keeps its child state while an unowned
   orphan is deleted.
-- Service/CLI/gateway tests for `/session-maintenance --apply-orphans`.
+- Service/CLI/gateway tests for `/session maintenance --apply-orphans`.
 
 ### 7. Wrong vs Correct
 
@@ -1045,11 +1110,11 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
   `SessionStore.apply_session_maintenance_vacuum() -> SessionVacuumResult`
 - Domain payload:
   `SessionVacuumResult(before_db_size_bytes, after_db_size_bytes, before_page_count, after_page_count, before_freelist_count, after_freelist_count, page_size, dry_run=False)`
-- CLI slash command: `/session-maintenance --apply-vacuum`
+- CLI slash command: `/session maintenance --apply-vacuum`
 
 ### 3. Contracts
 
-- Default `/session-maintenance` remains read-only.
+- Default `/session maintenance` remains read-only.
 - Doctor must not run `VACUUM`.
 - Empty-session cleanup and orphan cleanup must not run `VACUUM`.
 - Vacuum must not delete sessions, delete child rows, repair orphan rows, or
@@ -1062,7 +1127,7 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
 - Store test proving explicit vacuum returns before/after database metrics while
   preserving sessions and messages.
 - Store test proving empty/orphan cleanup paths do not execute `VACUUM`.
-- Service/CLI/gateway completion tests for `/session-maintenance --apply-vacuum`.
+- Service/CLI/gateway completion tests for `/session maintenance --apply-vacuum`.
 
 ## Scenario: Doctor Session Maintenance Readiness
 
@@ -1075,7 +1140,7 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
 
 - Doctor check name: `session_maintenance`
 - Output fields: `workspace_sessions=<int> empty_sessions=<int> freelist_pages=<int>`
-- Remediation: warning messages should point to `/session-maintenance`.
+- Remediation: warning messages should point to `/session maintenance`.
 
 ### 3. Contracts
 
@@ -1087,14 +1152,14 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
 
 ### 4. Validation & Error Matrix
 
-- Empty workspace sessions > 0 -> warning with `/session-maintenance`.
-- `PRAGMA freelist_count` > 0 -> warning with `/session-maintenance`.
+- Empty workspace sessions > 0 -> warning with `/session maintenance`.
+- `PRAGMA freelist_count` > 0 -> warning with `/session maintenance`.
 - Both counts are zero -> ok.
 - Sessions from other workspaces -> excluded from workspace counts.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: doctor reports `session_maintenance: workspace_sessions=2 empty_sessions=1 ...; inspect with /session-maintenance`.
+- Good: doctor reports `session_maintenance: workspace_sessions=2 empty_sessions=1 ...; inspect with /session maintenance`.
 - Base: fresh valid DB reports `workspace_sessions=0 empty_sessions=0 freelist_pages=0`.
 - Bad: doctor repairs, deletes, vacuums, or creates session storage while checking.
 

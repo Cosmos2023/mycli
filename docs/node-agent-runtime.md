@@ -489,7 +489,7 @@ duplicate nicknames remain distinct. All model-visible coordination tool calls a
 the transcript. Progress and terminal projections update existing rows instead of duplicating them,
 and provider-only mailbox payloads remain hidden from user-authored transcript history.
 
-Use `/tasks agents` or `/agents runs` for the agent view. Use `/usage` for session usage; child usage remains
+Use `/agents` for the agent view. Use `/usage` for session usage; child usage remains
 attributed to the child thread and is projected through canonical usage events.
 
 ## Operational Checks

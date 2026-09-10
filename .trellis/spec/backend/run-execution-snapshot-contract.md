@@ -56,6 +56,8 @@
 - Approval and clarification suspension persist the complete run snapshot with the continuation.
   Restoration requires the suspended turn id to match. When the same process still owns the run,
   the durable snapshot must equal the active snapshot exactly before any resolution side effect.
+  This supports live runtime continuity; cold session activation interrupts historical waits and
+  never uses the stored snapshot as authority to resume an old approval or question.
 - A restored execution policy becomes the policy coordinator's base for that turn instead of being
   recomputed from current settings. A user-approved temporary permission grant creates a new
   immutable policy snapshot for the same run; it does not change the frozen collaboration mode or
@@ -97,7 +99,7 @@
 
 - Good: MCP refresh replaces `docs_old` with `docs_new` while a run is active; the active run can
   still expose only `docs_old`, and the next run sees only `docs_new`.
-- Good: an approval survives restart with its Plan-mode instruction, trusted workspace policy,
+- Good: a live approval survives client reattachment with its Plan-mode instruction, trusted workspace policy,
   deferred catalog, activated tools, and skill catalog intact.
 - Good: an untrusted parent with a constrained workspace profile gives the child the same filesystem
   shape while preserving `trusted=false` and disabling process-tool exposure.

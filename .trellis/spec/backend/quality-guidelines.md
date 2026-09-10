@@ -210,8 +210,8 @@ Correct:
 - Session maintenance diagnostics must not classify runtime-only sessions as
   empty. `history_items`, `turn_rollouts`, and `session_state` rows count as
   durable session content even when legacy `conversation_messages` is empty.
-- `/session-maintenance` is read-only by default. Empty-session cleanup requires
-  the explicit `/session-maintenance --apply-empty` form, must recompute
+- `/session maintenance` is read-only by default. Empty-session cleanup requires
+  the explicit `/session maintenance --apply-empty` form, must recompute
   candidates at apply time, and must only delete workspace-scoped sessions that
   still have no conversation messages, summaries, history items, turn rollouts,
   or session state.
@@ -219,10 +219,10 @@ Correct:
   lineage as forked children or as parents of other sessions. Lineage pruning
   requires a separate explicit policy.
 - Orphan child-row cleanup requires the explicit
-  `/session-maintenance --apply-orphans` form. It may delete only known child
+  `/session maintenance --apply-orphans` form. It may delete only known child
   table rows whose `session_id` is absent from `sessions`; it must not delete
   sessions, repair lineage parent references, or run `VACUUM`.
-- SQLite vacuum requires the explicit `/session-maintenance --apply-vacuum`
+- SQLite vacuum requires the explicit `/session maintenance --apply-vacuum`
   form. It must report bounded before/after storage metrics, preserve sessions
   and child rows, and must not run from doctor, the default dry-run report,
   empty-session cleanup, or orphan cleanup.
@@ -477,13 +477,13 @@ Correct:
   missing/mismatch/malformed, and configured command path checks.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,
   runtime-state protection, lineage protection, bounded apply limits, and CLI
-  routing through `/session-maintenance --apply-empty`.
+  routing through `/session maintenance --apply-empty`.
 - Unit test explicit orphan child-row cleanup for multi-table orphan deletion,
   valid-row preservation, empty-session separation, and CLI/gateway routing
-  through `/session-maintenance --apply-orphans`.
+  through `/session maintenance --apply-orphans`.
 - Unit test explicit vacuum maintenance for before/after storage metrics,
   session preservation, cleanup-path separation, and CLI/gateway routing through
-  `/session-maintenance --apply-vacuum`.
+  `/session maintenance --apply-vacuum`.
 - Node protocol tests cover event methods plus required fields, property names, and enum values
   against canonical schemas.
 - Unit test runtime-contract discovery against both direct object payload schemas and generated
@@ -885,7 +885,7 @@ must continue to observe the actual process.
 - Completion command: `mycli completion <bash|zsh|fish|powershell>`.
 - Completion renderer: `renderShellCompletion(shell: CompletionShell) -> string`.
 - Keymap catalog: `TUI_KEYMAP_ACTIONS` and `tui.keymap.<context>.<config-key>` paths in
-  `backend/packages/contracts/src/tui-keymap.ts`.
+  `backend/packages/contracts/src/gateway/tui-keymap.ts`.
 - Settings RPCs: `settings.load`, `settings.save`, and `settings.keymap.reset`.
 - Settings snapshot fields: `settings`, `sources`, `keymap`, `terminal_capabilities`, and `catalog`.
 - Focused command: `npm run test:ux-contracts`.
@@ -928,6 +928,14 @@ must continue to observe the actual process.
 - TUI chrome consumes semantic color and glyph tokens. `none` emits no ANSI color sequences, ASCII
   mode removes product-owned non-ASCII chrome, and reduced motion uses a static progress indicator
   without changing transcript meaning or layout dimensions.
+- `renderUnifiedDiff` expands tabs to three spaces before parsing, highlighting, wrapping, and
+  fallback rendering, matching `Text`, `Markdown`, and `visibleWidth`. Raw terminal tabs only move
+  the cursor: skipped cells keep their old background and terminal tab stops invalidate measured
+  widths. Added/removed rows must paint every cell, including indentation, blank source lines,
+  continuations, and trailing padding. Keep source file contents unchanged.
+- Diff background regressions inspect actual `HeadlessTerminal.visibleCell` background attributes,
+  not just the presence of ANSI color codes. Cover tabbed code, CJK text, widths 18/22/80, dark/light
+  themes, supported color modes, and incremental updates and resize in both terminal render modes.
 - Slash commands, aliases, and shell setting keys are generated or checked from their canonical
   registries rather than copied into another production registry.
 - Gateway drift checks compare the generated contract catalog with the frozen M8 gateway evidence.

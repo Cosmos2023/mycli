@@ -47,7 +47,7 @@ test("test catalog separates contracts integrations platforms and release checks
 		"integration",
 	);
 	assert.equal(
-		byPath.get("backend/packages/runtime/test/worker-provider-step-executor.test.ts"),
+		byPath.get("backend/packages/runtime/test/workers/worker-provider-step-executor.test.ts"),
 		"integration",
 	);
 	assert.equal(
@@ -55,7 +55,7 @@ test("test catalog separates contracts integrations platforms and release checks
 		"platform",
 	);
 	assert.equal(
-		byPath.get("backend/packages/tools/test/node-pty-transport.integration.test.ts"),
+		byPath.get("backend/packages/tools/test/shell/node-pty-transport.integration.test.ts"),
 		"platform",
 	);
 	assert.equal(byPath.get("scripts/test/release-scripts.test.mjs"), "release");

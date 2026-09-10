@@ -21,6 +21,17 @@ Apply this contract when changing:
 ## Contracts
 
 - `Read` should expose grounded file excerpts and snapshot metadata.
+- TUI summaries use validated `actualStartLine`, `actualEndLine`, `shownLines`, and `totalLines`
+  to describe the returned read range. Empty, out-of-range, and unchanged reads have distinct
+  summaries. CSV/TSV use row labels when row metadata is available. Preserve these bounded
+  numeric fields and the `dedup` boolean through readable transcript projection and sanitization,
+  without forwarding argument objects or file digests. Explicit display summaries retain priority.
+- The main TUI groups Read, search, and list operations under `Exploring`/`Explored`, including
+  single operations and recognized Shell searches. Consecutive reads merge deduplicated display
+  filenames in one row, with hanging wrapping and no fixed target limit. Read aliases share this
+  behavior. Failed/cancelled reads remain distinct so a successful retry cannot hide them.
+  Expanded tools and the full transcript retain every call, full target, available output, and
+  range/empty/unchanged summary; these details do not appear in the main exploration summary.
 - Structured files such as CSV/TSV should expose model-visible content and
   useful summaries rather than only raw payload fields.
 - Repeated unchanged reads should include a dedup hint.
@@ -48,3 +59,4 @@ Required tests for read-only discovery changes:
 - Grep content-mode structured matches and evidence.
 - Empty search result guidance.
 - Existing read-only tool compatibility tests.
+- Read range summary validation and storage-to-gateway-to-TUI preservation after resume.

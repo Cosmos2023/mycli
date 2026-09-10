@@ -28,14 +28,18 @@ without changing the active turn.
 ## Error Types
 
 - `RuntimeErrorCode` is generated from the canonical runtime-turn JSON Schema.
-- `backend/packages/contracts/src/runtime-errors.ts` owns:
-  - `RUNTIME_ERROR_CODES`
-  - the exhaustive public-message mapping
-  - the exhaustive optional recovery-hint mapping
-  - `RuntimeFailure`, its separate bounded `additionalDetails`, and diagnostic
-    value types
-  - the runtime error-code guard
-  - public-detail redaction and canonical terminal messages
+- `backend/packages/contracts/src/errors/` owns the versioned reason catalog,
+  legacy mappings, public summaries, and bounded context validation.
+- `gateway/runtime-errors.ts` remains a compatibility facade for the 17 legacy
+  runtime codes, `RuntimeFailure`, redaction, and terminal message helpers.
+- Version-1 `error_context` adds 66 precise reasons without expanding those
+  legacy codes. It contains a stable occurrence ID, source, operation scope,
+  outcome/effect evidence, reason-specific details, and at most three causal
+  snapshots. Its encoded size cannot exceed 8 KiB.
+- Use `errorContext` internally and `error_context` in existing snake-case
+  result/metadata/gateway envelopes. The nested object is identical. Use
+  `failureScope()` for opaque ownership IDs; safe IDs are retained and unsafe
+  or oversized IDs become a deterministic SHA-256 identity.
 - Provider-facing runtime codes are grouped by recovery semantics:
   - credentials and policy: `auth_error`, `permission_denied`
   - caller correction: `invalid_request`, `context_window_exceeded`
@@ -55,8 +59,8 @@ without changing the active turn.
   boundary.
 - `GatewayFailure` is an app-layer request error. It is not a `RuntimeFailure`
   and must not terminalize a turn.
-- Fatal TUI rendering failures stay outside the conversation error protocol and
-  use the private fatal-error diagnostic path.
+- Fatal TUI rendering failures use the same context catalog in the private
+  fatal-error diagnostic path, while remaining outside conversation state.
 
 Do not duplicate the runtime error-code list or public-message switch in
 providers, runtime, storage, Worker RPC, gateway, or TUI code.
@@ -80,6 +84,15 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
 - Normalize retry delays from `retry-after-ms`, numeric or HTTP-date
   `Retry-After`, and the structured `rate_limit_exceeded` message form used by
   Responses. Provider and runtime boundaries both cap the delay at one hour.
+- HTTP success is not stream success. Capture structured Responses `error` (flat or nested) and
+  `response.failed` objects at the existing SSE boundary before the SDK reduces them to text.
+  Immediately classify and sanitize this evidence; retain only the canonical failure, never the
+  whole envelope. It takes precedence over SDK translation, with caller cancellation still first.
+  Capture response-body transport causes similarly. Fatal code/type tokens work without an HTTP
+  error status or code; only remaining remote stream failures use the retryable fallback.
+- SDK error-string decoding is a compatibility fallback, not the primary Responses error contract.
+  Do not add exact-message whitelists to fix unrecognized remote error formats. The first terminal
+  event owns the outcome; a following `response.failed` must not replace its detail or delay shutdown.
 - Treat HTTP 413 and 415 as caller-correctable `invalid_request` failures when
   no more specific context-window signature applies.
 - Never promote an arbitrary local `Error.message`, stack, raw body, header, or
@@ -98,6 +111,13 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
   `additionalDetails` field and is capped at 1,000 characters.
 - Retry policy consumes structured `retryable`, `retryAfterSeconds`, and
   diagnostics. It does not infer retryability from rendered text.
+- `providerAttemptRetryAllowed()` checks attempt completion, cancellation and
+  dispatch evidence before applying those budgets. `resolveErrorRecovery()`
+  additionally checks current session ownership, activity, capabilities and
+  prior effects. A retryable provider attempt never authorizes whole-turn replay.
+- Retry exhaustion retains the last concrete cause. User cancellation is
+  `runtime.user_cancelled` only when the owning interrupt boundary supplies
+  explicit evidence. Legacy `interrupted` remains unspecified.
 - Connection failures before the first Provider event may consume the request
   retry budget. Once output has started, a connection failure is reclassified
   as `response_stream_error`, rolls back that incomplete visible attempt, and
@@ -105,8 +125,22 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
 - An ordinary local exception without a recognized transport identity or
   structured retryable server response is not retryable merely because it has
   no HTTP status.
+- A typed Worker request byte-limit rejection before dispatch is a local
+  `context_window_exceeded` result with zero observed provider events, not an
+  upstream provider failure. Preserve `error_source=worker_rpc` and safe numeric
+  limits, publish the failed attempt diagnostic, and use the existing single
+  reactive compaction attempt. Do not classify oversized inbound Worker traffic
+  or arbitrary protocol exceptions as recoverable input overflow.
+- Other typed Worker provider-RPC failures remain non-retryable local failures.
+  Preserve `error_source=worker_rpc` and a fixed safe explanation to restart mycli
+  and reload matching runtime modules. Do not expose the raw exception in public
+  detail or spend a remote retry budget on an already successful remote attempt.
+  Optional diagnostic payload incompatibility alone cannot cause this failure;
+  its envelope, identity, sequence, and byte bounds still require validation.
 - A retry publishes transient `stream.retrying`; it does not persist a terminal
   error or fail the turn.
+- Both request and stream retries honor bounded `retryAfterSeconds`. Retrying a provider step must
+  never re-execute tools from an earlier committed step or publish incomplete tool-call arguments.
 - Retry exhaustion or a non-retryable failure is persisted atomically with the
   terminal turn and its model-hidden display item before `turn.failed` is
   projected.
@@ -116,6 +150,15 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
   safe detail, usage, or kind from request-local values after commit.
 - `turn.failed` owns terminal failure content. `turn.status` and
   `status.update` update state only.
+- Failed terminal commits emit an uncommitted `runtime_error`, projected as
+  `gateway.error`, with unknown outcome and the original failure as a cause.
+  Never recursively persist that emergency failure or publish a committed
+  `turn.failed`. Readable snapshot write failures are private diagnostics and
+  cannot replace an already committed successful/failed outcome.
+- Keep notification delivery outside the terminal-commit catch. A disconnect
+  after commit must retain the committed outcome and occurrence, without a
+  second storage error or request replay. Preserve structured SQLite lock and
+  capacity reasons when the commit itself fails.
 
 ### Storage And Resume
 
@@ -125,18 +168,30 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
 - `/resume` restores the persisted error item with the same main message and
   optional `additional_details` metadata as the live failure. Neither display
   field is injected into model context.
+- Database format 14 fences enriched writes. The v12/v13 forward migration is
+  transactional and preserves existing transcript bytes. Writers obtain
+  `errorContextVersion: 1` from the store; legacy stores reject enriched data.
+- Provider attempt, effect ledger, lifecycle outbox, and turn results retain the
+  same occurrence. Runtime-state closed payloads do not gain a second copy.
+  Snapshot v2 already has extensible transcript metadata; its version remains
+  2, with bounded context parsing before read-only recovery.
 
 ### Gateway And TUI
 
 - `gateway.error` represents one failed RPC. It must not stop an otherwise
   active turn.
+- RPC error codes outside the closed event enum project to `internal_error`
+  using `isGatewayErrorCode()`, while the RPC code and enriched reason remain
+  intact. Preserve invalid-context markers and resolved empty action lists.
+  Legacy projection removes version-1 recovery actions as well as contexts.
 - Distinct gateway failures remain distinct even when their text matches.
 - Re-delivery of the same terminal turn failure is idempotent by stable
   identity, not by adjacent-text comparison.
 - TUI reducers consume structured error events, finalize foreground tool rows,
-  and render one notice. `runtimeErrorRecoveryHint()` derives optional recovery
-  guidance only from a validated runtime code; hints are neither persisted nor
-  parsed from Provider text, so live and `/resume` projection stay identical.
+  and render one notice. Shared summaries describe historical failure facts;
+  the runtime resolves recovery against current state for live and loaded
+  history. An explicit empty recovery list must remain empty. Legacy hint
+  helpers are fallback facades, never authority to replay effects.
   The hint, `additional_details`, `code`, `method`, and `source` may form one
   logical secondary line; they do not become extra transcript rows. When a hint
   exists, rendering prioritizes the hint and safe detail over repeating
@@ -166,9 +221,28 @@ from provider-visible history and readable error messages.
   code/message and do not reuse `turn.failed`.
 - Diagnostics crossing Worker or storage boundaries are closed, bounded
   records containing only string, number, boolean, or null values.
+- Provider attempt diagnostics may carry `failure?: RuntimeFailure` alongside the legacy
+  `failureKind`. Worker parsing reuses the canonical failure validator and rejects a failed
+  diagnostic marked successful or with a contradictory failure code. Trace projections retain only
+  allowlisted classification fields, retryability/delay, and sanitized additional detail.
 
 Schema validation is mandatory at external/gateway boundaries and independent
 runtime validation is mandatory at Worker and storage trust boundaries.
+
+Gateway protocol 1 negotiates `supported_error_context_versions: [1]` and replies
+with `error_context_version: 1`. Missing/unsupported selection downgrades every
+known nested event, RPC, history and attempt context. Only an explicit handshake
+parameter rejection permits retrying bootstrap without the extension. Worker
+protocol 2 rejects stale peers before dispatch. Unknown optional contexts are
+quarantined with `error_context_invalid`, suppress speculative recovery, and
+cannot invalidate an otherwise authoritative terminal envelope.
+
+`tests/fixtures/error-system/` contains shared hashed presentation fixtures and
+the reviewed emitter inventory. After changing a boundary, review the intended
+classification and regenerate the inventory with
+`node --conditions=mycli-source --import tsx scripts/error-emitter-inventory.mjs --write`.
+The inventory records syntax-level emitters and explicit generic fallbacks;
+integration tests remain responsible for proving their actual ownership flow.
 
 ---
 

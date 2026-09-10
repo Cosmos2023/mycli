@@ -13,7 +13,8 @@ the sanitized M2-M7 corpus.
   contract work added shell controls, explicit `session.new`, settings and update controls, and
   provider connectivity validation, model controls, provider-scoped directory listing, and durable
   queue-restoration acknowledgement plus explicit child-interaction cancellation, so the Node
-  contract now advertises 44 RPC methods and 44 event streams.
+  contract now advertises 45 RPC methods and 45 event streams, including durable provider attempt
+  history and committed attempt notifications.
 - The retained slash surface contains 35 commands and 13 argument-prefix aliases. The retired
   agent-profile browser is absent; `/agents` is canonical and `/tasks` remains a compatibility alias.
   Remaining commands keep frozen ownership, surfaces, running-turn policy, argument rules,
