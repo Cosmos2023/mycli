@@ -1,9 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GatewayEventDeduper } from "../../src/adapters/gateway-events.ts";
-import type { GatewayEvent, RpcMessage } from "../../src/adapters/gateway-client.ts";
-import { initialRuntimeState, reduceDecodedRuntimeEvent, type RuntimeShellState } from "../../src/adapters/runtime-state.ts";
+import { GatewayEventDeduper } from "../../src/transport/gateway-events.ts";
+import type { GatewayEvent, RpcMessage } from "../../src/transport/gateway-client.ts";
+import {
+	initialRuntimeState,
+	type RuntimeShellState,
+} from "../../src/state/runtime-state-model.ts";
+import {
+	reduceDecodedRuntimeEvent,
+} from "../../src/state/runtime-event-reducer.ts";
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 

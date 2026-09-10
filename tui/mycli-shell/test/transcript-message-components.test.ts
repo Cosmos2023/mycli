@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { AssistantMessageComponent } from "../src/components/assistant-message.ts";
+import { AssistantMessageComponent } from "../src/components/transcript/assistant-message.ts";
 import {
 	renderTranscriptMessageLines,
 	transcriptMessageContentWidth,
-} from "../src/components/transcript-message-layout.ts";
-import { UserMessageComponent } from "../src/components/user-message.ts";
+} from "../src/components/transcript/transcript-message-layout.ts";
+import { UserMessageComponent } from "../src/components/transcript/user-message.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
 
 function stripAnsi(text: string): string {

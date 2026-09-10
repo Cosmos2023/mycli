@@ -1,5 +1,12 @@
 import { execSync } from "node:child_process";
 
+const IMAGE_FILE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif"] as const;
+const IMAGE_FILE_RE = new RegExp(`\\.(${IMAGE_FILE_EXTENSIONS.join("|")})$`, "i");
+
+export function isImageFilePath(path: string): boolean {
+	return IMAGE_FILE_RE.test(path);
+}
+
 type ImageProtocol = "kitty" | "iterm2" | null;
 
 export interface TerminalCapabilities {
@@ -8,19 +15,7 @@ export interface TerminalCapabilities {
 	hyperlinks: boolean;
 }
 
-export interface CellDimensions {
-	widthPx: number;
-	heightPx: number;
-}
-
 let cachedCapabilities: TerminalCapabilities | null = null;
-
-// Default cell dimensions - updated by TUI when terminal responds to query
-let cellDimensions: CellDimensions = { widthPx: 9, heightPx: 18 };
-
-export function setCellDimensions(dims: CellDimensions): void {
-	cellDimensions = dims;
-}
 
 /**
  * Checks whether the attached tmux client forwards OSC 8 hyperlinks to the

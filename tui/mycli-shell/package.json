@@ -17,12 +17,13 @@
       "import": "./dist/gateway.js"
     },
     "./gateway-transport": {
-      "mycli-source": "./src/adapters/gateway-transport.ts",
-      "types": "./dist/adapters/gateway-transport.d.ts",
-      "import": "./dist/adapters/gateway-transport.js"
+      "mycli-source": "./src/transport/gateway-transport.ts",
+      "types": "./dist/transport/gateway-transport.d.ts",
+      "import": "./dist/transport/gateway-transport.js"
     }
   },
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.build.json",
     "demo": "node --import tsx src/demo.ts",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
@@ -33,10 +34,13 @@
   },
   "dependencies": {
     "@mycli/contracts": "0.1.0",
+    "@mycli/gateway": "0.1.0",
     "cli-highlight": "2.1.11",
     "get-east-asian-width": "1.6.0",
+    "linebreak": "1.1.0",
     "marked": "15.0.12",
-    "parse-diff": "0.12.0"
+    "parse-diff": "0.12.0",
+    "shell-quote": "1.10.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

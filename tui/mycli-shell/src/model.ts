@@ -2,9 +2,20 @@ import type {
 	DiagnosticCategory,
 	DiagnosticRecoveryAction,
 	TuiKeymapActionId,
+	ProviderAttemptRecord,
+	GatewayTerminalInteraction,
+	ErrorContext,
 } from "@mycli/contracts";
 
+export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
+
+export function hasProviderAttemptRetries(record: ProviderAttemptRecord): boolean {
+	return record.attempt > 1 || record.requestRetriesUsed > 0 || record.streamRetriesUsed > 0;
+}
+
 export type MycliShellNoticeDiagnostic = {
+	errorContext?: ErrorContext;
+	expanded?: boolean;
 	hint?: string;
 	source?: string;
 	method?: string;
@@ -60,6 +71,7 @@ export type MycliShellToolStatus = "running" | "success" | "error" | "cancelled"
 export type MycliShellTool = {
 	id: string;
 	name: string;
+	terminalInteraction?: GatewayTerminalInteraction;
 	args?: string;
 	status: MycliShellToolStatus;
 	durationMs?: number;
@@ -128,21 +140,6 @@ export type MycliShellBash = {
 	outputPreview?: string;
 	hiddenLineCount?: number;
 	expanded?: boolean;
-};
-
-export type MycliShellTranscriptOutputRequest = {
-	sessionId: string;
-	shellId: string;
-	callId?: string;
-};
-
-export type MycliShellTranscriptOutput = MycliShellTranscriptOutputRequest & {
-	output: string;
-	available: boolean;
-	complete: boolean;
-	omittedChars: number;
-	capturedChars: number;
-	outputChars: number;
 };
 
 type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "max_tool_calls" | string;
@@ -281,6 +278,11 @@ export type MycliShellWebSearch = {
 };
 
 export type MycliShellTranscriptBlock =
+	| { id: string; kind: "provider_attempt"; providerAttempt: {
+		readonly records: readonly ProviderAttemptRecord[];
+		readonly expanded: boolean;
+		readonly active: boolean;
+	} }
 	| { id: string; kind: "message"; message: MycliShellMessage }
 	| { id: string; kind: "turn_completed"; turnCompleted: MycliShellTurnCompleted }
 	| { id: string; kind: "web_search"; webSearch: MycliShellWebSearch }
@@ -324,6 +326,7 @@ export type MycliShellFooterData = {
 	liveState?: string;
 	liveStateKind?: string;
 	liveStateDetail?: string;
+	liveRetryAt?: string;
 	turnDurationMs?: number;
 	turnRunning?: boolean;
 	backgroundShellCount?: number;
@@ -383,6 +386,7 @@ export type MycliShellProviderRoute = {
 	protocol?: string;
 	baseUrl?: string;
 	authRef?: string;
+	credentialSource?: MycliShellCredentialSource;
 	activation: "active" | "inactive" | "unserviceable";
 	configured: boolean;
 	ready: boolean;
@@ -412,6 +416,12 @@ export type MycliShellCredentialReadiness = {
 	providerId: string;
 	authRef: string;
 	source: MycliShellCredentialSource;
+};
+
+export type MycliShellLoginResult = {
+	message?: string;
+	authProviders?: MycliShellAuthProvider[];
+	authReadiness?: MycliShellCredentialReadiness;
 };
 
 export type MycliShellVisualSettings = {
@@ -610,6 +620,9 @@ export type MycliShellPendingApproval = {
 	sessionId?: string;
 	generation?: number;
 	preview: string;
+	commandPreview?: string;
+	commandTruncated?: boolean;
+	justification?: string;
 	reason?: string;
 	toolName?: string;
 	workerName?: string;
@@ -698,6 +711,7 @@ export type MycliShellState = {
 	bash: MycliShellBash[];
 	transcript?: MycliShellTranscriptBlock[];
 	transcriptNextBefore?: string | null;
+	providerAttemptsNextBefore?: string | null;
 	footer: MycliShellFooterData;
 	pendingInput?: MycliShellPendingInput;
 	pendingNotice?: string;

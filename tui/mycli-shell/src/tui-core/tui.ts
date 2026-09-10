@@ -13,7 +13,7 @@ import {
 	type TerminalLinePatch,
 } from "./screen-buffer.ts";
 import type { Terminal } from "./terminal.ts";
-import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
+import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
@@ -770,7 +770,6 @@ export class TUI extends Container {
 		this.terminal.hideCursor();
 		this.hardwareCursorVisible = false;
 		this.hardwareCursorPositionKnown = false;
-		this.queryCellSize();
 		this.frameScheduler.start();
 	}
 
@@ -783,16 +782,6 @@ export class TUI extends Container {
 
 	removeInputListener(listener: InputListener): void {
 		this.inputListeners.delete(listener);
-	}
-
-	private queryCellSize(): void {
-		// Only query if terminal supports images (cell size is only used for image rendering)
-		if (!getCapabilities().images) {
-			return;
-		}
-		// Query terminal for cell size in pixels: CSI 16 t
-		// Response format: CSI 6 ; height ; width t
-		this.terminal.write("\x1b[16t");
 	}
 
 	stop(): void {
@@ -894,8 +883,8 @@ export class TUI extends Container {
 			data = current;
 		}
 
-		// Consume terminal cell size responses without blocking unrelated input.
-		if (this.consumeCellSizeResponse(data)) {
+		// Ignore late cell-size reports without invalidating character-based layout.
+		if (/^\x1b\[6;\d+;\d+t$/.test(data)) {
 			return;
 		}
 
@@ -943,26 +932,6 @@ export class TUI extends Container {
 			this.focusedComponent.handleInput(data);
 			this.requestRender();
 		}
-	}
-
-	private consumeCellSizeResponse(data: string): boolean {
-		// Response format: ESC [ 6 ; height ; width t
-		const match = data.match(/^\x1b\[6;(\d+);(\d+)t$/);
-		if (!match) {
-			return false;
-		}
-
-		const heightPx = parseInt(match[1], 10);
-		const widthPx = parseInt(match[2], 10);
-		if (heightPx <= 0 || widthPx <= 0) {
-			return true;
-		}
-
-		setCellDimensions({ widthPx, heightPx });
-		// Invalidate all components so images re-render with correct dimensions.
-		this.invalidate();
-		this.requestRender();
-		return true;
 	}
 
 	/**
@@ -1319,6 +1288,8 @@ export class TUI extends Container {
 		prevViewportTop: number,
 		hardwareCursorRow: number,
 	): void {
+		frameLines = frameLines.slice(0, height);
+		if (cursorPos && cursorPos.row >= height) cursorPos = null;
 		this.fullRedrawCount += 1;
 		let buffer = "\x1b[?2026h";
 
@@ -1392,12 +1363,10 @@ export class TUI extends Container {
 		width: number,
 		height: number,
 	): void {
-		const frameStart = Math.max(0, lines.length - height);
-		const frameLines = lines.slice(frameStart, frameStart + height);
+		const frameLines = lines.slice(0, height);
 		while (frameLines.length < height) frameLines.push("");
 
-		const previousStart = Math.max(0, this.previousLines.length - height);
-		const previousFrame = this.previousLines.slice(previousStart, previousStart + height);
+		const previousFrame = this.previousLines.slice(0, height);
 		while (previousFrame.length < height) previousFrame.push("");
 
 		const previousImageIds = this.collectKittyImageIds(previousFrame);
@@ -1427,9 +1396,7 @@ export class TUI extends Container {
 				terminalChanged = true;
 			}
 		}
-		const frameCursor = cursorPos && cursorPos.row >= frameStart
-			? { row: cursorPos.row - frameStart, col: cursorPos.col }
-			: null;
+		const frameCursor = cursorPos && cursorPos.row < height ? cursorPos : null;
 		if (terminalChanged) {
 			const cursorUpdate = this.buildHardwareCursorUpdate(frameCursor, frameLines.length, finalCursorRow);
 			this.terminal.write(`\x1b[?2026h${buffer}${cursorUpdate.sequence}\x1b[?2026l`);
@@ -1473,6 +1440,9 @@ export class TUI extends Container {
 		}
 		if (this.terminal.alternateScreen) {
 			newLines = this.fitAlternateScreenFrame(newLines, width, height);
+		}
+		if (this.terminal.nativeScrollback && (this.pendingHistoryLines !== null || this.nativeViewportAnchored)) {
+			newLines = newLines.slice(0, height);
 		}
 
 		// Extract cursor position before applying line resets (marker must be found first)

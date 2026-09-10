@@ -2,7 +2,7 @@ import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocompl
 import { getKeybindings } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
-import { isLocalImageAttachmentPath } from "../../local-image-attachments.ts";
+import { isImageFilePath } from "../terminal-image.ts";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
@@ -223,6 +223,22 @@ interface EditorState {
 	cursorCol: number;
 }
 
+export interface EditorImageAttachment {
+	readonly path: string;
+	readonly placeholder: string;
+}
+
+interface EditorHistoryEntry {
+	readonly text: string;
+	readonly localImages: readonly EditorImageAttachment[];
+}
+
+interface EditorSnapshot {
+	readonly state: EditorState;
+	readonly localImages: readonly EditorImageAttachment[];
+	readonly pastes: Map<number, string>;
+}
+
 interface LayoutLine {
 	text: string;
 	hasCursor: boolean;
@@ -244,6 +260,8 @@ export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
 	onDroppedImageFile?: (path: string) => string;
+	captureLocalImages?: () => readonly EditorImageAttachment[];
+	restoreLocalImages?: (images: readonly EditorImageAttachment[]) => void;
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -269,7 +287,7 @@ export function normalizeDroppedFilePaste(
 	const resolvedPath = resolve(pathText);
 	const relativePath = relative(cwd, resolvedPath);
 	const normalizedAbsolutePath = resolvedPath.split(sep).join("/");
-	if (isLocalImageAttachmentPath(normalizedAbsolutePath) && options.onDroppedImageFile) {
+	if (isImageFilePath(normalizedAbsolutePath) && options.onDroppedImageFile) {
 		if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
 			return options.onDroppedImageFile(normalizedAbsolutePath);
 		}
@@ -278,7 +296,7 @@ export function normalizeDroppedFilePaste(
 		return text;
 	}
 	const displayPath = relativePath.split(sep).join("/");
-	if (isLocalImageAttachmentPath(displayPath) && options.onDroppedImageFile) {
+	if (isImageFilePath(displayPath) && options.onDroppedImageFile) {
 		return options.onDroppedImageFile(displayPath);
 	}
 	if (/[\s"]/u.test(displayPath)) {
@@ -343,7 +361,7 @@ export class Editor implements Component, Focusable {
 	private isInPaste: boolean = false;
 
 	// Prompt history for up/down navigation
-	private history: string[] = [];
+	private history: EditorHistoryEntry[] = [];
 	private historyIndex: number = -1; // -1 = not browsing, 0 = most recent, 1 = older, etc.
 
 	// Kill ring for Emacs-style kill/yank operations
@@ -364,7 +382,9 @@ export class Editor implements Component, Focusable {
 	private snappedFromCursorCol: number | null = null;
 
 	// Undo support
-	private undoStack = new UndoStack<EditorState>();
+	private undoStack = new UndoStack<EditorSnapshot>();
+	private readonly captureLocalImages?: EditorOptions["captureLocalImages"];
+	private readonly restoreLocalImages?: EditorOptions["restoreLocalImages"];
 
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
@@ -379,6 +399,8 @@ export class Editor implements Component, Focusable {
 		const maxVisible = options.autocompleteMaxVisible ?? 5;
 		this.autocompleteMaxVisible = Number.isFinite(maxVisible) ? Math.max(3, Math.min(20, Math.floor(maxVisible))) : 5;
 		this.onDroppedImageFile = options.onDroppedImageFile;
+		this.captureLocalImages = options.captureLocalImages;
+		this.restoreLocalImages = options.restoreLocalImages;
 	}
 
 	/** Set of currently valid paste IDs, for marker-aware segmentation. */
@@ -424,12 +446,13 @@ export class Editor implements Component, Focusable {
 	 * Add a prompt to history for up/down arrow navigation.
 	 * Called after successful submission.
 	 */
-	addToHistory(text: string): void {
+	addToHistory(text: string, localImages: readonly EditorImageAttachment[] = []): void {
 		const trimmed = text.trim();
 		if (!trimmed) return;
 		// Don't add consecutive duplicates
-		if (this.history.length > 0 && this.history[0] === trimmed) return;
-		this.history.unshift(trimmed);
+		const entry = { text: trimmed, localImages: localImages.map((image) => ({ ...image })) };
+		if (JSON.stringify(this.history[0]) === JSON.stringify(entry)) return;
+		this.history.unshift(entry);
 		// Limit history size
 		if (this.history.length > 100) {
 			this.history.pop();
@@ -442,7 +465,7 @@ export class Editor implements Component, Focusable {
 	 */
 	removeLastFromHistory(text: string): void {
 		const trimmed = text.trim();
-		if (!trimmed || this.history[0] !== trimmed) {
+		if (!trimmed || this.history[0]?.text !== trimmed) {
 			return;
 		}
 		this.history.shift();
@@ -481,9 +504,12 @@ export class Editor implements Component, Focusable {
 
 		if (this.historyIndex === -1) {
 			// Returned to "current" state - clear editor
+			this.restoreLocalImages?.([]);
 			this.setTextInternal("");
 		} else {
-			this.setTextInternal(this.history[this.historyIndex] || "", direction === -1 ? "start" : "end");
+			const entry = this.history[this.historyIndex]!;
+			this.restoreLocalImages?.(entry.localImages.map((image) => ({ ...image })));
+			this.setTextInternal(entry.text, direction === -1 ? "start" : "end");
 		}
 	}
 
@@ -1047,7 +1073,7 @@ export class Editor implements Component, Focusable {
 		return { line: this.state.cursorLine, col: this.state.cursorCol };
 	}
 
-	setText(text: string): void {
+	setText(text: string, localImages?: readonly EditorImageAttachment[]): void {
 		this.cancelAutocomplete();
 		this.lastAction = null;
 		this.historyIndex = -1; // Exit history browsing mode
@@ -1056,7 +1082,23 @@ export class Editor implements Component, Focusable {
 		if (this.getText() !== normalized) {
 			this.pushUndoSnapshot();
 		}
+		if (localImages) this.restoreLocalImages?.(localImages.map((image) => ({ ...image })));
 		this.setTextInternal(normalized);
+	}
+
+	clearUndoHistory(): void {
+		this.undoStack.clear();
+		this.lastAction = null;
+	}
+
+	/** Relabel bound images as part of the current edit, preserving its cursor and undo unit. */
+	replaceImagePlaceholders(replacements: ReadonlyMap<string, string>): void {
+		if (replacements.size === 0) return;
+		const replace = (text: string): string => text.replace(IMAGE_MARKER_REGEX, (marker) => replacements.get(marker) ?? marker);
+		const cursorPrefix = (this.state.lines[this.state.cursorLine] ?? "").slice(0, this.state.cursorCol);
+		this.state.lines = this.state.lines.map(replace);
+		this.setCursorCol(replace(cursorPrefix).length);
+		this.notifyChange();
 	}
 
 	/**
@@ -1984,14 +2026,20 @@ export class Editor implements Component, Focusable {
 	}
 
 	private pushUndoSnapshot(): void {
-		this.undoStack.push(this.state);
+		this.undoStack.push({
+			state: this.state,
+			localImages: this.captureLocalImages?.() ?? [],
+			pastes: this.pastes,
+		});
 	}
 
 	private undo(): void {
 		this.historyIndex = -1; // Exit history browsing mode
 		const snapshot = this.undoStack.pop();
 		if (!snapshot) return;
-		Object.assign(this.state, snapshot);
+		this.state = snapshot.state;
+		this.pastes = snapshot.pastes;
+		this.restoreLocalImages?.(snapshot.localImages);
 		this.lastAction = null;
 		this.preferredVisualCol = null;
 		this.notifyChange();

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderMycliShell } from "../src/index.ts";
-import { initialRuntimeState, projectRuntimeState, runtimeStateFromTranscript } from "../src/adapters/runtime-state.ts";
+import {
+	initialRuntimeState,
+} from "../src/state/runtime-state-model.ts";
+import {
+	projectRuntimeState,
+} from "../src/state/runtime-projection.ts";
+import {
+	runtimeStateFromTranscript,
+} from "../src/state/transcript-history.ts";
 import { loadGatewayReplay, replayGatewayEvents } from "./support/gateway-replay.ts";
 
 test("recorded duplicate gateway mirrors replay as one assistant answer", () => {

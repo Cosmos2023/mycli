@@ -1,23 +1,35 @@
 import { writeFile } from "node:fs/promises";
-import { GatewayRequestError, GatewayClient, type GatewayEvent } from "../../src/adapters/gateway-client.ts";
-import { GatewayEventDeduper } from "../../src/adapters/gateway-events.ts";
+import { GatewayRequestError, GatewayClient, type GatewayEvent } from "../../src/transport/gateway-client.ts";
+import { GatewayEventDeduper } from "../../src/transport/gateway-events.ts";
 import {
 	initialRuntimeState,
+	type RuntimeShellState,
+	type RuntimeLocalUserInput,
+} from "../../src/state/runtime-state-model.ts";
+import {
 	reduceDecodedRuntimeEvent,
 	reduceRuntimeEvent,
+} from "../../src/state/runtime-event-reducer.ts";
+import {
 	runtimeStateFromBootstrap,
+	runtimeStateWithSessionCommandNotice,
+} from "../../src/state/session-state.ts";
+import { runtimeStateWithCommandResult } from "../../src/state/command-state.ts";
+import { SessionTransitionController } from "../../src/application/session-transition.ts";
+import {
 	runtimeStateFromTranscript,
-	runtimeStateAfterCommandResult,
+} from "../../src/state/transcript-history.ts";
+import {
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
 	runtimeStateAcknowledgeQueuedInput,
 	restorePendingSteersAfterInterrupt,
 	removeLocalUserInput,
+} from "../../src/state/input-queue.ts";
+import {
 	sessionsFromResult,
-	type RuntimeShellState,
-	type RuntimeLocalUserInput,
-} from "../../src/adapters/runtime-state.ts";
+} from "../../src/state/catalog-state.ts";
 
 type ExpectedScriptedTurnState =
 	| "waiting_approval"
@@ -65,6 +77,11 @@ const client = new GatewayClient({
 	output: process.stdout,
 	log: (event) => handleGatewayEvent(event),
 });
+const sessionTransitions = new SessionTransitionController({
+	current: () => state,
+	update: (next) => { state = next; },
+	loadTranscript: (sessionId) => send("transcript.load", { session_id: sessionId, before: null }),
+});
 
 export async function runScriptedClient(
 	scriptRaw = process.env.MYCLI_NODE_TUI_SCRIPT || "[]",
@@ -110,6 +127,7 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	const decoded = eventDeduper.consume(event);
 	if (!decoded) return;
 	state = reduceDecodedRuntimeEvent(state, decoded);
+	if (decoded.method === "session.changed") sessionTransitions.invalidate();
 	if (
 		decoded.method === "turn.interrupted" ||
 		(decoded.method === "turn.completed" && decoded.params.turn_state === "interrupted")
@@ -146,14 +164,15 @@ async function loadSessions(): Promise<void> {
 }
 
 async function runScriptedCommand(command: string): Promise<void> {
+	const source = { sessionId: state.sessionId, generation: state.sessionGeneration };
 	const result = await send("command.run", { command, surface: "cli" });
-	state = await runtimeStateAfterCommandResult(
-		state,
-		command,
-		result,
-		async (sessionId) =>
-			await send("transcript.load", { session_id: sessionId, before: null }),
-	);
+	if (result.mutated_session === true) {
+		if (await sessionTransitions.resume(result, undefined, source)) {
+			state = runtimeStateWithSessionCommandNotice(state, command, result);
+		}
+	} else {
+		state = runtimeStateWithCommandResult(state, command, result);
+	}
 	if (result.exit_requested === true) {
 		await send("shutdown", {});
 		await dumpStateIfRequested();
@@ -217,14 +236,9 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 	}
 
 	if (action.type === "session.resume") {
+		const source = { sessionId: state.sessionId, generation: state.sessionGeneration };
 		const result = await send("session.resume", { session_id: action.session_id });
-		state = await runtimeStateAfterCommandResult(
-			state,
-			`/resume ${action.session_id}`,
-			{ ...result, mutated_session: true },
-			async (sessionId) =>
-				await send("transcript.load", { session_id: sessionId, before: null }),
-		);
+		await sessionTransitions.resume(result, undefined, source);
 		return;
 	}
 

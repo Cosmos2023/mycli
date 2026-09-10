@@ -1,5 +1,7 @@
 import process from "node:process";
-import { MycliShellRuntime } from "./shell-runtime.ts";
+import {
+	MycliShellRuntime,
+} from "./application/shell-runtime.ts";
 import type { MycliShellState } from "./model.ts";
 
 function initialState(): MycliShellState {

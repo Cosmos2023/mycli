@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type { MycliShellMessage, MycliShellState } from "../src/model.ts";
-import { MycliShellRuntime } from "../src/shell-runtime.ts";
+import {
+	MycliShellRuntime,
+} from "../src/application/shell-runtime.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
 function historyState(messageCount: number = 40): MycliShellState {

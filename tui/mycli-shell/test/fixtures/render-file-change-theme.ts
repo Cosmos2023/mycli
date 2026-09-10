@@ -1,4 +1,4 @@
-import { renderUnifiedDiff } from "../../src/components/diff-renderer.ts";
+import { renderUnifiedDiff } from "../../src/components/transcript/diff-renderer.ts";
 
 
 const diff = (

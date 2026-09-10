@@ -4,11 +4,11 @@ import {
 	ConnectivityStepComponent,
 	ReadyStepComponent,
 	WelcomeStepComponent,
-} from "../src/components/startup-onboarding.ts";
+} from "../src/components/selectors/startup-onboarding.ts";
 import {
 	StartupOnboardingCoordinator,
 	startupOnboardingStages,
-} from "../src/startup-onboarding.ts";
+} from "../src/application/startup-onboarding.ts";
 import { visibleWidth } from "../src/tui-core/index.ts";
 
 function stripAnsi(text: string): string {

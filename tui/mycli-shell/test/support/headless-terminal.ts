@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import type { Terminal as XtermTerminal } from "@xterm/headless";
+import type { IBufferCell, Terminal as XtermTerminal } from "@xterm/headless";
 import type { Terminal } from "../../src/tui-core/terminal.ts";
 
 const require = createRequire(import.meta.url);
@@ -114,6 +114,11 @@ export class HeadlessTerminal implements Terminal {
 		return Array.from({ length: this.rows }, (_, row) =>
 			buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? "",
 		);
+	}
+
+	visibleCell(row: number, column: number): IBufferCell | undefined {
+		const buffer = this.emulator.buffer.active;
+		return buffer.getLine(buffer.viewportY + row)?.getCell(column);
 	}
 
 	historyLines(): string[] {

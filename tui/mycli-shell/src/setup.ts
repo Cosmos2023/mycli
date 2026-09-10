@@ -4,7 +4,7 @@ import {
 	SetupWizardComponent,
 	type SetupWizardResult,
 	type SetupWizardState,
-} from "./components/setup-wizard.ts";
+} from "./components/selectors/setup-wizard.ts";
 import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
 import { Container, TUI } from "./tui-core/tui.ts";
 

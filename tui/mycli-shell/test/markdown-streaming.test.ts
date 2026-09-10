@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { markdownTheme } from "../src/components/markdown-theme.ts";
+import { markdownTheme } from "../src/components/shared/markdown-theme.ts";
 import { Markdown, type MarkdownTheme } from "../src/tui-core/components/markdown.ts";
 
 function renderFresh(text: string, width: number): string[] {
@@ -169,6 +169,29 @@ test("character-streamed paragraphs fall back across inline markdown transitions
 	}
 
 	assert.equal(renderedTokens(markdown)[0]?.paragraph, undefined);
+});
+
+test("Unicode break opportunities stay consistent across streamed inline boundaries", () => {
+	const cases = [
+		"甲乙丙丁，戊己庚辛。壬癸（测试）继续，结束。",
+		"前缀 abc中文defghijklmnop 后续，标点。",
+		"中文测试\u{20000}\u{20001}\u{1f469}\u200d\u{1f4bb}继续\u{1f1e8}\u{1f1f3}文字e\u0301，结束。",
+		"**甲乙丙丁，戊己庚辛。**后续（测试）结束。",
+		"甲乙ab中文中文testingtestingtestingtesting中文，后续。",
+	];
+	for (const width of [3, 4, 7, 8, 13, 18, 40]) {
+		for (const target of cases) {
+			const markdown = new Markdown("", 0, 0, markdownTheme());
+			let source = "";
+			for (const character of target) {
+				source += character;
+				markdown.setText(source);
+				const fresh = renderFresh(source, width);
+				assert.deepEqual(markdown.render(width), fresh, JSON.stringify({ width, source }));
+				assert.deepEqual(markdown.renderTail(width, 3).lines, fresh.slice(-3));
+			}
+		}
+	}
 });
 
 test("streaming rich inline paragraphs retain lexer and layout prefixes", () => {

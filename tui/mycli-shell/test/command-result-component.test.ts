@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CommandResultComponent } from "../src/components/command-result.ts";
+import { CommandResultComponent } from "../src/components/transcript/command-result.ts";
 import type {
 	MycliShellCommandDisplay,
 	MycliShellCommandResult,
