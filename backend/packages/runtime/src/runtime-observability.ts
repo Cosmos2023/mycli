@@ -1,4 +1,4 @@
-import type { RuntimeErrorCode } from "@mycli/contracts";
+import type { ErrorContext, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
 import type { ProtocolId, ProviderRouteId } from "@mycli/core";
 
 export interface ProviderStreamDiagnostics {
@@ -8,6 +8,13 @@ export interface ProviderStreamDiagnostics {
 	readonly ttftMs?: number;
 	readonly tbtMs?: number;
 	readonly maxTbtMs?: number;
+	readonly lastTextDeltaMs?: number;
+	readonly responseTerminalMs?: number;
+	readonly sdkTerminalMs?: number;
+	readonly completedEventMs?: number;
+	readonly streamSettledMs?: number;
+	readonly terminalPersistMs?: number;
+	readonly textTailMs?: number;
 	readonly textDeltaIntervalCount: number;
 	readonly providerEventCount: number;
 	readonly reasoningEventCount: number;
@@ -20,9 +27,11 @@ export interface ProviderStreamDiagnostics {
 	readonly textBytes: number;
 	readonly success: boolean;
 	readonly failureKind?: RuntimeErrorCode;
+	readonly failure?: RuntimeFailure;
 }
 
 export type RuntimeDiagnosticEvent =
+	| { readonly kind: "runtime_error"; readonly operation: "terminal_commit" | "terminal_projection"; readonly errorContext?: ErrorContext }
 	| (ProviderStreamDiagnostics & {
 		readonly kind: "model_stream_diagnostics";
 		readonly turnId: string;
@@ -30,6 +39,16 @@ export type RuntimeDiagnosticEvent =
 		readonly protocol: ProtocolId;
 		readonly model: string;
 	})
+	| {
+		readonly kind: "turn_completion_diagnostics";
+		readonly turnId: string;
+		readonly commitMs: number;
+		readonly continuationMs: number;
+		readonly snapshotMs: number;
+		readonly publishMs: number;
+		readonly elapsedMs: number;
+		readonly snapshotWritten: boolean;
+	}
 	| {
 		readonly kind: "tool_execution";
 		readonly turnId: string;
