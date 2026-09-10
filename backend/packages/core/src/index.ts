@@ -1,9 +1,17 @@
 export { TurnTransitionError } from "./errors.ts";
-export { TOOL_RESULT_OUTPUT_MAX_CHARS } from "./tool-output.ts";
+export { TOOL_RESULT_OUTPUT_MAX_CHARS } from "./conversation/tool-output.ts";
+export {
+	PROVIDER_NATIVE_APIS,
+	parseProviderNativeTransportSnapshot,
+	providerNativeEndpointSha256,
+	providerNativeProtocol,
+} from "./conversation/provider-native-transport.ts";
+export type { ProviderNativeApi, ProviderNativeTransportSnapshot } from "./conversation/provider-native-transport.ts";
 export {
 	CANONICAL_IMAGE_DATA_MAX_CHARS,
 	CANONICAL_IMAGE_MAX_COUNT,
-} from "./image-limits.ts";
+	normalizeCanonicalImages,
+} from "./conversation/image-limits.ts";
 export {
 	AgentPathError,
 	AgentAuthorityError,
@@ -28,7 +36,7 @@ export {
 	parseAgentPath,
 	rootAgentPath,
 	selectAgentForkConversation,
-} from "./agent.ts";
+} from "./lifecycle/agent.ts";
 export type {
 	AgentBudget,
 	AgentBudgetExhaustionKind,
@@ -61,43 +69,43 @@ export type {
 	ListAgentsQuery,
 	SendAgentMessageCommand,
 	SpawnAgentCommand,
-} from "./agent.ts";
+} from "./lifecycle/agent.ts";
 export type {
 	ShellLifecycleEvent,
 	ShellLifecycleKind,
 	ShellTransportKind,
-} from "./shell-lifecycle.ts";
-export { SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS } from "./shell-lifecycle.ts";
+} from "./lifecycle/shell-lifecycle.ts";
+export { SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS } from "./lifecycle/shell-lifecycle.ts";
 export {
 	ApprovalConflictError,
 	createWaitingApproval,
 	transitionApproval,
-} from "./approval-continuation.ts";
+} from "./lifecycle/approval-continuation.ts";
 export type {
 	ApprovalResolution,
 	ApprovalTransition,
-} from "./approval-continuation.ts";
-export { decideCompaction } from "./compaction-policy.ts";
+} from "./lifecycle/approval-continuation.ts";
+export { decideCompaction } from "./policy/compaction-policy.ts";
 export type {
 	CompactionDecision,
 	CompactionDecisionInput,
-} from "./compaction-policy.ts";
+} from "./policy/compaction-policy.ts";
 export { fingerprintSubmission } from "./fingerprint.ts";
 export type { TurnSubmissionFingerprintInput } from "./fingerprint.ts";
 export {
 	TURN_ABORTED_CONTEXT_TEXT,
 	turnAbortedContextItem,
-} from "./turn-aborted.ts";
-export type { TurnAbortedContextItem } from "./turn-aborted.ts";
+} from "./lifecycle/turn-aborted.ts";
+export type { TurnAbortedContextItem } from "./lifecycle/turn-aborted.ts";
 export {
 	orderProviderConversationItems,
 	projectNoToolRequest,
 	projectProviderRequest,
-} from "./request-projection.ts";
+} from "./conversation/request-projection.ts";
 export type {
 	NoToolRequestProjectionInput,
 	ProviderRequestProjectionInput,
-} from "./request-projection.ts";
+} from "./conversation/request-projection.ts";
 export {
 	DEFAULT_QUEUE_CAPACITY,
 	QueueCapacityError,
@@ -118,7 +126,7 @@ export {
 	retireQueueRestorationClaim,
 	retireQueuedInputClaim,
 	restoreQueue,
-} from "./queue-state.ts";
+} from "./lifecycle/queue-state.ts";
 export type {
 	EnqueueFollowUpInput,
 	EnqueueSteerInput,
@@ -134,12 +142,12 @@ export type {
 	QueueSteerResubmitResult,
 	QueuedInput,
 	RestoreQueueInput,
-} from "./queue-state.ts";
+} from "./lifecycle/queue-state.ts";
 export {
 	completeTurn,
 	failTurn,
 	startTurn,
-} from "./turn-state.ts";
+} from "./lifecycle/turn-state.ts";
 export {
 	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
 	PROVIDER_ROUTE_ID_MAX_CHARS,
@@ -151,7 +159,7 @@ export type {
 	CompleteTurnInput,
 	FailTurnInput,
 	StartTurnInput,
-} from "./turn-state.ts";
+} from "./lifecycle/turn-state.ts";
 export type {
 	ChildTaskStatus,
 	HookExecution,
@@ -207,11 +215,11 @@ export {
 	orderInstructionFragments,
 	providerTimelinePrefixSha256,
 	stableModelInputJson,
-} from "./model-input.ts";
+} from "./conversation/model-input.ts";
 export {
 	networkDomainAllowed,
 	normalizeNetworkDomains,
-} from "./network-domain-policy.ts";
+} from "./policy/network-domain-policy.ts";
 export type {
 	InstructionContract,
 	InstructionFragment,
@@ -234,4 +242,4 @@ export type {
 	ProviderRequestManifestV3,
 	ToolSetSnapshot,
 	TurnContextSection,
-} from "./model-input.ts";
+} from "./conversation/model-input.ts";

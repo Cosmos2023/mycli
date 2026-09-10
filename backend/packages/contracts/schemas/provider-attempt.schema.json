@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/schemas/provider-attempt.schema.json",
+  "title": "ProviderAttemptEnvelope",
+  "oneOf": [
+    { "$ref": "#/$defs/update" },
+    { "$ref": "#/$defs/record" }
+  ],
+  "$defs": {
+    "identity": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+    "timestamp": { "type": "string", "minLength": 20, "maxLength": 30, "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$" },
+    "policy": {
+      "title": "ProviderAttemptPolicy",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestMaxRetries", "streamMaxRetries"],
+      "properties": {
+        "requestMaxRetries": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "streamMaxRetries": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "$ref": "runtime-turn.schema.json#/$defs/runtime_error_code" },
+        "message": { "type": "string", "maxLength": 2048 },
+        "errorContext": { "$ref": "error-context.schema.json" },
+        "additionalDetails": { "type": "string", "maxLength": 4096 },
+        "retryable": { "type": "boolean" },
+        "retryAfterSeconds": { "type": "number", "minimum": 0, "maximum": 3600 },
+        "diagnostics": {
+          "type": "object", "maxProperties": 64,
+          "propertyNames": { "maxLength": 128 },
+          "additionalProperties": {
+            "anyOf": [
+              { "type": "string", "maxLength": 2048 },
+              { "type": "number" }, { "type": "boolean" }, { "type": "null" }
+            ]
+          }
+        }
+      }
+    },
+    "fields": {
+      "title": "ProviderAttemptFields",
+      "type": "object",
+      "required": ["sequence", "attempt", "state", "policy", "requestRetriesUsed", "streamRetriesUsed", "observedAt"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 201 },
+        "state": { "enum": ["scheduled", "started", "failed", "completed", "recovered", "exhausted", "cancelled", "unknown"] },
+        "policy": { "$ref": "#/$defs/policy" },
+        "requestRetriesUsed": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "streamRetriesUsed": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "observedAt": { "$ref": "#/$defs/timestamp" },
+        "failure": { "$ref": "#/$defs/failure" },
+        "recoveryKind": { "enum": ["request", "stream"] },
+        "retryAt": { "$ref": "#/$defs/timestamp" },
+        "resetOutput": { "type": "boolean" }
+      }
+    },
+    "update": {
+      "title": "ProviderAttemptUpdate",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/fields" }],
+      "unevaluatedProperties": false
+    },
+    "record": {
+      "title": "ProviderAttemptRecord",
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/fields" },
+        {
+          "type": "object",
+          "required": ["eventId", "attemptId", "retryChainId", "sessionId", "turnId", "requestId", "provider", "model", "source", "committedAt"],
+          "properties": {
+            "eventId": { "$ref": "#/$defs/identity" },
+            "attemptId": { "$ref": "#/$defs/identity" },
+            "retryChainId": { "$ref": "#/$defs/identity" },
+            "sessionId": { "$ref": "#/$defs/identity" },
+            "turnId": { "$ref": "#/$defs/identity" },
+            "requestId": { "$ref": "#/$defs/identity" },
+            "provider": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$", "maxLength": 256 },
+            "model": { "$ref": "#/$defs/identity" },
+            "source": { "enum": ["worker", "in_process", "restart_recovery"] },
+            "committedAt": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

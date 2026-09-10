@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/gateway-tool-record.schema.json",
+  "title": "GatewayToolRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "kind", "name", "status", "mutating"],
+  "properties": {
+    "version": { "const": 1 },
+    "kind": { "const": "tool_execution" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "call_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "status": { "enum": ["running", "success", "error", "cancelled"] },
+    "mutating": { "type": "boolean" },
+    "error_context": { "$ref": "error-context.schema.json" },
+    "error_context_invalid": { "const": true },
+    "target": { "$ref": "#/$defs/Preview" },
+    "duration_ms": { "$ref": "#/$defs/NonNegativeNumber" },
+    "content_preview": { "$ref": "#/$defs/Preview" },
+    "content_line_count": { "$ref": "#/$defs/Count" },
+    "diff_preview": { "$ref": "#/$defs/Preview" },
+    "summary_preview": { "$ref": "#/$defs/Preview" },
+    "detail_preview": { "$ref": "#/$defs/Preview" },
+    "output_preview": { "$ref": "#/$defs/Preview" },
+    "error_preview": { "$ref": "#/$defs/Preview" },
+    "hidden_line_count": { "$ref": "#/$defs/Count" },
+    "presentation": {
+      "enum": ["tool", "context", "mutation", "shell", "skill", "web", "diagnostic", "control", "external"]
+    },
+    "display_truncated": { "type": "boolean" },
+    "display_omitted_chars": { "$ref": "#/$defs/Count" },
+    "shell": { "$ref": "#/$defs/GatewayShellRecord" },
+    "terminal_interaction": { "$ref": "#/$defs/GatewayTerminalInteraction" }
+  },
+  "$defs": {
+    "Preview": { "type": "string", "maxLength": 8192 },
+    "Count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "NonNegativeNumber": { "type": "number", "minimum": 0, "maximum": 9007199254740991 },
+    "GatewayTerminalInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shell_id", "kind"],
+      "properties": {
+        "shell_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "kind": { "enum": ["input", "poll"] },
+        "input_preview": { "$ref": "#/$defs/Preview" },
+        "command_preview": { "$ref": "#/$defs/Preview" },
+        "interaction_succeeded": { "type": "boolean" },
+        "process_running": { "type": "boolean" }
+      }
+    },
+    "GatewayShellRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command_preview": { "$ref": "#/$defs/Preview" },
+        "description": { "$ref": "#/$defs/Preview" },
+        "shell_id": { "type": "string", "maxLength": 512 },
+        "background": { "type": "boolean" },
+        "process_state": { "type": "string", "maxLength": 100 },
+        "transport": { "type": "string", "maxLength": 100 },
+        "tty": { "type": "boolean" },
+        "yielded": { "type": "boolean" },
+        "terminal_state": { "type": "string", "maxLength": 100 },
+        "exit_code": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+        "sequence": { "$ref": "#/$defs/Count" },
+        "started_at": { "type": "string", "maxLength": 100 },
+        "completed_at": { "type": "string", "maxLength": 100 },
+        "output_chars": { "$ref": "#/$defs/Count" },
+        "omitted_output_chars": { "$ref": "#/$defs/Count" },
+        "cleanup_result": { "type": "string", "maxLength": 100 },
+        "shell_kind": { "type": "string", "maxLength": 100 },
+        "shell_edition": { "type": "string", "maxLength": 100 }
+      }
+    }
+  }
+}

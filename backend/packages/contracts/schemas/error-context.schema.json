@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/schemas/error-context.schema.json",
+  "title": "ErrorContextV1",
+  "type": "object",
+  "allOf": [
+    { "$ref": "#/$defs/identity" },
+    { "$ref": "#/$defs/reason_details" }
+  ],
+  "required": ["version"],
+  "properties": {
+    "version": { "const": 1 },
+    "causes": {
+      "type": "array", "maxItems": 3,
+      "items": { "$ref": "#/$defs/occurrence" }
+    }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "token": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "source": {
+      "title": "FailureSource",
+      "enum": ["config", "provider", "tool", "policy", "integration", "worker_rpc", "runtime", "storage", "gateway", "tui"]
+    },
+    "scope": {
+      "title": "FailureScope",
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["provider_attempt", "tool_call", "request", "turn", "session", "connection", "application"] },
+        "id": { "$ref": "#/$defs/token" }
+      }
+    },
+    "outcome": {
+      "title": "FailureOutcome",
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "effects"],
+      "properties": {
+        "state": { "enum": ["not_started", "failed", "cancelled", "completed", "unknown"] },
+        "effects": { "enum": ["none", "possible", "confirmed"] }
+      },
+      "if": { "properties": { "state": { "const": "not_started" } } },
+      "then": { "properties": { "effects": { "const": "none" } } }
+    },
+    "identity": {
+      "title": "ErrorIdentityV1",
+      "type": "object", "required": ["id", "source", "scope", "outcome"],
+      "properties": {
+        "id": { "$ref": "#/$defs/token" },
+        "source": { "$ref": "#/$defs/source" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "outcome": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "occurrence": {
+      "title": "ErrorOccurrenceV1", "type": "object",
+      "allOf": [{ "$ref": "#/$defs/identity" }, { "$ref": "#/$defs/reason_details" }],
+      "unevaluatedProperties": false
+    },
+    "configuration_details": {
+      "title": "ConfigurationErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "provider": { "$ref": "#/$defs/token" }, "model": { "$ref": "#/$defs/token" },
+        "setting": { "$ref": "#/$defs/token" }
+      }
+    },
+    "provider_details": {
+      "title": "ProviderErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "provider": { "$ref": "#/$defs/token" }, "model": { "$ref": "#/$defs/token" },
+        "http_status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "request_id": { "$ref": "#/$defs/token" }, "provider_code": { "$ref": "#/$defs/token" },
+        "provider_type": { "$ref": "#/$defs/token" },
+        "retry_after_seconds": { "type": "number", "minimum": 0, "maximum": 3600 }
+      }
+    },
+    "capability_details": {
+      "title": "CapabilityErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "provider": { "$ref": "#/$defs/token" }, "model": { "$ref": "#/$defs/token" },
+        "feature": { "$ref": "#/$defs/token" },
+        "input_origin": { "enum": ["user", "tool", "history"] }
+      }
+    },
+    "transport_details": {
+      "title": "TransportErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "transport_code": { "$ref": "#/$defs/token" }, "request_id": { "$ref": "#/$defs/token" },
+        "phase": { "enum": ["connect", "request", "stream", "dispatch", "delivery", "shutdown"] },
+        "timeout_ms": { "$ref": "#/$defs/count" },
+        "exit_code": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "signal": { "$ref": "#/$defs/token" }
+      }
+    },
+    "gateway_details": {
+      "title": "GatewayErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "method": { "$ref": "#/$defs/token" }, "legacy_code": { "$ref": "#/$defs/token" },
+        "limit_bytes": { "$ref": "#/$defs/count" }, "actual_bytes": { "$ref": "#/$defs/count" },
+        "expected_version": { "$ref": "#/$defs/count" }, "actual_version": { "$ref": "#/$defs/count" }
+      }
+    },
+    "tool_details": {
+      "title": "ToolErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "tool": { "$ref": "#/$defs/token" }, "legacy_kind": { "$ref": "#/$defs/token" },
+        "errno": { "$ref": "#/$defs/token" }, "signal": { "$ref": "#/$defs/token" },
+        "exit_code": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "timeout_ms": { "$ref": "#/$defs/count" }
+      }
+    },
+    "policy_details": {
+      "title": "PolicyErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "tool": { "$ref": "#/$defs/token" }, "policy": { "$ref": "#/$defs/token" },
+        "platform": { "enum": ["darwin", "linux", "win32", "other"] },
+        "errno": { "$ref": "#/$defs/token" }
+      }
+    },
+    "storage_details": {
+      "title": "StorageErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "operation": { "enum": ["read", "write", "commit", "projection", "migration", "restore"] },
+        "storage_code": { "$ref": "#/$defs/token" }, "legacy_code": { "$ref": "#/$defs/token" },
+        "expected_version": { "$ref": "#/$defs/count" }, "actual_version": { "$ref": "#/$defs/count" }
+      }
+    },
+    "runtime_details": {
+      "title": "RuntimeErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "operation": { "$ref": "#/$defs/token" }, "legacy_code": { "$ref": "#/$defs/token" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 201 },
+        "request_retries": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "stream_retries": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "omitted_causes": { "$ref": "#/$defs/count" },
+        "exit_code": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "signal": { "$ref": "#/$defs/token" }
+      }
+    },
+    "integration_details": {
+      "title": "IntegrationErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": {
+        "integration": { "$ref": "#/$defs/token" }, "legacy_kind": { "$ref": "#/$defs/token" }
+      }
+    },
+    "terminal_details": {
+      "title": "TerminalErrorDetails", "type": "object", "additionalProperties": false,
+      "properties": { "operation": { "$ref": "#/$defs/token" } }
+    },
+    "reason_details": {
+      "title": "ErrorReasonDetails",
+      "oneOf": [
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["config.invalid", "config.model_unavailable"] },
+            "details": { "$ref": "#/$defs/configuration_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["auth.credentials_missing", "auth.credentials_rejected", "auth.model_access_denied"] },
+            "details": { "$ref": "#/$defs/provider_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["capability.image_input_unsupported", "capability.tool_calls_unsupported", "capability.hosted_search_unsupported", "capability.reasoning_unsupported", "capability.deferred_response_unsupported", "capability.auth_flow_unavailable", "capability.unspecified"] },
+            "details": { "$ref": "#/$defs/capability_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["provider.invalid_request", "provider.context_limit", "provider.rate_limited", "provider.quota_exceeded", "provider.overloaded", "provider.service_failed", "provider.tool_protocol_invalid", "provider.failure_unclassified"] },
+            "details": { "$ref": "#/$defs/provider_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["transport.connect_failed", "transport.timed_out", "transport.stream_interrupted", "transport.gateway_disconnected", "transport.output_stalled"] },
+            "details": { "$ref": "#/$defs/transport_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["gateway.admission_rejected", "gateway.output_capacity_exceeded", "gateway.message_too_large", "gateway.protocol_incompatible", "gateway.invalid_request", "gateway.state_conflict", "gateway.failure_unclassified"] },
+            "details": { "$ref": "#/$defs/gateway_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["tool.invalid_arguments", "tool.not_found", "tool.path_not_found", "tool.path_unreadable", "tool.image_invalid", "tool.image_decoder_unavailable", "tool.process_start_failed", "tool.process_exited", "tool.timed_out", "tool.failure_unclassified"] },
+            "details": { "$ref": "#/$defs/tool_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["policy.approval_denied", "policy.access_denied", "policy.sandbox_unavailable", "policy.sandbox_initialization_failed"] },
+            "details": { "$ref": "#/$defs/policy_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["storage.busy", "storage.capacity_exceeded", "storage.write_failed", "storage.data_invalid", "storage.version_unsupported", "storage.session_unavailable", "storage.failure_unclassified"] },
+            "details": { "$ref": "#/$defs/storage_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["runtime.user_cancelled", "runtime.interruption_unspecified", "runtime.worker_exited", "runtime.retry_exhausted", "runtime.tool_budget_exceeded", "runtime.continuation_unavailable", "runtime.effect_outcome_unknown", "runtime.internal_error"] },
+            "details": { "$ref": "#/$defs/runtime_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["integration.unavailable", "integration.protocol_invalid", "integration.failure_unclassified"] },
+            "details": { "$ref": "#/$defs/integration_details" }
+          }
+        },
+        {
+          "type": "object", "required": ["reason"],
+          "properties": {
+            "reason": { "enum": ["tui.render_failed", "tui.terminal_unavailable"] },
+            "details": { "$ref": "#/$defs/terminal_details" }
+          }
+        }
+      ]
+    }
+  }
+}

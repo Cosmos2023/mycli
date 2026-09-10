@@ -25,10 +25,14 @@ async function writeOrCheck(path, content, check) {
 }
 
 const targets = [
+	["error-context.schema.json", "error-context.ts"],
 	["catalog.schema.json", "catalog.ts"],
 	["json-rpc.schema.json", "json-rpc-message.ts"],
+	["gateway-tool-record.schema.json", "gateway-tool-record.ts"],
 	["gateway-events.schema.json", "gateway-event-notification.ts"],
+	["gateway-rpc.schema.json", "gateway-rpc.ts"],
 	["runtime-turn.schema.json", "runtime-turn-record.ts"],
+	["provider-attempt.schema.json", "provider-attempt.ts"],
 	["runtime-state.schema.json", "runtime-state-record.ts"],
 	["plugin-v2-manifest.schema.json", "plugin-v2-manifest.ts"],
 	["plugin-v2-protocol.schema.json", "plugin-v2-protocol.ts"],
@@ -38,7 +42,8 @@ for (const [schemaName, outputName] of targets) {
 	const generated = await compileFromFile(resolve(schemaRoot, schemaName), {
 		bannerComment: "",
 		cwd: schemaRoot,
-		unknownAny: false,
+		unknownAny: schemaName === "gateway-rpc.schema.json",
+		...(schemaName === "error-context.schema.json" ? { additionalProperties: false, ignoreMinAndMaxItems: true } : {}),
 	});
 	await writeOrCheck(resolve(generatedRoot, outputName), banner + generated, check);
 }

@@ -1,5 +1,6 @@
-import type { RuntimeErrorCode } from "@mycli/contracts";
-import type { ShellLifecycleEvent } from "./shell-lifecycle.ts";
+import type { ErrorContext, GatewayTerminalInteraction, ProviderAttemptRecord, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
+import type { ShellLifecycleEvent } from "./lifecycle/shell-lifecycle.ts";
+import type { ProviderNativeTransportSnapshot } from "./conversation/provider-native-transport.ts";
 
 type Brand<Value, Name extends string> = Value & { readonly __brand: Name };
 
@@ -79,9 +80,13 @@ export interface CanonicalToolResult {
 	readonly toolName: string;
 	readonly output: string;
 	readonly success: boolean;
+	readonly images?: readonly CanonicalImage[];
 }
 
 export interface ApprovalPreviewDetails {
+	readonly commandPreview?: string;
+	readonly commandTruncated?: boolean;
+	readonly justification?: string;
 	readonly contentPreview?: string;
 	readonly contentLineCount?: number;
 	readonly contentChars?: number;
@@ -118,6 +123,7 @@ export interface FileMutationPreviewChange {
 export interface CanonicalImage {
 	readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 	readonly data: string;
+	readonly detail?: "high" | "original";
 }
 
 export interface ProviderReplayState {
@@ -201,6 +207,7 @@ export interface ProviderRequestConfig {
 	readonly provider: ProviderRouteId;
 	readonly protocol: ProtocolId;
 	readonly model: string;
+	readonly nativeTransport?: ProviderNativeTransportSnapshot;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly maxOutputTokens?: number;
 	readonly sessionId?: string;
@@ -255,6 +262,8 @@ export type RuntimeEvent =
 	}
 	| {
 		readonly type: "compaction_completed";
+		readonly failure?: RuntimeFailure;
+		readonly usage?: ProviderUsage;
 		readonly clientTurnId: string;
 		readonly source: "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
 		readonly status: "compressed" | "skipped" | "failed";
@@ -262,6 +271,12 @@ export type RuntimeEvent =
 		readonly afterTokens: number;
 		readonly maxTokens: number;
 		readonly durationSeconds: number;
+	}
+	| {
+		readonly type: "compaction_progress";
+		readonly clientTurnId: string;
+		readonly operationId: string;
+		readonly text: string;
 	}
 	| { readonly type: "reasoning_delta"; readonly text: string }
 	| { readonly type: "text_delta"; readonly text: string }
@@ -277,6 +292,7 @@ export type RuntimeEvent =
 		readonly additionalDetails: string;
 	}
 	| { readonly type: "stream_recovered" }
+	| { readonly type: "provider_attempt"; readonly record: ProviderAttemptRecord }
 	| { readonly type: "message_complete"; readonly responseId?: string }
 	| { readonly type: "web_search_started"; readonly callId: string }
 	| { readonly type: "web_search_completed"; readonly call: WebSearchCall }
@@ -317,7 +333,8 @@ export type RuntimeEvent =
 		readonly header: string;
 		readonly multiSelect: boolean;
 	}
-	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string }
+	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string;
+		readonly terminalInteraction?: GatewayTerminalInteraction }
 	| {
 		readonly type: "tool_execution_completed";
 		readonly callId: string;
@@ -351,12 +368,19 @@ export type RuntimeEvent =
 		readonly durationMs?: number;
 	}
 	| {
+		readonly type: "runtime_error";
+		readonly code: RuntimeErrorCode;
+		readonly message: string;
+		readonly errorContext?: ErrorContext;
+	}
+	| {
 		readonly type: "turn_failed";
 		readonly code: RuntimeErrorCode;
 		readonly message: string;
 		readonly additionalDetails?: string;
+		readonly errorContext?: ErrorContext;
 	}
-	| { readonly type: "turn_interrupted"; readonly message: string };
+	| { readonly type: "turn_interrupted"; readonly message: string; readonly errorContext?: ErrorContext };
 
 export type ApprovalChoice =
 	| "approve_once"

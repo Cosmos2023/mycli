@@ -1,4 +1,25 @@
 export { gatewayContractCatalog } from "./catalog.ts";
+export { ERROR_DEFINITIONS, ERROR_REASONS, errorDefinition, isErrorReason } from "./errors/catalog.ts";
+export type { ErrorDefinition, ErrorReason } from "./errors/catalog.ts";
+export { createErrorContext, parseErrorContext, readErrorContext, errorOccurrence, failureScope, safeErrorToken, errorContextSchema, ERROR_CONTEXT_VERSION, ERROR_CONTEXT_MAX_BYTES } from "./errors/error-context.ts";
+export type { ErrorContext, ErrorOccurrence, ErrorContextInput, ErrorContextIssue } from "./errors/error-context.ts";
+export type { FailureOutcome, FailureScope, FailureSource, ErrorReasonDetails } from "./generated/error-context.ts";
+export { errorSummary, errorPublicDetails } from "./errors/presentation.ts";
+export { LEGACY_RUNTIME_ERRORS, LEGACY_TOOL_REASONS, LEGACY_GATEWAY_REASONS, legacyRuntimeReason, legacyToolReason, legacyGatewayReason } from "./errors/legacy.ts";
+export { parseProviderAttemptUpdate, parseProviderAttemptRecord, parseRuntimeFailure } from "./provider-attempt.ts";
+export type {
+	ProviderAttemptPolicy,
+	ProviderAttemptUpdate,
+	ProviderAttemptRecord,
+	ProviderAttemptState,
+	ProviderAttemptSource,
+} from "./provider-attempt.ts";
+export { GATEWAY_RPC_METHODS, GatewayRpcValidationError, isGatewayMethod, parseGatewayParams, parseGatewayResult } from "./gateway/rpc.ts";
+export type { GatewayMethod, GatewayParams, GatewayResult, GatewayTranscriptItem } from "./gateway/rpc.ts";
+export type { GatewayRpcMethods } from "./generated/gateway-rpc.ts";
+export type { GatewayToolRecord, GatewayShellRecord, GatewayTerminalInteraction } from "./generated/gateway-tool-record.ts";
+export { terminalInteractionFromArguments, projectTerminalInteraction } from "./gateway/terminal-interaction.ts";
+export { GATEWAY_TOOL_PREVIEW_MAX_CHARS, projectGatewayToolRecord, gatewayToolLifecycleRecord } from "./gateway/tool-record.ts";
 export {
 	diagnosticRecoveryAction,
 	DIAGNOSTIC_CATEGORIES,
@@ -8,20 +29,21 @@ export {
 	requestFailureNoticeId,
 	runtimeErrorCategory,
 	runtimeErrorRecoveryActions,
-} from "./diagnostics.ts";
+} from "./gateway/diagnostics.ts";
 export type {
 	DiagnosticCategory,
 	DiagnosticRecoveryAction,
 	DiagnosticRecoveryActionId,
 	DiagnosticSeverity,
-} from "./diagnostics.ts";
+} from "./gateway/diagnostics.ts";
 export { parsePackageVersion } from "./package-version.ts";
 export type { PackageVersionManifest } from "./package-version.ts";
 export {
 	isModelSelectionScope,
 	MODEL_SELECTION_SCOPES,
-} from "./model-selection.ts";
-export type { ModelSelectionScope } from "./model-selection.ts";
+} from "./gateway/model-selection.ts";
+export type { ModelSelectionScope } from "./gateway/model-selection.ts";
+export { slashCommandArguments } from "./gateway/slash-command.ts";
 export {
 	normalizeTuiKeySpec,
 	TUI_KEYMAP_ACTIONS,
@@ -29,12 +51,12 @@ export {
 	tuiKeymapAction,
 	tuiKeymapActionForConfig,
 	tuiKeymapConfigPath,
-} from "./tui-keymap.ts";
+} from "./gateway/tui-keymap.ts";
 export type {
 	TuiKeymapActionDescriptor,
 	TuiKeymapActionId,
 	TuiKeymapContext,
-} from "./tui-keymap.ts";
+} from "./gateway/tui-keymap.ts";
 export {
 	canonicalRuntimeFailureMessage,
 	canonicalTurnFailureMessage,
@@ -48,22 +70,24 @@ export {
 	sanitizeRuntimeErrorDetail,
 	turnFailedNoticeId,
 	turnFailureNotice,
-} from "./runtime-errors.ts";
+} from "./gateway/runtime-errors.ts";
 export type {
 	RuntimeFailure,
 	RuntimeFailureDiagnostics,
 	RuntimeFailureDiagnosticValue,
 	RuntimeErrorNoticeSeverity,
-} from "./runtime-errors.ts";
+} from "./gateway/runtime-errors.ts";
 export {
 	TURN_INTERRUPTED_NOTICE,
 	turnCompletedDurationId,
 	turnInterruptedNoticeId,
-} from "./transcript-messages.ts";
+} from "./gateway/transcript-messages.ts";
 export {
 	ContractValidationError,
+	isGatewayErrorCode,
 	parseGatewayContractCatalog,
 	parseGatewayEvent,
+	parseGatewayToolRecord,
 	parseJsonRpcMessage,
 	parsePluginV2Manifest,
 	parsePluginV2ProtocolMessage,
@@ -80,3 +104,6 @@ export type {
 	RuntimeErrorCode,
 	RuntimeTurnRecord,
 } from "./generated/runtime-turn-record.ts";
+export { providerAttemptId } from "./provider-attempt.ts";
+export { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
+export { LOCAL_CONNECTION_REASONS, localConnectionReason, storageErrorReason } from "./errors/boundaries.ts";
