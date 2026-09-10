@@ -3,17 +3,23 @@ export {
 	ProviderFailure,
 	providerFailurePublicMessage,
 	providerFailureToRuntimeFailure,
+	providerFailureReason,
 } from "./errors.ts";
-export type { ProviderFailureOptions } from "./errors.ts";
+export type { ProviderFailureOptions, ProviderFailureProjection } from "./errors.ts";
 export type {
 	ModelProvider,
 	ProviderStreamOptions,
+	ProviderStreamPhase,
 } from "./model-provider.ts";
-export { ProviderRegistry } from "./provider-registry.ts";
+export { ProviderRegistry } from "./registry/provider-registry.ts";
+export { resolveProviderNativeTransport, captureProviderNativeEnvironment } from "./registry/provider-native-transport.ts";
+export { loginNativeProvider, inspectNativeProviderAuth } from "./auth/native-auth-management.ts";
+export type { NativeAuthTarget, NativeAuthStatus, NativeAuthPrompt, NativeAuthEvent, NativeAuthInteraction } from "./auth/native-auth-management.ts";
+export type { ResolveProviderNativeTransportInput } from "./registry/provider-native-transport.ts";
 export type {
 	ProviderTransportConfig,
 	ProviderRegistryOptions,
-} from "./provider-registry.ts";
+} from "./registry/provider-registry.ts";
 export type {
 	ProviderDirectoryDisabledReason,
 	ProviderDirectoryEntry,
@@ -27,9 +33,9 @@ export type {
 	ProviderRouteModelPolicy,
 	ProviderRouteSource,
 	ProviderRouteSupportTier,
-} from "./provider-directory-types.ts";
-export { loadPiAiProviderDirectory } from "./provider-directory.ts";
+} from "./registry/provider-directory-types.ts";
+export { loadPiAiProviderDirectory } from "./registry/provider-directory.ts";
 export {
 	mergePiAiCompatOverrides,
 	validatePiAiCompatOverride,
-} from "./pi-ai-compat.ts";
+} from "./pi-ai/pi-ai-compat.ts";

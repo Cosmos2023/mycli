@@ -12,14 +12,14 @@
       "import": "./dist/index.js"
     },
     "./profile": {
-      "mycli-source": "./src/config-profile.ts",
-      "types": "./dist/config-profile.d.ts",
-      "import": "./dist/config-profile.js"
+      "mycli-source": "./src/configuration/config-profile.ts",
+      "types": "./dist/configuration/config-profile.d.ts",
+      "import": "./dist/configuration/config-profile.js"
     },
     "./paths": {
-      "mycli-source": "./src/config-paths.ts",
-      "types": "./dist/config-paths.d.ts",
-      "import": "./dist/config-paths.js"
+      "mycli-source": "./src/configuration/config-paths.ts",
+      "types": "./dist/configuration/config-paths.d.ts",
+      "import": "./dist/configuration/config-paths.js"
     }
   },
   "scripts": {

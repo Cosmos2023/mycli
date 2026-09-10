@@ -47,6 +47,23 @@ test("suppresses redundant SDK empty-body text while retaining structured diagno
 	});
 });
 
+test("secret-shaped upstream codes, types and request IDs cannot enter canonical diagnostics", () => {
+	const token = "sk-fixture-secret-12345678";
+	const failure = providers.classifyProviderError({
+		error: { code: token, type: token, message: "upstream failed" },
+	}, { source: "response_stream", response: { status: 200, headers: { "x-request-id": token } } });
+	assert.equal(failure.retryable, true);
+	assert.equal(failure.diagnostics.provider_error_code, undefined);
+	assert.equal(failure.diagnostics.provider_error_type, undefined);
+	assert.equal(failure.diagnostics.request_id, undefined);
+	assert.doesNotMatch(JSON.stringify(providers.providerFailureToRuntimeFailure(failure)), /sk-fixture/u);
+	const fatal = providers.classifyProviderError({ error: { code: "invalid_api_key", type: token } }, {
+		source: "response_stream", response: { status: 200, headers: {} },
+	});
+	assert.equal(fatal.code, "auth_error");
+	assert.equal(fatal.retryable, false);
+});
+
 test("classifies rate limits as retryable with bounded retry-after", () => {
 	const failure = providers.classifyProviderError({
 		status: 429,

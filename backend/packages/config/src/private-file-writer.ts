@@ -8,6 +8,7 @@ import {
 	rm,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 const LOCK_TIMEOUT_MS = 2_000;
 const LOCK_RETRY_MS = 10;
@@ -17,6 +18,8 @@ export interface AtomicPrivateFileUpdateOptions {
 	readonly directory: string;
 	readonly fileName: string;
 	readonly maxCurrentBytes?: number;
+	readonly lockTimeoutMs?: number;
+	readonly signal?: AbortSignal;
 	readonly buildContent: (
 		current: string | undefined,
 	) => string | null | undefined | Promise<string | null | undefined>;
@@ -37,6 +40,9 @@ export async function atomicPrivateFileUpdate(
 		&& (!Number.isSafeInteger(options.maxCurrentBytes) || options.maxCurrentBytes <= 0)) {
 		throw new RangeError("invalid_private_file_read_limit");
 	}
+	if (options.lockTimeoutMs !== undefined && (!Number.isSafeInteger(options.lockTimeoutMs)
+		|| options.lockTimeoutMs < 0 || options.lockTimeoutMs > 60_000)) throw new RangeError("invalid_private_file_lock_timeout");
+	options.signal?.throwIfAborted();
 	await mkdir(options.directory, { recursive: true, mode: 0o700 });
 	await harden(options.directory, 0o700);
 	const lockPath = join(options.directory, `.${options.fileName}.lock`);
@@ -48,11 +54,12 @@ export async function atomicPrivateFileUpdate(
 	let lock: Awaited<ReturnType<typeof open>> | undefined;
 	let temporary: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		lock = await acquireLock(lockPath);
+		lock = await acquireLock(lockPath, options.lockTimeoutMs ?? LOCK_TIMEOUT_MS, options.signal);
 		await lock.writeFile(`${process.pid}\n`, "utf8");
 		await lock.sync();
 		const current = await readOptional(targetPath, options.maxCurrentBytes);
 		const content = await options.buildContent(current);
+		options.signal?.throwIfAborted();
 		if (content === undefined || content === current) return false;
 		if (content === null) {
 			if (current === undefined) return false;
@@ -81,14 +88,15 @@ export async function atomicPrivateFileUpdate(
 	}
 }
 
-async function acquireLock(path: string): Promise<Awaited<ReturnType<typeof open>>> {
-	const deadline = Date.now() + LOCK_TIMEOUT_MS;
+async function acquireLock(path: string, timeoutMs: number, signal: AbortSignal | undefined): Promise<Awaited<ReturnType<typeof open>>> {
+	const deadline = Date.now() + timeoutMs;
 	while (true) {
+		signal?.throwIfAborted();
 		try {
 			return await open(path, "wx", 0o600);
 		} catch (error) {
 			if (!isNodeError(error, "EEXIST") || Date.now() >= deadline) throw error;
-			await delay(LOCK_RETRY_MS);
+			await delay(LOCK_RETRY_MS, undefined, { signal });
 		}
 	}
 }
@@ -145,8 +153,4 @@ async function syncDirectory(path: string): Promise<void> {
 
 function isNodeError(error: unknown, code: string): boolean {
 	return error instanceof Error && "code" in error && error.code === code;
-}
-
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

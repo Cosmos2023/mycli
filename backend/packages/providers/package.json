@@ -24,7 +24,8 @@
 		"@earendil-works/pi-ai": "0.84.4",
 		"@mycli/config": "0.1.0",
 		"@mycli/contracts": "0.1.0",
-		"@mycli/core": "0.1.0"
+		"@mycli/core": "0.1.0",
+		"eventsource-parser": "3.1.0"
 	},
   "devDependencies": {
     "tsx": "^4.22.4",
