@@ -2849,9 +2849,11 @@ function transcriptBlocksWerePrepended(
 function resourceInspectCommand(type: MycliShellResource["type"]): string | null {
 	switch (type) {
 		case "hook":
-			return "/tools hooks";
+			return "/hooks";
 		case "plugin":
-			return "/tools plugins";
+			return "/plugins";
+		case "mcp":
+			return "/mcp";
 		case "skill":
 			return "/skills";
 		case "prompt":

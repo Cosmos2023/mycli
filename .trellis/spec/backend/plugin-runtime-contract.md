@@ -2,12 +2,12 @@
 
 ## Overview
 
-The repository has one executable local plugin contract: process-isolated Plugin API v2 for
-compiled ESM. Legacy Python plugin directories are discovery-only migration candidates; Node never
-imports or spawns their source.
+The repository supports Codex-style capability bundles and process-isolated Plugin API v2 for
+compiled ESM. Bundles feed the existing skill/MCP/configured-hook systems. Legacy Python plugin
+directories are discovery-only migration candidates; Node never imports or spawns their source.
 
-The runtime does not implement marketplace install/update/remove, ACP, provider plugins, or an LLM
-facade.
+Plugin package management supports local/Git installation, marketplaces, update/remove and
+enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are not implemented.
 
 ## Directory And Config Shape
 
@@ -16,24 +16,48 @@ facade.
 - A v2 directory plugin contains `plugin.yaml` plus a relative compiled `.js` or `.mjs` entry.
 - Enablement is read from existing TOML config files:
   - repo `<workspace>/.mycli/config.toml`
-  - user `<home>/.config/mycli/config.toml`
+  - user `<home>/.mycli/config.toml`, falling back to `<home>/.config/mycli/config.toml`
 - Supported keys:
   - `[plugins] enabled = ["demo"]`
   - `[plugins] disabled = ["demo"]`
-- Plugins are opt-in. Disabled wins over enabled.
+- Unmanaged directory plugins are opt-in. Managed installation enables a package by default;
+  explicit config overrides that default and disabled wins over enabled.
+
+## Capability Bundles And Packages
+
+- Recognize `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`. Resolve component paths
+  beneath the real package root. Default components are `skills/`, `.mcp.json`, `hooks/hooks.json`
+  and `.app.json`. Apps produce `plugin_apps_unavailable`; they never appear usable.
+- One startup discovery is shared across bundle skills, MCP, hooks and PluginRuntime. Disabled or
+  untrusted repository bundles contribute nothing. Invalid component entries remain diagnostic
+  visible and give the bundle `partial` status while valid entries can load.
+- Skill references use `plugin:skill` or `plugin@marketplace:skill`; `isSkillReferenceName` in core
+  owns validation at activation, durable context and transcript boundaries. Prefix source paths
+  within the skill body bound. Never let a qualified name silently lose its instructions.
+- Qualified plugin tool/command routes use a deterministic safe internal namespace; display and
+  command lookup preserve the original plugin id. Bundle MCP ids isolate identical server names.
+  Include package cwd/description in the MCP catalog fingerprint to invalidate updated snapshots.
+- Installation copies data only, with no ESM import, MCP start, hook execution, lifecycle script,
+  or submodule execution. Bound entry/byte counts, reject escaping symlinks and cycles, and disable
+  Git user config/templates/hooks. Cancellation/timeout terminates Git's process tree.
+- `~/.mycli/plugin-registry.json` is private, locked and atomically replaced. New immutable cache
+  snapshots commit only after validation and an expected previous-cache check. On failure or
+  cancellation remove only the uncommitted stage. Prior snapshots survive update/remove for
+  active sessions; there is currently no automatic cache GC.
+- Enablement is one atomic config write, preserving unrelated and legacy user config. It must not
+  depend on a partially committed second file. Unknown ids fail; project-disabled overrides are
+  reported rather than claiming successful activation.
+- `plugins list --available [--marketplace name]` lists marketplace entries. Without `--available`,
+  the same filter lists installed/discovered plugins. Marketplace upgrade refreshes the catalog;
+  package update is separate. Marketplace removal retains installed packages.
+- Regressions cover package defaults, realpath aliases/escapes/cycles, cancellation, failed update,
+  concurrent commits, qualified names, actual MCP/hook execution, trust/enablement, CLI routing,
+  and skill instructions surviving runtime context validation.
 
 ## Manifest Contract
 
-`plugin.yaml` supports:
-
-- `name`
-- `version`
-- `description`
-- `kind`
-- `provides_tools`
-- `provides_hooks`
-- `provides_commands`
-- `requires_env`
+`plugin.yaml` declares `api_version: 2`, `id`, `name`, optional `version`/`description`, compiled
+`entry`, `provides.tools/hooks/commands`, `requires_env`, and `capabilities`.
 
 Manifest parse errors, missing or unsafe entries, missing required env vars, duplicate ids/names,
 worker startup failures, and protocol failures must be reported as bounded diagnostics, not
@@ -69,13 +93,32 @@ and `error`.
 - `mycli plugins run <plugin_id> <command_name> [--json-args JSON] [--json]`
   is provider-free and executes enabled plugin commands through the same local
   command registry.
-- `/plugin <plugin_id> <command_name> [json-args]` is the minimum in-session
-  slash command surface for plugin commands.
+- `/plugins` is the in-session plugin catalog. Registered command routes use
+  `/plugin:<plugin_id>:<command_name> [json-args]`; the historical `/plugin ...` alias is not public.
 - `doctor` includes a `plugins` check and must not start provider/model work.
 - Human and JSON diagnostics may expose bounded plugin ids, source, names,
   status, registered hooks/tools, and issue summaries.
 - Diagnostics must not print raw tracebacks, plugin raw exception messages,
   environment values, tokens, or secret-like payloads.
+- Tools, hooks, and commands convert process failures at the adapter boundary using existing
+  `integration.*` reasons. Retain bounded phase, operation, timeout, numeric exit code, allowlisted
+  signal/errno, and one prior failure. The host owns `error_context`; discard plugin-supplied values.
+- A process host retains its first terminal failure. A dispatched invocation that times out or
+  loses its process has an unknown outcome and possible effects. Never automatically replay it.
+- `RecoverablePluginHost` may replace a failed process for a subsequent invocation after
+  `worker_exited`, `call_timeout`, `startup_timeout`, or cancellation (`host_closed`). Startup must
+  reproduce the complete original registration set, including schemas. Protocol corruption and
+  registration drift require explicit configuration/runtime reload.
+- Concurrent new invocations share one replacement. Individual cancellation releases only that
+  waiter; the last waiter cancels startup. A later caller waits for abandoned startup cleanup.
+  Closing fences initialization and all dispatch; it cannot publish a late ready state.
+- Runtime records and `/plugins` resources derive from current host state (`loaded`,
+  `loading`, `error`, `closed`), independent of configured enablement. Subscription updates must not
+  fire for successful calls with unchanged state; retired content cannot republish stale resources.
+  Resource selector labels and colors give unhealthy/loading/closed status precedence over the
+  configured `enabled` flag; a crashed enabled plugin cannot appear as a healthy `on` resource.
+- A plugin pre-hook failure scopes the blocked tool to `not_started/none` and preserves the hook's
+  own possible effects as a separate cause. A post-hook failure cannot rewrite a committed tool result.
 
 ## Required Tests
 

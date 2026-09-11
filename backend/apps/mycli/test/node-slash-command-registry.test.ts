@@ -69,6 +69,15 @@ test("supported search-only commands retain their own routes", () => {
 	assert.equal(kill.args, "kill\tchild-1");
 });
 
+test("integration domains have independent common entries and tools remains diagnostic", () => {
+	const common = commandManifest("tui");
+	for (const name of ["/mcp", "/plugins", "/skills", "/hooks"]) {
+		assert.equal(common.find((command) => command.name === name)?.category, "integrations");
+	}
+	assert.equal(common.some((command) => command.name === "/tools"), false);
+	assert.equal(commandDiscoveryManifest("tui").find((command) => command.name === "/tools")?.search_only, true);
+});
+
 test("Node slash registry matches the current command and retirement matrix", () => {
 	const fixture = JSON.parse(readFileSync(new URL(
 		"./fixtures/node-slash-command-matrix.json",

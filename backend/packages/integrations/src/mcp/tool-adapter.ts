@@ -8,9 +8,11 @@ import { createIntegrationId, providerSafeToolName } from "../foundation/ids.ts"
 import { defineIntegrationRegistration } from "../foundation/registration.ts";
 import type { IntegrationRegistration } from "../foundation/registration.ts";
 import {
-	classifyMcpFailure,
+	describeMcpFailure,
 	isMcpAbort,
+	mcpFailureContext,
 	mcpFailureErrorKind,
+	mcpFailureText,
 } from "./diagnostics.ts";
 import type {
 	McpClientContract,
@@ -53,16 +55,21 @@ class McpTool implements ToolAdapter {
 			);
 		} catch (error) {
 			if (options.signal.aborted || isMcpAbort(error)) throw error;
-			const failureCategory = classifyMcpFailure(error);
+			const failure = describeMcpFailure(error, { operation: "tools/call" });
+			const failureCategory = failure.category;
+			const errorContext = options.errorContextVersion === 1
+				? mcpFailureContext(failure, options.callId, this.#descriptor.serverId) : undefined;
 			return Object.freeze({
 				success: false,
-				modelOutput: `MCP tool failed.\nError kind: ${failureCategory}`,
+				modelOutput: `MCP tool failed.\n${mcpFailureText(failure)}`,
 				summary: `MCP ${this.#descriptor.serverId}.${this.#descriptor.name} failed`,
 				errorKind: mcpFailureErrorKind(failureCategory),
+				...(errorContext ? { errorContext } : {}),
 				metadata: Object.freeze({
 					server: this.#descriptor.serverId,
 					tool: this.#descriptor.name,
 					failureCategory,
+					...(errorContext ? { error_context: errorContext } : {}),
 				}),
 			});
 		}
@@ -104,6 +111,7 @@ export function createMcpToolRegistration(
 		definition,
 		adapter,
 		originMetadata: { server: descriptor.serverId, tool: descriptor.name },
+		...(descriptor.serverInstructions ? { sourceDescription: descriptor.serverInstructions } : {}),
 	});
 }
 

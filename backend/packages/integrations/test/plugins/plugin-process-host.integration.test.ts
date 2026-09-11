@@ -70,6 +70,16 @@ test("plugin host contains malformed output, unknown ids, floods, and crashes", 
 			(error: unknown) => error instanceof PluginHostError && error.kind === kind,
 		);
 		assert.equal(host.status, "failed");
+		assert.equal(host.failure?.kind, kind);
+		assert.equal(host.failure?.evidence.phase, "request");
+		if (mode === "crash") assert.equal(host.failure?.evidence.exitCode, 91);
+		await assert.rejects(host.invoke("command:act", {}, new AbortController().signal), (error: unknown) => {
+			assert.ok(error instanceof PluginHostError);
+			assert.equal(error.kind, "host_closed");
+			assert.equal(error.evidence.dispatched, false);
+			assert.equal(error.evidence.previous?.kind, kind);
+			return true;
+		});
 	}
 });
 
@@ -100,7 +110,8 @@ test("plugin host rejects undeclared registration and bounds startup and call ti
 	await host.start(new AbortController().signal);
 	await assert.rejects(
 		() => host.invoke("command:act", {}, new AbortController().signal),
-		(error: unknown) => error instanceof PluginHostError && error.kind === "call_timeout",
+		(error: unknown) => error instanceof PluginHostError && error.kind === "call_timeout"
+			&& error.evidence.timeoutMs === 100 && error.evidence.dispatched === true,
 	);
 
 	const missingEnvHost = hostFor(t, manifest);

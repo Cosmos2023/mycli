@@ -1254,7 +1254,7 @@ test("runtime adapter projects runtime resources", () => {
 				enabled: true,
 				status: "enabled",
 				detail: "configured hook",
-				command: "/tools hooks",
+				command: "/hooks",
 			},
 			{ id: "bad", type: "unknown", name: "ignored" },
 		],
@@ -1269,7 +1269,7 @@ test("runtime adapter projects runtime resources", () => {
 			enabled: true,
 			status: "enabled",
 			detail: "configured hook",
-			command: "/tools hooks",
+			command: "/hooks",
 		},
 	]);
 });

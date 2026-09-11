@@ -3,7 +3,6 @@ import {
 	CLI_COMMAND_NAMES,
 	ROOT_CLI_OPTIONS,
 	type CliArgumentDescriptor,
-	type CliCommandDescriptor,
 	type CliCommandNode,
 	type CliOptionDescriptor,
 	type CompletionShell,
@@ -78,28 +77,25 @@ function renderBashFixedValueCases(): readonly string[] {
 	];
 }
 
-function renderBashCommand(command: CliCommandDescriptor): readonly string[] {
+function renderBashCommand(command: CliCommandNode, depth = 1, level = 2): readonly string[] {
+	const indent = "\t".repeat(level);
 	const parentCandidates = nodeCandidates(command, { includeSubcommands: true });
 	if (!command.subcommands?.length) {
 		return [
-			`\t\t${command.name}) candidates=${bashQuote(candidatesToWords(parentCandidates))} ;;`,
+			`${indent}${command.name}) candidates=${bashQuote(candidatesToWords(parentCandidates))} ;;`,
 		];
 	}
 	return [
-		`\t\t${command.name})`,
-		"\t\t\tif (( COMP_CWORD == 2 )); then",
-		`\t\t\t\tcandidates=${bashQuote(candidatesToWords(parentCandidates))}`,
-		"\t\t\telse",
-		"\t\t\t\tcase \"$action\" in",
-		...command.subcommands.flatMap((subcommand) => [
-			`\t\t\t\t\t${subcommand.name}) candidates=${bashQuote(candidatesToWords(
-				nodeCandidates(subcommand),
-			))} ;;`,
-		]),
-		`\t\t\t\t\t*) candidates=${bashQuote(candidatesToWords(parentCandidates))} ;;`,
-		"\t\t\t\tesac",
-		"\t\t\tfi",
-		"\t\t\t;;",
+		`${indent}${command.name})`,
+		`${indent}\tif (( COMP_CWORD == ${depth + 1} )); then`,
+		`${indent}\t\tcandidates=${bashQuote(candidatesToWords(parentCandidates))}`,
+		`${indent}\telse`,
+		`${indent}\t\tcase "\${COMP_WORDS[${depth + 1}]:-}" in`,
+		...command.subcommands.flatMap((subcommand) => renderBashCommand(subcommand, depth + 1, level + 3)),
+		`${indent}\t\t\t*) candidates=${bashQuote(candidatesToWords(parentCandidates))} ;;`,
+		`${indent}\t\tesac`,
+		`${indent}\tfi`,
+		`${indent}\t;;`,
 	];
 }
 
@@ -154,35 +150,29 @@ function renderZshCompletion(): string {
 	return lines.join("\n");
 }
 
-function renderZshCommand(command: CliCommandDescriptor): readonly string[] {
+function renderZshCommand(command: CliCommandNode, depth = 1, level = 2): readonly string[] {
+	const indent = "\t".repeat(level);
 	const parentCandidates = nodeCandidates(command, { includeSubcommands: true });
 	if (!command.subcommands?.length) {
 		return [
-			`\t\t${command.name})`,
-			...zshCandidateAssignment(parentCandidates, 3),
-			"\t\t\t;;",
+			`${indent}${command.name})`,
+			...zshCandidateAssignment(parentCandidates, level + 1),
+			`${indent}\t;;`,
 		];
 	}
 	return [
-		`\t\t${command.name})`,
-		"\t\t\tif (( CURRENT == 3 )); then",
-		...zshCandidateAssignment(parentCandidates, 4),
-		"\t\t\telse",
-		"\t\t\t\tcase \"$action\" in",
-		...command.subcommands.flatMap((subcommand) => [
-			`\t\t\t\t\t${subcommand.name})`,
-			...zshCandidateAssignment(
-				nodeCandidates(subcommand),
-				6,
-			),
-			"\t\t\t\t\t\t;;",
-		]),
-		"\t\t\t\t\t*)",
-		...zshCandidateAssignment(parentCandidates, 6),
-		"\t\t\t\t\t\t;;",
-		"\t\t\t\tesac",
-		"\t\t\tfi",
-		"\t\t\t;;",
+		`${indent}${command.name})`,
+		`${indent}\tif (( CURRENT == ${depth + 2} )); then`,
+		...zshCandidateAssignment(parentCandidates, level + 2),
+		`${indent}\telse`,
+		`${indent}\t\tcase "\${words[${depth + 2}]:-}" in`,
+		...command.subcommands.flatMap((subcommand) => renderZshCommand(subcommand, depth + 1, level + 3)),
+		`${indent}\t\t\t*)`,
+		...zshCandidateAssignment(parentCandidates, level + 4),
+		`${indent}\t\t\t\t;;`,
+		`${indent}\t\tesac`,
+		`${indent}\tfi`,
+		`${indent}\t;;`,
 	];
 }
 
@@ -215,33 +205,24 @@ function renderFishCompletion(): string {
 	}
 	for (const command of CLI_COMMAND_CATALOG) {
 		const commandCondition = `__fish_seen_subcommand_from ${command.name}`;
-		const commandOptionCondition = command.subcommands?.length
-			? `${commandCondition}; and not __fish_seen_subcommand_from ${
-				command.subcommands.map((subcommand) => subcommand.name).join(" ")
-			}`
-			: commandCondition;
-		for (const option of command.options ?? []) {
-			lines.push(fishOptionCompletion(commandOptionCondition, option));
-		}
-		for (const argument of command.arguments ?? []) {
-			lines.push(...fishArgumentCompletions(commandCondition, argument));
-		}
-		if (!command.subcommands?.length) continue;
-		const subcommandNames = command.subcommands.map((subcommand) => subcommand.name).join(" ");
-		const actionCondition = `${commandCondition}; and not __fish_seen_subcommand_from ${subcommandNames}`;
-		for (const subcommand of command.subcommands) {
-			lines.push(fishValueCompletion(actionCondition, subcommand.name, subcommand.description));
-			const subcommandCondition = `${commandCondition}; and __fish_seen_subcommand_from ${subcommand.name}`;
-			for (const option of subcommand.options ?? []) {
-				lines.push(fishOptionCompletion(subcommandCondition, option));
-			}
-			for (const argument of subcommand.arguments ?? []) {
-				lines.push(...fishArgumentCompletions(subcommandCondition, argument));
-			}
-		}
+		lines.push(...renderFishNode(command, commandCondition));
 	}
 	lines.push("");
 	return lines.join("\n");
+}
+
+function renderFishNode(command: CliCommandNode, condition: string): readonly string[] {
+	const children = command.subcommands ?? [];
+	const activeCondition = children.length
+		? `${condition}; and not __fish_seen_subcommand_from ${children.map((child) => child.name).join(" ")}` : condition;
+	return [
+		...(command.options ?? []).map((option) => fishOptionCompletion(activeCondition, option)),
+		...(command.arguments ?? []).flatMap((argument) => fishArgumentCompletions(condition, argument)),
+		...children.flatMap((child) => [
+			fishValueCompletion(activeCondition, child.name, child.description),
+			...renderFishNode(child, `${condition}; and __fish_seen_subcommand_from ${child.name}`),
+		]),
+	];
 }
 
 function fishValueCompletion(condition: string, value: string, description: string): string {
@@ -346,37 +327,31 @@ function renderPowerShellCompletion(): string {
 	return lines.join("\n");
 }
 
-function renderPowerShellCommand(command: CliCommandDescriptor): readonly string[] {
+function renderPowerShellCommand(command: CliCommandNode, depth = 1, level = 4): readonly string[] {
+	const indent = "\t".repeat(level);
 	const parentCandidates = nodeCandidates(command, { includeSubcommands: true });
 	if (!command.subcommands?.length) {
 		return [
-			`\t\t\t\t${powerShellQuote(command.name)} {`,
-			...powerShellCandidateAssignment(parentCandidates, 5),
-			"\t\t\t\t\tbreak",
-			"\t\t\t\t}",
+			`${indent}${powerShellQuote(command.name)} {`,
+			...powerShellCandidateAssignment(parentCandidates, level + 1),
+			`${indent}\tbreak`,
+			`${indent}}`,
 		];
 	}
 	const knownActions = command.subcommands.map((subcommand) => powerShellQuote(subcommand.name));
 	return [
-		`\t\t\t\t${powerShellQuote(command.name)} {`,
-		`\t\t\t\t\t$knownActions = @(${knownActions.join(", ")})`,
-		"\t\t\t\t\tif (-not $action -or $knownActions -notcontains $action -or ($tokens.Count -eq 3 -and $wordToComplete)) {",
-		...powerShellCandidateAssignment(parentCandidates, 6),
-		"\t\t\t\t\t} else {",
-		"\t\t\t\t\t\tswitch ($action) {",
-		...command.subcommands.flatMap((subcommand) => [
-			`\t\t\t\t\t\t\t${powerShellQuote(subcommand.name)} {`,
-			...powerShellCandidateAssignment(
-				nodeCandidates(subcommand),
-				8,
-			),
-			"\t\t\t\t\t\t\t\tbreak",
-			"\t\t\t\t\t\t\t}",
-		]),
-		"\t\t\t\t\t\t}",
-		"\t\t\t\t\t}",
-		"\t\t\t\t\tbreak",
-		"\t\t\t\t}",
+		`${indent}${powerShellQuote(command.name)} {`,
+		`${indent}\t$knownActions = @(${knownActions.join(", ")})`,
+		`${indent}\t$action = if ($tokens.Count -gt ${depth + 1}) { $tokens[${depth + 1}] } else { '' }`,
+		`${indent}\tif (-not $action -or $knownActions -notcontains $action -or ($tokens.Count -eq ${depth + 2} -and $wordToComplete)) {`,
+		...powerShellCandidateAssignment(parentCandidates, level + 2),
+		`${indent}\t} else {`,
+		`${indent}\t\tswitch ($action) {`,
+		...command.subcommands.flatMap((subcommand) => renderPowerShellCommand(subcommand, depth + 1, level + 3)),
+		`${indent}\t\t}`,
+		`${indent}\t}`,
+		`${indent}\tbreak`,
+		`${indent}}`,
 	];
 }
 
@@ -456,13 +431,10 @@ function fixedOptionValues(): readonly {
 }
 
 function allOptions(): readonly CliOptionDescriptor[] {
-	return [
-		...ROOT_CLI_OPTIONS,
-		...CLI_COMMAND_CATALOG.flatMap((command) => [
-			...(command.options ?? []),
-			...(command.subcommands ?? []).flatMap((subcommand) => subcommand.options ?? []),
-		]),
+	const fromNode = (node: CliCommandNode): readonly CliOptionDescriptor[] => [
+		...(node.options ?? []), ...(node.subcommands ?? []).flatMap(fromNode),
 	];
+	return [...ROOT_CLI_OPTIONS, ...CLI_COMMAND_CATALOG.flatMap(fromNode)];
 }
 
 function uniqueCandidates(

@@ -14,7 +14,7 @@ export type ResourceSelectorOptions = {
 	onCancel: () => void;
 };
 
-const FILTERS: ResourceFilter[] = ["all", "hook", "plugin", "skill", "prompt", "theme"];
+const FILTERS: ResourceFilter[] = ["all", "mcp", "plugin", "skill", "hook", "prompt", "theme"];
 
 export class ResourceSelectorComponent extends Container {
 	private readonly searchInput = new Input();
@@ -135,7 +135,9 @@ export class ResourceSelectorComponent extends Container {
 
 	private resourceLine(resource: MycliShellResource, selected: boolean): string {
 		const prefix = selected ? theme.fg("selectorMatch", `${uiGlyphs().arrow} `) : "  ";
-		const marker = resource.enabled === false ? "off" : resource.enabled === true ? "on" : resource.status ?? "info";
+		const marker = (resource.type === "plugin" || resource.type === "mcp") && resource.status && !["enabled", "loaded", "disabled"].includes(resource.status)
+			? resource.status.replaceAll("_", " ")
+			: resource.enabled === false ? "off" : resource.enabled === true ? "on" : resource.status ?? "info";
 		const labelColor = resourceTypeColor(resource.type);
 		const label = selected ? theme.fg("selectorMatch", resource.name) : theme.fg(labelColor, resource.name);
 		const statusColor = resourceStatusColor(resource);
@@ -151,6 +153,8 @@ function resourceTypeColor(resourceType: MycliShellResource["type"]) {
 			return "resourceHook";
 		case "plugin":
 			return "resourcePlugin";
+		case "mcp":
+			return "accent";
 		case "skill":
 			return "resourceSkill";
 		case "prompt":
@@ -162,6 +166,11 @@ function resourceTypeColor(resourceType: MycliShellResource["type"]) {
 
 function resourceStatusColor(resource: MycliShellResource) {
 	if (resource.status === "issue") return "resourceIssue";
+	if (resource.type === "plugin" || resource.type === "mcp") {
+		if (["error", "failed", "cached", "partial", "migration_required"].includes(resource.status ?? "")) return "resourceIssue";
+		if (resource.status === "loading") return "selectorMeta";
+		if (resource.status === "closed") return "resourceDisabled";
+	}
 	if (resource.enabled === false || resource.status === "disabled") return "resourceDisabled";
 	if (resource.enabled === true || resource.status === "enabled") return "resourceEnabled";
 	return "selectorMeta";

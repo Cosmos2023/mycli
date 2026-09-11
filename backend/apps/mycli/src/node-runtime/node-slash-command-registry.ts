@@ -7,6 +7,7 @@ export type SlashCommandPresentation = "none" | "overlay" | "transcript";
 type SlashCommandCategory =
 	| "diagnostics"
 	| "interface"
+	| "integrations"
 	| "model"
 	| "safety"
 	| "session"
@@ -201,10 +202,22 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	spec("skills", "/skills", "Inspect available skills", {
 		presentation: "overlay",
 	}),
-	spec("tools", "/tools", "Inspect tools, hooks, extensions, and plugins", {
-		argumentHint: "[list|sets|hooks|extensions|plugins]",
+	spec("mcp", "/mcp", "Inspect MCP servers and their tools", {
+		argumentHint: "[verbose]",
 		argumentPolicy: "optional",
 		presentation: "overlay",
+	}),
+	spec("plugins", "/plugins", "Browse installed plugins and their capabilities", {
+		presentation: "overlay",
+	}),
+	spec("hooks", "/hooks", "Inspect configured hooks", {
+		presentation: "overlay",
+	}),
+	spec("tools", "/tools", "Inspect the runtime tool inventory", {
+		argumentHint: "[list|sets]",
+		argumentPolicy: "optional",
+		presentation: "overlay",
+		visible: false,
 	}),
 	spec("resources", "/resources", "Browse runtime resources", {
 		tuiPolicy: tuiPolicy("open_resources"),
@@ -315,10 +328,12 @@ const RETIRED_SLASH_COMMANDS: readonly RetiredSlashCommand[] = Object.freeze([
 	{ name: "/status stats", replacement: "/stats" },
 	{ name: "/skill", replacement: "/skills" },
 	{ name: "/tools skills", replacement: "/skills" },
-	{ name: "/hooks", replacement: "/tools hooks" },
+	{ name: "/tools hooks", replacement: "/hooks" },
+	{ name: "/tools plugins", replacement: "/plugins" },
+	{ name: "/tools extensions", replacement: "/tools" },
 	{ name: "/toolsets", replacement: "/tools sets" },
-	{ name: "/extensions", replacement: "/tools extensions" },
-	{ name: "/plugin", replacement: "/tools plugins" },
+	{ name: "/extensions", replacement: "/tools" },
+	{ name: "/plugin", replacement: "/plugins" },
 	{ name: "/tasks", replacement: "/agents" },
 	{ name: "/jobs", replacement: "/agents" },
 	{ name: "/tasks agents kill", replacement: "/agents kill" },
@@ -426,7 +441,8 @@ function commandCategory(id: string): SlashCommandCategory {
 	if (["new", "resume", "fork", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
 		return "session";
 	}
-	if (["skills", "tools", "resources", "memory", "agents", "ps", "changes", "undo"].includes(id)) {
+	if (["skills", "mcp", "plugins", "hooks", "resources"].includes(id)) return "integrations";
+	if (["tools", "memory", "agents", "ps", "changes", "undo"].includes(id)) {
 		return "tools";
 	}
 	if (["status", "usage", "context", "stats", "trace"].includes(id)) return "diagnostics";

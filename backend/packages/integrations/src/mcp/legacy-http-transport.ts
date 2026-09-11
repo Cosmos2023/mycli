@@ -1,5 +1,6 @@
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { McpHttpError } from "./diagnostics.ts";
 
 export interface LegacyHttpTransportOptions {
 	readonly url: URL;
@@ -58,7 +59,10 @@ export class LegacyHttpTransport implements Transport {
 				body: JSON.stringify(message),
 				signal: controller.signal,
 			});
-			if (!response.ok) throw new Error(`mcp_http_status_${response.status}`);
+			if (!response.ok) {
+				await response.body?.cancel().catch(() => undefined);
+				throw new McpHttpError(response.status);
+			}
 			if (response.status === 202 || response.status === 204) return;
 			const text = await boundedResponseText(response, this.#maxResponseBytes);
 			if (!text.trim()) return;

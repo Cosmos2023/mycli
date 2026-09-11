@@ -42,6 +42,10 @@ test("complete Node system prompt contains the workflow contract", () => {
 	assert.match(prompt, /Use `update_plan` to publish the complete current plan/u);
 	assert.match(prompt, /issue them together in the same response/u);
 	assert.match(prompt, /Built-in `Read`, `Shell`, `web_fetch`, and `tool_search` calls support parallel execution/u);
+	assert.match(prompt, /even if the user does not explicitly name the service or MCP/u);
+	assert.match(prompt, /When the needed tool is not already exposed, use `tool_search`/u);
+	assert.match(prompt, /For MCP and plugin tool discovery, use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`/u);
+	assert.match(prompt, /Discovered tools still follow the current approval and permission policy/u);
 	assert.match(prompt, /Never parallelize `Write`, `Edit`, `Patch`, `WriteStdin`, `update_plan`, `request_permissions`, or `AskUserQuestion` calls/u);
 	assert.match(prompt, /Independent `Shell` calls may be submitted together in the same response, including calls with `sandbox_permissions="require_escalated"`/u);
 	assert.match(prompt, /include a concise `justification` in the user's language/u);

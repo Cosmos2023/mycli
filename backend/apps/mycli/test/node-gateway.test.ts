@@ -184,7 +184,9 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/usage",
 	"/compact",
 	"/skills",
-	"/tools",
+	"/mcp",
+	"/plugins",
+	"/hooks",
 	"/agents",
 	"/ps",
 	"/changes",
@@ -532,14 +534,19 @@ function gatewayHarness(options: {
 			detail: "Review changes",
 			command: "/skills",
 		}, {
-			id: "mcp:docs:file:///README.md",
-			type: "plugin",
-			name: "docs README",
+			id: "mcp:docs",
+			type: "mcp",
+			name: "docs",
 			source: "runtime",
 			enabled: true,
-			status: "enabled",
-			detail: "MCP resource file:///README.md",
-			command: "/mcp inspect docs",
+			status: "ready",
+			detail: "1 tools, 1 resources",
+			tool_count: 1, resource_count: 1, tool_names: ["McpSearch"],
+			inspection_detail: "Transport: stdio\nResources (1): README",
+			command: "/mcp",
+		}, {
+			id: "plugin:demo", type: "plugin", name: "demo", source: "repo", enabled: true,
+			status: "enabled", inspection_detail: "Commands (1): /plugin:demo:status", command: "/plugins",
 		}],
 		commands: {
 			list: () => options.integrationCommands ?? [{
@@ -2035,7 +2042,10 @@ test("retired slash commands fail locally with replacements and no side effects"
 		["/jobs kill-subagents", "/agents kill-all"],
 		["/agents kill-agents", "/agents kill-all"],
 		["/tools\tskills", "/skills"],
-		["/plugin demo status {}", "/tools plugins"],
+		["/plugin demo status {}", "/plugins"],
+		["/tools plugins demo status {}", "/plugins"],
+		["/tools hooks", "/hooks"],
+		["/tools extensions", "/tools"],
 		["/stop", "/ps stop-all"],
 		["/session-maintenance --apply-empty", "/session maintenance"],
 	]) {
@@ -2663,13 +2673,14 @@ test("transcript normalization closes only after its marked response is written"
 	assert.equal(harness.closeCalls(), 1);
 });
 
-test("tools subactions and trace commands return filtered bounded displays", async () => {
+test("integration commands separate servers, packages, and tools in bounded displays", async () => {
 	const harness = gatewayHarness({ integrations: true });
 	for (const [command, title, labels] of [
 		["/tools list", "Tools", ["Read", "Skill", "McpSearch"]],
 		["/tools sets", "Tool sets", ["external", "file"]],
-		["/tools extensions", "Extensions", ["Skill", "McpSearch"]],
-		["/tools plugins", "Plugins", ["docs README", "/plugin:demo:status"]],
+		["/mcp", "MCP servers", ["docs"]],
+		["/mcp verbose", "MCP servers", ["docs"]],
+		["/plugins", "Plugins", ["demo"]],
 	] as const) {
 		const response = await harness.send("command.run", { command, surface: "tui" });
 		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
@@ -2697,20 +2708,15 @@ test("tools subactions and trace commands return filtered bounded displays", asy
 		assert.ok(response.result.lines.length <= 100);
 	}
 	const plugin = await harness.send("command.run", {
-		command: "/tools plugins demo status {}",
+		command: "/plugin:demo:status {}",
 		surface: "tui",
 	});
 	assert.equal("result" in plugin ? plugin.result.presentation : null, "transcript");
-	assert.equal(
-		"result" in plugin
-			? (plugin.result.display as { preformatted?: unknown }).preformatted
-			: null,
-		"demo ready",
-	);
-	for (const command of ["/tools\tplugins\tdemo\tstatus\t{}", "/tools plugins\ndemo\nstatus {}"]) {
+	assert.deepEqual("result" in plugin ? plugin.result.lines : [], ["demo ready"]);
+	for (const command of ["/plugin:demo:status\t{}", "/plugin:demo:status\n{}"]) {
 		const response = await harness.send("command.run", { command, surface: "tui" });
 		assert.ok("result" in response);
-		assert.equal((response.result.display as { preformatted?: string }).preformatted, "demo ready");
+		assert.deepEqual(response.result.lines, ["demo ready"]);
 	}
 	await harness.gateway.close();
 });
@@ -2730,7 +2736,7 @@ test("skill and tool inspection retain descriptions, availability, and configure
 		const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
 		assert.deepEqual(display.rows.map((row) => [row.label, row.status, row.detail]), [["review", "enabled", "Review changes"]]);
 	}
-	for (const command of ["/tools hooks", "/tools\thooks"]) {
+	for (const command of ["/hooks", "/hooks\t"]) {
 		const response = await harness.send("command.run", { command, surface: "tui" });
 		assert.ok("result" in response);
 		const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
@@ -2754,6 +2760,8 @@ test("malformed backend slash subactions return structured bounded errors", asyn
 		"/session maintenance --delete-all",
 		"/trace raw",
 		"/tools unknown",
+		"/mcp inspect docs",
+		"/mcp verbose extra",
 		"/ps stop",
 		"/ps stop-all extra",
 		"/agents kill",
@@ -2801,14 +2809,17 @@ test("gateway exposes bounded integration manifests resources commands and subag
 		detail: "Review changes",
 		command: "/skills",
 	}, {
-		id: "mcp:docs:file:///README.md",
-		type: "plugin",
-		name: "docs README",
+		id: "mcp:docs",
+		type: "mcp",
+		name: "docs",
 		source: "runtime",
 		enabled: true,
-		status: "enabled",
-		detail: "MCP resource file:///README.md",
-		command: "/mcp inspect docs",
+		status: "ready",
+		detail: "1 tools, 1 resources",
+		command: "/mcp",
+	}, {
+		id: "plugin:demo", type: "plugin", name: "demo", source: "repo", enabled: true,
+		status: "enabled", command: "/plugins",
 	}]);
 	assert.equal(JSON.stringify(resources).includes("body"), false);
 

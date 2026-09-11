@@ -7,7 +7,7 @@ import {
 	NODE_RUNTIME_CONTEXT_DEFAULTS,
 	type NodeRuntimeConfig,
 } from "@mycli/config";
-import type { RuntimeTurnRecord } from "@mycli/contracts";
+import { createErrorContext, readErrorContext, type RuntimeTurnRecord } from "@mycli/contracts";
 import type {
 	CanonicalConversationItem,
 	CanonicalMessage,
@@ -37,6 +37,7 @@ import type {
 import { SQLiteTranscriptEventRepository, StorageFailure } from "@mycli/storage";
 import {
 	ASK_USER_QUESTION_TOOL_DEFINITION,
+	createToolSearchDefinition,
 	EDIT_TOOL_DEFINITION,
 	PATCH_TOOL_DEFINITION,
 	READ_TOOL_DEFINITION,
@@ -894,6 +895,37 @@ for (const action of ["deny", "error"] as const) {
 			: "tool_hook_error");
 	});
 }
+
+test("a failed plugin pre-hook records no tool effects and retains the hook failure as its cause", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-hook-error-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = new SQLiteTranscriptEventRepository({ dbPath: join(root, "sessions.db"), initializeSchemaVersion: 14 });
+	t.after(() => store.close());
+	const trace: string[] = [];
+	const router = new SequencedRouter(trace);
+	const hookError = createErrorContext({ reason: "integration.unavailable", source: "integration",
+		scope: { kind: "request", id: "hook:guard" }, outcome: { state: "unknown", effects: "possible" },
+		details: { integration: "demo", operation: "hooks/run", phase: "request", exit_code: 91 },
+	});
+	const runtime = createRuntime({ store, toolRouter: router,
+		provider: scriptedProvider(trace, [], [
+			[{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS }, { type: "completed", responseId: "tools" }],
+			[{ type: "completed", responseId: "final" }],
+		]),
+		hookRunner: { run: async (input) => input.point === "pre_tool_use"
+			? [{ hookId: "guard", result: { action: "error", message: "plugin hook failed", errorContext: hookError } }] : [] },
+	});
+	const result = await runtime.submit(submission(), () => undefined, { signal: new AbortController().signal });
+	assert.equal(result.status, "completed");
+	assert.equal(router.calls, 0);
+	const tool = store.loadReadableTranscript("session-1").find((item) => item.type === "tool");
+	const context = readErrorContext(tool?.metadata?.error_context);
+	assert.equal(context?.reason, "integration.unavailable");
+	assert.deepEqual(context?.scope, { kind: "tool_call", id: "call-1" });
+	assert.deepEqual(context?.outcome, { state: "not_started", effects: "none" });
+	assert.equal(context?.causes?.[0]?.id, hookError.id);
+	assert.deepEqual(context?.causes?.[0]?.outcome, { state: "unknown", effects: "possible" });
+});
 
 test("hook-modified arguments are schema revalidated before adapter execution", async () => {
 	const trace: string[] = [];
@@ -3422,7 +3454,15 @@ test("freezes mode and tool catalogs per run while the next run observes refresh
 			catalogResolutions += 1;
 			return {
 				catalogVersion,
-				directTools: collaborationMode === "plan" ? [READ_TOOL_DEFINITION] : [],
+				directTools: [
+					...(collaborationMode === "plan" ? [READ_TOOL_DEFINITION] : []),
+					createToolSearchDefinition([{
+						definition: deferred,
+						source: "mcp",
+						originMetadata: { server: deferred.name },
+						sourceDescription: deferred.description,
+					}]),
+				],
 				deferredTools: [deferred],
 				skillCatalog,
 			};
@@ -3440,10 +3480,16 @@ test("freezes mode and tool catalogs per run while the next run observes refresh
 	}, () => undefined, { signal: new AbortController().signal });
 
 	assert.deepEqual(requests.map((request) => request.tools.map((tool) => tool.name)), [
-		["Read", "docs_old"],
-		["Read", "docs_old"],
-		["docs_new"],
+		["Read", "tool_search", "docs_old"],
+		["Read", "tool_search", "docs_old"],
+		["tool_search", "docs_new"],
 	]);
+	const discoveryDescriptions = requests.map((request) => request.tools.find((tool) => tool.name === "tool_search")?.description);
+	assert.equal(discoveryDescriptions[0], discoveryDescriptions[1]);
+	assert.match(discoveryDescriptions[1] ?? "", /mcp:docs_old/u);
+	assert.doesNotMatch(discoveryDescriptions[1] ?? "", /mcp:docs_new/u);
+	assert.match(discoveryDescriptions[2] ?? "", /mcp:docs_new/u);
+	assert.doesNotMatch(discoveryDescriptions[2] ?? "", /mcp:docs_old/u);
 	assert.match(JSON.stringify(requests[1]), /# Plan Mode/u);
 	assert.doesNotMatch(JSON.stringify(requests[2]), /# Plan Mode/u);
 	assert.equal(catalogResolutions, 2);

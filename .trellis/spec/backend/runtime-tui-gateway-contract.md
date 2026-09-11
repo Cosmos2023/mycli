@@ -257,9 +257,18 @@ and tool execution. A later permission change does not affect a running turn.
 
 ## Scenario: Command Inspection Lists
 
-- `/skills` and `/tools` return bounded structured list displays. The tools projection preserves
+- `/mcp`, `/plugins`, `/skills`, `/hooks`, and diagnostic `/tools` have independent bounded list displays.
+  The default palette and settings center expose integration domains separately. `/tools` is search-only
+  and lists callable tools, never plugin packages or MCP resources. Its only subactions are `list` and `sets`.
+  `/tools plugins`, `/tools hooks`, and `/tools extensions` are retired with canonical replacement hints.
+  The tools projection preserves
   manifest descriptions and availability. Hook inspection reads configured hook resources,
   including disabled entries; diagnostics alone are not an inventory of configured hooks.
+- MCP resources use `type: "mcp"`, with one row per configured server, including disabled, loading,
+  failed, and tool-only servers. Cached discovery must not claim a verified live connection.
+  `/mcp verbose` includes safe transport/resource metadata; config environment, headers, and command
+  arguments never enter inspection output. Plugin rows represent packages; their capabilities and
+  command routes appear in details, not as sibling package rows. Inspection never executes a command.
 - `CommandResultOverlayComponent` must not apply the folded transcript row limit. Every returned
   row remains reachable through keyboard selection, paging, and search over names, values, status,
   and details. Enter inspects an item without invoking a tool or skill; Esc returns before closing.

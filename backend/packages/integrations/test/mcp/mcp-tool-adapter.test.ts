@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CanonicalToolCall } from "@mycli/core";
 import { ToolRouter } from "@mycli/tools";
+import { McpHttpError, McpRequestError } from "../../src/mcp/diagnostics.ts";
 import {
 	createMcpToolRegistration,
 	type McpClientContract,
@@ -20,7 +21,10 @@ test("creates stable MCP registrations and validates arguments through the share
 			};
 		},
 	};
-	const registration = createMcpToolRegistration(client, descriptor());
+	const registration = createMcpToolRegistration(client, {
+		...descriptor(),
+		serverInstructions: "Browse project files and repository documentation.",
+	});
 	const router = new ToolRouter({
 		adapters: [registration.adapter],
 		exposure: [registration.definition],
@@ -32,6 +36,7 @@ test("creates stable MCP registrations and validates arguments through the share
 	assert.equal(registration.id, "mcp:files:read_file");
 	assert.equal(registration.definition.name, "mcp_files_read_file");
 	assert.equal(registration.source, "mcp");
+	assert.equal(registration.sourceDescription, "Browse project files and repository documentation.");
 	assert.equal(registration.supportsParallelToolCalls, false);
 	assert.deepEqual(registration.originMetadata, { server: "files", tool: "read_file" });
 	assert.equal(invalid.errorKind, "invalid_arguments");
@@ -145,6 +150,28 @@ test("isolates MCP transport failures without returning raw server output", asyn
 	assert.equal(result.errorKind, "mcp_transport_error");
 	assert.equal(result.metadata.failureCategory, "transport_error");
 	assert.equal(JSON.stringify(result).includes("private-value"), false);
+});
+
+test("MCP error context survives the router and downgrades for legacy sessions", async () => {
+	const registration = createMcpToolRegistration({ callTool: async () => {
+		throw new McpRequestError(new McpHttpError(503), { operation: "tools/call", phase: "request" });
+	} }, descriptor());
+	const router = new ToolRouter({ adapters: [registration.adapter], exposure: [registration.definition] });
+	for (const version of [1, undefined] as const) {
+		const result = await router.execute(call('{"path":"README.md"}'), { ...executionOptions(), errorContextVersion: version });
+		assert.equal(result.errorKind, "mcp_transport_error");
+		assert.match(result.modelOutput, /HTTP status: 503/u);
+		assert.match(result.modelOutput, /outcome is unknown/u);
+		if (version === 1) {
+			assert.equal(result.errorContext?.reason, "integration.unavailable");
+			assert.deepEqual(result.errorContext?.details, { integration: "files", legacy_kind: "mcp_transport_error", operation: "tools/call", phase: "request", http_status: 503 });
+			assert.deepEqual(result.errorContext?.outcome, { state: "unknown", effects: "possible" });
+			assert.deepEqual(result.metadata.error_context, result.errorContext);
+		} else {
+			assert.equal(result.errorContext, undefined);
+			assert.equal(result.metadata.error_context, undefined);
+		}
+	}
 });
 
 test("rejects malformed MCP input schemas before registration", () => {

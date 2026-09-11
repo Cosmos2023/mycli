@@ -25,7 +25,7 @@ const ROOT_ALIASES = ["servers", "mcp_servers", "mcpServers"] as const;
 const SERVER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-class McpConfigError extends Error {
+export class McpConfigError extends Error {
 	readonly errorClass: string;
 
 	constructor(errorClass: string) {
@@ -111,7 +111,7 @@ async function readConfigFile(
 	const parsed = new Map<string, McpServerConfig>();
 	for (const [id, row] of rows) {
 		try {
-			parsed.set(id, parseServer(id, row, env));
+			parsed.set(id, parseMcpServerConfig(id, row, env));
 		} catch (error) {
 			diagnostics.push(issue(
 				file,
@@ -123,7 +123,7 @@ async function readConfigFile(
 	return parsed;
 }
 
-function parseServer(
+export function parseMcpServerConfig(
 	id: string,
 	raw: Readonly<Record<string, unknown>>,
 	env: Readonly<Record<string, string | undefined>>,

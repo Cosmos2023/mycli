@@ -7,6 +7,8 @@ import {
 	defineIntegrationRegistration,
 	discoverHookConfig,
 	discoverMcpConfig,
+	discoverPlugins,
+	pluginBundleContributions,
 	FOLLOWUP_TASK_TOOL_DEFINITION,
 	HookAllowlistStore,
 	HookManager,
@@ -20,6 +22,7 @@ import {
 	McpManager,
 	type McpManagerDiscovery,
 	type McpResourceService,
+	type McpServerConfig,
 	PluginRuntime,
 	renderSkillCatalog,
 	SEND_AGENT_MESSAGE_TOOL_DEFINITION,
@@ -54,6 +57,7 @@ import {
 	pluginSandboxProfile,
 	workspaceSandboxProfile,
 } from "./integration-sandbox.ts";
+import { mcpCatalogResources, pluginCatalogResources, type McpCatalogPhase } from "./integration-resource-catalog.ts";
 
 type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
 
@@ -384,6 +388,16 @@ export async function createRuntimeIntegrationComposition(
 		notifyExtensions();
 	};
 	const startRefresh = (owner: RuntimeIntegrationContent): void => {
+		owner.startPluginUpdates(() => {
+			if (closed || owner !== content) return;
+			const plugin = owner.pluginContribution();
+			snapshot = runtimeIntegrationSnapshot({ version: snapshot.version + 1, builtinManifest: options.builtinManifest,
+				registrations: snapshot.registrations,
+				resources: [...snapshot.resources.filter((resource) => !isPluginResource(resource)), ...(plugin.resources ?? [])],
+				diagnostics: [...snapshot.diagnostics.filter((diagnostic) => diagnostic.source !== "plugin"), ...(plugin.diagnostics ?? [])],
+			});
+			notifyExtensions();
+		});
 		queueMicrotask(() => owner.startMcpRefresh(
 			(contribution) => publishMcp(owner, contribution),
 		));
@@ -509,6 +523,8 @@ interface RuntimeIntegrationContent {
 	readonly composition: IntegrationComposition;
 	readonly hookDiscovery: Awaited<ReturnType<typeof discoverHookConfig>>;
 	readonly skillRegistry: SkillRegistry;
+	pluginContribution(): IntegrationCompositionContribution;
+	startPluginUpdates(publish: () => void): void;
 	startMcpRefresh(
 		publish: (contribution: IntegrationCompositionContribution) => void,
 	): void;
@@ -526,9 +542,15 @@ async function createRuntimeIntegrationContent(input: {
 	const mcpRefreshController = new AbortController();
 	let skillRegistry: SkillRegistry | undefined;
 	let mcpManager: McpManager | undefined;
+	let pluginRuntime: PluginRuntime | undefined;
+	let unsubscribePlugins: (() => void) | undefined;
 	let startMcpRefresh: ((
 		publish: (contribution: IntegrationCompositionContribution) => void,
 	) => void) | undefined;
+	const pluginDiscovery = await discoverPlugins({ workspaceRoot: input.workspaceRoot, homeDir: options.homeDir,
+		includeRepository: input.projectConfigurationEnabled });
+	const bundles = pluginBundleContributions(pluginDiscovery, { workspaceRoot: input.workspaceRoot, env: options.env,
+		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd) });
 	const hookDiscovery = await discoverHookConfig({
 		workspaceRoot: input.workspaceRoot,
 		homeDir: options.homeDir,
@@ -548,6 +570,7 @@ async function createRuntimeIntegrationContent(input: {
 						skillRegistry = await SkillRegistry.discover({
 							builtinRoot: builtinSkillRoot(),
 							userRoot: join(options.homeDir, ".mycli", "skills"),
+							pluginSkills: bundles.skills,
 							...(input.projectConfigurationEnabled ? {
 								sharedRepoRoot: join(input.workspaceRoot, ".agents", "skills"),
 								repoRoot: join(input.workspaceRoot, ".mycli", "skills"),
@@ -570,8 +593,9 @@ async function createRuntimeIntegrationContent(input: {
 							env: options.env,
 							includeRepository: input.projectConfigurationEnabled,
 						});
+						const servers = [...config.servers, ...bundles.mcpServers];
 						const manager = new McpManager({
-							configs: config.servers,
+							configs: servers,
 							catalogCache: new McpCatalogCache({
 								directory: join(options.homeDir, ".mycli", "cache"),
 							}),
@@ -589,6 +613,7 @@ async function createRuntimeIntegrationContent(input: {
 								(discovery) => {
 									if (!discoverySignal.aborted) {
 										publish(mcpContribution(
+											servers,
 											config.diagnostics,
 											mergeMcpRefresh(cached, discovery),
 										));
@@ -596,13 +621,13 @@ async function createRuntimeIntegrationContent(input: {
 								},
 								() => {
 									if (!discoverySignal.aborted) {
-										publish(mcpRefreshFailure(config.diagnostics, cached));
+										publish(mcpRefreshFailure(servers, config.diagnostics, cached));
 									}
 								},
 							);
 						};
 						return {
-							...mcpContribution(config.diagnostics, cached),
+							...mcpContribution(servers, config.diagnostics, cached, cached ? "cached" : "loading"),
 							close: () => manager.close(),
 						};
 					},
@@ -616,12 +641,17 @@ async function createRuntimeIntegrationContent(input: {
 							env: options.env,
 							includeRepository: input.projectConfigurationEnabled,
 							sandboxProfile: pluginSandboxProfile,
+							discovery: pluginDiscovery,
+							bundleIssues: [...bundles.issues, ...(skillRegistry?.diagnostics().issues ?? [])
+								.filter((issue) => bundles.skills.some((skill) => skill.pluginId === issue.fileLabel))
+								.map((issue) => ({ pluginId: issue.fileLabel, errorClass: issue.errorClass }))],
 						}, signal);
+						pluginRuntime = runtime;
 						if (input.reportStartup) options.onStartupStage?.("plugins_ready");
 						return {
 							registrations: runtime.tools,
-							hooks: runtime.hooks,
-							resources: pluginResources(runtime.records),
+							hooks: [...runtime.hooks, ...bundles.hooks],
+							resources: pluginCatalogResources(runtime),
 							diagnostics: runtime.issues.map((issue) => ({
 								source: "plugin",
 								label: "runtime",
@@ -638,7 +668,7 @@ async function createRuntimeIntegrationContent(input: {
 		mcpRefreshController.abort();
 		throw error;
 	}
-	if (!skillRegistry || !mcpManager) {
+	if (!skillRegistry || !mcpManager || !pluginRuntime) {
 		mcpRefreshController.abort();
 		await composition.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
@@ -649,12 +679,18 @@ async function createRuntimeIntegrationContent(input: {
 		composition,
 		hookDiscovery,
 		skillRegistry,
+		pluginContribution: () => pluginContribution(pluginRuntime!),
+		startPluginUpdates: (publish: () => void) => {
+			unsubscribePlugins?.();
+			unsubscribePlugins = pluginRuntime!.subscribe(publish);
+		},
 		startMcpRefresh: (
 			publish: (contribution: IntegrationCompositionContribution) => void,
 		) => { startMcpRefresh?.(publish); },
-		retire: () => { mcpRefreshController.abort(); },
+		retire: () => { mcpRefreshController.abort(); unsubscribePlugins?.(); },
 		close: () => {
 			mcpRefreshController.abort();
+			unsubscribePlugins?.();
 			return composition.close();
 		},
 	});
@@ -687,8 +723,12 @@ function runtimeContentSnapshot(
 	mcpOverride?: IntegrationCompositionContribution,
 ): RuntimeIntegrationSnapshot {
 	const resources = Object.freeze([
-		...content.composition.resources,
+		...content.composition.resources.filter((resource) => !isPluginResource(resource)),
+		...(content.pluginContribution().resources ?? []),
 		...hookResources(content.hookDiscovery.hooks),
+		...hookResources(content.composition.hooks.map((hook) => ({
+			hookId: hook.id, name: hook.id, scope: "runtime", enabled: true, hookPoint: hook.hookPoint,
+		}))),
 	]);
 	const staticRegistrations = content.composition.registrations.filter(
 		(registration) => registration.source !== "mcp",
@@ -698,7 +738,7 @@ function runtimeContentSnapshot(
 	const staticResources = resources.filter((resource) => !isMcpResource(resource));
 	const mcpResources = mcpOverride?.resources ?? resources.filter(isMcpResource);
 	const staticDiagnostics = content.composition.diagnostics.filter(
-		(diagnostic) => !isMcpDiagnostic(diagnostic),
+		(diagnostic) => !isMcpDiagnostic(diagnostic) && diagnostic.source !== "plugin",
 	);
 	const mcpDiagnostics = mcpOverride?.diagnostics
 		?? content.composition.diagnostics.filter(isMcpDiagnostic);
@@ -712,7 +752,7 @@ function runtimeContentSnapshot(
 			...subagentRegistrations,
 		]),
 		resources: [...staticResources, ...mcpResources],
-		diagnostics: [...staticDiagnostics, ...mcpDiagnostics],
+		diagnostics: [...staticDiagnostics, ...(content.pluginContribution().diagnostics ?? []), ...mcpDiagnostics],
 	});
 }
 
@@ -752,12 +792,14 @@ function runtimeIntegrationSnapshot(input: {
 }
 
 function mcpContribution(
+	configs: readonly McpServerConfig[],
 	configDiagnostics: readonly object[],
 	discovery: McpManagerDiscovery | undefined,
+	phase: McpCatalogPhase = "ready",
 ): IntegrationCompositionContribution {
 	return Object.freeze({
 		registrations: discovery?.registrations ?? Object.freeze([]),
-		resources: discovery ? mcpResources(discovery.resources, discovery.servers) : Object.freeze([]),
+		resources: mcpCatalogResources(configs, discovery, phase),
 		diagnostics: Object.freeze([
 			...configDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
 			...(discovery?.servers.flatMap((server) => server.failureCategory
@@ -768,12 +810,13 @@ function mcpContribution(
 }
 
 function mcpRefreshFailure(
+	configs: readonly McpServerConfig[],
 	configDiagnostics: readonly object[],
 	cached: McpManagerDiscovery | undefined,
 ): IntegrationCompositionContribution {
 	return Object.freeze({
 		registrations: cached?.registrations ?? Object.freeze([]),
-		resources: cached ? mcpResources(cached.resources, cached.servers) : Object.freeze([]),
+		resources: mcpCatalogResources(configs, cached, "failed"),
 		diagnostics: Object.freeze([
 			...configDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
 			Object.freeze({ source: "mcp", label: "runtime", errorClass: "refresh_failed" }),
@@ -850,66 +893,13 @@ function skillDiagnostics(registry: SkillRegistry): readonly Readonly<Record<str
 	return registry.diagnostics().issues.map((issue) => Object.freeze({ ...issue }));
 }
 
-function mcpResources(
-	resources: readonly {
-		readonly serverId: string;
-		readonly uri: string;
-		readonly name: string;
-		readonly description: string;
-	}[],
-	servers: readonly {
-		readonly serverId: string;
-		readonly status: string;
-		readonly resourceCount: number;
-	}[],
-): readonly Readonly<Record<string, unknown>>[] {
-	const projected = resources.map((resource) => Object.freeze({
-		id: `mcp:${resource.serverId}:${resource.uri}`.slice(0, 256),
-		type: "plugin",
-		name: `${resource.serverId} ${resource.name}`.slice(0, 256),
-		source: "runtime",
-		enabled: true,
-		status: "enabled",
-		detail: `MCP resource ${resource.uri}`.slice(0, 512),
-		command: `/mcp inspect ${resource.serverId}`,
-	}));
-	const projectedServers = new Set(resources.map((resource) => resource.serverId));
-	for (const server of servers) {
-		if (server.status !== "ok" || server.resourceCount === 0
-			|| projectedServers.has(server.serverId)) continue;
-		projected.push(Object.freeze({
-			id: `mcp:${server.serverId}:resources`.slice(0, 256),
-			type: "plugin",
-			name: `${server.serverId} resources`.slice(0, 256),
-			source: "runtime",
-			enabled: true,
-			status: "enabled",
-			detail: `${server.resourceCount} cached MCP resources`.slice(0, 512),
-			command: `/mcp inspect ${server.serverId}`,
-		}));
-	}
-	return Object.freeze(projected);
+function isPluginResource(resource: Readonly<Record<string, unknown>>): boolean {
+	return typeof resource.id === "string" && resource.id.startsWith("plugin:");
 }
 
-function pluginResources(
-	records: readonly {
-		readonly pluginId: string;
-		readonly source: string;
-		readonly enabled: boolean;
-		readonly status: string;
-		readonly issues: readonly string[];
-	}[],
-): readonly Readonly<Record<string, unknown>>[] {
-	return records.map((record) => Object.freeze({
-		id: `plugin:${record.pluginId}`,
-		type: "plugin",
-		name: record.pluginId,
-		source: resourceSource(record.source),
-		enabled: record.enabled,
-		status: record.status === "loaded" ? "enabled" : record.status,
-		...(record.issues[0] ? { detail: record.issues[0].slice(0, 512) } : {}),
-		command: "/tools plugins",
-	}));
+function pluginContribution(runtime: PluginRuntime): IntegrationCompositionContribution {
+	return Object.freeze({ resources: pluginCatalogResources(runtime),
+		diagnostics: runtime.issues.map((errorClass) => ({ source: "plugin", label: "runtime", errorClass })) });
 }
 
 function hookResources(
@@ -929,7 +919,7 @@ function hookResources(
 		enabled: hook.enabled,
 		status: hook.enabled ? "enabled" : "disabled",
 		detail: hook.hookPoint,
-		command: "/tools hooks",
+		command: "/hooks",
 	}));
 }
 
@@ -1014,6 +1004,7 @@ function pluginCommandService(registry: PluginCommandRegistry): IntegrationComma
 				lines: Object.freeze([result.summary]),
 				ok: result.ok,
 				...(result.error ? { error: result.error } : {}),
+				...(result.errorContext ? { error_context: result.errorContext } : {}),
 			});
 		},
 	};

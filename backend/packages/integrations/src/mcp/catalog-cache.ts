@@ -168,6 +168,7 @@ function parseTool(serverId: string, value: unknown): McpToolDescriptor[] {
 		|| value.serverId !== serverId
 		|| !boundedString(value.name, 512)
 		|| !boundedString(value.description, MAX_TEXT_CHARS, true)
+		|| (value.serverInstructions !== undefined && !boundedString(value.serverInstructions, MAX_TEXT_CHARS, true))
 		|| !isRecord(value.inputSchema)
 		|| JSON.stringify(value.inputSchema).length > MAX_SCHEMA_CHARS
 		|| typeof value.supportsParallelToolCalls !== "boolean") {
@@ -177,6 +178,7 @@ function parseTool(serverId: string, value: unknown): McpToolDescriptor[] {
 		serverId,
 		name: value.name as string,
 		description: value.description as string,
+		...(typeof value.serverInstructions === "string" ? { serverInstructions: value.serverInstructions } : {}),
 		inputSchema: Object.freeze({ ...value.inputSchema }),
 		supportsParallelToolCalls: value.supportsParallelToolCalls,
 	})];
@@ -189,6 +191,8 @@ function configFingerprint(configs: readonly McpServerConfig[]): string {
 		command: config.command ?? null,
 		url: config.url ?? null,
 		args: [...config.args],
+		cwd: config.cwd ?? null,
+		pluginDescription: config.pluginDescription ?? null,
 		env: sortedRecord(config.env),
 		headers: sortedRecord(config.headers),
 		enabled: config.enabled,

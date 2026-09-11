@@ -178,6 +178,7 @@ export interface DeferredToolCandidate {
 	readonly definition: ToolDefinition;
 	readonly source: "mcp" | "plugin";
 	readonly originMetadata: Readonly<Record<string, string>>;
+	readonly sourceDescription?: string;
 }
 
 export interface ToolTurnCatalog {

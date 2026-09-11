@@ -352,8 +352,9 @@ function responseRows(
 		const result = record(Reflect.get(response, "commandResult"));
 		return [
 			...rows(response, "plugins").map((row) => fields("plugin", row, [
-				"pluginId", "source", "enabled", "status", "tools", "hooks", "commands",
+				"pluginId", "source", "enabled", "status", "format", "version", "skillCount", "tools", "hooks", "commands",
 			])),
+			...rows(response, "marketplaces").map((row) => fields("marketplace", row, ["name", "source"])),
 			...(result ? [fields("command", result, ["ok", "summary", "error"])] : []),
 		];
 	}

@@ -219,7 +219,10 @@ test("reuses a private MCP catalog without reconnecting and invalidates config c
 			...client("alpha", []),
 			listTools: async () => {
 				discoveryCalls += 1;
-				return client("alpha", []).listTools(new AbortController().signal);
+				return (await client("alpha", []).listTools(new AbortController().signal)).map((tool) => ({
+					...tool,
+					serverInstructions: "Search engineering documentation.",
+				}));
 			},
 			listResources: async () => {
 				discoveryCalls += 1;
@@ -244,6 +247,7 @@ test("reuses a private MCP catalog without reconnecting and invalidates config c
 	const cached = await second.discover(new AbortController().signal);
 	assert.equal(cachedDiscoveryCalls, 0);
 	assert.equal(cached.registrations.length, 1);
+	assert.equal(cached.registrations[0]?.sourceDescription, "Search engineering documentation.");
 	assert.equal(cached.resources.length, 0);
 	assert.equal(cached.servers[0]?.resourceCount, 1);
 	await second.close();

@@ -595,7 +595,7 @@ export type MycliShellSessionTree = {
 
 export type MycliShellResource = {
 	id: string;
-	type: "hook" | "plugin" | "skill" | "prompt" | "theme";
+	type: "hook" | "mcp" | "plugin" | "skill" | "prompt" | "theme";
 	name: string;
 	source?: "user" | "repo" | "builtin" | "package" | "runtime" | "unknown";
 	enabled?: boolean;
@@ -740,7 +740,7 @@ export type MycliShellCommandSpec = {
 	argumentPolicy: "none" | "optional" | "required";
 	availableDuringTurn: boolean;
 	aliases?: string[];
-	category?: "diagnostics" | "interface" | "model" | "safety" | "session" | "tools";
+	category?: "diagnostics" | "interface" | "integrations" | "model" | "safety" | "session" | "tools";
 	searchOnly?: boolean;
 	available?: boolean;
 	unavailableReason?: string;

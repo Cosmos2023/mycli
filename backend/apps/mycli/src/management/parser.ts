@@ -484,8 +484,38 @@ function parseHooks(args: readonly string[], json: boolean): HooksManagementComm
 
 function parsePlugins(args: readonly string[], json: boolean): PluginsManagementCommand {
 	const action = args[0];
-	if (action === "list" && args.length === 1) {
-		return Object.freeze({ kind: "plugins", action, json });
+	if (action === "list") {
+		const available = extractFlag(args.slice(1), "--available");
+		const marketplace = extractOption(available.args, "--marketplace");
+		if (marketplace.args.length) throw pluginUsage();
+		if (available.json) return Object.freeze({ kind: "plugins", action: "available",
+			...(marketplace.value ? { marketplace: marketplace.value } : {}), json });
+		return Object.freeze({ kind: "plugins", action, ...(marketplace.value ? { marketplace: marketplace.value } : {}), json });
+	}
+	if (action === "add") {
+		const marketplace = extractOption(args.slice(1), "--marketplace");
+		const ref = extractOption(marketplace.args, "--ref");
+		if (ref.args.length !== 1 || marketplace.value && ref.value) throw pluginUsage();
+		return Object.freeze({ kind: "plugins", action, source: nonEmpty(ref.args[0]), json,
+			...(marketplace.value ? { marketplace: marketplace.value } : {}), ...(ref.value ? { ref: ref.value } : {}) });
+	}
+	if (["remove", "enable", "disable", "update"].includes(action ?? "")) {
+		if (args.length !== 2) throw pluginUsage();
+		return Object.freeze({ kind: "plugins", action: action as "remove" | "enable" | "disable" | "update", pluginId: nonEmpty(args[1]), json });
+	}
+	if (action === "marketplace") {
+		const operation = args[1];
+		if (operation === "list" && args.length === 2) return Object.freeze({ kind: "plugins", action, operation, json });
+		if (operation === "add") {
+			const ref = extractOption(args.slice(2), "--ref");
+			if (ref.args.length !== 1) throw pluginUsage();
+			return Object.freeze({ kind: "plugins", action, operation, target: nonEmpty(ref.args[0]), json,
+				...(ref.value ? { ref: ref.value } : {}) });
+		}
+		if ((operation === "remove" || operation === "upgrade") && args.length === 3) {
+			return Object.freeze({ kind: "plugins", action, operation, target: nonEmpty(args[2]), json });
+		}
+		throw pluginUsage();
 	}
 	if (action === "inspect" && args.length === 2) {
 		return Object.freeze({ kind: "plugins", action, pluginId: nonEmpty(args[1]), json });
@@ -595,7 +625,7 @@ function nonEmpty(value: string | undefined): string {
 }
 
 function pluginUsage(): Error {
-	return usage("plugins list|inspect|run [plugin_id] [command] [--json-args JSON] [--json]");
+	return usage("plugins list|inspect|run|add|remove|enable|disable|update|marketplace [arguments] [--json]");
 }
 
 function configUsage(): Error {

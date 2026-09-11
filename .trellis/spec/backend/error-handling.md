@@ -69,6 +69,44 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
 
 ## Error Handling Patterns
 
+### MCP Boundary
+
+- MCP failures use the existing `integration.*` reasons and `IntegrationErrorDetails`; do not create
+  a second public error catalog. Keep operation, `connect`/`request`/`reconnect` phase, HTTP status,
+  numeric JSON-RPC code, bounded timeout/recovery counts, and allowlisted transport codes.
+- Capture HTTP evidence per response in the transport, not in a shared "last error" slot. Drop raw
+  response bodies, URLs (including credential-bearing paths), headers, session IDs, and SDK data.
+- Only typed Streamable HTTP POST 404 failures with a sent session ID qualify for reinitialization
+  and one replay. Never infer expiry from error text, replay after a timeout/ambiguous disconnect,
+  or treat the optional GET stream's HTTP 405 as a failed tool request.
+- Recovery compares connection generations. Concurrent failures reuse one replacement handshake;
+  retiring a connection must not cancel other in-flight requests. A cancelled waiter must not abort
+  a handshake still needed by another caller. Close or cancellation of the last waiter must stop
+  further initialization/replay; old-connection cleanup must not delay joining shared recovery.
+- Initialization failures and confirmed request rejection mean `not_started` with no tool effects.
+  Timeouts and ambiguous post-dispatch failures retain `unknown` outcomes and possible tool effects.
+  Resource reads/discovery have no mutation effects. Parallel-call permission alone is not evidence
+  that a tool is read-only.
+- Adapters attach scoped `errorContext` and `metadata.error_context` only for negotiated v1 callers;
+  the router preserves the occurrence. Aggregate resource failures keep bounded per-server details
+  and explicit omitted counts. Model output, persistence, and TUI presentation must keep safe codes.
+- Regression tests cover SDK HTTP/RPC errors and redaction, stateful loopback HTTP expiry, concurrent
+  recovery, cancellation/close, retry bounds, non-replay after ambiguous failures, and stored errors.
+
+### Plugin Boundary
+
+- Plugin API v2 workers use `PluginHostError` and host-owned `integration.*` contexts. Keep safe
+  operation (`tools/call`, `hooks/run`, `commands/run`, `initialize`, `shutdown`), phase, timeout,
+  exit code, and allowlisted signal/errno evidence; omit raw worker diagnostics and environment.
+- The first terminal failure remains available when later callers encounter `host_closed`.
+  Retain at most one bounded prior failure; do not build unbounded exception chains across restarts.
+- An unavailable worker may be replaced for a new invocation, with a shared cancellable handshake
+  and identical registrations. An ambiguous already-dispatched invocation is never replayed.
+- Plugin tool contexts are negotiated per session. Strip plugin-provided `metadata.error_context`
+  before attaching the host context, and preserve the occurrence through router, storage, and TUI.
+- Pre-hook failure blocks tool dispatch with `not_started/none`, retaining the separately scoped
+  hook failure as a cause. Completed tool effects remain authoritative after post-hook failures.
+
 ### Provider Boundary
 
 - Classify SDK/HTTP errors once with `classifyProviderError()`.

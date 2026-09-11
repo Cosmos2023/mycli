@@ -102,10 +102,12 @@ function indexCandidate(candidate: DeferredToolCandidate): IndexedCandidate {
 		}),
 		source: candidate.source,
 		originMetadata: Object.freeze({ ...candidate.originMetadata }),
+		...(candidate.sourceDescription === undefined ? {} : { sourceDescription: candidate.sourceDescription }),
 		normalizedName: normalize(candidate.definition.name),
 		normalizedDescription: normalize(candidate.definition.description),
 		normalizedOrigin: normalize([
 			candidate.source,
+			candidate.sourceDescription ?? "",
 			...Object.keys(candidate.originMetadata),
 			...Object.values(candidate.originMetadata),
 		].join(" ")),

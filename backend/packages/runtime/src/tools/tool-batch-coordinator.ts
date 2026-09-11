@@ -8,7 +8,7 @@ import {
 	type ShellLifecycleEvent,
 	type ToolDefinition,
 } from "@mycli/core";
-import { terminalInteractionFromArguments, type RuntimeTurnRecord } from "@mycli/contracts";
+import { createErrorContext, errorOccurrence, failureScope, terminalInteractionFromArguments, type RuntimeTurnRecord } from "@mycli/contracts";
 import { ProviderFailure } from "@mycli/providers";
 import {
 	StorageFailure,
@@ -44,7 +44,7 @@ import type {
 } from "../turns/clarification-continuation-coordinator.ts";
 import type { ContextItemCoordinatorContract } from "../context/context-item-coordinator.ts";
 import type { HookContextAccumulator } from "../hooks/hook-context-accumulator.ts";
-import type { HookCoordinator } from "../hooks/hook-coordinator.ts";
+import type { HookCoordinator, BeforeToolHookResult } from "../hooks/hook-coordinator.ts";
 import type { RunExecutionSnapshot } from "../turns/run-execution-snapshot.ts";
 import type { AgentBudgetTracker } from "../agents/agent-budget-tracker.ts";
 import { assertNotAborted } from "../abort.ts";
@@ -367,7 +367,7 @@ export class ToolBatchCoordinator {
 					contexts: before.contexts,
 				});
 				if (before.status === "deny") {
-					blockedByHook = hookDeniedResult(call, before.errorKind);
+					blockedByHook = hookDeniedResult(call, before, this.#options.store.errorContextVersion);
 				} else {
 					executionCall = before.call;
 				}
@@ -932,17 +932,24 @@ function planModeUpdatePlanResult(call: CanonicalToolCall): ToolExecutionResult 
 
 function hookDeniedResult(
 	call: CanonicalToolCall,
-	errorKind: "tool_denied_by_hook" | "tool_hook_error",
+	before: Extract<BeforeToolHookResult, { readonly status: "deny" }>,
+	errorContextVersion?: 1,
 ): ToolExecutionResult {
 	const toolName = boundedToolName(call.name);
+	const errorKind = before.errorKind;
+	const errorContext = errorContextVersion === 1 && before.errorContext ? createErrorContext({
+		...before.errorContext, id: undefined, scope: failureScope("tool_call", call.callId),
+		outcome: { state: "not_started", effects: "none" }, causes: [errorOccurrence(before.errorContext)],
+	}) : undefined;
 	return Object.freeze({
 		callId: call.callId,
 		toolName: call.name,
 		success: false,
-		modelOutput: `${toolName} failed\nError kind: ${errorKind}`,
+		modelOutput: `${toolName} failed\nError kind: ${errorKind}${before.errorContext ? `\n${before.message}` : ""}`,
 		summary: `${toolName} failed`,
 		errorKind,
-		metadata: Object.freeze({}),
+		...(errorContext ? { errorContext } : {}),
+		metadata: Object.freeze(errorContext ? { error_context: errorContext } : {}),
 	});
 }
 

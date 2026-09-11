@@ -7,9 +7,9 @@ import {
 	type ToolAdapterResult,
 	type ToolExecutionOptions,
 } from "@mycli/tools";
-import { classifyMcpFailure, isMcpAbort } from "./diagnostics.ts";
+import { describeMcpFailure, isMcpAbort, mcpFailureContext, mcpFailureErrorKind, mcpFailureText, type McpOperation } from "./diagnostics.ts";
 import { boundMcpText, renderMcpContent } from "./result-content.ts";
-import type { McpResourceContent, McpResourceService } from "./types.ts";
+import type { McpResourceContent, McpResourceFailure, McpResourceService } from "./types.ts";
 
 export class ListMcpResourcesTool implements ToolAdapter {
 	readonly definition = LIST_MCP_RESOURCES_TOOL_DEFINITION;
@@ -30,8 +30,8 @@ export class ListMcpResourcesTool implements ToolAdapter {
 					: { ...await this.#service.listResourcesPage(parsed.server, options.signal, parsed.cursor), failures: [] };
 				options.signal.throwIfAborted();
 				return listResult("resources", listing.resources.map(({ serverId, ...resource }) => ({ server: serverId, ...resource })),
-					parsed.server, "nextCursor" in listing ? listing.nextCursor as string | undefined : undefined, listing.failures);
-			} catch (error) { return resourceFailure(error, options.signal); }
+					parsed.server, "nextCursor" in listing ? listing.nextCursor as string | undefined : undefined, listing.failures, options);
+			} catch (error) { return resourceFailure(error, options, "resources/list", parsed.server); }
 		}
 		if (args.cursor !== undefined) return invalidArguments();
 		const offset = resourceOffset(args.offset);
@@ -41,8 +41,8 @@ export class ListMcpResourcesTool implements ToolAdapter {
 			options.signal.throwIfAborted();
 			if (offset > listing.resources.length) return invalidArguments();
 			const resources: Readonly<Record<string, unknown>>[] = [];
-			const failures = listing.failures.slice(0, 16);
-			const base = { failures, ...(listing.failures.length > failures.length ? { omitted_failures: listing.failures.length - failures.length } : {}) };
+			const base = projectedFailures(listing.failures);
+			const errorContext = listing.resources.length === 0 ? listingFailureContext(listing.failures, options) : undefined;
 			let next = offset;
 			for (const resource of listing.resources.slice(offset)) {
 				const row = {
@@ -63,9 +63,11 @@ export class ListMcpResourcesTool implements ToolAdapter {
 				modelOutput: JSON.stringify({ ...base, resources, ...(next < listing.resources.length ? { next_offset: next } : {}) }),
 				summary: `Listed ${resources.length} MCP resources`,
 				...(listing.failures.length > 0 && listing.resources.length === 0 ? { errorKind: "mcp_resource_error" } : {}),
-				metadata: { resourceCount: resources.length, failureCount: listing.failures.length },
+				...(errorContext ? { errorContext } : {}),
+				metadata: { resourceCount: resources.length, failureCount: listing.failures.length,
+					...(errorContext ? { error_context: errorContext } : {}) },
 			};
-		} catch (error) { return resourceFailure(error, options.signal); }
+		} catch (error) { return resourceFailure(error, options, "resources/list", args.server as string | undefined); }
 	}
 }
 
@@ -85,8 +87,8 @@ export class ListMcpResourceTemplatesTool implements ToolAdapter {
 				?? { resourceTemplates: [], failures: [] };
 			options.signal.throwIfAborted();
 			return listResult("resourceTemplates", listing.resourceTemplates.map(({ serverId, ...template }) => ({ server: serverId, ...template })),
-				parsed.server, listing.nextCursor, listing.failures);
-		} catch (error) { return resourceFailure(error, options.signal); }
+				parsed.server, listing.nextCursor, listing.failures, options);
+		} catch (error) { return resourceFailure(error, options, "resources/templates/list", parsed.server); }
 	}
 }
 
@@ -133,7 +135,7 @@ export class ReadMcpResourceTool implements ToolAdapter {
 				...(rendered.invalidImages ? { errorKind: "mcp_invalid_image" } : {}),
 				metadata: { imageCount: rendered.images.length, contentCount: contents.length },
 			};
-		} catch (error) { return resourceFailure(error, options.signal); }
+		} catch (error) { return resourceFailure(error, options, "resources/read", args.server); }
 	}
 }
 
@@ -181,10 +183,11 @@ function listResult(
 	entries: readonly Readonly<Record<string, unknown>>[],
 	server: string | undefined,
 	nextCursor: string | undefined,
-	failures: readonly { readonly server: string; readonly errorKind: string }[],
+	failures: readonly McpResourceFailure[],
+	options: ToolExecutionOptions,
 ): ToolAdapterResult {
 	const base = { ...(server === undefined ? {} : { server }), ...(nextCursor === undefined ? {} : { nextCursor }),
-		...(failures.length ? { failures: failures.slice(0, 16) } : {}) };
+		...(failures.length ? projectedFailures(failures) : {}) };
 	if (JSON.stringify(base).length + 128 > TOOL_RESULT_OUTPUT_MAX_CHARS) {
 		return failure("resource_too_large", "MCP resource cursor exceeds the output limit.");
 	}
@@ -195,11 +198,29 @@ function listResult(
 		rows.push(row);
 	}
 	if (entries.length > 0 && rows.length === 0) return failure("resource_too_large", "MCP resource identifier exceeds the output limit.");
+	const errorContext = rows.length === 0 ? listingFailureContext(failures, options) : undefined;
 	return { success: failures.length === 0 || rows.length > 0,
 		modelOutput: JSON.stringify({ ...base, [key]: rows, ...(rows.length < entries.length ? { truncated: true } : {}) }),
 		summary: `Listed ${rows.length} MCP ${key === "resources" ? "resources" : "resource templates"}`,
 		...(failures.length && rows.length === 0 ? { errorKind: "mcp_resource_error" } : {}),
-		metadata: { resourceCount: rows.length, failureCount: failures.length } };
+		...(errorContext ? { errorContext } : {}),
+		metadata: { resourceCount: rows.length, failureCount: failures.length, ...(errorContext ? { error_context: errorContext } : {}) } };
+}
+
+function projectedFailures(failures: readonly McpResourceFailure[]): Readonly<Record<string, unknown>> {
+	const rows: Readonly<Record<string, unknown>>[] = [];
+	for (const item of failures.slice(0, 16)) {
+		const row = { server: item.server, errorKind: item.errorKind,
+			...(item.diagnostic ? { details: mcpFailureContext(item.diagnostic, "mcp:resource", item.server).details } : {}) };
+		if (JSON.stringify([...rows, row]).length > 3_000) break;
+		rows.push(row);
+	}
+	return { failures: rows, ...(failures.length > rows.length ? { omitted_failures: failures.length - rows.length } : {}) };
+}
+
+function listingFailureContext(failures: readonly McpResourceFailure[], options: ToolExecutionOptions): ToolAdapterResult["errorContext"] {
+	const first = failures.find((item) => item.diagnostic);
+	return first?.diagnostic && options.errorContextVersion === 1 ? mcpFailureContext(first.diagnostic, options.callId, first.server) : undefined;
 }
 
 function validIdentity(value: unknown, max: number): value is string {
@@ -208,10 +229,14 @@ function validIdentity(value: unknown, max: number): value is string {
 
 function invalidArguments(): ToolAdapterResult { return failure("invalid_arguments", "Invalid MCP resource arguments or continuation."); }
 
-function resourceFailure(error: unknown, signal: AbortSignal): ToolAdapterResult {
-	if (signal.aborted || isMcpAbort(error)) throw error;
-	const kind = error instanceof Error && error.message === "unknown_mcp_server" ? "unknown_mcp_server" : classifyMcpFailure(error);
-	return failure(kind, "The MCP resource request failed.");
+function resourceFailure(error: unknown, options: ToolExecutionOptions, operation: McpOperation, server?: string): ToolAdapterResult {
+	if (options.signal.aborted || isMcpAbort(error)) throw error;
+	const diagnostic = describeMcpFailure(error, { operation });
+	const kind = error instanceof Error && error.message === "unknown_mcp_server" ? "unknown_mcp_server" : mcpFailureErrorKind(diagnostic.category);
+	const errorContext = options.errorContextVersion === 1 ? mcpFailureContext(diagnostic, options.callId, server) : undefined;
+	return { success: false, modelOutput: `The MCP resource request failed.\n${mcpFailureText(diagnostic)}`,
+		summary: "MCP resource unavailable", errorKind: kind, ...(errorContext ? { errorContext } : {}),
+		metadata: errorContext ? { error_context: errorContext } : {} };
 }
 
 function failure(errorKind: string, message: string): ToolAdapterResult {

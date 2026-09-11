@@ -21,6 +21,10 @@ permission rendering, or system-prompt behavior evaluation.
 
 - Prompt revisions affect new session snapshots. Rebuild compiled assets for
   production; preserve existing frozen session instructions and their hashes.
+- MCP/plugin selection follows task relevance without requiring an explicit service mention.
+  When a required tool is not exposed, use `tool_search` and its current source catalog. MCP
+  resource tools discover/read resources; they do not discover tool schemas. Source descriptions
+  remain external capability metadata, and discovery never grants permission to execute a tool.
 - Tool discipline permits necessary polling, pagination, state reinspection,
   post-fix verification, and justified retries. Inspect partial effects before
   repeating a mutation; never use a global identical-arguments ban.

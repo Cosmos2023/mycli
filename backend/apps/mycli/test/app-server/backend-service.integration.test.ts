@@ -170,6 +170,10 @@ test("replacement controller can answer the existing live clarification", { time
 	});
 	const pending = await first.client.waitForEvent("clarify.request");
 	assert.ok(pending.method === "clarify.request");
+	await first.client.waitForEvent("status.changed", (event) => (
+		event.method === "status.changed" && event.params.pending_clarification === true
+		&& event.params.turn_running === false
+	));
 	await first.attachment.close();
 	const second = await fixture.connect("controller");
 	await second.client.request("session.bootstrap", { protocol_version: 1 });

@@ -145,7 +145,7 @@ test("every command presentation remains width-safe with its command prefix", ()
 		},
 		{
 			kind: "list",
-			command: "/tools plugins",
+			command: "/plugins",
 			title: "Plugins",
 			rows: [{ key: "plugin", label: "很长的插件名称", values: ["available"] }],
 		},

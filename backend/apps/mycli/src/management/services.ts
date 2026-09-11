@@ -11,7 +11,7 @@ import {
 	resolveConfig,
 	WorkspaceTrustStore,
 } from "@mycli/config";
-import type { McpServerConfig } from "@mycli/integrations";
+import type { McpServerConfig, PluginPackageRequest } from "@mycli/integrations";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	pluginSandboxProfile,
@@ -54,7 +54,8 @@ export interface HookManagementContract {
 }
 
 export interface PluginManagementContract {
-	list(signal: AbortSignal): MaybePromise<ManagementResponse>;
+	packages?(request: PluginPackageRequest, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	list(signal: AbortSignal, marketplace?: string): MaybePromise<ManagementResponse>;
 	inspect(pluginId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 	run(
 		pluginId: string,
@@ -206,10 +207,12 @@ export class ManagementServices implements ManagementExecutor {
 			return this.#services.hooks.revoke(command.identity);
 		}
 		if (command.kind === "plugins") {
-			if (command.action === "list") return this.#services.plugins.list(signal);
+			if (command.action === "list") return this.#services.plugins.list(signal, command.marketplace);
 			if (command.action === "inspect") {
 				return this.#services.plugins.inspect(command.pluginId, signal);
 			}
+			if (command.action !== "run") return this.#services.plugins.packages?.(command, signal)
+				?? failure(command.action, "plugin package management is unavailable", "plugin_packages_unavailable");
 			return this.#services.plugins.run(
 				command.pluginId,
 				command.commandName,

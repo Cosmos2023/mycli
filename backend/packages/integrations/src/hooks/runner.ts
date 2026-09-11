@@ -418,6 +418,10 @@ function hookEnvironment(
 		MYCLI_HOOK_POINT: spec.hookPoint,
 		MYCLI_HOOK_SOURCE: spec.scope,
 	};
+	if (spec.pluginRoot) {
+		env.CODEX_PLUGIN_ROOT = spec.pluginRoot;
+		env.CLAUDE_PLUGIN_ROOT = spec.pluginRoot;
+	}
 	if (spec.envPolicy === "inherit_safe") {
 		for (const key of SAFE_ENV_KEYS) {
 			const value = environmentValue(environment, key);

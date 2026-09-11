@@ -2,6 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCliMode } from "../src/management/parser.ts";
 
+test("plugin package and marketplace commands parse with bounded option combinations", () => {
+	const cases = [
+		{ args: ["add", "demo@personal"], command: { action: "add", source: "demo@personal" } },
+		{ args: ["add", "owner/repo", "--ref", "stable"], command: { action: "add", source: "owner/repo", ref: "stable" } },
+		{ args: ["list", "--available", "--marketplace", "personal"], command: { action: "available", marketplace: "personal" } },
+		{ args: ["disable", "demo@personal"], command: { action: "disable", pluginId: "demo@personal" } },
+		{ args: ["update", "demo"], command: { action: "update", pluginId: "demo" } },
+		{ args: ["marketplace", "add", "./market"], command: { action: "marketplace", operation: "add", target: "./market" } },
+		{ args: ["marketplace", "upgrade", "personal"], command: { action: "marketplace", operation: "upgrade", target: "personal" } },
+		{ args: ["marketplace", "list"], command: { action: "marketplace", operation: "list" } },
+	];
+	for (const { args, command } of cases) assert.deepEqual(parseCliMode(["plugins", ...args, "--json"]), {
+		kind: "management", command: { kind: "plugins", ...command, json: true },
+	});
+	for (const args of [["add"], ["remove"], ["add", "demo", "--ref"], ["list", "--available", "extra"],
+		["marketplace", "remove"], ["marketplace", "list", "extra"], ["add", "demo", "--marketplace", "one", "--ref", "main"]]) {
+		assert.throws(() => parseCliMode(["plugins", ...args]));
+	}
+});
+
 test("OAuth login parses independently of API-key stdin login", () => {
 	assert.deepEqual(parseCliMode(["login", "--oauth", "--provider", "anthropic", "--auth-ref", "work", "--json"]), {
 		kind: "management", command: { kind: "login", action: "oauth", provider: "anthropic", authRef: "work", json: true },

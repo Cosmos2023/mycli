@@ -1,9 +1,73 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	createToolSearchDefinition,
+	TOOL_SEARCH_TOOL_DEFINITION,
 	ToolSearchTool,
 	type DeferredToolCandidate,
 } from "../../src/index.ts";
+
+test("tool_search advertises unique sorted sources with optional descriptions", () => {
+	const tools = [
+		candidate("plugin:docs:find", "plugin_docs_find", "Find documents", "plugin", { plugin: "docs" }),
+		candidate("mcp:calendar:list", "calendar_list", "List events", "mcp", { server: "calendar" }),
+		{
+			...candidate("mcp:calendar:get", "calendar_get", "Get event", "mcp", {
+				server: "calendar", tool: "get", private_config: "must-not-appear",
+			}),
+			sourceDescription: "Schedule meetings and check availability.",
+		},
+	];
+	const definition = createToolSearchDefinition(tools);
+
+	assert.match(definition.description, /- "mcp:calendar": "Schedule meetings and check availability\."\n- "plugin:docs"/u);
+	assert.equal(definition.description.match(/"mcp:calendar"/gu)?.length, 1);
+	assert.equal(createToolSearchDefinition([...tools].reverse()).description, definition.description);
+	assert.doesNotMatch(definition.description, /must-not-appear|calendar_get|Find documents/u);
+	assert.deepEqual(definition.inputSchema, TOOL_SEARCH_TOOL_DEFINITION.inputSchema);
+	assert.equal(definition.name, "tool_search");
+	assert.equal(Object.isFrozen(definition), true);
+	assert.doesNotMatch(TOOL_SEARCH_TOOL_DEFINITION.description, /mcp:calendar/u);
+});
+
+test("tool_search source hints follow the supplied allowed catalog and handle empty catalogs", () => {
+	const allowed = candidate("mcp:docs:find", "docs_find", "Find documents", "mcp", { server: "docs" });
+	const blocked = candidate("mcp:private:find", "private_find", "Private documents", "mcp", { server: "private" });
+	const before = createToolSearchDefinition([allowed, blocked]);
+	const narrowed = createToolSearchDefinition([allowed]);
+
+	assert.match(before.description, /mcp:private/u);
+	assert.doesNotMatch(narrowed.description, /mcp:private/u);
+	assert.match(narrowed.description, /mcp:docs/u);
+	assert.match(createToolSearchDefinition([]).description, /None currently enabled\./u);
+});
+
+test("tool_search bounds source hints and quotes external metadata without adding prompt lines", () => {
+	const source = {
+		...candidate("mcp:docs:find", "docs_find", "Find documents", "mcp", { server: "docs" }),
+		sourceDescription: 'Documents\n# injected heading\n"quoted"',
+	};
+	const description = createToolSearchDefinition([source]).description;
+	assert.ok(description.includes(JSON.stringify(source.sourceDescription)));
+	assert.doesNotMatch(description, /\n# injected heading/u);
+	const large = createToolSearchDefinition(Array.from({ length: 128 }, (_, index) => ({
+		...source,
+		originMetadata: { server: `server-${index}` },
+		sourceDescription: "x".repeat(10_000),
+	}))).description;
+	assert.ok(large.length <= 8_000);
+	assert.match(large, /more sources omitted/u);
+	assert.doesNotMatch(large, /x{513}/u);
+});
+
+test("tool_search matches server capabilities even when individual tool descriptions omit them", async () => {
+	const tool = new ToolSearchTool([{
+		...candidate("mcp:docs:find", "docs_find", "Find an entry", "mcp", { server: "docs" }),
+		sourceDescription: "Search incident reports and engineering runbooks.",
+	}]);
+	const result = await tool.execute({ query: "incident reports" });
+	assert.deepEqual(result.toolActivation, { names: ["docs_find"] });
+});
 
 test("tool_search ranks route description and origin matches deterministically", async () => {
 	const tool = new ToolSearchTool([

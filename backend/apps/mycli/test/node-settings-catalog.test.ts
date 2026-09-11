@@ -129,11 +129,16 @@ test("settings catalog keeps unavailable actions and private values bounded", ()
 	});
 	const serialized = JSON.stringify(catalog);
 	const items = catalog.items as Array<Record<string, unknown>>;
-	const integrations = items.find((item) => item.id === "integrations.resources");
+	const integrations = items.filter((item) => item.category === "integrations");
 	const updates = items.find((item) => item.id === "diagnostics.updates");
 
-	assert.equal(integrations?.locked, true);
-	assert.equal(integrations?.lock_reason, "No integration resource service is configured");
+	assert.deepEqual(integrations.map((item) => item.command), ["/mcp", "/plugins", "/skills", "/hooks"]);
+	for (const item of integrations) {
+		assert.equal(item.locked, true);
+		assert.equal(item.lock_reason, "No integration resource service is configured");
+		assert.equal(item.action, "run_command");
+		assert.equal(item.action_args, item.command);
+	}
 	assert.equal(updates?.locked, true);
 	assert.equal(updates?.lock_reason, "Update status is unavailable");
 	assert.equal(serialized.includes("\n"), false);

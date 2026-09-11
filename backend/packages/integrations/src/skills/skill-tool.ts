@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ToolDefinition } from "@mycli/core";
+import { isSkillReferenceName } from "@mycli/core";
 import type {
 	ToolAdapter,
 	ToolAdapterResult,
@@ -42,7 +43,6 @@ export const SKILL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 const SKILL_SOURCE_KINDS = new Set(["builtin", "user", "shared_repo", "repo"]);
 const MAX_SKILL_BODY_CHARS = 65_536;
 const MAX_SKILL_CONTEXT_CHARS = 131_072;
-const SAFE_SKILL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export class SkillTool implements ToolAdapter {
 	readonly definition = SKILL_TOOL_DEFINITION;
@@ -101,7 +101,7 @@ export function skillInvocationArtifactFromMetadata(
 	const artifact = value as Partial<SkillInvocationArtifact>;
 	return artifact.kind === "skill_instructions"
 		&& typeof artifact.name === "string"
-		&& SAFE_SKILL_NAME.test(artifact.name)
+		&& isSkillReferenceName(artifact.name)
 		&& typeof artifact.text === "string"
 		&& artifact.text.length <= MAX_SKILL_CONTEXT_CHARS
 		&& isSkillSourceKind(artifact.sourceKind)

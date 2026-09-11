@@ -69,6 +69,7 @@ import {
 	NodeGatewayInteractiveController,
 } from "./node-gateway-interactive-controller.ts";
 import { NodeGatewayShellController } from "./node-gateway-shell-controller.ts";
+import { integrationInspectionResult } from "./node-integration-command-results.ts";
 import {
 	cachedUpdateStatusPayload,
 	credentialReadinessPayload,
@@ -855,129 +856,11 @@ class InProcessNodeGateway implements NodeGateway {
 				{ label: "Tool calls", value: String(transcript.filter((item) => item.type === "tool").length) },
 			]);
 		}
-		if (invocation.commandId === "tools") {
-			const manifest = integrationToolManifest(this.#options.integrations);
-			const tools = isObject(manifest) && Array.isArray(manifest.tools) ? manifest.tools : [];
-			const toolRows = tools.flatMap((value, index) => {
-				if (!isObject(value)) return [];
-				const availability = isObject(value.availability) ? value.availability : {};
-				return [{
-					key: String(value.id ?? `tool:${index}`),
-					label: String(value.name ?? value.id ?? "Tool"),
-					values: [String(value.source ?? "runtime"), String(value.toolset ?? "")].filter(Boolean),
-					...(typeof availability.status === "string" ? { status: availability.status } : {}),
-					...(typeof value.description === "string" ? { detail: value.description } : {}),
-				}];
+		if (["tools", "skills", "mcp", "plugins", "hooks"].includes(invocation.commandId)) {
+			return integrationInspectionResult(invocation, {
+				manifest: integrationToolManifest(this.#options.integrations),
+				resources: invocation.commandId === "tools" ? [] : await this.#options.integrations?.listResources?.() ?? [],
 			});
-			if (!invocation.args || invocation.args === "list") {
-				return listCommandResult(invocation, "Tools", toolRows);
-			}
-			if (invocation.args === "sets") {
-				const toolsets = isObject(manifest) && Array.isArray(manifest.toolsets)
-					? manifest.toolsets
-					: [];
-				return listCommandResult(invocation, "Tool sets", toolsets.flatMap((value, index) => {
-					if (!isObject(value)) return [];
-					return [{
-						key: `toolset:${index}`,
-						label: String(value.id ?? "Tool set"),
-						values: [`tools=${String(value.tool_count ?? 0)}`],
-					}];
-				}));
-			}
-			if (invocation.args === "hooks") {
-				const resources = await this.#options.integrations?.listResources?.() ?? [];
-				const hooks = resources.filter((value) => value.type === "hook");
-				return listCommandResult(invocation, "Hooks", hooks.map((value, index) => ({
-					key: String(value.id ?? `hook:${index}`),
-					label: String(value.name ?? value.id ?? "Hook"),
-					values: [String(value.source ?? "runtime")],
-					status: String(value.status ?? "configured"),
-					...(typeof value.detail === "string" ? { detail: value.detail } : {}),
-				})));
-			}
-			if (invocation.args === "extensions") {
-				return listCommandResult(
-					invocation,
-					"Extensions",
-					toolRows.filter((row) => !row.values.includes("builtin")),
-				);
-			}
-			if (invocation.args === "plugins") {
-				const resources = await this.#options.integrations?.listResources?.() ?? [];
-				const resourceRows = resources.filter((value) => value.type === "plugin")
-					.map((value, index) => ({
-						key: `plugin-resource:${index}`,
-						label: String(value.name ?? value.id ?? "Plugin"),
-						values: [String(value.source ?? "runtime")],
-						status: String(value.status ?? "available"),
-						...(typeof value.detail === "string" ? { detail: value.detail } : {}),
-					}));
-				const commandRows = (this.#options.integrations?.commands?.list() ?? [])
-					.filter((value) => typeof value.name === "string" && value.name.startsWith("/plugin"))
-					.map((value, index) => ({
-						key: `plugin-command:${index}`,
-						label: String(value.name),
-						values: ["command"],
-						...(typeof value.description === "string" ? { detail: value.description } : {}),
-					}));
-				return listCommandResult(invocation, "Plugins", [...resourceRows, ...commandRows]);
-			}
-			const pluginArguments = slashCommandArguments(invocation.args, "plugins");
-			if (pluginArguments) {
-				const match = /^(\S+)\s+(\S+)(?:\s+([\s\S]*))?$/u.exec(pluginArguments);
-				if (!match) {
-					return errorCommandResult(
-						invocation,
-						"Plugin ID and command name are required",
-						"/tools plugins <plugin-id> <command-name> [json-args]",
-					);
-				}
-				const [, pluginId, commandName, rawArguments = ""] = match;
-				const route = `/plugin:${pluginId}:${commandName}${rawArguments ? ` ${rawArguments}` : ""}`;
-				let result: JsonObject | undefined;
-				try {
-					result = await this.#options.integrations?.commands?.run(
-						route,
-						new AbortController().signal,
-					);
-				} catch {
-					return errorCommandResult(
-						invocation,
-						"Invalid plugin command arguments",
-						"/tools plugins <plugin-id> <command-name> [json-args]",
-					);
-				}
-				if (!result) {
-					return errorCommandResult(invocation, "Plugin command was not found");
-				}
-				const lines = Array.isArray(result.lines)
-					? result.lines.filter((line): line is string => typeof line === "string")
-					: [];
-				return preformattedCommandResult(invocation, "Plugin output", lines, {
-					presentation: "transcript",
-					extra: {
-						...(typeof result.ok === "boolean" ? { ok: result.ok } : {}),
-						...(typeof result.error === "string" ? { error: result.error } : {}),
-					},
-				});
-			}
-			return errorCommandResult(
-				invocation,
-				"Unsupported tools action",
-				"/tools [list|sets|hooks|extensions|plugins]",
-			);
-		}
-		if (invocation.commandId === "skills") {
-			const resources = await this.#options.integrations?.listResources?.() ?? [];
-			return listCommandResult(invocation, "Skills", resources.flatMap((value, index) =>
-				value.type === "skill" ? [{
-					key: `skill:${index}`,
-					label: String(value.name ?? "Skill"),
-					values: [String(value.source ?? "runtime")],
-					status: String(value.status ?? "available"),
-					detail: typeof value.detail === "string" ? value.detail : undefined,
-				}] : []));
 		}
 		if (invocation.commandId === "agents") {
 			const tasks = this.#options.backgroundTaskCommands;

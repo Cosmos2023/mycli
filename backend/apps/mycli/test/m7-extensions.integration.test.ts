@@ -143,6 +143,7 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 	assert.ok(address && typeof address === "object");
 	const secret = "test-m7-live-secret";
 
+	// Keep context compaction outside this scripted extension workflow.
 	const result = await runSmoke(workspace, {
 		...process.env,
 		HOME: home,
@@ -151,6 +152,8 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 		MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
 		MYCLI_PROVIDER: "openai",
 		MYCLI_MODEL: "gpt-test",
+		MYCLI_MAX_PROMPT_TOKENS: "128000",
+		MYCLI_COMPACTION_TOKEN_LIMIT: "128000",
 	}, "responses");
 
 	assert.equal(result.code, 0, result.stdout);
@@ -259,6 +262,10 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 	assert.equal(requests.length, 2);
 	assert.equal(providerToolNames(requests[0]!).includes("mcp_local_echo"), false);
 	assert.equal(providerToolNames(requests[1]!).includes("mcp_local_echo"), true);
+	const discoveryTool = (requests[0]!.tools as JsonObject[]).find((tool) => tool.name === "tool_search");
+	assert.match(String(discoveryTool?.description), /"mcp:local": "Echo text and read fixture resources\."/u);
+	assert.match(String(discoveryTool?.description), /even when the user has not named the MCP server or plugin/u);
+	assert.doesNotMatch(String(discoveryTool?.description), /MCP_PID_FILE|mcp\.pid|mcp-stdio-server/u);
 	assert.deepEqual(
 		events(messages, "tool.complete").map((message) => (
 			isObject(message.params) ? message.params.name : undefined
@@ -437,11 +444,17 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
+	const cleanup: { shutdown?: () => Promise<void> } = {};
 	t.after(async () => {
-		await new Promise<void>((resolve, reject) => {
-			server.close((error) => error ? reject(error) : resolve());
-		});
-		await rm(root, { recursive: true, force: true });
+		try {
+			await cleanup.shutdown?.();
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => error ? reject(error) : resolve());
+			});
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	const backend = await startNodeBackend({
@@ -462,6 +475,8 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			MYCLI_STREAM_MAX_RETRIES: "0",
 			MYCLI_CACHE_RETENTION: "none",
 			MYCLI_MEMORY_ENABLED: "false",
+			MYCLI_MAX_PROMPT_TOKENS: "128000",
+			MYCLI_COMPACTION_TOKEN_LIMIT: "128000",
 			COLORTERM: "",
 			PLUGIN_PID_FILE: pluginPidFile,
 		},
@@ -473,7 +488,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		send(backend, "shutdown", "shutdown", {});
 		assert.equal(await backend.completion, 0);
 	};
-	t.after(shutdown);
+	cleanup.shutdown = shutdown;
 	const messages: JsonObject[] = [];
 	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
@@ -545,6 +560,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			"spawn_agent",
 			"wait_agent",
 		],
+		JSON.stringify(extensionDiagnostics(requests, messages)),
 	);
 	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), false);
 	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), false);

@@ -5,6 +5,7 @@ import type {
 	HookRunnerContract,
 } from "@mycli/core";
 import type { ToolExecutionResult } from "@mycli/tools";
+import type { ErrorContext } from "@mycli/contracts";
 
 export interface HookCoordinatorOptions {
 	readonly runner: HookRunnerContract;
@@ -23,12 +24,14 @@ export type BeforeToolHookResult =
 		readonly call: CanonicalToolCall;
 		readonly errorKind: "tool_denied_by_hook" | "tool_hook_error";
 		readonly message: string;
+		readonly errorContext?: ErrorContext;
 		readonly contexts: readonly string[];
 	};
 
 export interface AfterToolHookResult {
 	readonly contexts: readonly string[];
 	readonly failed: boolean;
+	readonly errorContext?: ErrorContext;
 }
 
 export interface HookPointResult {
@@ -36,6 +39,7 @@ export interface HookPointResult {
 	readonly failed: boolean;
 	readonly denied: boolean;
 	readonly message?: string;
+	readonly errorContext?: ErrorContext;
 }
 
 export class HookCoordinator {
@@ -74,6 +78,7 @@ export class HookCoordinator {
 			failed: executions.some((execution) => execution.result.action === "error"),
 			denied: blocked?.result.action === "deny",
 			...(blocked && "message" in blocked.result ? { message: blocked.result.message } : {}),
+			...(blocked?.result.action === "error" && blocked.result.errorContext ? { errorContext: blocked.result.errorContext } : {}),
 		});
 	}
 
@@ -106,6 +111,7 @@ export class HookCoordinator {
 				result.action === "deny" ? "tool_denied_by_hook" : "tool_hook_error",
 				result.message,
 				contexts,
+				result.action === "error" ? result.errorContext : undefined,
 			);
 		}
 		return Object.freeze({
@@ -134,11 +140,13 @@ export class HookCoordinator {
 			throwIfAborted(error, signal);
 			return Object.freeze({ contexts: Object.freeze([]), failed: true });
 		}
+		const failure = executions.find((execution) => execution.result.action === "error" && execution.result.errorContext)?.result;
 		return Object.freeze({
 			contexts: hookContexts(executions),
 			failed: executions.some((execution) =>
 				execution.result.action === "deny" || execution.result.action === "error"
 			),
+			...(failure?.action === "error" && failure.errorContext ? { errorContext: failure.errorContext } : {}),
 		});
 	}
 
@@ -162,12 +170,14 @@ function denied(
 	errorKind: "tool_denied_by_hook" | "tool_hook_error",
 	message: string,
 	contexts: readonly string[],
+	errorContext?: ErrorContext,
 ): BeforeToolHookResult {
 	return Object.freeze({
 		status: "deny",
 		call,
 		errorKind,
 		message: message.slice(0, 512) || "hook blocked tool execution",
+		...(errorContext ? { errorContext } : {}),
 		contexts: uniqueContexts(contexts),
 	});
 }

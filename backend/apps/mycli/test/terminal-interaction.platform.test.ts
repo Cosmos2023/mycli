@@ -86,6 +86,9 @@ test("Worker terminal interactions reach the TUI and survive backend restart", {
 		MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
 		MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false",
 		MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+		// Keep terminal request counts independent of prompt-driven compaction.
+		MYCLI_MAX_PROMPT_TOKENS: "100000", MYCLI_COMPACTION_TOKEN_LIMIT: "90000",
+		MYCLI_COMPRESSION_THRESHOLD_TOKENS: "80000",
 	} };
 	backend = await startTestNodeBackend(options);
 	let observedWait = false;

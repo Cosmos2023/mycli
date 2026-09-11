@@ -98,7 +98,13 @@ test("one crashed plugin fails its command without corrupting another plugin", {
 
 	assert.equal(crashed.ok, false);
 	assert.equal(crashed.error, "worker_exited");
-	assert.equal(JSON.stringify(crashed).includes("91"), false);
+	assert.equal(crashed.errorContext?.reason, "integration.unavailable");
+	assert.equal(crashed.errorContext?.details?.exit_code, 91);
+	assert.equal(crashed.errorContext?.details?.operation, "commands/run");
+	assert.deepEqual(crashed.errorContext?.outcome, { state: "unknown", effects: "possible" });
+	assert.equal(JSON.stringify(crashed).includes(fixture.workspaceRoot), false);
+	assert.equal(JSON.stringify(crashed).includes("unused"), false);
+	assert.equal(runtime.records.find((record) => record.pluginId === "crash")?.status, "error");
 	assert.equal(healthy.success, true);
 	assert.equal(healthy.modelOutput, "still-ready");
 });

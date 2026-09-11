@@ -5,7 +5,7 @@ import { MycliShellRuntime } from "../../src/application/shell-runtime.ts";
 import { commandResultFromGateway } from "../../src/state/command-results.ts";
 import { HeadlessTerminal } from "../support/headless-terminal.ts";
 
-test("skills and tools inspection keep navigation, details, and the draft across terminal sizes", async () => {
+test("integration inspection keeps navigation, details, and the draft across terminal sizes", async () => {
 	for (const nativeScrollback of [false, true]) {
 		const terminal = new HeadlessTerminal({ columns: 80, rows: 24, nativeScrollback });
 		const runtime = new MycliShellRuntime({
@@ -19,11 +19,11 @@ test("skills and tools inspection keep navigation, details, and the draft across
 		try {
 			runtime.start();
 			runtime.editor.setText("keep this draft");
-			for (const title of ["Skills", "Tools"]) {
+			for (const title of ["Skills", "Tools", "MCP servers", "Plugins", "Hooks"]) {
 				const result = commandResultFromGateway({
 					presentation: "overlay",
 					display: {
-						version: 1, kind: "list", title, command: `/${title.toLowerCase()}`, severity: "info",
+						version: 1, kind: "list", title, command: title === "MCP servers" ? "/mcp" : `/${title.toLowerCase()}`, severity: "info",
 						rows: Array.from({ length: 30 }, (_, index) => ({
 							key: `entry-${index + 1}`, label: `entry-${index + 1}`, values: ["repo"], status: "enabled",
 							detail: `Complete description ${index + 1}. ${"More detail. ".repeat(60)}description-end`,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { describeMcpFailure, McpHttpError, McpRequestError } from "../../src/mcp/diagnostics.ts";
 import { ToolRouter, TOOL_SEARCH_TOOL_DEFINITION, type ToolExecutionOptions } from "@mycli/tools";
 import { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool, type McpResourceService } from "../../src/index.ts";
 
@@ -98,6 +99,35 @@ test("resource tools validate arguments, retain partial failures, and propagate 
 	assert.equal((await read.execute({ server: "files", uri: "data:///read", offset: -1 }, OPTIONS)).errorKind, "invalid_arguments");
 	assert.equal(JSON.stringify(await read.execute({ server: "files", uri: "data:///read" }, OPTIONS)).includes("private upstream"), false);
 	await assert.rejects(read.execute({ server: "files", uri: "data:///read" }, { ...OPTIONS, signal: AbortSignal.abort() }), { name: "AbortError" });
+});
+
+test("resource errors keep bounded per-server diagnostics and the router preserves their context", async () => {
+	const diagnostic = describeMcpFailure(new McpHttpError(401), { operation: "resources/list" });
+	const service: McpResourceService = {
+		listResources: async () => ({ resources: [], failures: Array.from({ length: 50 }, (_, index) => ({ server: `server-${index}`, errorKind: "transport_error", diagnostic })) }),
+		listResourcesPage: async () => { throw new McpRequestError(new McpHttpError(403), { operation: "resources/list" }); },
+		readResource: async () => { throw new McpRequestError(new McpHttpError(503), { operation: "resources/read" }); },
+	};
+	const list = new ListMcpResourcesTool(service);
+	const read = new ReadMcpResourceTool(service);
+	const router = new ToolRouter({ adapters: [list, read], exposure: [list.definition, read.definition] });
+	const options = { ...OPTIONS, callId: "resource:failure", errorContextVersion: 1 as const };
+	for (const args of [{}, { offset: 0 }]) {
+		const result = await list.execute(args, options);
+		assert.ok(result.modelOutput.length <= 8_000);
+		const output = JSON.parse(result.modelOutput) as { failures: { details: { http_status: number } }[]; omitted_failures: number };
+		assert.equal(output.failures[0]?.details.http_status, 401);
+		assert.equal(output.failures.length + output.omitted_failures, 50);
+		assert.equal(result.errorContext?.reason, "integration.unavailable");
+	}
+	for (const [tool, args, status] of [[list, { server: "remote" }, 403], [read, { server: "remote", uri: "data:///test" }, 503]] as const) {
+		const result = await router.execute({ callId: "resource:failure", name: tool.definition.name, argumentsJson: JSON.stringify(args) }, options);
+		assert.equal(result.errorContext?.scope.id, "resource:failure");
+		assert.equal((result.errorContext?.details as { http_status: number }).http_status, status);
+		assert.deepEqual(result.metadata.error_context, result.errorContext);
+		assert.equal(result.errorContext?.outcome.effects, "none");
+		assert.match(result.modelOutput, new RegExp(`HTTP status: ${status}`));
+	}
 });
 
 test("native resource reads return Codex contents and keep truncated JSON bounded", async () => {

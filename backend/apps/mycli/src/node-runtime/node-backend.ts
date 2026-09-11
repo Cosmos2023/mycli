@@ -130,6 +130,7 @@ import {
 	BashOutputTool,
 	BashTool,
 	builtinToolManifest,
+	createToolSearchDefinition,
 	EditTool,
 	FileHistoryStore,
 	FileMutationRuntime,
@@ -152,6 +153,7 @@ import {
 	KillShellTool,
 	type BuiltInToolManifest,
 	type CombinedToolManifest,
+	type DeferredToolCandidate,
 	type PermissionProfile,
 	type ToolAdapter,
 	UpdatePlanTool,
@@ -992,16 +994,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					readonly shell: boolean;
 					readonly collaborationMode: string;
 				},
-			) => filterToolDefinitions(
-			Object.freeze([
-				...planToolExposure(toolManifest, {
-					...capabilities,
-					requestPermissionsTool: requestPermissionsToolEnabled,
-				}),
-				...directExtensionDefinitions,
-			]),
-			allowedTools,
-		);
+				deferred = allowedDeferredRegistrations(),
+			): readonly ToolDefinition[] => Object.freeze(filterToolDefinitions(
+				[
+					...planToolExposure(toolManifest, {
+						...capabilities,
+						requestPermissionsTool: requestPermissionsToolEnabled,
+					}),
+					...directExtensionDefinitions,
+				],
+				allowedTools,
+			).map((definition) => definition.name === "tool_search"
+				? createToolSearchDefinition(deferredCandidates(deferred))
+				: definition));
 				const toolRouter = new ToolRouter({
 					adapters: staticAdapters,
 					exposure: plannedTools({ shell: true, collaborationMode: "plan" }),
@@ -1235,7 +1240,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const deferred = allowedDeferredRegistrations();
 				return Object.freeze({
 					catalogVersion,
-					directTools: plannedTools(capabilities),
+					directTools: plannedTools(capabilities, deferred),
 					deferredTools: Object.freeze(deferred.map(
 						(registration) => registration.definition,
 					)),
@@ -2482,13 +2487,14 @@ function runtimeToolExposure(
 	]);
 }
 
-function deferredCandidates(registrations: readonly IntegrationRegistration[]) {
+function deferredCandidates(registrations: readonly IntegrationRegistration[]): readonly DeferredToolCandidate[] {
 	return registrations.flatMap((registration) => (
 		registration.source === "mcp" || registration.source === "plugin"
 			? [{
 				definition: registration.definition,
 				source: registration.source,
 				originMetadata: registration.originMetadata,
+				...(registration.sourceDescription === undefined ? {} : { sourceDescription: registration.sourceDescription }),
 			}]
 			: []
 	));

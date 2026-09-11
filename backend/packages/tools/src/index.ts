@@ -30,6 +30,7 @@ export type {
 export { AskUserQuestionTool } from "./interaction/ask-user-question-tool.ts";
 export { UpdatePlanTool } from "./interaction/update-plan-tool.ts";
 export { ToolSearchTool } from "./registry/tool-search-tool.ts";
+export { createToolSearchDefinition } from "./registry/tool-search-definition.ts";
 export {
 	isPublicIpAddress,
 	normalizePublicUrl,

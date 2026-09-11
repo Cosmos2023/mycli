@@ -33,10 +33,52 @@ test("MCP Streamable HTTP uses the SDK and configured headers", { timeout: 10_00
 	await client.close();
 
 	assert.equal(tools[0]?.name, "echo");
+	assert.equal(tools[0]?.serverInstructions, "Echo text and read remote resources.");
 	assert.equal(result.content[0]?.text, "echo:remote");
 	assert.equal(resources[0]?.uri, "file:///remote.txt");
 	assert.equal(contents[0]?.text, "remote resource");
 	assert.ok(headerCount >= 4);
+});
+
+test("MCP recovers an expired session through a real HTTP transport", { timeout: 10_000 }, async (t) => {
+	const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
+	let initializations = 0;
+	let rejectedCalls = 0;
+	const httpServer = createServer(async (request, response) => {
+		if (request.method === "GET") { response.writeHead(405).end(); return; }
+		const payload = await jsonBody(request) as { readonly method?: string };
+		const id = request.headers["mcp-session-id"];
+		let session = typeof id === "string" ? sessions.get(id) : undefined;
+		if (typeof id === "string" && !session) {
+			if (payload.method === "tools/call") rejectedCalls += 1;
+			response.writeHead(404).end("private expired session");
+			return;
+		}
+		if (!session) {
+			const sessionId = `session-${++initializations}`;
+			session = { server: fixtureSdkServer(), transport: new StreamableHTTPServerTransport({ sessionIdGenerator: () => sessionId, enableJsonResponse: true }) };
+			sessions.set(sessionId, session);
+			await session.server.connect(session.transport);
+		}
+		await session.transport.handleRequest(request, response, payload);
+	});
+	t.after(async () => {
+		await Promise.all([...sessions.values()].map((session) => session.server.close()));
+		await closeServer(httpServer);
+	});
+	await listen(httpServer);
+	const address = httpServer.address();
+	assert.ok(address && typeof address !== "string");
+	const client = new McpClient({ config: remoteConfig("streamable_http", `http://127.0.0.1:${address.port}/mcp`, {}) });
+	t.after(() => client.close());
+	await client.listTools(new AbortController().signal);
+	await sessions.get("session-1")!.server.close();
+	sessions.delete("session-1");
+	const result = await client.callTool("echo", { text: "recovered" }, new AbortController().signal);
+	assert.equal(result.content[0]?.text, "echo:recovered");
+	assert.equal(initializations, 2);
+	assert.equal(rejectedCalls, 1);
+	assert.equal((await client.listResources(new AbortController().signal)).length, 1);
 });
 
 test("MCP legacy HTTP preserves JSON-RPC compatibility", {
@@ -134,7 +176,7 @@ async function startStreamableServer(
 function fixtureSdkServer(): Server {
 	const server = new Server(
 		{ name: "mycli-test-http", version: "1.0.0" },
-		{ capabilities: { tools: {}, resources: {} } },
+		{ capabilities: { tools: {}, resources: {} }, instructions: "Echo text and read remote resources." },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		tools: [{

@@ -1,3 +1,5 @@
+import type { McpFailure } from "./diagnostics.ts";
+
 export type McpTransportKind = "stdio" | "http" | "streamable_http";
 
 export interface McpServerConfig {
@@ -11,6 +13,8 @@ export interface McpServerConfig {
 	readonly enabled: boolean;
 	readonly supportsParallelToolCalls: boolean;
 	readonly timeoutMs: number;
+	readonly cwd?: string;
+	readonly pluginDescription?: string;
 }
 
 export type McpConfigSource = "user" | "repository";
@@ -32,6 +36,7 @@ export interface McpToolDescriptor {
 	readonly serverId: string;
 	readonly name: string;
 	readonly description: string;
+	readonly serverInstructions?: string;
 	readonly inputSchema: Readonly<Record<string, unknown>>;
 	readonly supportsParallelToolCalls: boolean;
 }
@@ -74,7 +79,13 @@ export interface McpResourceTemplatePage {
 }
 
 export interface McpResourceTemplateListing extends McpResourceTemplatePage {
-	readonly failures: readonly { readonly server: string; readonly errorKind: string }[];
+	readonly failures: readonly McpResourceFailure[];
+}
+
+export interface McpResourceFailure {
+	readonly server: string;
+	readonly errorKind: string;
+	readonly diagnostic?: McpFailure;
 }
 
 export interface McpResourceContent {
@@ -87,7 +98,7 @@ export interface McpResourceContent {
 
 export interface McpResourceListing {
 	readonly resources: readonly McpResourceDescriptor[];
-	readonly failures: readonly { readonly server: string; readonly errorKind: string }[];
+	readonly failures: readonly McpResourceFailure[];
 }
 
 export interface McpResourceService {
@@ -99,6 +110,7 @@ export interface McpResourceService {
 
 export interface McpProtocolClient {
 	connect(signal: AbortSignal): Promise<void>;
+	getInstructions?(): string | undefined;
 	listTools(signal: AbortSignal): Promise<{
 		readonly tools: readonly Readonly<Record<string, unknown>>[];
 	}>;

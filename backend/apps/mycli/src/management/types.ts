@@ -1,4 +1,5 @@
 import type { ConfigPathScope } from "@mycli/config/paths";
+import type { PluginPackageRequest } from "@mycli/integrations";
 import type { HeadlessCommand } from "../headless/types.ts";
 import type { CompletionShell } from "./cli-command-catalog.ts";
 
@@ -12,7 +13,8 @@ export type HooksManagementCommand =
 	};
 
 export type PluginsManagementCommand =
-	| { readonly kind: "plugins"; readonly action: "list"; readonly json: boolean }
+	| ({ readonly kind: "plugins"; readonly json: boolean } & PluginPackageRequest)
+	| { readonly kind: "plugins"; readonly action: "list"; readonly marketplace?: string; readonly json: boolean }
 	| {
 		readonly kind: "plugins";
 		readonly action: "inspect";

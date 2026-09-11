@@ -129,6 +129,12 @@ async function readHookFile(
 		return [];
 	}
 
+	return parseHookConfigDocument(payload, file, options, diagnostics);
+}
+
+export function parseHookConfigDocument(
+	payload: Readonly<Record<string, unknown>>, file: HookConfigFile, options: DiscoverHookConfigOptions, diagnostics: HookConfigDiagnostic[],
+): readonly ConfiguredHookSpec[] {
 	let entries: readonly RawHookEntry[];
 	try {
 		entries = rawHookEntries(payload);
@@ -166,6 +172,7 @@ async function readHookFile(
 }
 
 function rawHookEntries(payload: Readonly<Record<string, unknown>>): readonly RawHookEntry[] {
+	if (isRecord(payload.hooks)) return rawHookEntries(payload.hooks);
 	if (payload.hooks !== undefined) {
 		if (!Array.isArray(payload.hooks)) throw new HookConfigError("invalid_hooks");
 		return payload.hooks.map((value, index) => ({ value, fallbackId: `hook_${index}` }));

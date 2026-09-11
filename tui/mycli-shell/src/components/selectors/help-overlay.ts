@@ -28,6 +28,7 @@ const SHORTCUTS: readonly [AppKeybinding, string][] = [
 const CATEGORY_LABELS: Readonly<Record<NonNullable<MycliShellCommandSpec["category"]>, string>> = {
 	diagnostics: "Diagnostics",
 	interface: "Interface",
+	integrations: "Integrations",
 	model: "Model",
 	safety: "Safety",
 	session: "Session",

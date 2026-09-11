@@ -47,9 +47,9 @@
     ]
   },
   "slash_commands": {
-	"command_count": 35,
-	"retired_command_count": 37,
-	"sha256": "574ed8292cf6d32be364093de1069ab0202c8c6d4e68dab3c43f727031bd988b"
+	"command_count": 38,
+	"retired_command_count": 39,
+	"sha256": "fe1281e5dfe79ddcf0415e40a73001996781692ed6f3f8926b88262f5ca9d349"
   },
   "tools": {
     "retained": [

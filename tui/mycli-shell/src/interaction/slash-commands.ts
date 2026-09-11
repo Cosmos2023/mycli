@@ -28,7 +28,7 @@ function commandFromUnknown(value: unknown): MycliShellCommandSpec | null {
 		? record.argument_hint.trim()
 		: undefined;
 	const categories: readonly MycliShellCommandSpec["category"][] = [
-		"diagnostics", "interface", "model", "safety", "session", "tools",
+		"diagnostics", "interface", "integrations", "model", "safety", "session", "tools",
 	];
 	const category = categories.includes(record.category as MycliShellCommandSpec["category"])
 		? record.category as MycliShellCommandSpec["category"]

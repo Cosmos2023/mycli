@@ -1,10 +1,11 @@
 import type { IntegrationRegistration } from "../foundation/registration.ts";
-import { classifyMcpFailure, isMcpAbort } from "./diagnostics.ts";
+import { classifyMcpFailure, describeMcpFailure, isMcpAbort } from "./diagnostics.ts";
 import { createMcpToolRegistration } from "./tool-adapter.ts";
 import type {
 	McpManagedClient,
 	McpResourceContent,
 	McpResourceDescriptor,
+	McpResourceFailure,
 	McpResourceListing,
 	McpResourcePage,
 	McpResourceTemplateDescriptor,
@@ -89,7 +90,7 @@ export class McpManager {
 			const configs = this.#configs.filter((config) => config.enabled && (serverId === undefined || config.id === serverId));
 			if (serverId && configs.length === 0) throw new Error("unknown_mcp_server");
 			const resources: McpResourceDescriptor[] = [];
-			const failures: { server: string; errorKind: string }[] = [];
+			const failures: McpResourceFailure[] = [];
 			const settled = await Promise.allSettled(configs.map(async (config) => {
 				const client = this.#clients.get(config.id);
 				if (!client) throw new Error("mcp_server_unavailable");
@@ -98,7 +99,8 @@ export class McpManager {
 			activeSignal.throwIfAborted();
 			settled.forEach((result, index) => {
 				if (result.status === "fulfilled") resources.push(...result.value);
-				else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason) });
+				else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason),
+					diagnostic: describeMcpFailure(result.reason, { operation: "resources/list" }) });
 			});
 			return Object.freeze({ resources: Object.freeze(resources), failures: Object.freeze(failures) });
 		});
@@ -132,7 +134,7 @@ export class McpManager {
 			const configs = this.#configs.filter((config) => config.enabled && (serverId === undefined || config.id === serverId));
 			if (serverId && configs.length === 0) throw new Error("unknown_mcp_server");
 			const resourceTemplates: McpResourceTemplateDescriptor[] = [];
-			const failures: { server: string; errorKind: string }[] = [];
+			const failures: McpResourceFailure[] = [];
 			const settled = await Promise.allSettled(configs.map(async (config) => {
 				const client = this.#clients.get(config.id);
 				if (!client) throw new Error("mcp_server_unavailable");
@@ -159,7 +161,8 @@ export class McpManager {
 				if (result.status === "fulfilled") {
 					resourceTemplates.push(...result.value.resourceTemplates);
 					nextCursor = result.value.nextCursor;
-				} else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason) });
+				} else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason),
+					diagnostic: describeMcpFailure(result.reason, { operation: "resources/templates/list" }) });
 			});
 			return { resourceTemplates, failures, ...(nextCursor === undefined ? {} : { nextCursor }) };
 		});

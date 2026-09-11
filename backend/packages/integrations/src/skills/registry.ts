@@ -18,6 +18,14 @@ export interface SkillRegistryOptions {
 	readonly maxFrontmatterChars?: number;
 	readonly maxBodyChars?: number;
 	readonly maxSkills?: number;
+	readonly pluginSkills?: readonly PluginSkillFile[];
+}
+
+export interface PluginSkillFile {
+	readonly pluginId: string;
+	readonly path: string;
+	readonly pluginRoot: string;
+	readonly sourceKind: "user" | "repo";
 }
 
 interface SkillDirectory {
@@ -105,6 +113,18 @@ export class SkillRegistry {
 			}
 		}
 
+		for (const item of options.pluginSkills ?? []) {
+			discoveredCount += 1;
+			if (discoveredCount > limits.maxSkills) { issues.push(issue(item.sourceKind, item.pluginId, "skill_limit_exceeded")); continue; }
+			try {
+				const skill = await parseSkill(item.path, item.sourceKind, limits);
+				const name = `${item.pluginId}:${skill.name}`;
+				if (skills.has(name)) { issues.push(issue(item.sourceKind, item.pluginId, "duplicate_plugin_skill")); continue; }
+				const body = `Plugin root: ${JSON.stringify(item.pluginRoot)}\nSkill file: ${JSON.stringify(item.path)}\n\n${skill.body}`;
+				if (body.length > limits.maxBodyChars) throw new SkillFileError("skill_body_too_large");
+				skills.set(name, Object.freeze({ ...skill, name, pluginId: item.pluginId, body }));
+			} catch { issues.push(issue(item.sourceKind, item.pluginId, "plugin_skill_invalid")); }
+		}
 		const sourceCounts = {
 			builtin: 0,
 			user: 0,
@@ -125,6 +145,7 @@ export class SkillRegistry {
 	}
 
 	get(name: string): SkillDefinition | undefined {
+		if (name.includes(":")) return this.#skills.get(name);
 		const normalized = tryNormalizeSkillName(name);
 		return normalized ? this.#skills.get(normalized) : undefined;
 	}

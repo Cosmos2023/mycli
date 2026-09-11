@@ -10,7 +10,7 @@ import { parseJsonRpcMessage } from "@mycli/contracts";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const DEADLINE_MS = 15_000;
-const EXPECTED_VISIBLE_COMMANDS = 36;
+const EXPECTED_DISCOVERABLE_COMMANDS = 38;
 
 async function main() {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m8-smoke-"));
@@ -62,7 +62,7 @@ async function main() {
 			: [];
 		const sessionReady = isObject(bootstrap.result) && typeof bootstrap.result.session_id === "string";
 		const completed = sessionReady
-			&& commandRows.length === EXPECTED_VISIBLE_COMMANDS
+			&& commandRows.length === EXPECTED_DISCOVERABLE_COMMANDS
 			&& !existsSync(pythonMarker);
 		await shutdown(backend);
 		backend = undefined;

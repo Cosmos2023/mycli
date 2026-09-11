@@ -133,6 +133,23 @@ Each tool entry must include:
 
 ## Validation
 
+### Deferred Tool Discovery
+
+- The static `tool_search` manifest owns its schema and task-based discovery guidance.
+  `createToolSearchDefinition(candidates)` adds a sorted, deduplicated source directory from the
+  allowed MCP/plugin candidates. It does not expose configuration, tool arguments, or input schemas.
+- MCP initialization instructions are optional source descriptions; preserve them through client
+  discovery, registrations, and the private catalog cache. Older caches without them remain valid.
+- Source metadata is JSON-quoted, individual descriptions are bounded to 512 characters, and the
+  full tool description stays within 8,000 characters with an explicit source-omission marker.
+- Build the description from the same allowed registrations as the run's deferred catalog.
+  Snapshot freezing preserves it across provider steps and continuations. Background discovery,
+  trust changes, and tool restrictions affect later run catalogs rather than mutating active ones.
+- Search indexes include source descriptions so a capability shown in the source directory can
+  match tools even when their individual descriptions omit that capability.
+- Tests cover missing/duplicate sources, ordering, metadata quoting/bounds, scoped catalogs,
+  cached server instructions, real SDK initialization, and provider-visible run snapshot stability.
+
 ### MCP Resource Tools
 
 - Built-in `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource` use the active integration composition's

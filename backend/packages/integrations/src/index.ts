@@ -109,6 +109,10 @@ export type {
 export { loadPluginManifest } from "./plugins/manifest.ts";
 export type { LoadPluginManifestOptions } from "./plugins/manifest.ts";
 export { discoverPlugins } from "./plugins/discovery.ts";
+export { pluginBundleContributions } from "./plugins/bundle-contributions.ts";
+export type { PluginBundleContributions } from "./plugins/bundle-contributions.ts";
+export { PluginPackageManager } from "./plugins/package-management.ts";
+export type { PluginPackageRequest, PluginPackageResponse } from "./plugins/package-management.ts";
 export type { DiscoverPluginsOptions } from "./plugins/discovery.ts";
 export {
 	PluginHostError,

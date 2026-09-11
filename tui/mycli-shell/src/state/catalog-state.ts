@@ -450,7 +450,7 @@ export function currentModel(provider: string, model: string, thinkingLevel?: st
 }
 
 function resourceTypeValue(value: unknown): MycliShellResource["type"] | null {
-	return value === "hook" || value === "plugin" || value === "skill" || value === "prompt" || value === "theme" ? value : null;
+	return value === "hook" || value === "mcp" || value === "plugin" || value === "skill" || value === "prompt" || value === "theme" ? value : null;
 }
 
 function resourceSourceValue(value: unknown): MycliShellResource["source"] | null {

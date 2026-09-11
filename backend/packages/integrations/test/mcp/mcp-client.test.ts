@@ -51,6 +51,7 @@ test("initializes one MCP protocol client and normalizes tools and resources", a
 	const calls: string[] = [];
 	const protocol: McpProtocolClient = {
 		connect: async () => { calls.push("connect"); },
+		getInstructions: () => "  Browse project files and repository documentation.  ",
 		listTools: async () => {
 			calls.push("listTools");
 			return { tools: [{
@@ -88,6 +89,7 @@ test("initializes one MCP protocol client and normalizes tools and resources", a
 	await Promise.all([client.close(), client.close()]);
 
 	assert.equal(tools[0]?.name, "read_file");
+	assert.equal(tools[0]?.serverInstructions, "Browse project files and repository documentation.");
 	assert.equal(tools[0]?.supportsParallelToolCalls, true);
 	assert.deepEqual(tools[0]?.inputSchema.required, ["path"]);
 	assert.equal(result.content[0]?.type, "text");

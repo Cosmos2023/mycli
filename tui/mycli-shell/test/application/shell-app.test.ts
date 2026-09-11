@@ -137,7 +137,7 @@ function sampleState(): MycliShellState {
 				enabled: true,
 				status: "enabled",
 				detail: "configured hook",
-				command: "/tools hooks",
+				command: "/hooks",
 			},
 		],
 		pendingNotice: "Waiting for approval",
@@ -6160,7 +6160,7 @@ test("mycli shell resource selector loads resources and opens runtime inspect co
 
 	terminal.input?.("\r");
 	await setTimeout(25);
-	assert.deepEqual(commands, ["/tools hooks"]);
+	assert.deepEqual(commands, ["/hooks"]);
 });
 
 test("mycli shell session tree selector filters folds and selects nodes", async () => {
