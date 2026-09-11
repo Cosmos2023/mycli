@@ -99,6 +99,19 @@ test("constructors omit unsafe details without losing reason or execution eviden
 	}));
 });
 
+test("integration diagnostics validate HTTP, RPC and phase evidence and render it publicly", () => {
+	const context = createErrorContext({ reason: "integration.unavailable", source: "integration", scope: { kind: "tool_call", id: "mcp:call" },
+		outcome: { state: "not_started", effects: "none" }, details: { integration: "remote", operation: "tools/call", phase: "request",
+			http_status: 404, rpc_code: -32602, transport_code: "mcp_session_expired", recovery_attempts: 1 } });
+	assert.deepEqual(parseErrorContext(JSON.parse(JSON.stringify(context))), context);
+	const text = errorPublicDetails(context);
+	assert.match(text ?? "", /HTTP 404.*Operation: tools\/call.*Phase: request.*RPC -32602.*mcp_session_expired/u);
+	for (const details of [
+		{ http_status: 600 }, { rpc_code: 2 ** 32 }, { phase: "private phase" }, { operation: "https://private/path" },
+		{ transport_code: "Bearer secret" }, { recovery_attempts: 2 }, { raw_body: "private" },
+	]) assert.throws(() => parseErrorContext({ ...context, details }), ContractValidationError);
+});
+
 test("aggregate failures preserve immediate and root causes without mutation", () => {
 	const causes = Array.from({ length: 6 }, (_, index) => createErrorContext({
 		reason: "transport.timed_out", source: "provider", scope: { kind: "provider_attempt", id: `attempt:${index}` },

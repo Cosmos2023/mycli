@@ -223,7 +223,7 @@ test("projects bounded context and provider replay state immutably", () => {
 			cacheClass: "dynamic",
 			durability: "persistent",
 			scope: "transcript",
-			sourceId: "review",
+			sourceId: `${"p".repeat(64)}@${"m".repeat(64)}:${"s".repeat(64)}`,
 			contentSha256: "a".repeat(64),
 			contentLength: 12,
 		},

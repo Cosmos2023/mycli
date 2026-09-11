@@ -3,7 +3,7 @@ export { ERROR_DEFINITIONS, ERROR_REASONS, errorDefinition, isErrorReason } from
 export type { ErrorDefinition, ErrorReason } from "./errors/catalog.ts";
 export { createErrorContext, parseErrorContext, readErrorContext, errorOccurrence, failureScope, safeErrorToken, errorContextSchema, ERROR_CONTEXT_VERSION, ERROR_CONTEXT_MAX_BYTES } from "./errors/error-context.ts";
 export type { ErrorContext, ErrorOccurrence, ErrorContextInput, ErrorContextIssue } from "./errors/error-context.ts";
-export type { FailureOutcome, FailureScope, FailureSource, ErrorReasonDetails } from "./generated/error-context.ts";
+export type { FailureOutcome, FailureScope, FailureSource, ErrorReasonDetails, IntegrationErrorDetails } from "./generated/error-context.ts";
 export { errorSummary, errorPublicDetails } from "./errors/presentation.ts";
 export { LEGACY_RUNTIME_ERRORS, LEGACY_TOOL_REASONS, LEGACY_GATEWAY_REASONS, legacyRuntimeReason, legacyToolReason, legacyGatewayReason } from "./errors/legacy.ts";
 export { parseProviderAttemptUpdate, parseProviderAttemptRecord, parseRuntimeFailure } from "./provider-attempt.ts";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	ContractValidationError, GatewayRpcValidationError, gatewayToolLifecycleRecord,
+	ContractValidationError, GatewayRpcValidationError, createErrorContext, gatewayToolLifecycleRecord,
 	parseGatewayEvent, parseGatewayResult, parseGatewayToolRecord, projectGatewayToolRecord,
 	type GatewayToolRecord,
 } from "../../src/index.ts";
@@ -40,6 +40,17 @@ test("tool records normalize legacy targets without copying argument objects or 
 	assert.equal(projected.duration_ms, 250);
 	assert.deepEqual(projected, JSON.parse(JSON.stringify(projected)));
 	assert.doesNotMatch(JSON.stringify(projected), /argument-secret|payload-secret|private-rationale|arguments|raw_payload/);
+});
+
+test("MCP live and history error previews retain structured diagnostics", () => {
+	const context = createErrorContext({ reason: "integration.unavailable", source: "integration", scope: { kind: "tool_call", id: "mcp:call" },
+		outcome: { state: "unknown", effects: "possible" }, details: { operation: "tools/call", phase: "request", http_status: 503 } });
+	const metadata = { tool_name: "mcp_remote_change", call_id: "mcp:call", status: "failed", error_context: context };
+	for (const record of [projectGatewayToolRecord({ text: "MCP tool failed", metadata }), gatewayToolLifecycleRecord("tool.failed", metadata)]) {
+		assert.deepEqual(parseGatewayToolRecord(record), record);
+		assert.match(record.error_preview ?? "", /unavailable.*\nHTTP 503.*Phase: request/u);
+		assert.deepEqual(record.error_context, context);
+	}
 });
 
 test("display records preserve whitespace, cancellation, mutation content, and explicit shell metrics", () => {

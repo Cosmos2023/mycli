@@ -1,5 +1,6 @@
 import {
 	isProviderRouteId,
+	isSkillReferenceName,
 	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
 	type CanonicalContextMetadata,
 	type CanonicalConversationItem,
@@ -204,7 +205,8 @@ function canonicalContextMetadata(value: unknown): CanonicalContextMetadata {
 		contentLength: Number(metadata.content_length ?? metadata.contentLength),
 	};
 	const validSource = canonical.sourceId.length > 0
-		&& canonical.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+		&& (canonical.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+			|| canonical.kind === "skill_instructions" && isSkillReferenceName(canonical.sourceId))
 		&& !canonical.sourceId.includes("/")
 		&& !canonical.sourceId.includes("\\")
 		&& !canonical.sourceId.includes("\0");

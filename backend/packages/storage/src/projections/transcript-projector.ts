@@ -1,3 +1,4 @@
+import { isSkillReferenceName } from "@mycli/core";
 import {
 	TURN_INTERRUPTED_NOTICE,
 	turnInterruptedNoticeId,
@@ -704,8 +705,8 @@ function visiblePlanMetadata(
 }
 
 function boundedSkillName(value: unknown): string | undefined {
-	const name = boundedIdentity(value, 64);
-	return name && /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(name) ? name : undefined;
+	const name = boundedIdentity(value, 194);
+	return isSkillReferenceName(name) ? name : undefined;
 }
 
 function projectFileChange(value: unknown): Readonly<Record<string, unknown>> | undefined {

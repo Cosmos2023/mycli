@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextItemCoordinator } from "../../src/index.ts";
 
+test("plugin-qualified skill artifacts become durable context and reject malformed names", () => {
+	for (const name of ["demo:review", "demo@personal:review", "../../review", "demo@@personal:review", "demo:review:extra"]) {
+		const artifact = { kind: "skill_instructions" as const, name, text: "Review changes", sourceKind: "user", contentSha256: "a".repeat(64), contentLength: 14 };
+		const coordinator = new ContextItemCoordinator({ extractArtifact: () => artifact });
+		const context = coordinator.contextItemFor({ turnId: "turn", result: { callId: "call", toolName: "Skill", success: true,
+			modelOutput: "activated", summary: "activated", metadata: {} } });
+		assert.equal(context?.metadata?.sourceId, name === "demo:review" || name === "demo@personal:review" ? name : undefined);
+	}
+});
+
 test("context item coordinator maps a validated skill artifact to durable context", () => {
 	const artifact = {
 		kind: "skill_instructions" as const,

@@ -1,4 +1,5 @@
 export { TurnTransitionError } from "./errors.ts";
+export { isSkillReferenceName } from "./skill-reference.ts";
 export { TOOL_RESULT_OUTPUT_MAX_CHARS } from "./conversation/tool-output.ts";
 export {
 	PROVIDER_NATIVE_APIS,

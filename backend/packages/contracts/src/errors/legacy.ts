@@ -74,6 +74,10 @@ export const LEGACY_TOOL_REASONS: Readonly<Record<string, ErrorReason>> = Object
 	skill_not_found: "integration.unavailable", mcp_unavailable: "integration.unavailable",
 	mcp_resource_error: "integration.failure_unclassified", mcp_tool_error: "integration.failure_unclassified",
 	mcp_protocol_error: "integration.protocol_invalid",
+	mcp_schema_error: "integration.protocol_invalid",
+	mcp_server_startup: "integration.unavailable", mcp_transport_error: "integration.unavailable",
+	mcp_timeout: "integration.unavailable", unknown_mcp_server: "integration.unavailable",
+	mcp_execution_error: "integration.failure_unclassified",
 	protocol_invalid: "integration.protocol_invalid",
 });
 

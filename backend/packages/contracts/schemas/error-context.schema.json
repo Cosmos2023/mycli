@@ -141,7 +141,16 @@
     "integration_details": {
       "title": "IntegrationErrorDetails", "type": "object", "additionalProperties": false,
       "properties": {
-        "integration": { "$ref": "#/$defs/token" }, "legacy_kind": { "$ref": "#/$defs/token" }
+        "integration": { "$ref": "#/$defs/token" }, "legacy_kind": { "$ref": "#/$defs/token" },
+        "operation": { "enum": ["initialize", "tools/list", "tools/call", "resources/list", "resources/templates/list", "resources/read", "hooks/run", "commands/run", "shutdown"] },
+        "phase": { "enum": ["connect", "request", "reconnect", "shutdown"] },
+        "http_status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "rpc_code": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "transport_code": { "$ref": "#/$defs/token" },
+        "timeout_ms": { "$ref": "#/$defs/count" },
+        "recovery_attempts": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "exit_code": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "signal": { "$ref": "#/$defs/token" }
       }
     },
     "terminal_details": {

@@ -9,6 +9,7 @@ import {
 	type ToolDefinition,
 } from "../types.ts";
 import { parseProviderNativeTransportSnapshot } from "./provider-native-transport.ts";
+import { isSkillReferenceName } from "../skill-reference.ts";
 
 export interface NoToolRequestProjectionInput {
 	readonly config: ProviderRequestConfig;
@@ -180,7 +181,8 @@ const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
 
 function validateContext(text: string, metadata: CanonicalContextMetadata): void {
 	const validSource = metadata.sourceId.length > 0
-		&& metadata.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+		&& (metadata.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+			|| metadata.kind === "skill_instructions" && isSkillReferenceName(metadata.sourceId))
 		&& !metadata.sourceId.includes("/")
 		&& !metadata.sourceId.includes("\\")
 		&& !metadata.sourceId.includes("\0");

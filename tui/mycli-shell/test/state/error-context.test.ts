@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { parseErrorContext, TURN_INTERRUPTED_NOTICE } from "@mycli/contracts";
+import { createErrorContext, parseErrorContext, TURN_INTERRUPTED_NOTICE } from "@mycli/contracts";
 import { appendErrorNotice, appendInterruptedNotice, noticeDiagnostic } from "../../src/state/transcript-messages.ts";
 import { NoticeMessageComponent } from "../../src/components/transcript/notice-message.ts";
 import { visibleWidth } from "../../src/tui-core/utils.ts";
@@ -44,4 +44,18 @@ test("unknown error extensions never imply a configuration fix or automatic retr
 	const diagnostic = noticeDiagnostic({ code: "connection_error", error_context: { ...fixture, version: 2 }, recovery_actions: ["retry"] }).diagnostic;
 	assert.equal(diagnostic?.hint, undefined);
 	assert.equal(diagnostic?.recoveryActions, undefined);
+});
+
+test("MCP diagnostics expose status and operation without overflowing narrow terminals", () => {
+	const context = createErrorContext({ reason: "integration.unavailable", source: "integration", scope: { kind: "tool_call", id: "call:mcp" },
+		outcome: { state: "unknown", effects: "possible" }, details: { integration: "remote", operation: "tools/call", phase: "request", http_status: 503, rpc_code: -32050 } });
+	const item = appendErrorNotice([], { code: "provider_error", error_context: context }, "old summary")[0]!;
+	const diagnostic = noticeDiagnostic(item.metadata).diagnostic;
+	assert.match(diagnostic?.details ?? "", /HTTP 503.*Operation: tools\/call.*Phase: request.*RPC -32050/u);
+	const component = new NoticeMessageComponent({ id: item.id, role: "error", text: item.text, diagnostic: { ...diagnostic, expanded: true } });
+	for (const width of [24, 80, 160]) {
+		const lines = component.render(width);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.ok(lines.join("\n").includes("503"));
+	}
 });

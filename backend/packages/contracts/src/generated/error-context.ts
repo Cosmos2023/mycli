@@ -202,6 +202,24 @@ export interface RuntimeErrorDetails {
 export interface IntegrationErrorDetails {
   integration?: Token;
   legacy_kind?: Token;
+  operation?:
+    | "initialize"
+    | "tools/list"
+    | "tools/call"
+    | "resources/list"
+    | "resources/templates/list"
+    | "resources/read"
+    | "hooks/run"
+    | "commands/run"
+    | "shutdown";
+  phase?: "connect" | "request" | "reconnect" | "shutdown";
+  http_status?: number;
+  rpc_code?: number;
+  transport_code?: Token;
+  timeout_ms?: Count;
+  recovery_attempts?: number;
+  exit_code?: number;
+  signal?: Token;
 }
 export interface TerminalErrorDetails {
   operation?: Token;

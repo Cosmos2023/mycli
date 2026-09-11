@@ -22,6 +22,16 @@ export function errorPublicDetails(context: ErrorContext): string | undefined {
 	}
 	if (details && "exit_code" in details && details.exit_code !== undefined) parts.push(`Exit code: ${details.exit_code}.`);
 	if (details && "http_status" in details && details.http_status !== undefined) parts.push(`HTTP ${details.http_status}.`);
+	if (context.source === "integration" && details) {
+		if ("integration" in details && details.integration) parts.push(`Integration: ${details.integration}.`);
+		if ("operation" in details && details.operation) parts.push(`Operation: ${details.operation}.`);
+		if ("phase" in details && details.phase) parts.push(`Phase: ${details.phase}.`);
+		if ("rpc_code" in details && details.rpc_code !== undefined) parts.push(`RPC ${details.rpc_code}.`);
+		if ("transport_code" in details && details.transport_code) parts.push(`Transport: ${details.transport_code}.`);
+		if ("legacy_kind" in details && details.legacy_kind) parts.push(`Failure: ${details.legacy_kind}.`);
+		if ("timeout_ms" in details && details.timeout_ms !== undefined) parts.push(`Timeout: ${details.timeout_ms} ms.`);
+		if ("signal" in details && details.signal) parts.push(`Signal: ${details.signal}.`);
+	}
 	if (context.outcome.state === "unknown") parts.push("The operation's outcome has not been confirmed.");
 	else if (context.scope.kind === "tool_call" && context.outcome.state === "not_started") parts.push("The operation did not start.");
 	if (context.reason !== "runtime.retry_exhausted" && context.causes?.length) {

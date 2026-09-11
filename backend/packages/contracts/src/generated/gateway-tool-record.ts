@@ -246,6 +246,24 @@ export interface RuntimeErrorDetails {
 export interface IntegrationErrorDetails {
   integration?: string;
   legacy_kind?: string;
+  operation?:
+    | "initialize"
+    | "tools/list"
+    | "tools/call"
+    | "resources/list"
+    | "resources/templates/list"
+    | "resources/read"
+    | "hooks/run"
+    | "commands/run"
+    | "shutdown";
+  phase?: "connect" | "request" | "reconnect" | "shutdown";
+  http_status?: number;
+  rpc_code?: number;
+  transport_code?: string;
+  timeout_ms?: number;
+  recovery_attempts?: number;
+  exit_code?: number;
+  signal?: string;
 }
 export interface TerminalErrorDetails {
   operation?: string;

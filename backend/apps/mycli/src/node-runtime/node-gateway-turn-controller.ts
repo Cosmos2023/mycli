@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isSkillReferenceName } from "@mycli/core";
 import {
 	runtimeErrorPublicMessage,
 	errorSummary,
@@ -2090,7 +2091,7 @@ function safeToolMetadata(
 function skillNameFromMetadata(metadata: Readonly<Record<string, unknown>>): string | undefined {
 	if (!isObject(metadata.skillInvocationArtifact)) return undefined;
 	const name = metadata.skillInvocationArtifact.name;
-	return typeof name === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(name)
+	return isSkillReferenceName(name)
 		? name
 		: undefined;
 }

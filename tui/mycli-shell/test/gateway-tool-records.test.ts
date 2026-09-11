@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gatewayToolLifecycleRecord, projectGatewayToolRecord, type GatewayToolRecord } from "@mycli/contracts";
+import { createErrorContext, gatewayToolLifecycleRecord, projectGatewayToolRecord, type GatewayToolRecord } from "@mycli/contracts";
+import { ToolExecutionComponent } from "../src/components/transcript/tool-execution.ts";
+import { visibleWidth } from "../src/tui-core/utils.ts";
 import {
 	initialRuntimeState,
 } from "../src/state/runtime-state-model.ts";
@@ -39,6 +41,42 @@ test("live and restored typed records render the same tool semantics", () => {
 	const resumed = runtimeStateFromTranscript(initialRuntimeState(), { items: [{ id: "history", type: "tool_summary", text: "Skill", tool_record: record, metadata: {} }] });
 	const live = reduceRuntimeEvent(initialRuntimeState(), "tool.complete", { name: "Skill", tool_id: "live", call_id: "skill-call", tool_record: record });
 	assert.deepEqual({ ...projectRuntimeState(live).tools[0], id: null }, { ...projectRuntimeState(resumed).tools[0], id: null });
+});
+
+test("live and restored MCP failures display HTTP and operation diagnostics", () => {
+	const context = createErrorContext({ reason: "integration.unavailable", source: "integration", scope: { kind: "tool_call", id: "call:mcp" },
+		outcome: { state: "unknown", effects: "possible" }, details: { operation: "tools/call", phase: "request", http_status: 503 } });
+	const metadata = { name: "mcp_remote_change", call_id: "call:mcp", error_context: context };
+	const record = gatewayToolLifecycleRecord("tool.failed", metadata);
+	const live = reduceRuntimeEvent(initialRuntimeState(), "tool.failed", { ...metadata, tool_id: "live", tool_record: record });
+	const restored = runtimeStateFromTranscript(initialRuntimeState(), { items: [{ id: "history", type: "tool_summary", text: "MCP failed", tool_record: record }] });
+	for (const state of [live, restored]) {
+		const tool = projectRuntimeState(state).tools[0]!;
+		assert.match(tool.errorPreview ?? "", /HTTP 503.*Operation: tools\/call.*Phase: request/u);
+		for (const expanded of [false, true]) for (const width of [24, 80, 160]) {
+			const lines = new ToolExecutionComponent({ ...tool, expanded }).render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			if (expanded || width >= 80) assert.ok(lines.join("\n").includes("503"));
+		}
+	}
+});
+
+test("live and restored plugin failures preserve exit evidence at narrow widths", () => {
+	const context = createErrorContext({ reason: "integration.unavailable", source: "integration", scope: { kind: "tool_call", id: "call:plugin" },
+		outcome: { state: "unknown", effects: "possible" }, details: { integration: "demo", operation: "tools/call", phase: "request", exit_code: 91, legacy_kind: "plugin_worker_exited" } });
+	const metadata = { name: "plugin_demo_act", call_id: "call:plugin", error_context: context };
+	const record = gatewayToolLifecycleRecord("tool.failed", metadata);
+	const live = reduceRuntimeEvent(initialRuntimeState(), "tool.failed", { ...metadata, tool_id: "live", tool_record: record });
+	const restored = runtimeStateFromTranscript(initialRuntimeState(), { items: [{ id: "history", type: "tool_summary", text: "Plugin failed", tool_record: record }] });
+	for (const state of [live, restored]) {
+		const tool = projectRuntimeState(state).tools[0]!;
+		assert.match(tool.errorPreview ?? "", /Exit code: 91.*Integration: demo.*plugin_worker_exited/u);
+		for (const expanded of [false, true]) for (const width of [24, 80, 160]) {
+			const lines = new ToolExecutionComponent({ ...tool, expanded }).render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			if (expanded || width >= 80) assert.ok(lines.join("\n").includes("91"));
+		}
+	}
 });
 
 test("terminal events update typed foreground records without stopping background shells", () => {

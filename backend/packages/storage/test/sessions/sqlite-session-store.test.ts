@@ -954,7 +954,8 @@ test("persists ordered Python-compatible tool calls and results", async (t) => {
 	);
 });
 
-test("persists provider replay state and context with its tool result", async (t) => {
+for (const sourceId of ["review", `${"p".repeat(64)}@${"m".repeat(64)}:${"s".repeat(64)}`]) {
+test(`persists provider replay state and ${sourceId === "review" ? "local" : "qualified plugin"} skill context with its tool result`, async (t) => {
 	const SQLiteSessionStore = constructor();
 	const fixture = await databaseFixture(t);
 	const store = new SQLiteSessionStore({ dbPath: fixture.dbPath, clock: fixedClock });
@@ -970,7 +971,7 @@ test("persists provider replay state and context with its tool result", async (t
 		cacheClass: "dynamic",
 		durability: "persistent",
 		scope: "transcript",
-		sourceId: "review",
+		sourceId,
 		contentSha256: "a".repeat(64),
 		contentLength: 12,
 	};
@@ -992,7 +993,7 @@ test("persists provider replay state and context with its tool result", async (t
 		},
 		summary: "Read file",
 		contextItem: {
-			itemId: "turn-1:skill:review",
+			itemId: `turn-1:skill:${sourceId}`,
 			text: "instructions",
 			metadata,
 		},
@@ -1013,6 +1014,7 @@ test("persists provider replay state and context with its tool result", async (t
 		["user_message", "tool_call", "tool_result", "skill_instructions"],
 	);
 });
+}
 
 test("persists plan updates after tool results without duplicating model conversation", async (t) => {
 	const SQLiteSessionStore = constructor();

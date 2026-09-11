@@ -1,7 +1,7 @@
 import type { GatewayShellRecord, GatewayToolRecord } from "../generated/gateway-tool-record.ts";
 import { projectTerminalInteraction } from "./terminal-interaction.ts";
 import { readErrorContext } from "../errors/error-context.ts";
-import { errorSummary } from "../errors/presentation.ts";
+import { errorPublicDetails, errorSummary } from "../errors/presentation.ts";
 
 type Metadata = Readonly<Record<string, unknown>>;
 type ToolStatus = GatewayToolRecord["status"];
@@ -53,6 +53,7 @@ export function projectGatewayToolRecord(input: {
 	const terminalInteraction = projectTerminalInteraction(metadata.terminal_interaction);
 	const readSummary = !hasDisplay && status === "success" ? readRangeSummary(name, metadata) : undefined;
 	const errorContext = status === "error" || status === "cancelled" ? readErrorContext(metadata.error_context) : undefined;
+	const integrationDetails = errorContext?.source === "integration" ? errorPublicDetails(errorContext) : undefined;
 	const result: GatewayToolRecord = definedFields({
 		version: 1,
 		kind: "tool_execution",
@@ -69,7 +70,7 @@ export function projectGatewayToolRecord(input: {
 			?? (content ? lineCount(content) : undefined),
 		diff_preview: diff,
 		output_preview: output,
-		error_preview: errorContext ? errorSummary(errorContext)
+		error_preview: errorContext ? [errorSummary(errorContext), integrationDetails].filter(Boolean).join("\n")
 			: hasDisplay ? preview(display.error) : text(metadata.error) ?? (status === "error" ? preview(input.text) : undefined),
 		hidden_line_count: hidden,
 		...(readSummary ? { summary_preview: readSummary } : {}),

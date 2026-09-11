@@ -86,22 +86,25 @@ function imageFailure(): ReturnType<typeof createErrorContext> {
 	});
 }
 
-test("a failed completed tool retains its occurrence through effects, restart recovery, and transcript projection", async (t) => {
+for (const kind of ["Shell", "MCP", "Plugin"] as const) test(`a failed ${kind} tool retains its occurrence through effects, restart recovery, and transcript projection`, async (t) => {
+	const integration = kind !== "Shell";
 	const dbPath = await temporaryDatabase(t);
 	const store = openRuntimeSessionStore({ dbPath, clock: () => NOW });
 	t.after(() => store.close());
 	reserve(store);
-	const call = { callId: "call:error", name: "Shell", argumentsJson: "{}" };
+	const call = { callId: "call:error", name: kind === "Plugin" ? "plugin_remote_change" : integration ? "mcp_remote_change" : "Shell", argumentsJson: "{}" };
 	store.appendAssistantToolCalls({ sessionId: "session:error", clientTurnId: "client:error", assistantText: "", calls: [call] });
-	const errorContext = createErrorContext({ reason: "tool.timed_out", source: "tool",
+	const errorContext = createErrorContext({ ...(integration ? { reason: "integration.unavailable", source: "integration",
+		details: { integration: "remote", operation: "tools/call", phase: "request", ...(kind === "Plugin" ? { exit_code: 91, legacy_kind: "plugin_worker_exited" } : { http_status: 503, recovery_attempts: 1 }) } } as const
+		: { reason: "tool.timed_out", source: "tool" } as const),
 		scope: { kind: "tool_call", id: call.callId }, outcome: { state: "unknown", effects: "possible" },
 	});
 	store.agentEffectLedger.reserve({ attemptId: "effect:error", kind: "tool", sessionId: "session:error",
 		turnId: "turn:error", jobId: "job:error", externalId: call.callId, mutating: true, request: call, createdAt: NOW,
 	});
 	store.agentEffectLedger.complete({ attemptId: "effect:error", state: "completed", completedAt: NOW,
-		result: { callId: call.callId, toolName: call.name, success: false, modelOutput: "timed out", summary: "Shell timed out",
-			errorKind: "timeout", errorContext, metadata: { error_context: errorContext },
+		result: { callId: call.callId, toolName: call.name, success: false, modelOutput: kind === "Plugin" ? "Exit code: 91" : integration ? "HTTP 503" : "timed out", summary: "Tool failed",
+			errorKind: kind === "Plugin" ? "plugin_worker_exited" : integration ? "mcp_transport_error" : "timeout", errorContext, metadata: { error_context: errorContext },
 		},
 	});
 	const recovered = interruptedToolResult(call, store.agentEffectLedger.load("effect:error"), "interrupted");

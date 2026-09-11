@@ -14,6 +14,7 @@ import type { RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
 	isProviderRouteId,
+	isSkillReferenceName,
 	PROVIDER_REPLAY_STATE_MAX_JSON_CHARS,
 	QueueConflictError,
 	selectAgentForkConversation,
@@ -2563,7 +2564,8 @@ const MAX_CONTEXT_SOURCE_ID_CHARS = 128;
 function validateContextItem(input: AppendContextItemInput): void {
 	const { metadata } = input;
 	const validSource = metadata.sourceId.length > 0
-		&& metadata.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+		&& (metadata.sourceId.length <= MAX_CONTEXT_SOURCE_ID_CHARS
+			|| metadata.kind === "skill_instructions" && isSkillReferenceName(metadata.sourceId))
 		&& !metadata.sourceId.includes("/")
 		&& !metadata.sourceId.includes("\\")
 		&& !metadata.sourceId.includes("\0");
