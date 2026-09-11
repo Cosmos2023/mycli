@@ -10,7 +10,7 @@ This directory is split by document purpose.
 - [reference/configuration.md](./reference/configuration.md): generated configuration keys, defaults, canonical paths, and compatibility aliases.
 - [reference/config.example.toml](./reference/config.example.toml): generated commented configuration example.
 - [providers.md](./providers.md): first-class provider defaults, compatible endpoints, credentials, rollback, and opt-in live verification.
-- [commands.md](./commands.md): canonical 36-command slash registry, aliases, and availability.
+- [commands.md](./commands.md): canonical 38-command slash registry, independent integration entries, retired names, and availability.
 - [terminal-accessibility.md](./terminal-accessibility.md): terminal capabilities, custom keymaps, CJK/IME, paste, resize, completion, and non-TTY behavior.
 - [parity/configuration-ux-baseline.md](./parity/configuration-ux-baseline.md): provider-free UX journeys, budgets, privacy rules, and drift gates.
 - [compatibility.md](./compatibility.md): supported Node, platform, config, catalog, session, deprecation, and evidence windows.
@@ -25,6 +25,7 @@ This directory is split by document purpose.
 - [node-extensions.md](./node-extensions.md): extension discovery, configuration, approvals, management, and doctor.
 - [node-agent-runtime.md](./node-agent-runtime.md): durable agent threads, coordination tools, permissions, artifacts, recovery, and TUI projection.
 - [plugin-api-v2.md](./plugin-api-v2.md): process-isolated compiled ESM plugin author contract.
+- [plugin-codex-parity.md](./plugin-codex-parity.md): plugin installation, marketplaces, bundle formats, TUI entries, and Codex compatibility limits.
 - [migration/python-plugins-to-v2.md](./migration/python-plugins-to-v2.md): legacy plugin migration to compiled ESM Plugin API v2.
 - [parity/node-runtime-m8-capability-audit.md](./parity/node-runtime-m8-capability-audit.md): final retained-capability audit and frozen corpus.
 

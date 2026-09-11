@@ -128,8 +128,8 @@ service and requires a terminal. `update check` may contact the npm registry, an
 | `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
 | `mycli sandbox status\|setup\|reset [--confirm] [--json]` | Inspect or recover platform sandbox readiness | Status is read-only; setup/reset preview by default and execute only with `--confirm` |
 | `mycli hooks <action> [identity]` | List, inspect, approve, or revoke configured hooks | Operates on local hook metadata and supports `--json` |
-| `mycli plugins <action> [arguments]` | List, inspect, or run a declared local plugin command | Validates declared commands and JSON arguments before execution |
-| `mycli mcp <action> [server-id]` | List or inspect configured MCP servers | Reads local configuration without starting an MCP server or model turn |
+| `mycli plugins <action> [arguments]` | Install, manage, inspect, or run plugins; manage marketplaces | Package operations use local or Git sources; declared commands and JSON arguments are validated before execution |
+| `mycli mcp <action> [server-id]` | List or inspect configured MCP servers | May start or contact enabled servers to verify discovery; never starts a model turn |
 | `mycli session <action> [arguments]` | List, resume, fork, rename, archive, restore, delete, or export sessions | Management actions are provider-free; `session resume <id>` enters the interactive TUI |
 | `mycli completion <bash\|zsh\|fish\|powershell>` | Generate completion for one supported shell | Writes a static script to stdout without loading management services, a provider, the backend, or the TUI |
 
@@ -250,7 +250,7 @@ The canonical setting list and commented TOML example are generated in
 ## Slash Command Reference
 
 The Node runtime owns one canonical registry for parsing, discovery, dispatch, and errors. It exposes
-35 supported commands, each with one canonical name. The TUI palette normally shows the common
+38 supported commands, each with one canonical name. The TUI palette normally shows the common
 subset; search-only commands below remain supported and test-covered.
 `Ctrl+P` starts with common commands that are available in the current runtime. Typing a query also
 searches descriptions, settings terminology, and current setting values; matching search-only commands
@@ -286,7 +286,10 @@ also clears the temporary override so the saved choice takes effect.
 | `/compact` | none | backend | no | common |
 | `/stats` | none | backend | yes | search-only |
 | `/skills` | none | overlay | yes | common |
-| `/tools` | optional `[list\|sets\|hooks\|extensions\|plugins]` | overlay | yes | common |
+| `/mcp` | optional `[verbose]` | server connections and tools; verbose adds transport and resources | yes | common |
+| `/plugins` | none | installed plugin packages and capability details | yes | common |
+| `/hooks` | none | configured and plugin-provided hooks | yes | common |
+| `/tools` | optional `[list\|sets]` | actual tool inventory | yes | search-only |
 | `/resources` | none | opens resources | yes | search-only |
 | `/memory` | optional `[list\|path\|search\|add\|forget]` | overlay | yes | search-only |
 | `/agents` | optional `[child-session-id\|kill <child-session-id>\|kill-all]` | agent view when bare; backend when inline | yes | common |
@@ -339,11 +342,20 @@ at the previewed metadata revision, while Esc cancels without changing the sourc
 `/resume <session-id>` uses the same backend transition. See [sessions.md](sessions.md) for the
 provider-free management commands and recovery matrix.
 
-The `/skills` and `/tools` inspection lists support text filtering, arrow-key selection,
+The `/mcp`, `/plugins`, `/skills`, `/hooks`, and `/tools` inspection lists support text filtering, arrow-key selection,
 Page Up/Down, and Home/End. Enter opens the selected item's complete returned description and
 status; Esc returns to the list, then closes it without changing the composer draft. The panel
 adapts to the available terminal height. A result capped by the backend reports the loaded count
-separately from the total. `/tools hooks` lists configured hooks, including disabled ones.
+separately from the total. `/hooks` lists configured hooks, including disabled ones, and plugin hooks.
+
+MCP servers, plugin packages, and callable tools have separate inventories. `/mcp` includes servers
+that are loading, disabled, failed, or serving cached discovery, including servers without resources.
+Enter shows their tools; `/mcp verbose` also includes transport, timeout, and resource names, without
+dumping environment values, headers, or command arguments. `/plugins` lists each discovered package
+once; Enter shows its declared skills, MCP servers, hooks, tools, commands, and issues. A plugin's
+MCP servers still appear under `/mcp`, and its loaded tools appear in the diagnostic `/tools` inventory.
+Opening these views does not invoke a tool, plugin command, or model turn. Package installation,
+updates, removal, and enablement use `mycli plugins`; see [Plugin Compatibility](plugin-codex-parity.md).
 
 ### Retired Names
 
@@ -361,10 +373,10 @@ to a model or plugin. Plugin commands such as `/plugin:<id>:<command>` remain su
 | `/status stats` | `/stats` |
 | `/tools permissions` | `/permissions` |
 | `/skill`, `/tools skills` | `/skills` |
-| `/hooks` | `/tools hooks` |
+| `/tools hooks` | `/hooks` |
 | `/toolsets` | `/tools sets` |
-| `/extensions` | `/tools extensions` |
-| `/plugin` | `/tools plugins` |
+| `/extensions`, `/tools extensions` | `/tools` |
+| `/plugin`, `/tools plugins` | `/plugins` |
 | `/tasks`, `/jobs`, `/tasks agents`, `/jobs subagents`, `/subagents`, `/agents runs`, `/agents agents` | `/agents` |
 | `/tasks agents kill`, `/jobs subagents kill` | `/agents kill` |
 | `/tasks kill-agents`, `/jobs kill-subagents`, `/agents kill-agents` | `/agents kill-all` |

@@ -26,8 +26,18 @@ visible as a diagnostic and does not prevent unrelated entries from loading.
 ## Deferred Tool Discovery
 
 MCP and plugin adapters start with the runtime and remain routable, but their provider schemas are
-not included in the initial request. The stable `tool_search` built-in searches their bounded name,
-description, source, and origin metadata. A successful result activates at most 16 matching routes
+not included in the initial request. The stable `tool_search` built-in advertises a sorted,
+deduplicated catalog of searchable MCP servers and plugins in its description, including MCP
+initialization instructions when available. Only sources with tools allowed in the current run
+appear. This bounded description is frozen with the run's tool catalog; background refresh affects
+the next run. Cached MCP discovery preserves the optional server instructions.
+
+The model may choose relevant tools from the task context without an explicit MCP or plugin
+mention. It uses `tool_search` to find missing tools, and uses the MCP resource tools to discover
+or read resources. Source descriptions are external capability metadata, not permission grants.
+
+`tool_search` searches bounded name, description, source, and origin metadata, including the
+server capability description. A successful result activates at most 16 matching routes
 for later provider steps in the same turn.
 
 Activation metadata is appended atomically with the `tool_search` result before any selected schema
@@ -127,6 +137,20 @@ MCP tool still requires one-time approval before execution.
 the same timeout, sandbox, cancellation, and cleanup path as runtime startup and close every client
 before returning.
 
+MCP tool and resource failures include bounded diagnostics: operation, connection/request phase,
+HTTP status, JSON-RPC code, and an allowlisted transport cause code when available. Version-1 error
+contexts preserve this evidence in tool results and session history. Endpoint URLs, session IDs,
+authorization headers, and raw upstream error bodies are never included in those diagnostics.
+
+For Streamable HTTP, a POST rejected with HTTP 404 while carrying an MCP session ID triggers a
+fresh initialization and at most one retry of the rejected operation. Concurrent failures share
+the replacement connection; already running requests can finish on the old connection. Cancellation
+or client close stops further recovery work. A 404 without a session ID, ordinary HTTP errors,
+timeouts, and ambiguous disconnections do not replay tool calls automatically. When execution
+cannot be confirmed, the error records an unknown outcome so callers can check remote state before
+retrying an operation that may have side effects. An unsupported optional GET stream (HTTP 405)
+remains compatible with POST-based MCP servers.
+
 ## Images And MCP Resources
 
 `view_image` accepts a local `path`. It decodes PNG, JPEG, GIF and WebP by their actual content,
@@ -199,7 +223,14 @@ agent configuration, permission, artifact, recovery, and TUI contract is documen
 
 ## Plugins
 
-Node plugins use the process-isolated Plugin API v2. Production entries must be compiled `.js` or
+Plugins may be Codex-style bundles installed with `mycli plugins add <directory|Git-source|name@marketplace>`.
+Bundles contribute namespaced skills, MCP servers and command hooks through the existing runtime
+systems. Use `mycli plugins marketplace add <source>` to register a catalog, then
+`mycli plugins list --available` to browse it. Install/update/enable/disable/remove take effect in
+new sessions; installation does not execute package code. Apps declarations are reported as
+unavailable. See [plugin-codex-parity.md](plugin-codex-parity.md) for formats, commands and limits.
+
+Executable ESM plugins use the process-isolated Plugin API v2. Production entries must be compiled `.js` or
 `.mjs`; raw TypeScript and Python source are not executed. See [plugin-api-v2.md](plugin-api-v2.md)
 for the author contract and [migration/python-plugins-to-v2.md](migration/python-plugins-to-v2.md)
 for Python migration.
@@ -209,6 +240,19 @@ Plugin tools use stable ids `plugin:<plugin-id>:<tool-name>`, are activated for 
 the normal ordered hook pipeline. The worker receives only a minimal environment plus explicitly
 declared names, and every invocation is bounded by protocol size, timeout, outstanding-request, and
 output limits.
+
+`/plugins` reflects live process status: a crashed worker becomes `error`, a replacement is
+`loading`, and a successfully initialized worker becomes enabled again. Successful calls do not
+refresh the extension catalog. A retired or closed runtime cannot publish old plugin state.
+
+Failures identify the plugin, operation, phase, and safe process evidence such as exit code or
+timeout. The runtime may start one replacement for a new invocation after a crash, timeout, or
+cancellation. Concurrent callers share startup; cancelled callers are not dispatched. Calls with
+uncertain outcomes are never replayed automatically. Registration changes or protocol corruption
+require a runtime reload after correcting the plugin. Commands remain provider-free through
+`mycli plugins run` and the registered `/plugin:<id>:<command>` routes.
+
+See [plugin-codex-parity.md](plugin-codex-parity.md) for the Codex comparison and compatibility scope.
 
 ## Doctor And Troubleshooting
 

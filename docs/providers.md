@@ -7,7 +7,8 @@ catalog routes below are active by default. Other catalog routes remain dormant 
 explicitly declared, so upgrading pi-ai never silently
 activates a new network destination. New models on an already active catalog route become available
 after the dependency update passes. Credentials remain owned by mycli through `MYCLI_API_KEY` or the
-private `~/.mycli/auth.json` store; pi-ai ambient credentials and OAuth are not used.
+private `~/.mycli/auth.json` store. Supported native routes can also use provider environment
+authentication and OAuth through mycli's credential adapter.
 
 The three route tiers are:
 
@@ -116,10 +117,16 @@ printf '%s\n' "$OPENROUTER_API_KEY" | \
   --with-api-key --json
 ```
 
-Provider-specific ambient variables such as `OPENROUTER_API_KEY` are not read automatically. The
-examples pass them through setup stdin; runtime resolution uses only `MYCLI_API_KEY`, the selected
-mycli `auth_ref`, or the supported legacy user setting. Pi-ai OAuth and credential stores are not
-part of the runtime credential chain.
+The examples pass provider-specific variables through setup stdin and store the key under mycli's
+selected `auth_ref`. `MYCLI_API_KEY` and stored credentials remain explicit authentication sources.
+Supported native routes can also resolve their provider-specific environment when ambient
+authentication is enabled. Custom declared routes do not inherit a native provider's credential
+chain automatically.
+
+`mycli login --oauth --provider <provider-id>` starts OAuth for a supported native provider.
+OAuth credentials and refreshes use the private mycli auth store. `mycli login status` reports the
+selected credential source, and `mycli logout` removes the local stored credential without
+unsetting environment credentials. See [authentication commands](commands.md#provider-free-cli-commands).
 
 ## Provider-scoped Model Selection
 
@@ -250,10 +257,11 @@ reasoning_effort = "none"
 ```
 
 `compatible` provides generic OpenAI-compatible behavior, not a claim that mycli has verified the
-service's auth, model catalog, reasoning dialect, replay details, or optional controls. Google
-Generative AI, Vertex AI, Amazon Bedrock, Mistral Conversations, Azure Responses, provider OAuth,
-cloud credential chains, service accounts, and other new-protocol providers are deferred. They are
-not enabled by pi-ai merely being present in the dependency graph.
+service's auth, model catalog, reasoning dialect, replay details, or optional controls. Native routes
+remain separate: the current protocol mapping includes OpenAI Chat Completions, Responses,
+Anthropic Messages, and Azure Responses. Google, Vertex, Bedrock, and Mistral-specific protocols
+are not activated merely because their modules exist in pi-ai. Authentication support also depends
+on the selected native provider; a compatible endpoint does not inherit its OAuth or cloud credentials.
 
 For a named custom route instead of the shared `compatible` profile, declare the complete route and
 model metadata in `models.json`:

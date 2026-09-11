@@ -63,6 +63,22 @@ transcript, status and footer. Viewport caching, activity animation, tool detail
 transcript cell creation each have a separate owner. Static output, native output and the history
 viewer use the same transcript block factory as interactive rendering.
 
+## Integration Inspection
+
+`/mcp [verbose]`, `/plugins`, `/skills`, and `/hooks` have independent entries in command discovery
+and the settings center. `/tools [list|sets]` remains a search-only diagnostic inventory of callable
+tools. Retired `/tools plugins`, `/tools hooks`, and `/tools extensions` forms return replacement
+hints from the backend registry.
+
+MCP catalog entries use `type: "mcp"` and represent servers, including loading, disabled, failed,
+and cached states. Plugin entries represent packages; their contributed capabilities appear in
+details. A plugin's MCP servers also appear in the MCP catalog, and its tools in the tool inventory.
+
+`CommandResultOverlayComponent` owns list filtering, navigation, and scrollable details. Enter
+inspects a row without invoking a tool or plugin command. Esc returns before closing, and resize
+preserves the selection and composer draft. Plugin package management remains in the CLI; see
+[Plugin compatibility](../../docs/plugin-codex-parity.md) for the supported scope.
+
 ## Invariants
 
 - Keep all internal imports direct. Do not route implementation imports through the package facade.

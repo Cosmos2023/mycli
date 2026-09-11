@@ -87,7 +87,7 @@ approval scheduling. Deterministic scorer tests use scripted responses and do
 not establish that a live model follows the prompt. Live results are separate
 from `npm test`, may incur provider charges, and apply to the tested model only.
 
-The packaged prompt is now `2026-09-codex-style-base-v16`. Rebuild and restart
+The packaged prompt is now `2026-09-codex-style-base-v18`. Rebuild and restart
 mycli, then create a new session to use the updated base instructions. Existing
 sessions retain their frozen instruction snapshot; they are not rewritten.
 
