@@ -14,6 +14,7 @@ import type {
 export interface DiscoverHookConfigOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
+	readonly includeRepository?: boolean;
 	readonly platform?: NodeJS.Platform;
 	readonly env?: Readonly<NodeJS.ProcessEnv>;
 	readonly shellPath?: string;
@@ -63,7 +64,12 @@ export async function discoverHookConfig(
 ): Promise<HookConfigDiscovery> {
 	const files: readonly HookConfigFile[] = [
 		{ path: join(options.homeDir, ".mycli", "hooks.json"), scope: "user" },
-		{ path: join(options.workspaceRoot, ".mycli", "hooks.json"), scope: "repo" },
+		...(options.includeRepository === false
+			? []
+			: [{
+				path: join(options.workspaceRoot, ".mycli", "hooks.json"),
+				scope: "repo" as const,
+			}]),
 	];
 	const hooks: ConfiguredHookSpec[] = [];
 	const diagnostics: HookConfigDiagnostic[] = [];
@@ -123,6 +129,12 @@ async function readHookFile(
 		return [];
 	}
 
+	return parseHookConfigDocument(payload, file, options, diagnostics);
+}
+
+export function parseHookConfigDocument(
+	payload: Readonly<Record<string, unknown>>, file: HookConfigFile, options: DiscoverHookConfigOptions, diagnostics: HookConfigDiagnostic[],
+): readonly ConfiguredHookSpec[] {
 	let entries: readonly RawHookEntry[];
 	try {
 		entries = rawHookEntries(payload);
@@ -160,6 +172,7 @@ async function readHookFile(
 }
 
 function rawHookEntries(payload: Readonly<Record<string, unknown>>): readonly RawHookEntry[] {
+	if (isRecord(payload.hooks)) return rawHookEntries(payload.hooks);
 	if (payload.hooks !== undefined) {
 		if (!Array.isArray(payload.hooks)) throw new HookConfigError("invalid_hooks");
 		return payload.hooks.map((value, index) => ({ value, fallbackId: `hook_${index}` }));

@@ -54,7 +54,26 @@ redirection, pipes, chained commands, or unknown syntax may require confirmation
 Interactive shell sessions use `node-pty` and ConPTY. Restricted process profiles use the packaged
 `backend/packages/tools/native/windows/mycli-windows-sandbox.exe` helper built from
 `native/windows-sandbox-helper`. A missing or invalid helper returns `sandbox_unavailable`; mycli
-does not run the command unrestricted.
+does not run the command unrestricted. The first restricted command initializes a dedicated local
+sandbox identity and offline firewall policy. Windows displays a UAC prompt for this one-time setup;
+mycli waits for setup to finish and verifies it before running the command.
+
+Inspect or recover the same state without starting the TUI or a provider:
+
+```powershell
+mycli sandbox status
+mycli sandbox setup
+mycli sandbox setup --confirm
+mycli sandbox reset
+mycli sandbox reset --confirm
+```
+
+Setup and reset only preview their effects until `--confirm` is present. Confirmed setup can display
+UAC; canceling it leaves the restricted command blocked and reports `operation_canceled`. Confirmed
+reset does not delete the dedicated account or remove firewall/WFP restrictions. It clears only the
+encrypted credential and setup markers, so the next confirmed setup or valid restricted command can
+rotate credentials and verify the retained restrictions safely. `status` and `mycli doctor --verbose`
+show bounded typed codes; native helper output, local paths, and stacks are not printed by the CLI.
 
 ## Verification
 
@@ -67,4 +86,11 @@ npm run smoke:package
 ```
 
 CI covers Node 22.19 and Node 24 on Windows and separately compiles/tests the sandbox protocol,
-restricted-token primitives, filesystem policy, and network policy.
+restricted-token primitives, filesystem policy, and network policy. Release compatibility uses the
+stable `windows-2022` image, installs the packed candidate, and uploads a sanitized structural
+evidence file. It never records local paths, commands, credentials, provider content, or native
+helper stderr.
+
+For a package upgrade or downgrade, stop all mycli windows first, back up `%USERPROFILE%\.mycli`,
+and follow [upgrading.md](upgrading.md). Sandbox machine state is not part of the npm or
+configuration rollback; run `mycli sandbox status` after changing versions.

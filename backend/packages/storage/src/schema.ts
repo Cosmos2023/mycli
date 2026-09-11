@@ -2,6 +2,8 @@ export const SCHEMA_VERSION = 9;
 export const SCHEMA_V10_VERSION = 10;
 export const SCHEMA_V11_VERSION = 11;
 export const SCHEMA_V12_VERSION = 12;
+export const SCHEMA_V13_VERSION = 13;
+export const SCHEMA_V14_VERSION = 14;
 
 export const SCHEMA_V2_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -935,3 +937,49 @@ export const SCHEMA_V12_SQL = `
 ${SCHEMA_V11_SQL}
 ${SCHEMA_V12_PROVIDER_LEDGER_SQL}
 `;
+
+export const SCHEMA_V13_PROVIDER_ATTEMPTS_SQL = `
+CREATE TABLE provider_retry_chains (
+    request_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    FOREIGN KEY (request_id) REFERENCES provider_request_manifests(request_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+CREATE INDEX idx_provider_retry_chains_session_turn
+ON provider_retry_chains(session_id, turn_id, request_id);
+CREATE TABLE provider_attempt_events (
+    global_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    request_id TEXT NOT NULL,
+    sequence_no INTEGER NOT NULL CHECK (sequence_no BETWEEN 1 AND 1000),
+    attempt_no INTEGER NOT NULL CHECK (attempt_no BETWEEN 1 AND 201),
+    state TEXT NOT NULL CHECK (state IN (
+        'scheduled', 'started', 'failed', 'completed', 'recovered', 'exhausted', 'cancelled', 'unknown'
+    )),
+    record_json TEXT NOT NULL,
+    UNIQUE (request_id, sequence_no),
+    FOREIGN KEY (request_id) REFERENCES provider_retry_chains(request_id)
+);
+CREATE TRIGGER provider_retry_chains_no_update
+BEFORE UPDATE ON provider_retry_chains BEGIN
+    SELECT RAISE(ABORT, 'provider_retry_chains are immutable');
+END;
+CREATE TRIGGER provider_retry_chains_no_delete
+BEFORE DELETE ON provider_retry_chains BEGIN
+    SELECT RAISE(ABORT, 'provider_retry_chains are append-only');
+END;
+CREATE TRIGGER provider_attempt_events_no_update
+BEFORE UPDATE ON provider_attempt_events BEGIN
+    SELECT RAISE(ABORT, 'provider_attempt_events are immutable');
+END;
+CREATE TRIGGER provider_attempt_events_no_delete
+BEFORE DELETE ON provider_attempt_events BEGIN
+    SELECT RAISE(ABORT, 'provider_attempt_events are append-only');
+END;
+`;
+
+export const SCHEMA_V13_SQL = `${SCHEMA_V12_SQL}\n${SCHEMA_V13_PROVIDER_ATTEMPTS_SQL}`;

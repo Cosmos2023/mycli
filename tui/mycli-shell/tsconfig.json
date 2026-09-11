@@ -1,8 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
-  "include": ["src/**/*.ts", "test/**/*.test.ts"],
-  "exclude": ["src/imported-ui/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.test.ts"]
 }

@@ -9,13 +9,20 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
 	discoverHookConfig,
 	HookAllowlistStore,
 } from "@mycli/integrations";
 import { openRuntimeSessionStore } from "@mycli/storage";
-import { startNodeBackend, type NodeBackend } from "../src/node-runtime/node-backend.ts";
+import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import {
+	responsesAuthorityText,
+	responsesTextEvents as responsesFinal,
+	responsesToolEvents as responsesTool,
+} from "./support/responses-sse.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -136,6 +143,7 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 	assert.ok(address && typeof address === "object");
 	const secret = "test-m7-live-secret";
 
+	// Keep context compaction outside this scripted extension workflow.
 	const result = await runSmoke(workspace, {
 		...process.env,
 		HOME: home,
@@ -144,6 +152,8 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 		MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
 		MYCLI_PROVIDER: "openai",
 		MYCLI_MODEL: "gpt-test",
+		MYCLI_MAX_PROMPT_TOKENS: "128000",
+		MYCLI_COMPACTION_TOKEN_LIMIT: "128000",
 	}, "responses");
 
 	assert.equal(result.code, 0, result.stdout);
@@ -179,6 +189,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 		`env = { MCP_PID_FILE = ${JSON.stringify(mcpPidFile)} }`,
 		"timeout_seconds = 10",
 	].join("\n"), "utf8");
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	const requests: JsonObject[] = [];
 	const server = createServer((request, response) => {
 		let raw = "";
@@ -212,7 +223,7 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
-			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_CACHE_RETENTION: "none",
 			MYCLI_MEMORY_ENABLED: "false",
 			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
 		},
@@ -251,6 +262,10 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 	assert.equal(requests.length, 2);
 	assert.equal(providerToolNames(requests[0]!).includes("mcp_local_echo"), false);
 	assert.equal(providerToolNames(requests[1]!).includes("mcp_local_echo"), true);
+	const discoveryTool = (requests[0]!.tools as JsonObject[]).find((tool) => tool.name === "tool_search");
+	assert.match(String(discoveryTool?.description), /"mcp:local": "Echo text and read fixture resources\."/u);
+	assert.match(String(discoveryTool?.description), /even when the user has not named the MCP server or plugin/u);
+	assert.doesNotMatch(String(discoveryTool?.description), /MCP_PID_FILE|mcp\.pid|mcp-stdio-server/u);
 	assert.deepEqual(
 		events(messages, "tool.complete").map((message) => (
 			isObject(message.params) ? message.params.name : undefined
@@ -261,6 +276,104 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 	assert.equal(existsSync(mcpPidFile), true);
 	await shutdown();
 	await eventually(() => !existsSync(mcpPidFile));
+});
+
+test("workspace trust starts and revocation stops project MCP and plugin hosts", {
+	timeout: 15_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-trust-reload-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const hookMarker = join(workspace, "hook-ran");
+	const mcpPidFile = join(workspace, "mcp.pid");
+	const pluginPidFile = join(workspace, ".mycli", "plugins", "good", "plugin.pid");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	await writeExtensionFixtures({
+		home,
+		workspace,
+		hookMarker,
+		mcpPidFile,
+		pluginPidFile,
+	});
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "m7-trust-reload", "--model", "gpt-test"],
+		env: {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			MYCLI_API_KEY: "test-m7-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+			PLUGIN_PID_FILE: pluginPidFile,
+		},
+	});
+	let closed = false;
+	const shutdown = async (): Promise<void> => {
+		if (closed) return;
+		closed = true;
+		send(backend, "shutdown-trust-reload", "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	};
+	t.after(shutdown);
+	const messages: JsonObject[] = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	assert.equal(existsSync(mcpPidFile), false);
+	assert.equal(existsSync(pluginPidFile), false);
+
+	const untrustedManifest = await request(
+		backend,
+		messages,
+		"manifest-before-trust",
+		"extension.manifest",
+		{},
+	);
+	assert.deepEqual(extensionToolNames(untrustedManifest).filter((name) => (
+		name === "mcp_local_echo" || name === "plugin_good_echo"
+	)), []);
+
+	await request(backend, messages, "trust-project-hosts", "workspace.trust.set", { state: "trusted" });
+	await waitFor(() => existsSync(mcpPidFile) && existsSync(pluginPidFile), 8_000);
+	let trustedManifest: JsonObject | undefined;
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		trustedManifest = await request(
+			backend,
+			messages,
+			`manifest-after-trust-${attempt}`,
+			"extension.manifest",
+			{},
+		);
+		const names = extensionToolNames(trustedManifest);
+		if (names.includes("mcp_local_echo") && names.includes("plugin_good_echo")) break;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	assert.ok(trustedManifest);
+	assert.equal(extensionToolNames(trustedManifest).includes("mcp_local_echo"), true);
+	assert.equal(extensionToolNames(trustedManifest).includes("plugin_good_echo"), true);
+	assert.equal(existsSync(mcpPidFile), true);
+	assert.equal(existsSync(pluginPidFile), true);
+
+	await request(backend, messages, "revoke-project-hosts", "workspace.trust.set", { state: "untrusted" });
+	const revokedManifest = await request(
+		backend,
+		messages,
+		"manifest-after-revoke",
+		"extension.manifest",
+		{},
+	);
+	assert.deepEqual(extensionToolNames(revokedManifest).filter((name) => (
+		name === "mcp_local_echo" || name === "plugin_good_echo"
+	)), []);
+	await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
+	await shutdown();
 });
 
 test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
@@ -281,6 +394,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		mcpPidFile,
 		pluginPidFile,
 	});
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	const hookDiscovery = await discoverHookConfig({ homeDir: home, workspaceRoot: workspace });
 	assert.equal(hookDiscovery.hooks.length, 1);
 	await new HookAllowlistStore({ homeDir: home }).approve(hookDiscovery.hooks[0]!);
@@ -330,11 +444,17 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
+	const cleanup: { shutdown?: () => Promise<void> } = {};
 	t.after(async () => {
-		await new Promise<void>((resolve, reject) => {
-			server.close((error) => error ? reject(error) : resolve());
-		});
-		await rm(root, { recursive: true, force: true });
+		try {
+			await cleanup.shutdown?.();
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => error ? reject(error) : resolve());
+			});
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	const backend = await startNodeBackend({
@@ -353,8 +473,10 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
-			MYCLI_PROMPT_CACHE_KEY_ENABLED: "false",
+			MYCLI_CACHE_RETENTION: "none",
 			MYCLI_MEMORY_ENABLED: "false",
+			MYCLI_MAX_PROMPT_TOKENS: "128000",
+			MYCLI_COMPACTION_TOKEN_LIMIT: "128000",
 			COLORTERM: "",
 			PLUGIN_PID_FILE: pluginPidFile,
 		},
@@ -366,7 +488,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		send(backend, "shutdown", "shutdown", {});
 		assert.equal(await backend.completion, 0);
 	};
-	t.after(shutdown);
+	cleanup.shutdown = shutdown;
 	const messages: JsonObject[] = [];
 	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
@@ -438,6 +560,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			"spawn_agent",
 			"wait_agent",
 		],
+		JSON.stringify(extensionDiagnostics(requests, messages)),
 	);
 	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), false);
 	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), false);
@@ -545,36 +668,8 @@ async function writeExtensionFixtures(options: {
 	assert.equal(options.pluginPidFile, join(pluginRoot, "plugin.pid"));
 }
 
-function responsesTool(callId: string, name: string, argumentsValue: JsonObject): readonly JsonObject[] {
-	return [
-		{
-			type: "response.output_item.done",
-			item: {
-				type: "function_call",
-				call_id: callId,
-				name,
-				arguments: JSON.stringify(argumentsValue),
-			},
-		},
-		{ type: "response.completed", response: { id: `resp-${callId}` } },
-	];
-}
-
-function responsesFinal(text: string, id: string): readonly JsonObject[] {
-	return [
-		{ type: "response.output_text.delta", delta: text },
-		{ type: "response.completed", response: { id } },
-	];
-}
-
 function isSubagentRequest(payload: JsonObject): boolean {
-	if (!Array.isArray(payload.input)) return false;
-	return payload.input.some((item) => (
-		isObject(item)
-		&& item.role === "developer"
-		&& typeof item.content === "string"
-		&& item.content.includes("<subagent_context>")
-	));
+	return responsesAuthorityText(payload).includes("<subagent_context>");
 }
 
 function writeSse(response: ServerResponse, items: readonly JsonObject[]): void {

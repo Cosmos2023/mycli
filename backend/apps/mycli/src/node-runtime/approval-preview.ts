@@ -7,6 +7,9 @@ export function approvalPreviewDetails(
 	value: ApprovalPreviewDetails,
 ): ApprovalPreviewDetails {
 	return {
+		...(value.commandPreview !== undefined ? { commandPreview: value.commandPreview } : {}),
+		...(value.commandTruncated !== undefined ? { commandTruncated: value.commandTruncated } : {}),
+		...(value.justification !== undefined ? { justification: value.justification } : {}),
 		...(value.contentPreview !== undefined ? { contentPreview: value.contentPreview } : {}),
 		...(value.contentLineCount !== undefined ? { contentLineCount: value.contentLineCount } : {}),
 		...(value.contentChars !== undefined ? { contentChars: value.contentChars } : {}),
@@ -21,6 +24,9 @@ export function approvalPreviewPayload(
 	value: ApprovalPreviewDetails,
 ): Readonly<Record<string, string | number | boolean>> {
 	return {
+		...(value.commandPreview !== undefined ? { command_preview: value.commandPreview } : {}),
+		...(value.commandTruncated !== undefined ? { command_truncated: value.commandTruncated } : {}),
+		...(value.justification !== undefined ? { justification: value.justification } : {}),
 		...(value.contentPreview !== undefined ? { content_preview: value.contentPreview } : {}),
 		...(value.contentLineCount !== undefined ? { content_line_count: value.contentLineCount } : {}),
 		...(value.contentChars !== undefined ? { content_chars: value.contentChars } : {}),

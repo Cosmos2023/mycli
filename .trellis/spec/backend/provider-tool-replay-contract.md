@@ -14,6 +14,8 @@
 - Shared limit: `TOOL_RESULT_OUTPUT_MAX_CHARS = 8_000` from `@mycli/core`.
 - Shell default model-output limit: `DEFAULT_SHELL_MODEL_OUTPUT_MAX_CHARS = 2_000` and
   `DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS = 500` from `@mycli/tools`.
+- Shell model-output maximum: `SHELL_MODEL_OUTPUT_MAX_TOKENS = 2_000`, derived from the
+  shared 8,000-character limit using the existing four-characters-per-token estimate.
 - Execution boundary: `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
 - Persistence boundary: `SQLiteSessionStore.appendToolResult(input) -> void`.
 - Terminal failure: `SQLiteSessionStore.failTurn(input) -> RuntimeTurnRecord`.
@@ -33,8 +35,10 @@
   persistence contract. `SQLiteSessionStore.appendToolResult` rejects output above the shared limit
   as defense in depth.
 - `Shell`, `Bash`, `WriteStdin`, `ShellOutput`, and `BashOutput` use the shared Shell default of
-  2,000 model-visible characters per call. A requested `max_output_tokens` may lower that budget but
-  cannot raise it above the tool instance's configured maximum. Multiple incremental results remain
+  2,000 model-visible characters per call. `Shell` and `WriteStdin` accept a requested
+  `max_output_tokens` above or below the default, bounded by both the tool instance's configured
+  maximum and the shared persistence maximum. Omitted budgets use the default or a lower
+  configured maximum. Multiple incremental results remain
   separate replay items until compaction; there is no process-wide cumulative output budget.
 - Calls and results are persisted in provider order. Each persisted call id has at most one result,
   and a result must match the pending call id and tool name.
@@ -83,6 +87,7 @@
 | --- | --- |
 | Adapter output exceeds 8,000 characters | Truncate in `ToolRouter` and record omitted count |
 | Default Shell or WriteStdin model output exceeds 2,000 characters | Preserve bounded head/tail output and truncation metadata within 2,000 characters |
+| Shell or WriteStdin requests a larger output budget | Honor it up to 2,000 estimated tokens and any lower runtime maximum; preserve head/tail output before the shared router limit |
 | Oversized result reaches storage directly | Reject with bounded `persistence_error` |
 | Result call id or tool name differs from next pending call | Reject without changing call order |
 | Provider calls a name outside the frozen exposure | Persist `unsupported_tool` and continue without adapter execution |
@@ -121,8 +126,10 @@
 ### 6. Tests Required
 
 - Tool-router unit test asserts exact 8,000-character output, truncation flag, and omitted count.
-- Shell and WriteStdin unit tests assert their default 2,000-character result cannot be raised by a
-  larger model-requested `max_output_tokens` value.
+- Shell and WriteStdin unit tests distinguish default, smaller, larger, and excessive requested
+  budgets, including runtime overrides above and below the default and the persistence maximum.
+- App integration verifies that a larger Shell result survives Worker execution, router bounding,
+  storage, the next provider request, and session resume without losing its retained tail.
 - Storage test rejects a directly supplied oversized result.
 - Storage test asserts `failTurn` closes every pending call before later replay.
 - Replay regression asserts terminal legacy calls receive exactly one synthetic result while active
@@ -239,8 +246,9 @@ emit({
 - Responses wire field: top-level `parallel_tool_calls: true`.
 - Execution boundary:
   `ToolRouter.execute(call, options) -> Promise<ToolExecutionResult>`.
-- Scheduling boundary: `NodeTurnRuntime` partitions one provider tool-call batch into consecutive
-  parallel-safe phases separated by single-call barriers.
+- Scheduling boundary: `ToolBatchCoordinator.process(input)` partitions one provider tool-call
+  batch into consecutive parallel-safe phases separated by single-call barriers;
+  `NodeTurnRuntime` delegates only after the complete batch is durable.
 
 ### 3. Contracts
 
@@ -253,9 +261,10 @@ emit({
   capability metadata, unknown tools, clarification tools, planning tools, file mutations, and
   unclassified extensions are sequential. `Shell` opts into parallel phases; its approval and
   sandbox decision is still evaluated independently for every call.
-- Pending safe calls flush before a sequential call, approval suspension, denied call, or hook
-  barrier. The barrier runs alone before collection of the next safe phase.
-- Calls in one safe phase may execute concurrently, but lifecycle completion, result persistence,
+- Pending safe calls flush before a sequential call, legacy approval suspension, denied call, or
+  hook barrier. Compatible per-call approvals stay in the phase and independently await decisions;
+  see [Runtime Composition Contract](runtime-composition-contract.md).
+- Calls in one safe phase may execute concurrently and emit live completion immediately, but result persistence,
   post-tool hooks, checkpoints, generated context, and provider replay are applied in the original
   provider order.
 - Every parallel call carries only its own exact-call `sandboxOverrideApproved` decision. A hook
@@ -279,7 +288,8 @@ emit({
 | Consecutive manifest-approved calls | Start concurrently and apply results in provider order |
 | Consecutive allowed Shell calls | Start concurrently with independent execution options |
 | Sequential call after safe calls | Flush the safe phase, then run the barrier alone |
-| Approval request after safe calls | Flush and persist prior results before durable suspension |
+| Parallel approval request beside safe calls | Register the phase durably and await each call's own decision |
+| Sequential approval request after safe calls | Flush and persist prior results before durable suspension |
 | Hook changes a safe call to a sequential route | Reclassify the modified call as a barrier |
 | Missing or throwing capability query | Fail closed to sequential execution |
 | Parallel call unexpectedly requests clarification | Fail with bounded `tool_protocol_error` |
@@ -422,31 +432,27 @@ for (const phase of manifestGatedProviderOrderPhases(calls)) {
 - Provider-grouped `models.json` may set `capabilities.web_search` at the provider level and override
   it per model. Enabling hosted search with a non-Responses protocol is a configuration error.
 - A live Responses request adds `{ type: "web_search", external_web_access: true }` to the same
-  stable tool array as local function tools. Disabled requests do not expose the hosted tool.
-- `response.output_item.added` starts a readable search lifecycle. The matching completed
-  `web_search_call` supplies its bounded id and action. Redundant web-search status frames and
-  output-text annotation frames must not terminate the stream or create duplicate rows.
-- The running search cell owns the user-visible `Searching the web` label. The generic turn activity
-  indicator remains generic and must not repeat that label as a header or nested detail. A later
-  search call uses its own call id and may appear after an earlier completed search.
-- Completed web-search calls are retained in the same bounded Responses native replay state as
-  encrypted reasoning and replayed before the matching assistant output. Legacy
-  `responsesReasoningItems` remains readable.
-- Persist only bounded call identity and the `search`, `open_page`, or `find_in_page` action needed
-  for replay and readable presentation. Do not persist source bodies, raw search results, or page
-  content in transcript display metadata.
-- Stream retry removes every transient search row from the incomplete attempt. Terminal failure or
-  interruption removes unfinished rows, retains completed rows, and marks those rows durable.
-- A completed search is persisted as `display_activity:web_search`; the readable projector must
-  preserve its call id, status, bounded action metadata, and text so live and resumed TUI rows match.
+- The provider registry always selects `PiAiProvider`; no direct OpenAI hosted-search transport or
+  SDK dependency exists in mycli.
+- The pinned pi-ai version consumes keepalive and `response.web_search_call.*` frames without publishing them in
+  its public assistant event union. These frames must not terminate the request. The final assistant
+  text, usage, response identity, and completion continue through the canonical provider boundary.
+- New pi-ai turns do not fabricate `web_search_started`, `web_search_completed`, or
+  `display_activity:web_search` rows. Pi-ai replay drops native `web_search_call` items and retains
+  only supported assistant/reasoning/tool-call state, so continuation falls back to canonical
+  assistant content for search results.
+- Historical canonical search activity produced by the retired compatibility transport remains
+  readable. It does not cause a new direct transport to be selected during continuation.
+- Provider-hosted search remains outside local approval, sandbox, `ToolRouter`, and local tool-call
+  replay because it is an upstream Responses tool rather than a mycli function tool.
 
 ### 3. Tests Required
 
 - Config tests cover OpenAI live defaults, non-OpenAI disabled defaults, provider inheritance,
   model override, invalid capability types, and rejection on non-Responses protocols.
-- Responses tests cover enabled/disabled request serialization, legal auxiliary stream frames,
-  bounded action mapping, omission of source bodies, native replay, and call-id limits.
-- Worker/runtime tests cover request and event round trips, returned search calls, readable
-  persistence, and provider-state continuation replay.
-- Storage, gateway, and TUI tests cover live start/completion, retry reset, terminal cleanup,
-  non-duplicated turn activity, width-safe rendering, and equivalent resumed projection.
+- Provider tests cover enabled/disabled request serialization, rejection outside Responses, one
+  pi-ai request, heartbeat and native search lifecycle tolerance, final text, and completion.
+- Replay tests prove native `web_search_call` items are discarded while supported Responses
+  reasoning and canonical assistant content remain usable.
+- Storage, gateway, and TUI retain backward-compatible projection tests for historical persisted
+  search activity; new pi-ai requests are not required to emit progress rows.

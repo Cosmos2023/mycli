@@ -16,6 +16,7 @@ export interface SelectItem {
 }
 
 export interface SelectListTheme {
+	readonly cursor?: string;
 	selectedPrefix: (text: string) => string;
 	selectedText: (text: string) => string;
 	description: (text: string) => string;
@@ -143,7 +144,7 @@ export class SelectList implements Component {
 		descriptionSingleLine: string | undefined,
 		primaryColumnWidth: number,
 	): string {
-		const prefix = isSelected ? "→ " : "  ";
+		const prefix = isSelected ? (this.theme.cursor ?? "→ ") : "  ";
 		const prefixWidth = visibleWidth(prefix);
 
 		if (descriptionSingleLine && width > 40) {

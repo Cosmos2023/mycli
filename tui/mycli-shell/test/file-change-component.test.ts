@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { renderUnifiedDiff } from "../src/components/diff-renderer.ts";
-import { FileChangeComponent } from "../src/components/file-change.ts";
-import { highlightDiffCode } from "../src/components/syntax-highlight.ts";
+import { renderUnifiedDiff } from "../src/components/transcript/diff-renderer.ts";
+import { FileChangeComponent } from "../src/components/transcript/file-change.ts";
+import { highlightDiffCode } from "../src/components/shared/syntax-highlight.ts";
 import type { MycliShellFileChange } from "../src/model.ts";
+import { setUiGlyphMode, uiGlyphMode } from "../src/theme/terminal-style.ts";
+import { theme } from "../src/theme/theme.ts";
+import { TUI } from "../src/tui-core/tui.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
+import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
 
 function stripAnsi(text: string): string {
@@ -17,9 +22,14 @@ function stripAnsi(text: string): string {
 
 function renderThemeFixture(env: NodeJS.ProcessEnv): string {
 	const fixture = fileURLToPath(new URL("./fixtures/render-file-change-theme.ts", import.meta.url));
+	const childEnv = { ...process.env };
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) delete childEnv[key];
+		else childEnv[key] = value;
+	}
 	const result = spawnSync(process.execPath, ["--import", "tsx", fixture], {
 		encoding: "utf8",
-		env: { ...process.env, ...env },
+		env: childEnv,
 	});
 	assert.equal(result.status, 0, result.stderr);
 	return result.stdout;
@@ -29,6 +39,19 @@ function renderThemeFixture(env: NodeJS.ProcessEnv): string {
 function backgroundSequenceFor(text: string, needle: string): string {
 	const line = text.split("\n").find((candidate) => stripAnsi(candidate).includes(needle)) ?? "";
 	return line.match(/\x1b\[(?:4[0-7]|10[0-7]|48;(?:2|5);[^m]+)m/)?.[0] ?? "";
+}
+
+
+function assertFullRowBackground(terminal: HeadlessTerminal, row: number, colored: boolean): void {
+	const firstCell = terminal.visibleCell(row, 0);
+	assert.ok(firstCell);
+	assert.equal(firstCell.isBgDefault(), !colored);
+	for (let column = 0; column < terminal.columns; column++) {
+		const cell = terminal.visibleCell(row, column);
+		assert.ok(cell);
+		assert.equal(cell.getBgColorMode(), firstCell.getBgColorMode(), `row ${row}, column ${column}`);
+		assert.equal(cell.getBgColor(), firstCell.getBgColor(), `row ${row}, column ${column}`);
+	}
 }
 
 
@@ -59,13 +82,12 @@ function renderFileChange(
 	width = 100,
 	term = "xterm-256color",
 ): string[] {
-	const previousTerm = process.env.TERM;
-	process.env.TERM = term;
+	const previousGlyphMode = uiGlyphMode();
+	setUiGlyphMode(term === "dumb" ? "ascii" : "unicode");
 	try {
 		return new FileChangeComponent(fileChange).render(width);
 	} finally {
-		if (previousTerm === undefined) delete process.env.TERM;
-		else process.env.TERM = previousTerm;
+		setUiGlyphMode(previousGlyphMode);
 	}
 }
 
@@ -131,11 +153,107 @@ test("malformed diff falls back to bounded preformatted rows", () => {
 });
 
 
+test("malformed diff expands tabs before wrapping fallback rows", () => {
+	const lines = renderUnifiedDiff("\told\tvalue\n+\tnew", { width: 12, indent: 2 }).map(stripAnsi);
+
+	assert.deepEqual(lines, ["     old", "  value", "  +   new"]);
+});
+
+
+test("diff backgrounds cover tabbed code, blank rows and wrapped continuations", async () => {
+	const previousTheme = theme.name();
+	const previousColorMode = theme.colorMode();
+	try {
+		for (const name of ["dark", "light"] as const) {
+			theme.setName(name);
+			for (const mode of ["truecolor", "256", "16", "none"] as const) {
+				theme.setColorMode(mode);
+				for (const width of [18, 22, 80]) {
+					for (const sign of ["-", "+"]) {
+						const hunk = sign === "-" ? "@@ -1,3 +0,0 @@" : "@@ -0,0 +1,3 @@";
+						const lines = renderUnifiedDiff(
+							`${hunk}\n${sign}\tconst value\t= \"代码 with spaces\";\t\n${sign}\t\t\n${sign}\n`,
+							{ width, indent: 4, language: "ts" },
+						);
+						const terminal = new HeadlessTerminal({ columns: width, rows: lines.length + 2 });
+						try {
+							terminal.write([...lines, "after diff"].join("\r\n"));
+							await terminal.flush();
+							for (let row = 0; row < lines.length; row++) {
+								assertFullRowBackground(terminal, row, mode !== "none");
+								assert.equal(visibleWidth(lines[row]!), width);
+							}
+							assert.deepEqual(
+								terminal.visibleLines().slice(0, lines.length + 1).map((line) => line.trimEnd()),
+								[...lines.map((line) => stripAnsi(line).trimEnd()), "after diff"],
+							);
+							assertFullRowBackground(terminal, lines.length, false);
+							if (mode === "none") assert.doesNotMatch(lines.join("\n"), /\x1b\[/);
+						} finally {
+							terminal.dispose();
+						}
+					}
+				}
+			}
+		}
+	} finally {
+		theme.setName(previousTheme);
+		theme.setColorMode(previousColorMode);
+	}
+});
+
+
+test("file change backgrounds stay continuous through TUI updates and resize", async () => {
+	const previousColorMode = theme.colorMode();
+	theme.setColorMode("truecolor");
+	try {
+		for (const nativeScrollback of [false, true]) {
+			const terminal = new HeadlessTerminal({ columns: 80, rows: 24, nativeScrollback });
+			const change = editedFileChange();
+			const component = new FileChangeComponent(change);
+			const ui = new TUI(terminal);
+			ui.addChild(component);
+			ui.start();
+			try {
+				for (const [width, value] of [[80, "old"], [80, "a longer value with spaces"], [22, "new"]] as const) {
+					component.updateFileChange({
+						...change,
+						files: [{ ...change.files[0]!, diff: `@@ -24 +24 @@\n-\tvalue\t= \"${value}\"\n+\tvalue\t= \"replacement\"\n` }],
+					});
+					if (terminal.columns !== width) terminal.resize(width, terminal.rows);
+					ui.requestRender();
+					await delay(25);
+					await terminal.flush();
+					const expected = component.render(width);
+					const visibleLines = terminal.visibleLines();
+					const frameStart = visibleLines.findLastIndex((line) => line.includes("Edited")) - 1;
+					assert.ok(frameStart >= 0);
+					for (let row = 2; row < expected.length; row++) {
+						assertFullRowBackground(terminal, frameStart + row, true);
+					}
+					assert.deepEqual(
+						visibleLines.slice(frameStart, frameStart + expected.length).map((line) => line.trimEnd()),
+						expected.map((line) => stripAnsi(line).trimEnd()),
+					);
+				}
+			} finally {
+				ui.stop();
+				await terminal.flush();
+				terminal.dispose();
+			}
+		}
+	} finally {
+		theme.setColorMode(previousColorMode);
+	}
+});
+
+
 test("added and removed rows use distinct full-line backgrounds", () => {
 	const dark = renderThemeFixture({
 		MYCLI_TUI_THEME: "dark",
 		MYCLI_TUI_COLOR: "always",
 		COLORTERM: "truecolor",
+		NO_COLOR: undefined,
 	});
 	const removedLine = dark
 		.split("\n")
@@ -158,6 +276,7 @@ test("light theme keeps syntax and context code readable", () => {
 		MYCLI_TUI_THEME: "light",
 		MYCLI_TUI_COLOR: "always",
 		COLORTERM: "truecolor",
+		NO_COLOR: undefined,
 	});
 	const contextLine = light
 		.split("\n")
@@ -173,7 +292,7 @@ test("light theme keeps syntax and context code readable", () => {
 test("NO_COLOR preserves labels line numbers and diff signs", () => {
 	const plain = renderThemeFixture({
 		NO_COLOR: "1",
-		MYCLI_TUI_COLOR: "never",
+		MYCLI_TUI_COLOR: "always",
 		COLORTERM: "",
 	});
 
@@ -189,6 +308,7 @@ test("256-color and 16-color backgrounds avoid truecolor escapes", () => {
 		COLORTERM: "",
 		TERM: "xterm-256color",
 		MYCLI_TUI_COLOR: "always",
+		NO_COLOR: undefined,
 	});
 	assert.match(color256, /\x1b\[48;5;/);
 	assert.doesNotMatch(color256, /\x1b\[48;2;/);
@@ -197,6 +317,7 @@ test("256-color and 16-color backgrounds avoid truecolor escapes", () => {
 		COLORTERM: "",
 		TERM: "xterm",
 		MYCLI_TUI_COLOR: "always",
+		NO_COLOR: undefined,
 	});
 	assert.match(color16, /\x1b\[(?:4[0-7]|10[0-7])m/);
 	assert.doesNotMatch(color16, /\x1b\[(?:38|48);(?:2|5);/);

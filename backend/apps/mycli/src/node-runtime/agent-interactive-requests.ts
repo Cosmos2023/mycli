@@ -15,6 +15,8 @@ import { approvalPreviewPayload } from "./approval-preview.ts";
 type JsonObject = Record<string, unknown>;
 
 export interface AgentInteractiveRuntime {
+	hasActiveApproval?(decisionId: string): boolean;
+	respondActiveApproval?(input: ResolveApprovalInput): void;
 	resolveApproval(
 		input: ResolveApprovalInput,
 		emit: (event: RuntimeEvent) => void,
@@ -37,7 +39,7 @@ export interface AgentInteractiveNotification {
 	readonly params: JsonObject;
 }
 
-export interface AgentInteractiveRequestSnapshot {
+interface AgentInteractiveRequestSnapshot {
 	readonly sessionId: string;
 	readonly generation: number;
 	readonly agentPath: string;
@@ -56,7 +58,7 @@ export interface AgentInteractiveRequestGateway {
 	respondClarification(params: JsonObject): JsonObject | undefined;
 }
 
-export interface OpenAgentInteractiveTurnInput {
+interface OpenAgentInteractiveTurnInput {
 	readonly sessionId: string;
 	readonly agentPath: string;
 	readonly workerName: string;
@@ -66,7 +68,7 @@ export interface OpenAgentInteractiveTurnInput {
 	readonly emitRuntime: (event: RuntimeEvent) => void;
 }
 
-export interface AgentInteractiveTurn {
+interface AgentInteractiveTurn {
 	onRuntimeEvent(event: RuntimeEvent): void;
 	waitForTerminal(result: RuntimeTurnRecord): Promise<RuntimeTurnRecord>;
 	fail(error: unknown): void;
@@ -123,6 +125,7 @@ export class AgentInteractiveRequestBroker implements AgentInteractiveRequestGat
 		if (!isApprovalChoice(choice) || !pending.event.options.includes(choice)) {
 			throw requestFailure("invalid_params", "Unsupported approval choice.");
 		}
+		const answeredActive = pending.turn.respondActiveApproval({ decisionId, choice });
 		this.#consume(pending, {
 			method: "approval.respond",
 			params: {
@@ -133,7 +136,7 @@ export class AgentInteractiveRequestBroker implements AgentInteractiveRequestGat
 				choice,
 			},
 		});
-		pending.turn.resumeApproval({ decisionId, choice });
+		if (!answeredActive) pending.turn.resumeApproval({ decisionId, choice });
 		return {
 			accepted: true,
 			decision_id: pending.event.decisionId,
@@ -305,6 +308,15 @@ class InteractiveTurn implements AgentInteractiveTurn {
 		);
 	}
 
+	respondActiveApproval(input: ResolveApprovalInput): boolean {
+		const runtime = this.#input.runtime;
+		if (!runtime.hasActiveApproval?.(input.decisionId) || !runtime.respondActiveApproval) return false;
+		runtime.respondActiveApproval(input);
+		this.#waiting = false;
+		this.#input.emitLifecycle({ type: "resumed", summary: "Child approval resolved" });
+		return true;
+	}
+
 	resumeClarification(input: ResolveClarificationInput): void {
 		this.#resume(
 			() => this.#input.runtime.resolveClarification(input, (event) => this.onRuntimeEvent(event), {
@@ -438,7 +450,7 @@ function pendingSnapshot(pending: PendingRequest): AgentInteractiveRequestSnapsh
 	});
 }
 
-function approvalChoiceLabel(choice: ApprovalChoice): string {
+export function approvalChoiceLabel(choice: ApprovalChoice): string {
 	return {
 		approve_once: "Approve once",
 		reject: "Reject",

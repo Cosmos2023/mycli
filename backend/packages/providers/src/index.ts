@@ -3,32 +3,39 @@ export {
 	ProviderFailure,
 	providerFailurePublicMessage,
 	providerFailureToRuntimeFailure,
+	providerFailureReason,
 } from "./errors.ts";
-export type { ProviderFailureOptions } from "./errors.ts";
+export type { ProviderFailureOptions, ProviderFailureProjection } from "./errors.ts";
 export type {
-	AnthropicMessagesClient,
-	ChatCompletionsClient,
 	ModelProvider,
 	ProviderStreamOptions,
-	ResponsesClient,
+	ProviderStreamPhase,
 } from "./model-provider.ts";
-export { AnthropicProvider } from "./anthropic-provider.ts";
-export type { AnthropicProviderOptions } from "./anthropic-provider.ts";
-export { ChatProvider } from "./chat-provider.ts";
-export type { ChatProviderOptions } from "./chat-provider.ts";
-export { OpenAIProviderRegistry } from "./openai-provider-registry.ts";
+export { ProviderRegistry } from "./registry/provider-registry.ts";
+export { resolveProviderNativeTransport, captureProviderNativeEnvironment } from "./registry/provider-native-transport.ts";
+export { loginNativeProvider, inspectNativeProviderAuth } from "./auth/native-auth-management.ts";
+export type { NativeAuthTarget, NativeAuthStatus, NativeAuthPrompt, NativeAuthEvent, NativeAuthInteraction } from "./auth/native-auth-management.ts";
+export type { ResolveProviderNativeTransportInput } from "./registry/provider-native-transport.ts";
 export type {
-	OpenAIClientFacade,
-	OpenAIClientFactory,
-	OpenAIClientOptions,
-	OpenAIProviderRegistryOptions,
-} from "./openai-provider-registry.ts";
-export { ResponsesProvider } from "./responses-provider.ts";
-export type { ResponsesProviderOptions } from "./responses-provider.ts";
-export { ProviderRegistry } from "./provider-registry.ts";
-export type {
-	AnthropicClientFactory,
-	AnthropicClientOptions,
 	ProviderTransportConfig,
 	ProviderRegistryOptions,
-} from "./provider-registry.ts";
+} from "./registry/provider-registry.ts";
+export type {
+	ProviderDirectoryDisabledReason,
+	ProviderDirectoryEntry,
+	ProviderDirectorySnapshot,
+	ProviderDirectoryStatus,
+	ProviderInputModality,
+	PiAiCompatOverride,
+	ProviderModelDirectoryEntry,
+	ProviderRouteActivation,
+	ProviderRouteDescriptor,
+	ProviderRouteModelPolicy,
+	ProviderRouteSource,
+	ProviderRouteSupportTier,
+} from "./registry/provider-directory-types.ts";
+export { loadPiAiProviderDirectory } from "./registry/provider-directory.ts";
+export {
+	mergePiAiCompatOverrides,
+	validatePiAiCompatOverride,
+} from "./pi-ai/pi-ai-compat.ts";

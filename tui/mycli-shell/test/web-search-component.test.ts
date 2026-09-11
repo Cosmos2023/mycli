@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WebSearchComponent } from "../src/components/web-search.ts";
+import { WebSearchComponent } from "../src/components/transcript/web-search.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
 
 function stripAnsi(text: string): string {

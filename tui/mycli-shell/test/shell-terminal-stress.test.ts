@@ -150,7 +150,7 @@ test("native xterm converges after resize streaming cursor and backpressure race
 		const writes = terminal.writes.join("");
 		assert.match(screen, new RegExp(`final-${round}`, "u"));
 		assert.match(screen, new RegExp(`ready-${round}`, "u"));
-		assert.match(screen, /1 local agent · \/tasks view/u);
+		assert.match(screen, /1 local agent · \/agents view/u);
 		assert.doesNotMatch(screen, new RegExp(`round-${round}-partial`, "u"));
 		assert.doesNotMatch(writes, new RegExp(`round-${round}-partial`, "u"));
 		assert.equal(writes.match(/\x1b\[3J/gu)?.length ?? 0, 1);

@@ -1,0 +1,19 @@
+{
+  "id": "normalized-index",
+  "title": "Repair a shared normalization contract",
+  "cwd": ".",
+  "prompt": "Make the index in src/index.mjs accept keys case-insensitively, ignoring surrounding whitespace. Apply the same normalization when building and querying the index, keep the last duplicate entry, preserve false and zero values, and return null for missing entries. Update the shared normalizeKey function in src/key.mjs and preserve both exported APIs.",
+  "files": {
+    "src/key.mjs": "export function normalizeKey(key) {\n  return key.trim();\n}\n",
+    "src/index.mjs": "import { normalizeKey } from './key.mjs';\n\nexport function lookup(entries, key) {\n  const index = new Map(entries.map(([name, value]) => [normalizeKey(name), value]));\n  return index.get(key) || null;\n}\n"
+  },
+  "immutable": [],
+  "checks": [
+    { "id": "shared-normalizer", "kind": "export", "path": "src/key.mjs", "name": "normalizeKey", "args": ["  ALIce "], "expected": "alice" },
+    { "id": "query-normalization", "kind": "export", "path": "src/index.mjs", "name": "lookup", "args": [[[" Alice ", 7]], " ALICE "], "expected": 7 },
+    { "id": "last-duplicate", "kind": "export", "path": "src/index.mjs", "name": "lookup", "args": [[[" A ", 1], ["a", 2]], "A"], "expected": 2 },
+    { "id": "false-value", "kind": "export", "path": "src/index.mjs", "name": "lookup", "args": [[["a", false]], "a"], "expected": false },
+    { "id": "zero-value", "kind": "export", "path": "src/index.mjs", "name": "lookup", "args": [[["a", 0]], "a"], "expected": 0 },
+    { "id": "missing", "kind": "export", "path": "src/index.mjs", "name": "lookup", "args": [[], "missing"], "expected": null }
+  ]
+}

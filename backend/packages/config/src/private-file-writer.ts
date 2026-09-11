@@ -8,20 +8,41 @@ import {
 	rm,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 const LOCK_TIMEOUT_MS = 2_000;
 const LOCK_RETRY_MS = 10;
+const PRIVATE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 export interface AtomicPrivateFileUpdateOptions {
 	readonly directory: string;
 	readonly fileName: string;
-	readonly buildContent: (current: string | undefined) => string;
+	readonly maxCurrentBytes?: number;
+	readonly lockTimeoutMs?: number;
+	readonly signal?: AbortSignal;
+	readonly buildContent: (
+		current: string | undefined,
+	) => string | null | undefined | Promise<string | null | undefined>;
+	readonly prepareCommit?: (input: {
+		readonly current: string | undefined;
+		readonly content: string | null;
+	}) => void | Promise<void>;
 	readonly failpoint?: (name: string) => void;
 }
 
 export async function atomicPrivateFileUpdate(
 	options: AtomicPrivateFileUpdateOptions,
-): Promise<void> {
+): Promise<boolean> {
+	if (!PRIVATE_FILE_NAME.test(options.fileName)) {
+		throw new RangeError("invalid_private_file_name");
+	}
+	if (options.maxCurrentBytes !== undefined
+		&& (!Number.isSafeInteger(options.maxCurrentBytes) || options.maxCurrentBytes <= 0)) {
+		throw new RangeError("invalid_private_file_read_limit");
+	}
+	if (options.lockTimeoutMs !== undefined && (!Number.isSafeInteger(options.lockTimeoutMs)
+		|| options.lockTimeoutMs < 0 || options.lockTimeoutMs > 60_000)) throw new RangeError("invalid_private_file_lock_timeout");
+	options.signal?.throwIfAborted();
 	await mkdir(options.directory, { recursive: true, mode: 0o700 });
 	await harden(options.directory, 0o700);
 	const lockPath = join(options.directory, `.${options.fileName}.lock`);
@@ -33,20 +54,32 @@ export async function atomicPrivateFileUpdate(
 	let lock: Awaited<ReturnType<typeof open>> | undefined;
 	let temporary: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		lock = await acquireLock(lockPath);
+		lock = await acquireLock(lockPath, options.lockTimeoutMs ?? LOCK_TIMEOUT_MS, options.signal);
 		await lock.writeFile(`${process.pid}\n`, "utf8");
 		await lock.sync();
-		const current = await readOptional(targetPath);
-		const content = options.buildContent(current);
+		const current = await readOptional(targetPath, options.maxCurrentBytes);
+		const content = await options.buildContent(current);
+		options.signal?.throwIfAborted();
+		if (content === undefined || content === current) return false;
+		if (content === null) {
+			if (current === undefined) return false;
+			await options.prepareCommit?.({ current, content });
+			options.failpoint?.("before_rename");
+			await rm(targetPath);
+			await syncDirectory(options.directory);
+			return true;
+		}
 		temporary = await open(temporaryPath, "wx", 0o600);
 		await temporary.writeFile(content, "utf8");
 		await temporary.sync();
 		await temporary.close();
 		temporary = undefined;
+		await options.prepareCommit?.({ current, content });
 		options.failpoint?.("before_rename");
 		await rename(temporaryPath, targetPath);
 		await harden(targetPath, 0o600);
 		await syncDirectory(options.directory);
+		return true;
 	} finally {
 		await temporary?.close().catch(() => undefined);
 		await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -55,24 +88,46 @@ export async function atomicPrivateFileUpdate(
 	}
 }
 
-async function acquireLock(path: string): Promise<Awaited<ReturnType<typeof open>>> {
-	const deadline = Date.now() + LOCK_TIMEOUT_MS;
+async function acquireLock(path: string, timeoutMs: number, signal: AbortSignal | undefined): Promise<Awaited<ReturnType<typeof open>>> {
+	const deadline = Date.now() + timeoutMs;
 	while (true) {
+		signal?.throwIfAborted();
 		try {
 			return await open(path, "wx", 0o600);
 		} catch (error) {
 			if (!isNodeError(error, "EEXIST") || Date.now() >= deadline) throw error;
-			await delay(LOCK_RETRY_MS);
+			await delay(LOCK_RETRY_MS, undefined, { signal });
 		}
 	}
 }
 
-async function readOptional(path: string): Promise<string | undefined> {
+async function readOptional(path: string, maxBytes: number | undefined): Promise<string | undefined> {
+	if (maxBytes === undefined) {
+		try {
+			return await readFile(path, "utf8");
+		} catch (error) {
+			if (isNodeError(error, "ENOENT")) return undefined;
+			throw error;
+		}
+	}
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		return await readFile(path, "utf8");
+		handle = await open(path, "r");
+		const stats = await handle.stat();
+		if (!stats.isFile() || stats.size > maxBytes) return undefined;
+		const content = Buffer.alloc(stats.size);
+		let offset = 0;
+		while (offset < content.length) {
+			const { bytesRead } = await handle.read(content, offset, content.length - offset, offset);
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		return content.subarray(0, offset).toString("utf8");
 	} catch (error) {
 		if (isNodeError(error, "ENOENT")) return undefined;
 		throw error;
+	} finally {
+		await handle?.close().catch(() => undefined);
 	}
 }
 
@@ -98,8 +153,4 @@ async function syncDirectory(path: string): Promise<void> {
 
 function isNodeError(error: unknown, code: string): boolean {
 	return error instanceof Error && "code" in error && error.code === code;
-}
-
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

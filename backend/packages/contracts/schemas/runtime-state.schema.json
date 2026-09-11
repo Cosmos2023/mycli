@@ -67,8 +67,9 @@
         },
         "state": {
           "type": "string",
-          "enum": ["queued", "accepted", "committed"]
+          "enum": ["queued", "accepted", "claimed", "committed"]
         },
+        "claim_turn_id": {"$ref": "#/$defs/nullable_identifier"},
         "text": {
           "type": "string",
           "minLength": 1,
@@ -326,7 +327,48 @@
           "maxItems": 128,
           "items": {"type": "object"}
         },
-        "continuation": {"type": "object"}
+        "continuation": {"type": "object"},
+        "parallel_batch": {"$ref": "#/$defs/parallel_approval_batch"}
+      }
+    },
+    "canonical_tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["callId", "name", "argumentsJson"],
+      "properties": {
+        "callId": {"$ref": "#/$defs/identifier"},
+        "name": {"$ref": "#/$defs/identifier"},
+        "argumentsJson": {"type": "string", "maxLength": 1048576}
+      }
+    },
+    "parallel_approval_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call", "execution_call", "sandbox_override_approved"],
+      "properties": {
+        "call": {"$ref": "#/$defs/canonical_tool_call"},
+        "execution_call": {"$ref": "#/$defs/canonical_tool_call"},
+        "sandbox_override_approved": {"type": "boolean"},
+        "approval": {"$ref": "#/$defs/pending_decision_payload"},
+        "choice": {
+          "type": "string",
+          "enum": ["approve_once", "allow_session", "always_allow", "reject"]
+        }
+      }
+    },
+    "parallel_approval_batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batch_id", "revision", "calls"],
+      "properties": {
+        "batch_id": {"$ref": "#/$defs/identifier"},
+        "revision": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/parallel_approval_call"}
+        }
       }
     },
     "suspended_turn": {

@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
 	defaultUserRipgrepRoot,
+	resolveRipgrep,
 	ripgrepOutputPath,
 	ripgrepPlatformKey,
 } from "@mycli/tools";
 import type { GatewayTransport } from "mycli-shell-tui/gateway-transport";
 import { runCli } from "../src/cli.ts";
+import {
+	CLI_COMMAND_NAMES,
+	COMPLETION_SHELLS,
+} from "../src/management/cli-command-catalog.ts";
+import type { ManagementCommand } from "../src/management/types.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { MYCLI_VERSION, parseAppVersion } from "../src/version.ts";
 
@@ -96,6 +102,24 @@ test("help and version are local and never start the Node backend", async (t) =>
 	}
 });
 
+test("management commands receive process cancellation and remove signal hooks", async () => {
+	const entered = deferred<void>();
+	const harness = cliHarness({ argv: ["login", "--oauth", "--provider", "anthropic", "--json"],
+		management: { execute: async (_command: ManagementCommand, signal: AbortSignal) => {
+			entered.resolve();
+			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+			return { ok: false, action: "login", exitCode: 130, issues: ["interrupted"] };
+		} },
+		startNodeBackend: () => assert.fail("login must not start backend"),
+	});
+	const result = runCli(harness.options);
+	await entered.promise;
+	harness.hooks.emit("SIGINT");
+	assert.equal(await result, 130);
+	assert.equal(harness.hooks.listenerCount("SIGINT"), 0);
+	assert.equal(harness.hooks.listenerCount("SIGTERM"), 0);
+});
+
 test("app version rejects an invalid package manifest", () => {
 	assert.throws(() => parseAppVersion({}), /package_version_invalid/u);
 });
@@ -104,13 +128,47 @@ test("help advertises the provider-free management surface", async () => {
 	const harness = cliHarness({ argv: ["--help"] });
 
 	assert.equal(await runCli(harness.options), 0);
-	for (const command of ["setup", "doctor", "hooks", "plugins", "mcp"]) {
+	for (const command of CLI_COMMAND_NAMES) {
 		assert.match(harness.stdout.join(""), new RegExp(`\\b${command}\\b`));
 	}
 	assert.doesNotMatch(harness.stdout.join(""), /runtime-backend|python-sidecar/u);
+	assert.match(harness.stdout.join(""), /-p, --profile <name>/u);
 });
 
-test("CLI startup prepends vendored ripgrep before handling local commands", async (t) => {
+test("shell completion runs without TTY, management, backend, provider, or TUI startup", async (t) => {
+	for (const shell of COMPLETION_SHELLS) {
+		await t.test(shell, async () => {
+			let managementCalls = 0;
+			let backendStarts = 0;
+			let tuiImports = 0;
+			const harness = cliHarness({
+				argv: ["completion", shell],
+				stdin: { isTTY: false },
+				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+				management: {
+					execute: async () => {
+						managementCalls += 1;
+						return { ok: true, action: "unexpected" };
+					},
+				},
+				startNodeBackend: () => {
+					backendStarts += 1;
+					return fakeBackend().backend;
+				},
+				importTui: async () => { tuiImports += 1; },
+			});
+
+			assert.equal(await runCli(harness.options), 0);
+			assert.match(harness.stdout.join(""), /mycli/u);
+			assert.equal(harness.stderr.join(""), "");
+			assert.equal(managementCalls, 0);
+			assert.equal(backendStarts, 0);
+			assert.equal(tuiImports, 0);
+		});
+	}
+});
+
+test("CLI startup prepends resolved vendored ripgrep before handling local commands", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-cli-ripgrep-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const homeDir = join(root, "home");
@@ -119,11 +177,13 @@ test("CLI startup prepends vendored ripgrep before handling local commands", asy
 	await writeFile(binary, "#!/bin/sh\nexit 0\n", "utf8");
 	await chmod(binary, 0o755);
 	const env: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
+	const resolvedBinary = resolveRipgrep({ homeDir, pathValue: env.PATH });
+	assert.ok(resolvedBinary);
 	const harness = cliHarness({ argv: ["--help"], env, homeDir });
 
 	assert.equal(await runCli(harness.options), 0);
-	assert.equal(env.PATH, `${dirname(binary)}:/usr/bin`);
-	assert.equal(env.MYCLI_RIPGREP_PATH_DIR, dirname(binary));
+	assert.equal(env.PATH, `${dirname(resolvedBinary)}:/usr/bin`);
+	assert.equal(env.MYCLI_RIPGREP_PATH_DIR, dirname(resolvedBinary));
 });
 
 test("retired runtime backend flags fail before starting Node", async () => {
@@ -171,25 +231,185 @@ test("JSON management commands run without TTY, backend, provider, or TUI startu
 	assert.equal(tuiImports, 0);
 });
 
+test("configuration management runs without TTY, backend, provider, or TUI startup", async (t) => {
+	for (const expected of [
+		{
+			name: "validate-strict",
+			argv: ["config", "validate", "--strict", "--json"],
+			command: { kind: "config", action: "validate", strict: true, json: true },
+		},
+		{
+			name: "show",
+			argv: ["config", "show", "--json"],
+			command: { kind: "config", action: "show", json: true },
+		},
+		{
+			name: "path",
+			argv: ["config", "path", "profile", "--profile", "work", "--json"],
+			command: {
+				kind: "config",
+				action: "path",
+				scope: "profile",
+				profile: "work",
+				json: true,
+			},
+		},
+		{
+			name: "get",
+			argv: ["config", "get", "model.name", "--json"],
+			command: { kind: "config", action: "get", key: "model.name", json: true },
+		},
+		{
+			name: "set",
+			argv: ["config", "set", "memory.enabled", "true", "--json"],
+			command: {
+				kind: "config",
+				action: "set",
+				key: "memory.enabled",
+				value: "true",
+				json: true,
+			},
+		},
+		{
+			name: "unset",
+			argv: ["config", "unset", "model.name", "--json"],
+			command: { kind: "config", action: "unset", key: "model.name", json: true },
+		},
+		{
+			name: "migrate-preview",
+			argv: ["config", "migrate", "--dry-run", "--json"],
+			command: { kind: "config", action: "migrate", operation: "preview", json: true },
+		},
+		{
+			name: "migrate-apply",
+			argv: [
+				"config",
+				"migrate",
+				"--apply",
+				"--expected-version",
+				"migration-v1-example",
+				"--json",
+			],
+			command: {
+				kind: "config",
+				action: "migrate",
+				operation: "apply",
+				expectedVersion: "migration-v1-example",
+				json: true,
+			},
+		},
+		{
+			name: "migrate-rollback",
+			argv: ["config", "migrate", "--rollback", "backup-example", "--json"],
+			command: {
+				kind: "config",
+				action: "migrate",
+				operation: "rollback",
+				backupId: "backup-example",
+				json: true,
+			},
+		},
+	] as const) {
+		await t.test(expected.name, async () => {
+			let nodeStarts = 0;
+			let tuiImports = 0;
+			let managementCalls = 0;
+			const harness = cliHarness({
+				argv: expected.argv,
+				stdin: { isTTY: false },
+				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+				startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
+				importTui: async () => { tuiImports += 1; },
+				management: {
+					execute: async (command: ManagementCommand) => {
+						managementCalls += 1;
+						assert.deepEqual(command, expected.command);
+						return { ok: true, action: expected.command.action, message: "configuration command" };
+					},
+				},
+			});
+
+			assert.equal(await runCli(harness.options), 0);
+			assert.equal(JSON.parse(harness.stdout.join("")).action, expected.command.action);
+			assert.equal(managementCalls, 1);
+			assert.equal(nodeStarts, 0);
+			assert.equal(tuiImports, 0);
+		});
+	}
+});
+
+test("strict configuration validation exits one without starting runtime services", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-cli-config-strict-"));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(homeDir, ".mycli"), { recursive: true }),
+		mkdir(workspaceRoot, { recursive: true }),
+	]);
+	await writeFile(join(homeDir, ".mycli", "config.toml"), [
+		"[model]",
+		'nmae = "private-warning-sentinel"',
+		"",
+	].join("\n"), "utf8");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let nodeStarts = 0;
+	let tuiImports = 0;
+	const harness = cliHarness({
+		argv: ["config", "validate", "--strict", "--json"],
+		homeDir,
+		cwd: workspaceRoot,
+		stdin: { isTTY: false },
+		stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
+		startNodeBackend: async () => { nodeStarts += 1; return fakeBackend().backend; },
+		importTui: async () => { tuiImports += 1; },
+	});
+
+	assert.equal(await runCli(harness.options), 1);
+	const response = JSON.parse(harness.stdout.join("")) as Record<string, unknown>;
+	assert.equal(response.ok, false);
+	assert.equal(response.action, "validate");
+	assert.deepEqual(response.issues, ["strict_validation_failed"]);
+	assert.equal(JSON.stringify(response).includes("private-warning-sentinel"), false);
+	assert.equal(nodeStarts, 0);
+	assert.equal(tuiImports, 0);
+});
+
 test("doctor and setup route before backend selection", async (t) => {
-	for (const kind of ["doctor", "setup"] as const) {
+	for (const kind of ["doctor", "setup", "sandbox"] as const) {
 		await t.test(kind, async () => {
 			let commandKind = "";
+			const response = kind === "sandbox"
+				? {
+					ok: true,
+					action: "status",
+					message: "mycli sandbox status",
+					readiness: {
+						state: "ready",
+						code: "ready",
+						platform: "darwin",
+						isolation: "macos_seatbelt",
+					},
+					exitCode: 0,
+				}
+				: { ok: true, action: kind, message: `${kind} complete` };
 			const harness = cliHarness({
-				argv: [kind],
+				argv: kind === "sandbox" ? [kind, "status"] : [kind],
 				stdin: { isTTY: false },
 				stdout: { isTTY: false, write: (value: string) => { harness.stdout.push(value); } },
 				management: {
 					execute: async (command: { kind: string }) => {
 						commandKind = command.kind;
-						return { ok: true, action: kind, message: `${kind} complete` };
+						return response;
 					},
 				},
 			});
 
 			assert.equal(await runCli(harness.options), 0);
 			assert.equal(commandKind, kind);
-			assert.match(harness.stdout.join(""), new RegExp(`${kind} complete`));
+			assert.match(
+				harness.stdout.join(""),
+				new RegExp(kind === "sandbox" ? "mycli sandbox status" : `${kind} complete`),
+			);
 		});
 	}
 });
@@ -218,6 +438,9 @@ test("default management composition lists local extensions without backend star
 	let starts = 0;
 	for (const argv of [
 		["doctor", "--json"],
+		["doctor", "--fix", "--json"],
+		["doctor", "--support-bundle", "--json"],
+		["sandbox", "status", "--json"],
 		["hooks", "list", "--json"],
 		["plugins", "list", "--json"],
 		["mcp", "list", "--json"],
@@ -235,6 +458,10 @@ test("default management composition lists local extensions without backend star
 		assert.equal(JSON.parse(harness.stdout.join("")).ok, true);
 	}
 	assert.equal(starts, 0);
+	assert.equal(
+		(await stat(join(root, "home", ".mycli", "support", "diagnostic-support.json"))).isFile(),
+		true,
+	);
 });
 
 test("default non-TTY setup persists through Node without backend or secret output", async (t) => {
@@ -247,7 +474,7 @@ test("default non-TTY setup persists through Node without backend or secret outp
 	await chmod(ripgrepPath, 0o755);
 	const input = new PassThrough() as PassThrough & { isTTY?: boolean };
 	input.isTTY = false;
-	input.end("5\n\n\nsecret-cli-value\n");
+	input.end("secret-cli-value\n");
 	const output = new PassThrough() as PassThrough & { isTTY?: boolean };
 	output.isTTY = false;
 	let rendered = "";
@@ -256,7 +483,13 @@ test("default non-TTY setup persists through Node without backend or secret outp
 	let starts = 0;
 
 	const code = await runCli({
-		argv: ["setup"],
+		argv: [
+			"setup",
+			"--non-interactive",
+			"--provider",
+			"anthropic",
+			"--with-api-key",
+		],
 		env: {},
 		cwd: root,
 		homeDir,
@@ -278,7 +511,7 @@ test("interactive startup configures transport before importing the TUI", async 
 	const fake = fakeBackend();
 	let configured: GatewayTransport | null = null;
 	const harness = cliHarness({
-		argv: ["--session", "demo", "--model", "gpt-test"],
+		argv: ["--session", "demo", "--model", "gpt-test", "-p", "work"],
 		startNodeBackend: (options: { args: readonly string[] }) => {
 			order.push(`start:${options.args.join(" ")}`);
 			return fake.backend;
@@ -296,11 +529,69 @@ test("interactive startup configures transport before importing the TUI", async 
 
 	assert.equal(await runCli(harness.options), 0);
 	assert.deepEqual(order, [
-		"start:--session demo --model gpt-test",
+		"start:--session demo --model gpt-test --profile work",
 		"configure",
 		"import",
 	]);
 	assert.equal(fake.closeCalls(), 1);
+});
+
+test("CLI canonicalizes every supported profile selector form", async (t) => {
+	for (const argv of [
+		["--profile", "work"],
+		["--profile=work"],
+		["-p", "work"],
+		["-p=work"],
+	]) {
+		await t.test(argv.join(" "), async () => {
+			const fake = fakeBackend();
+			let backendArgs: readonly string[] = [];
+			let transport: GatewayTransport | undefined;
+			const harness = cliHarness({
+				argv,
+				startNodeBackend: (options: { args: readonly string[] }) => {
+					backendArgs = options.args;
+					return fake.backend;
+				},
+				configureTransport: (configured: GatewayTransport) => { transport = configured; },
+				importTui: async () => {
+					await transport?.close?.();
+					fake.completion.resolve(0);
+				},
+			});
+
+			assert.equal(await runCli(harness.options), 0);
+			assert.deepEqual(backendArgs, ["--profile", "work"]);
+		});
+	}
+});
+
+test("CLI rejects invalid profile names before backend or TUI startup", async () => {
+	let backendStarts = 0;
+	let tuiImports = 0;
+	const harness = cliHarness({
+		argv: ["--profile=../private"],
+		startNodeBackend: () => { backendStarts += 1; return fakeBackend().backend; },
+		importTui: async () => { tuiImports += 1; },
+	});
+
+	assert.equal(await runCli(harness.options), 2);
+	assert.equal(backendStarts, 0);
+	assert.equal(tuiImports, 0);
+	assert.match(harness.stderr.join(""), /invalid_arguments: profile name/u);
+	assert.doesNotMatch(harness.stderr.join(""), /\.\.\/private/u);
+});
+
+test("CLI rejects duplicate profile selectors before backend startup", async () => {
+	let backendStarts = 0;
+	const harness = cliHarness({
+		argv: ["-p", "work", "--profile=review"],
+		startNodeBackend: () => { backendStarts += 1; return fakeBackend().backend; },
+	});
+
+	assert.equal(await runCli(harness.options), 2);
+	assert.equal(backendStarts, 0);
+	assert.match(harness.stderr.join(""), /invalid_arguments: duplicate --profile/u);
 });
 
 test("interactive startup imports the TUI while the Node backend is still starting", async () => {
@@ -377,6 +668,24 @@ test("unexpected Node backend exit returns one without printing its diagnostic",
 
 	assert.equal(await runCli(harness.options), 1);
 	assert.doesNotMatch(harness.stderr.join(""), /api_key/);
+});
+
+test("interactive transport exposes the latest backend diagnostic after close", async () => {
+	const fake = fakeBackend();
+	let diagnostic = "";
+	let configured: GatewayTransport | undefined;
+	const harness = cliHarness({
+		startNodeBackend: () => ({ ...fake.backend, diagnostic: () => diagnostic }),
+		configureTransport: (transport: GatewayTransport) => { configured = transport; },
+		importTui: async () => {
+			assert.equal(configured?.diagnostic?.(), "");
+			diagnostic = "gateway_overloaded";
+			await configured?.close?.();
+			assert.equal(configured?.diagnostic?.(), "gateway_overloaded");
+			fake.completion.resolve(1);
+		},
+	});
+	assert.equal(await runCli(harness.options), 1);
 });
 
 test("abnormal parent exit synchronously kills a running Node backend", async () => {

@@ -16,6 +16,7 @@ import type {
 	LoadedPluginManifest,
 	PluginHostErrorKind,
 	PluginHostStatus,
+	PluginFailureEvidence,
 	PluginInvocationResult,
 	PluginProtocolRegistration,
 	PluginResultType,
@@ -27,6 +28,9 @@ type ShutdownCompleteMessage = Extract<PluginV2ProtocolMessage, { readonly type:
 type ExpectedMessage = RegisteredMessage | ResultMessage | ShutdownCompleteMessage;
 
 interface PendingRequest {
+	readonly phase: "connect" | "request" | "shutdown";
+	readonly timeoutMs: number;
+	dispatched: boolean;
 	readonly expectedType: ExpectedMessage["type"];
 	readonly timeoutKind: "startup_timeout" | "call_timeout";
 	readonly resolve: (message: ExpectedMessage) => void;
@@ -64,9 +68,16 @@ const MAX_PROTOCOL_LIMIT = 1_048_576;
 const MINIMAL_ENV_KEYS = ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR"] as const;
 
 export class PluginHostError extends Error {
-	constructor(readonly kind: PluginHostErrorKind) {
+	readonly evidence: PluginFailureEvidence;
+
+	constructor(readonly kind: PluginHostErrorKind, evidence: PluginFailureEvidence = {}) {
 		super(`plugin_host_error: ${kind}`);
 		this.name = "PluginHostError";
+		const previous = evidence.previous ? Object.freeze({
+			kind: evidence.previous.kind,
+			evidence: Object.freeze({ ...evidence.previous.evidence, previous: undefined }),
+		}) : undefined;
+		this.evidence = Object.freeze({ ...evidence, ...(previous ? { previous } : {}) });
 	}
 }
 
@@ -88,6 +99,8 @@ export class PluginProcessHost {
 	#startPromise?: Promise<readonly PluginProtocolRegistration[]>;
 	#closePromise?: Promise<void>;
 	#cleanupPromise?: Promise<void>;
+	#failure?: PluginHostError;
+	readonly #listeners = new Set<() => void>();
 
 	constructor(options: PluginProcessHostOptions) {
 		this.#options = {
@@ -110,10 +123,17 @@ export class PluginProcessHost {
 		return this.#registrations;
 	}
 
+	get failure(): PluginHostError | undefined { return this.#failure; }
+
+	subscribe(listener: () => void): () => void {
+		this.#listeners.add(listener);
+		return () => { this.#listeners.delete(listener); };
+	}
+
 	start(signal: AbortSignal): Promise<readonly PluginProtocolRegistration[]> {
 		if (this.#status === "ready") return Promise.resolve(this.#registrations);
 		if (this.#status === "closed" || this.#status === "closing" || this.#status === "failed") {
-			return Promise.reject(new PluginHostError("host_closed"));
+			return Promise.reject(new PluginHostError("host_closed", { phase: "connect", dispatched: false, previous: this.#failure }));
 		}
 		this.#startPromise ??= this.#initialize(signal);
 		return this.#startPromise;
@@ -126,7 +146,7 @@ export class PluginProcessHost {
 	): Promise<PluginInvocationResult> {
 		await this.start(signal);
 		if (!this.#registrations.some((registration) => registration.token === target)) {
-			throw new PluginHostError("unknown_target");
+			throw new PluginHostError("unknown_target", { phase: "request", dispatched: false });
 		}
 		const response = await this.#request({
 			version: 2,
@@ -135,8 +155,17 @@ export class PluginProcessHost {
 			target,
 			input,
 		}, "result", this.#options.callTimeoutMs, "call_timeout", signal);
-		if (response.type !== "result") throw new PluginHostError("protocol_invalid");
-		return invocationResult(response);
+		try {
+			if (response.type !== "result") throw new PluginHostError("protocol_invalid");
+			const result = invocationResult(response);
+			const registration = this.#registrations.find((item) => item.token === target)!;
+			if (result.resultType !== `${registration.kind}_result`) throw new PluginHostError("protocol_invalid");
+			return result;
+		} catch {
+			const error = new PluginHostError("protocol_invalid", { phase: "request", dispatched: true });
+			this.#fail(error, "terminate");
+			throw error;
+		}
 	}
 
 	close(): Promise<void> {
@@ -146,13 +175,14 @@ export class PluginProcessHost {
 
 	async #initialize(signal: AbortSignal): Promise<readonly PluginProtocolRegistration[]> {
 		assertNotAborted(signal);
-		this.#status = "starting";
+		this.#setStatus("starting");
 		let environment: Readonly<NodeJS.ProcessEnv>;
 		try {
 			environment = workerEnvironment(this.#options.manifest, this.#options.env ?? process.env);
 		} catch (error) {
-			this.#status = "failed";
-			throw error;
+			const failure = new PluginHostError(error instanceof PluginHostError ? error.kind : "plugin_error", { phase: "connect", dispatched: false });
+			this.#fail(failure, "terminate");
+			throw failure;
 		}
 		let launch: SandboxedProcessLaunch;
 		try {
@@ -163,8 +193,9 @@ export class PluginProcessHost {
 				this.#options.sandboxProfile,
 			);
 		} catch {
-			this.#status = "failed";
-			throw new PluginHostError("sandbox_unavailable");
+			const error = new PluginHostError("sandbox_unavailable", { phase: "connect", dispatched: false });
+			this.#fail(error, "terminate");
+			throw error;
 		}
 		this.#spawn(launch, environment);
 		const response = await this.#request({
@@ -180,11 +211,11 @@ export class PluginProcessHost {
 		try {
 			this.#registrations = validateRegistrations(response.registrations, this.#options.manifest);
 		} catch {
-			const error = new PluginHostError("registration_mismatch");
+			const error = new PluginHostError("registration_mismatch", { phase: "connect", dispatched: false });
 			this.#fail(error, "terminate");
 			throw error;
 		}
-		this.#status = "ready";
+		this.#setStatus("ready");
 		return this.#registrations;
 	}
 
@@ -200,21 +231,28 @@ export class PluginProcessHost {
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch {
-			this.#status = "failed";
-			throw new PluginHostError("spawn_failed");
+			const error = new PluginHostError("spawn_failed", { phase: "connect", dispatched: false });
+			this.#fail(error, "terminate");
+			throw error;
 		}
 		this.#child = child;
 		child.stdin.on("error", () => undefined);
 		child.stdout.on("data", (chunk: Buffer) => this.#acceptStdout(chunk));
 		child.stderr.on("data", (chunk: Buffer) => this.#acceptStderr(chunk));
-		child.once("error", () => this.#fail(new PluginHostError("spawn_failed"), "terminate"));
-		child.once("close", () => {
+		child.once("error", (error) => this.#fail(new PluginHostError("spawn_failed", {
+			phase: "connect", dispatched: false,
+			transportCode: "code" in error && typeof error.code === "string" ? error.code : undefined,
+		}), "terminate"));
+		child.once("close", (exitCode, signal) => {
 			if (this.#status === "closed") return;
 			if (this.#status === "closing" && this.#pending.size === 0) {
-				this.#status = "closed";
+				this.#setStatus("closed");
 				return;
 			}
-			this.#fail(new PluginHostError("worker_exited"), "terminate");
+			this.#fail(new PluginHostError("worker_exited", {
+				phase: this.#status === "starting" ? "connect" : "request",
+				...(exitCode === null ? {} : { exitCode }), ...(signal === null ? {} : { signal }),
+			}), "terminate");
 		});
 		if (child.pid !== undefined) {
 			this.#controller = createProcessController({
@@ -270,7 +308,7 @@ export class PluginProcessHost {
 		}
 		if (message.type === "error") {
 			this.#settle(message.request_id);
-			const error = new PluginHostError(hostErrorKind(message.error.code));
+			const error = new PluginHostError(hostErrorKind(message.error.code), { phase: pending.phase, dispatched: pending.dispatched });
 			pending.reject(error);
 			if (pending.expectedType === "registered") this.#fail(error, "terminate");
 			return;
@@ -294,36 +332,39 @@ export class PluginProcessHost {
 		timeoutKind: PendingRequest["timeoutKind"],
 		signal?: AbortSignal,
 	): Promise<ExpectedMessage> {
+		const phase = message.type === "initialize" ? "connect" : message.type === "shutdown" ? "shutdown" : "request";
 		if (!this.#child || this.#status === "failed" || this.#status === "closed") {
-			return Promise.reject(new PluginHostError("host_closed"));
+			return Promise.reject(new PluginHostError("host_closed", { phase, dispatched: false, previous: this.#failure }));
 		}
 		if (this.#pending.size >= this.#options.maxOutstandingRequests) {
-			return Promise.reject(new PluginHostError("too_many_requests"));
+			return Promise.reject(new PluginHostError("too_many_requests", { phase, dispatched: false }));
 		}
 		let line: string;
 		try {
 			line = `${JSON.stringify(parsePluginV2ProtocolMessage(message))}\n`;
 		} catch {
-			return Promise.reject(new PluginHostError("input_too_large"));
+			return Promise.reject(new PluginHostError("input_too_large", { phase, dispatched: false }));
 		}
 		if (Buffer.byteLength(line) > this.#options.maxLineBytes) {
-			return Promise.reject(new PluginHostError("input_too_large"));
+			return Promise.reject(new PluginHostError("input_too_large", { phase, dispatched: false }));
 		}
 		return new Promise((resolve, reject) => {
 			const onAbort = signal
 				? (): void => {
 					this.#settle(message.request_id);
 					reject(abortError());
-					this.#fail(new PluginHostError("host_closed"), "interrupt");
+					this.#fail(new PluginHostError("host_closed", { phase }), "interrupt");
 				}
 				: undefined;
 			const timer = setTimeout(() => {
+				const dispatched = this.#pending.get(message.request_id)?.dispatched ?? false;
 				this.#settle(message.request_id);
-				const error = new PluginHostError(timeoutKind);
+				const error = new PluginHostError(timeoutKind, { phase, timeoutMs, dispatched });
 				reject(error);
 				this.#fail(error, "terminate");
 			}, timeoutMs);
 			this.#pending.set(message.request_id, {
+				phase, timeoutMs, dispatched: false,
 				expectedType,
 				timeoutKind,
 				resolve,
@@ -337,6 +378,7 @@ export class PluginProcessHost {
 				onAbort!();
 				return;
 			}
+			this.#pending.get(message.request_id)!.dispatched = true;
 			this.#child!.stdin.write(line, "utf8", (error) => {
 				if (error) this.#fail(new PluginHostError("worker_exited"), "terminate");
 			});
@@ -355,12 +397,28 @@ export class PluginProcessHost {
 
 	#fail(error: PluginHostError, cleanup: "interrupt" | "terminate"): void {
 		if (this.#status === "failed" || this.#status === "closed") return;
+		const phase = this.#status === "starting" ? "connect" : this.#status === "closing" ? "shutdown" : "request";
+		this.#failure = new PluginHostError(error.kind, { phase, ...error.evidence });
 		this.#status = "failed";
 		for (const [requestId, pending] of this.#pending) {
 			this.#settle(requestId);
-			pending.reject(error);
+			pending.reject(new PluginHostError(error.kind, { ...error.evidence, phase: pending.phase, dispatched: pending.dispatched }));
 		}
+		// Own cleanup before notifying observers, which may close or replace this host.
 		this.#cleanupPromise ??= this.#cleanup(cleanup);
+		this.#notify();
+	}
+
+	#setStatus(status: PluginHostStatus): void {
+		if (this.#status === status) return;
+		this.#status = status;
+		this.#notify();
+	}
+
+	#notify(): void {
+		for (const listener of this.#listeners) {
+			try { listener(); } catch { /* Observers cannot affect plugin execution. */ }
+		}
 	}
 
 	async #cleanup(kind: "interrupt" | "terminate"): Promise<void> {
@@ -374,7 +432,7 @@ export class PluginProcessHost {
 	async #close(): Promise<void> {
 		if (this.#status === "closed") return;
 		if (this.#status === "idle") {
-			this.#status = "closed";
+			this.#setStatus("closed");
 			return;
 		}
 		if (this.#status === "failed") {
@@ -391,14 +449,14 @@ export class PluginProcessHost {
 			type: "shutdown",
 			request_id: this.#requestId(),
 		}, "shutdown_complete", this.#options.shutdownTimeoutMs, "call_timeout");
-		this.#status = "closing";
+		this.#setStatus("closing");
 		try {
 			await request;
 		} catch {
 			// Cleanup below is authoritative.
 		}
 		await this.#cleanup("terminate");
-		this.#status = "closed";
+		this.#setStatus("closed");
 	}
 
 	#requestId(): string {

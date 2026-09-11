@@ -7,6 +7,8 @@ import {
 	defineIntegrationRegistration,
 	discoverHookConfig,
 	discoverMcpConfig,
+	discoverPlugins,
+	pluginBundleContributions,
 	FOLLOWUP_TASK_TOOL_DEFINITION,
 	HookAllowlistStore,
 	HookManager,
@@ -19,6 +21,8 @@ import {
 	McpCatalogCache,
 	McpManager,
 	type McpManagerDiscovery,
+	type McpResourceService,
+	type McpServerConfig,
 	PluginRuntime,
 	renderSkillCatalog,
 	SEND_AGENT_MESSAGE_TOOL_DEFINITION,
@@ -53,10 +57,11 @@ import {
 	pluginSandboxProfile,
 	workspaceSandboxProfile,
 } from "./integration-sandbox.ts";
+import { mcpCatalogResources, pluginCatalogResources, type McpCatalogPhase } from "./integration-resource-catalog.ts";
 
-export type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
+type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
 
-export interface IntegrationCompositionContribution {
+interface IntegrationCompositionContribution {
 	readonly registrations?: readonly IntegrationRegistration[];
 	readonly hooks?: readonly HookRegistration[];
 	readonly resources?: readonly Readonly<Record<string, unknown>>[];
@@ -79,14 +84,14 @@ export interface IntegrationCompositionSource {
 	start(signal: AbortSignal): Promise<IntegrationCompositionContribution>;
 }
 
-export interface CreateIntegrationCompositionOptions {
+interface CreateIntegrationCompositionOptions {
 	readonly builtinManifest: BuiltInToolManifest;
 	readonly sources: readonly IntegrationCompositionSource[];
 	readonly closeTimeoutMs?: number;
 	readonly signal?: AbortSignal;
 }
 
-export interface IntegrationComposition {
+interface IntegrationComposition {
 	readonly registrations: readonly IntegrationRegistration[];
 	readonly hooks: readonly HookRegistration[];
 	readonly resources: readonly Readonly<Record<string, unknown>>[];
@@ -97,14 +102,19 @@ export interface IntegrationComposition {
 	close(): Promise<void>;
 }
 
-export interface CreateRuntimeIntegrationCompositionOptions {
+interface CreateRuntimeIntegrationCompositionOptions {
+	readonly disabled?: boolean;
 	readonly builtinManifest: BuiltInToolManifest;
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: Readonly<NodeJS.ProcessEnv>;
+	readonly projectConfigurationEnabled?: boolean;
 	readonly parentSessionId: string;
 	readonly parentTurnId: () => string;
-	readonly parentTools: () => readonly string[];
+	readonly parentTools: (input: {
+		readonly parentSessionId: string;
+		readonly parentTurnId: string;
+	}) => readonly string[];
 	readonly createSubagentSupervisor: (
 		options: CreateSubagentSupervisorOptions,
 	) => SubagentSupervisorContract;
@@ -121,7 +131,7 @@ export interface CreateRuntimeIntegrationCompositionOptions {
 	readonly onStartupStage?: (stage: IntegrationStartupStage) => void;
 }
 
-export type IntegrationStartupStage =
+type IntegrationStartupStage =
 	| "integration_discovery_started"
 	| "hooks_ready"
 	| "skills_ready"
@@ -130,6 +140,7 @@ export type IntegrationStartupStage =
 	| "subagents_ready";
 
 export interface RuntimeIntegrationComposition extends IntegrationComposition {
+	readonly mcpResourceService: McpResourceService;
 	readonly version: number;
 	readonly hookRunner: HookRunnerContract;
 	readonly skillCatalog: string;
@@ -139,9 +150,13 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	): () => void;
 	publishSubagent(subagent: Readonly<Record<string, unknown>>): void;
 	subscribeExtensions(listener: (version: number) => void): () => void;
+	reloadProjectConfiguration(input: {
+		readonly workspaceRoot: string;
+		readonly enabled: boolean;
+	}): Promise<void>;
 }
 
-export interface RuntimeToolRegistrationPartition {
+interface RuntimeToolRegistrationPartition {
 	readonly direct: readonly IntegrationRegistration[];
 	readonly deferred: readonly (IntegrationRegistration & { readonly source: "mcp" | "plugin" })[];
 }
@@ -241,113 +256,45 @@ export async function createIntegrationComposition(
 export async function createRuntimeIntegrationComposition(
 	options: CreateRuntimeIntegrationCompositionOptions,
 ): Promise<RuntimeIntegrationComposition> {
+	if (options.disabled) {
+		const composition = await createIntegrationComposition({ builtinManifest: options.builtinManifest, sources: [] });
+		return Object.freeze({
+			...composition, version: 1, skillCatalog: "",
+			mcpResourceService: {
+				listResources: async (signal: AbortSignal) => { signal.throwIfAborted(); return { resources: [], failures: [] }; },
+				listResourcesPage: async () => { throw new Error("unknown_mcp_server"); },
+				listResourceTemplates: async (signal: AbortSignal, serverId?: string) => {
+					signal.throwIfAborted();
+					if (serverId !== undefined) throw new Error("unknown_mcp_server");
+					return { resourceTemplates: [], failures: [] };
+				},
+				readResource: async () => { throw new Error("unknown_mcp_server"); },
+			},
+			hookRunner: { run: async () => Object.freeze([]) },
+			subscribeSubagents: () => () => undefined,
+			publishSubagent: () => undefined,
+			subscribeExtensions: () => () => undefined,
+			reloadProjectConfiguration: async () => undefined,
+		});
+	}
 	const subagentListeners = new Set<(
 		subagent: Readonly<Record<string, unknown>>,
 	) => void>();
 	const extensionListeners = new Set<(version: number) => void>();
-	const mcpRefreshController = new AbortController();
-	let startMcpRefresh: ((publish: (contribution: IntegrationCompositionContribution) => void) => void)
-		| undefined;
-	let subagentController: SubagentController | undefined;
 	options.onStartupStage?.("integration_discovery_started");
-	const hookDiscovery = await discoverHookConfig({
+	let content = await createRuntimeIntegrationContent({
+		options,
 		workspaceRoot: options.workspaceRoot,
-		homeDir: options.homeDir,
-		env: options.env,
+		projectConfigurationEnabled: options.projectConfigurationEnabled !== false,
+		reportStartup: true,
 	});
-	options.onStartupStage?.("hooks_ready");
-	let skillRegistry: SkillRegistry | undefined;
-	const composition = await createIntegrationComposition({
-		builtinManifest: options.builtinManifest,
-		...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
-		sources: [
-			{
-				id: "skill",
-				start: async () => {
-					skillRegistry = await SkillRegistry.discover({
-						builtinRoot: builtinSkillRoot(),
-						userRoot: join(options.homeDir, ".mycli", "skills"),
-						sharedRepoRoot: join(options.workspaceRoot, ".agents", "skills"),
-						repoRoot: join(options.workspaceRoot, ".mycli", "skills"),
-					});
-					options.onStartupStage?.("skills_ready");
-					return {
-						registrations: [createSkillToolRegistration(skillRegistry)],
-						resources: skillResources(skillRegistry),
-						diagnostics: skillDiagnostics(skillRegistry),
-					};
-				},
-			},
-				{
-					id: "mcp",
-					start: async (signal) => {
-						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal]);
-						const config = await discoverMcpConfig({
-						workspaceRoot: options.workspaceRoot,
-						homeDir: options.homeDir,
-						env: options.env,
-					});
-					const manager = new McpManager({
-						configs: config.servers,
-						catalogCache: new McpCatalogCache({
-							directory: join(options.homeDir, ".mycli", "cache"),
-						}),
-						createClient: (server) => new McpClient({
-							config: server,
-							cwd: options.workspaceRoot,
-							sandboxProfile: workspaceSandboxProfile(options.workspaceRoot),
-						}),
-					});
-						const cached = await manager.loadCached(discoverySignal);
-						options.onStartupStage?.("mcp_cache_ready");
-						startMcpRefresh = (publish) => {
-							void manager.refresh(discoverySignal).then(
-								(discovery) => {
-									if (!discoverySignal.aborted) {
-										publish(mcpContribution(
-											config.diagnostics,
-											mergeMcpRefresh(cached, discovery),
-										));
-									}
-								},
-								() => {
-									if (!discoverySignal.aborted) {
-										publish(mcpRefreshFailure(config.diagnostics, cached));
-									}
-								},
-							);
-						};
-						return {
-							...mcpContribution(config.diagnostics, cached),
-							close: () => manager.close(),
-						};
-				},
-			},
-			{
-				id: "plugin",
-				start: async (signal) => {
-					const runtime = await PluginRuntime.load({
-						workspaceRoot: options.workspaceRoot,
-						homeDir: options.homeDir,
-						env: options.env,
-						sandboxProfile: pluginSandboxProfile,
-					}, signal);
-					options.onStartupStage?.("plugins_ready");
-					return {
-						registrations: runtime.tools,
-						hooks: runtime.hooks,
-						resources: pluginResources(runtime.records),
-						diagnostics: runtime.issues.map((issue) => ({
-							source: "plugin",
-							label: "runtime",
-							errorClass: issue,
-						})),
-						commands: pluginCommandService(runtime.commands),
-						close: () => runtime.close(),
-					};
-				},
-			},
-			{
+	let subagentController: SubagentController | undefined;
+	let subagentComposition: IntegrationComposition;
+	try {
+		subagentComposition = await createIntegrationComposition({
+			builtinManifest: options.builtinManifest,
+			...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
+			sources: [{
 				id: "subagent",
 				start: async () => {
 					subagentController = new SubagentController({
@@ -363,7 +310,7 @@ export async function createRuntimeIntegrationComposition(
 						...(options.maxAgentDepth === undefined
 							? {}
 							: { maxAgentDepth: options.maxAgentDepth }),
-						});
+					});
 					subagentController.recoverAbandoned("parent runtime restarted");
 					options.onStartupStage?.("subagents_ready");
 					return {
@@ -375,113 +322,438 @@ export async function createRuntimeIntegrationComposition(
 						close: () => subagentController?.close() ?? Promise.resolve(),
 					};
 				},
-			},
-		],
-	});
-
-	try {
-		const allowlistStore = new HookAllowlistStore({ homeDir: options.homeDir });
-		const configuredExecutor = new ConfiguredHookRunner({
-			workspaceRoot: options.workspaceRoot,
-			allowlistStore,
-			env: options.env,
-			sandboxProfile: (cwd) => workspaceSandboxProfile(options.workspaceRoot, cwd),
+			}],
 		});
-		const hookRunner = new HookManager({
-			configuredHooks: hookDiscovery.hooks,
-			configuredExecutor,
-			pluginHooks: composition.hooks,
-		});
-			const initialResources = Object.freeze([
-				...composition.resources,
-				...hookResources(hookDiscovery.hooks),
-			]);
-			let snapshot = runtimeIntegrationSnapshot({
-				version: 1,
-				builtinManifest: options.builtinManifest,
-				registrations: composition.registrations,
-				resources: initialResources,
-				diagnostics: composition.diagnostics,
-			});
-			const staticRegistrations = composition.registrations.filter(
-				(registration) => registration.source !== "mcp",
-			);
-			const staticResources = initialResources.filter((resource) => !isMcpResource(resource));
-			const staticDiagnostics = composition.diagnostics.filter((diagnostic) => !isMcpDiagnostic(diagnostic));
-			const publishMcp = (contribution: IntegrationCompositionContribution): void => {
-				try {
-					snapshot = runtimeIntegrationSnapshot({
-						version: snapshot.version + 1,
-						builtinManifest: options.builtinManifest,
-						registrations: orderedRegistrations([
-							...staticRegistrations,
-							...(contribution.registrations ?? []),
-						]),
-						resources: [...staticResources, ...(contribution.resources ?? [])],
-						diagnostics: [...staticDiagnostics, ...(contribution.diagnostics ?? [])],
-					});
-				} catch {
-					snapshot = runtimeIntegrationSnapshot({
-						version: snapshot.version + 1,
-						builtinManifest: options.builtinManifest,
-						registrations: snapshot.registrations,
-						resources: snapshot.resources,
-						diagnostics: [
-							...staticDiagnostics,
-							{ source: "mcp", label: "runtime", errorClass: "refresh_failed" },
-						],
-					});
-				}
-				for (const listener of extensionListeners) {
-					try { listener(snapshot.version); } catch { /* Observers cannot affect discovery. */ }
-				}
-			};
-			let closePromise: Promise<void> | undefined;
-			const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
-				get version() { return snapshot.version; },
-				get registrations() { return snapshot.registrations; },
-				get hooks() { return composition.hooks; },
-				get resources() { return snapshot.resources; },
-				get diagnostics() { return snapshot.diagnostics; },
-				get commands() { return composition.commands; },
-				get subagents() { return composition.subagents; },
-				get manifest() { return snapshot.manifest; },
-				hookRunner,
-			skillCatalog: skillRegistry ? renderSkillCatalog(skillRegistry) : "",
-			...(subagentController ? { subagentController } : {}),
-			subscribeSubagents: (
-				listener: (subagent: Readonly<Record<string, unknown>>) => void,
-				) => {
-					subagentListeners.add(listener);
-					return () => { subagentListeners.delete(listener); };
-				},
-				publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
-					for (const listener of subagentListeners) {
-						try {
-							listener(subagent);
-						} catch {
-							// UI projection listeners cannot affect agent execution.
-						}
-					}
-				},
-				subscribeExtensions: (listener: (version: number) => void) => {
-					extensionListeners.add(listener);
-					return () => { extensionListeners.delete(listener); };
-				},
-				close: () => closePromise ??= (() => {
-					mcpRefreshController.abort();
-					return composition.close();
-				})().finally(() => {
-					subagentListeners.clear();
-					extensionListeners.clear();
-				}),
-			});
-			queueMicrotask(() => { startMcpRefresh?.(publishMcp); });
-			return runtimeComposition;
 	} catch {
+		await content.close().catch(() => undefined);
+		throw new Error("integration_start_failed");
+	}
+
+	let activeSkillRegistry = content.skillRegistry;
+	const skillRegistration = createSkillToolRegistration({
+		get: (name) => activeSkillRegistry.get(name),
+	});
+	let activeHookRunner = createRuntimeHookRunner(options, content);
+	const hookRunner: HookRunnerContract = Object.freeze({
+		run: (
+			input: Parameters<HookRunnerContract["run"]>[0],
+			signal: Parameters<HookRunnerContract["run"]>[1],
+		) => activeHookRunner.run(input, signal),
+	});
+	let workspaceRoot = options.workspaceRoot;
+	let projectConfigurationEnabled = options.projectConfigurationEnabled !== false;
+	const retiredContents: RuntimeIntegrationContent[] = [];
+	let snapshot = runtimeContentSnapshot(
+		options.builtinManifest,
+		1,
+		content,
+		skillRegistration,
+		subagentComposition.registrations,
+	);
+	let closed = false;
+	let reloadQueue = Promise.resolve();
+	let closePromise: Promise<void> | undefined;
+
+	const notifyExtensions = (): void => {
+		for (const listener of extensionListeners) {
+			try { listener(snapshot.version); } catch { /* Observers cannot affect discovery. */ }
+		}
+	};
+	const publishMcp = (
+		owner: RuntimeIntegrationContent,
+		contribution: IntegrationCompositionContribution,
+	): void => {
+		if (closed || owner !== content) return;
+		try {
+			snapshot = runtimeContentSnapshot(
+				options.builtinManifest,
+				snapshot.version + 1,
+				owner,
+				skillRegistration,
+				subagentComposition.registrations,
+				contribution,
+			);
+		} catch {
+			snapshot = runtimeIntegrationSnapshot({
+				version: snapshot.version + 1,
+				builtinManifest: options.builtinManifest,
+				registrations: snapshot.registrations,
+				resources: snapshot.resources,
+				diagnostics: [
+					...snapshot.diagnostics.filter((diagnostic) => !isMcpDiagnostic(diagnostic)),
+					{ source: "mcp", label: "runtime", errorClass: "refresh_failed" },
+				],
+			});
+		}
+		notifyExtensions();
+	};
+	const startRefresh = (owner: RuntimeIntegrationContent): void => {
+		owner.startPluginUpdates(() => {
+			if (closed || owner !== content) return;
+			const plugin = owner.pluginContribution();
+			snapshot = runtimeIntegrationSnapshot({ version: snapshot.version + 1, builtinManifest: options.builtinManifest,
+				registrations: snapshot.registrations,
+				resources: [...snapshot.resources.filter((resource) => !isPluginResource(resource)), ...(plugin.resources ?? [])],
+				diagnostics: [...snapshot.diagnostics.filter((diagnostic) => diagnostic.source !== "plugin"), ...(plugin.diagnostics ?? [])],
+			});
+			notifyExtensions();
+		});
+		queueMicrotask(() => owner.startMcpRefresh(
+			(contribution) => publishMcp(owner, contribution),
+		));
+	};
+	const reloadProjectConfiguration = (input: {
+		readonly workspaceRoot: string;
+		readonly enabled: boolean;
+	}): Promise<void> => {
+		const run = reloadQueue.then(async () => {
+			if (closed) throw new Error("integration_composition_closed");
+			if (input.workspaceRoot === workspaceRoot && input.enabled === projectConfigurationEnabled) {
+				return;
+			}
+			const next = await createRuntimeIntegrationContent({
+				options,
+				workspaceRoot: input.workspaceRoot,
+				projectConfigurationEnabled: input.enabled,
+				reportStartup: false,
+			});
+			let nextSnapshot: RuntimeIntegrationSnapshot;
+			try {
+				nextSnapshot = runtimeContentSnapshot(
+					options.builtinManifest,
+					snapshot.version + 1,
+					next,
+					skillRegistration,
+					subagentComposition.registrations,
+				);
+			} catch (error) {
+				await next.close().catch(() => undefined);
+				throw error;
+			}
+			const previous = content;
+			previous.retire();
+			content = next;
+			activeSkillRegistry = next.skillRegistry;
+			activeHookRunner = createRuntimeHookRunner(options, next);
+			workspaceRoot = input.workspaceRoot;
+			projectConfigurationEnabled = input.enabled;
+			snapshot = nextSnapshot;
+			notifyExtensions();
+			startRefresh(next);
+			try {
+				await previous.close();
+			} catch {
+				retiredContents.push(previous);
+			}
+		});
+		reloadQueue = run.catch(() => undefined);
+		return run;
+	};
+
+	const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
+		mcpResourceService: {
+			listResources: (signal: AbortSignal, serverId?: string) => content.mcpResourceService.listResources(signal, serverId),
+			listResourcesPage: async (serverId: string, signal: AbortSignal, cursor?: string) => {
+				if (content.mcpResourceService.listResourcesPage) return content.mcpResourceService.listResourcesPage(serverId, signal, cursor);
+				if (cursor !== undefined) throw new Error("invalid_mcp_resource_pagination");
+				const listing = await content.mcpResourceService.listResources(signal, serverId);
+				if (listing.failures.length) throw new Error("mcp_resource_error");
+				return { resources: listing.resources };
+			},
+			listResourceTemplates: async (signal: AbortSignal, serverId?: string, cursor?: string) =>
+				content.mcpResourceService.listResourceTemplates?.(signal, serverId, cursor) ?? { resourceTemplates: [], failures: [] },
+			readResource: (serverId: string, uri: string, signal: AbortSignal) => content.mcpResourceService.readResource(serverId, uri, signal),
+		},
+		get version() { return snapshot.version; },
+		get registrations() { return snapshot.registrations; },
+		get hooks() { return content.composition.hooks; },
+		get resources() { return snapshot.resources; },
+		get diagnostics() { return snapshot.diagnostics; },
+		get commands() { return content.composition.commands; },
+		get subagents() { return subagentComposition.subagents; },
+		get manifest() { return snapshot.manifest; },
+		hookRunner,
+		get skillCatalog() { return renderSkillCatalog(activeSkillRegistry); },
+		...(subagentController ? { subagentController } : {}),
+		subscribeSubagents: (
+			listener: (subagent: Readonly<Record<string, unknown>>) => void,
+		) => {
+			subagentListeners.add(listener);
+			return () => { subagentListeners.delete(listener); };
+		},
+		publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
+			for (const listener of subagentListeners) {
+				try { listener(subagent); } catch { /* Projection cannot affect execution. */ }
+			}
+		},
+		subscribeExtensions: (listener: (version: number) => void) => {
+			extensionListeners.add(listener);
+			return () => { extensionListeners.delete(listener); };
+		},
+		reloadProjectConfiguration,
+		close: () => closePromise ??= (async () => {
+			closed = true;
+			await reloadQueue;
+			content.retire();
+			let failed = false;
+			try {
+				await subagentComposition.close();
+			} catch {
+				failed = true;
+			}
+			for (const owned of [content, ...retiredContents].reverse()) {
+				try {
+					await owned.close();
+				} catch {
+					failed = true;
+				}
+			}
+			subagentListeners.clear();
+			extensionListeners.clear();
+			if (failed) throw new Error("integration_close_failed");
+		})(),
+	});
+	startRefresh(content);
+	return runtimeComposition;
+}
+
+interface RuntimeIntegrationContent {
+	readonly mcpResourceService: McpResourceService;
+	readonly workspaceRoot: string;
+	readonly composition: IntegrationComposition;
+	readonly hookDiscovery: Awaited<ReturnType<typeof discoverHookConfig>>;
+	readonly skillRegistry: SkillRegistry;
+	pluginContribution(): IntegrationCompositionContribution;
+	startPluginUpdates(publish: () => void): void;
+	startMcpRefresh(
+		publish: (contribution: IntegrationCompositionContribution) => void,
+	): void;
+	retire(): void;
+	close(): Promise<void>;
+}
+
+async function createRuntimeIntegrationContent(input: {
+	readonly options: CreateRuntimeIntegrationCompositionOptions;
+	readonly workspaceRoot: string;
+	readonly projectConfigurationEnabled: boolean;
+	readonly reportStartup: boolean;
+}): Promise<RuntimeIntegrationContent> {
+	const { options } = input;
+	const mcpRefreshController = new AbortController();
+	let skillRegistry: SkillRegistry | undefined;
+	let mcpManager: McpManager | undefined;
+	let pluginRuntime: PluginRuntime | undefined;
+	let unsubscribePlugins: (() => void) | undefined;
+	let startMcpRefresh: ((
+		publish: (contribution: IntegrationCompositionContribution) => void,
+	) => void) | undefined;
+	const pluginDiscovery = await discoverPlugins({ workspaceRoot: input.workspaceRoot, homeDir: options.homeDir,
+		includeRepository: input.projectConfigurationEnabled });
+	const bundles = pluginBundleContributions(pluginDiscovery, { workspaceRoot: input.workspaceRoot, env: options.env,
+		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd) });
+	const hookDiscovery = await discoverHookConfig({
+		workspaceRoot: input.workspaceRoot,
+		homeDir: options.homeDir,
+		env: options.env,
+		includeRepository: input.projectConfigurationEnabled,
+	});
+	if (input.reportStartup) options.onStartupStage?.("hooks_ready");
+	let composition: IntegrationComposition;
+	try {
+		composition = await createIntegrationComposition({
+			builtinManifest: options.builtinManifest,
+			...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
+			sources: [
+				{
+					id: "skill",
+					start: async () => {
+						skillRegistry = await SkillRegistry.discover({
+							builtinRoot: builtinSkillRoot(),
+							userRoot: join(options.homeDir, ".mycli", "skills"),
+							pluginSkills: bundles.skills,
+							...(input.projectConfigurationEnabled ? {
+								sharedRepoRoot: join(input.workspaceRoot, ".agents", "skills"),
+								repoRoot: join(input.workspaceRoot, ".mycli", "skills"),
+							} : {}),
+						});
+						if (input.reportStartup) options.onStartupStage?.("skills_ready");
+						return {
+							resources: skillResources(skillRegistry),
+							diagnostics: skillDiagnostics(skillRegistry),
+						};
+					},
+				},
+				{
+					id: "mcp",
+					start: async (signal) => {
+						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal]);
+						const config = await discoverMcpConfig({
+							workspaceRoot: input.workspaceRoot,
+							homeDir: options.homeDir,
+							env: options.env,
+							includeRepository: input.projectConfigurationEnabled,
+						});
+						const servers = [...config.servers, ...bundles.mcpServers];
+						const manager = new McpManager({
+							configs: servers,
+							catalogCache: new McpCatalogCache({
+								directory: join(options.homeDir, ".mycli", "cache"),
+							}),
+							createClient: (server) => new McpClient({
+								config: server,
+								cwd: input.workspaceRoot,
+								sandboxProfile: workspaceSandboxProfile(input.workspaceRoot),
+							}),
+						});
+						mcpManager = manager;
+						const cached = await manager.loadCached(discoverySignal);
+						if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
+						startMcpRefresh = (publish) => {
+							void manager.refresh(discoverySignal).then(
+								(discovery) => {
+									if (!discoverySignal.aborted) {
+										publish(mcpContribution(
+											servers,
+											config.diagnostics,
+											mergeMcpRefresh(cached, discovery),
+										));
+									}
+								},
+								() => {
+									if (!discoverySignal.aborted) {
+										publish(mcpRefreshFailure(servers, config.diagnostics, cached));
+									}
+								},
+							);
+						};
+						return {
+							...mcpContribution(servers, config.diagnostics, cached, cached ? "cached" : "loading"),
+							close: () => manager.close(),
+						};
+					},
+				},
+				{
+					id: "plugin",
+					start: async (signal) => {
+						const runtime = await PluginRuntime.load({
+							workspaceRoot: input.workspaceRoot,
+							homeDir: options.homeDir,
+							env: options.env,
+							includeRepository: input.projectConfigurationEnabled,
+							sandboxProfile: pluginSandboxProfile,
+							discovery: pluginDiscovery,
+							bundleIssues: [...bundles.issues, ...(skillRegistry?.diagnostics().issues ?? [])
+								.filter((issue) => bundles.skills.some((skill) => skill.pluginId === issue.fileLabel))
+								.map((issue) => ({ pluginId: issue.fileLabel, errorClass: issue.errorClass }))],
+						}, signal);
+						pluginRuntime = runtime;
+						if (input.reportStartup) options.onStartupStage?.("plugins_ready");
+						return {
+							registrations: runtime.tools,
+							hooks: [...runtime.hooks, ...bundles.hooks],
+							resources: pluginCatalogResources(runtime),
+							diagnostics: runtime.issues.map((issue) => ({
+								source: "plugin",
+								label: "runtime",
+								errorClass: issue,
+							})),
+							commands: pluginCommandService(runtime.commands),
+							close: () => runtime.close(),
+						};
+					},
+				},
+			],
+		});
+	} catch (error) {
+		mcpRefreshController.abort();
+		throw error;
+	}
+	if (!skillRegistry || !mcpManager || !pluginRuntime) {
+		mcpRefreshController.abort();
 		await composition.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
 	}
+	return Object.freeze({
+		workspaceRoot: input.workspaceRoot,
+		mcpResourceService: mcpManager,
+		composition,
+		hookDiscovery,
+		skillRegistry,
+		pluginContribution: () => pluginContribution(pluginRuntime!),
+		startPluginUpdates: (publish: () => void) => {
+			unsubscribePlugins?.();
+			unsubscribePlugins = pluginRuntime!.subscribe(publish);
+		},
+		startMcpRefresh: (
+			publish: (contribution: IntegrationCompositionContribution) => void,
+		) => { startMcpRefresh?.(publish); },
+		retire: () => { mcpRefreshController.abort(); unsubscribePlugins?.(); },
+		close: () => {
+			mcpRefreshController.abort();
+			unsubscribePlugins?.();
+			return composition.close();
+		},
+	});
+}
+
+function createRuntimeHookRunner(
+	options: CreateRuntimeIntegrationCompositionOptions,
+	content: RuntimeIntegrationContent,
+): HookManager {
+	const allowlistStore = new HookAllowlistStore({ homeDir: options.homeDir });
+	const configuredExecutor = new ConfiguredHookRunner({
+		workspaceRoot: content.workspaceRoot,
+		allowlistStore,
+		env: options.env,
+		sandboxProfile: (cwd) => workspaceSandboxProfile(content.workspaceRoot, cwd),
+	});
+	return new HookManager({
+		configuredHooks: content.hookDiscovery.hooks,
+		configuredExecutor,
+		pluginHooks: content.composition.hooks,
+	});
+}
+
+function runtimeContentSnapshot(
+	builtinManifest: BuiltInToolManifest,
+	version: number,
+	content: RuntimeIntegrationContent,
+	skillRegistration: IntegrationRegistration,
+	subagentRegistrations: readonly IntegrationRegistration[],
+	mcpOverride?: IntegrationCompositionContribution,
+): RuntimeIntegrationSnapshot {
+	const resources = Object.freeze([
+		...content.composition.resources.filter((resource) => !isPluginResource(resource)),
+		...(content.pluginContribution().resources ?? []),
+		...hookResources(content.hookDiscovery.hooks),
+		...hookResources(content.composition.hooks.map((hook) => ({
+			hookId: hook.id, name: hook.id, scope: "runtime", enabled: true, hookPoint: hook.hookPoint,
+		}))),
+	]);
+	const staticRegistrations = content.composition.registrations.filter(
+		(registration) => registration.source !== "mcp",
+	);
+	const mcpRegistrations = mcpOverride?.registrations
+		?? content.composition.registrations.filter((registration) => registration.source === "mcp");
+	const staticResources = resources.filter((resource) => !isMcpResource(resource));
+	const mcpResources = mcpOverride?.resources ?? resources.filter(isMcpResource);
+	const staticDiagnostics = content.composition.diagnostics.filter(
+		(diagnostic) => !isMcpDiagnostic(diagnostic) && diagnostic.source !== "plugin",
+	);
+	const mcpDiagnostics = mcpOverride?.diagnostics
+		?? content.composition.diagnostics.filter(isMcpDiagnostic);
+	return runtimeIntegrationSnapshot({
+		version,
+		builtinManifest,
+		registrations: orderedRegistrations([
+			skillRegistration,
+			...staticRegistrations,
+			...mcpRegistrations,
+			...subagentRegistrations,
+		]),
+		resources: [...staticResources, ...mcpResources],
+		diagnostics: [...staticDiagnostics, ...(content.pluginContribution().diagnostics ?? []), ...mcpDiagnostics],
+	});
 }
 
 function orderedSources(
@@ -520,12 +792,14 @@ function runtimeIntegrationSnapshot(input: {
 }
 
 function mcpContribution(
+	configs: readonly McpServerConfig[],
 	configDiagnostics: readonly object[],
 	discovery: McpManagerDiscovery | undefined,
+	phase: McpCatalogPhase = "ready",
 ): IntegrationCompositionContribution {
 	return Object.freeze({
 		registrations: discovery?.registrations ?? Object.freeze([]),
-		resources: discovery ? mcpResources(discovery.resources, discovery.servers) : Object.freeze([]),
+		resources: mcpCatalogResources(configs, discovery, phase),
 		diagnostics: Object.freeze([
 			...configDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
 			...(discovery?.servers.flatMap((server) => server.failureCategory
@@ -536,12 +810,13 @@ function mcpContribution(
 }
 
 function mcpRefreshFailure(
+	configs: readonly McpServerConfig[],
 	configDiagnostics: readonly object[],
 	cached: McpManagerDiscovery | undefined,
 ): IntegrationCompositionContribution {
 	return Object.freeze({
 		registrations: cached?.registrations ?? Object.freeze([]),
-		resources: cached ? mcpResources(cached.resources, cached.servers) : Object.freeze([]),
+		resources: mcpCatalogResources(configs, cached, "failed"),
 		diagnostics: Object.freeze([
 			...configDiagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
 			Object.freeze({ source: "mcp", label: "runtime", errorClass: "refresh_failed" }),
@@ -588,9 +863,9 @@ function mergeMcpRefresh(
 function orderedRegistrations(
 	registrations: readonly IntegrationRegistration[],
 ): readonly IntegrationRegistration[] {
-	return Object.freeze([...registrations].sort((left, right) => {
-		return SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source];
-	}));
+	return Object.freeze([...registrations].sort((left, right) => (
+		SOURCE_ORDER[left.source] - SOURCE_ORDER[right.source]
+	)));
 }
 
 function isMcpResource(resource: Readonly<Record<string, unknown>>): boolean {
@@ -610,7 +885,7 @@ function skillResources(registry: SkillRegistry): readonly Readonly<Record<strin
 		enabled: true,
 		status: "enabled",
 		detail: skill.description,
-		command: "/tools skills",
+		command: "/skills",
 	}));
 }
 
@@ -618,66 +893,13 @@ function skillDiagnostics(registry: SkillRegistry): readonly Readonly<Record<str
 	return registry.diagnostics().issues.map((issue) => Object.freeze({ ...issue }));
 }
 
-function mcpResources(
-	resources: readonly {
-		readonly serverId: string;
-		readonly uri: string;
-		readonly name: string;
-		readonly description: string;
-	}[],
-	servers: readonly {
-		readonly serverId: string;
-		readonly status: string;
-		readonly resourceCount: number;
-	}[],
-): readonly Readonly<Record<string, unknown>>[] {
-	const projected = resources.map((resource) => Object.freeze({
-		id: `mcp:${resource.serverId}:${resource.uri}`.slice(0, 256),
-		type: "plugin",
-		name: `${resource.serverId} ${resource.name}`.slice(0, 256),
-		source: "runtime",
-		enabled: true,
-		status: "enabled",
-		detail: `MCP resource ${resource.uri}`.slice(0, 512),
-		command: `/mcp inspect ${resource.serverId}`,
-	}));
-	const projectedServers = new Set(resources.map((resource) => resource.serverId));
-	for (const server of servers) {
-		if (server.status !== "ok" || server.resourceCount === 0
-			|| projectedServers.has(server.serverId)) continue;
-		projected.push(Object.freeze({
-			id: `mcp:${server.serverId}:resources`.slice(0, 256),
-			type: "plugin",
-			name: `${server.serverId} resources`.slice(0, 256),
-			source: "runtime",
-			enabled: true,
-			status: "enabled",
-			detail: `${server.resourceCount} cached MCP resources`.slice(0, 512),
-			command: `/mcp inspect ${server.serverId}`,
-		}));
-	}
-	return Object.freeze(projected);
+function isPluginResource(resource: Readonly<Record<string, unknown>>): boolean {
+	return typeof resource.id === "string" && resource.id.startsWith("plugin:");
 }
 
-function pluginResources(
-	records: readonly {
-		readonly pluginId: string;
-		readonly source: string;
-		readonly enabled: boolean;
-		readonly status: string;
-		readonly issues: readonly string[];
-	}[],
-): readonly Readonly<Record<string, unknown>>[] {
-	return records.map((record) => Object.freeze({
-		id: `plugin:${record.pluginId}`,
-		type: "plugin",
-		name: record.pluginId,
-		source: resourceSource(record.source),
-		enabled: record.enabled,
-		status: record.status === "loaded" ? "enabled" : record.status,
-		...(record.issues[0] ? { detail: record.issues[0].slice(0, 512) } : {}),
-		command: "/tools plugins",
-	}));
+function pluginContribution(runtime: PluginRuntime): IntegrationCompositionContribution {
+	return Object.freeze({ resources: pluginCatalogResources(runtime),
+		diagnostics: runtime.issues.map((errorClass) => ({ source: "plugin", label: "runtime", errorClass })) });
 }
 
 function hookResources(
@@ -697,7 +919,7 @@ function hookResources(
 		enabled: hook.enabled,
 		status: hook.enabled ? "enabled" : "disabled",
 		detail: hook.hookPoint,
-		command: "/tools hooks",
+		command: "/hooks",
 	}));
 }
 
@@ -782,6 +1004,7 @@ function pluginCommandService(registry: PluginCommandRegistry): IntegrationComma
 				lines: Object.freeze([result.summary]),
 				ok: result.ok,
 				...(result.error ? { error: result.error } : {}),
+				...(result.errorContext ? { error_context: result.errorContext } : {}),
 			});
 		},
 	};

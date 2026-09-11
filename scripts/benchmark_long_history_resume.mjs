@@ -19,7 +19,10 @@ import {
 	applyV9TranscriptNormalizationCutover,
 	openRuntimeSessionStore,
 	SCHEMA_V12_VERSION,
+	SCHEMA_V13_VERSION,
+	SCHEMA_V14_VERSION,
 	SQLiteSessionStore,
+	SQLiteTranscriptEventRepository,
 	stageV10ContentBlobMigrationBatch,
 	stageV9TranscriptNormalizationBatch,
 } from "@mycli/storage";
@@ -70,8 +73,9 @@ const PROFILES = Object.freeze({
 });
 const REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 const SAMPLE_INTERVAL_MS = 10;
-const CURRENT_STORAGE_SCHEMA = `v${SCHEMA_V12_VERSION}`;
-const STORAGE_SCHEMAS = new Set(["v9", "v10", "v11", CURRENT_STORAGE_SCHEMA, "paired"]);
+const CURRENT_STORAGE_SCHEMA = `v${SCHEMA_V14_VERSION}`;
+const TIMELINE_STORAGE_SCHEMAS = new Set(["v12", "v13", CURRENT_STORAGE_SCHEMA]);
+const STORAGE_SCHEMAS = new Set(["v9", "v10", "v11", ...TIMELINE_STORAGE_SCHEMAS, "paired"]);
 const CONTENT_BLOB_BATCH_SIZE = 500;
 const TOOL_HEAVY_PAYLOAD_REDUCTION_MINIMUM = 0.35;
 const COMPACTION_PHYSICAL_REDUCTION_MINIMUM = 0.30;
@@ -536,8 +540,8 @@ async function seedFixtureInChild(root, profileName, storageSchema) {
 }
 
 function seedDatabase({ dbPath, workspace, profile, storageSchema }) {
-	if (storageSchema === CURRENT_STORAGE_SCHEMA) {
-		return seedCurrentDatabase({ dbPath, workspace, profile });
+	if (TIMELINE_STORAGE_SCHEMAS.has(storageSchema)) {
+		return seedCurrentDatabase({ dbPath, workspace, profile, storageSchema });
 	}
 	const initialize = new SQLiteSessionStore({ dbPath });
 	initialize.close();
@@ -719,9 +723,13 @@ function seedDatabase({ dbPath, workspace, profile, storageSchema }) {
 	};
 }
 
-function seedCurrentDatabase({ dbPath, workspace, profile }) {
+function seedCurrentDatabase({ dbPath, workspace, profile, storageSchema }) {
 	const now = "2026-08-13T00:00:00.000Z";
-	const store = openRuntimeSessionStore({ dbPath, clock: () => now });
+	const store = storageSchema === "v12"
+		? new SQLiteTranscriptEventRepository({ dbPath, clock: () => now, initializeSchemaVersion: SCHEMA_V12_VERSION })
+		: storageSchema === "v13"
+			? new SQLiteTranscriptEventRepository({ dbPath, clock: () => now, initializeSchemaVersion: SCHEMA_V13_VERSION })
+			: openRuntimeSessionStore({ dbPath, clock: () => now });
 	try {
 		const compactAfterTurns = compactionTurnCounts(profile);
 		for (let turnIndex = 0; turnIndex < profile.turns; turnIndex += 1) {
@@ -1427,12 +1435,12 @@ function assertResumeSemantics({
 		throw new Error("resume_provider_tool_window_mismatch");
 	}
 	const expectedTranscriptItems = profile.turns * (
-		profile.toolsPerTurn + (storageSchema === CURRENT_STORAGE_SCHEMA ? 4 : 3)
+		profile.toolsPerTurn + (TIMELINE_STORAGE_SCHEMAS.has(storageSchema) ? 4 : 3)
 	);
 	if (transcriptItems.length !== expectedTranscriptItems) {
 		throw new Error("resume_transcript_projection_count_mismatch");
 	}
-	if (storageSchema === CURRENT_STORAGE_SCHEMA) {
+	if (TIMELINE_STORAGE_SCHEMAS.has(storageSchema)) {
 		const counts = Object.fromEntries([
 			"user",
 			"assistant_final",

@@ -1,5 +1,10 @@
 import { createIntegrationId } from "../foundation/ids.ts";
+import { randomUUID } from "node:crypto";
+import { failureScope, type ErrorContext } from "@mycli/contracts";
+import { deepFreezeCopy } from "./deep-freeze-copy.ts";
+import { isPluginId, pluginRouteNamespace } from "./package-files.ts";
 import { PluginHostError } from "./process-host.ts";
+import { pluginFailureContext, pluginFailureText } from "./diagnostics.ts";
 import type {
 	PluginHostContract,
 	PluginProtocolRegistration,
@@ -21,6 +26,7 @@ export interface PluginCommandResult {
 	readonly content?: readonly unknown[];
 	readonly metadata: Readonly<Record<string, unknown>>;
 	readonly error?: string;
+	readonly errorContext?: ErrorContext;
 }
 
 interface RegisteredCommand {
@@ -52,7 +58,7 @@ export class PluginCommandRegistry {
 		registrations: readonly PluginCommandRegistration[],
 	): readonly string[] {
 		const commands = registrations.map((registration): RegisteredCommand => {
-			const id = createIntegrationId("plugin", pluginId, registration.name);
+			const id = createIntegrationId("plugin", pluginRouteNamespace(pluginId), registration.name);
 			const descriptor = Object.freeze({
 				id,
 				pluginId,
@@ -90,17 +96,16 @@ export class PluginCommandRegistry {
 		try {
 			const response = await command.host.invoke(command.token, argumentsValue, signal);
 			if (response.resultType !== "command_result") {
-				return failure("plugin command failed", "protocol_invalid", pluginId, name);
+				throw new PluginHostError("protocol_invalid");
 			}
 			return commandResult(response.value, pluginId, name);
 		} catch (error) {
 			if (signal.aborted || isAbortError(error)) throw error;
-			return failure(
-				"plugin command failed",
-				error instanceof PluginHostError ? error.kind : "plugin_error",
-				pluginId,
-				name,
-			);
+			const errorContext = pluginFailureContext(error, { pluginId, operation: "commands/run", scope: failureScope("request", `plugin-command:${randomUUID()}`) });
+			return Object.freeze({ ok: false, summary: pluginFailureText(errorContext),
+				error: error instanceof PluginHostError ? error.kind : "plugin_error", errorContext,
+				metadata: Object.freeze({ pluginId: safeId(pluginId), command: safeId(name), error_context: errorContext }),
+			});
 		}
 	}
 }
@@ -114,11 +119,15 @@ function commandResult(
 	const ok = typeof value.ok === "boolean" ? value.ok : error === undefined;
 	const summary = safeText(value.summary, ok ? "plugin command completed" : "plugin command failed");
 	const content = boundedContent(value.content);
+	const errorContext = !ok ? pluginFailureContext(new PluginHostError("handler_failed"), {
+		pluginId, operation: "commands/run", scope: failureScope("request", `plugin-command:${randomUUID()}`),
+	}) : undefined;
 	return Object.freeze({
 		ok,
 		summary,
 		...(content.length > 0 ? { content } : {}),
-		metadata: boundedMetadata(value.metadata, pluginId, name),
+		metadata: Object.freeze({ ...boundedMetadata(value.metadata, pluginId, name), ...(errorContext ? { error_context: errorContext } : {}) }),
+		...(errorContext ? { errorContext } : {}),
 		...(error ? { error } : !ok ? { error: "plugin_command_error" } : {}),
 	});
 }
@@ -153,7 +162,7 @@ function boundedContent(value: unknown): readonly unknown[] {
 
 function boundedMetadata(value: unknown, pluginId: string, name: string): Readonly<Record<string, unknown>> {
 	if (!isRecord(value)) return Object.freeze({ pluginId: safeId(pluginId), command: safeId(name) });
-	const bounded = deepFreezeCopy(Object.fromEntries(Object.entries(value).slice(0, 32).map(([key, item]) => [
+	const bounded = deepFreezeCopy(Object.fromEntries(Object.entries(value).filter(([key]) => key !== "error_context").slice(0, 32).map(([key, item]) => [
 		key.slice(0, 64),
 		boundValue(item, 0),
 	])));
@@ -188,12 +197,12 @@ function safeError(value: unknown): string | undefined {
 }
 
 function safeId(value: string): string {
-	return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value) ? value : "plugin";
+	return isPluginId(value) || /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value) ? value : "plugin";
 }
 
 function commandId(pluginId: string, name: string): string | undefined {
 	try {
-		return createIntegrationId("plugin", pluginId, name);
+		return createIntegrationId("plugin", pluginRouteNamespace(pluginId), name);
 	} catch {
 		return undefined;
 	}
@@ -201,14 +210,6 @@ function commandId(pluginId: string, name: string): string | undefined {
 
 function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function deepFreezeCopy<Value>(value: Value): Value {
-	if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeCopy)) as Value;
-	if (!isRecord(value)) return value;
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).map(([key, child]) => [key, deepFreezeCopy(child)]),
-	)) as Value;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

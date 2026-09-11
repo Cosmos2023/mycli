@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveAgentWorkerSettings } from "../src/node-runtime/agent-worker-settings.ts";
-import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 
 test("Agent Worker settings preserve the production defaults", () => {
 	assert.deepEqual(resolveAgentWorkerSettings({}), {

@@ -1,4 +1,8 @@
 import type { PluginCommandResult } from "./command-registry.ts";
+import { isPluginId } from "./package-files.ts";
+import { PluginPackageManager, type PluginPackageRequest, type PluginPackageResponse } from "./package-management.ts";
+import { discoverPlugins } from "./discovery.ts";
+import { pluginBundleContributions } from "./bundle-contributions.ts";
 import { PluginRuntime, type PluginRuntimeOptions, type PluginRuntimeRecord } from "./runtime.ts";
 
 export interface PluginManagementRow {
@@ -10,6 +14,9 @@ export interface PluginManagementRow {
 	readonly hooks: readonly string[];
 	readonly commands: readonly string[];
 	readonly issues: readonly string[];
+	readonly hostStatus?: PluginRuntimeRecord["hostStatus"];
+	readonly format?: "codex";
+	readonly skillCount?: number;
 }
 
 export interface PluginManagementResponse {
@@ -32,19 +39,25 @@ export class PluginManagementService {
 		this.#options = options;
 	}
 
-	list(signal: AbortSignal): Promise<PluginManagementResponse> {
-		return this.#withRuntime("list", signal, (runtime) => response(
-			runtime.records.every((record) => record.status !== "error")
+	packages(request: PluginPackageRequest, signal: AbortSignal): Promise<PluginPackageResponse> {
+		return new PluginPackageManager(this.#options.runtimeOptions).execute(request, signal);
+	}
+
+	list(signal: AbortSignal, marketplace?: string): Promise<PluginManagementResponse> {
+		return this.#withRuntime("list", signal, (runtime) => {
+			const records = runtime.records.filter((record) => !marketplace || record.pluginId.endsWith(`@${marketplace}`));
+			return response(
+			records.every((record) => record.status !== "error")
 				&& runtime.discovery.diagnostics.length === 0,
 			"list",
-			`plugins: ${runtime.records.length} discovered`,
-			runtime.records.map(managementRow),
+			`plugins: ${records.length} discovered`,
+			records.map(managementRow),
 			runtime.issues,
-		));
+		); });
 	}
 
 	inspect(pluginId: string, signal: AbortSignal): Promise<PluginManagementResponse> {
-		const safePluginId = boundedId(pluginId);
+		const safePluginId = isPluginId(pluginId) ? pluginId : undefined;
 		if (!safePluginId) {
 			return Promise.resolve(response(false, "inspect", "plugin not found: plugin", [], []));
 		}
@@ -66,7 +79,7 @@ export class PluginManagementService {
 		argumentsValue: Readonly<Record<string, unknown>>,
 		signal: AbortSignal,
 	): Promise<PluginManagementResponse> {
-		const safePluginId = boundedId(pluginId);
+		const safePluginId = isPluginId(pluginId) ? pluginId : undefined;
 		const safeCommand = boundedId(command);
 		if (!safePluginId || !safeCommand) {
 			const commandResult: PluginCommandResult = Object.freeze({
@@ -115,7 +128,12 @@ export class PluginManagementService {
 	): Promise<PluginManagementResponse> {
 		let runtime: PluginRuntime | undefined;
 		try {
-			runtime = await PluginRuntime.load(this.#options.runtimeOptions, signal);
+			const options = this.#options.runtimeOptions;
+			const discovery = options.discovery ?? await discoverPlugins(options);
+			const bundles = pluginBundleContributions(discovery, { workspaceRoot: options.workspaceRoot, env: options.env,
+				sandboxProfile: (cwd) => ({ mode: "workspace-write", filesystem: "workspace_write", network: "disabled",
+					cwd, workspaceRoot: options.workspaceRoot, writableRoots: [options.workspaceRoot] }) });
+			runtime = await PluginRuntime.load({ ...options, discovery, bundleIssues: bundles.issues }, signal);
 			return await operation(runtime);
 		} catch (error) {
 			if (signal.aborted || isAbortError(error)) throw error;
@@ -136,6 +154,8 @@ function managementRow(record: PluginRuntimeRecord): PluginManagementRow {
 		hooks: Object.freeze([...record.hooks]),
 		commands: Object.freeze([...record.commands]),
 		issues: Object.freeze([...record.issues]),
+		...(record.hostStatus ? { hostStatus: record.hostStatus } : {}),
+		...(record.format ? { format: record.format, skillCount: record.skillCount } : {}),
 	});
 }
 

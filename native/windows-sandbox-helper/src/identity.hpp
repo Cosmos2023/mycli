@@ -20,6 +20,8 @@ std::wstring OfflineUsernameForOwner(const std::wstring& owner_sid);
 void SetupOfflineIdentity(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid);
+void ResetOfflineIdentityCredentials(
+    const std::filesystem::path& state_directory);
 OfflineIdentity LoadOfflineIdentity(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid);

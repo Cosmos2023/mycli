@@ -2,10 +2,10 @@ import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import {
+	builtinModelReasoningDefaults,
 	listProviderProfiles,
 	readApiKey,
-	writeApiKey,
-	writeUserProviderConfig,
+	writeUserProviderSetup,
 } from "@mycli/config";
 import {
 	prepareUserRipgrep,
@@ -20,6 +20,8 @@ import {
 	type SetupWizardResult,
 	type SetupWizardState,
 } from "mycli-shell-tui";
+import { abortable, abortError } from "./abort.ts";
+import type { ApiKeyInputReader } from "./auth.ts";
 import type { ManagementResponse } from "./types.ts";
 
 export interface SetupInputStream extends NodeJS.ReadableStream {
@@ -44,6 +46,12 @@ export interface RunSetupCommandOptions {
 	readonly input?: SetupInputStream;
 	readonly output?: SetupOutputStream;
 	readonly signal?: AbortSignal;
+	readonly nonInteractive?: {
+		readonly provider: string;
+		readonly model?: string;
+		readonly apiBaseUrl?: string;
+		readonly readApiKeyInput: ApiKeyInputReader;
+	};
 	readonly runTui?: SetupInteraction;
 	readonly runPlain?: SetupInteraction;
 	readonly prepareRipgrep?: (
@@ -66,19 +74,20 @@ export interface SetupCommandResponse extends ManagementResponse {
 	readonly ripgrepInstalled?: boolean;
 }
 
-const PROVIDER_NAMES: Readonly<Record<string, string>> = Object.freeze({
-	openai: "OpenAI",
-	codex: "Codex Responses",
-	deepseek: "DeepSeek",
-	qwen: "Qwen",
-	anthropic: "Anthropic",
-	compatible: "Compatible",
-});
-
 export async function runSetupCommand(
 	options: RunSetupCommandOptions,
 ): Promise<SetupCommandResponse> {
 	if (options.signal?.aborted) return cancelled();
+	if (options.nonInteractive) {
+		return runNonInteractiveSetup(options, options.nonInteractive);
+	}
+	if (!options.isTty) {
+		return failure(
+			"non-interactive setup requires explicit provider options and an API key on stdin",
+			"setup_non_interactive_required",
+			2,
+		);
+	}
 	const state = await buildSetupState(options.homeDir);
 	const runTui = options.runTui ?? ((nextState, signal) => runSetupTui({
 		state: nextState,
@@ -97,8 +106,6 @@ export async function runSetupCommand(
 		} catch {
 			result = await runPlain(state, options.signal);
 		}
-	} else {
-		result = await runPlain(state, options.signal);
 	}
 	if (!result) return cancelled();
 	const prepareRipgrep = async (
@@ -119,10 +126,57 @@ export async function runSetupCommand(
 	);
 }
 
+async function runNonInteractiveSetup(
+	options: RunSetupCommandOptions,
+	input: NonNullable<RunSetupCommandOptions["nonInteractive"]>,
+): Promise<SetupCommandResponse> {
+	const profile = listProviderProfiles().find((item) => item.provider === input.provider);
+	const model = input.model?.trim() || profile?.defaultModel;
+	const apiBaseUrl = input.apiBaseUrl?.trim() || profile?.defaultBaseUrl;
+	if (!profile || !model || !apiBaseUrl) {
+		return failure(
+			"non-interactive setup requires a supported provider and complete model settings",
+			"setup_invalid_options",
+			2,
+		);
+	}
+	let apiKey: string;
+	try {
+		apiKey = await input.readApiKeyInput(options.signal ?? new AbortController().signal);
+	} catch (error) {
+		if (options.signal?.aborted || isAbortError(error)) return cancelled();
+		return failure(
+			"non-interactive setup requires a non-empty API key on stdin",
+			"setup_api_key_input_failed",
+			2,
+		);
+	}
+	const prepareRipgrep = setupRipgrepPreparer(options);
+	return saveSetupResult(options.homeDir, {
+		provider: profile.provider,
+		api_base_url: apiBaseUrl,
+		model,
+		api_key: apiKey,
+	}, prepareRipgrep, options.signal);
+}
+
+function setupRipgrepPreparer(
+	options: RunSetupCommandOptions,
+): NonNullable<RunSetupCommandOptions["prepareRipgrep"]> {
+	return async (prepareOptions) => {
+		const existing = (options.resolveRipgrep ?? resolveRipgrep)({
+			homeDir: options.homeDir,
+			pathValue: "",
+		});
+		if (existing) return { path: existing, installed: false };
+		return await (options.prepareRipgrep ?? prepareUserRipgrep)(prepareOptions);
+	};
+}
+
 async function buildSetupState(homeDir: string): Promise<SetupWizardState> {
 	const providers = await Promise.all(listProviderProfiles().map(async (profile): Promise<SetupProvider> => ({
 		id: profile.provider,
-		name: PROVIDER_NAMES[profile.provider] ?? profile.provider,
+		name: profile.displayName,
 		configured: Boolean(await readApiKey({ homeDir, authRef: profile.provider })),
 		default_model: profile.defaultModel ?? "",
 		default_base_url: profile.defaultBaseUrl,
@@ -146,18 +200,27 @@ async function saveSetupResult(
 		return failure("setup returned incomplete provider settings", "setup_invalid_result");
 	}
 	let configPath: string;
+	let authPath: string;
 	try {
-		configPath = await writeUserProviderConfig({
+		const reasoning = builtinModelReasoningDefaults({
+			provider: profile.provider,
+			protocol: profile.defaultProtocol,
+			model: result.model.trim(),
+		});
+		const saved = await writeUserProviderSetup({
 			homeDir,
 			provider: profile.provider,
 			protocol: profile.defaultProtocol,
 			model: result.model,
 			apiBaseUrl: result.api_base_url,
 			authRef: profile.provider,
-			promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
-			cacheControlEnabled: profile.cacheControlEnabled,
+			cacheRetention: "short",
+			thinkingEnabled: reasoning.thinkingEnabled,
+			reasoningEffort: reasoning.reasoningEffort,
+			apiKey: result.api_key,
 		});
-		await writeApiKey({ homeDir, authRef: profile.provider, apiKey: result.api_key });
+		configPath = saved.configPath;
+		authPath = saved.authPath;
 	} catch {
 		return failure("setup could not save configuration", "setup_write_failed");
 	}
@@ -169,7 +232,7 @@ async function saveSetupResult(
 		model: result.model.trim(),
 		apiBaseUrl: result.api_base_url.trim().replace(/\/+$/u, ""),
 		configPath,
-		authPath: join(homeDir, ".mycli", "auth.json"),
+		authPath,
 	};
 	try {
 		const ripgrep = await prepareRipgrep({
@@ -323,23 +386,6 @@ function promptRawSecret(
 	});
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const onAbort = (): void => reject(abortError());
-		signal.addEventListener("abort", onAbort, { once: true });
-		promise.then(
-			(value) => {
-				signal.removeEventListener("abort", onAbort);
-				resolve(value);
-			},
-			(error: unknown) => {
-				signal.removeEventListener("abort", onAbort);
-				reject(error);
-			},
-		);
-	});
-}
-
 function cancelled(): SetupCommandResponse {
 	return Object.freeze({
 		ok: false,
@@ -350,14 +396,14 @@ function cancelled(): SetupCommandResponse {
 	});
 }
 
-function failure(message: string, issue: string): SetupCommandResponse {
-	return Object.freeze({ ok: false, action: "setup", message, issues: Object.freeze([issue]) });
-}
-
-function abortError(): Error {
-	const error = new Error("interrupted");
-	error.name = "AbortError";
-	return error;
+function failure(message: string, issue: string, exitCode?: number): SetupCommandResponse {
+	return Object.freeze({
+		ok: false,
+		action: "setup",
+		message,
+		issues: Object.freeze([issue]),
+		...(exitCode === undefined ? {} : { exitCode }),
+	});
 }
 
 function isAbortError(error: unknown): boolean {

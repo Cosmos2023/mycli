@@ -7,7 +7,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { resolveConfig } from "@mycli/config";
-import { OpenAIProviderRegistry } from "@mycli/providers";
+import { ProviderRegistry } from "@mycli/providers";
 import { NodeTurnRuntime } from "@mycli/runtime";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
@@ -82,7 +82,7 @@ async function main() {
 		const exposure = planToolExposure(builtinToolManifest());
 		const readTool = new ReadTool({ workspaceRoot: tempRoot });
 		const toolRouter = new ToolRouter({ adapters: [readTool], exposure });
-		const registry = new OpenAIProviderRegistry();
+		const registry = new ProviderRegistry();
 		const runtimeConfig = {
 			...config,
 			workspaceRoot: tempRoot,
@@ -92,7 +92,7 @@ async function main() {
 			requestMaxRetries: 0,
 			streamMaxRetries: 0,
 			thinkingEnabled: false,
-			promptCacheKeyEnabled: false,
+			cacheRetention: "none",
 		};
 		const runtime = new NodeTurnRuntime({
 			sessionId,

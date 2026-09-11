@@ -1,3 +1,5 @@
+import type { ErrorContext } from "@mycli/contracts";
+
 export type HookPoint =
 	| "pre_tool_use"
 	| "post_tool_use"
@@ -11,7 +13,7 @@ export type HookResult =
 	| { readonly action: "allow"; readonly additionalContexts?: readonly string[] }
 	| { readonly action: "deny"; readonly message: string }
 	| { readonly action: "modify"; readonly arguments: Readonly<Record<string, unknown>> }
-	| { readonly action: "error"; readonly message: string };
+	| { readonly action: "error"; readonly message: string; readonly errorContext?: ErrorContext };
 
 export interface HookInvocation {
 	readonly point: HookPoint;

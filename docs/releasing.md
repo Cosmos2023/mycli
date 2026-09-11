@@ -6,7 +6,8 @@ under the app's `dist/node_modules` directory during packing. The workspace root
 
 ## One-Time Repository Setup
 
-1. Ensure the npm account or organization owns the `@mycli` scope.
+1. Ensure the npm account owns the `@cosmos2023` scope and has publish access to all seven public
+   packages.
 2. Create a protected GitHub environment named `npm`. Require a reviewer so pushing a version tag
    cannot publish without a separate approval.
 3. Configure npm Trusted Publishing for `.github/workflows/release.yml` on all seven public packages.
@@ -25,14 +26,26 @@ Start from a clean, current `main` checkout. Do not release from a feature workt
 npm ci
 npm run release:version -- 0.2.0
 npm run release:verify
+npm run release:compatibility
 npm run contracts:check
 npm run lint
-npm test
+npm run test:ci
 npm run typecheck
-npm run test:m8
 npm run smoke:m8
 npm run smoke:package -- --all-platforms
+npm run smoke:release-compatibility -- --evidence release-evidence/local.json
 ```
+
+When credentials are available, run the opt-in curated-provider smoke after the deterministic
+gates and retain only its redacted evidence:
+
+```bash
+npm run smoke:providers -- --dry-run
+npm run smoke:providers -- --evidence release-evidence/providers-live.json
+```
+
+Rows without credentials remain `skipped`; only `passed` rows may be described as live-verified.
+See [providers.md](providers.md) for single-provider launch-scoped key usage and evidence fields.
 
 `release:version` updates all coordinated manifests, internal dependency specifications, and the
 workspace lockfile. `release:verify` fails when the root is publishable, a public package is private,
@@ -62,11 +75,17 @@ git tag -a v0.2.0 -m "mycli v0.2.0"
 git push origin v0.2.0
 ```
 
+The independent `release-compatibility` workflow runs installed-artifact journeys on macOS, Ubuntu,
+and Windows. Its registry-backed predecessor journey exits `77` or records `blocked_external` only
+for a bounded registry/network infrastructure failure; candidate product failures remain hard
+failures. A tag release repeats this journey strictly and does not waive an external blocker.
+
 The release workflow then:
 
 1. builds the Windows sandbox helper on Windows;
 2. verifies the tagged commit belongs to `main` and validates the tag and coordinated metadata;
-3. runs contract, lint, test, typecheck, M8, and all-platform package gates;
+3. runs contract, lint, categorized test, typecheck, compatibility-policy, M8 smoke, packed-artifact, and real
+   predecessor upgrade/downgrade gates;
 4. publishes the six platform packages followed by the application package;
 5. publishes stable versions under `latest` and prereleases under `next`;
 6. creates a GitHub Release only after npm publication succeeds.
@@ -91,3 +110,8 @@ version:
 ```bash
 npm install -g @cosmos2023/mycli@0.1.0
 ```
+
+Compatibility windows, package-name migration, configuration rollback, and session-schema limits
+are documented in [compatibility.md](compatibility.md) and [upgrading.md](upgrading.md). Release
+operators must update [../CHANGELOG.md](../CHANGELOG.md) and [release-notes.md](release-notes.md)
+before creating the tag.

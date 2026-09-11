@@ -22,7 +22,7 @@ export type StartupProfileStage =
 	| "session_ready"
 	| "gateway_ready";
 
-export interface StartupProfileMark {
+interface StartupProfileMark {
 	readonly stage: StartupProfileStage;
 	readonly elapsedMs: number;
 }

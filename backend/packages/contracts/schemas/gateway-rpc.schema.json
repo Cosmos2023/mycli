@@ -1,0 +1,1976 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/gateway-rpc.schema.json",
+  "title": "GatewayRpcMethods",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "initialize",
+    "status.get",
+    "status.inspect",
+    "session.bootstrap",
+    "session.list",
+    "session.new",
+    "session.resume",
+    "session.resume.preview",
+    "session.tree",
+    "transcript.load",
+    "provider.attempts.load",
+    "turn.submit",
+    "turn.steer",
+    "turn.follow_up",
+    "turn.interrupt",
+    "turn.queue.pop",
+    "turn.queue.clear",
+    "turn.queue.restore.ack",
+    "turn.queue.migration.ack",
+    "approval.respond",
+    "decision.resolve",
+    "clarify.respond",
+    "workspace.trust.status",
+    "workspace.trust.set",
+    "permissions.list",
+    "permissions.update",
+    "provider.list",
+    "model.list",
+    "model.select",
+    "auth.api_key.save",
+    "provider.connectivity.validate",
+    "settings.load",
+    "settings.save",
+    "settings.keymap.reset",
+    "update.status",
+    "update.dismiss",
+    "command.list",
+    "command.run",
+    "completion.slash",
+    "completion.path",
+    "resource.list",
+    "extension.manifest",
+    "shell.list",
+    "shell.output.load",
+    "shell.stop",
+    "shell.stop_all",
+    "trace.export",
+    "shutdown"
+  ],
+  "properties": {
+    "initialize": {
+      "$ref": "#/$defs/BootstrapMethod"
+    },
+    "status.get": {
+      "$ref": "#/$defs/StatusMethod"
+    },
+    "status.inspect": {
+      "$ref": "#/$defs/StatusMethod"
+    },
+    "session.bootstrap": {
+      "$ref": "#/$defs/BootstrapMethod"
+    },
+    "session.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/SessionQuery"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "sessions"
+          ],
+          "properties": {
+            "sessions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SessionSummary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "session.new": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SessionTransition"
+        }
+      }
+    },
+    "session.resume": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/ResumeParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SessionTransition"
+        }
+      }
+    },
+    "session.resume.preview": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/ResumePreview"
+        }
+      }
+    },
+    "session.tree": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "active_path",
+            "nodes"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "active_path": {
+              "$ref": "#/$defs/Strings"
+            },
+            "nodes": {
+              "$ref": "#/$defs/Objects"
+            }
+          }
+        }
+      }
+    },
+    "transcript.load": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/TranscriptParams"
+        },
+        "result": {
+          "$ref": "#/$defs/TranscriptPage"
+        }
+      }
+    },
+    "provider.attempts.load": {
+      "type": "object",
+      "required": ["params", "result"],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "turn_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "after_sequence": {"type": "integer", "minimum": 0, "maximum": 1000},
+            "before_event_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}
+          },
+          "dependentRequired": {"after_sequence": ["request_id"]},
+          "not": {"required": ["before_event_id", "request_id"]}
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session_id", "records", "has_more"],
+          "properties": {
+            "session_id": {"type": "string"},
+            "records": {"type": "array", "maxItems": 500, "items": {"$ref": "provider-attempt.schema.json#/$defs/record"}},
+            "has_more": {"type": "boolean"},
+            "next_before_event_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 256}
+          }
+        }
+      }
+    },
+    "turn.submit": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/SubmitParams"
+        },
+        "result": {
+          "$ref": "#/$defs/TurnAccepted"
+        }
+      }
+    },
+    "turn.steer": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/SteerParams"
+        },
+        "result": {
+          "$ref": "#/$defs/QueueMutation"
+        }
+      }
+    },
+    "turn.follow_up": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/FollowUpParams"
+        },
+        "result": {
+          "$ref": "#/$defs/QueueMutation"
+        }
+      }
+    },
+    "turn.interrupt": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/InterruptParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "accepted"
+          ],
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            },
+            "requested": {
+              "type": "boolean"
+            },
+            "admission_cancelled": {
+              "type": "boolean"
+            },
+            "client_user_message_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            },
+            "client_turn_id": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "turn.queue.pop": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/OwnerParams"
+        },
+        "result": {
+          "$ref": "#/$defs/QueueResult"
+        }
+      }
+    },
+    "turn.queue.clear": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/RestoreParams"
+        },
+        "result": {
+          "$ref": "#/$defs/QueueResult"
+        }
+      }
+    },
+    "turn.queue.restore.ack": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/RestoreParams"
+            },
+            {
+              "type": "object",
+              "required": [
+                "restore_token"
+              ],
+              "properties": {
+                "restore_token": { "$ref": "#/$defs/Identity" }
+              }
+            }
+          ]
+        },
+        "result": {
+          "$ref": "#/$defs/QueueResult"
+        }
+      }
+    },
+    "turn.queue.migration.ack": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "token"
+          ],
+          "properties": {
+            "token": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/QueueResult"
+        }
+      }
+    },
+    "approval.respond": {
+      "$ref": "#/$defs/ApprovalMethod"
+    },
+    "decision.resolve": {
+      "$ref": "#/$defs/ApprovalMethod"
+    },
+    "clarify.respond": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/ClarificationParams"
+        },
+        "result": {
+          "$ref": "#/$defs/TurnAccepted"
+        }
+      }
+    },
+    "workspace.trust.status": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/TrustState"
+        }
+      }
+    },
+    "workspace.trust.set": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/Trust"
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/TrustState"
+        }
+      }
+    },
+    "permissions.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/Permissions"
+        }
+      }
+    },
+    "permissions.update": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "profile"
+          ],
+          "properties": {
+            "profile": {
+              "$ref": "#/$defs/Permission"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "permissions",
+            "status"
+          ],
+          "properties": {
+            "permissions": {
+              "$ref": "#/$defs/Permissions"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            }
+          }
+        }
+      }
+    },
+    "provider.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "providers"
+          ],
+          "properties": {
+            "providers": {
+              "$ref": "#/$defs/Objects"
+            }
+          }
+        }
+      }
+    },
+    "model.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "provider",
+            "models"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string"
+            },
+            "models": {
+              "$ref": "#/$defs/Objects"
+            }
+          }
+        }
+      }
+    },
+    "model.select": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/ModelSelection"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "selected",
+            "provider",
+            "models",
+            "status"
+          ],
+          "properties": {
+            "selected": {
+              "type": "object"
+            },
+            "auth_providers": {
+              "$ref": "#/$defs/Objects"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "models": {
+              "$ref": "#/$defs/Objects"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            },
+            "scope": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "auth.api_key.save": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "provider_id",
+            "api_key"
+          ],
+          "properties": {
+            "provider_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "api_key": {
+              "type": "string",
+              "minLength": 1
+            },
+            "auth_ref": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "provider_id": {
+              "type": "string"
+            },
+            "auth_ref": {
+              "type": "string"
+            },
+            "auth_providers": {
+              "$ref": "#/$defs/Objects"
+            },
+            "auth_status": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "provider.connectivity.validate": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "settings.load": {
+      "$ref": "#/$defs/SettingsMethod"
+    },
+    "settings.keymap.reset": {
+      "$ref": "#/$defs/SettingsMethod"
+    },
+    "settings.save": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/SettingsMutation"
+        },
+        "result": {
+          "$ref": "#/$defs/SettingsResult"
+        }
+      }
+    },
+    "update.status": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/UpdateResult"
+        }
+      }
+    },
+    "update.dismiss": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "version"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/UpdateResult"
+        }
+      }
+    },
+    "command.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/SurfaceParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "commands",
+            "routing_names"
+          ],
+          "properties": {
+            "commands": {
+              "$ref": "#/$defs/Objects"
+            },
+            "routing_names": {
+              "$ref": "#/$defs/Strings"
+            }
+          }
+        }
+      }
+    },
+    "command.run": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "surface": {
+              "type": "string"
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/CommandResult"
+        }
+      }
+    },
+    "completion.slash": {
+      "$ref": "#/$defs/CompletionMethod"
+    },
+    "completion.path": {
+      "$ref": "#/$defs/CompletionMethod"
+    },
+    "resource.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "resources"
+          ],
+          "properties": {
+            "resources": {
+              "$ref": "#/$defs/Objects"
+            }
+          }
+        }
+      }
+    },
+    "extension.manifest": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "protocol_version": {
+              "type": "integer"
+            },
+            "tools": {
+              "$ref": "#/$defs/Objects"
+            },
+            "version": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "shell.list": {
+      "$ref": "#/$defs/ShellListMethod"
+    },
+    "shell.stop_all": {
+      "$ref": "#/$defs/ShellListMethod"
+    },
+    "shell.output.load": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/ShellOutputParams"
+        },
+        "result": {
+          "$ref": "#/$defs/ShellOutputPage"
+        }
+      }
+    },
+    "shell.stop": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "shell_id"
+          ],
+          "properties": {
+            "shell_id": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/ShellSnapshot"
+        }
+      }
+    },
+    "trace.export": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "tail": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "format",
+            "rows"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "format": {
+              "const": "jsonl"
+            },
+            "rows": {
+              "$ref": "#/$defs/Strings"
+            }
+          }
+        }
+      }
+    },
+    "shutdown": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Identity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "Objects": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "EmptyParams": {
+      "type": "object"
+    },
+    "Permission": {
+      "enum": [
+        "read-only",
+        "workspace",
+        "full-access"
+      ]
+    },
+    "Trust": {
+      "enum": [
+        "trusted",
+        "untrusted",
+        "unknown"
+      ]
+    },
+    "OwnerParams": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/Identity"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "BootstrapMethod": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "protocol_version": {
+              "type": "integer"
+            },
+            "supported_error_context_versions": {
+              "type": "array", "maxItems": 8, "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/Bootstrap"
+        }
+      }
+    },
+    "StatusMethod": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/Status"
+        }
+      }
+    },
+    "Status": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "turn_running": {
+          "type": "boolean"
+        },
+        "trust": {
+          "$ref": "#/$defs/TrustState"
+        },
+        "permissions": {
+          "$ref": "#/$defs/Permissions"
+        },
+        "pending_decision": {
+          "type": "boolean"
+        },
+        "pending_clarification": {
+          "type": "boolean"
+        },
+        "suspended_turn": {
+          "type": "boolean"
+        },
+        "has_pending_input": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Bootstrap": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "session_id",
+        "workspace",
+        "provider",
+        "model",
+        "status"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "error_context_version": { "const": 1 },
+        "session_id": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "permissions": {
+          "$ref": "#/$defs/Permissions"
+        },
+        "background_shells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ShellSnapshot"
+          }
+        },
+        "auth_providers": {
+          "$ref": "#/$defs/Objects"
+        }
+      }
+    },
+    "SessionQuery": {
+      "type": "object",
+      "properties": {
+        "workspace_root": {
+          "type": "string"
+        },
+        "search": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "collaboration_mode": {
+          "enum": [
+            "default",
+            "plan"
+          ]
+        },
+        "permission_profile": {
+          "$ref": "#/$defs/Permission"
+        },
+        "status": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "include_archived": {
+          "type": "boolean"
+        },
+        "include_deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SessionSummary": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "message_count": {
+          "type": "integer"
+        },
+        "created": {
+          "type": "string"
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    },
+    "ResumeParams": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/Identity"
+        },
+        "repair_action": {
+          "type": "string"
+        },
+        "metadata_revision": {
+          "type": "integer"
+        }
+      }
+    },
+    "ResumePreview": {
+      "type": "object",
+      "required": [
+        "session",
+        "ready",
+        "issues",
+        "actions"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionSummary"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "requires_confirmation": {
+          "type": "boolean"
+        },
+        "issues": {
+          "$ref": "#/$defs/Objects"
+        },
+        "actions": {
+          "$ref": "#/$defs/Strings"
+        }
+      }
+    },
+    "SessionTransition": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "generation",
+        "read_only",
+        "lines",
+        "background_shells"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer"
+        },
+        "read_only": {
+          "type": "boolean"
+        },
+        "lines": {
+          "$ref": "#/$defs/Strings"
+        },
+        "background_shells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ShellSnapshot"
+          }
+        },
+        "auth_providers": {
+          "$ref": "#/$defs/Objects"
+        },
+        "auth_status": {
+          "type": "object"
+        }
+      }
+    },
+    "TranscriptParams": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "before": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "TranscriptItem": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "text",
+        "folded",
+        "metadata"
+      ],
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_record": {
+          "$ref": "gateway-tool-record.schema.json"
+        },
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "folded": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "TranscriptPage": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "items",
+        "next_before"
+      ],
+      "properties": {
+        "provider_attempts": {
+          "type": "array", "maxItems": 200,
+          "items": {"$ref": "provider-attempt.schema.json#/$defs/record"}
+        },
+        "provider_attempts_truncated": {"type": "boolean"},
+        "provider_attempts_next_before": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+        "session_id": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TranscriptItem"
+          }
+        },
+        "next_before": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "read_only": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SubmitParams": {
+      "type": "object",
+      "required": [
+        "message",
+        "client_turn_id"
+      ],
+      "properties": {
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_turn_id": {
+          "$ref": "#/$defs/Identity"
+        },
+        "client_user_message_id": {
+          "type": "string"
+        },
+        "local_images": {
+          "$ref": "#/$defs/Strings"
+        },
+        "collaboration_mode": {
+          "enum": [
+            "default",
+            "plan"
+          ]
+        }
+      }
+    },
+    "FollowUpParams": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/OwnerParams"
+        },
+        {
+          "type": "object",
+          "required": [
+            "message"
+          ],
+          "properties": {
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "client_turn_id": {
+              "type": "string"
+            },
+            "client_user_message_id": {
+              "type": "string"
+            },
+            "local_images": {
+              "$ref": "#/$defs/QueueImages"
+            }
+          }
+        }
+      ]
+    },
+    "QueueImages": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "placeholder": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "SteerParams": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FollowUpParams"
+        },
+        {
+          "type": "object",
+          "required": [
+            "expected_turn_id"
+          ],
+          "properties": {
+            "expected_turn_id": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        }
+      ]
+    },
+    "InterruptParams": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/OwnerParams"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "turn_id": {
+              "type": "string"
+            },
+            "client_turn_id": {
+              "type": "string"
+            },
+            "rollback_user_input": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "TurnAccepted": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "admission_cancelled": {
+          "type": "boolean"
+        },
+        "client_turn_id": {
+          "type": "string"
+        },
+        "client_user_message_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer"
+        },
+        "decision_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      }
+    },
+    "RestoreParams": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/OwnerParams"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "restore_token": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "QueueResult": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer"
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "restore_token": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "pending_steers": {
+          "$ref": "#/$defs/Objects"
+        },
+        "follow_ups": {
+          "$ref": "#/$defs/Objects"
+        },
+        "rejected_steers": {
+          "$ref": "#/$defs/Objects"
+        }
+      }
+    },
+    "QueueMutation": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer"
+        }
+      }
+    },
+    "ApprovalMethod": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/ApprovalParams"
+        },
+        "result": {
+          "$ref": "#/$defs/TurnAccepted"
+        }
+      }
+    },
+    "ApprovalParams": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/OwnerParams"
+        },
+        {
+          "type": "object",
+          "required": [
+            "decision_id",
+            "choice"
+          ],
+          "properties": {
+            "decision_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "choice": {
+              "enum": [
+                "approve_once",
+                "reject",
+                "allow_session",
+                "always_allow"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ClarificationParams": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/OwnerParams"
+        },
+        {
+          "type": "object",
+          "required": [
+            "request_id",
+            "response"
+          ],
+          "properties": {
+            "request_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "response": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "TrustState": {
+      "type": "object",
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/Trust"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "enforced": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Permissions": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "$ref": "#/$defs/Permission"
+        },
+        "profiles": {
+          "$ref": "#/$defs/Objects"
+        },
+        "command_allowance_count": {
+          "type": "integer"
+        },
+        "effective": {
+          "type": "object"
+        },
+        "sandbox_readiness": {
+          "type": "object"
+        }
+      }
+    },
+    "ModelSelection": {
+      "type": "object",
+      "required": [
+        "provider",
+        "protocol",
+        "model",
+        "base_url"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/Identity"
+        },
+        "protocol": {
+          "$ref": "#/$defs/Identity"
+        },
+        "model": {
+          "$ref": "#/$defs/Identity"
+        },
+        "base_url": {
+          "$ref": "#/$defs/Identity"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SettingsMethod": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "$ref": "#/$defs/SettingsResult"
+        }
+      }
+    },
+    "SettingsResult": {
+      "type": "object",
+      "required": [
+        "settings"
+      ],
+      "properties": {
+        "settings": {
+          "type": "object"
+        },
+        "sources": {
+          "type": "object"
+        },
+        "catalog": {
+          "type": "object"
+        },
+        "keymap": {
+          "type": "object"
+        },
+        "terminal_capabilities": {
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "SettingsMutation": {
+      "type": "object",
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "setting_id",
+            "value"
+          ],
+          "properties": {
+            "setting_id": { "type": "string", "minLength": 1 },
+            "value": {}
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "settings"
+          ],
+          "properties": {
+            "settings": { "type": "object" }
+          }
+        }
+      ],
+      "properties": {
+        "setting_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {},
+        "settings": {
+          "type": "object"
+        }
+      }
+    },
+    "UpdateResult": {
+      "type": "object",
+      "required": [
+        "update"
+      ],
+      "properties": {
+        "update": {
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "dismissed_version": {
+          "type": "string"
+        }
+      }
+    },
+    "SurfaceParams": {
+      "type": "object",
+      "properties": {
+        "surface": {
+          "type": "string"
+        }
+      }
+    },
+    "CommandResult": {
+      "type": "object",
+      "properties": {
+        "execution": {
+          "type": "string"
+        },
+        "command_id": {
+          "type": "string"
+        },
+        "client_action": {
+          "type": "string"
+        },
+        "args": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "presentation": {
+          "type": "string"
+        }
+      }
+    },
+    "CompletionMethod": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "surface": {
+              "type": "string"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "items"
+          ],
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/Objects"
+            }
+          }
+        }
+      }
+    },
+    "ShellListMethod": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "shells"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer"
+            },
+            "stopped": {
+              "type": "integer"
+            },
+            "shells": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ShellSnapshot"
+              }
+            }
+          }
+        }
+      }
+    },
+    "ShellSnapshot": {
+      "type": "object",
+      "required": [
+        "shell_id"
+      ],
+      "properties": {
+        "shell_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "ShellOutputParams": {
+      "type": "object",
+      "required": [
+        "shell_id"
+      ],
+      "properties": {
+        "shell_id": {
+          "$ref": "#/$defs/Identity"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "after_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit_chars": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ShellOutputPage": {
+      "type": "object",
+      "required": [
+        "shell_id"
+      ],
+      "properties": {
+        "shell_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "chunks": {
+          "$ref": "#/$defs/Objects"
+        },
+        "next_sequence": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

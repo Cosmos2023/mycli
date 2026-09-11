@@ -7,25 +7,40 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { ConfigError, WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
-import { fingerprintSubmission, rootAgentPath } from "@mycli/core";
+import { fingerprintSubmission, PROVIDER_IDS, rootAgentPath } from "@mycli/core";
 import {
 	encodeSessionContentBlob,
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
 	openRuntimeSessionStore,
-	SCHEMA_V12_VERSION,
+	SCHEMA_V14_VERSION,
 	subagentRunId,
 	type RuntimeSessionStore,
 } from "@mycli/storage";
 import { renderMycliShell } from "mycli-shell-tui";
-import type { GatewayEvent } from "../../../../tui/mycli-shell/src/adapters/gateway-client.ts";
-import { GatewayEventDeduper } from "../../../../tui/mycli-shell/src/adapters/gateway-events.ts";
+import type { GatewayEvent } from "../../../../tui/mycli-shell/src/transport/gateway-client.ts";
+import { GatewayEventDeduper } from "../../../../tui/mycli-shell/src/transport/gateway-events.ts";
 import {
 	initialRuntimeState,
+} from "../../../../tui/mycli-shell/src/state/runtime-state-model.ts";
+import {
 	projectRuntimeState,
+} from "../../../../tui/mycli-shell/src/state/runtime-projection.ts";
+import {
 	reduceRuntimeEvent,
-} from "../../../../tui/mycli-shell/src/adapters/runtime-state.ts";
-import { startNodeBackend } from "../src/node-runtime/node-backend.ts";
+} from "../../../../tui/mycli-shell/src/state/runtime-event-reducer.ts";
+import {
+	runtimeStateFromTranscript,
+} from "../../../../tui/mycli-shell/src/state/transcript-history.ts";
+import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
+import {
+	responsesAuthorityText,
+	responsesTextEvents,
+	writeResponsesEvents,
+	writeResponsesText,
+	writeResponsesTool,
+} from "./support/responses-sse.ts";
 
 function finalMessageCount(messages: readonly Record<string, unknown>[]): number {
 	return messages.filter((message) => {
@@ -34,6 +49,104 @@ function finalMessageCount(messages: readonly Record<string, unknown>[]): number
 		return params?.final === true;
 	}).length;
 }
+
+test("Node backend round trips curated provider readiness rows and trace identities", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-curated-providers-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(home, ".mycli", "traces"), { recursive: true }),
+		mkdir(workspace, { recursive: true }),
+	]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const providers = [
+		["openrouter", "OpenRouter", "openrouter/auto"],
+		["groq", "Groq", "openai/gpt-oss-120b"],
+		["together", "Together", "moonshotai/Kimi-K2.7-Code"],
+		["moonshotai", "Moonshot AI", "kimi-k2.7-code"],
+		["nvidia", "NVIDIA", "openai/gpt-oss-120b"],
+		["cerebras", "Cerebras", "gpt-oss-120b"],
+	] as const;
+	const curatedIds = PROVIDER_IDS.filter((provider) => providers.some(([id]) => id === provider));
+
+	for (const [index, [provider, displayName, defaultModel]] of providers.entries()) {
+		const sessionId = `curated-provider-${provider}`;
+		const secret = `${provider}-gateway-secret`;
+		await writeFile(join(home, ".mycli", "config.toml"), [
+			"[model]",
+			`provider = "${provider}"`,
+			"",
+		].join("\n"), "utf8");
+		await writeFile(join(home, ".mycli", "auth.json"), `${JSON.stringify({
+			[provider]: { type: "api_key", key: secret },
+		}, null, 2)}\n`, "utf8");
+		if (index === 0) {
+			await writeFile(
+				join(home, ".mycli", "traces", `${sessionId}-trace.jsonl`),
+				`${curatedIds.map((traceProvider, traceIndex) => JSON.stringify({
+					kind: "model_stream_diagnostics",
+					turn_id: `trace-turn-${traceIndex}`,
+					payload: {
+						provider: traceProvider,
+						protocol: "chat_completions",
+						model: `${traceProvider}-model`,
+						attempt: 1,
+						success: true,
+						secret,
+					},
+				})).join("\n")}\n`,
+				"utf8",
+			);
+		}
+
+		const backend = await startNodeBackend({
+			cwd: workspace,
+			args: ["--session", sessionId],
+			env: { HOME: home },
+		});
+		const messages: Array<Record<string, unknown>> = [];
+		createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+			messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+		});
+		await waitFor(() => event(messages, "runtime.ready"));
+		writeRequest(backend, `bootstrap-${provider}`, "session.bootstrap", { protocol_version: 1 });
+		const bootstrap = await waitFor(() => response(messages, `bootstrap-${provider}`));
+		assert.equal(bootstrap.error, undefined);
+		assert.deepEqual(resultValue(bootstrap, "auth_status"), {
+			ready: true,
+			provider_id: provider,
+			auth_ref: provider,
+			source: "stored",
+		});
+		const rows = resultValue(bootstrap, "auth_providers") as Array<Record<string, unknown>>;
+		assert.deepEqual(new Set(rows.map((row) => row.id)), new Set([
+			...PROVIDER_IDS, "qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual",
+		]));
+		assert.deepEqual(rows.find((row) => row.id === provider), {
+			id: provider,
+			name: displayName,
+			configured: true,
+			credential_source: "stored",
+			auth_ref: provider,
+			default_model: defaultModel,
+		});
+		assert.equal(JSON.stringify(bootstrap).includes(secret), false);
+
+		if (index === 0) {
+			writeRequest(backend, "curated-trace", "trace.export", { tail: 20 });
+			const trace = await waitFor(() => response(messages, "curated-trace"));
+			const traceRows = (resultValue(trace, "rows") as readonly string[]).map((row) => (
+				JSON.parse(row) as Record<string, unknown>
+			));
+			assert.deepEqual(traceRows.map((row) => (
+				(row.payload as Record<string, unknown>).provider
+			)), curatedIds);
+			assert.equal(JSON.stringify(traceRows).includes(secret), false);
+		}
+		writeRequest(backend, `shutdown-${provider}`, "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	}
+});
 
 test("Node backend rejects invalid lane-specific agent execution adapters before startup", async () => {
 	for (const environmentKey of [
@@ -114,7 +227,125 @@ test("Node backend becomes ready before an uncached MCP discovery completes", as
 	assert.equal(await backend.completion, 0);
 });
 
-test("fresh schema-v12 bootstrap loads the virtual session transcript without persisting it", async (t) => {
+test("Node backend does not await update refresh and closes only after aborted work settles", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-background-update-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	let requestStarted!: () => void;
+	const started = new Promise<void>((resolve) => { requestStarted = resolve; });
+	let releaseCleanup!: () => void;
+	const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+	let aborted = false;
+	const updateFetch = (async (_input, init) => {
+		requestStarted();
+		return await new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener("abort", () => {
+				aborted = true;
+				void cleanup.then(() => reject(new DOMException("aborted", "AbortError")));
+			}, { once: true });
+		});
+	}) as typeof fetch;
+
+	const backend = await Promise.race([
+		startNodeBackend({
+			cwd: workspace,
+			args: ["--session", "background-update-session"],
+			env: { HOME: home },
+			updateFetch,
+		}),
+		new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error("backend startup waited for update refresh")), 1_000);
+		}),
+	]);
+	await started;
+
+	let closeSettled = false;
+	const closing = backend.close().then(() => { closeSettled = true; });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(aborted, true);
+	assert.equal(closeSettled, false);
+	releaseCleanup();
+	await closing;
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend startup update opt-out performs no network request", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-update-opt-out-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(join(home, ".mycli"), { recursive: true }), mkdir(workspace)]);
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		"[updates]",
+		"check_on_startup = false",
+	].join("\n"), "utf8");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let requests = 0;
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "update-opt-out-session"],
+		env: { HOME: home },
+		updateFetch: (async () => {
+			requests += 1;
+			return new Response(JSON.stringify({ version: "0.2.0" }));
+		}) as typeof fetch,
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(requests, 0);
+	await backend.close();
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend advertises a refreshed update only on the next startup", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-update-next-startup-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let requests = 0;
+	const updateFetch = (async () => {
+		requests += 1;
+		return new Response(JSON.stringify({ version: "0.2.0" }), {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+	}) as typeof fetch;
+	const options = {
+		cwd: workspace,
+		args: ["--session", "update-next-startup-session"],
+		env: { HOME: home },
+		updateFetch,
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => existsSync(join(home, ".mycli", "version.json")));
+	writeRequest(first, "bootstrap-update-first", "session.bootstrap", { protocol_version: 1 });
+	const firstBootstrap = await waitFor(() => response(firstMessages, "bootstrap-update-first"));
+	const firstUpdate = resultValue(firstBootstrap, "update") as Readonly<Record<string, unknown>>;
+	assert.equal(firstUpdate.availability, "unknown");
+	await first.close();
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	writeRequest(second, "bootstrap-update-second", "session.bootstrap", { protocol_version: 1 });
+	const secondBootstrap = await waitFor(() => response(secondMessages, "bootstrap-update-second"));
+	const secondUpdate = resultValue(secondBootstrap, "update") as Readonly<Record<string, unknown>>;
+	assert.equal(secondUpdate.availability, "available");
+	assert.equal(secondUpdate.latest_version, "0.2.0");
+	assert.equal(requests, 1);
+	await second.close();
+});
+
+test("fresh schema-v14 bootstrap loads the virtual session transcript without persisting it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-virtual-session-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -156,6 +387,9 @@ test("fresh schema-v12 bootstrap loads the virtual session transcript without pe
 		items: [],
 		next_before: null,
 		read_only: false,
+		provider_attempts: [],
+		provider_attempts_truncated: false,
+		provider_attempts_next_before: null,
 	});
 	writeRequest(backend, "resume-missing", "session.resume", { session_id: "missing-session" });
 	const missingResume = await waitFor(() => response(messages, "resume-missing"));
@@ -166,7 +400,7 @@ test("fresh schema-v12 bootstrap loads the virtual session transcript without pe
 
 	const database = new DatabaseSync(join(home, ".mycli", "sessions.db"), { readOnly: true });
 	try {
-		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V12_VERSION);
+		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
 		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
 	} finally {
 		database.close();
@@ -242,10 +476,13 @@ test("Node backend gives one live window exclusive ownership of a session", asyn
 	await waitFor(() => event(messages, "runtime.ready"));
 	writeRequest(other, "resume-owned", "session.resume", { session_id: "exclusive-session" });
 	const blocked = await waitFor(() => response(messages, "resume-owned"));
-	assert.equal(errorValue(blocked, "code"), "session_in_use");
-	assert.equal(
-		errorValue(blocked, "message"),
-		"Session is already open in another mycli window.",
+	assert.equal(errorValue(blocked, "code"), "session_repair_required");
+	const blockedPreview = (
+		(blocked.error as Record<string, unknown>).data as Record<string, unknown>
+	).preview as Record<string, unknown>;
+	assert.deepEqual(
+		(blockedPreview.issues as Array<Record<string, unknown>>).map((issue) => issue.code),
+		["active_owner"],
 	);
 
 	await first.close();
@@ -278,6 +515,74 @@ test("Node backend gives one live window exclusive ownership of a session", asyn
 	await releasedSource.close();
 });
 
+test("native Azure environment auth reaches in-process and Worker requests with durable transport snapshots", { timeout: 30_000 }, async (t) => {
+	for (const adapter of ["in_process", "worker"] as const) await t.test(adapter, async (context) => {
+		const root = await mkdtemp(join(tmpdir(), "mycli-native-azure-"));
+		const home = join(root, "home");
+		const workspace = join(root, "workspace");
+		await mkdir(home);
+		await mkdir(workspace);
+		const captured: Array<{ url: string; key: string | undefined; model: unknown }> = [];
+		const server = createServer((request, response) => {
+			let body = "";
+			request.setEncoding("utf8");
+			request.on("data", (chunk) => { body += chunk; });
+			request.on("end", () => {
+				captured.push({ url: request.url ?? "", key: request.headers["api-key"] as string | undefined,
+					model: (JSON.parse(body) as Record<string, unknown>).model });
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				if (captured.length === 1) {
+					response.end('event: error\ndata: {"type":"error","error":{"code":"stream_read_error","type":"upstream_error","message":"Upstream request failed"}}\n\n');
+					return;
+				}
+				writeResponsesText(response, "native azure complete", "response-native-azure");
+				response.end();
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		context.after(async () => {
+			await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+			await rm(root, { recursive: true, force: true });
+		});
+		const address = server.address();
+		assert(address && typeof address === "object");
+		const sessionId = `azure-${adapter}`;
+		const backend = await startNodeBackend({ cwd: workspace, args: ["--session", sessionId], env: {
+			HOME: home, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
+			MYCLI_THINKING_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
+			AZURE_OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/openai/v1`, AZURE_OPENAI_API_KEY: "fixture-azure-key",
+			AZURE_OPENAI_API_VERSION: "2025-04-01-preview", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.5=fixture-deployment",
+		} });
+		context.after(() => backend.close().catch(() => undefined));
+		const messages: Array<Record<string, unknown>> = [];
+		createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+			messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+		});
+		await waitFor(() => event(messages, "runtime.ready"));
+		writeRequest(backend, "azure-submit", "turn.submit", { message: "hello", client_turn_id: "azure-turn", client_user_message_id: "azure-user" });
+		const submitted = await waitFor(() => response(messages, "azure-submit"));
+		assert.equal(submitted.error, undefined);
+		await waitFor(() => event(messages, "turn.completed") ?? event(messages, "turn.failed"));
+		assert.equal(event(messages, "turn.failed"), undefined);
+		assert.equal(captured.length, 2);
+		assert.equal(captured[0]?.key, "fixture-azure-key");
+		assert.equal(captured[0]?.model, "fixture-deployment");
+		assert.equal(new URL(captured[0]!.url, "http://fixture.invalid").searchParams.get("api-version"), "2025-04-01-preview");
+		await backend.close();
+		const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+		try {
+			const manifest = store.modelInputLedger.loadLatestProviderRequestManifest(sessionId);
+			assert(manifest);
+			const request = store.modelInputLedger.reconstructProviderStep(manifest.requestId).request;
+			assert.equal(request.nativeTransport?.api, "azure-openai-responses");
+			assert.deepEqual(request.nativeTransport?.azure, { apiVersion: "2025-04-01-preview", deploymentName: "fixture-deployment" });
+			const attempts = store.providerAttemptLedger.list({ sessionId });
+			assert.deepEqual(attempts.map((attempt) => attempt.state), ["started", "failed", "scheduled", "started", "recovered"]);
+			assert.doesNotMatch(JSON.stringify({ manifest, request, attempts, messages }), /fixture-azure-key|127\.0\.0\.1/u);
+		} finally { store.close(); }
+	});
+});
+
 test("Worker-backed root composes sessions, provider streaming, transcripts, and SQLite", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-backend-"));
 	const home = join(root, "home");
@@ -294,8 +599,11 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 			requests += 1;
 			capture.requestBody = JSON.parse(body) as Record<string, unknown>;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello from node\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_node\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n");
+			writeResponsesText(response, "hello from node", "resp_node", {
+				input_tokens: 2,
+				output_tokens: 3,
+				total_tokens: 5,
+			});
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -322,6 +630,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 			MYCLI_REQUEST_PERMISSIONS_TOOL: "true",
 		},
 	});
+	t.after(() => backend.close().catch(() => undefined));
 	const messages: Array<Record<string, unknown>> = [];
 	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
@@ -352,6 +661,8 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 	assert.deepEqual(userStarted.params, {
 		client_turn_id: "integration-turn",
 		turn_id: (userStarted.params as Record<string, unknown>).turn_id,
+		session_id: "integration-session",
+		generation: 1,
 		item: {
 			id: `${String((userStarted.params as Record<string, unknown>).turn_id)}:user:integration-message`,
 			type: "user_message",
@@ -373,6 +684,8 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 			method: message.method,
 			code: paramValue(message, "code") ?? errorValue(message, "code"),
 			state: paramValue(message, "state"),
+			message: paramValue(message, "message") ?? errorValue(message, "message"),
+			additional_details: paramValue(message, "additional_details"),
 		}))));
 	}
 	const submitResponse = await waitFor(() => response(messages, "1"));
@@ -401,7 +714,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		providerToolNames(capture.requestBody?.tools),
 			[
 				"Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch",
-				"tool_search", "Skill",
+				"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent", "web_search",
 			],
@@ -521,25 +834,15 @@ test("Node backend executes update_plan and restores its model-hidden transcript
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-plan",
-						name: "update_plan",
-						arguments: JSON.stringify({
-							explanation: "Start implementation",
-							plan: [
-								{ step: "Inspect runtime", status: "completed" },
-								{ step: "Wire plan updates", status: "in_progress" },
-							],
-						}),
-					},
-				})}\n\n`);
-				response.write('data: {"type":"response.completed","response":{"id":"resp-plan"}}\n\n');
+				writeResponsesTool(response, "call-plan", "update_plan", {
+					explanation: "Start implementation",
+					plan: [
+						{ step: "Inspect runtime", status: "completed" },
+						{ step: "Wire plan updates", status: "in_progress" },
+					],
+				}, "resp-plan");
 			} else {
-				response.write('data: {"type":"response.output_text.delta","delta":"Plan recorded."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-final"}}\n\n');
+				writeResponsesText(response, "Plan recorded.", "resp-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -574,9 +877,14 @@ test("Node backend executes update_plan and restores its model-hidden transcript
 		client_turn_id: "plan-turn",
 		client_user_message_id: "plan-message",
 	});
+	const planSubmission = await waitFor(() => response(messages, "submit-plan"));
+	const planTurnId = resultValue(planSubmission, "turn_id");
 	const update = await waitFor(() => event(messages, "plan.updated"));
 	assert.deepEqual(update.params, {
 		client_turn_id: "plan-turn",
+		session_id: "plan-session",
+		generation: 1,
+		turn_id: planTurnId,
 		plan_steps: ["completed: Inspect runtime", "in_progress: Wire plan updates"],
 		plan: {
 			items: [
@@ -611,6 +919,22 @@ test("Node backend executes update_plan and restores its model-hidden transcript
 	);
 	assert.equal(JSON.stringify(streamDiagnostics).includes("Plan the implementation."), false);
 	assert.equal(JSON.stringify(streamDiagnostics).includes("Plan recorded."), false);
+	const timing = streamDiagnostics.at(-1)?.payload as Record<string, unknown>;
+	for (const field of ["last_text_delta_ms", "response_terminal_ms", "sdk_terminal_ms",
+		"completed_event_ms", "stream_settled_ms", "terminal_persist_ms", "text_tail_ms"]) {
+		assert.equal(typeof timing[field], "number", field);
+		assert.ok((timing[field] as number) >= 0, field);
+	}
+	assert.ok((timing.response_terminal_ms as number) <= (timing.sdk_terminal_ms as number));
+	assert.ok((timing.sdk_terminal_ms as number) <= (timing.completed_event_ms as number));
+	assert.ok((timing.completed_event_ms as number) <= (timing.stream_settled_ms as number));
+	const completionTiming = traceRows.map((row) => JSON.parse(row) as Record<string, unknown>)
+		.find((row) => row.kind === "turn_completion_diagnostics")?.payload as Record<string, unknown>;
+	assert.equal(completionTiming.snapshot_written, true);
+	for (const field of ["commit_ms", "continuation_ms", "snapshot_ms", "publish_ms", "elapsed_ms"]) {
+		assert.equal(typeof completionTiming[field], "number", field);
+		assert.ok((completionTiming[field] as number) >= 0, field);
+	}
 
 	writeRequest(backend, "plan-transcript", "transcript.load", { session_id: "plan-session" });
 	const transcript = await waitFor(() => response(messages, "plan-transcript"));
@@ -651,8 +975,11 @@ test("Node backend Plan mode adds structured clarification after /plan", async (
 		request.on("end", () => {
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Plan inspected.\"}\n\n");
-			response.write(`data: {"type":"response.completed","response":{"id":"resp_plan_exposure_${requestBodies.length}"}}\n\n`);
+			writeResponsesText(
+				response,
+				"Plan inspected.",
+				`resp_plan_exposure_${requestBodies.length}`,
+			);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -742,25 +1069,23 @@ test("Root adapters preserve canonical persistence, provider, usage, and gateway
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (providerStep === 0) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-root-parity-plan",
-						name: "update_plan",
-						arguments: JSON.stringify({
-							explanation: "Record adapter parity",
-							plan: [
-								{ step: "Commit canonical input", status: "completed" },
-								{ step: "Compare adapters", status: "in_progress" },
-							],
-						}),
-					},
-				})}\n\n`);
-				response.write('data: {"type":"response.completed","response":{"id":"resp-root-parity-tools","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}\n\n');
+				writeResponsesTool(response, "call-root-parity-plan", "update_plan", {
+					explanation: "Record adapter parity",
+					plan: [
+						{ step: "Commit canonical input", status: "completed" },
+						{ step: "Compare adapters", status: "in_progress" },
+					],
+				}, "resp-root-parity-tools", {
+					input_tokens: 2,
+					output_tokens: 3,
+					total_tokens: 5,
+				});
 			} else {
-				response.write('data: {"type":"response.output_text.delta","delta":"Root parity complete."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-root-parity-final","usage":{"input_tokens":7,"output_tokens":11,"total_tokens":18}}}\n\n');
+				writeResponsesText(response, "Root parity complete.", "resp-root-parity-final", {
+					input_tokens: 7,
+					output_tokens: 11,
+					total_tokens: 18,
+				});
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -899,25 +1224,24 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 			requestBodies.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-worker-rollback-plan",
-						name: "update_plan",
-						arguments: JSON.stringify({
-							explanation: "Persist before rollback",
-							plan: [{ step: "Persist Worker state", status: "completed" }],
-						}),
-					},
-				})}\n\n`);
-				response.write('data: {"type":"response.completed","response":{"id":"resp-worker-rollback-tools","usage":{"total_tokens":4}}}\n\n');
+				writeResponsesTool(response, "call-worker-rollback-plan", "update_plan", {
+					explanation: "Persist before rollback",
+					plan: [{ step: "Persist Worker state", status: "completed" }],
+				}, "resp-worker-rollback-tools", { total_tokens: 4 });
 			} else if (requestBodies.length === 2) {
-				response.write('data: {"type":"response.output_text.delta","delta":"Worker state persisted."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-worker-rollback-final","usage":{"total_tokens":6}}}\n\n');
+				writeResponsesText(
+					response,
+					"Worker state persisted.",
+					"resp-worker-rollback-final",
+					{ total_tokens: 6 },
+				);
 			} else {
-				response.write('data: {"type":"response.output_text.delta","delta":"In-process rollback resumed."}\n\n');
-				response.write('data: {"type":"response.completed","response":{"id":"resp-in-process-rollback","usage":{"total_tokens":8}}}\n\n');
+				writeResponsesText(
+					response,
+					"In-process rollback resumed.",
+					"resp-in-process-rollback",
+					{ total_tokens: 8 },
+				);
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -944,21 +1268,28 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		args: ["--session", "root-adapter-rollback", "--model", "gpt-test"],
 		env: baseEnv,
 	});
+	t.after(() => first.close());
 	const firstMessages: Array<Record<string, unknown>> = [];
 	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
 	});
 	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "bootstrap-errors", "session.bootstrap", { protocol_version: 1, supported_error_context_versions: [1] });
+	await waitFor(() => response(firstMessages, "bootstrap-errors"));
 	writeRequest(first, "worker-turn", "turn.submit", {
 		message: "Persist this turn before adapter rollback.",
 		client_turn_id: "worker-rollback-turn",
 		client_user_message_id: "worker-rollback-message",
 	});
-	const workerFinal = await waitFor(() => firstMessages.find((message) => (
-		message.method === "message.complete"
-		&& paramValue(message, "final") === true
-		&& paramValue(message, "client_turn_id") === "worker-rollback-turn"
-	)), 8_000);
+	const workerFinal = await waitFor(() => {
+		const failure = firstMessages.find((message) => message.method === "turn.failed" || message.method === "gateway.error");
+		assert.equal(failure, undefined, JSON.stringify(failure));
+		return firstMessages.find((message) => (
+			message.method === "message.complete"
+			&& paramValue(message, "final") === true
+			&& paramValue(message, "client_turn_id") === "worker-rollback-turn"
+		));
+	}, 8_000);
 	await waitFor(() => firstMessages.find((message, index) => (
 		index > firstMessages.indexOf(workerFinal)
 		&& message.method === "status.changed"
@@ -982,6 +1313,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		args: ["--session", "root-adapter-rollback", "--model", "gpt-test"],
 		env: { ...baseEnv, MYCLI_AGENT_EXECUTION_ADAPTER: "in_process" },
 	});
+	t.after(() => second.close());
 	const secondMessages: Array<Record<string, unknown>> = [];
 	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
 		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
@@ -1027,7 +1359,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		reopened.close();
 	}
 	const database = new DatabaseSync(dbPath, { readOnly: true });
-	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V12_VERSION);
+	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
 	const ownerCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blobs").get()?.count);
 	const referenceCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blob_refs").get()?.count);
 	assert.ok(ownerCount > 0);
@@ -1069,8 +1401,7 @@ test("Node backend sends and persists local image attachments", async (t) => {
 		request.on("end", () => {
 			requestBody = JSON.parse(body) as Record<string, unknown>;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write('data: {"type":"response.output_text.delta","delta":"described"}\n\n');
-			response.write('data: {"type":"response.completed","response":{"id":"resp_image","usage":{}}}\n\n');
+			writeResponsesText(response, "described", "resp_image");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -1094,6 +1425,7 @@ test("Node backend sends and persists local image attachments", async (t) => {
 			MYCLI_PROTOCOL: "responses",
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_SUPPORTS_IMAGES: "true",
 		},
 	});
 	t.after(() => backend.close().catch(() => undefined));
@@ -1128,6 +1460,7 @@ test("Node backend sends and persists local image attachments", async (t) => {
 		{ type: "input_text", text: "describe" },
 		{
 			type: "input_image",
+			detail: "auto",
 			image_url: `data:image/png;base64,${imageData.toString("base64")}`,
 		},
 	]);
@@ -1170,36 +1503,32 @@ test("Worker-backed root projects steering and follow-up input into TUI transcri
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requestBodies.length === 1) {
 				void firstResponseReleased.then(() => {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-read-steering",
-							name: "Read",
-							arguments: JSON.stringify({ file_path: "README.md", offset: 1, limit: 20 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-steering-tools\"}}\n\n");
+					writeResponsesTool(response, "call-read-steering", "Read", {
+						file_path: "README.md",
+						offset: 1,
+						limit: 20,
+					}, "resp-steering-tools");
 					response.end("data: [DONE]\n\n");
 				});
 				return;
 			}
 			if (requestBodies.length === 2) {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Steering received.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-steering-final\"}}\n\n");
+				writeResponsesText(response, "Steering received.", "resp-steering-final");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 			if (requestBodies.length === 3) {
 				void deferredParentResponseReleased.then(() => {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent finished without tools.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-deferred-parent\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Parent finished without tools.",
+						"resp-deferred-parent",
+					);
 					response.end("data: [DONE]\n\n");
 				});
 				return;
 			}
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Deferred steering received.\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-deferred-steering\"}}\n\n");
+			writeResponsesText(response, "Deferred steering received.", "resp-deferred-steering");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -1338,7 +1667,7 @@ test("Worker-backed root projects steering and follow-up input into TUI transcri
 	assert.equal(await backend.completion, 0);
 });
 
-test("Node backend restores and resolves a durable clarification without a new turn", async (t) => {
+test("Node backend interrupts a historical clarification and waits for a new user turn", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-clarification-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -1353,24 +1682,14 @@ test("Node backend restores and resolves a durable clarification without a new t
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			requestBodies.push(payload);
 			if (requestBodies.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-question",
-						name: "AskUserQuestion",
-						arguments: JSON.stringify({
-							question: "Which runtime?",
-							options: [{ label: "Node" }, { label: "Python" }],
-							header: "Runtime",
-							multi_select: false,
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-question\"}}\n\n");
+				writeResponsesTool(response, "call-question", "AskUserQuestion", {
+					question: "Which runtime?",
+					options: [{ label: "Node" }, { label: "Python" }],
+					header: "Runtime",
+					multi_select: false,
+				}, "resp-question");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Node selected.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-final\"}}\n\n");
+				writeResponsesText(response, "Node selected.", "resp-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -1428,14 +1747,20 @@ test("Node backend restores and resolves a durable clarification without a new t
 	});
 	await waitFor(() => event(secondMessages, "runtime.ready"));
 	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
-	const restored = await waitFor(() => event(secondMessages, "clarify.request"));
-	assert.equal(paramValue(restored, "request_id"), "call-question");
+	await waitFor(() => response(secondMessages, "bootstrap"));
+	assert.equal(secondMessages.some((message) => message.method === "clarify.request"), false);
+	assert.equal(requestBodies.length, 1);
 	writeRequest(second, "answer", "clarify.respond", {
 		request_id: "call-question",
 		response: "Node",
 	});
 	const accepted = await waitFor(() => response(secondMessages, "answer"));
-	assert.equal(resultValue(accepted, "accepted"), true);
+	assert.equal(errorValue(accepted, "code"), "clarification_not_pending");
+	writeRequest(second, "new-turn", "turn.submit", {
+		message: "Use Node for the new task.",
+		client_turn_id: "new-clarification-turn",
+		client_user_message_id: "new-clarification-user",
+	});
 	let final: Record<string, unknown>;
 	try {
 		final = await waitFor(() => secondMessages.find((message) =>
@@ -1450,14 +1775,16 @@ test("Node backend restores and resolves a durable clarification without a new t
 	}
 	assert.equal(paramValue(final, "text"), "Node selected.");
 	assert.equal(requestBodies.length, 2);
-	assert.equal(JSON.stringify(requestBodies[1]?.input).includes("User response: Node"), true);
+	assert.equal(JSON.stringify(requestBodies[1]?.input).includes("User response: Node"), false);
+	assert.match(JSON.stringify(requestBodies[1]?.input), /Use Node for the new task/);
 
 	writeRequest(second, "shutdown-second", "shutdown", {});
 	assert.equal(await second.completion, 0);
 	const reopened = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		assert.equal(reopened.loadState("clarification-session", "suspended_turn"), undefined);
-		assert.equal(reopened.loadTurn("clarification-session", "clarification-client-turn")?.status, "completed");
+		assert.equal(reopened.loadTurn("clarification-session", "clarification-client-turn")?.status, "interrupted");
+		assert.equal(reopened.loadTurn("clarification-session", "new-clarification-turn")?.status, "completed");
 	} finally {
 		reopened.close();
 	}
@@ -1478,6 +1805,7 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 		"---",
 		"PRIVATE SKILL BODY THAT MUST NOT CROSS RESOURCE LIST",
 	].join("\n"), "utf8");
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 
 	const backend = await startNodeBackend({
@@ -1521,9 +1849,76 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 	const resourceResponse = await waitFor(() => response(messages, "resources"));
 	const resources = resultValue(resourceResponse, "resources") as readonly Record<string, unknown>[];
 	assert.equal(resources.some((resource) => resource.id === "skill:review"), true);
+	assert.equal(resources.find((resource) => resource.id === "skill:review")?.command, "/skills");
 	assert.equal(JSON.stringify(resources).includes("PRIVATE SKILL BODY"), false);
 
 	writeRequest(backend, "shutdown-integrations", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("resumed sessions gate integrations using the persisted workspace trust", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-resume-trust-root-"));
+	const home = join(root, "home");
+	const launchWorkspace = join(root, "launch-workspace");
+	const sessionWorkspace = join(root, "session-workspace");
+	await Promise.all([
+		mkdir(join(launchWorkspace, ".mycli", "skills"), { recursive: true }),
+		mkdir(join(sessionWorkspace, ".mycli", "skills"), { recursive: true }),
+		mkdir(home),
+	]);
+	await Promise.all([
+		writeFile(join(launchWorkspace, ".mycli", "skills", "launch.md"), [
+			"---",
+			"name: launch-skill",
+			"description: Launch workspace skill",
+			"---",
+			"launch",
+		].join("\n"), "utf8"),
+		writeFile(join(sessionWorkspace, ".mycli", "skills", "session.md"), [
+			"---",
+			"name: session-skill",
+			"description: Session workspace skill",
+			"---",
+			"session",
+		].join("\n"), "utf8"),
+	]);
+	await new WorkspaceTrustStore({ homeDir: home }).save(launchWorkspace, "trusted");
+	const seed = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		seedCompletedSession(seed, sessionWorkspace, "resume-trust", "question", "answer");
+	} finally {
+		seed.close();
+	}
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+	const backend = await startNodeBackend({
+		cwd: launchWorkspace,
+		args: ["--session", "resume-trust", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "resume-trust-resources", "resource.list", {});
+	const listed = await waitFor(() => response(messages, "resume-trust-resources"));
+	const resources = resultValue(listed, "resources") as readonly Record<string, unknown>[];
+	assert.equal(resources.some((resource) => resource.id === "skill:launch-skill"), false);
+	assert.equal(resources.some((resource) => resource.id === "skill:session-skill"), false);
+	writeRequest(backend, "resume-trust-status", "status.inspect", {});
+	const inspected = await waitFor(() => response(messages, "resume-trust-status"));
+	const trust = resultValue(inspected, "trust") as Record<string, unknown>;
+	assert.equal(trust.workspace, sessionWorkspace);
+	assert.equal(trust.state, "unknown");
+	writeRequest(backend, "shutdown-resume-trust", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 });
 
@@ -1575,28 +1970,20 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 		request.on("data", (chunk) => { body += chunk; });
 		request.on("end", () => {
 				const payload = JSON.parse(body) as Record<string, unknown>;
-				response.writeHead(200, { "content-type": "text/event-stream" });
-				if (isSubagentRequest(payload)) {
-					childRequests.push(payload);
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child inspected repository.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n\n");
-				} else if (parentRequests.push(payload) === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-spawn-1",
-						name: "spawn_agent",
-						arguments: JSON.stringify({
-							task_name: "explore",
-							message: "Inspect the repository.",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-tools\"}}\n\n");
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (isSubagentRequest(payload)) {
+				childRequests.push(payload);
+				writeResponsesText(response, "Child inspected repository.", "resp-child", {
+					input_tokens: 3,
+					output_tokens: 4,
+				});
+			} else if (parentRequests.push(payload) === 1) {
+				writeResponsesTool(response, "call-spawn-1", "spawn_agent", {
+					task_name: "explore",
+					message: "Inspect the repository.",
+				}, "resp-parent-tools");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received child report.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-final\"}}\n\n");
+				writeResponsesText(response, "Parent received child report.", "resp-parent-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -1674,23 +2061,25 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.equal(childRequests.length, 1);
 	assert.deepEqual(toolNames(childRequests[0]?.tools), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "Skill",
+		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
-	assert.match(String(childRequests[0]?.instructions), /^# Identity\n/u);
-	assert.match(String(childRequests[0]?.instructions), /until their goal is genuinely handled/u);
+	const childAuthority = responsesAuthorityText(childRequests[0] ?? {});
+	assert.match(childAuthority, /^# Identity\n/u);
+	assert.match(childAuthority, /until their goal is genuinely handled/u);
 	const childInput = childRequests[0]?.input as readonly Record<string, unknown>[];
-	const childDeveloperContext = childInput.filter((item) => item.role === "developer")
-		.map((item) => String(item.content)).join("\n");
-	assert.match(childDeveloperContext, /Agent path: \/root\/explore/u);
-	assert.match(childDeveloperContext, /Assigned task: explore/u);
+	assert.match(childAuthority, /Agent path: \/root\/explore/u);
+	assert.match(childAuthority, /Assigned task: explore/u);
 	assert.match(
-		childDeveloperContext,
-		/Tool scope: Edit, Patch, Read, Skill, Write, tool_search, update_plan, web_fetch/u,
+		childAuthority,
+		/Tool scope: Edit, Patch, Read, Skill, Write, list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, tool_search, update_plan, view_image, web_fetch/u,
 	);
-	assert.match(childDeveloperContext, /Permission profile: workspace/u);
-	assert.match(childDeveloperContext, /Sandbox mode: workspace-write/u);
-	assert.deepEqual(childInput.at(-1), { role: "user", content: "Inspect the repository." });
+	assert.match(childAuthority, /Permission profile: workspace/u);
+	assert.match(childAuthority, /Sandbox mode: workspace-write/u);
+	assert.deepEqual(childInput.at(-1), {
+		role: "user",
+		content: [{ type: "input_text", text: "Inspect the repository." }],
+	});
 	const subagentEvents = messages.filter((message) => message.method === "subagent.updated");
 	assert.deepEqual(subagentEvents.map((message) => (
 		(message.params as { subagent: { status: string } }).subagent.status
@@ -1782,30 +2171,11 @@ test("Node backend interrupts one Worker-backed child while root and sibling com
 				name: string,
 				argumentsValue: Readonly<Record<string, unknown>>,
 			): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(argumentsValue),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: `resp-${callId}` },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, argumentsValue, `resp-${callId}`);
 				response.end("data: [DONE]\n\n");
 			};
 			const finishText = (text: string, responseId: string): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_text.delta",
-					delta: text,
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId },
-				})}\n\n`);
+				writeResponsesText(response, text, responseId);
 				response.end("data: [DONE]\n\n");
 			};
 			if (isSubagentRequest(payload)) {
@@ -1910,8 +2280,11 @@ test("Node backend interrupts one Worker-backed child while root and sibling com
 			?.status === "completed"
 	)), false);
 	assert.ok(siblingResponse);
-	siblingResponse.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Sibling completed independently.\"}\n\n");
-	siblingResponse.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-interrupt-sibling-complete\"}}\n\n");
+	writeResponsesText(
+		siblingResponse,
+		"Sibling completed independently.",
+		"resp-interrupt-sibling-complete",
+	);
 	siblingResponse.end("data: [DONE]\n\n");
 	await waitFor(() => messages.find((message) => (
 		message.method === "subagent.updated"
@@ -1979,55 +2352,36 @@ test("Node backend rejects AskUserQuestion from a Default-mode Worker child", {
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
 				if (childRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-child-question",
-							name: "AskUserQuestion",
-							arguments: JSON.stringify({
-								question: "Which file should the child inspect?",
-								options: [{ label: "README" }, { label: "package.json" }],
-								header: "File",
-								multi_select: false,
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-question\"}}\n\n");
+					writeResponsesTool(response, "call-child-question", "AskUserQuestion", {
+						question: "Which file should the child inspect?",
+						options: [{ label: "README" }, { label: "package.json" }],
+						header: "File",
+						multi_select: false,
+					}, "resp-child-question");
 				} else {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child continued without clarification.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-clarified\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Child continued without clarification.",
+						"resp-child-clarified",
+					);
 				}
 			} else {
 				parentRequests.push(payload);
 				if (parentRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-spawn-clarification-child",
-							name: "spawn_agent",
-							arguments: JSON.stringify({
-								task_name: "clarify-worker",
-								message: "Ask which file to inspect.",
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-clarify-spawn\"}}\n\n");
+					writeResponsesTool(response, "call-spawn-clarification-child", "spawn_agent", {
+						task_name: "clarify-worker",
+						message: "Ask which file to inspect.",
+					}, "resp-parent-clarify-spawn");
 				} else if (parentRequests.length === 2) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-wait-clarification-child",
-							name: "wait_agent",
-							arguments: JSON.stringify({ timeout_ms: 5_000 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-clarify-wait\"}}\n\n");
+					writeResponsesTool(response, "call-wait-clarification-child", "wait_agent", {
+						timeout_ms: 5_000,
+					}, "resp-parent-clarify-wait");
 				} else {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received child report.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-clarified\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Parent received child report.",
+						"resp-parent-clarified",
+					);
 				}
 			}
 			response.end("data: [DONE]\n\n");
@@ -2134,14 +2488,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 				responseId: string,
 				usage: Readonly<Record<string, number>>,
 			): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_text.delta",
-					delta: text,
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId, usage },
-				})}\n\n`);
+				writeResponsesText(response, text, responseId, usage);
 				response.end("data: [DONE]\n\n");
 			};
 			const finishTool = (
@@ -2151,19 +2498,7 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 				responseId: string,
 				usage: Readonly<Record<string, number>> = {},
 			): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(argumentsValue),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId, usage },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, argumentsValue, responseId, usage);
 				response.end("data: [DONE]\n\n");
 			};
 			const childRequest = isSubagentRequest(payload);
@@ -2189,11 +2524,20 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 								command,
 								yield_time_ms: 3_000,
 								sandbox_permissions: "require_escalated",
+								justification: "Run the child command with the access required by the approval test.",
 							},
 							"resp-concurrent-shell-tool",
 							{ input_tokens: 1, output_tokens: 2, total_tokens: 3 },
 						);
 					});
+					return;
+				}
+				const shellId = runningShellId(payload.input);
+				if (shellId) {
+					finishTool(
+						`call-concurrent-poll-${askerRequests.length}`, "WriteStdin", { session_id: shellId },
+						`resp-concurrent-poll-${askerRequests.length}`,
+					);
 					return;
 				}
 				finishText(
@@ -2333,9 +2677,9 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)
 			?.status === "completed"
 	)).length === 2, 10_000);
-	assert.equal(askerRequests.length, 2);
+	assert.ok(askerRequests.length >= 2);
 	assert.equal(readerRequests.length, 2);
-	assertApprovedShellOutcome(askerRequests[1]?.input, "concurrent-shell-ok");
+	assertApprovedShellOutcome(askerRequests.at(-1)?.input, "concurrent-shell-ok");
 	assert.doesNotMatch(JSON.stringify(askerRequests), /reader-only-content/u);
 	assert.match(JSON.stringify(readerRequests[1]?.input), /reader-only-content/u);
 	assert.doesNotMatch(JSON.stringify(readerRequests), /concurrent-shell-ok/u);
@@ -2391,6 +2735,7 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		"utf8",
 	);
 	const command = `"${process.execPath}" child-command.cjs`;
+	const justification = "Run the requested child command with the required access.";
 	const parentRequests: Record<string, unknown>[] = [];
 	const childRequests: Record<string, unknown>[] = [];
 	let releaseParentFinal!: () => void;
@@ -2407,50 +2752,44 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
 				if (childRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-child-shell",
-							name: "Shell",
-							arguments: JSON.stringify({
-								command,
-								yield_time_ms: 3_000,
-								sandbox_permissions: "require_escalated",
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-shell\"}}\n\n");
+					writeResponsesTool(response, "call-child-shell", "Shell", {
+						command,
+						justification,
+						yield_time_ms: 3_000,
+						sandbox_permissions: "require_escalated",
+					}, "resp-child-shell");
 					response.end("data: [DONE]\n\n");
 					return;
 				}
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Child completed after approval.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-approved\"}}\n\n");
+				const shellId = runningShellId(payload.input);
+				if (shellId) {
+					writeResponsesTool(
+						response, `call-child-poll-${childRequests.length}`, "WriteStdin", { session_id: shellId },
+						`resp-child-poll-${childRequests.length}`,
+					);
+					response.end("data: [DONE]\n\n");
+					return;
+				}
+				writeResponsesText(response, "Child completed after approval.", "resp-child-approved");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 
 			parentRequests.push(payload);
 			if (parentRequests.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-spawn-approved-child",
-						name: "spawn_agent",
-						arguments: JSON.stringify({
-							task_name: "approval-worker",
-							message: "Run the command and report after approval.",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-spawn\"}}\n\n");
+				writeResponsesTool(response, "call-spawn-approved-child", "spawn_agent", {
+					task_name: "approval-worker",
+					message: "Run the command and report after approval.",
+				}, "resp-parent-spawn");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 			void parentFinalReleased.then(() => {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent observed child completion.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-approved-final\"}}\n\n");
+				writeResponsesText(
+					response,
+					"Parent observed child completion.",
+					"resp-parent-approved-final",
+				);
 				response.end("data: [DONE]\n\n");
 			});
 		});
@@ -2513,6 +2852,13 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 	assert.equal(paramValue(approval, "child_session_id"), childSessionId);
 	assert.equal(typeof generation, "number");
 	assert.equal(decisionId, "call-child-shell");
+	assert.equal(paramValue(approval, "command_preview"), command);
+	assert.equal(paramValue(approval, "justification"), justification);
+	const approvalState = projectRuntimeState(reduceRuntimeEvent(
+		initialRuntimeState(), "approval.request", approval.params as Record<string, unknown>,
+	));
+	assert.equal(approvalState.pendingApproval?.commandPreview, command);
+	assert.equal(approvalState.pendingApproval?.justification, justification);
 	await waitFor(() => messages.find((message) => (
 		message.method === "subagent.updated"
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status === "waiting"
@@ -2546,8 +2892,8 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		message.method === "subagent.updated"
 		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status === "completed"
 	)), 8_000);
-	assert.equal(childRequests.length, 2);
-	assertApprovedShellOutcome(childRequests[1]?.input, "child-approved");
+	assert.ok(childRequests.length >= 2);
+	assertApprovedShellOutcome(childRequests.at(-1)?.input, "child-approved");
 	assert.equal(messages.some((message) => (
 		message.method === "approval.respond"
 		&& paramValue(message, "session_id") === childSessionId
@@ -2598,45 +2944,36 @@ test("Node backend gives a Full Access child the frozen parent policy without ap
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
 				if (childRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-child-full-access-shell",
-							name: "Shell",
-							arguments: JSON.stringify({ command, yield_time_ms: 3_000 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-full-access-shell\"}}\n\n");
+					writeResponsesTool(response, "call-child-full-access-shell", "Shell", {
+						command,
+						yield_time_ms: 3_000,
+					}, "resp-child-full-access-shell");
 					response.end("data: [DONE]\n\n");
 					return;
 				}
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Full Access child completed.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-child-full-access-completed\"}}\n\n");
+				writeResponsesText(
+					response,
+					"Full Access child completed.",
+					"resp-child-full-access-completed",
+				);
 				response.end("data: [DONE]\n\n");
 				return;
 			}
 
 			parentRequests.push(payload);
 			if (parentRequests.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-spawn-full-access-child",
-						name: "spawn_agent",
-						arguments: JSON.stringify({
-							task_name: "full-access-worker",
-							message: "Run the command and report the output.",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-spawn-full-access\"}}\n\n");
+				writeResponsesTool(response, "call-spawn-full-access-child", "spawn_agent", {
+					task_name: "full-access-worker",
+					message: "Run the command and report the output.",
+				}, "resp-parent-spawn-full-access");
 				response.end("data: [DONE]\n\n");
 				return;
 			}
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent delegated Full Access work.\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-parent-full-access-completed\"}}\n\n");
+			writeResponsesText(
+				response,
+				"Parent delegated Full Access work.",
+				"resp-parent-full-access-completed",
+			);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -2713,6 +3050,119 @@ test("Node backend gives a Full Access child the frozen parent policy without ap
 	await shutdown();
 });
 
+test("Node backend preserves a disabled parent run profile without marking the child trusted", {
+	timeout: 10_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-restricted-child-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const parentRequests: Record<string, unknown>[] = [];
+	const childRequests: Record<string, unknown>[] = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			const payload = JSON.parse(body) as Record<string, unknown>;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (isSubagentRequest(payload)) {
+				childRequests.push(payload);
+				writeResponsesText(
+					response,
+					"Restricted child completed.",
+					"resp-restricted-child-completed",
+				);
+				response.end("data: [DONE]\n\n");
+				return;
+			}
+
+			parentRequests.push(payload);
+			if (parentRequests.length === 1) {
+				writeResponsesTool(response, "call-spawn-restricted-child", "spawn_agent", {
+					task_name: "restricted-worker",
+					message: "Report the inherited execution policy.",
+				}, "resp-parent-spawn-restricted");
+				response.end("data: [DONE]\n\n");
+				return;
+			}
+			writeResponsesText(
+				response,
+				"Parent completed after restricted delegation.",
+				"resp-parent-restricted-completed",
+			);
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "restricted-child-parent", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	let closed = false;
+	const shutdown = async (): Promise<void> => {
+		if (closed) return;
+		closed = true;
+		writeRequest(backend, "shutdown-restricted-child", "shutdown", {});
+		assert.equal(await backend.completion, 0);
+	};
+	t.after(async () => {
+		await shutdown();
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "start-restricted-child", "turn.submit", {
+		message: "Delegate within the current untrusted workspace.",
+		client_turn_id: "restricted-child-parent-turn",
+		client_user_message_id: "restricted-child-parent-message",
+	});
+
+	await waitFor(() => messages.find((message) => (
+		message.method === "subagent.updated"
+		&& (paramValue(message, "subagent") as Record<string, unknown> | undefined)?.status
+			=== "completed"
+	)), 6_000);
+	assert.equal(childRequests.length, 1);
+	assert.match(JSON.stringify(childRequests[0]?.input), /Permission profile: workspace/u);
+	assert.match(JSON.stringify(childRequests[0]?.input), /Sandbox mode: workspace-write/u);
+	assert.match(JSON.stringify(childRequests[0]?.input), /Filesystem policy: workspace_write/u);
+	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		const task = store.subagentTasks.list("restricted-child-parent")[0];
+		assert.equal(task?.status, "completed");
+		const child = task ? store.agentThreads.get(task.childSessionId) : undefined;
+		assert.deepEqual(child?.spawnConfig?.executionPolicy, {
+			trusted: false,
+			permission: "workspace",
+			sandboxMode: "workspace-write",
+			filesystem: "workspace_write",
+			network: "disabled",
+			writableRoots: [await realpath(workspace)],
+		});
+	} finally {
+		store.close();
+	}
+	await shutdown();
+});
+
 test("Node backend delivers background subagent completion through wait_agent without polling", {
 	timeout: 10_000,
 }, async (t) => {
@@ -2731,38 +3181,24 @@ test("Node backend delivers background subagent completion through wait_agent wi
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (isSubagentRequest(payload)) {
 				childRequests.push(payload);
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Background child report.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-background-child\"}}\n\n");
+				writeResponsesText(response, "Background child report.", "resp-background-child");
 			} else {
 				parentRequests.push(payload);
 				if (parentRequests.length === 1) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-background-task",
-							name: "spawn_agent",
-							arguments: JSON.stringify({
-								task_name: "inspect",
-								message: "Inspect in the background.",
-							}),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-background-task\"}}\n\n");
+					writeResponsesTool(response, "call-background-task", "spawn_agent", {
+						task_name: "inspect",
+						message: "Inspect in the background.",
+					}, "resp-background-task");
 				} else if (parentRequests.length === 2) {
-					response.write(`data: ${JSON.stringify({
-						type: "response.output_item.done",
-						item: {
-							type: "function_call",
-							call_id: "call-wait-agent",
-							name: "wait_agent",
-							arguments: JSON.stringify({ timeout_ms: 5_000 }),
-						},
-					})}\n\n`);
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-wait-agent\"}}\n\n");
+					writeResponsesTool(response, "call-wait-agent", "wait_agent", {
+						timeout_ms: 5_000,
+					}, "resp-wait-agent");
 				} else {
-					response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Parent received automatic background result.\"}\n\n");
-					response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-background-parent-final\"}}\n\n");
+					writeResponsesText(
+						response,
+						"Parent received automatic background result.",
+						"resp-background-parent-final",
+					);
 				}
 			}
 			response.end("data: [DONE]\n\n");
@@ -2921,27 +3357,11 @@ test("Node backend triggers a durable follow-up turn without fabricating child u
 			const payload = JSON.parse(body) as Record<string, unknown>;
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			const finishText = (text: string, responseId: string): void => {
-				response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: responseId },
-				})}\n\n`);
+				writeResponsesText(response, text, responseId);
 				response.end("data: [DONE]\n\n");
 			};
 			const finishTool = (callId: string, name: string, args: Record<string, unknown>): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(args),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: `resp-${callId}` },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, args, `resp-${callId}`);
 				response.end("data: [DONE]\n\n");
 			};
 			if (isSubagentRequest(payload)) {
@@ -3179,24 +3599,11 @@ test("Node backend recovers a stale agent and accepts an explicit follow-up afte
 			const tools = toolNames(payload.tools);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			const completeText = (text: string, id: string): void => {
-				response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: text })}\n\n`);
-				response.write(`data: ${JSON.stringify({ type: "response.completed", response: { id } })}\n\n`);
+				writeResponsesText(response, text, id);
 				response.end("data: [DONE]\n\n");
 			};
 			const completeTool = (callId: string, name: string, args: Record<string, unknown>): void => {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: callId,
-						name,
-						arguments: JSON.stringify(args),
-					},
-				})}\n\n`);
-				response.write(`data: ${JSON.stringify({
-					type: "response.completed",
-					response: { id: `resp-${callId}` },
-				})}\n\n`);
+				writeResponsesTool(response, callId, name, args, `resp-${callId}`);
 				response.end("data: [DONE]\n\n");
 			};
 			if (tools.length === 1 && tools[0] === "Read") {
@@ -3355,8 +3762,7 @@ test("Node backend repairs a terminal subagent notification and does not duplica
 		request.on("end", () => {
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Recovered once.\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-subagent-recovery\"}}\n\n");
+			writeResponsesText(response, "Recovered once.", "resp-subagent-recovery");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -3554,19 +3960,11 @@ test("wait_agent wakes for live user steering and commits it before the next pro
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requests.length === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-wait-steering",
-						name: "wait_agent",
-						arguments: JSON.stringify({ timeout_ms: 5_000 }),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-wait-steering\"}}\n\n");
+				writeResponsesTool(response, "call-wait-steering", "wait_agent", {
+					timeout_ms: 5_000,
+				}, "resp-wait-steering");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Steering received after wait.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-steering-final\"}}\n\n");
+				writeResponsesText(response, "Steering received after wait.", "resp-steering-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -3639,8 +4037,7 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 			const payload = JSON.parse(body) as Record<string, unknown>;
 			requestTools.push(providerToolNames(payload.tools));
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n");
-			response.write(`data: {"type":"response.completed","response":{"id":"resp_${requestTools.length}"}}\n\n`);
+			writeResponsesText(response, "done", `resp_${requestTools.length}`);
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -3677,10 +4074,23 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 		client_user_message_id: "message-untrusted",
 	});
 	await waitFor(() => finalMessageCount(messages) === 1);
+	const untrustedCompleted = await waitFor(() => messages.find((message) => (
+		message.method === "turn.completed"
+		&& paramValue(message, "client_turn_id") === "turn-untrusted"
+	)));
+	await waitFor(() => messages.find((message, index) => (
+		index > messages.indexOf(untrustedCompleted)
+		&& message.method === "status.changed"
+		&& paramValue(message, "turn_running") === false
+	)));
 	writeRequest(backend, "trust-shell", "workspace.trust.set", { state: "trusted" });
-	await waitFor(() => response(messages, "trust-shell"));
+	const trusted = await waitFor(() => response(messages, "trust-shell"));
+	assert.equal(resultValue(trusted, "state"), "trusted");
 	writeRequest(backend, "permission-shell", "permissions.update", { profile: "read-only" });
-	await waitFor(() => response(messages, "permission-shell"));
+	const permission = await waitFor(() => response(messages, "permission-shell"));
+	const permissionResult = resultValue(permission, "permissions");
+	assert.ok(permissionResult && typeof permissionResult === "object" && !Array.isArray(permissionResult));
+	assert.equal((permissionResult as Record<string, unknown>).active, "read-only");
 	writeRequest(backend, "turn-trusted", "turn.submit", {
 		message: "second",
 		client_turn_id: "turn-trusted",
@@ -3690,13 +4100,13 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 
 	assert.deepEqual(requestTools[0], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "Skill",
+		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent", "web_search",
 	]);
 	assert.deepEqual(requestTools[1], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
+		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
 		"followup_task", "interrupt_agent", "list_agents", "wait_agent", "web_search",
 	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
@@ -3758,6 +4168,349 @@ test("Node backend persists workspace trust across process restarts", async (t) 
 	});
 	writeRequest(second, "shutdown-second", "shutdown", {});
 	assert.equal(await second.completion, 0);
+});
+
+test("Node backend atomically activates and removes project configuration with workspace trust", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-config-trust-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const userConfig = join(home, ".mycli", "config.toml");
+	const projectConfig = join(workspace, ".mycli", "config.toml");
+	const projectSkill = join(workspace, ".mycli", "skills", "private-review.md");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(join(workspace, ".mycli", "skills"), { recursive: true }),
+	]);
+	await writeFile(userConfig, "[model]\nname = \"user-model\"\n", "utf8");
+	await writeFile(projectConfig, "[broken\nprivate = 'not-read'\n", "utf8");
+	await writeFile(projectSkill, [
+		"---",
+		"name: private-review",
+		"description: Project-only review skill",
+		"---",
+		"private project instructions",
+	].join("\n"), "utf8");
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "config-trust-session"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+		},
+	} as const;
+
+	const backend = await startNodeBackend(options);
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "bootstrap-untrusted-config", "session.bootstrap", { protocol_version: 1 });
+	const untrusted = await waitFor(() => response(messages, "bootstrap-untrusted-config"));
+	assert.equal(resultValue(untrusted, "model"), "user-model");
+	writeRequest(backend, "resources-untrusted-config", "resource.list", {});
+	const untrustedResources = await waitFor(() => response(messages, "resources-untrusted-config"));
+	assert.equal(
+		(resultValue(untrustedResources, "resources") as readonly Record<string, unknown>[])
+			.some((resource) => resource.id === "skill:private-review"),
+		false,
+	);
+
+	writeRequest(backend, "trust-invalid-config", "workspace.trust.set", { state: "trusted" });
+	const invalidTrust = await waitFor(() => response(messages, "trust-invalid-config"));
+	assert.equal(errorValue(invalidTrust, "code"), "internal_error");
+	writeRequest(backend, "trust-status-after-failure", "workspace.trust.status", {});
+	const failedStatus = await waitFor(() => response(messages, "trust-status-after-failure"));
+	assert.equal(resultValue(failedStatus, "state"), "unknown");
+
+	await writeFile(projectConfig, "[model]\nname = \"project-model\"\n", "utf8");
+	writeRequest(backend, "trust-valid-config", "workspace.trust.set", { state: "trusted" });
+	const acceptedTrust = await waitFor(() => response(messages, "trust-valid-config"));
+	assert.equal(resultValue(acceptedTrust, "state"), "trusted");
+	writeRequest(backend, "bootstrap-trusted-config", "session.bootstrap", { protocol_version: 1 });
+	const trusted = await waitFor(() => response(messages, "bootstrap-trusted-config"));
+	assert.equal(resultValue(trusted, "model"), "project-model");
+	writeRequest(backend, "resources-trusted-config", "resource.list", {});
+	const trustedResources = await waitFor(() => response(messages, "resources-trusted-config"));
+	assert.equal(
+		(resultValue(trustedResources, "resources") as readonly Record<string, unknown>[])
+			.some((resource) => resource.id === "skill:private-review"),
+		true,
+	);
+
+	writeRequest(backend, "untrust-config", "workspace.trust.set", { state: "untrusted" });
+	const removedTrust = await waitFor(() => response(messages, "untrust-config"));
+	assert.equal(resultValue(removedTrust, "state"), "untrusted");
+	writeRequest(backend, "bootstrap-revoked-config", "session.bootstrap", { protocol_version: 1 });
+	const revoked = await waitFor(() => response(messages, "bootstrap-revoked-config"));
+	assert.equal(resultValue(revoked, "model"), "user-model");
+	writeRequest(backend, "resources-revoked-config", "resource.list", {});
+	const revokedResources = await waitFor(() => response(messages, "resources-revoked-config"));
+	assert.equal(
+		(resultValue(revokedResources, "resources") as readonly Record<string, unknown>[])
+			.some((resource) => resource.id === "skill:private-review"),
+		false,
+	);
+
+	writeRequest(backend, "shutdown-config-trust", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend excludes workspace instructions until trust is active", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-instructions-trust-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const privateInstruction = "PROJECT_INSTRUCTION_VISIBLE_ONLY_AFTER_TRUST";
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	await writeFile(join(workspace, "AGENTS.md"), `# Instructions\n\n${privateInstruction}\n`, "utf8");
+	const requests: Array<Record<string, unknown>> = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requests.push(JSON.parse(body) as Record<string, unknown>);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			writeResponsesText(response, "done", `resp_${requests.length}`);
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "instructions-trust-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_ROOT_AGENT_EXECUTION_ADAPTER: "in_process",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "instructions-untrusted-turn", "turn.submit", {
+		message: "first",
+		client_turn_id: "instructions-untrusted-turn",
+		client_user_message_id: "instructions-untrusted-message",
+	});
+	await waitFor(() => finalMessageCount(messages) === 1);
+	assert.equal(JSON.stringify(requests[0]?.input).includes(privateInstruction), false);
+
+	writeRequest(backend, "instructions-trust", "workspace.trust.set", { state: "trusted" });
+	const trusted = await waitFor(() => response(messages, "instructions-trust"));
+	assert.equal(resultValue(trusted, "state"), "trusted");
+	writeRequest(backend, "instructions-trusted-turn", "turn.submit", {
+		message: "second",
+		client_turn_id: "instructions-trusted-turn",
+		client_user_message_id: "instructions-trusted-message",
+	});
+	await waitFor(() => finalMessageCount(messages) === 2);
+	assert.equal(JSON.stringify(requests[1]?.input).includes(privateInstruction), true);
+
+	writeRequest(backend, "shutdown-instructions-trust", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("provider connectivity validation is bounded, optional, and sanitizes failures", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-connectivity-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const requests: Array<Record<string, unknown>> = [];
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requests.push(JSON.parse(body) as Record<string, unknown>);
+			if (requests.length === 1) {
+				const item = {
+					type: "message",
+					id: "msg_connectivity",
+					role: "assistant",
+					status: "completed",
+					content: [{ type: "output_text", text: "OK", annotations: [] }],
+				};
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				response.end([
+					'data: {"type":"response.created","response":{"id":"resp_connectivity","status":"in_progress"}}',
+					"",
+					`data: ${JSON.stringify({
+						type: "response.output_item.added",
+						output_index: 0,
+						item: { ...item, status: "in_progress", content: [] },
+					})}`,
+					"",
+					'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"OK"}',
+					"",
+					`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item })}`,
+					"",
+					`data: ${JSON.stringify({
+						type: "response.completed",
+						response: {
+							id: "resp_connectivity",
+							status: "completed",
+							output: [item],
+							usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+						},
+					})}`,
+					"",
+					"data: [DONE]",
+					"",
+				].join("\n"));
+				return;
+			}
+			response.writeHead(401, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: { message: "private upstream authentication detail" } }));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => error ? reject(error) : resolve());
+		});
+		await rm(root, { recursive: true, force: true });
+	});
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "connectivity-session", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "connectivity-save-key", "auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "openai",
+		api_key: "connectivity-test-key",
+	});
+	const saved = await waitFor(() => response(messages, "connectivity-save-key"));
+	assert.equal(resultValue(saved, "ok"), true);
+
+	writeRequest(backend, "connectivity-success", "provider.connectivity.validate", {});
+	const success = await waitFor(() => response(messages, "connectivity-success"));
+	assert.deepEqual(success.result, { ok: true, message: "Provider connection verified." });
+	assert.equal(requests[0]?.max_output_tokens, 16);
+	assert.equal(requests[0]?.store, false);
+	assert.deepEqual(providerToolNames(requests[0]?.tools), []);
+	assert.equal(JSON.stringify(requests[0]).includes("connectivity-test-key"), false);
+
+	writeRequest(backend, "connectivity-failure", "provider.connectivity.validate", {});
+	const failure = await waitFor(() => response(messages, "connectivity-failure"));
+	assert.deepEqual(failure.result, {
+		ok: false,
+		message: "Unable to reach the selected provider.",
+	});
+	assert.equal(JSON.stringify(failure).includes("private upstream authentication detail"), false);
+
+	writeRequest(backend, "shutdown-connectivity", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
+test("Node backend applies a launch profile to new and resumed sessions without persisting selection", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-config-profile-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const profilePath = join(home, ".mycli", "work.config.toml");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(workspace, { recursive: true }),
+	]);
+	await writeFile(join(home, ".mycli", "config.toml"), "[model]\nname = \"user-model\"\n", "utf8");
+	await writeFile(
+		profilePath,
+		'tui_theme = "light"\n[model]\nname = "profile-model"\n',
+		"utf8",
+	);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const options = {
+		cwd: workspace,
+		args: ["--session", "profile-runtime-session", "--profile", "work"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: "http://127.0.0.1:9/v1",
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_MEMORY_ENABLED: "false",
+		},
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "bootstrap-profile-new", "session.bootstrap", { protocol_version: 1 });
+	const bootstrap = await waitFor(() => response(firstMessages, "bootstrap-profile-new"));
+	assert.equal(resultValue(bootstrap, "model"), "profile-model");
+	writeRequest(first, "settings-profile-new", "settings.load", {});
+	const settings = await waitFor(() => response(firstMessages, "settings-profile-new"));
+	assert.equal((resultValue(settings, "settings") as Record<string, unknown>).theme, "light");
+	assert.equal((resultValue(settings, "sources") as Record<string, unknown>).theme, "profile");
+	writeRequest(first, "shutdown-profile-new", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	await writeFile(profilePath, "[broken", "utf8");
+	await assert.rejects(
+		startNodeBackend(options),
+		(error: unknown) => error instanceof ConfigError
+			&& error.diagnostic.code === "invalid_toml"
+			&& error.diagnostic.layer === "profile",
+	);
+
+	const resumed = await startNodeBackend({
+		...options,
+		args: ["--session", "profile-runtime-session"],
+	});
+	const resumedMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: resumed.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		resumedMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(resumedMessages, "runtime.ready"));
+	writeRequest(resumed, "settings-profile-resumed", "settings.load", {});
+	const resumedSettings = await waitFor(() => response(resumedMessages, "settings-profile-resumed"));
+	assert.equal((resultValue(resumedSettings, "settings") as Record<string, unknown>).theme, "dark");
+	assert.equal((resultValue(resumedSettings, "sources") as Record<string, unknown>).theme, "default");
+	writeRequest(resumed, "shutdown-profile-resumed", "shutdown", {});
+	assert.equal(await resumed.completion, 0);
 });
 
 test("Worker-backed root atomically resumes complete persisted session state", async (t) => {
@@ -3838,8 +4591,7 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 		request.on("end", () => {
 			requests.push(JSON.parse(body) as Record<string, unknown>);
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"target resumed\"}\n\n");
-			response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_target\"}}\n\n");
+			writeResponsesText(response, "target resumed", "resp_target");
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -3873,28 +4625,14 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 	writeRequest(backend, "approval-resume", "session.resume", { session_id: "approval" });
 	const approvalResume = await waitFor(() => response(messages, "approval-resume"));
 	assert.equal(resultValue(approvalResume, "session_id"), "approval");
-	const approvalEvent = await waitFor(() => sessionEvent(messages, "approval.request", "approval"));
-	assert.equal(paramValue(approvalEvent, "decision_id"), "call-approval");
-	assert.deepEqual(paramValue(approvalEvent, "permission_request"), {
-		network: { enabled: true },
-	});
+	assert.equal(sessionEvent(messages, "approval.request", "approval"), undefined);
 	writeRequest(backend, "approval-reject", "approval.respond", {
 		decision_id: "call-approval",
 		choice: "reject",
 	});
 	const approvalRejected = await waitFor(() => response(messages, "approval-reject"));
-	assert.equal(resultValue(approvalRejected, "accepted"), true);
-	const approvalCompleted = await waitFor(() => messages.find((message) => {
-		if (message.method !== "turn.completed") return false;
-		const params = message.params as Record<string, unknown> | undefined;
-		return params?.client_turn_id === "approval-client-approval";
-	}));
-	await waitFor(() => messages.find((message, index) => (
-		index > messages.indexOf(approvalCompleted)
-		&& message.method === "status.changed"
-		&& paramValue(message, "session_id") === "approval"
-		&& paramValue(message, "turn_running") === false
-	)));
+	assert.equal(errorValue(approvalRejected, "code"), "approval_not_pending");
+	assert.equal(requests.length, 0);
 
 	writeRequest(backend, "invalid-resume", "session.resume", { session_id: "invalid" });
 	const invalidResume = await waitFor(() => response(messages, "invalid-resume"));
@@ -3924,6 +4662,19 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 	writeRequest(backend, "target-transcript", "transcript.load", { session_id: "target" });
 	const transcript = await waitFor(() => response(messages, "target-transcript"));
 	assert.match(JSON.stringify(resultValue(transcript, "items")), /target question/);
+	const queuedCompletion = await waitFor(() => messages.find((message) => {
+		if (message.method !== "message.complete") return false;
+		const params = message.params as Record<string, unknown> | undefined;
+		return params?.final === true
+			&& params.text === "target resumed"
+			&& params.client_turn_id === "queue-client-target";
+	}));
+	await waitFor(() => messages.find((message, index) => (
+		index > messages.indexOf(queuedCompletion)
+		&& message.method === "status.changed"
+		&& paramValue(message, "session_id") === "target"
+		&& paramValue(message, "turn_running") === false
+	)));
 
 	writeRequest(backend, "target-turn", "turn.submit", {
 		message: "continue target",
@@ -3937,11 +4688,10 @@ test("Worker-backed root atomically resumes complete persisted session state", a
 			&& params.text === "target resumed"
 			&& params.client_turn_id === "target-client-turn";
 	}));
-	const resumedRequests = requests.slice(1);
-	assert.ok(resumedRequests.some((request) => (
+	assert.ok(requests.some((request) => (
 		JSON.stringify(request.input).includes("target question")
 	)));
-	assert.equal(resumedRequests.some((request) => (
+	assert.equal(requests.some((request) => (
 		JSON.stringify(request.input).includes("source question")
 	)), false);
 
@@ -4069,7 +4819,7 @@ test("Node backend interrupts an orphaned claimed approval effect without replay
 	}
 });
 
-test("Node backend restores a durably queued follow-up without provider IO", async (t) => {
+test("Node backend drains a durable queued follow-up once after restart", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-queue-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -4114,10 +4864,9 @@ test("Node backend restores a durably queued follow-up without provider IO", asy
 	writeRequest(second, "bootstrap", "session.bootstrap", { protocol_version: 1 });
 	const bootstrap = await waitFor(() => response(secondMessages, "bootstrap"));
 	const status = resultValue(bootstrap, "status") as Record<string, unknown>;
-	assert.equal(status.queue_revision, 1);
-	assert.deepEqual(status.queued_follow_up, ["persist across restart"]);
-	const migration = resultValue(bootstrap, "legacy_user_queue_migration") as Record<string, unknown>;
-	assert.equal((migration.records as Array<Record<string, unknown>>)[0]?.text, "persist across restart");
+	assert.equal(status.queue_revision, 3);
+	assert.deepEqual(status.queued_follow_up, []);
+	assert.equal("legacy_user_queue_migration" in (bootstrap.result as Record<string, unknown>), false);
 	writeRequest(second, "shutdown-second", "shutdown", {});
 	assert.equal(await second.completion, 0);
 });
@@ -4194,10 +4943,10 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
 	let requestNumber = 0;
-	const runCommand = async (command: string): Promise<Record<string, unknown>> => {
+	const runCommand = async (command: string, surface = "tui"): Promise<Record<string, unknown>> => {
 		requestNumber += 1;
 		const id = `command-${requestNumber}`;
-		writeRequest(backend, id, "command.run", { command, surface: "tui" });
+		writeRequest(backend, id, "command.run", { command, surface });
 		return await waitFor(() => response(messages, id));
 	};
 
@@ -4226,7 +4975,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 		"traces",
 		"command-session-trace.jsonl.1",
 	)), true);
-	const tasks = await runCommand("/tasks agents");
+	const tasks = await runCommand("/agents", "cli");
 	assert.equal(displayValue(tasks, "title"), "Background agents");
 	assert.equal(displayValue(tasks, "total_rows"), 0);
 
@@ -4254,7 +5003,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	assert.equal(displayValue(normalizedResult, "kind"), "notice");
 	assert.equal(resultValue(normalizedResult, "phase"), "complete");
 	assert.equal(resultValue(normalizedResult, "status"), "already_normalized");
-	assert.equal(resultValue(normalizedResult, "schema_version"), 12);
+	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V14_VERSION);
 	writeRequest(backend, "provider-free-shutdown", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	const normalized = openRuntimeSessionStore({ dbPath });
@@ -4265,7 +5014,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	}
 });
 
-test("Node backend reports v12 content blobs complete and collects explicit orphans", async (t) => {
+test("Node backend reports v14 content blobs complete and collects explicit orphans", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-content-blob-maintenance-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -4315,7 +5064,7 @@ test("Node backend reports v12 content blobs complete and collects explicit orph
 	const complete = await runCommand("/session maintenance --apply-content-blobs");
 	assert.equal(resultValue(complete, "phase"), "complete");
 	assert.equal(resultValue(complete, "status"), "already_blob_backed");
-	assert.equal(resultValue(complete, "schema_version"), 12);
+	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V14_VERSION);
 	assert.doesNotMatch(JSON.stringify(complete), /private backend content|content-event/u);
 
 	const orphan = encodeSessionContentBlob("private backend orphan ".repeat(500));
@@ -4358,22 +5107,12 @@ test("Node backend undoes a file created by a real provider tool turn", async (t
 			requests += 1;
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			if (requests === 1) {
-				response.write(`data: ${JSON.stringify({
-					type: "response.output_item.done",
-					item: {
-						type: "function_call",
-						call_id: "call-write-undo",
-						name: "Write",
-						arguments: JSON.stringify({
-							file_path: "undo-created.txt",
-							content: "created for undo\n",
-						}),
-					},
-				})}\n\n`);
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-write-undo\"}}\n\n");
+				writeResponsesTool(response, "call-write-undo", "Write", {
+					file_path: "undo-created.txt",
+					content: "created for undo\n",
+				}, "resp-write-undo");
 			} else {
-				response.write("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Created.\"}\n\n");
-				response.write("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-write-final\"}}\n\n");
+				writeResponsesText(response, "Created.", "resp-write-final");
 			}
 			response.end("data: [DONE]\n\n");
 		});
@@ -4429,6 +5168,281 @@ test("Node backend undoes a file created by a real provider tool turn", async (t
 	assert.equal(await backend.completion, 0);
 });
 
+test("Node backend gates missing custom credentials and reports bounded readiness sources", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-auth-readiness-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(workspace),
+	]);
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		"[model]",
+		'provider = "openai"',
+		'protocol = "responses"',
+		'name = "gpt-auth-readiness"',
+		'api_base_url = "https://example.invalid/v1"',
+		'auth_ref = "catalog-account"',
+	].join("\n"), "utf8");
+	const options = {
+		cwd: workspace,
+		args: ["--session", "auth-readiness-session"],
+		env: { HOME: home },
+	} as const;
+	const backend = await startNodeBackend(options);
+	const additionalBackends: Array<Awaited<ReturnType<typeof startNodeBackend>>> = [];
+	t.after(async () => {
+		for (const activeBackend of additionalBackends) await activeBackend.close();
+		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "bootstrap-missing-auth", "session.bootstrap", { protocol_version: 1 });
+	const missingBootstrap = await waitFor(() => response(messages, "bootstrap-missing-auth"));
+	assert.deepEqual(resultValue(missingBootstrap, "auth_status"), {
+		ready: false,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "missing",
+	});
+	const providerRows = resultValue(missingBootstrap, "auth_providers") as Array<Record<string, unknown>>;
+	assert.equal(providerRows.find((provider) => provider.id === "openai")?.auth_ref, "catalog-account");
+	assert.equal(providerRows.find((provider) => provider.id === "openai")?.credential_source, "missing");
+
+	writeRequest(backend, "submit-missing-auth", "turn.submit", {
+		message: "prompt-sentinel-must-not-persist",
+		client_turn_id: "missing-auth-turn",
+		client_user_message_id: "missing-auth-message",
+	});
+	const rejected = await waitFor(() => response(messages, "submit-missing-auth"));
+	assert.equal(errorValue(rejected, "code"), "auth_required");
+	assert.equal(JSON.stringify(rejected).includes("prompt-sentinel-must-not-persist"), false);
+	assert.equal(event(messages, "gateway.error"), undefined);
+	writeRequest(backend, "transcript-after-auth-rejection", "transcript.load", {
+		session_id: "auth-readiness-session",
+		before: null,
+	});
+	const transcript = await waitFor(() => response(messages, "transcript-after-auth-rejection"));
+	assert.deepEqual(resultValue(transcript, "items"), []);
+
+	writeRequest(backend, "save-unrelated-auth", "auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "unrelated-account",
+		api_key: "rejected-secret-sentinel",
+	});
+	const unrelated = await waitFor(() => response(messages, "save-unrelated-auth"));
+	assert.equal(errorValue(unrelated, "code"), "invalid_params");
+	assert.equal(JSON.stringify(unrelated).includes("unrelated-account"), false);
+	assert.equal(JSON.stringify(unrelated).includes("rejected-secret-sentinel"), false);
+
+	writeRequest(backend, "save-current-auth", "auth.api_key.save", {
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		api_key: "stored-secret-sentinel",
+	});
+	const saved = await waitFor(() => response(messages, "save-current-auth"));
+	assert.deepEqual(resultValue(saved, "auth_status"), {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "stored",
+	});
+	assert.equal(JSON.stringify(saved).includes("stored-secret-sentinel"), false);
+	const authFile = await readFile(join(home, ".mycli", "auth.json"), "utf8");
+	assert.equal(JSON.parse(authFile)["catalog-account"].key, "stored-secret-sentinel");
+
+	writeRequest(backend, "shutdown-auth-readiness", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+
+	const environmentBackend = await startNodeBackend({
+		...options,
+		env: { HOME: home, MYCLI_API_KEY: "environment-secret-sentinel" },
+	});
+	additionalBackends.push(environmentBackend);
+	const environmentMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: environmentBackend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		environmentMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(environmentMessages, "runtime.ready"));
+	writeRequest(environmentBackend, "bootstrap-environment-auth", "session.bootstrap", { protocol_version: 1 });
+	const environmentBootstrap = await waitFor(() => response(
+		environmentMessages,
+		"bootstrap-environment-auth",
+	));
+	assert.deepEqual(resultValue(environmentBootstrap, "auth_status"), {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "environment",
+	});
+	assert.equal(JSON.stringify(environmentBootstrap).includes("environment-secret-sentinel"), false);
+	writeRequest(environmentBackend, "shutdown-environment-auth", "shutdown", {});
+	assert.equal(await environmentBackend.completion, 0);
+
+	await writeFile(join(home, ".mycli", "auth.json"), "{}\n", "utf8");
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		'api_key = "legacy-secret-sentinel"',
+		"[model]",
+		'provider = "openai"',
+		'protocol = "responses"',
+		'name = "gpt-auth-readiness"',
+		'api_base_url = "https://example.invalid/v1"',
+		'auth_ref = "catalog-account"',
+	].join("\n"), "utf8");
+	const legacyBackend = await startNodeBackend(options);
+	additionalBackends.push(legacyBackend);
+	const legacyMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: legacyBackend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		legacyMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(legacyMessages, "runtime.ready"));
+	writeRequest(legacyBackend, "bootstrap-legacy-auth", "session.bootstrap", { protocol_version: 1 });
+	const legacyBootstrap = await waitFor(() => response(legacyMessages, "bootstrap-legacy-auth"));
+	assert.deepEqual(resultValue(legacyBootstrap, "auth_status"), {
+		ready: true,
+		provider_id: "openai",
+		auth_ref: "catalog-account",
+		source: "legacy_config",
+	});
+	assert.equal(JSON.stringify(legacyBootstrap).includes("legacy-secret-sentinel"), false);
+	writeRequest(legacyBackend, "shutdown-legacy-auth", "shutdown", {});
+	assert.equal(await legacyBackend.completion, 0);
+});
+
+test("Node backend activates experimental routes and scopes credentials and models by route", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-experimental-provider-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([
+		mkdir(join(home, ".mycli"), { recursive: true }),
+		mkdir(workspace),
+	]);
+	await writeFile(join(home, ".mycli", "models.json"), `${JSON.stringify({
+		version: 2,
+		providers: {
+			fireworks: {
+				source: "pi_ai_builtin",
+				protocol: "chat_completions",
+				auth_ref: "fireworks-primary",
+			},
+			"fireworks-alt": {
+				catalog_provider: "fireworks",
+				protocol: "chat_completions",
+				auth_ref: "fireworks-alt",
+			},
+		},
+	}, null, 2)}\n`, "utf8");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "experimental-provider-session"],
+		env: { HOME: home },
+	});
+	t.after(async () => {
+		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "experimental-providers", "provider.list", {});
+	const providerList = await waitFor(() => response(messages, "experimental-providers"));
+	const providerRows = resultValue(providerList, "providers") as Array<Record<string, unknown>>;
+	for (const providerId of ["fireworks", "fireworks-alt"]) {
+		const route = providerRows.find((provider) => provider.id === providerId);
+		assert.equal(route?.activation, "active");
+		assert.equal(route?.configured, true);
+		assert.equal(route?.ready, false);
+		assert.equal(route?.source, "pi_ai_builtin");
+	}
+
+	writeRequest(backend, "experimental-models", "model.list", { provider: "fireworks" });
+	const primaryModels = await waitFor(() => response(messages, "experimental-models"));
+	assert.equal("error" in primaryModels, false, JSON.stringify(primaryModels));
+	const primaryCatalog = resultValue(primaryModels, "models") as Array<Record<string, unknown>>;
+	assert.equal(primaryCatalog.length > 0, true);
+	assert.equal(primaryCatalog.every((model) => model.provider === "fireworks"), true);
+
+	writeRequest(backend, "experimental-alt-models", "model.list", { provider: "fireworks-alt" });
+	const altModels = await waitFor(() => response(messages, "experimental-alt-models"));
+	const altCatalog = resultValue(altModels, "models") as Array<Record<string, unknown>>;
+	assert.deepEqual(
+		altCatalog.map((model) => model.model),
+		primaryCatalog.map((model) => model.model),
+	);
+	assert.equal(altCatalog.every((model) => model.provider === "fireworks-alt"), true);
+
+	for (const [id, params] of [
+		["model-list-omitted-provider", {}],
+		["model-list-malformed-provider", { provider: "Fireworks" }],
+		["model-list-inactive-provider", { provider: "cloudflare-ai-gateway" }],
+	] as const) {
+		writeRequest(backend, id, "model.list", params);
+		const rejected = await waitFor(() => response(messages, id));
+		assert.equal(errorValue(rejected, "code"), "invalid_params");
+	}
+
+	const candidate = altCatalog[0]!;
+	writeRequest(backend, "experimental-select-missing-auth", "model.select", {
+		provider: candidate.provider,
+		protocol: candidate.protocol,
+		model: candidate.model,
+		base_url: candidate.base_url,
+	});
+	const missingAuth = await waitFor(() => response(messages, "experimental-select-missing-auth"));
+	assert.equal(errorValue(missingAuth, "code"), "invalid_params");
+	writeRequest(backend, "experimental-status-after-failure", "status.inspect", {});
+	const statusAfterFailure = await waitFor(() => response(messages, "experimental-status-after-failure"));
+	assert.equal(resultValue(statusAfterFailure, "provider"), "openai");
+
+	writeRequest(backend, "experimental-save-wrong-ref", "auth.api_key.save", {
+		provider_id: "fireworks-alt",
+		auth_ref: "unrelated-account",
+		api_key: "rejected-experimental-secret",
+	});
+	const wrongRef = await waitFor(() => response(messages, "experimental-save-wrong-ref"));
+	assert.equal(errorValue(wrongRef, "code"), "invalid_params");
+	assert.equal(JSON.stringify(wrongRef).includes("rejected-experimental-secret"), false);
+
+	writeRequest(backend, "experimental-save-key", "auth.api_key.save", {
+		provider_id: "fireworks-alt",
+		api_key: "stored-experimental-secret",
+	});
+	const saved = await waitFor(() => response(messages, "experimental-save-key"));
+	assert.equal(resultValue(saved, "provider_id"), "fireworks-alt");
+	assert.equal(resultValue(saved, "auth_ref"), "fireworks-alt");
+	assert.equal(JSON.stringify(saved).includes("stored-experimental-secret"), false);
+	const authFile = JSON.parse(await readFile(join(home, ".mycli", "auth.json"), "utf8"));
+	assert.equal(authFile["fireworks-alt"].key, "stored-experimental-secret");
+	assert.equal(authFile["unrelated-account"], undefined);
+
+	writeRequest(backend, "experimental-select", "model.select", {
+		provider: candidate.provider,
+		protocol: candidate.protocol,
+		model: candidate.model,
+		base_url: candidate.base_url,
+	});
+	const selected = await waitFor(() => response(messages, "experimental-select"));
+	assert.equal("error" in selected, false, JSON.stringify(selected));
+	assert.equal((resultValue(selected, "selected") as Record<string, unknown>).provider, "fireworks-alt");
+	assert.equal(resultValue(selected, "provider"), "fireworks-alt");
+
+	writeRequest(backend, "experimental-providers-after-save", "provider.list", {});
+	const readyList = await waitFor(() => response(messages, "experimental-providers-after-save"));
+	const readyRows = resultValue(readyList, "providers") as Array<Record<string, unknown>>;
+	assert.equal(readyRows.find((provider) => provider.id === "fireworks-alt")?.ready, true);
+
+	writeRequest(backend, "experimental-provider-shutdown", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
 test("Node backend persists canonical TUI control state without exposing credentials", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-controls-"));
 	const home = join(root, "home");
@@ -4445,32 +5459,43 @@ test("Node backend persists canonical TUI control state without exposing credent
 		version: 2,
 		providers: {
 			openai: {
-			protocol: "responses",
-			base_url: "https://example.invalid/v1",
-			auth_ref: "catalog-account",
-			options: { store: false },
-			models: {
-				"gpt-selected": {
-					description: "Integration catalog model",
-					limits: {
-						context_window_tokens: 200_000,
-						max_output_tokens: 50_000,
-					},
-					reasoning: {
-						efforts: ["low", "high"],
-						default: "low",
+				protocol: "responses",
+				base_url: "https://example.invalid/v1",
+				auth_ref: "catalog-account",
+				model_policy: "subset",
+				capabilities: { images: false },
+				models: {
+					"gpt-selected": {
+						description: "Integration catalog model",
+						limits: {
+							context_window_tokens: 200_000,
+							max_output_tokens: 50_000,
+						},
+						reasoning: {
+							efforts: ["low", "high"],
+							default: "low",
+						},
 					},
 				},
 			},
-			},
 		},
 	}, null, 2)}\n`, "utf8");
+	await writeFile(join(home, ".mycli", "config.toml"), [
+		'tui_color_mode = "256"',
+		'tui_glyph_mode = "ascii"',
+		"tui_reduced_motion = true",
+		"tui_high_contrast = true",
+		"",
+		"[tui.keymap.app]",
+		'help = "ctrl+h"',
+		"",
+	].join("\n"), "utf8");
 	await writeFile(join(workspace, "src", "README.md"), "control fixture\n", "utf8");
 	t.after(async () => { await rm(root, { recursive: true, force: true }); });
 	const options = {
 		cwd: workspace,
 		args: ["--session", "control-session"],
-		env: { HOME: home },
+		env: { HOME: home, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
 	} as const;
 
 	const first = await startNodeBackend(options);
@@ -4483,10 +5508,22 @@ test("Node backend persists canonical TUI control state without exposing credent
 	writeRequest(first, "bootstrap", "session.bootstrap", { protocol_version: 1 });
 	const bootstrap = await waitFor(() => response(firstMessages, "bootstrap"));
 	assert.equal((resultValue(bootstrap, "auth_providers") as unknown[]).length > 0, true);
-	const bootstrapModels = resultValue(bootstrap, "models") as Array<Record<string, unknown>>;
-	assert.deepEqual(bootstrapModels.map((entry) => entry.model), ["gpt-selected"]);
-	assert.equal(bootstrapModels[0]?.context_window_tokens, 200_000);
-	assert.equal(bootstrapModels[0]?.max_output_tokens, 50_000);
+	assert.equal("models" in (bootstrap.result as Record<string, unknown>), false);
+	writeRequest(first, "providers", "provider.list", {});
+	const providerList = await waitFor(() => response(firstMessages, "providers"));
+	assert.equal("error" in providerList, false, JSON.stringify(providerList));
+	assert.equal(
+		(resultValue(providerList, "providers") as Array<Record<string, unknown>>)
+			.some((entry) => entry.id === "openai" && entry.configured === true),
+		true,
+	);
+	writeRequest(first, "models", "model.list", { provider: "openai" });
+	const modelList = await waitFor(() => response(firstMessages, "models"));
+	assert.equal(resultValue(modelList, "provider"), "openai");
+	const listedModels = resultValue(modelList, "models") as Array<Record<string, unknown>>;
+	assert.deepEqual(listedModels.map((entry) => entry.model), ["gpt-5", "gpt-selected"]);
+	assert.equal(listedModels[1]?.context_window_tokens, 200_000);
+	assert.equal(listedModels[1]?.max_output_tokens, 50_000);
 
 	writeRequest(first, "auth", "auth.api_key.save", {
 		provider_id: "openai",
@@ -4502,6 +5539,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 		model: "gpt-selected",
 		base_url: "https://example.invalid/v1",
 		reasoning_effort: "high",
+		scope: "user",
 	});
 	const model = await waitFor(() => response(firstMessages, "model"));
 	const selected = resultValue(model, "selected") as Record<string, unknown>;
@@ -4515,12 +5553,35 @@ test("Node backend persists canonical TUI control state without exposing credent
 		(selectedStatus.context_window as Record<string, unknown>).max_tokens,
 		150_000,
 	);
+	writeRequest(first, "settings-initial", "settings.load", {});
+	const initialSettings = await waitFor(() => response(firstMessages, "settings-initial"));
+	const initialKeymap = resultValue(initialSettings, "keymap") as Record<string, unknown>;
+	assert.deepEqual((initialKeymap.bindings as Record<string, unknown>)["app.help"], ["ctrl+h"]);
+	const terminalCapabilities = resultValue(initialSettings, "terminal_capabilities") as Record<string, unknown>;
+	assert.equal(terminalCapabilities.color_mode, "256");
+	assert.equal(terminalCapabilities.color_forced_off, false);
+	assert.equal(terminalCapabilities.glyph_mode, "ascii");
+	assert.equal(terminalCapabilities.progress_animated, false);
+
+	writeRequest(first, "settings-keymap-reset", "settings.keymap.reset", {});
+	const resetKeymap = await waitFor(() => response(firstMessages, "settings-keymap-reset"));
+	const resetKeymapState = resultValue(resetKeymap, "keymap") as Record<string, unknown>;
+	assert.deepEqual((resetKeymapState.bindings as Record<string, unknown>)["app.help"], ["?"]);
 
 	writeRequest(first, "settings", "settings.save", {
-		settings: { viewMode: "verbose", statusbarMode: "compact", hideThinking: false },
+		setting_id: "tui.view_mode",
+		value: "verbose",
 	});
 	const settings = await waitFor(() => response(firstMessages, "settings"));
 	assert.equal((resultValue(settings, "settings") as Record<string, unknown>).view_mode, "verbose");
+	const settingsSources = resultValue(settings, "sources") as Record<string, unknown>;
+	assert.equal(settingsSources.view_mode, "user");
+	assert.equal(settingsSources.statusbar_mode, "default");
+	writeRequest(first, "settings-statusbar", "settings.save", {
+		setting_id: "tui.statusbar_mode",
+		value: "compact",
+	});
+	await waitFor(() => response(firstMessages, "settings-statusbar"));
 
 	writeRequest(first, "path", "completion.path", { prefix: "@src/" });
 	const completion = await waitFor(() => response(firstMessages, "path"));
@@ -4532,6 +5593,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 	assert.equal(configRaw.includes("integration-control-secret"), false);
 	assert.equal(configRaw.includes("catalog-control-secret"), false);
 	assert.equal(configRaw.includes('auth_ref = "catalog-account"'), true);
+	assert.equal(configRaw.includes("[tui.keymap"), false);
 	const second = await startNodeBackend(options);
 	const secondMessages: Array<Record<string, unknown>> = [];
 	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
@@ -4549,8 +5611,150 @@ test("Node backend persists canonical TUI control state without exposing credent
 		(resultValue(restartedSettings, "settings") as Record<string, unknown>).statusbar_mode,
 		"compact",
 	);
+	const restartedKeymap = resultValue(restartedSettings, "keymap") as Record<string, unknown>;
+	assert.deepEqual((restartedKeymap.bindings as Record<string, unknown>)["app.help"], ["?"]);
 	writeRequest(second, "shutdown-controls-restarted", "shutdown", {});
 	assert.equal(await second.completion, 0);
+});
+
+test("Node backend filters and selects curated model catalog entries", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-curated-models-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const configPath = join(home, ".mycli", "config.toml");
+	await Promise.all([mkdir(join(home, ".mycli"), { recursive: true }), mkdir(workspace)]);
+	await writeFile(join(home, ".mycli", "auth.json"), `${JSON.stringify({
+		groq: { type: "api_key", key: "groq-catalog-secret" },
+		"openrouter-custom": { type: "api_key", key: "openrouter-catalog-secret" },
+	}, null, 2)}\n`, "utf8");
+	await writeFile(join(home, ".mycli", "models.json"), `${JSON.stringify({
+		version: 2,
+		providers: {
+			openrouter: {
+				protocol: "chat_completions",
+				base_url: "https://custom.openrouter.invalid/v1",
+				auth_ref: "openrouter-custom",
+				model_policy: "subset",
+				capabilities: { images: false },
+				models: {
+					"custom-code": {
+						description: "Explicit OpenRouter catalog entry",
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["none", "medium"], default: "medium" },
+					},
+				},
+			},
+			deepseek: {
+				protocol: "chat_completions",
+				base_url: "https://api.deepseek.com",
+				auth_ref: "deepseek",
+				models: {
+					"deepseek-v4-flash": {},
+					"deepseek-v4-pro": {},
+				},
+			},
+		},
+	}, null, 2)}\n`, "utf8");
+	const initialConfig = [
+		"[model]",
+		'provider = "nvidia"',
+		'protocol = "chat_completions"',
+		'name = "openai/gpt-oss-120b"',
+		'api_base_url = "https://integrate.api.nvidia.com/v1"',
+		'auth_ref = "nvidia"',
+		"",
+		"[reasoning]",
+		"enabled = false",
+		'effort = "none"',
+		'reasoning_effort = "none"',
+		"",
+	].join("\n");
+	await writeFile(configPath, initialConfig, "utf8");
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "curated-model-session"],
+		env: { HOME: home },
+	});
+	t.after(async () => {
+		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	for (const provider of ["nvidia", "groq", "openrouter", "deepseek"] as const) {
+		writeRequest(backend, `curated-model-list-${provider}`, "model.list", { provider });
+		const listed = await waitFor(() => response(messages, `curated-model-list-${provider}`));
+		assert.equal("error" in listed, false, JSON.stringify(listed));
+		assert.equal(resultValue(listed, "provider"), provider);
+		const models = resultValue(listed, "models") as Array<Record<string, unknown>>;
+		assert.equal(models.length > 0, true);
+		assert.equal(models.every((entry) => entry.provider === provider), true);
+		if (provider === "nvidia") {
+			assert.equal(models.some((entry) => entry.model === "openai/gpt-oss-120b" && entry.current === true), true);
+		}
+		if (provider === "groq") {
+			assert.equal(models.some((entry) => entry.model === "openai/gpt-oss-120b"), true);
+		}
+		if (provider === "openrouter") {
+			assert.deepEqual(models.map((entry) => entry.model), ["custom-code"]);
+			assert.equal(models.some((entry) => entry.model === "openrouter/auto"), false);
+		}
+		if (provider === "deepseek") {
+			assert.equal(models.some((entry) => (
+				entry.model === "deepseek-v4-flash-vision-exp"
+				&& entry.supports_images === true
+				&& entry.context_window_tokens === 1_000_000
+				&& entry.max_output_tokens === 384_000
+			)), true);
+		}
+	}
+
+	writeRequest(backend, "curated-invalid-reasoning", "model.select", {
+		provider: "groq",
+		protocol: "chat_completions",
+		model: "openai/gpt-oss-120b",
+		base_url: "https://api.groq.com/openai/v1",
+		reasoning_effort: "xhigh",
+	});
+	const invalid = await waitFor(() => response(messages, "curated-invalid-reasoning"));
+	assert.equal(errorValue(invalid, "code"), "invalid_params");
+
+	writeRequest(backend, "curated-session-selection", "model.select", {
+		provider: "groq",
+		protocol: "chat_completions",
+		model: "openai/gpt-oss-120b",
+		base_url: "https://api.groq.com/openai/v1",
+	});
+	const sessionSelection = await waitFor(() => response(messages, "curated-session-selection"));
+	assert.equal(resultValue(sessionSelection, "scope"), "session");
+	const sessionSelected = resultValue(sessionSelection, "selected") as Record<string, unknown>;
+	assert.equal(sessionSelected.reasoning_effort, null);
+	assert.equal(sessionSelected.thinking_enabled, false);
+	assert.equal(await readFile(configPath, "utf8"), initialConfig);
+
+	writeRequest(backend, "curated-user-selection", "model.select", {
+		provider: "openrouter",
+		protocol: "chat_completions",
+		model: "custom-code",
+		base_url: "https://custom.openrouter.invalid/v1",
+		scope: "user",
+	});
+	const userSelection = await waitFor(() => response(messages, "curated-user-selection"));
+	assert.equal(resultValue(userSelection, "scope"), "user");
+	const userSelected = resultValue(userSelection, "selected") as Record<string, unknown>;
+	assert.equal(userSelected.reasoning_effort, "medium");
+	const writtenConfig = await readFile(configPath, "utf8");
+	assert.match(writtenConfig, /provider = "openrouter"/u);
+	assert.match(writtenConfig, /name = "custom-code"/u);
+	assert.match(writtenConfig, /auth_ref = "openrouter-custom"/u);
+	assert.equal(writtenConfig.includes("catalog-secret"), false);
+
+	writeRequest(backend, "curated-model-shutdown", "shutdown", {});
+	assert.equal(await backend.completion, 0);
 });
 
 test("Node backend restores model effort and mode from each session preference", async (t) => {
@@ -4568,9 +5772,17 @@ test("Node backend restores model effort and mode from each session preference",
 				protocol: "responses",
 				base_url: "https://session.invalid/v1",
 				auth_ref: "session-account",
+				model_policy: "subset",
+				capabilities: { images: false },
 				models: {
-					"gpt-session-a": { reasoning: { efforts: ["low", "high"], default: "low" } },
-					"gpt-session-b": { reasoning: { efforts: ["none"], default: "none" } },
+					"gpt-session-a": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["low", "high"], default: "low" },
+					},
+					"gpt-session-b": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["none"], default: "none" },
+					},
 				},
 			},
 		},
@@ -4598,6 +5810,8 @@ test("Node backend restores model effort and mode from each session preference",
 	await waitFor(() => response(firstMessages, "select-a"));
 	writeRequest(first, "mode-a", "command.run", { command: "/mode plan", surface: "tui" });
 	await waitFor(() => response(firstMessages, "mode-a"));
+	writeRequest(first, "permission-a", "permissions.update", { profile: "full-access" });
+	await waitFor(() => response(firstMessages, "permission-a"));
 
 	writeRequest(first, "new-b", "session.new", {});
 	const created = await waitFor(() => response(firstMessages, "new-b"));
@@ -4608,10 +5822,13 @@ test("Node backend restores model effort and mode from each session preference",
 		model: "gpt-session-b",
 		base_url: "https://session.invalid/v1",
 		reasoning_effort: "none",
+		scope: "user",
 	});
 	await waitFor(() => response(firstMessages, "select-b"));
 	writeRequest(first, "mode-b", "command.run", { command: "/mode default", surface: "tui" });
 	await waitFor(() => response(firstMessages, "mode-b"));
+	writeRequest(first, "permission-b", "permissions.update", { profile: "read-only" });
+	await waitFor(() => response(firstMessages, "permission-b"));
 
 	writeRequest(first, "resume-a", "session.resume", { session_id: "session-a" });
 	await waitFor(() => response(firstMessages, "resume-a"));
@@ -4620,6 +5837,10 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(resultValue(activeA, "model"), "gpt-session-a");
 	assert.equal(resultValue(activeA, "thinking_effort"), "high");
 	assert.equal(resultValue(activeA, "collaboration_mode"), "plan");
+	assert.equal(
+		(resultValue(activeA, "permissions") as Record<string, unknown>).active,
+		"full-access",
+	);
 
 	writeRequest(first, "new-fallback", "session.new", {});
 	await waitFor(() => response(firstMessages, "new-fallback"));
@@ -4628,6 +5849,10 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(resultValue(fallback, "model"), "gpt-session-b");
 	assert.equal(resultValue(fallback, "thinking_effort"), "none");
 	assert.equal(resultValue(fallback, "collaboration_mode"), "default");
+	assert.equal(
+		(resultValue(fallback, "permissions") as Record<string, unknown>).active,
+		"workspace",
+	);
 	writeRequest(first, "shutdown-session-preferences", "shutdown", {});
 	assert.equal(await first.completion, 0);
 
@@ -4635,12 +5860,22 @@ test("Node backend restores model effort and mode from each session preference",
 	const sessionA = store.loadState("session-a", "session_preferences") as Record<string, unknown>;
 	const storedB = store.loadState(sessionB, "session_preferences") as Record<string, unknown>;
 	assert.deepEqual(
-		[sessionA.model, sessionA.reasoning_effort, sessionA.collaboration_mode],
-		["gpt-session-a", "high", "plan"],
+		[
+			sessionA.model,
+			sessionA.reasoning_effort,
+			sessionA.collaboration_mode,
+			sessionA.permission_profile,
+		],
+		["gpt-session-a", "high", "plan", "full-access"],
 	);
 	assert.deepEqual(
-		[storedB.model, storedB.reasoning_effort, storedB.collaboration_mode],
-		["gpt-session-b", "none", "default"],
+		[
+			storedB.model,
+			storedB.reasoning_effort,
+			storedB.collaboration_mode,
+			storedB.permission_profile,
+		],
+		["gpt-session-b", "none", "default", "read-only"],
 	);
 	assert.equal(JSON.stringify([sessionA, storedB]).includes("session-secret"), false);
 	store.saveState({
@@ -4673,13 +5908,20 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(restartedStatus.model, "gpt-session-a");
 	assert.equal(restartedStatus.thinking_effort, "high");
 	assert.equal(restartedStatus.collaboration_mode, "plan");
+	assert.equal(
+		(restartedStatus.permissions as Record<string, unknown>).active,
+		"full-access",
+	);
 	writeRequest(second, "resume-corrupt", "session.resume", { session_id: "session-corrupt" });
 	const corruptResume = await waitFor(() => response(secondMessages, "resume-corrupt"));
-	assert.equal(
-		"error" in corruptResume
-			? (corruptResume.error as Record<string, unknown>).code
-			: undefined,
-		"session_state_invalid",
+	assert.equal(errorValue(corruptResume, "code"), "session_repair_required");
+	const corruptPreview = (
+		(corruptResume.error as Record<string, unknown>).data as Record<string, unknown>
+	).preview as Record<string, unknown>;
+	assert.equal(corruptPreview.ready, false);
+	assert.deepEqual(
+		(corruptPreview.issues as Array<Record<string, unknown>>).map((issue) => issue.code),
+		["schema_incompatible"],
 	);
 	writeRequest(second, "status-after-corrupt", "status.inspect", {});
 	const afterCorrupt = await waitFor(() => response(secondMessages, "status-after-corrupt"));
@@ -4687,6 +5929,291 @@ test("Node backend restores model effort and mode from each session preference",
 	assert.equal(resultValue(afterCorrupt, "model"), "gpt-session-a");
 	writeRequest(second, "shutdown-session-preferences-restarted", "shutdown", {});
 	assert.equal(await second.completion, 0);
+});
+
+test("Node backend separates session model choices from user defaults", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-model-scope-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	const configPath = join(home, ".mycli", "config.toml");
+	await Promise.all([mkdir(join(home, ".mycli"), { recursive: true }), mkdir(workspace)]);
+	await writeFile(join(home, ".mycli", "auth.json"), `${JSON.stringify({
+		"scope-account": { type: "api_key", key: "scope-secret" },
+	}, null, 2)}\n`, "utf8");
+	await writeFile(join(home, ".mycli", "models.json"), `${JSON.stringify({
+		version: 2,
+		providers: {
+			openai: {
+				protocol: "responses",
+				base_url: "https://scope.invalid/v1",
+				auth_ref: "scope-account",
+				model_policy: "subset",
+				capabilities: { images: false },
+				models: {
+					"gpt-default": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["low"], default: "low" },
+					},
+					"gpt-session": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["high"], default: "high" },
+					},
+					"gpt-user": {
+						limits: { context_window_tokens: 128_000, max_output_tokens: 16_384 },
+						reasoning: { efforts: ["medium"], default: "medium" },
+					},
+				},
+			},
+		},
+	}, null, 2)}\n`, "utf8");
+	const initialConfig = [
+		"[model]",
+		'provider = "openai"',
+		'protocol = "responses"',
+		'name = "gpt-default"',
+		'api_base_url = "https://scope.invalid/v1"',
+		'auth_ref = "scope-account"',
+		"",
+		"[reasoning]",
+		"enabled = true",
+		'effort = "low"',
+		'reasoning_effort = "low"',
+		"",
+	].join("\n");
+	await writeFile(configPath, initialConfig, "utf8");
+	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	const options = {
+		cwd: workspace,
+		args: ["--session", "scope-session"],
+		env: { HOME: home },
+	} as const;
+
+	const first = await startNodeBackend(options);
+	const firstMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: first.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		firstMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(firstMessages, "runtime.ready"));
+	writeRequest(first, "session-selection", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-session",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "high",
+	});
+	const sessionSelection = await waitFor(() => response(firstMessages, "session-selection"));
+	assert.equal(resultValue(sessionSelection, "scope"), "session");
+	assert.equal(await readFile(configPath, "utf8"), initialConfig);
+
+	writeRequest(first, "session-status", "status.inspect", {});
+	const sessionStatus = await waitFor(() => response(firstMessages, "session-status"));
+	assert.equal(resultValue(sessionStatus, "model"), "gpt-session");
+	assert.equal(resultValue(sessionStatus, "thinking_effort"), "high");
+
+	writeRequest(first, "new-default", "session.new", {});
+	await waitFor(() => response(firstMessages, "new-default"));
+	writeRequest(first, "default-status", "status.inspect", {});
+	const defaultStatus = await waitFor(() => response(firstMessages, "default-status"));
+	assert.equal(resultValue(defaultStatus, "model"), "gpt-default");
+	assert.equal(resultValue(defaultStatus, "thinking_effort"), "low");
+	writeRequest(first, "shutdown-model-scope-first", "shutdown", {});
+	assert.equal(await first.completion, 0);
+
+	const second = await startNodeBackend(options);
+	const secondMessages: Array<Record<string, unknown>> = [];
+	createInterface({ input: second.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		secondMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(secondMessages, "runtime.ready"));
+	writeRequest(second, "resumed-status", "status.inspect", {});
+	const resumedStatus = await waitFor(() => response(secondMessages, "resumed-status"));
+	assert.equal(resultValue(resumedStatus, "model"), "gpt-session");
+	assert.equal(resultValue(resumedStatus, "thinking_effort"), "high");
+	writeRequest(second, "plan-before-user-selection", "command.run", {
+		command: "/mode plan",
+		surface: "tui",
+	});
+	await waitFor(() => response(secondMessages, "plan-before-user-selection"));
+
+	writeRequest(second, "user-selection", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-user",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "medium",
+		scope: "user",
+	});
+	const userSelection = await waitFor(() => response(secondMessages, "user-selection"));
+	assert.equal(resultValue(userSelection, "scope"), "user");
+	assert.equal(
+		(resultValue(userSelection, "selected") as Record<string, unknown>).scope,
+		"user",
+	);
+	const userConfig = await readFile(configPath, "utf8");
+	assert.match(userConfig, /name = "gpt-user"/u);
+	writeRequest(second, "user-selection-status", "status.inspect", {});
+	const userSelectionStatus = await waitFor(() => response(secondMessages, "user-selection-status"));
+	assert.equal(resultValue(userSelectionStatus, "model"), "gpt-user");
+	assert.equal(resultValue(userSelectionStatus, "thinking_effort"), "medium");
+	assert.equal(resultValue(userSelectionStatus, "collaboration_mode"), "plan");
+
+	writeRequest(second, "new-user-default", "session.new", {});
+	await waitFor(() => response(secondMessages, "new-user-default"));
+	writeRequest(second, "user-default-status", "status.inspect", {});
+	const userDefaultStatus = await waitFor(() => response(secondMessages, "user-default-status"));
+	assert.equal(resultValue(userDefaultStatus, "model"), "gpt-user");
+	assert.equal(resultValue(userDefaultStatus, "thinking_effort"), "medium");
+	assert.equal(resultValue(userDefaultStatus, "collaboration_mode"), "default");
+
+	writeRequest(second, "resume-before-failure", "session.resume", { session_id: "scope-session" });
+	await waitFor(() => response(secondMessages, "resume-before-failure"));
+	writeRequest(second, "session-before-failure", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-session",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "high",
+		scope: "session",
+	});
+	await waitFor(() => response(secondMessages, "session-before-failure"));
+	assert.equal(await readFile(configPath, "utf8"), userConfig);
+	const lockPath = join(home, ".mycli", ".config.toml.lock");
+	await mkdir(lockPath);
+	writeRequest(second, "failed-user-selection", "model.select", {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-default",
+		base_url: "https://scope.invalid/v1",
+		reasoning_effort: "low",
+		scope: "user",
+	});
+	const failedSelection = await waitFor(
+		() => response(secondMessages, "failed-user-selection"),
+		4_000,
+	);
+	assert.equal("error" in failedSelection, true);
+	const failedSelectionText = JSON.stringify(failedSelection);
+	assert.equal(failedSelectionText.includes(home), false);
+	assert.equal(failedSelectionText.includes(configPath), false);
+	assert.equal(failedSelectionText.includes("scope-secret"), false);
+	assert.equal(failedSelectionText.includes("gpt-default"), false);
+	assert.equal(await readFile(configPath, "utf8"), userConfig);
+	writeRequest(second, "status-after-failure", "status.inspect", {});
+	const statusAfterFailure = await waitFor(() => response(secondMessages, "status-after-failure"));
+	assert.equal(resultValue(statusAfterFailure, "model"), "gpt-session");
+	assert.equal(resultValue(statusAfterFailure, "thinking_effort"), "high");
+	await rm(lockPath, { recursive: true, force: true });
+	writeRequest(second, "shutdown-model-scope-second", "shutdown", {});
+	assert.equal(await second.completion, 0);
+});
+
+test("hosted search reaches live TUI and restored history through both root adapters", { timeout: 30_000 }, async (t) => {
+	for (const adapter of ["in_process", "worker"] as const) {
+		for (const retryFirst of [false, true]) await t.test(`${adapter}, retry=${retryFirst}`, async (context) => {
+			const root = await mkdtemp(join(tmpdir(), "mycli-search-history-"));
+			const home = join(root, "home");
+			const workspace = join(root, "workspace");
+			await Promise.all([mkdir(home), mkdir(workspace)]);
+			const pending = Promise.withResolvers<ServerResponse>();
+			let requests = 0;
+			const search = {
+				type: "web_search_call", id: "ws-search", status: "completed",
+				action: { type: "search", queries: ["mycli docs", "mycli releases"] },
+			};
+			const finish = (response: ServerResponse): void => {
+				const done = { type: "response.output_item.done", output_index: 0, item: search };
+				writeResponsesEvents(response, [done, done, ...responsesTextEvents("Found the documentation.", "resp-search")
+					.slice(1).map((event) => typeof event.output_index === "number" ? { ...event, output_index: 1 } : event)]);
+				response.end();
+			};
+			const server = createServer((request, response) => {
+				request.resume();
+				request.on("end", () => {
+					requests += 1;
+					response.writeHead(200, { "content-type": "text/event-stream" });
+					writeResponsesEvents(response, [
+						{ type: "response.created", response: { id: "resp-search", status: "in_progress" } },
+						{ type: "response.output_item.added", output_index: 0,
+							item: { type: "web_search_call", id: requests === 1 && retryFirst ? "ws-retry" : search.id, status: "in_progress" } },
+					]);
+					if (requests === 1) pending.resolve(response);
+					else finish(response);
+				});
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			const address = server.address();
+			assert.ok(address && typeof address !== "string");
+			const backends: Array<Awaited<ReturnType<typeof startNodeBackend>>> = [];
+			context.after(async () => {
+				for (const backend of backends) await backend.close();
+				server.closeAllConnections();
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+				await rm(root, { recursive: true, force: true });
+			});
+			const options = {
+				cwd: workspace, args: ["--session", "search-history", "--model", "gpt-test"],
+				env: {
+					HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+					MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false",
+					MYCLI_MEMORY_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
+					MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
+				},
+			};
+			const backend = await startNodeBackend(options);
+			backends.push(backend);
+			const messages: Array<Record<string, unknown>> = [];
+			let tuiState = initialRuntimeState();
+			const lines = createInterface({ input: backend.transport.input, crlfDelay: Infinity });
+			context.after(() => lines.close());
+			lines.on("line", (line) => {
+				const message = parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>;
+				messages.push(message);
+				if (typeof message.method === "string") {
+					tuiState = reduceRuntimeEvent(tuiState, message.method, message.params as Record<string, unknown>);
+				}
+			});
+			await waitFor(() => event(messages, "runtime.ready"));
+			writeRequest(backend, "search-submit", "turn.submit", {
+				message: "Find the mycli documentation.", client_turn_id: "search-turn", client_user_message_id: "search-message",
+			});
+			await waitFor(() => tuiState.transcript.some((item) => item.type === "web_search"), 5_000);
+			assert.match(renderMycliShell(projectRuntimeState(tuiState), 120).join("\n"), /Searching the web/u);
+			assert.equal(messages.some((message) => message.method === "message.delta"), false);
+			const responseStream = await pending.promise;
+			if (retryFirst) {
+				writeResponsesEvents(responseStream, [{ type: "error", code: "stream_read_error", message: "fixture stream interrupted" }]);
+				responseStream.end();
+			} else finish(responseStream);
+			await waitFor(() => event(messages, "turn.completed"), 8_000);
+			const searches = tuiState.transcript.filter((item) => item.type === "web_search");
+			assert.equal(searches.length, 1);
+			assert.equal(searches[0]?.call_id, search.id);
+			assert.equal(searches[0]?.status, "completed");
+			assert.deepEqual(searches[0]?.metadata?.queries, search.action.queries);
+			const rendered = renderMycliShell(projectRuntimeState(tuiState), 120).join("\n");
+			assert.match(rendered, /Searched the web for mycli docs \.\.\./u);
+			assert.equal((rendered.match(/Searched the web/gu) ?? []).length, 1);
+			assert.equal(requests, retryFirst ? 2 : 1);
+			await backend.close();
+
+			const restored = await startNodeBackend(options);
+			backends.push(restored);
+			const restoredMessages: Array<Record<string, unknown>> = [];
+			const restoredLines = createInterface({ input: restored.transport.input, crlfDelay: Infinity });
+			context.after(() => restoredLines.close());
+			restoredLines.on("line", (line) => restoredMessages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>));
+			await waitFor(() => event(restoredMessages, "runtime.ready"));
+			writeRequest(restored, "search-transcript", "transcript.load", { session_id: "search-history" });
+			const transcript = await waitFor(() => response(restoredMessages, "search-transcript"));
+			const restoredState = runtimeStateFromTranscript(initialRuntimeState(), transcript.result as Record<string, unknown>);
+			const restoredSearches = restoredState.transcript.filter((item) => item.type === "web_search");
+			assert.equal(restoredSearches.length, 1);
+			assert.equal(restoredSearches[0]?.text, searches[0]?.text);
+			assert.equal(restoredSearches[0]?.metadata?.call_id, search.id);
+			assert.deepEqual(restoredSearches[0]?.metadata?.queries, search.action.queries);
+			assert.match(renderMycliShell(projectRuntimeState(restoredState), 120).join("\n"), /Searched the web for mycli docs \.\.\./u);
+		});
+	}
 });
 
 function writeRequest(
@@ -4751,6 +6278,21 @@ function providerToolNames(value: unknown): string[] {
 		}
 		return [];
 	});
+}
+
+function runningShellId(input: unknown): string | undefined {
+	if (!Array.isArray(input)) return undefined;
+	const call = input.findLast((item: unknown) => (
+		typeof item === "object" && item !== null && "type" in item && item.type === "function_call"
+	)) as { readonly call_id?: unknown } | undefined;
+	if (typeof call?.call_id !== "string") return undefined;
+	const output = input.find((item: unknown) => (
+		typeof item === "object" && item !== null && "type" in item && item.type === "function_call_output"
+		&& "call_id" in item && item.call_id === call.call_id
+	)) as { readonly output?: unknown } | undefined;
+	return typeof output?.output === "string"
+		? /Process running with session ID ([0-9a-f]{8})/u.exec(output.output)?.[1]
+		: undefined;
 }
 
 function assertApprovedShellOutcome(value: unknown, successMarker: string): void {
@@ -4828,7 +6370,7 @@ function providerStepSnapshots(
 
 function normalizeProviderRequest(value: object): unknown {
 	return normalizeValue(value, new Set([
-		"promptCacheKey", "previousResponseId", "sourceId", "supersedesItemId",
+		"previousResponseId", "sourceId", "supersedesItemId",
 	]));
 }
 
@@ -4856,16 +6398,9 @@ function normalizeValue(value: unknown, omittedKeys: ReadonlySet<string>): unkno
 }
 
 function isSubagentRequest(payload: Readonly<Record<string, unknown>>): boolean {
-	if (!Array.isArray(payload.input)) return false;
-	return payload.input.some((item) => (
-		typeof item === "object"
-		&& item !== null
-		&& "role" in item
-		&& item.role === "developer"
-		&& "content" in item
-		&& typeof item.content === "string"
-		&& item.content.includes("You are a subagent operating under the parent agent's delegated authority.")
-	));
+	return responsesAuthorityText(payload).includes(
+		"You are a subagent operating under the parent agent's delegated authority.",
+	);
 }
 
 function errorValue(message: Record<string, unknown>, key: string): unknown {

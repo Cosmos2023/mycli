@@ -23,6 +23,7 @@ export interface ConfiguredHookSpec {
 	readonly matcher: ConfiguredHookMatcher;
 	readonly scope: HookConfigScope;
 	readonly configPath: string;
+	readonly pluginRoot?: string;
 }
 
 export interface HookConfigDiagnostic {

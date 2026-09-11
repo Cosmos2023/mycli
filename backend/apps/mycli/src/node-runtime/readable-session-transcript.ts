@@ -12,7 +12,7 @@ const TRANSCRIPT_PAGE_MAX_ITEMS = 500;
 const TRANSCRIPT_RAW_WINDOW_SIZE = 2_000;
 const TRANSCRIPT_CURSOR_PREFIX = "v1.";
 
-export interface LegacyReadableTranscriptStore {
+interface LegacyReadableTranscriptStore {
 	loadHistoryItems(sessionId: string): readonly Readonly<Record<string, unknown>>[];
 	loadTurnRollouts(sessionId: string): readonly Readonly<Record<string, unknown>>[];
 	loadRecentHistoryItems(
@@ -51,12 +51,12 @@ export type ReadableTranscriptStore =
 	| LegacyReadableTranscriptStore
 	| NormalizedReadableTranscriptStore;
 
-export interface ReadableSessionTranscript {
+interface ReadableSessionTranscript {
 	readonly hasCanonicalHistory: boolean;
 	readonly items: readonly TranscriptItem[];
 }
 
-export interface ReadableSessionTranscriptPage {
+interface ReadableSessionTranscriptPage {
 	readonly hasCanonicalHistory: boolean;
 	readonly items: readonly TranscriptItem[];
 	readonly nextBefore: string | null;

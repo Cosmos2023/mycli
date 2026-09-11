@@ -4,7 +4,7 @@ import type { InstructionSnapshot } from "@mycli/core";
 import type { ModelInputLedgerStore } from "@mycli/storage";
 import type { PackagedSystemPrompt } from "./system-prompt.ts";
 
-export interface ResolveSessionInstructionSnapshotInput {
+interface ResolveSessionInstructionSnapshotInput {
 	readonly sessionId: string;
 	readonly ledger: ModelInputLedgerStore;
 	readonly template: PackagedSystemPrompt;

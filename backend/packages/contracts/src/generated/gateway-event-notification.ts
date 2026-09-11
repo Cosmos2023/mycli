@@ -12,6 +12,11 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "interactive.cancelled";
+      params: Interactive;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "subagent.updated";
       params: Subagent;
     }
@@ -142,6 +147,11 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "provider.attempt.updated";
+      params: ProviderAttempt;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "stream.retrying";
       params: Stream1;
     }
@@ -215,6 +225,303 @@ export type GatewayEventNotification =
       method: "workspace.trust.changed";
       params: WorkspaceTrust;
     };
+export type Interactive = {
+  child_session_id: string;
+  client_turn_id: string;
+  decision_id?: string;
+  generation: number;
+  request_id?: string;
+  session_id: string;
+  turn_id: string;
+  [k: string]: any;
+} & InteractiveCancelled;
+export type InteractiveCancelled = {
+  [k: string]: any;
+};
+export type ErrorContextV1 = ErrorIdentityV1 &
+  ErrorReasonDetails & {
+    version: 1;
+    /**
+     * @maxItems 3
+     */
+    causes?:
+      | []
+      | [ErrorOccurrenceV1]
+      | [ErrorOccurrenceV1, ErrorOccurrenceV1]
+      | [ErrorOccurrenceV1, ErrorOccurrenceV1, ErrorOccurrenceV1];
+    [k: string]: any;
+  };
+export type FailureSource =
+  "config" | "provider" | "tool" | "policy" | "integration" | "worker_rpc" | "runtime" | "storage" | "gateway" | "tui";
+export type ErrorReasonDetails =
+  | {
+      reason: "config.invalid" | "config.model_unavailable";
+      details?: ConfigurationErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason: "auth.credentials_missing" | "auth.credentials_rejected" | "auth.model_access_denied";
+      details?: ProviderErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "capability.image_input_unsupported"
+        | "capability.tool_calls_unsupported"
+        | "capability.hosted_search_unsupported"
+        | "capability.reasoning_unsupported"
+        | "capability.deferred_response_unsupported"
+        | "capability.auth_flow_unavailable"
+        | "capability.unspecified";
+      details?: CapabilityErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "provider.invalid_request"
+        | "provider.context_limit"
+        | "provider.rate_limited"
+        | "provider.quota_exceeded"
+        | "provider.overloaded"
+        | "provider.service_failed"
+        | "provider.tool_protocol_invalid"
+        | "provider.failure_unclassified";
+      details?: ProviderErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "transport.connect_failed"
+        | "transport.timed_out"
+        | "transport.stream_interrupted"
+        | "transport.gateway_disconnected"
+        | "transport.output_stalled";
+      details?: TransportErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "gateway.admission_rejected"
+        | "gateway.output_capacity_exceeded"
+        | "gateway.message_too_large"
+        | "gateway.protocol_incompatible"
+        | "gateway.invalid_request"
+        | "gateway.state_conflict"
+        | "gateway.failure_unclassified";
+      details?: GatewayErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "tool.invalid_arguments"
+        | "tool.not_found"
+        | "tool.path_not_found"
+        | "tool.path_unreadable"
+        | "tool.image_invalid"
+        | "tool.image_decoder_unavailable"
+        | "tool.process_start_failed"
+        | "tool.process_exited"
+        | "tool.timed_out"
+        | "tool.failure_unclassified";
+      details?: ToolErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "policy.approval_denied"
+        | "policy.access_denied"
+        | "policy.sandbox_unavailable"
+        | "policy.sandbox_initialization_failed";
+      details?: PolicyErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "storage.busy"
+        | "storage.capacity_exceeded"
+        | "storage.write_failed"
+        | "storage.data_invalid"
+        | "storage.version_unsupported"
+        | "storage.session_unavailable"
+        | "storage.failure_unclassified";
+      details?: StorageErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason:
+        | "runtime.user_cancelled"
+        | "runtime.interruption_unspecified"
+        | "runtime.worker_exited"
+        | "runtime.retry_exhausted"
+        | "runtime.tool_budget_exceeded"
+        | "runtime.continuation_unavailable"
+        | "runtime.effect_outcome_unknown"
+        | "runtime.internal_error";
+      details?: RuntimeErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason: "integration.unavailable" | "integration.protocol_invalid" | "integration.failure_unclassified";
+      details?: IntegrationErrorDetails;
+      [k: string]: any;
+    }
+  | {
+      reason: "tui.render_failed" | "tui.terminal_unavailable";
+      details?: TerminalErrorDetails;
+      [k: string]: any;
+    };
+export type ErrorOccurrenceV1 = ErrorIdentityV1 & ErrorReasonDetails;
+/**
+ * @maxItems 4
+ */
+export type RecoveryActions =
+  | []
+  | [
+      | "check_billing"
+      | "check_for_updates"
+      | "compact_session"
+      | "configure_credentials"
+      | "inspect_configuration"
+      | "inspect_execution"
+      | "review_access"
+      | "retry"
+      | "run_doctor"
+      | "select_compatible_model"
+      | "start_new_session"
+      | "wait_and_retry"
+    ]
+  | [
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      ),
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      )
+    ]
+  | [
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      ),
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      ),
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      )
+    ]
+  | [
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      ),
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      ),
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      ),
+      (
+        | "check_billing"
+        | "check_for_updates"
+        | "compact_session"
+        | "configure_credentials"
+        | "inspect_configuration"
+        | "inspect_execution"
+        | "review_access"
+        | "retry"
+        | "run_doctor"
+        | "select_compatible_model"
+        | "start_new_session"
+        | "wait_and_retry"
+      )
+    ];
 export type ShellCompleted = Shell & {
   [k: string]: any;
 };
@@ -224,6 +531,19 @@ export type ShellOutput = Shell & {
 };
 export type ShellRemoved = Shell;
 export type ShellStarted = Shell;
+export type ProviderAttemptRecord = ProviderAttemptFields & {
+  eventId: string;
+  attemptId: string;
+  retryChainId: string;
+  sessionId: string;
+  turnId: string;
+  requestId: string;
+  provider: string;
+  model: string;
+  source: "worker" | "in_process" | "restart_recovery";
+  committedAt: string;
+  [k: string]: any;
+};
 
 export interface Extension {
   version: number;
@@ -233,6 +553,9 @@ export interface Approval {
   client_turn_id?: string;
   child_session_id?: string;
   content_chars?: number;
+  command_preview?: string;
+  command_truncated?: boolean;
+  justification?: string;
   content_line_count?: number;
   content_preview?: string;
   content_truncated?: boolean;
@@ -333,6 +656,8 @@ export interface Approval {
   [k: string]: any;
 }
 export interface Subagent {
+  session_id?: string;
+  generation?: number;
   subagent: {
     run_id: string;
     child_session_id: string;
@@ -407,6 +732,10 @@ export interface Clarify1 {
   [k: string]: any;
 }
 export interface Compaction {
+  failure?: Failure;
+  usage?: {
+    [k: string]: number;
+  };
   after_tokens: number;
   before_tokens: number;
   client_turn_id: string;
@@ -420,6 +749,141 @@ export interface Compaction {
   status: "compressed" | "skipped" | "failed";
   [k: string]: any;
 }
+export interface Failure {
+  code:
+    | "config_error"
+    | "auth_error"
+    | "permission_denied"
+    | "invalid_request"
+    | "provider_error"
+    | "connection_error"
+    | "response_stream_error"
+    | "server_overloaded"
+    | "rate_limited"
+    | "quota_exceeded"
+    | "context_window_exceeded"
+    | "retry_exhausted"
+    | "persistence_error"
+    | "interrupted"
+    | "unsupported_capability"
+    | "tool_budget_exceeded"
+    | "tool_protocol_error";
+  message: string;
+  errorContext?: ErrorContextV1;
+  additionalDetails?: string;
+  retryable: boolean;
+  retryAfterSeconds?: number;
+  diagnostics?: {
+    [k: string]: string | number | boolean | null;
+  };
+}
+export interface ErrorIdentityV1 {
+  id: string;
+  source: FailureSource;
+  scope: FailureScope;
+  outcome: FailureOutcome;
+  [k: string]: any;
+}
+export interface FailureScope {
+  kind: "provider_attempt" | "tool_call" | "request" | "turn" | "session" | "connection" | "application";
+  id: string;
+}
+export interface FailureOutcome {
+  state: "not_started" | "failed" | "cancelled" | "completed" | "unknown";
+  effects: "none" | "possible" | "confirmed";
+}
+export interface ConfigurationErrorDetails {
+  provider?: string;
+  model?: string;
+  setting?: string;
+}
+export interface ProviderErrorDetails {
+  provider?: string;
+  model?: string;
+  http_status?: number;
+  request_id?: string;
+  provider_code?: string;
+  provider_type?: string;
+  retry_after_seconds?: number;
+}
+export interface CapabilityErrorDetails {
+  provider?: string;
+  model?: string;
+  feature?: string;
+  input_origin?: "user" | "tool" | "history";
+}
+export interface TransportErrorDetails {
+  transport_code?: string;
+  request_id?: string;
+  phase?: "connect" | "request" | "stream" | "dispatch" | "delivery" | "shutdown";
+  timeout_ms?: number;
+  exit_code?: number;
+  signal?: string;
+}
+export interface GatewayErrorDetails {
+  method?: string;
+  legacy_code?: string;
+  limit_bytes?: number;
+  actual_bytes?: number;
+  expected_version?: number;
+  actual_version?: number;
+}
+export interface ToolErrorDetails {
+  tool?: string;
+  legacy_kind?: string;
+  errno?: string;
+  signal?: string;
+  exit_code?: number;
+  timeout_ms?: number;
+}
+export interface PolicyErrorDetails {
+  tool?: string;
+  policy?: string;
+  platform?: "darwin" | "linux" | "win32" | "other";
+  errno?: string;
+}
+export interface StorageErrorDetails {
+  operation?: "read" | "write" | "commit" | "projection" | "migration" | "restore";
+  storage_code?: string;
+  legacy_code?: string;
+  expected_version?: number;
+  actual_version?: number;
+}
+export interface RuntimeErrorDetails {
+  operation?: string;
+  legacy_code?: string;
+  attempt?: number;
+  request_retries?: number;
+  stream_retries?: number;
+  omitted_causes?: number;
+  exit_code?: number;
+  signal?: string;
+}
+export interface IntegrationErrorDetails {
+  integration?: string;
+  legacy_kind?: string;
+  operation?:
+    | "initialize"
+    | "tools/list"
+    | "tools/call"
+    | "resources/list"
+    | "resources/templates/list"
+    | "resources/read"
+    | "hooks/run"
+    | "commands/run"
+    | "shutdown";
+  phase?: "connect" | "request" | "reconnect" | "shutdown";
+  http_status?: number;
+  rpc_code?: number;
+  transport_code?: string;
+  timeout_ms?: number;
+  recovery_attempts?: number;
+  exit_code?: number;
+  signal?: string;
+}
+export interface TerminalErrorDetails {
+  operation?: string;
+}
 export interface Compaction1 {
   before_tokens: number;
   client_turn_id: string;
@@ -431,6 +895,8 @@ export interface Compaction1 {
   [k: string]: any;
 }
 export interface Gateway {
+  error_context?: ErrorContextV1;
+  error_context_invalid?: true;
   code:
     | "internal_error"
     | "invalid_params"
@@ -454,9 +920,17 @@ export interface Gateway {
     | "turn_id_mismatch"
     | "active_turn_not_steerable"
     | "input_too_large"
+    | "gateway_message_too_large"
     | "message_id_conflict"
     | "session_not_found"
     | "session_in_use"
+    | "session_ambiguous"
+    | "session_changed"
+    | "session_deleted"
+    | "session_repair_required"
+    | "repair_not_available"
+    | "repair_unavailable"
+    | "repair_failed"
     | "session_state_invalid"
     | "session_state_version_unsupported"
     | "approval_not_pending"
@@ -465,8 +939,21 @@ export interface Gateway {
     [k: string]: any;
   };
   detail?: string;
+  category?:
+    | "auth"
+    | "config"
+    | "extension"
+    | "migration"
+    | "provider"
+    | "runtime"
+    | "sandbox"
+    | "storage"
+    | "terminal"
+    | "update";
   message: string;
   method?: string;
+  occurrence_id?: string;
+  recovery_actions?: RecoveryActions;
   [k: string]: any;
 }
 export interface Item {
@@ -648,6 +1135,7 @@ export interface Status {
   };
   queue_items: {
     follow_ups?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -660,13 +1148,14 @@ export interface Status {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     pending_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -679,13 +1168,14 @@ export interface Status {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     rejected_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -698,7 +1188,7 @@ export interface Status {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
@@ -746,7 +1236,10 @@ export interface Status {
   [k: string]: any;
 }
 export interface Status1 {
+  session_id?: string;
+  generation?: number;
   client_turn_id?: string;
+  turn_id?: string;
   kind: string;
   message?: string;
   severity?: string;
@@ -757,6 +1250,32 @@ export interface Status1 {
 export interface Stream {
   client_turn_id: string;
   [k: string]: any;
+}
+export interface ProviderAttempt {
+  session_id: string;
+  turn_id: string;
+  client_turn_id?: string;
+  generation?: number;
+  record: ProviderAttemptRecord;
+  [k: string]: any;
+}
+export interface ProviderAttemptFields {
+  sequence: number;
+  attempt: number;
+  state: "scheduled" | "started" | "failed" | "completed" | "recovered" | "exhausted" | "cancelled" | "unknown";
+  policy: ProviderAttemptPolicy;
+  requestRetriesUsed: number;
+  streamRetriesUsed: number;
+  observedAt: string;
+  failure?: Failure;
+  recoveryKind?: "request" | "stream";
+  retryAt?: string;
+  resetOutput?: boolean;
+  [k: string]: any;
+}
+export interface ProviderAttemptPolicy {
+  requestMaxRetries: number;
+  streamMaxRetries: number;
 }
 export interface Stream1 {
   additional_details?: string;
@@ -776,6 +1295,8 @@ export interface Thinking {
   [k: string]: any;
 }
 export interface Tool {
+  terminal_interaction?: GatewayTerminalInteraction;
+  tool_record?: GatewayToolRecord;
   call_id: string;
   client_turn_id: string;
   duration_s: number;
@@ -787,7 +1308,62 @@ export interface Tool {
   tool_id: string;
   [k: string]: any;
 }
+export interface GatewayTerminalInteraction {
+  shell_id: string;
+  kind: "input" | "poll";
+  input_preview?: string;
+  command_preview?: string;
+  interaction_succeeded?: boolean;
+  process_running?: boolean;
+}
+export interface GatewayToolRecord {
+  version: 1;
+  kind: "tool_execution";
+  name: string;
+  call_id?: string;
+  status: "running" | "success" | "error" | "cancelled";
+  mutating: boolean;
+  error_context?: ErrorContextV1;
+  error_context_invalid?: true;
+  target?: string;
+  duration_ms?: number;
+  content_preview?: string;
+  content_line_count?: number;
+  diff_preview?: string;
+  summary_preview?: string;
+  detail_preview?: string;
+  output_preview?: string;
+  error_preview?: string;
+  hidden_line_count?: number;
+  presentation?: "tool" | "context" | "mutation" | "shell" | "skill" | "web" | "diagnostic" | "control" | "external";
+  display_truncated?: boolean;
+  display_omitted_chars?: number;
+  shell?: GatewayShellRecord;
+  terminal_interaction?: GatewayTerminalInteraction;
+}
+export interface GatewayShellRecord {
+  command_preview?: string;
+  description?: string;
+  shell_id?: string;
+  background?: boolean;
+  process_state?: string;
+  transport?: string;
+  tty?: boolean;
+  yielded?: boolean;
+  terminal_state?: string;
+  exit_code?: number;
+  sequence?: number;
+  started_at?: string;
+  completed_at?: string;
+  output_chars?: number;
+  omitted_output_chars?: number;
+  cleanup_result?: string;
+  shell_kind?: string;
+  shell_edition?: string;
+}
 export interface Tool1 {
+  terminal_interaction?: GatewayTerminalInteraction;
+  tool_record?: GatewayToolRecord;
   call_id: string;
   client_turn_id: string;
   duration_s: number;
@@ -813,6 +1389,8 @@ export interface Tool2 {
   [k: string]: any;
 }
 export interface Tool3 {
+  terminal_interaction?: GatewayTerminalInteraction;
+  tool_record?: GatewayToolRecord;
   args_preview?: string;
   call_id: string;
   client_turn_id: string;
@@ -822,6 +1400,8 @@ export interface Tool3 {
   [k: string]: any;
 }
 export interface Turn {
+  session_id?: string;
+  generation?: number;
   activity_events: any[];
   assistant_message: string;
   client_turn_id: string;
@@ -856,6 +1436,11 @@ export interface Turn2 {
   [k: string]: any;
 }
 export interface Turn3 {
+  error_context?: ErrorContextV1;
+  error_context_invalid?: true;
+  recovery_actions?: RecoveryActions;
+  session_id?: string;
+  generation?: number;
   additional_details?: string;
   client_turn_id: string;
   code:
@@ -881,6 +1466,10 @@ export interface Turn3 {
   [k: string]: any;
 }
 export interface Turn4 {
+  error_context?: ErrorContextV1;
+  error_context_invalid?: true;
+  session_id?: string;
+  generation?: number;
   client_turn_id?: string;
   code?: "interrupted";
   input_rolled_back?: boolean;
@@ -920,6 +1509,7 @@ export interface TurnQueue {
   has_pending_input?: boolean;
   queue_items: {
     follow_ups?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -932,13 +1522,14 @@ export interface TurnQueue {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     pending_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -951,13 +1542,14 @@ export interface TurnQueue {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
       [k: string]: any;
     }[];
     rejected_steers?: {
+      claim_turn_id?: string | null;
       client_turn_id?: string;
       created_at?: string;
       kind?: "pending_steer" | "rejected_steer" | "follow_up";
@@ -970,7 +1562,7 @@ export interface TurnQueue {
       queue_id?: string;
       session_id?: string;
       source?: string;
-      state?: "queued" | "accepted" | "committed";
+      state?: "queued" | "accepted" | "claimed" | "committed";
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
@@ -996,11 +1588,15 @@ export interface TurnQueue {
   [k: string]: any;
 }
 export interface Turn5 {
+  session_id?: string;
+  generation?: number;
   client_turn_id: string;
   turn_id: string;
   [k: string]: any;
 }
 export interface Turn6 {
+  session_id?: string;
+  generation?: number;
   client_turn_id?: string;
   kind: string;
   message?: string;

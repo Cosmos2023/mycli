@@ -1,5 +1,17 @@
 {
 	"$defs": {
+		"provider.attempt.updated": {
+			"name": "provider.attempt.updated",
+			"type": "object",
+			"required": ["session_id", "turn_id", "record"],
+			"properties": {
+				"session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+				"turn_id": {"type": "string", "minLength": 1, "maxLength": 256},
+				"client_turn_id": {"type": "string", "maxLength": 256},
+				"generation": {"type": "integer", "minimum": 1},
+				"record": {"$ref": "provider-attempt.schema.json#/$defs/record"}
+			}
+		},
 		"extension.updated": {
 			"name": "extension.updated",
 			"additionalProperties": false,
@@ -25,6 +37,18 @@
         },
         "content_chars": {
           "type": "integer"
+        },
+        "command_preview": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "command_truncated": {
+          "type": "boolean"
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
         },
         "content_line_count": {
           "type": "integer"
@@ -321,6 +345,12 @@
     "compaction.completed": {
       "name": "compaction.completed",
       "properties": {
+        "failure": { "$ref": "provider-attempt.schema.json#/$defs/failure" },
+        "usage": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 },
+          "maxProperties": 16
+        },
         "after_tokens": {
           "type": "integer"
         },
@@ -421,6 +451,8 @@
     "gateway.error": {
       "name": "gateway.error",
       "properties": {
+        "error_context": { "$ref": "error-context.schema.json" },
+        "error_context_invalid": { "const": true },
         "code": {
           "enum": [
             "internal_error",
@@ -445,9 +477,17 @@
             "turn_id_mismatch",
             "active_turn_not_steerable",
             "input_too_large",
+            "gateway_message_too_large",
             "message_id_conflict",
             "session_not_found",
             "session_in_use",
+			"session_ambiguous",
+			"session_changed",
+			"session_deleted",
+			"session_repair_required",
+			"repair_not_available",
+			"repair_unavailable",
+			"repair_failed",
             "session_state_invalid",
             "session_state_version_unsupported",
             "approval_not_pending",
@@ -461,16 +501,112 @@
         "detail": {
           "type": "string"
         },
+        "category": {
+          "enum": [
+            "auth",
+            "config",
+            "extension",
+            "migration",
+            "provider",
+            "runtime",
+            "sandbox",
+            "storage",
+            "terminal",
+            "update"
+          ],
+          "type": "string"
+        },
         "message": {
           "type": "string"
         },
         "method": {
           "type": "string"
+        },
+        "occurrence_id": {
+          "maxLength": 96,
+          "type": "string"
+        },
+        "recovery_actions": {
+          "items": {
+            "enum": [
+              "check_billing",
+              "check_for_updates",
+              "compact_session",
+              "configure_credentials",
+              "inspect_configuration",
+              "inspect_execution",
+              "review_access",
+              "retry",
+              "run_doctor",
+              "select_compatible_model",
+              "start_new_session",
+              "wait_and_retry"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "type": "array"
         }
       },
       "required": [
         "code",
         "message"
+      ],
+      "type": "object"
+    },
+    "interactive.cancelled": {
+      "name": "interactive.cancelled",
+      "properties": {
+        "child_session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "client_turn_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "request_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "child_session_id",
+        "generation",
+        "client_turn_id",
+        "turn_id"
+      ],
+      "oneOf": [
+        {
+          "required": ["decision_id"]
+        },
+        {
+          "required": ["request_id"]
+        }
       ],
       "type": "object"
     },
@@ -991,6 +1127,16 @@
       "name": "subagent.updated",
       "additionalProperties": false,
       "properties": {
+		"session_id": {
+		  "maxLength": 256,
+		  "minLength": 1,
+		  "type": "string"
+		},
+		"generation": {
+		  "maximum": 9007199254740991,
+		  "minimum": 1,
+		  "type": "integer"
+		},
         "subagent": {
           "additionalProperties": false,
           "properties": {
@@ -1166,6 +1312,9 @@
             "follow_ups": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -1210,6 +1359,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -1234,6 +1384,9 @@
             "pending_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -1278,6 +1431,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -1302,6 +1456,9 @@
             "rejected_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -1346,6 +1503,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -1507,7 +1665,20 @@
     "status.update": {
       "name": "status.update",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
+          "type": "string"
+        },
+        "turn_id": {
           "type": "string"
         },
         "kind": {
@@ -1612,6 +1783,8 @@
     "tool.complete": {
       "name": "tool.complete",
       "properties": {
+        "terminal_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayTerminalInteraction" },
+        "tool_record": { "$ref": "gateway-tool-record.schema.json" },
         "call_id": {
           "type": "string"
         },
@@ -1656,6 +1829,8 @@
     "tool.failed": {
       "name": "tool.failed",
       "properties": {
+        "terminal_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayTerminalInteraction" },
+        "tool_record": { "$ref": "gateway-tool-record.schema.json" },
         "call_id": {
           "type": "string"
         },
@@ -1744,6 +1919,8 @@
     "tool.start": {
       "name": "tool.start",
       "properties": {
+        "terminal_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayTerminalInteraction" },
+        "tool_record": { "$ref": "gateway-tool-record.schema.json" },
         "args_preview": {
           "type": "string"
         },
@@ -1775,6 +1952,16 @@
     "turn.completed": {
       "name": "turn.completed",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "activity_events": {
           "type": "array"
         },
@@ -1895,6 +2082,19 @@
     "turn.failed": {
       "name": "turn.failed",
       "properties": {
+        "error_context": { "$ref": "error-context.schema.json" },
+        "error_context_invalid": { "const": true },
+        "recovery_actions": { "$ref": "#/$defs/gateway.error/properties/recovery_actions" },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "additional_details": {
           "maxLength": 1000,
           "type": "string"
@@ -1942,6 +2142,18 @@
     "turn.interrupted": {
       "name": "turn.interrupted",
       "properties": {
+        "error_context": { "$ref": "error-context.schema.json" },
+        "error_context_invalid": { "const": true },
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
           "type": "string"
         },
@@ -2075,6 +2287,9 @@
             "follow_ups": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -2119,6 +2334,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -2143,6 +2359,9 @@
             "pending_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -2187,6 +2406,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -2211,6 +2431,9 @@
             "rejected_steers": {
               "items": {
                 "properties": {
+                  "claim_turn_id": {
+                    "type": ["string", "null"]
+                  },
                   "client_turn_id": {
                     "type": "string"
                   },
@@ -2255,6 +2478,7 @@
                     "enum": [
                       "queued",
                       "accepted",
+                      "claimed",
                       "committed"
                     ],
                     "type": "string"
@@ -2339,6 +2563,16 @@
     "turn.started": {
       "name": "turn.started",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
           "type": "string"
         },
@@ -2355,6 +2589,16 @@
     "turn.status": {
       "name": "turn.status",
       "properties": {
+        "session_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
         "client_turn_id": {
           "type": "string"
         },
@@ -2447,6 +2691,26 @@
         },
         "params": {
           "$ref": "#/$defs/approval.request"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "interactive.cancelled"
+        },
+        "params": {
+          "$ref": "#/$defs/interactive.cancelled"
         }
       },
       "required": [
@@ -2982,6 +3246,20 @@
         "jsonrpc": {
           "const": "2.0"
         },
+        "method": {
+          "const": "provider.attempt.updated"
+        },
+        "params": {
+          "$ref": "#/$defs/provider.attempt.updated"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
         "method": {
           "const": "stream.retrying"
         },

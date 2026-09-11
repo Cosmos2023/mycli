@@ -5,31 +5,20 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	redactDoctorText,
-	redactDoctorValue,
 	scanDoctorFiles,
 } from "../src/management/doctor/redaction.ts";
 
-test("doctor redaction removes secret-shaped text and sensitive object fields", () => {
+test("doctor text redaction removes secret-shaped text", () => {
 	const text = redactDoctorText([
 		"Authorization: Bearer bearer-secret",
 		"api_key=sk-test-secret",
 		"command=private-command --token argument-secret",
 		"prompt=private-prompt",
 	].join(" "));
-	const value = redactDoctorValue({
-		headers: { Authorization: "Bearer nested-secret" },
-		env: { PRIVATE_TOKEN: "environment-secret" },
-		stderr: "plugin-private-output",
-		provider_payload: { text: "provider-private-output" },
-		count: 2,
-	});
-	const rendered = `${text}\n${JSON.stringify(value)}`;
 
-	assert.doesNotMatch(rendered, /bearer-secret|test-secret|private-command|argument-secret/u);
-	assert.doesNotMatch(rendered, /private-prompt|nested-secret|environment-secret/u);
-	assert.doesNotMatch(rendered, /plugin-private-output|provider-private-output/u);
-	assert.match(rendered, /\[REDACTED\]/u);
-	assert.equal((value as Readonly<Record<string, unknown>>).count, 2);
+	assert.doesNotMatch(text, /bearer-secret|test-secret|private-command|argument-secret/u);
+	assert.doesNotMatch(text, /private-prompt/u);
+	assert.match(text, /\[REDACTED\]/u);
 	assert.equal(redactDoctorText("api_key: present"), "api_key: present");
 	assert.equal(redactDoctorText("api_key: missing"), "api_key: missing");
 	assert.equal(redactDoctorText("api_key: unknown"), "api_key: unknown");

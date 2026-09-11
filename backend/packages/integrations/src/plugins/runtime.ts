@@ -5,6 +5,7 @@ import { createPluginHookRegistration } from "./hook-adapter.ts";
 import { PluginCommandRegistry } from "./command-registry.ts";
 import { discoverPlugins, type DiscoverPluginsOptions } from "./discovery.ts";
 import { PluginHostError, PluginProcessHost } from "./process-host.ts";
+import { RecoverablePluginHost } from "./recoverable-host.ts";
 import { createPluginToolRegistration } from "./tool-adapter.ts";
 import type {
 	DiscoveredPlugin,
@@ -12,12 +13,13 @@ import type {
 	PluginCandidate,
 	PluginDiscovery,
 	PluginHostContract,
+	PluginHostStatus,
 	PluginProtocolRegistration,
 } from "./types.ts";
 
 type PluginCommandRegistration = Extract<PluginProtocolRegistration, { readonly kind: "command" }>;
 
-export type PluginRuntimeRecordStatus = "loaded" | "disabled" | "error" | "migration_required";
+export type PluginRuntimeRecordStatus = "loaded" | "loading" | "closed" | "disabled" | "error" | "partial" | "migration_required";
 
 export interface PluginRuntimeRecord {
 	readonly pluginId: string;
@@ -28,9 +30,14 @@ export interface PluginRuntimeRecord {
 	readonly hooks: readonly string[];
 	readonly commands: readonly string[];
 	readonly issues: readonly string[];
+	readonly hostStatus?: PluginHostStatus;
+	readonly format?: "codex";
+	readonly skillCount?: number;
 }
 
 export interface PluginRuntimeOptions extends DiscoverPluginsOptions {
+	readonly discovery?: PluginDiscovery;
+	readonly bundleIssues?: readonly { readonly pluginId: string; readonly errorClass: string }[];
 	readonly env: Readonly<NodeJS.ProcessEnv>;
 	readonly sandboxProfile: (manifest: LoadedPluginManifest) => SandboxProfile;
 	readonly createHost?: (manifest: LoadedPluginManifest) => PluginHostContract;
@@ -38,12 +45,12 @@ export interface PluginRuntimeOptions extends DiscoverPluginsOptions {
 
 export class PluginRuntime {
 	readonly discovery: PluginDiscovery;
-	readonly records: readonly PluginRuntimeRecord[];
-	readonly issues: readonly string[];
+	readonly #records: readonly PluginRuntimeRecord[];
 	readonly tools: readonly IntegrationRegistration[];
 	readonly hooks: readonly HookRegistration[];
 	readonly commands: PluginCommandRegistry;
 	readonly #hosts: readonly PluginHostContract[];
+	readonly #hostById: ReadonlyMap<string, PluginHostContract>;
 	#closePromise?: Promise<void>;
 
 	private constructor(input: {
@@ -53,31 +60,58 @@ export class PluginRuntime {
 		readonly hooks: readonly HookRegistration[];
 		readonly commands: PluginCommandRegistry;
 		readonly hosts: readonly PluginHostContract[];
+		readonly hostById: ReadonlyMap<string, PluginHostContract>;
 	}) {
 		this.discovery = input.discovery;
-		this.records = Object.freeze([...input.records]);
-		this.issues = Object.freeze([
-			...input.discovery.diagnostics.map((diagnostic) => (
-				`${diagnostic.source}:${diagnostic.fileLabel}:${diagnostic.pluginId}:${diagnostic.errorClass}`
-			)),
-			...input.records.flatMap((record) => record.issues.map((issue) => `${record.pluginId}:${issue}`)),
-		]);
+		this.#records = Object.freeze([...input.records]);
 		this.tools = Object.freeze([...input.tools]);
 		this.hooks = Object.freeze([...input.hooks]);
 		this.commands = input.commands;
 		this.#hosts = Object.freeze([...input.hosts]);
+		this.#hostById = new Map(input.hostById);
+	}
+
+	get records(): readonly PluginRuntimeRecord[] {
+		return Object.freeze(this.#records.map((record) => {
+			const host = this.#hostById.get(record.pluginId);
+			if (!host) return record;
+			const status = host.status === "ready" ? "loaded" : host.status === "starting" ? "loading"
+				: host.status === "closed" || host.status === "closing" ? "closed" : "error";
+			return Object.freeze({ ...record, status, hostStatus: host.status,
+				issues: Object.freeze(host.failure ? [host.failure.kind] : []) });
+		}));
+	}
+
+	get issues(): readonly string[] {
+		return Object.freeze([
+			...this.discovery.diagnostics.map((item) => `${item.source}:${item.fileLabel}:${item.pluginId}:${item.errorClass}`),
+			...this.records.flatMap((record) => record.issues.map((issue) => `${record.pluginId}:${issue}`)),
+		]);
+	}
+
+	subscribe(listener: () => void): () => void {
+		const unsubscribers = this.#hosts.flatMap((host) => host.subscribe ? [host.subscribe(listener)] : []);
+		return () => { for (const unsubscribe of unsubscribers) unsubscribe(); };
 	}
 
 	static async load(options: PluginRuntimeOptions, signal: AbortSignal): Promise<PluginRuntime> {
 		assertNotAborted(signal);
-		const discovery = await discoverPlugins(options);
+		const discovery = options.discovery ?? await discoverPlugins(options);
 		const records: PluginRuntimeRecord[] = [];
 		const tools: IntegrationRegistration[] = [];
 		const hooks: HookRegistration[] = [];
 		const commands = new PluginCommandRegistry();
 		const hosts: PluginHostContract[] = [];
+		const hostById = new Map<string, PluginHostContract>();
 		for (const candidate of discovery.selected) {
 			assertNotAborted(signal);
+			if (candidate.kind === "bundle") {
+				const issues = [...candidate.manifest.issues, ...(options.bundleIssues ?? [])
+					.filter((issue) => issue.pluginId === candidate.pluginId).map((issue) => issue.errorClass)];
+				records.push(Object.freeze({ ...runtimeRecord(candidate, candidate.enabled ? issues.length ? "partial" : "loaded" : "disabled", issues),
+					format: "codex", skillCount: candidate.manifest.skillFiles.length }));
+				continue;
+			}
 			if (candidate.kind === "migration_required") {
 				records.push(runtimeRecord(candidate, "migration_required", [candidate.message]));
 				continue;
@@ -96,7 +130,7 @@ export class PluginRuntime {
 			}
 			let host: PluginHostContract | undefined;
 			try {
-				host = createHost(options, candidate);
+				host = new RecoverablePluginHost(() => createHost(options, candidate));
 				const registrations = await host.start(signal);
 				const pluginTools: IntegrationRegistration[] = [];
 				const pluginHooks: HookRegistration[] = [];
@@ -105,7 +139,7 @@ export class PluginRuntime {
 				const pluginCommands: PluginCommandRegistration[] = [];
 				for (const registration of registrations) {
 					if (registration.kind === "tool") {
-						pluginTools.push(createPluginToolRegistration(host, candidate.pluginId, registration));
+						pluginTools.push(createPluginToolRegistration(host, candidate.pluginId, registration, candidate.manifest.description));
 						pluginToolNames.push(registration.name);
 					} else if (registration.kind === "hook") {
 						pluginHooks.push(createPluginHookRegistration(host, candidate.pluginId, registration));
@@ -119,6 +153,7 @@ export class PluginRuntime {
 				tools.push(...pluginTools);
 				hooks.push(...pluginHooks);
 				hosts.push(host);
+				hostById.set(candidate.pluginId, host);
 				records.push(Object.freeze({
 					pluginId: candidate.pluginId,
 					source: candidate.source,
@@ -138,7 +173,7 @@ export class PluginRuntime {
 				records.push(runtimeRecord(candidate, "error", [runtimeErrorKind(error)]));
 			}
 		}
-		return new PluginRuntime({ discovery, records, tools, hooks, commands, hosts });
+		return new PluginRuntime({ discovery, records, tools, hooks, commands, hosts, hostById });
 	}
 
 	close(): Promise<void> {

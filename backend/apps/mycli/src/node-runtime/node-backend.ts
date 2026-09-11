@@ -1,35 +1,44 @@
 import { randomUUID } from "node:crypto";
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-} from "node:fs";
+import type { GatewayTransport, JsonObject } from "@mycli/gateway";
+import { GitReviewReadTool } from "../review/git-read-tool.ts";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { parseRuntimeState, type RuntimeTurnRecord } from "@mycli/contracts";
 import {
+	isModelSelectionScope,
+	type ModelSelectionScope,
+	type RuntimeTurnRecord,
+} from "@mycli/contracts";
+import {
+	CachedUpdateService,
+	detectTerminalCapabilities,
 	ExecPolicyStore,
-	findModelCatalogEntry,
 	listProviderProfiles,
-	loadModelCatalog,
 	loadManagedExecutionPolicy,
-	loadShellSettings,
-	modelCatalogEntryPayload,
+	modelInputTokenLimit,
+	parseConfigProfileName,
 	parseProtocol,
 	readApiKey,
-	resolveModelRuntimeConfig,
+	readProviderCredential,
+	resolveConfig,
 	resolveProviderProfile,
+	resolveShellSettingsState,
+	resolveTerminalCapabilities,
+	resetTuiKeymap,
+	saveShellSetting,
 	saveShellSettings,
 	writeApiKey,
 	writeUserProviderConfig,
 	WorkspaceTrustStore,
 } from "@mycli/config";
-import type { NodeRuntimeConfig, ResolveConfigOptions } from "@mycli/config";
+import type {
+	ConfigProfileName,
+	DetectedTerminalCapabilities,
+	LoadedShellSettings,
+	NodeRuntimeConfig,
+	ResolveConfigOptions,
+	WorkspaceTrustState,
+} from "@mycli/config";
 import type {
 	AgentBudget,
 	AgentBudgetExhaustionKind,
@@ -37,20 +46,24 @@ import type {
 	AgentExecutionPolicySnapshot,
 	AgentProviderSnapshot,
 	QueueSnapshot,
-	QueuedInput,
 	ReasoningEffort,
+	ProviderRequest,
 	RuntimeEvent,
 	ShellLifecycleEvent,
 } from "@mycli/core";
 import {
 	agentThreadId,
+	isProviderId,
 	modelInputSha256,
 	narrowAgentExecutionPolicy,
+	parseProviderRouteId,
 	rootAgentPath,
 } from "@mycli/core";
 import {
 	skillInvocationArtifactFromMetadata,
-	serializeSubagentTaskNotification,
+	ListMcpResourcesTool,
+	ReadMcpResourceTool,
+	ListMcpResourceTemplatesTool,
 	type IntegrationRegistration,
 	type ChildRuntimeCreateInput,
 	type ChildRuntimeEvent,
@@ -59,9 +72,16 @@ import {
 	type WaitAgentActivityContract,
 	type WaitAgentActivityInput,
 } from "@mycli/integrations";
-import { ProviderRegistry } from "@mycli/providers";
+import {
+	ProviderRegistry,
+	captureProviderNativeEnvironment,
+	inspectNativeProviderAuth,
+	resolveProviderNativeTransport,
+	type ProviderRouteDescriptor,
+} from "@mycli/providers";
 import {
 	ApprovalContinuationCoordinator,
+	ParallelApprovalCoordinator,
 	AgentActivityBus,
 	AgentMailbox,
 	AgentSupervisor,
@@ -81,7 +101,9 @@ import {
 	SessionTransitionError,
 	ShellLifecycleProjector,
 	summarizeCompactionWithProvider,
+	CompactionModelJournal,
 	TokenCounter,
+	toolExposureForSnapshot,
 	WorkerLeasedAgentThreadRuntimeFactory,
 	WorkerLeasedRootTurnRuntime,
 } from "@mycli/runtime";
@@ -89,29 +111,18 @@ import type {
 	ExecutionPolicyConstraints,
 	ExecutionPolicySnapshot,
 	NodeTurnRuntimeOptions,
-	PendingSessionApproval,
-	PendingSessionClarification,
 	PreparedSession,
-	RuntimeDiagnosticEvent,
+	RunExecutionSnapshot,
 } from "@mycli/runtime";
 import {
 	SessionArtifactStore,
-	sessionSubagentIndexEntry,
-	subagentRunId,
 	SnapshotStateError,
 	openRuntimeSessionStore,
 	TranscriptSnapshotStore,
 } from "@mycli/storage";
 import type {
 	AgentThreadRecord,
-	LegacySnapshotMessage,
-	RuntimeSessionStore,
-	SessionListQuery,
-	SessionOverview,
-	TranscriptItem,
-	TranscriptSnapshotV2,
 	SubagentTaskRecord,
-	WriteSubagentSnapshotInput,
 } from "@mycli/storage";
 import {
 	ApprovalPolicy,
@@ -119,14 +130,15 @@ import {
 	BashOutputTool,
 	BashTool,
 	builtinToolManifest,
+	createToolSearchDefinition,
 	EditTool,
 	FileHistoryStore,
 	FileMutationRuntime,
 	FileSnapshotStore,
+	inspectSandboxReadiness,
 	PatchTool,
 	planToolExposure,
 	parseShellCommand,
-	permissionRequestFromJson,
 	ReadTool,
 	RequestPermissionsTool,
 	resolveShellProfile,
@@ -137,9 +149,12 @@ import {
 	startPipeTransport,
 	ToolRouter,
 	ToolSearchTool,
+	ViewImageTool,
 	KillShellTool,
 	type BuiltInToolManifest,
 	type CombinedToolManifest,
+	type DeferredToolCandidate,
+	type PermissionProfile,
 	type ToolAdapter,
 	UpdatePlanTool,
 	WebFetchTool,
@@ -156,7 +171,7 @@ import {
 } from "./integration-composition.ts";
 import {
 	createNodeGateway,
-	type NodeGateway,
+	type NodeGatewayCredentialReadiness,
 	type NodeGatewayIntegrationCommands,
 	type NodeGatewayIntegrations,
 	type NodeGatewayRuntime,
@@ -171,9 +186,7 @@ import {
 import { packagedSystemPrompt } from "./system-prompt.ts";
 import { resolveAgentWorkerSettings } from "./agent-worker-settings.ts";
 import {
-	projectReadableSessionTranscript,
 	projectReadableSessionTranscriptPage,
-	projectRecentSessionTranscript,
 } from "./readable-session-transcript.ts";
 import {
 	cutoverTranscriptNormalization,
@@ -194,9 +207,48 @@ import {
 	sessionPreferencesFromConfig,
 	type SessionPreferences,
 } from "./session-preferences.ts";
+import { SessionService } from "./session-service.ts";
+import {
+	applyProviderScopedModelConfig,
+	findProviderScopedModelEntry,
+	providerScopedModelPayload,
+	ProviderModelDirectory,
+	type ProviderModelDirectorySnapshot,
+} from "./provider-model-directory.ts";
+import { MYCLI_PACKAGE_NAME, MYCLI_VERSION } from "../version.ts";
+import { NodeRuntimeRegistry } from "./node-runtime-registry.ts";
+import {
+	NodeBackendResourceOwner,
+	SerializedSessionArtifactQueue,
+} from "./node-runtime-resources.ts";
+import {
+	appendNodeTrace,
+	elapsedIsoMs,
+	elapsedMonotonicMs,
+	nodeLogRows,
+	nodeTraceRows,
+	runtimeDiagnosticTraceEvent,
+	tryAppendNodeTrace,
+} from "./node-runtime-trace.ts";
+import {
+	canonicalSnapshot,
+	canonicalTranscript,
+	emptyQueue,
+	hasCode,
+	isTerminalSubagentStatus,
+	listSessionsWithVirtualInitial,
+	loadApprovalState,
+	loadQueue,
+	loadResponsesContinuation,
+	prepareStoredSession,
+	projectCanonicalAgentEvent,
+	publishCanonicalSubagentEvent,
+	terminalSubagentOutput,
+	virtualSession,
+} from "./node-session-bootstrap.ts";
 
 export interface NodeBackend {
-	readonly transport: NodeGateway["transport"];
+	readonly transport: GatewayTransport;
 	readonly completion: Promise<number>;
 	close(): Promise<void>;
 	kill(): void;
@@ -204,7 +256,7 @@ export interface NodeBackend {
 	startupProfile?(): StartupProfileSnapshot | undefined;
 }
 
-export interface RecoverInterruptedTurnOptions {
+interface RecoverInterruptedTurnOptions {
 	readonly sessionId: string;
 	readonly turnId: string;
 	readonly inputRolledBack?: boolean;
@@ -212,12 +264,18 @@ export interface RecoverInterruptedTurnOptions {
 }
 
 export interface StartNodeBackendOptions {
+	readonly signal?: AbortSignal;
+	readonly approvalMode?: "live" | "suspend";
+	readonly executionMode?: "review";
+	readonly reviewRevision?: string;
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly args: readonly string[];
 	readonly sessionOwnerId?: string;
 	readonly maxOutputTokens?: number;
 	readonly recoverInterruptedTurns?: readonly RecoverInterruptedTurnOptions[];
+	readonly updateFetch?: typeof fetch;
+	readonly agentWorkerReadProcessRssBytes?: () => number;
 }
 
 type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
@@ -228,6 +286,8 @@ type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
 const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
 const DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS = 12_000;
+const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "workspace";
+const PROVIDER_CONNECTIVITY_TIMEOUT_MS = 15_000;
 const MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
@@ -237,19 +297,44 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		origin: 0,
 	});
 	startupProfiler.mark("runtime_entered");
-	const overrides = parseOverrides(options.args);
+	const runtimeArguments = parseRuntimeArguments(options.args);
+	const overrides = runtimeArguments.overrides;
+	const profileInput = runtimeArguments.configProfile
+		? { configProfile: runtimeArguments.configProfile }
+		: {};
 	const agentExecutionAdapters = resolveAgentExecutionAdapters(options.env);
 	const agentWorkerSettings = resolveAgentWorkerSettings(options.env);
+	const detectedTerminalCapabilities = detectTerminalCapabilities(options.env);
 	const homeDir = runtimeHome(options.env);
 	const managedExecutionPolicy = await loadManagedExecutionPolicy({ homeDir });
-	const config = await resolveModelRuntimeConfig({
+	const sandboxReadinessPromise = inspectSandboxReadiness();
+	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
+	const providerModelDirectory = new ProviderModelDirectory({ homeDir });
+	const resolveWorkspaceModelRuntimeConfig = async (
+		input: ResolveConfigOptions,
+		workspaceTrust?: WorkspaceTrustState,
+	): Promise<NodeRuntimeConfig> => resolveConfig({
+		...input,
+		...profileInput,
+		workspaceTrust: workspaceTrust ?? await workspaceTrustStore.load(input.workspaceRoot),
+	});
+	const resolveWorkspaceShellSettings = async (workspaceRoot: string) => (
+		resolveShellSettingsState({
+			homeDir,
+			workspaceRoot,
+			env: options.env,
+			...profileInput,
+			workspaceTrust: await workspaceTrustStore.load(workspaceRoot),
+		})
+	);
+	let startupTrustState = await workspaceTrustStore.load(options.cwd);
+	let config = await resolveWorkspaceModelRuntimeConfig({
 		homeDir,
 		workspaceRoot: options.cwd,
 		env: options.env,
 		overrides,
-	});
-	let defaultPreferences = sessionPreferencesFromConfig(config, "default");
-	startupProfiler.mark("config_ready");
+		...profileInput,
+	}, startupTrustState);
 	for (const recovery of options.recoverInterruptedTurns ?? []) {
 		if (recovery.sessionId !== config.sessionId) {
 			throw new Error("recovered_interrupt_session_mismatch");
@@ -265,6 +350,17 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	}[];
 	try {
 		store.acquireSessionLease(config.sessionId);
+		const persisted = store.loadSession(config.sessionId);
+		if (persisted && persisted.workspaceRoot !== config.workspaceRoot) {
+			startupTrustState = await workspaceTrustStore.load(persisted.workspaceRoot);
+			config = await resolveWorkspaceModelRuntimeConfig({
+				homeDir,
+				workspaceRoot: persisted.workspaceRoot,
+				env: options.env,
+				overrides,
+				...profileInput,
+			}, startupTrustState);
+		}
 		recoveredInterrupts = (options.recoverInterruptedTurns ?? []).flatMap((recovery) => {
 			const record = store.recoverInterruptedTurn(
 				recovery.sessionId,
@@ -282,12 +378,102 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		store.close();
 		throw error;
 	}
+	let defaultPreferences = sessionPreferencesFromConfig(
+		config,
+		"default",
+		DEFAULT_PERMISSION_PROFILE,
+	);
+	const updateCache = new CachedUpdateService({
+		homeDir,
+		packageName: MYCLI_PACKAGE_NAME,
+		currentVersion: MYCLI_VERSION,
+		env: options.env,
+		executablePath: process.argv[1],
+		...(options.updateFetch ? { fetch: options.updateFetch } : {}),
+	});
+	const startupUpdateStatus = await updateCache.status(config.updatesCheckOnStartup);
+	startupProfiler.mark("config_ready");
 	startupProfiler.mark("storage_ready");
 	const productSystemPrompt = packagedSystemPrompt();
-	const workspaceTrustStore = new WorkspaceTrustStore({ homeDir });
 	const registry = new ProviderRegistry();
+	const providerRoutesByConfig = new WeakMap<NodeRuntimeConfig, ProviderRouteDescriptor>();
+	const captureProviderRoute = async (
+		resolved: NodeRuntimeConfig,
+		resolveWithModelLimit?: (inputTokenLimit: number) => Promise<NodeRuntimeConfig>,
+		environment: Readonly<NodeJS.ProcessEnv> = options.env,
+	): Promise<NodeRuntimeConfig> => {
+		const snapshot = await providerModelDirectory.load(resolved);
+		const route = snapshot.route(resolved.provider);
+		if (!route || route.activation !== "active") {
+			throw new Error("provider_model_directory_error: active provider route is unavailable");
+		}
+		const entry = findProviderScopedModelEntry(snapshot, {
+			provider: resolved.provider,
+			protocol: resolved.protocol,
+			model: resolved.model,
+			baseUrl: resolved.apiBaseUrl,
+		});
+		const inputTokenLimit = entry === undefined ? undefined : modelInputTokenLimit(entry);
+		const modelAwareConfig = inputTokenLimit === undefined || resolveWithModelLimit === undefined
+			? resolved
+			: await resolveWithModelLimit(inputTokenLimit);
+		const selected = entry === undefined
+			? modelAwareConfig
+			: applyProviderScopedModelConfig(modelAwareConfig, entry);
+		const nativeTransport = route.source === "pi_ai_builtin" && route.catalogProviderId
+			? await resolveProviderNativeTransport({
+				catalogProviderId: route.catalogProviderId,
+				modelId: selected.model,
+				protocol: selected.protocol,
+				apiBaseUrl: selected.apiBaseUrl,
+				allowDeclaredModel: entry?.origin !== "pi_ai_catalog",
+				environment,
+			})
+			: undefined;
+		const providerEnv = nativeTransport ? await captureProviderNativeEnvironment({
+			catalogProviderId: nativeTransport.catalogProviderId,
+			environment,
+			...(selected.apiKey ? { apiKey: selected.apiKey } : {}),
+		}) : undefined;
+		const effective = nativeTransport ? Object.freeze({ ...selected, nativeTransport, providerEnv }) : selected;
+		providerRoutesByConfig.set(effective, nativeTransport ? Object.freeze({ ...route, nativeTransport }) : route);
+		return effective;
+	};
+	const resolveCapturedProviderModelConfig = async (
+		input: ResolveConfigOptions,
+		workspaceTrust?: WorkspaceTrustState,
+	): Promise<NodeRuntimeConfig> => {
+		const preliminary = await resolveWorkspaceModelRuntimeConfig(input, workspaceTrust);
+		return captureProviderRoute(preliminary, (inputTokenLimit) => (
+			resolveWorkspaceModelRuntimeConfig({
+				...input,
+				overrides: {
+					...input.overrides,
+					provider: preliminary.provider,
+					protocol: preliminary.protocol,
+					model: preliminary.model,
+					apiBaseUrl: preliminary.apiBaseUrl,
+					...(preliminary.allowAmbientAuth === false ? { authRef: preliminary.authRef } : {}),
+				},
+				defaultMaxPromptTokens: inputTokenLimit,
+				maxPromptTokensCeiling: inputTokenLimit,
+			}, workspaceTrust)
+		), input.env);
+	};
+	const providerRouteForConfig = (resolved: NodeRuntimeConfig): ProviderRouteDescriptor => {
+		const route = providerRoutesByConfig.get(resolved);
+		if (!route) {
+			throw new Error("provider_model_directory_error: provider route snapshot was not captured");
+		}
+		return route;
+	};
 	const agentWorkerPool = Object.values(agentExecutionAdapters).includes("worker")
-		? new AgentWorkerPool(agentWorkerSettings)
+		? new AgentWorkerPool({
+			...agentWorkerSettings,
+			...(options.agentWorkerReadProcessRssBytes
+				? { readProcessRssBytes: options.agentWorkerReadProcessRssBytes }
+				: {}),
+		})
 		: undefined;
 	let controlConfig = config;
 	const toolManifest = builtinToolManifest();
@@ -310,6 +496,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	};
 	const transcriptSnapshots = new TranscriptSnapshotStore({ homeDir });
 	const tokenCounter = new TokenCounter();
+	const resourceOwner = new NodeBackendResourceOwner({
+		closeUpdateCache: () => updateCache.close(),
+		...(agentWorkerPool ? { closeAgentWorkers: () => agentWorkerPool.close() } : {}),
+		closeShellManager: async () => { await shellManager.close(); },
+		drainShellLifecycle: () => shellLifecycle.drain(),
+		drainArtifacts: () => artifactQueue.close(),
+		closeStore: () => { store.close(); },
+	});
 	const childRuntimeFactoryDelegate: {
 		create?: (input: ChildRuntimeCreateInput) => Promise<ChildRuntimeHandle>;
 	} = {};
@@ -327,7 +521,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			delegate: inProcessChildRuntimeFactory,
 		})
 		: inProcessChildRuntimeFactory;
-	const runtimeBySessionId = new Map<string, NodeGatewayRuntime>();
+	const runtimeRegistry = new NodeRuntimeRegistry<NodeGatewayRuntime>();
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
 	const agentActivityBus = new AgentActivityBus();
 	let agentSupervisor: AgentSupervisor | undefined;
@@ -393,7 +587,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const agentMailbox = new AgentMailbox({
 		store: store.agentMailbox,
 		threadStore: store.agentThreads,
-		queueForSession: (sessionId) => runtimeBySessionId.get(sessionId)?.queueCoordinator,
+		queueForSession: (sessionId) => runtimeRegistry.get(sessionId)?.queueCoordinator,
 		committedQueueIds: (sessionId) => store.loadCommittedQueueIds(sessionId),
 		triggerReceiver: async (receiver, item) => {
 			await agentSupervisor?.followUp(
@@ -467,7 +661,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	};
 	const agentActivity: WaitAgentActivityContract = Object.freeze({
 		wait: async (input: WaitAgentActivityInput) => {
-			const queue = runtimeBySessionId.get(input.parentSessionId)?.queueCoordinator;
+			const queue = runtimeRegistry.get(input.parentSessionId)?.queueCoordinator;
 			const route = resolveAgentRouteContext(input.parentSessionId);
 			if (!queue || !route) return Object.freeze({ kind: "unavailable" as const });
 			const controller = new AbortController();
@@ -505,16 +699,27 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	let integrationComposition: RuntimeIntegrationComposition;
 	try {
 		integrationComposition = await createRuntimeIntegrationComposition({
+			disabled: options.executionMode === "review",
 			builtinManifest: toolManifest,
 			workspaceRoot: config.workspaceRoot,
 			homeDir,
 			env: options.env,
+			projectConfigurationEnabled: startupTrustState === "trusted",
 			parentSessionId: config.sessionId,
 			parentTurnId: () => "parent-turn-unavailable",
-			parentTools: () => allToolExposure.map((tool) => tool.name),
+			parentTools: ({ parentSessionId, parentTurnId }) => {
+				const runSnapshot = runtimeRegistry.get(parentSessionId)
+					?.runExecutionSnapshot?.(parentTurnId);
+				return runSnapshot
+					? toolExposureForSnapshot(
+						runSnapshot.toolCatalog,
+						store.loadToolActivations(parentSessionId, parentTurnId),
+					).map((tool) => tool.name)
+					: Object.freeze([]);
+			},
 			createSubagentSupervisor: (supervisorOptions) => {
 					agentSupervisor = new AgentSupervisor({
-						spawnStore: store.agentSpawns,
+						lifecycleStore: store.agentLifecycle,
 						threadStore: store.agentThreads,
 					taskStore: store.subagentTasks,
 					runtimeFactory: childRuntimeFactory,
@@ -535,9 +740,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const parentThreadId = overview?.threadId ?? input.parentSessionId;
 				const parentAgent = store.agentThreads.get(parentThreadId);
 				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
-				const parentPreferences = runtimeBySessionId.get(input.parentSessionId)
-					?.sessionPreferences?.();
-				const resolved = await resolveModelRuntimeConfig({
+				const parentRuntime = runtimeRegistry.get(input.parentSessionId);
+				const parentRunSnapshot = parentRuntime
+					?.runExecutionSnapshot?.(input.parentTurnId);
+				const parentPreferences = parentRuntime?.sessionPreferences?.();
+				const resolved = await resolveWorkspaceModelRuntimeConfig({
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -546,9 +753,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						parentPreferences ?? defaultPreferences,
 					),
 				});
-				const executionPolicy = narrowAgentExecutionPolicy(agentExecutionPolicySnapshot(
-					runtimeBySessionId.get(input.parentSessionId)?.executionPolicySnapshot?.(),
-				));
+				const executionPolicy = narrowAgentExecutionPolicy(
+					agentExecutionPolicyForRun(parentRunSnapshot),
+				);
 				return Object.freeze({
 					parentThreadId,
 					rootThreadId: parentAgent?.rootThreadId ?? parentThreadId,
@@ -580,32 +787,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			onStartupStage: (stage) => { startupProfiler.mark(stage); },
 			});
 		publishSubagentProjection = (value) => { integrationComposition.publishSubagent(value); };
+		resourceOwner.bindIntegration(() => integrationComposition.close());
 		startupProfiler.mark("integrations_ready");
 	} catch (error) {
-		try {
-			await agentWorkerPool?.close().catch(() => undefined);
-		} finally {
-			try {
-				await shellManager.close().catch(() => undefined);
-			} finally {
-				try {
-					await shellLifecycle.drain();
-				} finally {
-					try {
-						await artifactQueue.drain();
-					} finally {
-						store.close();
-					}
-				}
-			}
-		}
+		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
 	const partitionedRegistrations = partitionRuntimeToolRegistrations(integrationComposition.registrations);
 	const directExtensionRegistrations = partitionedRegistrations.direct;
-	const staticDeferredRegistrations = partitionedRegistrations.deferred.filter(
-		(registration) => registration.source !== "mcp",
-	);
 	const directExtensionDefinitions = Object.freeze(directExtensionRegistrations
 		.map((registration) => registration.definition));
 	const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(
@@ -626,7 +815,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			requestPermissionsToolEnabled,
 		);
 		for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
-		for (const runtime of runtimeBySessionId.values()) runtime.refreshExtensions?.();
+		runtimeRegistry.refreshExtensions();
 	};
 	const unsubscribeRuntimeExtensions = integrationComposition.subscribeExtensions(() => {
 		refreshRuntimeExtensions();
@@ -653,6 +842,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
 		): ComposedNodeRuntime => {
+			const allowedTools = options.executionMode === "review" ? ["Read"] : runtimeOptions.allowedTools;
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
 				: loadSessionPreferences(store, sessionId);
@@ -665,7 +855,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const preferences = runtimeOptions.provider
 					? undefined
 					: sessionPreferences ?? defaultPreferences;
-				const resolved = await resolveModelRuntimeConfig({
+				const configInput: ResolveConfigOptions = {
 					homeDir,
 					workspaceRoot,
 					env: options.env,
@@ -675,7 +865,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							provider: preferences.provider,
 							protocol: preferences.protocol,
 							apiBaseUrl: preferences.apiBaseUrl,
-							authRef: preferences.authRef,
+							...(preferences.authRef !== preferences.provider || config.allowAmbientAuth === false
+								? { authRef: preferences.authRef } : {}),
 							reasoningEffort: preferences.reasoningEffort,
 							thinkingEnabled: preferences.reasoningEffort !== "none",
 						} : {}),
@@ -684,16 +875,27 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							?? preferences?.model
 							?? defaultPreferences.model,
 					},
-				});
-				if (!runtimeOptions.provider) return resolved;
-				return Object.freeze({
-					...resolved,
-					provider: runtimeOptions.provider.provider,
-					protocol: runtimeOptions.provider.protocol,
-					model: runtimeOptions.provider.model,
-					reasoningEffort: runtimeOptions.provider.reasoningEffort ?? "none",
-					thinkingEnabled: (runtimeOptions.provider.reasoningEffort ?? "none") !== "none",
-				});
+				};
+				const resolveEffective = async (inputTokenLimit?: number): Promise<NodeRuntimeConfig> => {
+					const resolved = await resolveWorkspaceModelRuntimeConfig({
+						...configInput,
+						...(inputTokenLimit === undefined
+							? {}
+							: {
+								defaultMaxPromptTokens: inputTokenLimit,
+								maxPromptTokensCeiling: inputTokenLimit,
+							}),
+					});
+					return !runtimeOptions.provider ? resolved : Object.freeze({
+						...resolved,
+						provider: runtimeOptions.provider.provider,
+						protocol: runtimeOptions.provider.protocol,
+						model: runtimeOptions.provider.model,
+						reasoningEffort: runtimeOptions.provider.reasoningEffort ?? "none",
+						thinkingEnabled: (runtimeOptions.provider.reasoningEffort ?? "none") !== "none",
+					});
+				};
+				return captureProviderRoute(await resolveEffective(), resolveEffective, runtimeEnvironment);
 			};
 			const fileSnapshots = new FileSnapshotStore();
 			const fileHistory = new FileHistoryStore({ homeDir, workspaceRoot });
@@ -724,8 +926,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			})),
 		});
 		let loadExecPolicy: Promise<void> | undefined;
-		const ensureExecPolicyLoaded = (): Promise<void> => {
-			loadExecPolicy ??= execPolicyStore.load().then((rules) => {
+		let loadedExecPolicyTrustState: Awaited<ReturnType<WorkspaceTrustStore["load"]>> | undefined;
+		const ensureExecPolicyLoaded = async (): Promise<void> => {
+			const trustState = await workspaceTrustStore.load(workspaceRoot);
+			if (loadExecPolicy && loadedExecPolicyTrustState === trustState) {
+				return loadExecPolicy;
+			}
+			loadedExecPolicyTrustState = trustState;
+			loadExecPolicy = (trustState === "trusted"
+				? execPolicyStore.load()
+				: execPolicyStore.loadUserRules()).then((rules) => {
 				approvalPolicy.replaceExecPolicyRules(rules);
 			});
 			return loadExecPolicy;
@@ -737,20 +947,22 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			profile: shellProfile,
 		});
 			const allowedDeferredRegistrations = () => {
-				const allowedNames = runtimeOptions.allowedTools
-					? new Set(runtimeOptions.allowedTools)
+				const allowedNames = allowedTools
+					? new Set(allowedTools)
 					: undefined;
 				return currentDeferredRegistrations().filter(
 					(registration) => !allowedNames || allowedNames.has(registration.definition.name),
 				);
 			};
-			const allowedStaticDeferredDefinitions = filterToolDefinitions(
-				staticDeferredRegistrations.map((registration) => registration.definition),
-				runtimeOptions.allowedTools,
-			);
 			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
 			const staticAdapters = [
-				new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
+				new ViewImageTool({ workspaceRoot, homeDir }),
+				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
+				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
+				new ReadMcpResourceTool(integrationComposition.mcpResourceService),
+				options.executionMode === "review" && options.reviewRevision
+					? new GitReviewReadTool(workspaceRoot, options.reviewRevision)
+					: new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
@@ -765,8 +977,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			new ShellOutputTool({ manager: shellManager }),
 			new BashOutputTool({ manager: shellManager }),
 			new KillShellTool({ manager: shellManager }),
-				...integrationComposition.registrations
-					.filter((registration) => registration.source !== "mcp")
+				...directExtensionRegistrations
 					.map((registration) => registration.adapter),
 			];
 			const adapterByName = new Map<string, ToolAdapter>(
@@ -783,16 +994,19 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					readonly shell: boolean;
 					readonly collaborationMode: string;
 				},
-			) => filterToolDefinitions(
-			Object.freeze([
-				...planToolExposure(toolManifest, {
-					...capabilities,
-					requestPermissionsTool: requestPermissionsToolEnabled,
-				}),
-				...directExtensionDefinitions,
-			]),
-			runtimeOptions.allowedTools,
-		);
+				deferred = allowedDeferredRegistrations(),
+			): readonly ToolDefinition[] => Object.freeze(filterToolDefinitions(
+				[
+					...planToolExposure(toolManifest, {
+						...capabilities,
+						requestPermissionsTool: requestPermissionsToolEnabled,
+					}),
+					...directExtensionDefinitions,
+				],
+				allowedTools,
+			).map((definition) => definition.name === "tool_search"
+				? createToolSearchDefinition(deferredCandidates(deferred))
+				: definition));
 				const toolRouter = new ToolRouter({
 					adapters: staticAdapters,
 					exposure: plannedTools({ shell: true, collaborationMode: "plan" }),
@@ -800,9 +1014,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const refreshExtensions = (): void => {
 				const deferred = allowedDeferredRegistrations();
 				toolSearch.replaceCandidates(deferredCandidates(deferred));
-				toolRouter.replaceDynamicAdapters(deferred
-					.filter((registration) => registration.source === "mcp")
-					.map((registration) => registration.adapter));
+				toolRouter.replaceDynamicAdapters(deferred.map((registration) => registration.adapter));
 				approvalPolicy.replaceExtensionTools(integrationComposition.registrations.map(
 					(registration) => ({
 						name: registration.definition.name,
@@ -829,6 +1041,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
 			grantPermissions: (input) => executionPolicyCoordinator.grant(input),
 		});
+		const parallelApprovals = new ParallelApprovalCoordinator({
+			sessionId, workspaceRoot, threadId, store, approval: approvalCoordinator,
+		});
+		parallelApprovals.recover();
 		approvalCoordinator.recover();
 			const clarificationCoordinator = new ClarificationContinuationCoordinator({
 			sessionId,
@@ -903,18 +1119,26 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			const createCompactionCoordinator = (
 				resolved: NodeRuntimeConfig,
+				runSnapshot?: RunExecutionSnapshot,
 			): CompactionCoordinator => {
+				const journal = new CompactionModelJournal({ sessionId, store, clock: () => new Date().toISOString() });
 				const compactionThreshold = compactionThresholdForModel(resolved);
+				const compactTools = (): readonly ToolDefinition[] => runSnapshot
+					? toolExposureForSnapshot(
+						runSnapshot.toolCatalog,
+						store.loadToolActivations(sessionId, runSnapshot.turnId),
+					)
+					: allToolExposure;
 				return new CompactionCoordinator({
 					sessionId,
 					workspaceRoot,
 					threadId,
 					store,
 					tokenCounter,
-					baseContext: [
+					baseContext: () => [
 						runtimeInstructions,
 						...developerInstructions,
-						JSON.stringify(allToolExposure),
+						JSON.stringify(compactTools()),
 					].join("\n"),
 					tokenLimit: totalCompactionBudget(
 						compactionThreshold,
@@ -930,21 +1154,22 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					rehydrationMaxFiles: resolved.compactionRehydrationMaxFiles,
 					rehydrationMaxItemTokens: resolved.compactionRehydrationFileMaxItemTokens,
 					rehydrationMaxTotalTokens: resolved.compactionRehydrationFileMaxTotalTokens,
-					summarize: (input) => {
-						const summaryConfig = {
+					summarize: async (input) => {
+						const summaryConfig = await captureProviderRoute({
 							...resolved,
 							model: input.model ?? resolved.model,
-						};
+						}, undefined, runtimeEnvironment);
 						return summarizeCompactionWithProvider(
-							registry.create(summaryConfig),
-							{
-								provider: summaryConfig.provider,
-								protocol: summaryConfig.protocol,
-								model: summaryConfig.model,
-							},
+							registry.create(summaryConfig, providerRouteForConfig(summaryConfig)),
+							summaryConfig,
 							input,
+							{ recordDiagnostic: (diagnostic) => tryAppendNodeTrace(homeDir, sessionId,
+								runtimeDiagnosticTraceEvent({ ...diagnostic, kind: "model_stream_diagnostics",
+									turnId: `compaction:${input.operationId}`, provider: summaryConfig.provider,
+									protocol: summaryConfig.protocol, model: summaryConfig.model })) },
 						);
 					},
+					recordModelEvent: (input) => journal.record(input),
 					createCheckpointId: randomUUID,
 					clock: () => new Date().toISOString(),
 				});
@@ -967,13 +1192,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			}),
 			modelInputLedger: store.modelInputLedger,
 			agentEffectLedger: store.agentEffectLedger,
+			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
-			contextSources: ({ config: activeConfig }) => Object.freeze({
-				skillCatalog: integrationComposition.skillCatalog,
-				workspace: loadWorkspaceInstructions({
+			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
+				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
+				workspace: workspaceInstructionsForTrust(
 					workspaceRoot,
-					cwd: workspaceRoot,
-				}),
+					runSnapshot.policy?.configuration
+						? runSnapshot.policy.configuration.trust === "trusted"
+						: runSnapshot.policy?.toolsEnabled === true,
+				),
 				environment: Object.freeze({
 					workspace_root: workspaceRoot,
 					cwd: workspaceRoot,
@@ -991,7 +1219,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				: { maxOutputTokens: options.maxOutputTokens }),
 				store,
 				resolveConfig: (submission) => resolveRuntimeConfig(submission.modelOverride),
-				createProvider: (resolved) => registry.create(resolved),
+				createProvider: (resolved) => registry.create(
+					resolved,
+					providerRouteForConfig(resolved),
+				),
+				resolveProviderRoute: providerRouteForConfig,
 				loadLocalImages: loadRuntimeImages,
 				createTurnId: randomUUID,
 				clock: () => new Date().toISOString(),
@@ -1003,10 +1235,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				publishLifecycle,
 			executionPolicyCoordinator,
 			planTools: plannedTools,
-				deferredTools: (turnId) => Object.freeze([
-					...allowedStaticDeferredDefinitions,
-					...toolRouter.dynamicDefinitions(turnId),
-				]),
+			resolveToolCatalog: (capabilities) => {
+				const catalogVersion = integrationComposition.version;
+				const deferred = allowedDeferredRegistrations();
+				return Object.freeze({
+					catalogVersion,
+					directTools: plannedTools(capabilities, deferred),
+					deferredTools: Object.freeze(deferred.map(
+						(registration) => registration.definition,
+					)),
+					skillCatalog: integrationComposition.skillCatalog,
+				});
+			},
 			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
 			toolRouter,
 			hookRunner: integrationComposition.hookRunner,
@@ -1031,6 +1271,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 			},
 			approvalCoordinator,
+			...(options.approvalMode !== "suspend" ? { parallelApprovals } : {}),
 			clarificationCoordinator,
 			queueCoordinator,
 			providerContinuation,
@@ -1114,9 +1355,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					readonly model: string;
 					readonly reasoningEffort?: ReasoningEffort;
 					readonly collaborationMode: "default" | "plan";
+					readonly permissionProfile?: PermissionProfile;
 				}): SessionPreferences => {
 					const base = sessionPreferences
-						?? sessionPreferencesFromConfig(controlConfig, input.collaborationMode);
+						?? sessionPreferencesFromConfig(
+							controlConfig,
+							input.collaborationMode,
+							input.permissionProfile,
+						);
 					if (base.provider !== input.provider || base.model !== input.model) {
 						throw new SessionTransitionError(
 							"session_state_invalid",
@@ -1127,6 +1373,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						...base,
 						reasoningEffort: input.reasoningEffort ?? base.reasoningEffort,
 						collaborationMode: input.collaborationMode,
+						...(input.permissionProfile
+							? { permissionProfile: input.permissionProfile }
+							: {}),
 					});
 					if (!sameSessionPreferences(sessionPreferences, next)) {
 						saveSessionPreferences(store, {
@@ -1170,6 +1419,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						status: result.status,
 						beforeTokens: result.beforeTokens,
 						afterTokens: result.afterTokens,
+						...(result.failure ? { failure: result.failure } : {}),
+						...(result.usage ? { usage: result.usage } : {}),
 						maxTokens: resolved.maxPromptTokens,
 						durationMs: elapsedMonotonicMs(startedAt, performance.now()),
 					}));
@@ -1177,10 +1428,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						status: result.status,
 						beforeTokens: result.beforeTokens,
 						afterTokens: result.afterTokens,
+						...(result.failure ? { failure: result.failure } : {}),
+						...(result.usage ? { usage: result.usage } : {}),
 					};
 				},
 			});
-			runtimeBySessionId.set(sessionId, binding);
+			runtimeRegistry.set(sessionId, binding);
 			const agent = store.agentThreads.get(threadId);
 			agentMailbox.repair(Object.freeze({
 				threadId: agentThreadId(threadId),
@@ -1379,16 +1632,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				close: async () => {
 					localAbort?.abort();
 					store.agentThreads.clearLease(input.threadId, runtimeOwnerId);
-					if (runtimeBySessionId.get(input.childSessionId) === runtime) {
-					runtimeBySessionId.delete(input.childSessionId);
-				}
+					runtimeRegistry.delete(input.childSessionId, runtime);
 			},
 		};
 		};
 		try {
 			startupProfiler.mark("session_prepare_started");
-			const prepare = (sessionId: string) => prepareStoredSession({
+			const prepare = (sessionId: string, intent: "resume" | "inspect" = "resume") => prepareStoredSession({
 			sessionId,
+			intent,
 			store,
 			transcriptSnapshots,
 			sessionArtifacts,
@@ -1425,16 +1677,34 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return store.loadSessionLineage(sessionId);
 			},
 			});
-			const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
-			const initialPreferences = initial.binding.sessionPreferences?.();
-			if (initialPreferences) {
-				controlConfig = await resolveModelRuntimeConfig({
-					homeDir,
+				const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
+				const initialPreferences = initial.binding.sessionPreferences?.();
+				if (initialPreferences) {
+					controlConfig = await resolveCapturedProviderModelConfig({
+						homeDir,
 					workspaceRoot: initial.workspaceRoot,
 					env: options.env,
 					overrides: sessionPreferenceOverrides(initial.sessionId, initialPreferences),
 				});
 			}
+			const credentialReadiness = async (): Promise<NodeGatewayCredentialReadiness> => {
+				const active = sessionCoordinator.snapshot();
+				const preferences = active.binding.sessionPreferences?.()
+					?? loadSessionPreferences(store, active.sessionId)
+					?? defaultPreferences;
+				const resolved = await resolveWorkspaceModelRuntimeConfig({
+					homeDir,
+					workspaceRoot: active.workspaceRoot,
+					env: options.env,
+					overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+				});
+				return providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute);
+			};
+			const providerDirectory = async (): Promise<readonly JsonObject[]> => providerDirectoryPayload(
+				await providerModelDirectory.load(controlConfig),
+				homeDir,
+				await credentialReadiness(),
+			);
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
 		const gatewayIntegrations = integrationGateway(
@@ -1449,33 +1719,36 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				homeDir,
 				workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
 			});
-			let closeRuntimeResourcesPromise: Promise<void> | undefined;
+			const sessionService = new SessionService({
+				store,
+				currentConfig: () => controlConfig,
+				currentPermissionProfile: () => sessionCoordinator.snapshot().binding
+					.sessionPreferences?.()?.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+				loadModelCatalog: async (preferences, sessionWorkspaceRoot, sessionId) => {
+					const resolved = await resolveWorkspaceModelRuntimeConfig({
+						homeDir,
+						workspaceRoot: sessionWorkspaceRoot,
+						env: options.env,
+						overrides: sessionPreferenceOverrides(sessionId, preferences),
+					});
+					const snapshot = await providerModelDirectory.load(resolved);
+					return snapshot.models(preferences.provider);
+				},
+				hasCredential: async (preferences) => {
+					const active = sessionCoordinator.snapshot();
+					const resolved = await resolveWorkspaceModelRuntimeConfig({ homeDir, workspaceRoot: active.workspaceRoot,
+						env: options.env, overrides: sessionPreferenceOverrides(active.sessionId, preferences) });
+					return (await providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute)).ready;
+				},
+				...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
+			});
+			let runtimeExtensionsSubscribed = true;
 			const closeRuntimeResources = (): Promise<void> => {
-				closeRuntimeResourcesPromise ??= (async () => {
+				if (runtimeExtensionsSubscribed) {
+					runtimeExtensionsSubscribed = false;
 					unsubscribeRuntimeExtensions();
-					try {
-						await integrationComposition.close();
-					} finally {
-						try {
-							await agentWorkerPool?.close();
-						} finally {
-							try {
-								await shellManager.close();
-							} finally {
-								try {
-									await shellLifecycle.drain();
-								} finally {
-									try {
-										await artifactQueue.drain();
-									} finally {
-										store.close();
-									}
-								}
-							}
-						}
-					}
-				})();
-				return closeRuntimeResourcesPromise;
+				}
+				return resourceOwner.close();
 			};
 			const gateway = createNodeGateway({
 			sessionId: config.sessionId,
@@ -1487,9 +1760,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				: "none",
 			toolNames: allToolExposure.map((tool) => tool.name),
 			maxPromptTokens: () => controlConfig.maxPromptTokens,
+			sandboxReadiness: await sandboxReadinessPromise,
 			runtime: initial.binding,
 			agentInteractiveRequests,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
+			loadProviderAttempts: (input) => store.providerAttemptLedger.list(input),
 			loadTranscript: (sessionId) => {
 				const active = sessionCoordinator.snapshot();
 				if (!active.readOnly
@@ -1536,6 +1811,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						},
 					},
 					sessionCommands: {
+						list: (query) => sessionService.list(query),
+						inspect: (sessionId) => sessionService.inspect(sessionId),
+						previewResume: (sessionId) => sessionService.previewResume(sessionId),
+						applyResumeRepair: (input) => sessionService.applyResumeRepair(input),
 						fork: (input) => store.forkSession(input),
 						search: (query, workspaceRoot) => store.searchMessages(query, {
 							workspaceRoot,
@@ -1605,48 +1884,110 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						logs: () => nodeLogRows(homeDir),
 						append: (sessionId, event) => appendNodeTrace(homeDir, sessionId, event),
 					},
+					updateStatus: startupUpdateStatus,
+					updateCommands: {
+						status: () => updateCache.status(controlConfig.updatesCheckOnStartup),
+						check: () => updateCache.refreshNow(
+							controlConfig.updatesCheckOnStartup,
+						),
+						dismiss: (version) => updateCache.dismiss(
+							version,
+							controlConfig.updatesCheckOnStartup,
+						),
+					},
 					fileHistoryCommands: {
 						list: (sessionId) => activeFileHistory().listSnapshots({ sessionId }),
 						undo: (sessionId) => activeFileHistory().undoLatest({ sessionId }),
 					},
 					controlCommands: {
-						authProviders: async () => await Promise.all(listProviderProfiles().map(async (profile) => ({
-							id: profile.provider,
-							name: providerDisplayName(profile.provider),
-							configured: Boolean(await readApiKey({
-								homeDir,
-								authRef: profile.provider,
-							})),
-							...(profile.defaultModel ? { default_model: profile.defaultModel } : {}),
-						}))),
-						saveApiKey: async (providerId, apiKey) => {
-							const profile = resolveProviderProfile(providerId);
-							await writeApiKey({ homeDir, authRef: profile.provider, apiKey });
+						authProviders: async () => {
+							const profiles = listProviderProfiles();
+							return (await providerDirectory())
+								.filter((route) => route.activation === "active")
+								.map((route) => {
+									const profile = profiles.find((entry) => entry.provider === route.id);
+									return {
+										id: route.id,
+										name: profile?.displayName ?? route.name,
+										configured: route.ready,
+										credential_source: route.credential_source,
+										auth_ref: route.auth_ref,
+										...(profile?.defaultModel ? { default_model: profile.defaultModel } : {}),
+									};
+								});
+						},
+						credentialReadiness,
+						saveApiKey: async (providerId, apiKey, requestedAuthRef) => {
+							let provider;
+							try {
+								provider = parseProviderRouteId(providerId);
+							} catch {
+								throw controlRequestError("Selected provider route is invalid.");
+							}
+							const snapshot = await providerModelDirectory.load(controlConfig);
+							const route = snapshot.route(provider);
+							if (!route || route.activation !== "active") {
+								throw controlRequestError("Selected provider route is not active.");
+							}
+							const profile = isProviderId(provider)
+								? resolveProviderProfile(provider, route.protocol)
+								: undefined;
+							const authRef = requestedAuthRef ?? route.authRef;
+							if (authRef !== route.authRef && authRef !== profile?.provider) {
+								throw controlRequestError("Credential reference is not active for this provider.");
+							}
+							await writeApiKey({ homeDir, authRef, apiKey });
 							return {
 								ok: true,
-								provider_id: profile.provider,
-								message: `Saved API key for ${providerDisplayName(profile.provider)}.`,
+								provider_id: route.routeId,
+								auth_ref: authRef,
+								message: `Saved API key for ${route.displayName}.`,
 							};
 						},
-						models: async () => await modelCatalog(homeDir, controlConfig),
-						selectModel: async (input) => {
-							const provider = controlString(input.provider, "provider");
+						providers: providerDirectory,
+						models: async (providerValue) => {
+							let provider;
+							try {
+								provider = parseProviderRouteId(providerValue);
+							} catch {
+								throw controlRequestError("Selected provider route is invalid.");
+							}
+							const snapshot = await providerModelDirectory.load(controlConfig);
+							const route = snapshot.route(provider);
+							if (!route || route.activation !== "active") {
+								throw controlRequestError("Selected provider route is not active.");
+							}
+							return snapshot.models(provider).map(providerScopedModelPayload);
+						},
+							selectModel: async (input) => {
+							const providerValue = controlString(input.provider, "provider");
 							const protocolValue = controlString(input.protocol, "protocol");
-							const profile = resolveProviderProfile(provider, protocolValue);
-							const protocol = parseProtocol(protocolValue);
+							let provider;
+							let protocol: ReturnType<typeof parseProtocol>;
+							try {
+								provider = parseProviderRouteId(providerValue);
+								protocol = parseProtocol(protocolValue);
+							} catch {
+								throw controlRequestError("Selected provider or protocol is not supported.");
+							}
 							const model = controlString(input.model, "model");
 							const apiBaseUrl = controlString(input.base_url, "base_url").replace(/\/+$/u, "");
 							const collaborationMode = controlCollaborationMode(input.collaboration_mode);
+							const scope = controlModelSelectionScope(input.scope);
 							const requestedEffort = controlReasoningEffort(input.reasoning_effort);
-							const catalog = await loadModelCatalog({ homeDir, currentConfig: controlConfig });
-							const entry = findModelCatalogEntry(catalog, {
-								provider: profile.provider,
+							const snapshot = await providerModelDirectory.load(controlConfig);
+							const route = snapshot.route(provider);
+							if (!route || route.activation !== "active" || route.protocol !== protocol) {
+								throw controlRequestError("Selected provider route is not active.");
+							}
+							const entry = findProviderScopedModelEntry(snapshot, {
+								provider,
 								protocol,
 								model,
 								baseUrl: apiBaseUrl,
 							});
 							if (!entry) {
-								throw controlRequestError(`Model '${profile.provider}/${model}' is not available.`);
+								throw controlRequestError("Selected model is not available.");
 							}
 							const reasoningEffort = requestedEffort
 								?? entry.defaultReasoningEffort
@@ -1655,7 +1996,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									: undefined);
 							if (reasoningEffort && !entry.supportedReasoningEfforts.includes(reasoningEffort)) {
 								throw controlRequestError(
-									`Model '${model}' does not support reasoning effort '${reasoningEffort}'.`,
+									"Selected model does not support that reasoning effort.",
 								);
 							}
 							let apiKey = await readApiKey({ homeDir, authRef: entry.authRef });
@@ -1667,43 +2008,55 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								apiKey = controlConfig.apiKey;
 							}
 							if (!apiKey) {
-								throw controlRequestError(`No API key configured for auth_ref '${entry.authRef}'.`);
+								throw controlRequestError("No API key is configured for the selected model.");
 							}
 							const nextReasoningEffort = reasoningEffort ?? controlConfig.reasoningEffort;
 							const thinkingEnabled = reasoningEffort !== undefined && reasoningEffort !== "none";
-							await writeUserProviderConfig({
-								homeDir,
+							const active = sessionCoordinator.snapshot();
+							const preferences = Object.freeze({
 								provider: entry.provider,
 								protocol,
 								model,
 								apiBaseUrl: entry.baseUrl,
 								authRef: entry.authRef,
-								promptCacheKeyEnabled: profile.promptCacheKeyEnabled,
-								cacheControlEnabled: profile.cacheControlEnabled,
-								thinkingEnabled,
-								reasoningEffort: nextReasoningEffort,
-							});
-							controlConfig = await resolveModelRuntimeConfig({
+								reasoningEffort: thinkingEnabled ? nextReasoningEffort : "none",
+								collaborationMode,
+							}) satisfies SessionPreferences;
+							const inputTokenLimit = modelInputTokenLimit(entry);
+							const unresolvedControlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
-								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
+								workspaceRoot: active.workspaceRoot,
 								env: options.env,
-								overrides: {
-									session: sessionCoordinator.snapshot().sessionId,
+								overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+								...(inputTokenLimit === undefined
+									? {}
+									: {
+										defaultMaxPromptTokens: inputTokenLimit,
+										maxPromptTokensCeiling: inputTokenLimit,
+									}),
+							});
+							const nextControlConfig = applyProviderScopedModelConfig(
+								unresolvedControlConfig,
+								entry,
+							);
+							providerRoutesByConfig.set(nextControlConfig, route);
+							if (scope === "user") {
+								await writeUserProviderConfig({
+									homeDir,
+									workspaceRoot: active.workspaceRoot,
+									env: options.env,
+									workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+									...profileInput,
 									provider: entry.provider,
 									protocol,
 									model,
 									apiBaseUrl: entry.baseUrl,
 									authRef: entry.authRef,
-									reasoningEffort: thinkingEnabled ? nextReasoningEffort : "none",
+									cacheRetention: nextControlConfig.cacheRetention,
 									thinkingEnabled,
-								},
-							});
-							defaultPreferences = sessionPreferencesFromConfig(controlConfig, "default");
-							const active = sessionCoordinator.snapshot();
-							const preferences = Object.freeze({
-								...defaultPreferences,
-								collaborationMode,
-							});
+									reasoningEffort: nextReasoningEffort,
+								});
+							}
 							saveSessionPreferences(store, {
 								sessionId: active.sessionId,
 								workspaceRoot: active.workspaceRoot,
@@ -1711,25 +2064,43 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								preferences,
 							});
 							active.binding.setSessionPreferences?.(preferences);
-							const selectedCatalog = await loadModelCatalog({
-								homeDir,
-								currentConfig: controlConfig,
-							});
-							const selected = findModelCatalogEntry(selectedCatalog, {
-								provider: entry.provider,
-								protocol: entry.protocol,
-								model: entry.model,
-								baseUrl: entry.baseUrl,
-							})!;
+							if (scope === "user") {
+								defaultPreferences = Object.freeze({
+									...preferences,
+									collaborationMode: defaultPreferences.collaborationMode,
+									permissionProfile: defaultPreferences.permissionProfile
+										?? DEFAULT_PERMISSION_PROFILE,
+								});
+							}
+							controlConfig = nextControlConfig;
 							return {
-								...modelCatalogEntryPayload(selected),
+								...providerScopedModelPayload(entry),
+								current: true,
 								reasoning_effort: reasoningEffort ?? null,
 								thinking_enabled: thinkingEnabled,
-							};
-						},
-						activateSessionPreferences: async (preferences) => {
+								scope,
+								};
+							},
+							validateConnectivity: async () => {
+								const active = sessionCoordinator.snapshot();
+								const preferences = active.binding.sessionPreferences?.()
+									?? loadSessionPreferences(store, active.sessionId)
+									?? defaultPreferences;
+								controlConfig = await resolveCapturedProviderModelConfig({
+										homeDir,
+										workspaceRoot: active.workspaceRoot,
+										env: options.env,
+										overrides: sessionPreferenceOverrides(active.sessionId, preferences),
+									});
+								return validateProviderConnectivity(
+									registry,
+									controlConfig,
+									providerRouteForConfig(controlConfig),
+								);
+							},
+							activateSessionPreferences: async (preferences) => {
 							const active = sessionCoordinator.snapshot();
-							controlConfig = await resolveModelRuntimeConfig({
+							controlConfig = await resolveCapturedProviderModelConfig({
 								homeDir,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
@@ -1738,12 +2109,57 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 									: sessionPreferenceOverrides(active.sessionId, defaultPreferences),
 							});
 							return preferences
-								?? sessionPreferencesFromConfig(controlConfig, "default");
+								?? sessionPreferencesFromConfig(
+									controlConfig,
+									"default",
+									defaultPreferences.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+								);
 						},
-						loadSettings: async () => ({ ...await loadShellSettings({ homeDir }) }),
-						saveSettings: async (settings) => ({
-							...await saveShellSettings({ homeDir, settings }),
-						}),
+						loadSettings: async () => {
+							const loaded = await resolveWorkspaceShellSettings(
+								sessionCoordinator.snapshot().workspaceRoot,
+							);
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
+						},
+						saveSetting: async (settingId, value) => {
+							const active = sessionCoordinator.snapshot();
+							await saveShellSetting({
+								homeDir,
+								key: settingId,
+								value,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								...profileInput,
+							});
+							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
+						},
+						saveSettings: async (settings) => {
+							const active = sessionCoordinator.snapshot();
+							await saveShellSettings({
+								homeDir,
+								settings,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								...profileInput,
+							});
+							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
+						},
+						resetKeymap: async () => {
+							const active = sessionCoordinator.snapshot();
+							await resetTuiKeymap({
+								homeDir,
+								workspaceRoot: active.workspaceRoot,
+								env: options.env,
+								workspaceTrust: await workspaceTrustStore.load(active.workspaceRoot),
+								...profileInput,
+							});
+							const loaded = await resolveWorkspaceShellSettings(active.workspaceRoot);
+							return shellSettingsGatewaySnapshot(loaded, detectedTerminalCapabilities);
+						},
 						completePath: (prefix) => pathCompletionCandidates(
 							sessionCoordinator.snapshot().workspaceRoot,
 							prefix,
@@ -1756,6 +2172,35 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				initialState: initialTrustState,
 				load: (workspaceRoot) => workspaceTrustStore.load(workspaceRoot),
 				save: (workspaceRoot, state) => workspaceTrustStore.save(workspaceRoot, state),
+				reload: async (workspaceRoot, state) => {
+					const active = sessionCoordinator.snapshot();
+					const persistedPreferences = active.workspaceRoot === workspaceRoot
+						? active.binding.sessionPreferences?.()
+							?? loadSessionPreferences(store, active.sessionId)
+						: undefined;
+					const nextControlConfig = await resolveCapturedProviderModelConfig({
+						homeDir,
+						workspaceRoot,
+						env: options.env,
+						overrides: persistedPreferences
+							? sessionPreferenceOverrides(active.sessionId, persistedPreferences)
+							: { ...overrides, session: active.sessionId },
+					}, state);
+					await integrationComposition.reloadProjectConfiguration({
+						workspaceRoot,
+						enabled: state === "trusted",
+					});
+					controlConfig = nextControlConfig;
+					const nextPreferences = sessionPreferencesFromConfig(
+						nextControlConfig,
+						persistedPreferences?.collaborationMode ?? defaultPreferences.collaborationMode,
+						persistedPreferences?.permissionProfile
+							?? defaultPreferences.permissionProfile
+							?? DEFAULT_PERMISSION_PROFILE,
+					);
+					if (!persistedPreferences) defaultPreferences = nextPreferences;
+					return nextPreferences;
+				},
 			},
 			integrations: gatewayIntegrations,
 				close: closeRuntimeResources,
@@ -1766,6 +2211,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			}
 			startupProfiler.mark("gateway_ready");
+			updateCache.startBackgroundRefresh(config.updatesCheckOnStartup);
 			return Object.freeze({
 				transport: gateway.transport,
 				completion: gateway.completion,
@@ -1775,48 +2221,138 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				startupProfile: () => startupProfiler.snapshot(),
 			});
 	} catch (error) {
-		try {
-			await integrationComposition.close().catch(() => undefined);
-		} finally {
-			try {
-				await agentWorkerPool?.close().catch(() => undefined);
-			} finally {
-				try {
-					await shellManager.close().catch(() => undefined);
-				} finally {
-					try {
-						await shellLifecycle.drain();
-					} finally {
-						try {
-							await artifactQueue.drain();
-						} finally {
-							store.close();
-						}
-					}
-				}
-			}
-		}
+		unsubscribeRuntimeExtensions();
+		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
 }
 
-async function modelCatalog(
-	homeDir: string,
+async function providerCredentialReadiness(
 	config: NodeRuntimeConfig,
-): Promise<readonly Readonly<Record<string, unknown>>[]> {
-	const entries = await loadModelCatalog({ homeDir, currentConfig: config });
-	return Object.freeze(entries.map(modelCatalogEntryPayload));
+	homeDir: string,
+	environment: Readonly<NodeJS.ProcessEnv>,
+	captureNative?: (config: NodeRuntimeConfig) => Promise<NodeRuntimeConfig>,
+): Promise<NodeGatewayCredentialReadiness> {
+	const stored = await readProviderCredential({ homeDir, authRef: config.authRef });
+	const captured = !config.apiKey && !config.nativeTransport && (stored || config.allowAmbientAuth) && captureNative
+		? await captureNative(config) : config;
+	const native = !captured.apiKey && captured.nativeTransport ? await inspectNativeProviderAuth({
+		provider: captured.nativeTransport.catalogProviderId, homeDir, authRef: captured.authRef,
+		...(captured.providerEnv ? { providerEnv: captured.providerEnv } : {}),
+		...(captured.allowAmbientAuth === undefined ? {} : { allowAmbientAuth: captured.allowAmbientAuth }),
+	}) : undefined;
+	return Object.freeze({
+		ready: Boolean(config.apiKey) || native?.configured === true,
+		providerId: config.provider,
+		authRef: config.authRef,
+		source: config.apiKey
+			? environment.MYCLI_API_KEY?.trim() ? "environment" : stored ? "stored" : "legacy_config"
+			: native?.source ?? "missing",
+	});
 }
 
-function providerDisplayName(provider: string): string {
-	return {
-		openai: "OpenAI",
-		codex: "OpenAI Codex",
-		compatible: "OpenAI Compatible",
-		qwen: "Qwen",
-		deepseek: "DeepSeek",
-		anthropic: "Anthropic",
-	}[provider] ?? provider;
+async function providerDirectoryPayload(
+	snapshot: ProviderModelDirectorySnapshot,
+	homeDir: string,
+	currentCredential: NodeGatewayCredentialReadiness,
+): Promise<readonly JsonObject[]> {
+	const storedCredentials = new Map(await Promise.all(
+		[...new Set(snapshot.routes.map((route) => route.authRef))].map(async (authRef) => [
+			authRef,
+			Boolean(await readProviderCredential({ homeDir, authRef })),
+		] as const),
+	));
+	const activeRouteIds = new Set(snapshot.routes.map((route) => route.routeId));
+	const active = snapshot.routes.map((route) => {
+		const current = route.routeId === currentCredential.providerId;
+		const credential = current && route.authRef === currentCredential.authRef
+			? currentCredential
+			: {
+				ready: storedCredentials.get(route.authRef) === true,
+				source: storedCredentials.get(route.authRef) ? "stored" : "missing",
+			};
+		return Object.freeze({
+			id: route.routeId,
+			name: route.displayName,
+			support_tier: route.supportTier,
+			source: route.source,
+			...(route.catalogProviderId === undefined
+				? {}
+				: { catalog_provider_id: route.catalogProviderId }),
+			protocols: Object.freeze([route.protocol]),
+			protocol: route.protocol,
+			base_url: route.apiBaseUrl,
+			auth_ref: route.authRef,
+			activation: route.activation,
+			configured: true,
+			ready: credential.ready,
+			credential_source: credential.source,
+			current,
+			model_count: snapshot.models(route.routeId).length,
+		});
+	});
+	const dormant = snapshot.catalog.providers
+		.filter((provider) => !activeRouteIds.has(provider.catalogProviderId))
+		.map((provider) => Object.freeze({
+			id: provider.catalogProviderId,
+			name: provider.name,
+			support_tier: "experimental",
+			source: "pi_ai_builtin",
+			catalog_provider_id: provider.catalogProviderId,
+			protocols: Object.freeze([...provider.protocols]),
+			activation: provider.status === "unsupported" ? "unserviceable" : "inactive",
+			configured: false,
+			ready: false,
+			current: false,
+			endpoint_required: provider.endpointRequired,
+			model_count: provider.models.length,
+			...(provider.disabledReason === undefined
+				? {}
+				: { disabled_reason: provider.disabledReason }),
+		}));
+	return Object.freeze([...active, ...dormant]);
+}
+
+async function validateProviderConnectivity(
+	registry: ProviderRegistry,
+	config: NodeRuntimeConfig,
+	route: ProviderRouteDescriptor,
+): Promise<Record<string, unknown>> {
+	if (!config.apiKey && !config.nativeTransport) {
+		return { ok: false, message: "No API key is configured for the selected provider." };
+	}
+	const controller = new AbortController();
+	const timer = setTimeout(() => { controller.abort(); }, PROVIDER_CONNECTIVITY_TIMEOUT_MS);
+	timer.unref?.();
+	const request: ProviderRequest = {
+		provider: config.provider,
+		protocol: config.protocol,
+		model: config.model,
+		...(config.nativeTransport ? { nativeTransport: config.nativeTransport } : {}),
+		reasoningEffort: "none",
+		instructions: "This is a connectivity check.",
+		messages: [{ role: "user", content: "Reply with OK." }],
+		tools: [],
+		maxOutputTokens: 8,
+		sessionId: config.sessionId,
+		cacheRetention: config.cacheRetention,
+	};
+	try {
+		for await (const event of registry.create(config, route).stream(
+			request,
+			{ signal: controller.signal },
+		)) {
+			if (event.type === "completed") {
+				return { ok: true, message: "Provider connection verified." };
+			}
+		}
+		return { ok: false, message: "The provider ended the check without completing it." };
+	} catch {
+		return { ok: false, message: "Unable to reach the selected provider." };
+	} finally {
+		clearTimeout(timer);
+		controller.abort();
+	}
 }
 
 function sessionPreferenceOverrides(
@@ -1829,7 +2365,7 @@ function sessionPreferenceOverrides(
 		protocol: preferences.protocol,
 		model: preferences.model,
 		apiBaseUrl: preferences.apiBaseUrl,
-		authRef: preferences.authRef,
+		...(preferences.authRef !== preferences.provider ? { authRef: preferences.authRef } : {}),
 		reasoningEffort: preferences.reasoningEffort,
 		thinkingEnabled: preferences.reasoningEffort !== "none",
 	};
@@ -1864,6 +2400,12 @@ function controlReasoningEffort(value: unknown): ReasoningEffort | undefined {
 		|| value === "ultra"
 	) return value;
 	throw new Error("invalid_arguments: unsupported reasoning_effort");
+}
+
+function controlModelSelectionScope(value: unknown): ModelSelectionScope {
+	if (value === undefined) return "session";
+	if (isModelSelectionScope(value)) return value;
+	throw controlRequestError("Model selection scope is not supported.");
 }
 
 async function pathCompletionCandidates(
@@ -1945,13 +2487,14 @@ function runtimeToolExposure(
 	]);
 }
 
-function deferredCandidates(registrations: readonly IntegrationRegistration[]) {
+function deferredCandidates(registrations: readonly IntegrationRegistration[]): readonly DeferredToolCandidate[] {
 	return registrations.flatMap((registration) => (
 		registration.source === "mcp" || registration.source === "plugin"
 			? [{
 				definition: registration.definition,
 				source: registration.source,
 				originMetadata: registration.originMetadata,
+				...(registration.sourceDescription === undefined ? {} : { sourceDescription: registration.sourceDescription }),
 			}]
 			: []
 	));
@@ -1975,9 +2518,7 @@ function integrationGateway(
 			diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
 			toolNames,
 			listResources: () => composition.resources.map((resource) => ({ ...resource })),
-		...(composition.commands.length > 0 ? {
-			commands: combinedIntegrationCommands(composition.commands),
-		} : {}),
+		commands: combinedIntegrationCommands(() => composition.commands),
 			subscribeSubagents: (
 			listener: (subagent: Readonly<Record<string, unknown>>) => void,
 			) => composition.subscribeSubagents(listener),
@@ -1988,380 +2529,13 @@ function integrationGateway(
 	return Object.freeze(integrations);
 }
 
-function nodeTraceRows(
-	store: RuntimeSessionStore,
-	homeDir: string,
-	sessionId: string,
-): readonly Readonly<Record<string, unknown>>[] {
-	const diagnostics = loadNodeTrace(homeDir, sessionId);
-	const turns = store.loadTurnRollouts(sessionId).slice(-50).map((rollout) => {
-		const continuation = objectValue(rollout.continuation_state);
-		const usage = objectValue(continuation.usage);
-		return Object.freeze({
-			kind: "turn",
-			...(boundedTraceString(rollout.turn_id, 256) ? {
-				turn_id: boundedTraceString(rollout.turn_id, 256),
-			} : {}),
-			...(boundedTraceString(rollout.status, 32) ? {
-				status: boundedTraceString(rollout.status, 32),
-			} : {}),
-			...(boundedTraceString(rollout.stop_reason, 64) ? {
-				stop_reason: boundedTraceString(rollout.stop_reason, 64),
-			} : {}),
-			...(boundedTraceString(rollout.started_at, 64) ? {
-				started_at: boundedTraceString(rollout.started_at, 64),
-			} : {}),
-			...(boundedTraceString(rollout.completed_at, 64) ? {
-				completed_at: boundedTraceString(rollout.completed_at, 64),
-			} : {}),
-			...traceUsage(usage),
-		});
-	});
-	return Object.freeze([...turns, ...diagnostics].slice(-50));
-}
-
-function appendNodeTrace(
-	homeDir: string,
-	sessionId: string,
-	event: Readonly<Record<string, unknown>>,
-): void {
-	const identity = traceSessionId(sessionId);
-	const kind = nodeTraceKind(event.kind);
-	const turnId = boundedTraceString(event.turn_id, 256);
-	if (!kind || !turnId) return;
-	const payload = nodeTracePayload(kind, objectValue(event.payload));
-	const tracesRoot = join(homeDir, ".mycli", "traces");
-	const logsRoot = join(homeDir, ".mycli", "logs");
-	mkdirSync(tracesRoot, { recursive: true, mode: 0o700 });
-	mkdirSync(logsRoot, { recursive: true, mode: 0o700 });
-	const tracePath = join(tracesRoot, `${identity}-trace.jsonl`);
-	const traceLine = `${JSON.stringify({ kind, turn_id: turnId, payload })}\n`;
-	rotateNodeTraceIfNeeded(tracePath, Buffer.byteLength(traceLine, "utf8"));
-	appendFileSync(
-		tracePath,
-		traceLine,
-		{ encoding: "utf8", mode: 0o600 },
-	);
-	appendFileSync(
-		join(logsRoot, "agent.log"),
-		`event=${kind} session_id=${identity} turn_id=${turnId}\n`,
-		{ encoding: "utf8", mode: 0o600 },
-	);
-}
-
-const NODE_TRACE_MAX_BYTES = 5 * 1024 * 1024;
-
-function rotateNodeTraceIfNeeded(path: string, incomingBytes: number): void {
-	if (!existsSync(path) || statSync(path).size + incomingBytes <= NODE_TRACE_MAX_BYTES) return;
-	const backup = `${path}.1`;
-	rmSync(backup, { force: true });
-	renameSync(path, backup);
-}
-
-function loadNodeTrace(
-	homeDir: string,
-	sessionId: string,
-): readonly Readonly<Record<string, unknown>>[] {
-	const identity = traceSessionId(sessionId);
-	const path = join(homeDir, ".mycli", "traces", `${identity}-trace.jsonl`);
-	if (!existsSync(path)) return Object.freeze([]);
-	const rows: Readonly<Record<string, unknown>>[] = [];
-	for (const line of readFileSync(path, "utf8").split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const parsed = JSON.parse(line) as unknown;
-			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
-			const event = parsed as Readonly<Record<string, unknown>>;
-			const kind = nodeTraceKind(event.kind);
-			const turnId = boundedTraceString(event.turn_id, 256);
-			if (!kind || !turnId) continue;
-			rows.push(Object.freeze({
-				kind,
-				turn_id: turnId,
-				payload: nodeTracePayload(kind, objectValue(event.payload)),
-			}));
-		} catch {
-			// Corrupt diagnostics are skipped without affecting the runtime.
-		}
-	}
-	return Object.freeze(rows.slice(-50));
-}
-
-function traceSessionId(value: string): string {
-	if (!value || value.startsWith("<") || value.endsWith(">")
-		|| value.includes("/") || value.includes("\\") || value.includes("..")) {
-		throw new Error("invalid trace session id");
-	}
-	return value.slice(0, 256);
-}
-
-type NodeTraceKind =
-	| "turn_interrupt_requested"
-	| "turn_interrupted"
-	| "model_stream_diagnostics"
-	| "tool_execution"
-	| "compaction"
-	| "subagent_lifecycle";
-
-function nodeTraceKind(value: unknown): NodeTraceKind | undefined {
-	return [
-		"turn_interrupt_requested",
-		"turn_interrupted",
-		"model_stream_diagnostics",
-		"tool_execution",
-		"compaction",
-		"subagent_lifecycle",
-	].includes(value as NodeTraceKind)
-		? value as NodeTraceKind
-		: undefined;
-}
-
-function nodeTracePayload(
-	kind: NodeTraceKind,
-	value: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	if (kind === "model_stream_diagnostics") return modelStreamTracePayload(value);
-	if (kind === "tool_execution") return toolExecutionTracePayload(value);
-	if (kind === "compaction") return compactionTracePayload(value);
-	if (kind === "subagent_lifecycle") return subagentLifecycleTracePayload(value);
-	const clientTurnId = boundedTraceString(value.client_turn_id, 256);
-	return Object.freeze({
-		...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
-		...(typeof value.requested === "boolean" ? { requested: value.requested } : {}),
-		...(typeof value.input_rolled_back === "boolean"
-			? { input_rolled_back: value.input_rolled_back }
-			: {}),
-		...(value.status === "interrupted" ? { status: "interrupted" } : {}),
-	});
-}
-
-function modelStreamTracePayload(
-	value: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	return compactTracePayload({
-		provider: traceEnum(value.provider, ["openai", "codex", "compatible", "qwen", "deepseek", "anthropic"]),
-		protocol: traceEnum(value.protocol, ["responses", "chat_completions", "anthropic_messages"]),
-		model: boundedTraceToken(value.model, 256),
-		attempt: boundedTraceCount(value.attempt),
-		elapsed_ms: boundedTraceNumber(value.elapsed_ms),
-		ttfb_ms: boundedTraceNumber(value.ttfb_ms),
-		ttft_ms: boundedTraceNumber(value.ttft_ms),
-		tbt_ms: boundedTraceNumber(value.tbt_ms),
-		max_tbt_ms: boundedTraceNumber(value.max_tbt_ms),
-		text_delta_interval_count: boundedTraceCount(value.text_delta_interval_count),
-		provider_event_count: boundedTraceCount(value.provider_event_count),
-		reasoning_event_count: boundedTraceCount(value.reasoning_event_count),
-		text_event_count: boundedTraceCount(value.text_event_count),
-		provider_state_event_count: boundedTraceCount(value.provider_state_event_count),
-		tool_call_event_count: boundedTraceCount(value.tool_call_event_count),
-		usage_event_count: boundedTraceCount(value.usage_event_count),
-		completed_event_count: boundedTraceCount(value.completed_event_count),
-		reasoning_bytes: boundedTraceCount(value.reasoning_bytes),
-		text_bytes: boundedTraceCount(value.text_bytes),
-		success: typeof value.success === "boolean" ? value.success : undefined,
-		failure_kind: boundedTraceToken(value.failure_kind, 64),
-	});
-}
-
-function toolExecutionTracePayload(
-	value: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	return compactTracePayload({
-		call_id: boundedTraceToken(value.call_id, 256),
-		tool_name: boundedTraceToken(value.tool_name, 128),
-		duration_ms: boundedTraceNumber(value.duration_ms),
-		success: typeof value.success === "boolean" ? value.success : undefined,
-		output_chars: boundedTraceCount(value.output_chars),
-		output_truncated: typeof value.output_truncated === "boolean"
-			? value.output_truncated
-			: undefined,
-		failure_kind: boundedTraceToken(value.failure_kind, 128),
-	});
-}
-
-function compactionTracePayload(
-	value: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	return compactTracePayload({
-		source: traceEnum(value.source, ["pre_turn", "mid_turn", "context_overflow", "user_requested"]),
-		status: traceEnum(value.status, ["not_needed", "compressed", "skipped", "failed", "interrupted"]),
-		before_tokens: boundedTraceCount(value.before_tokens),
-		after_tokens: boundedTraceCount(value.after_tokens),
-		max_tokens: boundedTraceCount(value.max_tokens),
-		duration_ms: boundedTraceNumber(value.duration_ms),
-	});
-}
-
-function subagentLifecycleTracePayload(
-	value: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	return compactTracePayload({
-		thread_id: boundedTraceToken(value.thread_id, 256),
-		status: traceEnum(value.status, ["started", "completed", "failed", "interrupted"]),
-		duration_ms: boundedTraceNumber(value.duration_ms),
-	});
-}
-
-function runtimeDiagnosticTraceEvent(
-	event: RuntimeDiagnosticEvent,
-): Readonly<Record<string, unknown>> {
-	if (event.kind === "model_stream_diagnostics") {
-		return Object.freeze({
-			kind: event.kind,
-			turn_id: event.turnId,
-			payload: {
-				provider: event.provider,
-				protocol: event.protocol,
-				model: event.model,
-				attempt: event.attempt,
-				elapsed_ms: event.elapsedMs,
-				...(event.ttfbMs === undefined ? {} : { ttfb_ms: event.ttfbMs }),
-				...(event.ttftMs === undefined ? {} : { ttft_ms: event.ttftMs }),
-				...(event.tbtMs === undefined ? {} : { tbt_ms: event.tbtMs }),
-				...(event.maxTbtMs === undefined ? {} : { max_tbt_ms: event.maxTbtMs }),
-				text_delta_interval_count: event.textDeltaIntervalCount,
-				provider_event_count: event.providerEventCount,
-				reasoning_event_count: event.reasoningEventCount,
-				text_event_count: event.textEventCount,
-				provider_state_event_count: event.providerStateEventCount,
-				tool_call_event_count: event.toolCallEventCount,
-				usage_event_count: event.usageEventCount,
-				completed_event_count: event.completedEventCount,
-				reasoning_bytes: event.reasoningBytes,
-				text_bytes: event.textBytes,
-				success: event.success,
-				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
-			},
-		});
-	}
-	if (event.kind === "tool_execution") {
-		return Object.freeze({
-			kind: event.kind,
-			turn_id: event.turnId,
-			payload: {
-				call_id: event.callId,
-				tool_name: event.toolName,
-				duration_ms: event.durationMs,
-				success: event.success,
-				output_chars: event.outputChars,
-				output_truncated: event.outputTruncated,
-				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
-			},
-		});
-	}
-	return Object.freeze({
-		kind: event.kind,
-		turn_id: event.turnId,
-		payload: {
-			source: event.source,
-			status: event.status,
-			before_tokens: event.beforeTokens,
-			after_tokens: event.afterTokens,
-			max_tokens: event.maxTokens,
-			duration_ms: event.durationMs,
-		},
-	});
-}
-
-function tryAppendNodeTrace(
-	homeDir: string,
-	sessionId: string,
-	event: Readonly<Record<string, unknown>>,
-): void {
-	try {
-		appendNodeTrace(homeDir, sessionId, event);
-	} catch {
-		// Observability is best-effort and never participates in turn success.
-	}
-}
-
-function elapsedIsoMs(startedAt: string, finishedAt: string): number {
-	const elapsed = Date.parse(finishedAt) - Date.parse(startedAt);
-	return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
-}
-
-function elapsedMonotonicMs(startedAt: number, finishedAt: number): number {
-	const elapsed = finishedAt - startedAt;
-	return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
-}
-
-function boundedTraceNumber(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0
-		&& value <= 24 * 60 * 60 * 1_000
-		? value
-		: undefined;
-}
-
-function boundedTraceCount(value: unknown): number | undefined {
-	return Number.isSafeInteger(value) && (value as number) >= 0
-		&& (value as number) <= 1_099_511_627_776
-		? value as number
-		: undefined;
-}
-
-function boundedTraceToken(value: unknown, limit: number): string | undefined {
-	return typeof value === "string" && value.length > 0 && value.length <= limit
-		&& /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u.test(value)
-		? value
-		: undefined;
-}
-
-function traceEnum<const Value extends string>(
-	value: unknown,
-	allowed: readonly Value[],
-): Value | undefined {
-	return typeof value === "string" && allowed.includes(value as Value)
-		? value as Value
-		: undefined;
-}
-
-function compactTracePayload(
-	value: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).filter((entry) => entry[1] !== undefined),
-	));
-}
-
-function nodeLogRows(homeDir: string): readonly string[] {
-	const logsRoot = join(homeDir, ".mycli", "logs");
-	const rows = ["agent.log", "errors.log", "model-events.jsonl"].map((name) => {
-		const path = join(logsRoot, name);
-		return existsSync(path)
-			? `${name} present bytes=${statSync(path).size}`
-			: `${name} absent`;
-	});
-	return Object.freeze(rows);
-}
-
-function objectValue(value: unknown): Readonly<Record<string, unknown>> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? value as Readonly<Record<string, unknown>>
-		: {};
-}
-
-function boundedTraceString(value: unknown, limit: number): string | undefined {
-	return typeof value === "string" && value
-		? value.slice(0, limit)
-		: undefined;
-}
-
-function traceUsage(value: Readonly<Record<string, unknown>>): Readonly<Record<string, number>> {
-	const result: Record<string, number> = {};
-	for (const key of ["input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"] as const) {
-		const count = value[key];
-		if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) result[key] = count;
-	}
-	return Object.freeze(result);
-}
-
 function combinedIntegrationCommands(
-	services: readonly IntegrationCommandService[],
+	services: () => readonly IntegrationCommandService[],
 ): NodeGatewayIntegrationCommands {
 	const commands: NodeGatewayIntegrationCommands = {
-		list: () => services.flatMap((service) => service.list().map((command) => ({ ...command }))),
+		list: () => services().flatMap((service) => service.list().map((command) => ({ ...command }))),
 		run: async (command: string, signal: AbortSignal) => {
-			for (const service of services) {
+			for (const service of services()) {
 				const result = await service.run(command, signal);
 				if (result) return { ...result };
 			}
@@ -2369,6 +2543,26 @@ function combinedIntegrationCommands(
 		},
 	};
 	return Object.freeze(commands);
+}
+
+function workspaceInstructionsForTrust(
+	workspaceRoot: string,
+	trusted: boolean,
+): ReturnType<typeof loadWorkspaceInstructions> {
+	if (trusted) {
+		return loadWorkspaceInstructions({ workspaceRoot, cwd: workspaceRoot });
+	}
+	return Object.freeze({
+		content: "",
+		diagnostics: Object.freeze({
+			searchRoots: Object.freeze([]),
+			truncated: false,
+			originalLength: 0,
+			renderedLength: 0,
+			blocked: true,
+			issues: Object.freeze(["workspace_not_trusted"]),
+		}),
+	});
 }
 
 function emitChildRuntimeEvent(
@@ -2451,899 +2645,6 @@ function totalCompactionBudget(threshold: number, reservedOutputTokens: number):
 	return total;
 }
 
-interface PrepareStoredSessionOptions {
-	readonly sessionId: string;
-	readonly store: RuntimeSessionStore;
-	readonly transcriptSnapshots: TranscriptSnapshotStore;
-	readonly sessionArtifacts: SessionArtifactStore;
-	readonly artifactQueue: SerializedSessionArtifactQueue;
-	readonly fallbackWorkspaceRoot: string;
-	readonly repairAgentCompletions?: (parentSessionId: string) => Promise<void>;
-	readonly createRuntime: (
-		sessionId: string,
-		workspaceRoot: string,
-		threadId: string,
-		initialQueue: QueueSnapshot,
-		initialContinuation?: unknown,
-	) => NodeGatewayRuntime;
-}
-
-async function prepareStoredSession(
-	options: PrepareStoredSessionOptions,
-): Promise<PreparedSession<NodeGatewayRuntime>> {
-	const {
-		sessionId,
-		store,
-		transcriptSnapshots,
-		sessionArtifacts,
-		artifactQueue,
-		createRuntime,
-	} = options;
-	let overview: SessionOverview | undefined;
-	try {
-		overview = store.loadSession(sessionId);
-	} catch (error) {
-		const degraded = await loadDegradedSnapshot(transcriptSnapshots, sessionId, error);
-		return preparedFromReadOnlySnapshot(degraded, createRuntime);
-	}
-	if (!overview) {
-		try {
-			const degraded = await transcriptSnapshots.loadOrRebuild(sessionId, {
-				loadCanonical: () => undefined,
-				importLegacy: (legacySessionId, messages) => importLegacySnapshot(
-					store,
-					legacySessionId,
-					messages,
-					undefined,
-					options.fallbackWorkspaceRoot,
-				),
-			});
-			if (degraded.readOnly) {
-				return preparedFromReadOnlySnapshot(degraded.snapshot, createRuntime);
-			}
-			const importedOverview = store.loadSession(sessionId);
-			if (!importedOverview) {
-				throw new SessionTransitionError("session_state_invalid", "legacy session was not imported");
-			}
-			const initialQueue = emptyQueue(sessionId);
-			const binding = createRuntime(
-				sessionId,
-				importedOverview.workspaceRoot,
-				importedOverview.threadId,
-				initialQueue,
-			);
-			const records = store.subagentTasks.list(sessionId, 1_000);
-			await repairSessionArtifacts(
-				sessionId,
-				store,
-				transcriptSnapshots,
-				sessionArtifacts,
-				artifactQueue,
-			);
-			await options.repairAgentCompletions?.(sessionId);
-			repairSubagentNotifications(binding.queueCoordinator, records, sessionArtifacts, store);
-			return {
-				sessionId,
-				workspaceRoot: importedOverview.workspaceRoot,
-				threadId: importedOverview.threadId,
-				transcript: degraded.snapshot.transcript,
-				queue: binding.queueCoordinator?.snapshot() ?? initialQueue,
-				suspendedTurn: false,
-				readOnly: false,
-				binding,
-			};
-		} catch (error) {
-			if (error instanceof SnapshotStateError) {
-				throw new SessionTransitionError("session_not_found", "the target session does not exist");
-			}
-			throw error;
-		}
-	}
-
-	const queue = loadQueue(store, sessionId);
-	const approvalState = loadApprovalState(store, sessionId);
-	const compactionState = store.loadState(sessionId, "compact_checkpoint");
-	const responsesContinuation = loadResponsesContinuation(store, sessionId);
-	const binding = createRuntime(
-		sessionId,
-		overview.workspaceRoot,
-		overview.threadId,
-		queue,
-		responsesContinuation,
-	);
-	const records = store.subagentTasks.list(sessionId, 1_000);
-	let transcript;
-	try {
-		transcript = await transcriptSnapshots.loadOrRebuild(sessionId, {
-			loadCanonical: () => canonicalSnapshot(
-				store,
-				overview,
-				approvalState.pendingApproval !== undefined,
-				approvalState.pendingClarification !== undefined,
-				approvalState.suspendedTurn,
-			),
-			importLegacy: (legacySessionId, messages) => importLegacySnapshot(
-				store,
-				legacySessionId,
-				messages,
-				overview,
-				options.fallbackWorkspaceRoot,
-			),
-		});
-	} catch (error) {
-		if (error instanceof SnapshotStateError) {
-			throw new SessionTransitionError("session_state_invalid", "transcript state is not usable");
-		}
-		throw error;
-	}
-	if (transcript.readOnly) {
-		return preparedFromReadOnlySnapshot(transcript.snapshot, createRuntime);
-	}
-	await repairSessionArtifacts(
-		sessionId,
-		store,
-		transcriptSnapshots,
-		sessionArtifacts,
-		artifactQueue,
-	);
-	await options.repairAgentCompletions?.(sessionId);
-	repairSubagentNotifications(binding.queueCoordinator, records, sessionArtifacts, store);
-	const repairedQueue = binding.queueCoordinator?.snapshot() ?? queue;
-	return {
-		sessionId,
-		workspaceRoot: overview.workspaceRoot,
-		threadId: overview.threadId,
-		transcript: transcript.snapshot.transcript,
-		queue: repairedQueue,
-		...(approvalState.pendingApproval
-			? { pendingApproval: approvalState.pendingApproval }
-			: {}),
-		...(approvalState.pendingClarification
-			? { pendingClarification: approvalState.pendingClarification }
-			: {}),
-		suspendedTurn: approvalState.suspendedTurn,
-		...(compactionState === undefined ? {} : { compactionState }),
-		...(responsesContinuation === undefined ? {} : { responsesContinuation }),
-		readOnly: false,
-		binding,
-	};
-}
-
-function virtualSession(
-	sessionId: string,
-	workspaceRoot: string,
-	createRuntime: PrepareStoredSessionOptions["createRuntime"],
-): PreparedSession<NodeGatewayRuntime> {
-	return {
-		sessionId,
-		workspaceRoot,
-		threadId: sessionId,
-		transcript: Object.freeze([]),
-		queue: emptyQueue(sessionId),
-		suspendedTurn: false,
-		readOnly: false,
-		binding: createRuntime(sessionId, workspaceRoot, sessionId, emptyQueue(sessionId)),
-	};
-}
-
-function canonicalSnapshot(
-	store: RuntimeSessionStore,
-	overview: SessionOverview,
-	pendingApproval: boolean,
-	pendingClarification: boolean,
-	suspendedTurn: boolean,
-): TranscriptSnapshotV2 {
-	const transcript = recentCanonicalTranscript(store, overview.sessionId);
-	return {
-		schema_version: 2,
-		session_id: overview.sessionId,
-		cwd: overview.workspaceRoot,
-		state: pendingApproval
-			? "waiting_approval"
-			: pendingClarification
-				? "waiting_clarification"
-				: suspendedTurn ? "interrupted" : "idle",
-		message_count: overview.messageCount,
-		created_at: overview.createdAt,
-		updated_at: overview.updatedAt,
-		transcript,
-		subagents: subagentIndex(store, overview.sessionId),
-		links: { events: "events.jsonl" },
-	};
-}
-
-function canonicalTranscript(
-	store: RuntimeSessionStore,
-	sessionId: string,
-): readonly TranscriptItem[] {
-	const projected = projectReadableSessionTranscript(store, sessionId);
-	return projected.hasCanonicalHistory
-		? projected.items
-		: legacyConversationTranscript(store, sessionId);
-}
-
-function recentCanonicalTranscript(
-	store: RuntimeSessionStore,
-	sessionId: string,
-): readonly TranscriptItem[] {
-	const projected = projectRecentSessionTranscript(store, sessionId);
-	return projected.hasCanonicalHistory
-		? projected.items
-		: legacyConversationTranscript(store, sessionId);
-}
-
-function subagentIndex(
-	store: RuntimeSessionStore,
-	parentSessionId: string,
-): TranscriptSnapshotV2["subagents"] {
-	return Object.freeze(store.subagentTasks.list(parentSessionId, 1_000)
-			.map((record) => sessionSubagentIndexEntry(subagentSnapshotInput(
-				record,
-				[],
-				store.agentThreads.get(record.childSessionId),
-			)))
-		.sort((left, right) => left.run_id.localeCompare(right.run_id)));
-}
-
-function subagentSnapshotInput(
-	record: SubagentTaskRecord,
-	messages: readonly TranscriptItem[],
-	thread?: AgentThreadRecord,
-	lifecycleKind?: string,
-): WriteSubagentSnapshotInput {
-	const usage = record.payload.usage ?? {};
-	const usageToolCalls = usage.tool_calls ?? usage.toolCalls;
-	const toolCalls = Number.isSafeInteger(usageToolCalls) && usageToolCalls >= 0
-		? usageToolCalls
-		: Math.floor(record.progressSequence / 2);
-	return Object.freeze({
-		parentSessionId: record.parentSessionId,
-		childSessionId: record.childSessionId,
-		parentTurnId: record.parentTurnId,
-		profileId: record.profileId,
-		threadId: thread?.threadId ?? record.childSessionId,
-		...(thread ? {
-			rootThreadId: thread.rootThreadId,
-			parentThreadId: thread.parentThreadId,
-			agentPath: thread.path,
-			taskName: thread.taskName,
-			...(thread.nickname ? { nickname: thread.nickname } : {}),
-		} : {}),
-		...(lifecycleKind ? { lifecycleKind } : {}),
-		status: record.status,
-		...(record.payload.mode ? { mode: record.payload.mode } : {}),
-		...(record.payload.description === undefined ? {} : {
-			description: record.payload.description,
-		}),
-		...(record.payload.report === undefined ? {} : { report: record.payload.report }),
-		toolCalls,
-		...(subagentError(record) ? { error: subagentError(record) } : {}),
-		startedAt: record.createdAt,
-		...(record.completedAt ? { completedAt: record.completedAt } : {}),
-		contextDiagnostics: Object.freeze({
-			progress_sequence: record.progressSequence,
-			...(Object.keys(usage).length > 0 ? { usage } : {}),
-		}),
-		messages,
-	});
-}
-
-function subagentError(record: SubagentTaskRecord): string | undefined {
-	return record.payload.error ?? record.payload.interruptionReason;
-}
-
-function terminalSubagentOutput(record: SubagentTaskRecord): string {
-	for (const candidate of [
-		record.payload.report,
-		record.payload.error,
-		record.payload.interruptionReason,
-	]) {
-		if (candidate?.trim()) return candidate;
-	}
-	return `Subagent ${record.status}`;
-}
-
-interface SubagentArtifactProjectionResult {
-	readonly outputReady: boolean;
-	readonly snapshotReady: boolean;
-}
-
-async function projectSubagentRecord(
-	record: SubagentTaskRecord,
-	store: RuntimeSessionStore,
-	artifacts: SessionArtifactStore,
-	thread = store.agentThreads.get(record.childSessionId),
-	lifecycleKind?: string,
-): Promise<SubagentArtifactProjectionResult> {
-	let outputReady = !isTerminalSubagentStatus(record.status);
-	if (isTerminalSubagentStatus(record.status)) {
-		try {
-			await artifacts.writeTaskOutput({
-				sessionId: record.parentSessionId,
-				taskId: record.childSessionId,
-				output: terminalSubagentOutput(record),
-			});
-			await artifacts.writeTaskOutput({
-				sessionId: record.childSessionId,
-				taskId: record.taskId,
-				output: terminalSubagentOutput(record),
-			}).catch(() => undefined);
-			outputReady = true;
-		} catch {
-			outputReady = false;
-		}
-	}
-	let snapshotReady = false;
-	try {
-		await artifacts.writeSubagentSnapshot(subagentSnapshotInput(
-			record,
-			recentCanonicalTranscript(store, record.childSessionId),
-			thread,
-			lifecycleKind,
-		));
-		snapshotReady = true;
-	} catch {
-		snapshotReady = false;
-	}
-	return Object.freeze({ outputReady, snapshotReady });
-}
-
-async function refreshParentArtifactSnapshot(
-	parentSessionId: string,
-	store: RuntimeSessionStore,
-	transcriptSnapshots: TranscriptSnapshotStore,
-): Promise<void> {
-	const overview = store.loadSession(parentSessionId);
-	if (!overview) return;
-	const approval = loadApprovalState(store, parentSessionId);
-	await transcriptSnapshots.write(canonicalSnapshot(
-		store,
-		overview,
-		approval.pendingApproval !== undefined,
-		approval.pendingClarification !== undefined,
-		approval.suspendedTurn,
-	));
-}
-
-async function repairSessionArtifacts(
-	parentSessionId: string,
-	store: RuntimeSessionStore,
-	transcriptSnapshots: TranscriptSnapshotStore,
-	artifacts: SessionArtifactStore,
-	queue: SerializedSessionArtifactQueue,
-): Promise<void> {
-	await queue.run(async () => {
-		for (const record of store.subagentTasks.list(parentSessionId, 1_000)) {
-			await projectSubagentRecord(record, store, artifacts);
-		}
-		await refreshParentArtifactSnapshot(
-			parentSessionId,
-			store,
-			transcriptSnapshots,
-		).catch(() => undefined);
-	});
-}
-
-interface CanonicalAgentEventProjectionInput {
-	readonly event: AgentCanonicalEvent;
-	readonly store: RuntimeSessionStore;
-	readonly transcriptSnapshots: TranscriptSnapshotStore;
-	readonly artifacts: SessionArtifactStore;
-}
-
-async function projectCanonicalAgentEvent(
-	input: CanonicalAgentEventProjectionInput,
-): Promise<void> {
-	const { event, store, transcriptSnapshots, artifacts } = input;
-	const sessionIds = new Set<string>([event.threadId]);
-	if (event.type === "agent_communication") {
-		sessionIds.add(event.senderThreadId);
-		sessionIds.add(event.receiverThreadId);
-	} else if ("task" in event && event.task) {
-		sessionIds.add(event.task.parentSessionId);
-	}
-	for (const sessionId of sessionIds) {
-		await artifacts.appendEvent({
-			sessionId,
-			type: canonicalAgentArtifactType(event),
-			payload: canonicalAgentArtifactPayload(event),
-		}).catch(() => undefined);
-	}
-	if (event.type === "agent_communication" || !("task" in event) || !event.task) return;
-	const record = store.subagentTasks.get(event.task.taskId);
-	const thread = store.agentThreads.get(event.threadId);
-	if (!record || !thread || record.childSessionId !== event.threadId) return;
-	const projection = await projectSubagentRecord(
-		record,
-		store,
-		artifacts,
-		thread,
-		event.kind,
-	);
-	await refreshParentArtifactSnapshot(
-		record.parentSessionId,
-		store,
-		transcriptSnapshots,
-	).catch(() => undefined);
-	if (!projection.snapshotReady || !shouldPublishSubagentEvent(event)) return;
-	const entry = sessionSubagentIndexEntry(subagentSnapshotInput(record, [], thread, event.kind));
-	const subagent = subagentEventProjection(event, record, thread, entry);
-	await artifacts.appendEvent({
-		sessionId: record.parentSessionId,
-		type: "subagent.updated",
-		payload: { subagent },
-	}).catch(() => undefined);
-}
-
-function publishCanonicalSubagentEvent(
-	event: AgentCanonicalEvent,
-	store: RuntimeSessionStore,
-	publish: (value: Readonly<Record<string, unknown>>) => void,
-): void {
-	if (event.type === "agent_communication" || !shouldPublishSubagentEvent(event)
-		|| !("task" in event) || !event.task) return;
-	const record = store.subagentTasks.get(event.task.taskId);
-	const thread = store.agentThreads.get(event.threadId);
-	if (!record || !thread || record.childSessionId !== event.threadId) return;
-	const entry = sessionSubagentIndexEntry(subagentSnapshotInput(record, [], thread, event.kind));
-	publish(subagentEventProjection(event, record, thread, entry));
-}
-
-function canonicalAgentArtifactType(
-	event: AgentCanonicalEvent,
-): "agent.lifecycle" | "agent.progress" | "agent.usage" | "agent.communication" {
-	if (event.type === "agent_lifecycle") return "agent.lifecycle";
-	if (event.type === "agent_progress") return "agent.progress";
-	if (event.type === "agent_usage") return "agent.usage";
-	return "agent.communication";
-}
-
-function canonicalAgentArtifactPayload(
-	event: AgentCanonicalEvent,
-): Readonly<Record<string, unknown>> {
-	return Object.freeze({
-		event_id: event.eventId,
-		occurred_at: event.occurredAt,
-		kind: event.kind,
-		thread_id: event.threadId,
-		root_thread_id: event.rootThreadId,
-		...(event.parentThreadId ? { parent_thread_id: event.parentThreadId } : {}),
-		agent_path: event.path,
-		...(event.sourceCallId ? { source_call_id: event.sourceCallId } : {}),
-		...(event.type === "agent_lifecycle" ? {
-			thread_status: event.threadStatus,
-			...(event.summary ? { summary: event.summary } : {}),
-		} : {}),
-		...(event.type === "agent_progress" ? {
-			progress_sequence: event.progressSequence,
-			summary: event.summary,
-			usage: event.usage,
-		} : {}),
-		...(event.type === "agent_usage" ? { usage: event.usage } : {}),
-		...(event.type === "agent_communication" ? {
-			message_id: event.messageId,
-			sender_thread_id: event.senderThreadId,
-			sender_path: event.senderPath,
-			receiver_thread_id: event.receiverThreadId,
-			receiver_path: event.receiverPath,
-			receiver_sequence: event.receiverSequence,
-			trigger_mode: event.triggerMode,
-			payload_kind: event.payloadKind,
-		} : {}),
-		...("task" in event && event.task ? {
-			task_id: event.task.taskId,
-			parent_session_id: event.task.parentSessionId,
-			parent_turn_id: event.task.parentTurnId,
-			profile_id: event.task.profileId,
-			task_status: event.task.taskStatus,
-		} : {}),
-	});
-}
-
-function shouldPublishSubagentEvent(event: AgentCanonicalEvent): boolean {
-	return event.type === "agent_progress"
-		|| event.type === "agent_lifecycle" && [
-			"started",
-			"waiting",
-			"loaded",
-			"unloaded",
-			"completed",
-			"failed",
-			"interrupted",
-		].includes(event.kind);
-}
-
-function subagentEventProjection(
-	event: Exclude<AgentCanonicalEvent, { readonly type: "agent_communication" }>,
-	record: SubagentTaskRecord,
-	thread: AgentThreadRecord,
-	entry: ReturnType<typeof sessionSubagentIndexEntry>,
-): Readonly<Record<string, unknown>> {
-	const usage = record.payload.usage ?? (event.type === "agent_progress" || event.type === "agent_usage"
-		? event.usage
-		: {});
-	const totalTokens = Object.entries(usage).reduce((total, [key, value]) => (
-		key.includes("token") && Number.isFinite(value) ? total + value : total
-	), 0);
-	return Object.freeze({
-		...entry,
-		parent_session_id: record.parentSessionId,
-		run_id: subagentRunId(thread.threadId),
-		thread_id: thread.threadId,
-		root_thread_id: thread.rootThreadId,
-		parent_thread_id: thread.parentThreadId,
-		agent_path: thread.path,
-		task_name: thread.taskName,
-		...(thread.nickname ? { nickname: thread.nickname } : {}),
-		lifecycle_kind: event.kind,
-		status: subagentEventStatus(event, record),
-		summary: event.type === "agent_progress"
-			? event.summary
-			: event.type === "agent_lifecycle" && event.summary
-				? event.summary
-				: `Subagent ${event.kind}`,
-		progress: event.type === "agent_progress"
-			? [Object.freeze({ kind: "progress", summary: event.summary })]
-			: event.type === "agent_lifecycle" && isTerminalSubagentStatus(record.status)
-				? [Object.freeze({ kind: "final", summary: event.summary ?? `Subagent ${event.kind}` })]
-				: [],
-		...(totalTokens > 0 ? { total_tokens: totalTokens } : {}),
-	});
-}
-
-function subagentEventStatus(
-	event: Exclude<AgentCanonicalEvent, { readonly type: "agent_communication" }>,
-	record: SubagentTaskRecord,
-): string {
-	if (event.type !== "agent_lifecycle") return record.status === "queued" ? "running" : record.status;
-	if (event.kind === "completed" || event.kind === "failed" || event.kind === "interrupted") {
-		return event.kind;
-	}
-	if (event.kind === "loaded") return "idle";
-	if (event.kind === "unloaded") return "unloaded";
-	if (event.kind === "waiting") return "waiting";
-	return "running";
-}
-
-function repairSubagentNotifications(
-	queue: QueueCoordinator | undefined,
-	records: readonly SubagentTaskRecord[],
-	artifacts?: SessionArtifactStore,
-	store?: RuntimeSessionStore,
-): void {
-	if (!queue) return;
-	for (const record of [...records].reverse()) {
-		if (store?.agentThreads.get(record.childSessionId)?.spawnConfig) continue;
-		const outputFile = artifacts?.taskOutputPath(
-			record.parentSessionId,
-			record.childSessionId,
-		);
-		const text = serializeSubagentTaskNotification(record, {
-			...(outputFile && existsSync(outputFile) ? { outputFile } : {}),
-		});
-		if (!text) continue;
-		try {
-			queue.enqueueTaskNotification({
-				sessionId: record.parentSessionId,
-				taskId: record.taskId,
-				text,
-			});
-		} catch {
-			// The durable task remains the recovery source for a later session preparation.
-			break;
-		}
-	}
-}
-
-function isTerminalSubagentStatus(
-	value: unknown,
-): value is "completed" | "failed" | "interrupted" {
-	return value === "completed" || value === "failed" || value === "interrupted";
-}
-
-class SerializedSessionArtifactQueue {
-	#pending: Promise<void> = Promise.resolve();
-
-	run(operation: () => Promise<void>): Promise<void> {
-		const scheduled = this.#pending.then(operation);
-		this.#pending = scheduled.catch(() => undefined);
-		return scheduled;
-	}
-
-	drain(): Promise<void> {
-		return this.#pending;
-	}
-}
-
-function legacyConversationTranscript(
-	store: RuntimeSessionStore,
-	sessionId: string,
-): readonly TranscriptItem[] {
-	return Object.freeze(store.loadConversation(sessionId).map((message, index) => Object.freeze({
-		id: `${sessionId}:legacy:${index + 1}`,
-		type: message.role === "user" ? "user_message" : "assistant_message",
-		text: message.content,
-	}) satisfies TranscriptItem));
-}
-
-function importLegacySnapshot(
-	store: RuntimeSessionStore,
-	sessionId: string,
-	messages: readonly LegacySnapshotMessage[],
-	overview: SessionOverview | undefined,
-	fallbackWorkspaceRoot: string,
-): TranscriptSnapshotV2 {
-	const workspaceRoot = overview?.workspaceRoot ?? fallbackWorkspaceRoot;
-	const imported = store.importLegacyConversation({
-		sessionId,
-		workspaceRoot,
-		threadId: overview?.threadId ?? sessionId,
-		messages,
-	});
-	const current = store.loadSession(sessionId);
-	if (!imported || !current) {
-		throw new SessionTransitionError("session_state_invalid", "legacy transcript import failed");
-	}
-	return canonicalSnapshot(store, current, false, false, false);
-}
-
-async function loadDegradedSnapshot(
-	snapshots: TranscriptSnapshotStore,
-	sessionId: string,
-	storageError: unknown,
-): Promise<TranscriptSnapshotV2> {
-	const result = await snapshots.loadOrRebuild(sessionId, {
-		loadCanonical: () => { throw storageError; },
-		importLegacy: () => { throw storageError; },
-	});
-	if (!result.readOnly) {
-		throw new SessionTransitionError("session_state_invalid", "degraded transcript is writable");
-	}
-	return result.snapshot;
-}
-
-function preparedFromReadOnlySnapshot(
-	snapshot: TranscriptSnapshotV2,
-	createRuntime: PrepareStoredSessionOptions["createRuntime"],
-): PreparedSession<NodeGatewayRuntime> {
-	return {
-		sessionId: snapshot.session_id,
-		workspaceRoot: snapshot.cwd,
-		threadId: snapshot.session_id,
-		transcript: snapshot.transcript,
-		queue: emptyQueue(snapshot.session_id),
-		suspendedTurn: snapshot.state === "waiting_approval" || snapshot.state === "interrupted",
-		readOnly: true,
-		binding: createRuntime(
-			snapshot.session_id,
-			snapshot.cwd,
-			snapshot.session_id,
-			emptyQueue(snapshot.session_id),
-		),
-	};
-}
-
-function loadQueue(store: RuntimeSessionStore, sessionId: string): QueueSnapshot {
-	const payload = store.loadState(sessionId, "input_queue");
-	if (payload === undefined) return emptyQueue(sessionId);
-	const state = parseRuntimeState({ kind: "input_queue", version: 1, payload });
-	if (state.kind !== "input_queue" || state.payload.session_id !== sessionId) {
-		throw new SessionTransitionError("session_state_invalid", "queue session does not match");
-	}
-	return Object.freeze({
-		sessionId,
-		revision: state.payload.revision,
-		pendingSteers: Object.freeze(state.payload.pending_steers.map(queueRecord)),
-		rejectedSteers: Object.freeze(state.payload.rejected_steers.map(queueRecord)),
-		followUps: Object.freeze(state.payload.follow_ups.map(queueRecord)),
-	});
-}
-
-function queueRecord(record: {
-	readonly queue_id: string;
-	readonly session_id: string;
-	readonly client_turn_id: string;
-	readonly target_turn_id: string | null;
-	readonly kind: QueuedInput["kind"];
-	readonly state: QueuedInput["state"];
-	readonly text: string;
-	readonly image_paths: readonly string[];
-	readonly source: string;
-	readonly created_at: string;
-	readonly updated_at: string;
-}): QueuedInput {
-	return Object.freeze({
-		queueId: record.queue_id,
-		sessionId: record.session_id,
-		clientTurnId: record.client_turn_id,
-		targetTurnId: record.target_turn_id,
-		kind: record.kind,
-		state: record.state,
-		text: record.text,
-		imagePaths: Object.freeze([...record.image_paths]),
-		source: record.source,
-		createdAt: record.created_at,
-		updatedAt: record.updated_at,
-	});
-}
-
-function emptyQueue(sessionId: string): QueueSnapshot {
-	return Object.freeze({
-		sessionId,
-		revision: 0,
-		pendingSteers: Object.freeze([]),
-		rejectedSteers: Object.freeze([]),
-		followUps: Object.freeze([]),
-	});
-}
-
-function loadApprovalState(
-	store: RuntimeSessionStore,
-	sessionId: string,
-): {
-	readonly pendingApproval?: PendingSessionApproval;
-	readonly pendingClarification?: PendingSessionClarification;
-	readonly suspendedTurn: boolean;
-} {
-	const pendingPayload = store.loadState(sessionId, "pending_decision");
-	const suspendedPayload = store.loadState(sessionId, "suspended_turn");
-	const suspended = suspendedPayload === undefined
-		? undefined
-		: parseRuntimeState({ kind: "suspended_turn", version: 1, payload: suspendedPayload });
-	if (suspended !== undefined && (suspended.kind !== "suspended_turn"
-		|| (suspended.payload.session_id !== undefined
-			&& suspended.payload.session_id !== sessionId))) {
-		throw new SessionTransitionError("session_state_invalid", "suspended session does not match");
-	}
-	const pendingClarification = suspended?.kind === "suspended_turn"
-		? clarificationFromSuspendedState(sessionId, suspended.payload)
-		: undefined;
-	if (pendingPayload === undefined) {
-		return {
-			...(pendingClarification ? { pendingClarification } : {}),
-			suspendedTurn: suspended !== undefined,
-		};
-	}
-	if (suspended === undefined) {
-		throw new SessionTransitionError("session_state_invalid", "pending approval has no suspended turn");
-	}
-	const pending = parseRuntimeState({ kind: "pending_decision", version: 1, payload: pendingPayload });
-	if (pending.kind !== "pending_decision" || suspended.kind !== "suspended_turn") {
-		throw new SessionTransitionError("session_state_invalid", "approval continuation is invalid");
-	}
-	if (pendingClarification) {
-		throw new SessionTransitionError(
-			"session_state_invalid",
-			"approval and clarification cannot both be pending",
-		);
-	}
-	const clientTurnId = requiredStateString(suspended.payload.client_turn_id, "client turn id");
-	const turnId = requiredStateString(suspended.payload.turn_id, "turn id");
-	const call = pending.payload.tool_call;
-	const permissionRequest = permissionRequestFromJson(
-		objectValue(pending.payload.metadata).permission_request,
-	);
-	if (suspended.payload.pending_approval?.tool_call.call_id !== undefined
-		&& suspended.payload.pending_approval.tool_call.call_id !== call.call_id) {
-		throw new SessionTransitionError("session_state_invalid", "pending approval call does not match");
-	}
-	return {
-		pendingApproval: {
-			sessionId,
-			clientTurnId,
-			turnId,
-			decisionId: call.call_id,
-			callId: call.call_id,
-			toolName: call.name,
-			preview: pending.payload.preview,
-			reason: pending.payload.reason,
-			options: Object.freeze([...pending.payload.options]),
-			...(permissionRequest ? { permissionRequest } : {}),
-		},
-		suspendedTurn: true,
-	};
-}
-
-function clarificationFromSuspendedState(
-	sessionId: string,
-	payload: Extract<ReturnType<typeof parseRuntimeState>, { kind: "suspended_turn" }>['payload'],
-): PendingSessionClarification | undefined {
-	const clarification = payload.pending_clarification;
-	if (!clarification) return undefined;
-	const clientTurnId = requiredStateString(payload.client_turn_id, "client turn id");
-	const clientUserMessageId = typeof payload.client_user_message_id === "string"
-		&& payload.client_user_message_id.trim()
-		? payload.client_user_message_id
-		: clientTurnId;
-	const callId = requiredStateString(clarification.tool_call.call_id, "clarification call id");
-	return Object.freeze({
-		sessionId,
-		clientTurnId,
-		clientUserMessageId,
-		turnId: requiredStateString(payload.turn_id, "turn id"),
-		requestId: requiredStateString(clarification.request_id, "clarification request id"),
-		callId,
-		toolName: requiredStateString(clarification.tool_call.name, "clarification tool name"),
-		question: requiredStateString(clarification.question, "clarification question"),
-		options: Object.freeze(clarification.options.map(clarificationStateOption)),
-		header: typeof clarification.header === "string" ? clarification.header : "",
-		multiSelect: clarification.multi_select,
-	});
-}
-
-function clarificationStateOption(value: unknown): {
-	readonly label: string;
-	readonly description?: string;
-} {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new SessionTransitionError("session_state_invalid", "clarification option is invalid");
-	}
-	const option = value as Readonly<Record<string, unknown>>;
-	const label = requiredStateString(option.label, "clarification option label");
-	if (option.description !== undefined && typeof option.description !== "string") {
-		throw new SessionTransitionError("session_state_invalid", "clarification option is invalid");
-	}
-	return Object.freeze({
-		label,
-		...(typeof option.description === "string" && option.description
-			? { description: option.description }
-			: {}),
-	});
-}
-
-function loadResponsesContinuation(
-	store: RuntimeSessionStore,
-	sessionId: string,
-): unknown | undefined {
-	const payload = store.loadState(sessionId, "responses_continuation_state");
-	if (payload === undefined) return undefined;
-	const state = parseRuntimeState({ kind: "responses_continuation", version: 1, payload });
-	if (state.kind !== "responses_continuation"
-		|| (state.payload.session_id !== undefined && state.payload.session_id !== sessionId)) {
-		throw new SessionTransitionError("session_state_invalid", "provider continuation does not match");
-	}
-	return payload;
-}
-
-function requiredStateString(value: unknown, label: string): string {
-	if (typeof value !== "string" || !value.trim()) {
-		throw new SessionTransitionError("session_state_invalid", `${label} is missing`);
-	}
-	return value;
-}
-
-function listSessionsWithVirtualInitial(
-	store: RuntimeSessionStore,
-	query: SessionListQuery,
-	initialSessionId: string,
-	initialWorkspaceRoot: string,
-): readonly SessionOverview[] {
-	const sessions = [...store.listSessions(query)];
-	if (store.loadSession(initialSessionId)
-		|| (query.workspaceRoot !== undefined && query.workspaceRoot !== initialWorkspaceRoot)) {
-		return Object.freeze(sessions);
-	}
-	const timestamp = "";
-	sessions.push(Object.freeze({
-		sessionId: initialSessionId,
-		workspaceRoot: initialWorkspaceRoot,
-		threadId: initialSessionId,
-		createdAt: timestamp,
-		updatedAt: timestamp,
-		lastActiveAt: timestamp,
-		status: "active",
-		messageCount: 0,
-		summaryCount: 0,
-	}));
-	return Object.freeze(sessions.slice(0, query.limit ?? 20));
-}
-
-function hasCode(error: unknown, code: string): boolean {
-	return error instanceof Error
-		&& "code" in error
-		&& (error as Error & { readonly code: unknown }).code === code;
-}
-
 function agentExecutionPolicySnapshot(
 	snapshot: ExecutionPolicySnapshot | undefined,
 ): AgentExecutionPolicySnapshot {
@@ -3368,6 +2669,18 @@ function agentExecutionPolicySnapshot(
 		}),
 		writableRoots: Object.freeze([...(profile?.writableRoots ?? [])]),
 	});
+}
+
+function agentExecutionPolicyForRun(
+	snapshot: RunExecutionSnapshot | undefined,
+): AgentExecutionPolicySnapshot {
+	const policy = snapshot?.policy;
+	if (!policy) return agentExecutionPolicySnapshot(undefined);
+	return agentExecutionPolicySnapshot(Object.freeze({
+		trusted: policy.toolsEnabled,
+		valid: true,
+		profile: policy.profile,
+	}));
 }
 
 function inheritedAgentExecutionPolicyConstraints(
@@ -3435,18 +2748,69 @@ function subagentDeveloperContext(
 	].join("\n");
 }
 
-function parseOverrides(args: readonly string[]): { model?: string; session?: string } {
+function shellSettingsGatewaySnapshot(
+	loaded: LoadedShellSettings,
+	detected: DetectedTerminalCapabilities,
+): Readonly<Record<string, unknown>> {
+	const capabilities = resolveTerminalCapabilities(loaded.settings, detected);
+	return Object.freeze({
+		settings: Object.freeze({ ...loaded.settings }),
+		sources: Object.freeze({ ...loaded.sources }),
+		keymap: Object.freeze({
+			version: 1,
+			bindings: cloneReadonlyLists(loaded.keymap.bindings),
+			sources: Object.freeze({ ...loaded.keymap.sources }),
+			overridden: cloneReadonlyLists(loaded.keymap.overridden),
+		}),
+		terminal_capabilities: Object.freeze({
+			version: capabilities.version,
+			color_mode: capabilities.colorMode,
+			color_forced_off: capabilities.colorForcedOff,
+			glyph_mode: capabilities.glyphMode,
+			terminal_kind: capabilities.terminalKind,
+			progress_visible: capabilities.progressVisible,
+			progress_animated: capabilities.progressAnimated,
+			reduced_motion: capabilities.reducedMotion,
+			high_contrast: capabilities.highContrast,
+			guidance: Object.freeze([...capabilities.guidance]),
+		}),
+	});
+}
+
+function cloneReadonlyLists(
+	values: Readonly<Record<string, readonly string[]>>,
+): Readonly<Record<string, readonly string[]>> {
+	return Object.freeze(Object.fromEntries(
+		Object.entries(values).map(([key, items]) => [key, Object.freeze([...items])]),
+	));
+}
+
+interface ParsedRuntimeArguments {
+	readonly overrides: { readonly model?: string; readonly session?: string };
+	readonly configProfile?: ConfigProfileName;
+}
+
+function parseRuntimeArguments(args: readonly string[]): ParsedRuntimeArguments {
 	const overrides: { model?: string; session?: string } = {};
+	let configProfile: ConfigProfileName | undefined;
 	for (let index = 0; index < args.length; index += 2) {
 		const flag = args[index];
 		const value = args[index + 1];
-		if ((flag !== "--model" && flag !== "--session") || value === undefined) {
+		if ((flag !== "--model" && flag !== "--session" && flag !== "--profile")
+			|| value === undefined) {
 			throw new Error("invalid_arguments: invalid Node runtime arguments");
 		}
 		if (flag === "--model") overrides.model = value;
 		if (flag === "--session") overrides.session = value;
+		if (flag === "--profile") {
+			if (configProfile) throw new Error("invalid_arguments: duplicate --profile");
+			configProfile = parseConfigProfileName(value);
+		}
 	}
-	return overrides;
+	return Object.freeze({
+		overrides: Object.freeze(overrides),
+		...(configProfile ? { configProfile } : {}),
+	});
 }
 
 function runtimeHome(env: NodeJS.ProcessEnv): string {

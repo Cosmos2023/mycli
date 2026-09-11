@@ -10,6 +10,7 @@ export interface SkillDefinition {
 	readonly body: string;
 	readonly sourceKind: SkillSourceKind;
 	readonly fileLabel: string;
+	readonly pluginId?: string;
 }
 
 export interface SkillDiagnosticIssue {

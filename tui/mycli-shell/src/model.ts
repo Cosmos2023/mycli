@@ -1,3 +1,31 @@
+import type {
+	DiagnosticCategory,
+	DiagnosticRecoveryAction,
+	TuiKeymapActionId,
+	ProviderAttemptRecord,
+	GatewayTerminalInteraction,
+	ErrorContext,
+} from "@mycli/contracts";
+
+export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
+
+export function hasProviderAttemptRetries(record: ProviderAttemptRecord): boolean {
+	return record.attempt > 1 || record.requestRetriesUsed > 0 || record.streamRetriesUsed > 0;
+}
+
+export type MycliShellNoticeDiagnostic = {
+	errorContext?: ErrorContext;
+	expanded?: boolean;
+	hint?: string;
+	source?: string;
+	method?: string;
+	code?: string;
+	details?: string;
+	category?: DiagnosticCategory;
+	recoveryActions?: readonly DiagnosticRecoveryAction[];
+	occurrenceId?: string;
+};
+
 export type MycliShellMessage =
 	| { id: string; role: "user"; text: string }
 	| { id: string; role: "assistant"; text: string; thinking?: string; thinkingHidden?: boolean }
@@ -5,7 +33,7 @@ export type MycliShellMessage =
 		id: string;
 		role: "system" | "error" | "warning";
 		text: string;
-		diagnostic?: { hint?: string; source?: string; method?: string; code?: string; details?: string };
+		diagnostic?: MycliShellNoticeDiagnostic;
 	};
 
 export type MycliShellPlan = {
@@ -43,6 +71,7 @@ export type MycliShellToolStatus = "running" | "success" | "error" | "cancelled"
 export type MycliShellTool = {
 	id: string;
 	name: string;
+	terminalInteraction?: GatewayTerminalInteraction;
 	args?: string;
 	status: MycliShellToolStatus;
 	durationMs?: number;
@@ -111,21 +140,6 @@ export type MycliShellBash = {
 	outputPreview?: string;
 	hiddenLineCount?: number;
 	expanded?: boolean;
-};
-
-export type MycliShellTranscriptOutputRequest = {
-	sessionId: string;
-	shellId: string;
-	callId?: string;
-};
-
-export type MycliShellTranscriptOutput = MycliShellTranscriptOutputRequest & {
-	output: string;
-	available: boolean;
-	complete: boolean;
-	omittedChars: number;
-	capturedChars: number;
-	outputChars: number;
 };
 
 type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "max_tool_calls" | string;
@@ -264,6 +278,11 @@ export type MycliShellWebSearch = {
 };
 
 export type MycliShellTranscriptBlock =
+	| { id: string; kind: "provider_attempt"; providerAttempt: {
+		readonly records: readonly ProviderAttemptRecord[];
+		readonly expanded: boolean;
+		readonly active: boolean;
+	} }
 	| { id: string; kind: "message"; message: MycliShellMessage }
 	| { id: string; kind: "turn_completed"; turnCompleted: MycliShellTurnCompleted }
 	| { id: string; kind: "web_search"; webSearch: MycliShellWebSearch }
@@ -307,6 +326,7 @@ export type MycliShellFooterData = {
 	liveState?: string;
 	liveStateKind?: string;
 	liveStateDetail?: string;
+	liveRetryAt?: string;
 	turnDurationMs?: number;
 	turnRunning?: boolean;
 	backgroundShellCount?: number;
@@ -315,8 +335,17 @@ export type MycliShellFooterData = {
 };
 
 export type MycliShellQueuedInputPreview = {
+	queueId?: string;
+	clientUserMessageId?: string;
+	sessionId?: string;
+	targetTurnId?: string;
+	claimTurnId?: string;
+	kind?: "pending_steer" | "rejected_steer" | "follow_up";
+	state?: "queued" | "accepted" | "claimed" | "committed" | string;
 	text: string;
 	hasImages: boolean;
+	localImages?: MycliShellLocalImageAttachment[];
+	source?: string;
 };
 
 export type MycliShellLocalImageAttachment = {
@@ -347,11 +376,52 @@ export type MycliShellModel = {
 	scoped?: boolean;
 };
 
+export type MycliShellProviderRoute = {
+	id: string;
+	name: string;
+	supportTier?: "stable" | "experimental" | "compatible";
+	source?: "pi_ai_builtin" | "pi_ai_declared";
+	catalogProviderId?: string;
+	protocols: string[];
+	protocol?: string;
+	baseUrl?: string;
+	authRef?: string;
+	credentialSource?: MycliShellCredentialSource;
+	activation: "active" | "inactive" | "unserviceable";
+	configured: boolean;
+	ready: boolean;
+	current: boolean;
+	endpointRequired?: boolean;
+	modelCount?: number;
+	disabledReason?: string;
+};
+
 export type MycliShellAuthProvider = {
 	id: string;
 	name: string;
 	configured?: boolean;
 	defaultModel?: string;
+	authRef?: string;
+	credentialSource?: MycliShellCredentialSource;
+};
+
+export type MycliShellCredentialSource =
+	| "environment"
+	| "stored"
+	| "legacy_config"
+	| "missing";
+
+export type MycliShellCredentialReadiness = {
+	ready: boolean;
+	providerId: string;
+	authRef: string;
+	source: MycliShellCredentialSource;
+};
+
+export type MycliShellLoginResult = {
+	message?: string;
+	authProviders?: MycliShellAuthProvider[];
+	authReadiness?: MycliShellCredentialReadiness;
 };
 
 export type MycliShellVisualSettings = {
@@ -364,6 +434,84 @@ export type MycliShellVisualSettings = {
 	clearOnShrink?: boolean;
 	terminalProgress?: boolean;
 	subagentDensity?: "compact" | "normal" | "detailed";
+	colorMode?: "auto" | "truecolor" | "256" | "16" | "none";
+	reducedMotion?: boolean;
+	glyphMode?: "auto" | "unicode" | "ascii";
+	highContrast?: boolean;
+};
+
+export type MycliShellEffectiveKeymap = {
+	version: 1;
+	bindings: Record<TuiKeymapActionId, string[]>;
+	sources: Record<TuiKeymapActionId, string>;
+	overridden: Record<TuiKeymapActionId, string[]>;
+};
+
+export type MycliShellTerminalCapabilities = {
+	version: 1;
+	colorMode: "truecolor" | "256" | "16" | "none";
+	colorForcedOff: boolean;
+	glyphMode: "unicode" | "ascii";
+	terminalKind: "dumb" | "standard" | "windows_terminal";
+	progressVisible: boolean;
+	progressAnimated: boolean;
+	reducedMotion: boolean;
+	highContrast: boolean;
+	guidance: string[];
+};
+
+export type MycliShellSettingsCategoryId =
+	| "appearance"
+	| "diagnostics"
+	| "integrations"
+	| "model"
+	| "permissions"
+	| "providers"
+	| "sessions";
+
+export type MycliShellSettingsCategory = {
+	id: MycliShellSettingsCategoryId;
+	label: string;
+	description: string;
+};
+
+export type MycliShellSettingsItem = {
+	id: string;
+	category: MycliShellSettingsCategoryId;
+	kind: "action" | "choice" | "status";
+	label: string;
+	description: string;
+	value: string;
+	source: string;
+	scope: string;
+	allowedValues: string[];
+	clientKey?: keyof MycliShellVisualSettings;
+	configKey?: string;
+	action?: string;
+	actionArgs?: string;
+	command?: string;
+	locked: boolean;
+	lockReason?: string;
+	restartRequired: boolean;
+	searchTerms: string[];
+};
+
+export type MycliShellSettingsCatalog = {
+	version: 1;
+	categories: MycliShellSettingsCategory[];
+	items: MycliShellSettingsItem[];
+};
+
+export type MycliShellSettingsSnapshot = {
+	settings: MycliShellVisualSettings;
+	catalog?: MycliShellSettingsCatalog;
+	keymap?: MycliShellEffectiveKeymap;
+	terminalCapabilities?: MycliShellTerminalCapabilities;
+};
+
+export type MycliShellSettingChange = {
+	settingId: string;
+	value: string | boolean;
 };
 
 export type MycliShellSession = {
@@ -380,8 +528,42 @@ export type MycliShellSession = {
 	allMessagesText?: string;
 	parentSessionId?: string;
 	parentSessionPath?: string;
+	model?: string;
+	provider?: string;
+	reasoningEffort?: string;
+	collaborationMode?: "default" | "plan";
+	permissionProfile?: "read-only" | "workspace" | "full-access";
+	lifecycleStatus?: "active" | "archived" | "deleted" | "waiting_approval" | "waiting_clarification" | "interrupted";
+	storageStatus?: string;
+	lockState?: "unlocked" | "owned" | "active" | "stale";
+	pendingState?: "none" | "approval" | "clarification" | "interrupted";
+	metadataRevision?: number;
+	forkPoint?: number;
+	preferenceIssue?: string;
+	metadataIssue?: string;
 	named?: boolean;
 	current?: boolean;
+};
+
+export type MycliShellResumeRepairAction =
+	| "takeover_stale_owner"
+	| "unarchive"
+	| "fork_with_current_settings";
+
+export type MycliShellResumeRepairIssue = {
+	code: string;
+	blocking: boolean;
+	message: string;
+	action?: MycliShellResumeRepairAction;
+};
+
+export type MycliShellResumeRepairPreview = {
+	version: 1;
+	session: MycliShellSession;
+	ready: boolean;
+	requiresConfirmation: boolean;
+	issues: MycliShellResumeRepairIssue[];
+	actions: MycliShellResumeRepairAction[];
 };
 
 type MycliShellSessionTreeNodeKind = "session" | "message";
@@ -413,7 +595,7 @@ export type MycliShellSessionTree = {
 
 export type MycliShellResource = {
 	id: string;
-	type: "hook" | "plugin" | "skill" | "prompt" | "theme";
+	type: "hook" | "mcp" | "plugin" | "skill" | "prompt" | "theme";
 	name: string;
 	source?: "user" | "repo" | "builtin" | "package" | "runtime" | "unknown";
 	enabled?: boolean;
@@ -438,6 +620,9 @@ export type MycliShellPendingApproval = {
 	sessionId?: string;
 	generation?: number;
 	preview: string;
+	commandPreview?: string;
+	commandTruncated?: boolean;
+	justification?: string;
 	reason?: string;
 	toolName?: string;
 	workerName?: string;
@@ -479,12 +664,43 @@ export type MycliShellPermissionProfile = {
 	description: string;
 	current: boolean;
 	disabledReason?: string;
+	sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+	filesystem?: "read_only" | "workspace_write" | "unrestricted";
+	network?: "disabled" | "enabled";
+	approvalBehavior?: "on-request" | "never";
+};
+
+export type MycliShellEffectivePermission = {
+	trusted: boolean;
+	valid: boolean;
+	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+	filesystem: "read_only" | "workspace_write" | "unrestricted";
+	network: "disabled" | "enabled";
+	approvalBehavior: "on-request" | "never";
+	source: "default" | "user" | "project" | "session" | "managed";
+	constrained: boolean;
+	constraintsSource?: "managed" | "runtime";
+	readableRoots: number;
+	writableRoots: number;
+	networkDomains: number;
+	sessionGrant: boolean;
+	turnGrant: boolean;
+};
+
+export type MycliShellSandboxReadiness = {
+	state: "ready" | "setup_required" | "unavailable" | "not_required";
+	code: "ready" | "setup_incomplete" | "helper_missing" | "handshake_failed"
+		| "enforcement_unavailable" | "unsupported_platform" | "not_required";
+	platform: string;
+	isolation: "macos_seatbelt" | "linux_bubblewrap" | "windows_restricted_token" | "none";
 };
 
 export type MycliShellPermissionState = {
 	active: MycliShellPermissionProfile["id"];
 	profiles: MycliShellPermissionProfile[];
 	commandAllowanceCount: number;
+	effective?: MycliShellEffectivePermission;
+	sandboxReadiness?: MycliShellSandboxReadiness;
 };
 
 export type MycliShellState = {
@@ -495,15 +711,22 @@ export type MycliShellState = {
 	bash: MycliShellBash[];
 	transcript?: MycliShellTranscriptBlock[];
 	transcriptNextBefore?: string | null;
+	providerAttemptsNextBefore?: string | null;
 	footer: MycliShellFooterData;
 	pendingInput?: MycliShellPendingInput;
 	pendingNotice?: string;
 	pendingApproval?: MycliShellPendingApproval;
 	pendingClarification?: MycliShellPendingClarification;
 	models?: MycliShellModel[];
+	modelsProvider?: string;
+	providerRoutes?: MycliShellProviderRoute[];
 	authProviders?: MycliShellAuthProvider[];
+	authReadiness?: MycliShellCredentialReadiness;
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;
+	settingsCatalog?: MycliShellSettingsCatalog;
+	keymap?: MycliShellEffectiveKeymap;
+	terminalCapabilities?: MycliShellTerminalCapabilities;
 	sessions?: MycliShellSession[];
 	resources?: MycliShellResource[];
 	permissions?: MycliShellPermissionState;
@@ -516,6 +739,11 @@ export type MycliShellCommandSpec = {
 	argumentHint?: string;
 	argumentPolicy: "none" | "optional" | "required";
 	availableDuringTurn: boolean;
+	aliases?: string[];
+	category?: "diagnostics" | "interface" | "integrations" | "model" | "safety" | "session" | "tools";
+	searchOnly?: boolean;
+	available?: boolean;
+	unavailableReason?: string;
 };
 
 export type MycliShellClientAction = {

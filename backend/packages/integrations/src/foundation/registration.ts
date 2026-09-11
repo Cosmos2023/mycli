@@ -17,6 +17,7 @@ export interface IntegrationRegistration {
 	readonly definition: ToolDefinition;
 	readonly adapter: ToolAdapter;
 	readonly originMetadata: Readonly<Record<string, string>>;
+	readonly sourceDescription?: string;
 	readonly supportsParallelToolCalls: boolean;
 	readonly modelVisible?: boolean;
 }
@@ -60,6 +61,7 @@ export function defineIntegrationRegistration(
 		definition: freezeDefinition(input.definition),
 		adapter: input.adapter,
 		originMetadata: Object.freeze(Object.fromEntries(originEntries)),
+		...(input.sourceDescription === undefined ? {} : { sourceDescription: input.sourceDescription }),
 		supportsParallelToolCalls: input.adapter.supportsParallelToolCalls === true,
 		modelVisible: input.modelVisible ?? true,
 	});

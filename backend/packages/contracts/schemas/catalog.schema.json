@@ -9,6 +9,7 @@
     "rpcMethods",
     "eventStreams",
     "errorCodes",
+    "modelSelectionScopes",
     "approvalDecisionChoices",
     "terminalTurnStates"
   ],
@@ -18,6 +19,13 @@
     "rpcMethods": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "eventStreams": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "errorCodes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "modelSelectionScopes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {"enum": ["session", "user"]}
+    },
     "approvalDecisionChoices": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "terminalTurnStates": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
   }

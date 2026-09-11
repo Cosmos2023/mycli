@@ -1,5 +1,15 @@
 # Database Guidelines
 
+## Error Context Format Fence
+
+Runtime stores now write format 14. The v12/v13 upgrade preserves transcript
+bytes and uses the existing transactional migration boundary. Enriched failures
+are gated by `store.errorContextVersion === 1`; pre-14 writers reject them.
+The same occurrence must survive tool results, completed effects, provider
+attempts, terminalization and its lifecycle outbox. Provider-visible conversation
+content must not acquire diagnostic metadata. See `error-handling.md` and
+`docs/errors.md` for rollback requirements and uncommitted-storage diagnostics.
+
 > Database patterns and conventions for this project.
 
 ---
@@ -67,6 +77,16 @@ Questions to answer:
   `user_message`, a waiting-clarification `turn_record` with `user_message`, or
   a waiting-clarification rollout plus matching user history item. Doctor
   reports missing evidence read-only instead of clearing suspended state.
+- Cold session activation calls `interruptSessionForResume(sessionId)` only after acquiring
+  the session runtime lease. In one write transaction, validate recovery references, interrupt
+  unfinished turns, close pending tool calls, and clear approval/clarification continuation
+  state. Opening storage, inspecting history, or attaching to an existing live backend must
+  not invoke this transition. Repeated activation must not duplicate interruption records.
+- Recovery preserves committed tool results, including a crash between approval-result commit
+  and continuation cleanup. A matching completed effect checkpoint permits the continuation
+  to reference its already-completed canonical call. An unknown claimed effect closes all
+  remaining calls in its turn; reuse completed sibling results and never execute tools during
+  recovery. Cover these crash boundaries and transaction rollback in storage regression tests.
 - Session maintenance "empty session" detection must treat runtime state as
   durable session content. A session is empty only when it has no
   `conversation_messages`, no `session_summaries`, no `history_items`, no
@@ -94,6 +114,51 @@ Questions to answer:
   latest valid replacement plus canonical conversation rows after that boundary. Never reuse the
   bounded artifact snapshot or the complete UI transcript as provider input; prompt-cache keys,
   model-input manifests, and Responses continuation follow the effective provider window.
+
+---
+
+## Scenario: Delayed Interruption Display Order
+
+### Scope And Entry Points
+
+- Trigger: recovery appends interruption records after newer user inputs, or a late Shell
+  lifecycle snapshot is persisted after subsequent turns.
+- `projectTranscript(historyItems, turnRollouts, options): readonly TranscriptItem[]` owns
+  interruption placement after merging tool calls, results, and Shell snapshots.
+- `SQLiteTranscriptEventRepository.loadReadableTranscriptPage(sessionId, options)` returns
+  `TranscriptReadablePage` with ordered `items` and an exclusive `nextBeforeSequence` cursor.
+
+### Contracts
+
+- Identify interruption notices by `turnInterruptedNoticeId(turnId)` or
+  `metadata.event_kind === "turn_interrupted"`. Associate them by turn identity; repeated
+  user text and recovery timestamps are not ordering keys.
+- Place one terminal notice immediately after the last visible item belonging to its turn,
+  after tool result merging. Apply this to both persisted and synthesized notices before
+  slicing projected items. Preserve unanchored notices and ordinary warning positions.
+- Readable pagination must keep overlapping turn intervals together, even when intervening
+  events belong to other turns. A delayed record extends its group back to the earliest
+  event of its originating turn. Legacy call-scoped Shell activity also extends the group
+  back to its originating assistant tool call. Carry pending groups across raw event windows.
+- Use the same grouping rule for inherited fork history, with session-scoped identity
+  lookups. An exceptional complete group may exceed the requested item limit. Its cursor
+  advances past every event needed to build that group, without dropping older groups.
+- These are read projection rules. Preserve append-only event sequence, provider input
+  order, and database rows; no schema migration or transcript rewrite is required.
+- Cache originating turn/call lookups within a page load. Use the existing turn index for
+  turn boundaries, and resolve legacy call-scoped Shell references only when needed.
+
+### Cases And Verification
+
+- Three equal-text inputs followed by delayed recovery display as
+  `user 1, interrupted 1, user 2, interrupted 2, user 3, interrupted 3`.
+- A late Shell snapshot updates its original tool row. It does not create a detached tool
+  result between newer inputs and their interruption notices.
+- Cover persisted/synthesized and duplicate notices, ordinary warnings, and unchanged raw
+  history in projector tests. Verify complete history, recent history, paginated history,
+  inherited forks, and groups crossing the 2,000-event raw window.
+- Exercise gateway serialization, TUI page reducers, and headless terminal rendering at
+  narrow and wide terminal widths. Keep provider projection regression coverage passing.
 
 ---
 
@@ -837,12 +902,12 @@ return matches.map(formatMatch);
   db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
 - Candidate payload:
   `SessionMaintenanceCandidate(session_id, last_active_at, status)`
-- CLI slash command: `/session-maintenance`
+- CLI slash command: `/session maintenance`
 - Explicit cleanup commands:
-  - `/session-maintenance --apply-empty`
-  - `/session-maintenance --apply-payloads`
-  - `/session-maintenance --apply-orphans`
-  - `/session-maintenance --apply-vacuum`
+  - `/session maintenance --apply-empty`
+  - `/session maintenance --apply-payloads`
+  - `/session maintenance --apply-orphans`
+  - `/session maintenance --apply-vacuum`
 
 ### 3. Contracts
 
@@ -872,7 +937,7 @@ return matches.map(formatMatch);
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `/session-maintenance` reports `dry_run=true`, workspace counts, empty counts, bounded empty candidates, and SQLite page counters.
+- Good: `/session maintenance` reports `dry_run=true`, workspace counts, empty counts, bounded empty candidates, and SQLite page counters.
 - Base: A fresh DB reports zero workspace sessions without mutating data beyond normal store initialization.
 - Bad: Running `VACUUM`, deleting rows, or repairing orphaned state from the maintenance report path.
 - Bad: Cleaning orphan child rows from the default dry-run command. Orphan
@@ -886,7 +951,7 @@ return matches.map(formatMatch);
 - Two-repository store test proving live leases are preserved while stale and unowned empty sessions
   remain reclaimable.
 - Service/application test for formatted `key=value` lines.
-- CLI/TUI completion or command-routing tests for `/session-maintenance`.
+- CLI/TUI completion or command-routing tests for `/session maintenance`.
 
 ### 7. Wrong vs Correct
 
@@ -975,11 +1040,11 @@ this.#write(() => {
   repository write transaction.
 - Domain payload:
   `SessionOrphanCleanupResult(deleted_rows_by_table, total_deleted_rows, dry_run=False)`
-- CLI slash command: `/session-maintenance --apply-orphans`
+- CLI slash command: `/session maintenance --apply-orphans`
 
 ### 3. Contracts
 
-- Default `/session-maintenance` remains read-only.
+- Default `/session maintenance` remains read-only.
 - Orphan cleanup may delete rows only from known session child tables.
 - Orphan cleanup must not delete rows from `sessions`.
 - Orphan cleanup must not repair missing lineage parents or run `VACUUM`.
@@ -1012,7 +1077,7 @@ this.#write(() => {
 - Store test proving empty sessions are not deleted by orphan cleanup.
 - Two-repository test proving a live leased virtual session keeps its child state while an unowned
   orphan is deleted.
-- Service/CLI/gateway tests for `/session-maintenance --apply-orphans`.
+- Service/CLI/gateway tests for `/session maintenance --apply-orphans`.
 
 ### 7. Wrong vs Correct
 
@@ -1045,11 +1110,11 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
   `SessionStore.apply_session_maintenance_vacuum() -> SessionVacuumResult`
 - Domain payload:
   `SessionVacuumResult(before_db_size_bytes, after_db_size_bytes, before_page_count, after_page_count, before_freelist_count, after_freelist_count, page_size, dry_run=False)`
-- CLI slash command: `/session-maintenance --apply-vacuum`
+- CLI slash command: `/session maintenance --apply-vacuum`
 
 ### 3. Contracts
 
-- Default `/session-maintenance` remains read-only.
+- Default `/session maintenance` remains read-only.
 - Doctor must not run `VACUUM`.
 - Empty-session cleanup and orphan cleanup must not run `VACUUM`.
 - Vacuum must not delete sessions, delete child rows, repair orphan rows, or
@@ -1062,7 +1127,7 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
 - Store test proving explicit vacuum returns before/after database metrics while
   preserving sessions and messages.
 - Store test proving empty/orphan cleanup paths do not execute `VACUUM`.
-- Service/CLI/gateway completion tests for `/session-maintenance --apply-vacuum`.
+- Service/CLI/gateway completion tests for `/session maintenance --apply-vacuum`.
 
 ## Scenario: Doctor Session Maintenance Readiness
 
@@ -1075,7 +1140,7 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
 
 - Doctor check name: `session_maintenance`
 - Output fields: `workspace_sessions=<int> empty_sessions=<int> freelist_pages=<int>`
-- Remediation: warning messages should point to `/session-maintenance`.
+- Remediation: warning messages should point to `/session maintenance`.
 
 ### 3. Contracts
 
@@ -1087,14 +1152,14 @@ WHERE session_id NOT IN (SELECT session_id FROM sessions)
 
 ### 4. Validation & Error Matrix
 
-- Empty workspace sessions > 0 -> warning with `/session-maintenance`.
-- `PRAGMA freelist_count` > 0 -> warning with `/session-maintenance`.
+- Empty workspace sessions > 0 -> warning with `/session maintenance`.
+- `PRAGMA freelist_count` > 0 -> warning with `/session maintenance`.
 - Both counts are zero -> ok.
 - Sessions from other workspaces -> excluded from workspace counts.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: doctor reports `session_maintenance: workspace_sessions=2 empty_sessions=1 ...; inspect with /session-maintenance`.
+- Good: doctor reports `session_maintenance: workspace_sessions=2 empty_sessions=1 ...; inspect with /session maintenance`.
 - Base: fresh valid DB reports `workspace_sessions=0 empty_sessions=0 freelist_pages=0`.
 - Bad: doctor repairs, deletes, vacuums, or creates session storage while checking.
 
@@ -1228,7 +1293,7 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 
 - State row: `session_state(session_id, state_key='session_preferences', payload_json, updated_at)`.
 - Payload v1: `{state_version, provider, protocol, model, api_base_url, auth_ref,
-  reasoning_effort, collaboration_mode}`.
+  reasoning_effort, collaboration_mode, permission_profile?}`.
 - Store APIs: `loadState`, `saveState`, and both `forkSession` implementations.
 
 ### 3. Contracts
@@ -1239,6 +1304,8 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
   before any field influences provider or gateway state.
 - `api_base_url` and `auth_ref` are endpoint identity, not credentials. API keys, auth records,
   request headers, and environment secrets must not enter this payload.
+- `permission_profile` is optional for backward compatibility and, when present, must be exactly
+  `read-only`, `workspace`, or `full-access`.
 - Fork performs one transactional copy of the source `session_preferences` row when present. It must
   not bulk-copy other `session_state` rows because queue, approval, continuation, and recovery state
   belong to the source execution.
@@ -1251,13 +1318,14 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 | --- | --- |
 | No row | Return `undefined`; runtime applies its default-config fallback |
 | Valid v1 object | Return the complete typed preference |
-| Invalid JSON/non-object/version/field/URL/provider pair | Surface `session_state_invalid` |
+| Invalid JSON/non-object/version/field/URL/provider pair/permission profile | Surface `session_state_invalid` |
 | Fork source has a preference | Copy it byte-equivalently into the target transaction |
 | Fork source has other runtime state | Leave that state only on the source |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: a fork inherits model identity and mode while starting with empty queue/continuation state.
+- Good: a fork inherits model identity, mode, and permission while starting with empty
+  queue/continuation state.
 - Base: an old session has no row and resumes through the runtime fallback.
 - Bad: add model columns to `sessions` while retaining a competing JSON state authority.
 - Bad: `INSERT ... SELECT` every state key during fork or place a raw API key in `payload_json`.
@@ -1266,7 +1334,8 @@ if (explicitAction === "content_blob_gc" && report.contentBlobs
 
 - Both legacy conversation and normalized transcript repositories copy only the preference row on
   fork and leave `input_queue` absent on the target.
-- Runtime integration persists two distinct session payloads, restarts, and verifies exact recovery.
+- Runtime integration persists two distinct model/effort/mode/permission payloads, restarts, and
+  verifies exact recovery.
 - Corruption tests cover invalid versions, identities, provider/protocol pairs, efforts, modes, and
   credential-bearing or non-HTTP(S) URLs.
 - Serialized-payload assertions search for fixture secrets and require no match.
@@ -1287,4 +1356,195 @@ INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
 SELECT ?, state_key, payload_json, ?
 FROM session_state
 WHERE session_id = ? AND state_key = 'session_preferences';
+```
+
+## Scenario: Versioned Session Metadata And Operational Summary
+
+### 1. Scope / Trigger
+
+- Trigger: changing session list filters, title/archive/delete metadata, session summary fields,
+  owner lease inspection, pending-state discovery, or management mutations.
+
+### 2. Signatures
+
+- Metadata row: `session_state(session_id, state_key='session_metadata', payload_json, updated_at)`.
+- Payload v1: `{state_version: 1, revision, title?, archived, deleted}`.
+- Reads: `listSessions(query)`, `loadSession(sessionId)`,
+  `loadStates(sessionIds, keys)`, and `loadSessionMetadata(sessionId)`.
+- Mutation: `updateSessionMetadata({sessionId, expectedRevision, title?, archived?, deleted?})`.
+- Summary states: lease `unlocked | owned | active | stale`; pending
+  `none | approval | clarification | interrupted`.
+
+### 3. Contracts
+
+- Metadata is an additive versioned state row; it does not require a schema version bump or add a
+  competing sessions-table authority. Missing metadata means revision `0`, no title, and active
+  visibility.
+- Every metadata mutation runs in the store write transaction, compares `expectedRevision`, writes
+  the complete next payload, increments the revision once, and touches the existing session.
+- List filtering for workspace, title/id/cwd search, archive visibility, and delete visibility is
+  bounded and deterministic. Ordering remains `last_active_at DESC, session_id DESC`.
+- One batched operational-state query projects metadata, root/agent lease, pending decision,
+  suspended turn, and latest turn status for all listed rows. Callers must not perform per-row state
+  scans or receive raw SQLite rows and owner process ids.
+- A root lease owned by this store is `owned`; another live root or agent owner is `active`; a dead
+  owner remains `stale` until explicit atomic acquisition replaces it. Preview and management reads
+  never delete the lease.
+- Pending precedence is approval, clarification, interrupted, then none. Summary flags contain no
+  approval question, tool arguments/output, provider payload, or transcript text.
+- Delete is a logical tombstone. Archive is independently reversible. Canonical transcript and
+  lineage rows remain unchanged.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Missing metadata row | Return the revision-0 active default |
+| Malformed or unsupported metadata | Preserve the row; expose bounded metadata issue and fail direct metadata load |
+| Stale expected revision | Throw `SessionMetadataConflictError`; change nothing |
+| Missing session on mutation | Fail without creating metadata |
+| Invalid/oversized title, search, ids, keys, limit, or offset | Reject before query/write with bounded diagnostics |
+| Another live owner exists | Project `active`; do not expose or replace its pid/owner id |
+| Dead owner exists | Project `stale`; replace only inside explicit lease acquisition |
+| Pending approval and interrupted turn both exist | Project `approval` once |
+
+### 5. Good/Base/Bad Cases
+
+- Good: list 100 sessions with one overview query and one batched operational query, then render the
+  same ordered rows in CLI and TUI.
+- Good: preview a stale owner without mutation, confirm takeover, and let coordinator acquisition
+  atomically replace the lease.
+- Base: a pre-feature session has no metadata and appears active with revision zero.
+- Bad: delete stale leases during list/preview, physically delete transcript rows for
+  `session delete`, or query `session_state` once per displayed row.
+
+### 6. Tests Required
+
+- Storage tests cover metadata defaults, CAS/no-op behavior, title/archive/delete visibility,
+  bounded search, malformed payloads, and stable ordering.
+- Two-store lease tests cover owned/active/stale projection, no pid exposure, retained stale state,
+  atomic takeover, and conditional release.
+- Summary tests cover approval, clarification, interrupted precedence and batched `loadStates`.
+- App management and gateway/TUI tests assert identical filtered ordering and complete summary
+  fields without provider startup.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+for (const session of sessions) {
+	session.metadata = store.loadState(session.id, "session_metadata");
+	session.lease = inspectAndDeleteStaleLease(session.id);
+}
+```
+
+#### Correct
+
+```ts
+const sessions = store.listSessions(query);
+const state = store.loadStates(sessions.map((item) => item.sessionId), ["session_preferences"]);
+// listSessions already projects metadata, lease, and pending state in one bounded batch.
+```
+
+## Scenario: Transactional Turn And Agent Lifecycle Terminalization
+
+### 1. Scope / Trigger
+
+- Trigger: changing root-turn completion/failure/recovery, terminal runtime-event projection,
+  subagent spawn/follow-up/terminal transitions, or the relationship between `runtime_turns`,
+  `transcript_events`, `subagent_tasks`, and `agent_threads`.
+
+### 2. Signatures
+
+- Root terminal repository:
+  `TurnTerminalizationStore.terminalize(input) -> StoredTurnTerminalization` and
+  `TurnTerminalizationStore.load(sessionId, clientTurnId) -> StoredTurnTerminalization | undefined`.
+- Root result: `StoredTurnTerminalization { kind, turn, outbox }`, where `outbox` is the exact
+  persisted `turn_lifecycle` event.
+- Agent repository: `AgentLifecycleStore.reserve`, `activate`, `startFollowUp`, `completeRun`,
+  `failRun`, `interruptRun`, and `failSpawn`.
+- Agent result: `AgentLifecycleTransition { task, thread }` containing the records reloaded after
+  the transaction commits.
+
+### 3. Contracts
+
+- Completing a root turn writes its assistant output, optional duration display, terminal
+  `turn_lifecycle` outbox, `runtime_turns` state, and session activity timestamp in one repository
+  write transaction. Failure and interruption similarly include every pending synthetic tool
+  result plus their display/context rows.
+- The live runtime projects a normal `turn_completed`, `turn_failed`, or `turn_interrupted` event
+  from the committed `{ turn, outbox }` result. It must not reconstruct success, usage, failure
+  detail, or terminal kind from pre-commit inputs.
+- `turn_lifecycle` is the durable terminal outbox; do not add a parallel delivery table while
+  transcript replay already provides crash recovery. Its event id is deterministic from the turn
+  identity and terminal phase.
+- Process-restart and targeted runtime-owner interruption retain their distinct, fixed persisted
+  reasons. General caller-supplied failure text still passes through canonical error sanitization.
+- A subagent task and its thread/spawn edge transition in one write transaction for reservation,
+  activation, follow-up activation, completion, failure, interruption, and runtime-creation
+  failure. Supervisor state and lifecycle events consume only the returned committed pair.
+- A queued task may move directly to `interrupted`, but its compare-and-update predicate must match
+  the actual current status. Never permit the domain transition while leaving an SQL predicate
+  hard-coded to `running`.
+- `completeTurn()` and `failTurn()` remain compatibility adapters over the terminal repository.
+  Live runtime code uses `turnTerminalizations`; live supervisor code uses `agentLifecycle`.
+- These repository boundaries reuse schema v12 and the existing `turn_lifecycle` event. They do
+  not require a schema-version change.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Any root terminal write or session touch fails | Roll back transcript, outbox, turn state, and timestamp together |
+| Terminal turn has no matching lifecycle outbox | `load()` fails with `persistence_error`; do not synthesize committed truth |
+| Provider-step executor rejects after reservation | Persist a failed turn before publishing its normal terminal event |
+| Any paired agent write fails | Roll back both task and thread/spawn-edge state |
+| Queued child is interrupted before activation | Commit both task and thread as `interrupted` |
+| Projection or artifact work fails after commit | Preserve canonical SQLite state; auxiliary work cannot rewrite it |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a Worker provider-step rejection commits one failed turn and one outbox event, then the
+  runtime projects the exact committed failure.
+- Good: a follow-up activation fault leaves no follow-up task and keeps the prior child idle.
+- Base: compatibility callers receive the same `RuntimeTurnRecord` from `completeTurn()` while the
+  repository also retains an outbox available through `load()`.
+- Bad: mark a task running, transition its thread in a later transaction, and compensate after the
+  process can crash between those writes.
+- Bad: emit a terminal runtime event from request-local inputs and only afterwards try to persist
+  the corresponding terminal state.
+
+### 6. Tests Required
+
+- Storage failpoint tests throw after assistant/tool/display/outbox or task writes and assert that
+  no partial row or state transition survives.
+- Storage success tests reload the exact lifecycle outbox and assert the committed turn, event
+  phase, usage/error fields, recovery reason, and session timestamp agree.
+- Agent lifecycle tests cover reservation, activation, follow-up, every terminal result, queued
+  interruption, runtime-creation failure, and rollback of both task and thread/spawn edge.
+- Runtime tests make the provider-step executor reject and assert durable terminal state precedes
+  the projected failure. Projection tests use conflicting input values to prove committed records
+  are authoritative.
+- The complete repository test suite, lint, type-check, contract drift, and `git diff --check` must
+  pass because this boundary spans storage, runtime, integrations, and app composition.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const task = taskStore.complete(input);
+const thread = threadStore.transition({ threadId: input.childSessionId, status: "idle" });
+emitCompleted(task, thread);
+```
+
+#### Correct
+
+```typescript
+const terminal = agentLifecycle.completeRun(input);
+emitCompleted(terminal.task, terminal.thread);
+
+const committed = turnTerminalizations.terminalize({ kind: "completed", ...input });
+emit(projectCommittedTurnTerminalization(committed));
 ```

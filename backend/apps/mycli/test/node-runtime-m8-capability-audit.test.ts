@@ -16,7 +16,7 @@ interface AuditFixture {
 	};
 	readonly slash_commands: {
 		readonly command_count: number;
-		readonly prefixed_alias_count: number;
+		readonly retired_command_count: number;
 		readonly sha256: string;
 	};
 	readonly tools: {
@@ -75,9 +75,9 @@ test("M8 retained capability audit has no unresolved rows and freezes the final 
 
 	const matrix = slashCommandParityMatrix();
 	assert.ok(Array.isArray(matrix.commands));
-	assert.ok(Array.isArray(matrix.prefixed_aliases));
+	assert.ok(Array.isArray(matrix.retired_commands));
 	assert.equal(matrix.commands.length, fixture.slash_commands.command_count);
-	assert.equal(matrix.prefixed_aliases.length, fixture.slash_commands.prefixed_alias_count);
+	assert.equal(matrix.retired_commands.length, fixture.slash_commands.retired_command_count);
 	assert.equal(
 		createHash("sha256").update(JSON.stringify(matrix)).digest("hex"),
 		fixture.slash_commands.sha256,

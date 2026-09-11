@@ -10,9 +10,9 @@ recoverable after failures. The local mutation set is `Edit`, `Patch`, and
 
 Apply this contract when changing:
 
-- `backend/packages/tools/src/edit-tool.ts`
-- `backend/packages/tools/src/patch-tool.ts`
-- `backend/packages/tools/src/write-tool.ts`
+- `backend/packages/tools/src/files/edit-tool.ts`
+- `backend/packages/tools/src/files/patch-tool.ts`
+- `backend/packages/tools/src/files/write-tool.ts`
 - shared mutation safety helpers
 - file history integration
 - mutation tool formatter output

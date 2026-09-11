@@ -37,7 +37,10 @@ export interface Keybindings {
 	"tui.select.down": true;
 	"tui.select.pageUp": true;
 	"tui.select.pageDown": true;
+	"tui.select.previousGroup": true;
+	"tui.select.nextGroup": true;
 	"tui.select.confirm": true;
+	"tui.select.options": true;
 	"tui.select.cancel": true;
 }
 
@@ -127,7 +130,10 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: "pageDown",
 		description: "Selection page down",
 	},
+	"tui.select.previousGroup": { defaultKeys: "[", description: "Previous selection group" },
+	"tui.select.nextGroup": { defaultKeys: "]", description: "Next selection group" },
 	"tui.select.confirm": { defaultKeys: "enter", description: "Confirm selection" },
+	"tui.select.options": { defaultKeys: "tab", description: "Open selection options" },
 	"tui.select.cancel": {
 		defaultKeys: ["escape", "ctrl+c"],
 		description: "Cancel selection",

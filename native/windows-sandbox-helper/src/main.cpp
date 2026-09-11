@@ -13,11 +13,39 @@
 #include "firewall.hpp"
 #include "elevation.hpp"
 #include "identity.hpp"
+#include "win32.hpp"
 
 namespace {
 
 constexpr wchar_t kHelperName[] = L"mycli-windows-sandbox";
 constexpr bool kEnforcementReleased = false;
+
+class SetupStateLock {
+  public:
+    explicit SetupStateLock(const std::wstring& owner_sid)
+        : handle_{CreateMutexW(
+              nullptr,
+              FALSE,
+              (L"Local\\mycli-windows-sandbox-setup-" + owner_sid).c_str())} {
+        if (!handle_) throw mycli::sandbox::Win32Error("CreateMutexW(sandbox setup)");
+        const DWORD wait_result = WaitForSingleObject(handle_.get(), INFINITE);
+        if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
+            throw mycli::sandbox::Win32Error("WaitForSingleObject(sandbox setup)");
+        }
+        owns_mutex_ = true;
+    }
+
+    ~SetupStateLock() {
+        if (owns_mutex_) ReleaseMutex(handle_.get());
+    }
+
+    SetupStateLock(const SetupStateLock&) = delete;
+    SetupStateLock& operator=(const SetupStateLock&) = delete;
+
+  private:
+    mycli::sandbox::UniqueHandle handle_;
+    bool owns_mutex_ = false;
+};
 
 std::filesystem::path CurrentExecutablePath() {
     std::vector<wchar_t> path(32768);
@@ -56,6 +84,33 @@ void SetupForUser(
     std::cerr << "setup: firewall-done\n" << std::flush;
 }
 
+void EnsureSetupComplete() {
+    const auto owner_sid = mycli::sandbox::CurrentUserSidString();
+    const SetupStateLock setup_lock{owner_sid};
+    static_cast<void>(setup_lock);
+    if (SetupComplete()) return;
+
+    const int exit_code = mycli::sandbox::RunElevatedSetup(
+        mycli::sandbox::SandboxStateDirectory(),
+        owner_sid);
+    if (exit_code != 0) {
+        throw std::runtime_error("Windows sandbox setup failed");
+    }
+    if (!SetupComplete()) {
+        throw std::runtime_error(
+            "Windows sandbox setup exited before setup completed");
+    }
+}
+
+void ResetSetupState() {
+    const auto owner_sid = mycli::sandbox::CurrentUserSidString();
+    const SetupStateLock setup_lock{owner_sid};
+    static_cast<void>(setup_lock);
+    const auto state_directory = mycli::sandbox::SandboxStateDirectory();
+    mycli::sandbox::ResetOfflineIdentityCredentials(state_directory);
+    mycli::sandbox::ResetOfflineFirewallState(state_directory);
+}
+
 int Run(int argc, wchar_t* argv[]) {
     if (argc == 2 && std::wstring_view{argv[1]} == L"--handshake") {
         const bool setup_complete = SetupComplete();
@@ -82,10 +137,13 @@ int Run(int argc, wchar_t* argv[]) {
         return 0;
     }
     if (argc == 2 && std::wstring_view{argv[1]} == L"--ensure-setup") {
-        if (SetupComplete()) return 0;
-        return mycli::sandbox::RunElevatedSetup(
-            mycli::sandbox::SandboxStateDirectory(),
-            mycli::sandbox::CurrentUserSidString());
+        EnsureSetupComplete();
+        return 0;
+    }
+    if (argc == 2 && std::wstring_view{argv[1]} == L"--reset") {
+        ResetSetupState();
+        std::wcout << L"Windows sandbox setup state reset\n";
+        return 0;
     }
     if (argc == 4 && std::wstring_view{argv[1]} == L"--run-prepared-json") {
         if (mycli::sandbox::CurrentUserSidString() != argv[3]) {
@@ -95,10 +153,8 @@ int Run(int argc, wchar_t* argv[]) {
             mycli::sandbox::ParseAndValidateRequest(argv[2])));
     }
     if (argc == 3 && std::wstring_view{argv[1]} == L"--request-json") {
-        if (!SetupComplete()) {
-            throw std::runtime_error("Windows sandbox setup is incomplete; run --setup elevated");
-        }
         const auto request = mycli::sandbox::ParseAndValidateRequest(argv[2]);
+        EnsureSetupComplete();
         const auto state_directory = mycli::sandbox::SandboxStateDirectory();
         const auto owner_sid = mycli::sandbox::CurrentUserSidString();
         const auto identity = mycli::sandbox::LoadOfflineIdentity(
@@ -117,7 +173,7 @@ int Run(int argc, wchar_t* argv[]) {
     }
     throw std::runtime_error(
         "expected --handshake, --setup, --setup-for-user, --ensure-setup, "
-        "or --request-json <json>");
+        "--reset, or --request-json <json>");
 }
 
 }  // namespace
@@ -125,6 +181,8 @@ int Run(int argc, wchar_t* argv[]) {
 int wmain(int argc, wchar_t* argv[]) {
     try {
         return std::clamp(Run(argc, argv), 0, 255);
+    } catch (const mycli::sandbox::ElevationCanceled&) {
+        return mycli::sandbox::kElevationCanceledExitCode;
     } catch (const std::exception& error) {
         std::cerr << "mycli Windows sandbox error: " << error.what() << '\n';
     }

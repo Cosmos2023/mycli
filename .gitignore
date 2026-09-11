@@ -27,4 +27,5 @@ tui/node/.npm-cache/
 log/
 evaluation/runs/
 evaluation/**/fixtures/log/
+release-evidence/
 native/windows-sandbox-helper/build/

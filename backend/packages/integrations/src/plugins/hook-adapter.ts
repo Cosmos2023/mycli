@@ -1,7 +1,11 @@
 import type { HookInvocation, HookResult } from "@mycli/core";
+import { failureScope } from "@mycli/contracts";
 import type { HookRegistration } from "../hooks/manager.ts";
 import { createIntegrationId } from "../foundation/ids.ts";
+import { deepFreezeCopy } from "./deep-freeze-copy.ts";
+import { pluginRouteNamespace } from "./package-files.ts";
 import { PluginHostError } from "./process-host.ts";
+import { pluginFailureContext, pluginFailureText } from "./diagnostics.ts";
 import type {
 	PluginHostContract,
 	PluginProtocolRegistration,
@@ -22,18 +26,23 @@ export function createPluginHookRegistration(
 	registration: PluginHookRegistration,
 ): HookRegistration {
 	return Object.freeze({
-		id: createIntegrationId("plugin", pluginId, registration.name),
+		id: createIntegrationId("plugin", pluginRouteNamespace(pluginId), registration.name),
 		hookPoint: registration.hook_point,
 		handler: async (input: HookInvocation, signal: AbortSignal) => {
 			try {
 				const response = await host.invoke(registration.token, hookPayload(input), signal);
-				return response.resultType === "hook_result"
-					? normalizeHookResult(response.value)
-					: errorResult("plugin hook protocol invalid");
+				if (response.resultType !== "hook_result") throw new PluginHostError("protocol_invalid");
+				const result = normalizeHookResult(response.value);
+				if (result.action !== "error") return result;
+				return Object.freeze({ ...result, errorContext: pluginFailureContext(new PluginHostError("handler_failed"), {
+					pluginId, operation: "hooks/run",
+					scope: failureScope("request", `hook:${input.metadata.callId ?? input.turnId}:${pluginId}:${registration.name}`),
+				}) });
 			} catch (error) {
 				if (signal.aborted || isAbortError(error)) throw error;
-				const kind = error instanceof PluginHostError ? error.kind : "plugin_error";
-				return errorResult(`plugin hook failed: ${kind}`);
+				const errorContext = pluginFailureContext(error, { pluginId, operation: "hooks/run",
+					scope: failureScope("request", `hook:${input.metadata.callId ?? input.turnId}:${pluginId}:${registration.name}`) });
+				return Object.freeze({ action: "error", message: pluginFailureText(errorContext), errorContext });
 			}
 		},
 	});
@@ -102,14 +111,6 @@ function safeMessage(value: unknown, fallback: string): string {
 
 function errorResult(message: string): HookResult {
 	return Object.freeze({ action: "error", message });
-}
-
-function deepFreezeCopy<Value>(value: Value): Value {
-	if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeCopy)) as Value;
-	if (!isRecord(value)) return value;
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).map(([key, child]) => [key, deepFreezeCopy(child)]),
-	)) as Value;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

@@ -3,6 +3,7 @@ import type {
 	PluginV2ProtocolMessage,
 } from "@mycli/contracts";
 import type { HookPoint } from "@mycli/core";
+import type { PluginBundleManifest } from "./bundle-manifest.ts";
 
 export type PluginSource = "repo" | "user";
 export type PluginDiagnosticSource = PluginSource | "legacy_user" | "discovery";
@@ -37,6 +38,11 @@ export interface DiscoveredPlugin extends PluginCandidateBase {
 	readonly manifest: LoadedPluginManifest;
 }
 
+export interface DiscoveredPluginBundle extends PluginCandidateBase {
+	readonly kind: "bundle";
+	readonly manifest: PluginBundleManifest;
+}
+
 export interface PluginMigrationDiagnostic extends PluginCandidateBase {
 	readonly kind: "migration_required";
 	readonly message: "Python plugin requires Plugin API v2 migration";
@@ -49,6 +55,7 @@ export interface InvalidPluginCandidate extends PluginCandidateBase {
 
 export type PluginCandidate =
 	| DiscoveredPlugin
+	| DiscoveredPluginBundle
 	| PluginMigrationDiagnostic
 	| InvalidPluginCandidate;
 
@@ -102,9 +109,27 @@ export interface PluginInvocationResult {
 	readonly value: Readonly<Record<string, unknown>>;
 }
 
+export interface PluginFailureEvidence {
+	readonly phase?: "connect" | "request" | "reconnect" | "shutdown";
+	readonly dispatched?: boolean;
+	readonly timeoutMs?: number;
+	readonly exitCode?: number;
+	readonly signal?: string;
+	readonly transportCode?: string;
+	readonly recoveryAttempts?: 1;
+	readonly previous?: PluginHostFailure;
+}
+
+export interface PluginHostFailure {
+	readonly kind: PluginHostErrorKind;
+	readonly evidence: PluginFailureEvidence;
+}
+
 export interface PluginHostContract {
 	readonly status: PluginHostStatus;
 	readonly registrations: readonly PluginProtocolRegistration[];
+	readonly failure?: PluginHostFailure;
+	subscribe?(listener: () => void): () => void;
 	start(signal: AbortSignal): Promise<readonly PluginProtocolRegistration[]>;
 	invoke(
 		target: string,

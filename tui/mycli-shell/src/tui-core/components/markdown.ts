@@ -67,6 +67,19 @@ export interface MarkdownTheme {
 	italic: (text: string) => string;
 	strikethrough: (text: string) => string;
 	underline: (text: string) => string;
+	readonly glyphs?: {
+		readonly vertical: string;
+		readonly horizontal: string;
+		readonly teeLeft: string;
+		readonly teeRight: string;
+		readonly teeTop: string;
+		readonly teeBottom: string;
+		readonly cross: string;
+		readonly tableTopLeft: string;
+		readonly tableTopRight: string;
+		readonly tableBottomLeft: string;
+		readonly tableBottomRight: string;
+	};
 	highlightCode?: (code: string, lang?: string) => string[];
 	/** Prefix applied to each rendered code block line (default: "  ") */
 	codeBlockIndent?: string;
@@ -77,6 +90,34 @@ export interface MarkdownOptions {
 	preserveOrderedListMarkers?: boolean;
 	/** Maximum rendered lines for fenced code blocks. Undefined renders full code blocks. */
 	codeBlockPreviewLines?: number;
+}
+
+interface MarkdownTableGlyphs {
+	readonly horizontal: string;
+	readonly teeLeft: string;
+	readonly teeRight: string;
+	readonly teeTop: string;
+	readonly teeBottom: string;
+	readonly cross: string;
+	readonly topLeft: string;
+	readonly topRight: string;
+	readonly bottomLeft: string;
+	readonly bottomRight: string;
+}
+
+function markdownTableGlyphs(theme: MarkdownTheme): MarkdownTableGlyphs {
+	return {
+		horizontal: theme.glyphs?.horizontal ?? "─",
+		teeLeft: theme.glyphs?.teeLeft ?? "├",
+		teeRight: theme.glyphs?.teeRight ?? "┤",
+		teeTop: theme.glyphs?.teeTop ?? "┬",
+		teeBottom: theme.glyphs?.teeBottom ?? "┴",
+		cross: theme.glyphs?.cross ?? "┼",
+		topLeft: theme.glyphs?.tableTopLeft ?? "┌",
+		topRight: theme.glyphs?.tableTopRight ?? "┐",
+		bottomLeft: theme.glyphs?.tableBottomLeft ?? "└",
+		bottomRight: theme.glyphs?.tableBottomRight ?? "┘",
+	};
 }
 
 interface InlineStyleContext {
@@ -1231,7 +1272,7 @@ export class Markdown implements Component {
 		const quoteLines = wrapTextWithAnsi(styledText, quoteContentWidth);
 		if (continuesPreviousLine) quoteLines.shift();
 		const logicalLines = quoteLines.map(
-			(line) => this.theme.quoteBorder("│ ") + line,
+			(line) => this.theme.quoteBorder(`${this.theme.glyphs?.vertical ?? "│"} `) + line,
 		);
 		return this.renderLogicalLines(logicalLines, contentWidth, width);
 	}
@@ -1976,7 +2017,7 @@ export class Markdown implements Component {
 					const styledLine = applyQuoteStyle(quoteLine);
 					const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
 					for (const wrappedLine of wrappedLines) {
-						lines.push(this.theme.quoteBorder("│ ") + wrappedLine);
+						lines.push(this.theme.quoteBorder(`${this.theme.glyphs?.vertical ?? "│"} `) + wrappedLine);
 					}
 				}
 				if (nextTokenType && nextTokenType !== "space") {
@@ -1986,7 +2027,7 @@ export class Markdown implements Component {
 			}
 
 			case "hr":
-				lines.push(this.theme.hr("─".repeat(Math.min(width, 80))));
+				lines.push(this.theme.hr((this.theme.glyphs?.horizontal ?? "─").repeat(Math.min(width, 80))));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after horizontal rules (unless space token follows)
 				}
@@ -2355,8 +2396,9 @@ export class Markdown implements Component {
 	): RenderedTableLines {
 		const lines: string[] = [];
 		const rowBoundaryStarts: number[] = [];
-		const topBorderCells = columnWidths.map((w) => "─".repeat(w));
-		lines.push(`┌─${topBorderCells.join("─┬─")}─┐`);
+		const glyphs = markdownTableGlyphs(this.theme);
+		const topBorderCells = columnWidths.map((w) => glyphs.horizontal.repeat(w));
+		lines.push(`${glyphs.topLeft}${glyphs.horizontal}${topBorderCells.join(`${glyphs.horizontal}${glyphs.teeTop}${glyphs.horizontal}`)}${glyphs.horizontal}${glyphs.topRight}`);
 		lines.push(...this.renderTableRow(token.header, columnWidths, true, styleContext));
 
 		const separatorLine = this.tableSeparatorLine(columnWidths);
@@ -2368,8 +2410,8 @@ export class Markdown implements Component {
 		}
 
 		const bottomLineStart = lines.length;
-		const bottomBorderCells = columnWidths.map((w) => "─".repeat(w));
-		lines.push(`└─${bottomBorderCells.join("─┴─")}─┘`);
+		const bottomBorderCells = columnWidths.map((w) => glyphs.horizontal.repeat(w));
+		lines.push(`${glyphs.bottomLeft}${glyphs.horizontal}${bottomBorderCells.join(`${glyphs.horizontal}${glyphs.teeBottom}${glyphs.horizontal}`)}${glyphs.horizontal}${glyphs.bottomRight}`);
 		return { lines, rowBoundaryStarts, bottomLineStart };
 	}
 
@@ -2386,8 +2428,9 @@ export class Markdown implements Component {
 			lines.push(...this.renderTableRow(row, columnWidths, false));
 		}
 		const bottomLineStart = lines.length;
-		const bottomBorderCells = columnWidths.map((width) => "─".repeat(width));
-		lines.push(`└─${bottomBorderCells.join("─┴─")}─┘`);
+		const glyphs = markdownTableGlyphs(this.theme);
+		const bottomBorderCells = columnWidths.map((width) => glyphs.horizontal.repeat(width));
+		lines.push(`${glyphs.bottomLeft}${glyphs.horizontal}${bottomBorderCells.join(`${glyphs.horizontal}${glyphs.teeBottom}${glyphs.horizontal}`)}${glyphs.horizontal}${glyphs.bottomRight}`);
 		return { lines, rowBoundaryStarts, bottomLineStart };
 	}
 
@@ -2409,13 +2452,15 @@ export class Markdown implements Component {
 				const padded = text + " ".repeat(Math.max(0, columnWidths[columnIndex]! - visibleWidth(text)));
 				return header ? this.theme.bold(padded) : padded;
 			});
-			lines.push(`│ ${rowParts.join(" │ ")} │`);
+			const vertical = this.theme.glyphs?.vertical ?? "│";
+			lines.push(`${vertical} ${rowParts.join(` ${vertical} `)} ${vertical}`);
 		}
 		return lines;
 	}
 
 	private tableSeparatorLine(columnWidths: readonly number[]): string {
-		const cells = columnWidths.map((width) => "─".repeat(width));
-		return `├─${cells.join("─┼─")}─┤`;
+		const glyphs = markdownTableGlyphs(this.theme);
+		const cells = columnWidths.map((width) => glyphs.horizontal.repeat(width));
+		return `${glyphs.teeLeft}${glyphs.horizontal}${cells.join(`${glyphs.horizontal}${glyphs.cross}${glyphs.horizontal}`)}${glyphs.horizontal}${glyphs.teeRight}`;
 	}
 }

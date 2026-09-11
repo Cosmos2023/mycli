@@ -434,6 +434,21 @@ void SetupOfflineIdentity(
     SavePassword(state_directory, owner_sid, password);
 }
 
+void ResetOfflineIdentityCredentials(
+    const std::filesystem::path& state_directory) {
+    const auto credential = CredentialPath(state_directory);
+    std::error_code error;
+    std::filesystem::remove(credential, error);
+    if (error) {
+        throw std::runtime_error("failed to clear sandbox credential state");
+    }
+    error.clear();
+    std::filesystem::remove(credential.wstring() + L".tmp", error);
+    if (error) {
+        throw std::runtime_error("failed to clear temporary sandbox credential state");
+    }
+}
+
 OfflineIdentity LoadOfflineIdentity(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid) {

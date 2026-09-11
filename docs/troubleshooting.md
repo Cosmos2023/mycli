@@ -7,8 +7,10 @@ npm run mycli -- doctor
 npm run mycli -- doctor --json
 ```
 
-Doctor reads configuration, storage, package contracts, process support, and extension state. It
-does not call a model provider or repair files.
+Doctor reads configuration, storage, package contracts, process support, and extension state. The
+default command and `--fix` preview do not call a model provider or repair files. Apply only an
+unchanged preview with `mycli doctor --fix --confirm <plan-id>`. Generate a private redacted artifact
+for offline support with `mycli doctor --support-bundle`; mycli does not upload it.
 
 ## Interactive UI Does Not Start
 
@@ -37,9 +39,25 @@ does not call a model provider or repair files.
 
 ## Sandbox Unavailable
 
-- macOS restricted profiles require executable `/usr/bin/sandbox-exec`.
-- Linux restricted profiles require `bwrap`.
+- Start with `mycli sandbox status`; add `--json` for automation.
+- macOS restricted profiles require executable `/usr/bin/sandbox-exec`. Restore it through the
+  operating system; mycli does not install or replace system components.
+- Linux restricted profiles require both an executable `bwrap` and usable user, PID, and network
+  namespaces. Mycli runs a bounded read-only capability probe, so a container or CI host can report
+  `enforcement_unavailable` even when the binary exists (for example when namespace or loopback
+  setup is denied). Enable the required host/container namespace capabilities or use a compatible
+  runner; reinstalling bubblewrap alone will not fix that case. Mycli never invokes the package
+  manager.
 - Windows restricted profiles require the packaged `mycli-windows-sandbox.exe`.
+- On first use, approve the Windows UAC prompt so mycli can initialize the dedicated sandbox identity
+  and offline firewall policy. Canceling or failing setup keeps the command blocked; retrying the
+  restricted command starts setup again.
+- To recover explicitly, run `mycli sandbox setup`, review the privilege/effects preview, then rerun
+  with `--confirm`. If Windows state is corrupt, preview and confirm `mycli sandbox reset`, then set up
+  again. Reset retains the restricted account and network restrictions; it clears only mycli setup
+  markers and encrypted credential state.
+- Use `mycli doctor --verbose` with the stable readiness/recovery code. The CLI intentionally omits
+  native stderr, executable paths, stacks, and setup credentials from both human and JSON output.
 - Missing isolation fails closed. Select `danger-full-access` only as an explicit user decision;
   do not replace the helper with an unsandboxed fallback.
 
@@ -66,6 +84,18 @@ does not call a model provider or repair files.
 The former Python console script and wheel are no longer shipped. Install dependencies with
 `npm ci`, build with `npm run build`, and launch with `npm run mycli`; there is no compatibility
 fallback or manual session-data migration in the retirement step.
+
+## Upgrade Or Compatibility Gate Failure
+
+- Read [compatibility.md](compatibility.md) before changing package or session versions.
+- Run `npm run release:compatibility` for local policy and documentation drift.
+- Run `npm run smoke:package` to isolate the candidate artifact from npm registry availability.
+- The registry-backed `npm run smoke:release-compatibility` returns exit `77` only for a bounded
+  external registry/network blocker. Any other nonzero exit is a product or fixture failure and
+  must not be waived.
+- Configuration migration apply requires the exact version from a fresh preview. Use the returned
+  backup id for rollback; do not edit migration backup files manually.
+- Follow [upgrading.md](upgrading.md) for package-name replacement and session-safe downgrade.
 
 ## Extension Failure
 

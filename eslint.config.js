@@ -10,5 +10,13 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "error",
     },
   },
+  {
+    files: ["backend/apps/mycli/src/node-runtime/**/*.ts", "backend/packages/gateway/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        patterns: [{ group: ["mycli-shell-tui", "mycli-shell-tui/*"], message: "Use the client-independent @mycli/gateway API." }],
+      }],
+    },
+  },
   { ignores: ["**/dist/**", "**/src/generated/**"] },
 );

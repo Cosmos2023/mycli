@@ -5,6 +5,11 @@ export interface GatewayContractCatalog {
   rpcMethods: string[];
   eventStreams: string[];
   errorCodes: string[];
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  modelSelectionScopes: ["session" | "user", "session" | "user"];
   approvalDecisionChoices: string[];
   terminalTurnStates: string[];
 }

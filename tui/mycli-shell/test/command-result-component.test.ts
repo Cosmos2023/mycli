@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CommandResultComponent } from "../src/components/command-result.ts";
+import { CommandResultComponent } from "../src/components/transcript/command-result.ts";
 import type {
 	MycliShellCommandDisplay,
 	MycliShellCommandResult,
@@ -145,7 +145,7 @@ test("every command presentation remains width-safe with its command prefix", ()
 		},
 		{
 			kind: "list",
-			command: "/tools plugins",
+			command: "/plugins",
 			title: "Plugins",
 			rows: [{ key: "plugin", label: "很长的插件名称", values: ["available"] }],
 		},

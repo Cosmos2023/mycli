@@ -1,4 +1,4 @@
-import { UserMessageComponent } from "../../src/components/user-message.ts";
+import { UserMessageComponent } from "../../src/components/transcript/user-message.ts";
 
 const lines = new UserMessageComponent(
 	"这是一个会在较窄终端中换行的用户输入。",

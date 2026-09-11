@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "tasks": [
+    { "path": "tasks/inclusive-range.json", "sha256": "18dcfda305cdc8222884a5a88b5ceaf3437ae57d1e09393a956ae252d8a19b71" },
+    { "path": "tasks/normalized-index.json", "sha256": "d59aa03b850f4a0e14a879c61f931b9d6fb27cc1b9921a40dd126e93be7f470b" },
+    { "path": "tasks/layered-guidance.json", "sha256": "ab81b49f49e558be1493e2f687c59b298891a807f96f0293a2c9bad4719d03ed" }
+  ]
+}

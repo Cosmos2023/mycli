@@ -12,9 +12,23 @@ import {
 } from "@mycli/tools";
 import {
 	createIntegrationComposition,
+	createRuntimeIntegrationComposition,
 	partitionRuntimeToolRegistrations,
 	type IntegrationCompositionSource,
 } from "../src/node-runtime/integration-composition.ts";
+
+test("disabled runtime integrations perform no discovery and cannot be re-enabled by reload", async () => {
+	const composition = await createRuntimeIntegrationComposition({
+		disabled: true, builtinManifest: builtinToolManifest(), workspaceRoot: "/unavailable-workspace", homeDir: "/unavailable-home", env: {},
+		parentSessionId: "review", parentTurnId: () => "review-turn", parentTools: () => [],
+		createSubagentSupervisor: () => assert.fail("subagents must not start"), resolveSubagentSpawnContext: () => assert.fail("subagents must not spawn"),
+	});
+	await composition.reloadProjectConfiguration({ workspaceRoot: "/another-unavailable-workspace", enabled: true });
+	assert.deepEqual(composition.registrations, []);
+	assert.deepEqual(composition.resources, []);
+	assert.deepEqual(await composition.hookRunner.run({ point: "session_start", sessionId: "review", turnId: "review-turn", metadata: {} }, new AbortController().signal), []);
+	await composition.close();
+});
 
 test("integration composition starts sources deterministically and closes them in reverse once", async () => {
 	const started: string[] = [];

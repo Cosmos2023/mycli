@@ -3,6 +3,9 @@ import { basename, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import { loadPluginManifest } from "./manifest.ts";
+import { findBundleManifest, loadPluginBundle } from "./bundle-manifest.ts";
+import { isPluginId, PluginPackageError } from "./package-files.ts";
+import { pluginCacheRoot, readPluginPackageRegistry, type InstalledPluginPackage } from "./package-registry.ts";
 import type {
 	DiscoveredPlugin,
 	InvalidPluginCandidate,
@@ -18,6 +21,7 @@ import type {
 export interface DiscoverPluginsOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
+	readonly includeRepository?: boolean;
 	readonly maxPlugins?: number;
 }
 
@@ -37,20 +41,29 @@ interface ConfigRead {
 const DEFAULT_MAX_PLUGINS = 256;
 const MAX_PLUGINS = 1_024;
 const LEGACY_MANIFEST_MAX_BYTES = 65_536;
-const PLUGIN_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const PLUGIN_ID = /^[a-z0-9][a-z0-9._-]{0,63}(?:@[a-z0-9][a-z0-9._-]{0,63})?$/u;
 const MIGRATION_MESSAGE = "Python plugin requires Plugin API v2 migration" as const;
 
 export async function discoverPlugins(
 	options: DiscoverPluginsOptions,
 ): Promise<PluginDiscovery> {
 	const maxPlugins = pluginLimit(options.maxPlugins);
-	const enablement = await loadEnablement(options);
+	let installed: readonly InstalledPluginPackage[] = [];
+	let registryIssue: PluginDiagnostic | undefined;
+	try { installed = (await readPluginPackageRegistry(options.homeDir)).plugins; }
+	catch { registryIssue = diagnostic("user", "plugins", "plugin-registry.json", "plugin_registry_invalid"); }
+	const enablement = await loadEnablement(options, installed);
 	const directories: readonly PluginDirectory[] = [
-		{ source: "repo", root: join(options.workspaceRoot, ".mycli", "plugins") },
+		...(options.includeRepository === false
+			? []
+			: [{
+				source: "repo" as const,
+				root: join(options.workspaceRoot, ".mycli", "plugins"),
+			}]),
 		{ source: "user", root: join(options.homeDir, ".mycli", "plugins") },
 	];
 	const candidates: PluginCandidate[] = [];
-	const diagnostics: PluginDiagnostic[] = [...enablement.issues];
+	const diagnostics: PluginDiagnostic[] = [...enablement.issues, ...(registryIssue ? [registryIssue] : [])];
 	let discovered = 0;
 
 	for (const directory of directories) {
@@ -85,6 +98,15 @@ export async function discoverPlugins(
 		}
 	}
 
+	for (const item of installed) {
+		if (++discovered > maxPlugins) {
+			diagnostics.push(diagnostic("user", item.id, "plugins", "plugin_limit_exceeded"));
+			continue;
+		}
+		const candidate = await discoverCandidate("user", pluginCacheRoot(options.homeDir, item.cacheKey), enablement.isEnabled(item.id), item.id);
+		candidates.push(candidate);
+		if (candidate.kind === "invalid") diagnostics.push(candidate.diagnostic);
+	}
 	const selectedById = new Map<string, PluginCandidate>();
 	const duplicateIds = new Set<string>();
 	for (const candidate of candidates) {
@@ -138,11 +160,21 @@ async function discoverCandidate(
 	source: PluginSource,
 	pluginRoot: string,
 	enabled: boolean,
+	installedId?: string,
 ): Promise<PluginCandidate> {
-	const rawId = basename(pluginRoot);
+	const rawId = installedId ?? basename(pluginRoot);
 	const pluginId = safePluginId(rawId);
 	if (pluginId !== rawId) {
 		return invalidCandidate(source, pluginId, enabled, "invalid_plugin_id");
+	}
+	try {
+		if (await findBundleManifest(pluginRoot)) {
+			const manifest = await loadPluginBundle(pluginRoot, pluginId.split("@")[0]);
+			if (manifest.name !== pluginId.split("@")[0]) return invalidCandidate(source, pluginId, enabled, "plugin_name_mismatch");
+			return Object.freeze({ kind: "bundle", pluginId, source, enabled, duplicate: false, manifest });
+		}
+	} catch (error) {
+		return invalidCandidate(source, pluginId, enabled, error instanceof PluginPackageError ? error.code : "plugin_manifest_invalid");
 	}
 	if (await requiresMigration(pluginRoot)) {
 		return Object.freeze({
@@ -157,7 +189,7 @@ async function discoverCandidate(
 	const loaded = await loadPluginManifest({
 		pluginRoot,
 		source,
-		expectedPluginId: pluginId,
+		expectedPluginId: installedId ? pluginId.split("@")[0] : pluginId,
 	});
 	if (loaded.kind === "invalid") {
 		return Object.freeze({
@@ -210,20 +242,22 @@ async function pluginDirectories(root: string): Promise<readonly string[]> {
 		.map((entry) => join(root, entry.name)));
 }
 
-async function loadEnablement(options: DiscoverPluginsOptions): Promise<PluginEnablement> {
+async function loadEnablement(options: DiscoverPluginsOptions, installed: readonly InstalledPluginPackage[]): Promise<PluginEnablement> {
 	const modernUserPath = join(options.homeDir, ".mycli", "config.toml");
 	const modernUser = await readConfig(modernUserPath, "user");
-	const repo = await readConfig(
-		join(options.workspaceRoot, ".mycli", "config.toml"),
-		"repo",
-	);
+	const repo = options.includeRepository === false
+		? undefined
+		: await readConfig(
+			join(options.workspaceRoot, ".mycli", "config.toml"),
+			"repo",
+		);
 	const legacy = modernUser.exists
 		? undefined
 		: await readConfig(join(options.homeDir, ".config", "mycli", "config.toml"), "legacy_user");
 	const enabled = new Set<string>();
 	const disabled = new Set<string>();
 	const issues: PluginDiagnostic[] = [];
-	for (const config of [modernUser, repo, ...(legacy ? [legacy] : [])]) {
+	for (const config of [modernUser, ...(repo ? [repo] : []), ...(legacy ? [legacy] : [])]) {
 		if (config.diagnostic) issues.push(config.diagnostic);
 		if (!config.payload) continue;
 		const plugins = config.payload.plugins;
@@ -239,6 +273,9 @@ async function loadEnablement(options: DiscoverPluginsOptions): Promise<PluginEn
 		}
 		for (const id of stringIds(plugins.enabled)) enabled.add(id);
 		for (const id of stringIds(plugins.disabled)) disabled.add(id);
+	}
+	for (const item of installed) {
+		if (!enabled.has(item.id) && !disabled.has(item.id)) (item.enabled ? enabled : disabled).add(item.id);
 	}
 	const enabledIds = Object.freeze([...enabled].sort(compareText));
 	const disabledIds = Object.freeze([...disabled].sort(compareText));
@@ -284,7 +321,7 @@ async function readConfig(
 function stringIds(value: unknown): readonly string[] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap((item) => (
-		typeof item === "string" && PLUGIN_ID.test(item.trim()) ? [item.trim()] : []
+		typeof item === "string" && isPluginId(item.trim()) ? [item.trim()] : []
 	));
 }
 

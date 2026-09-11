@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@mycli/core";
+import { failureScope } from "@mycli/contracts";
 import type {
 	ToolAdapter,
 	ToolAdapterResult,
@@ -7,7 +8,10 @@ import type {
 import { createIntegrationId, providerSafeToolName } from "../foundation/ids.ts";
 import { defineIntegrationRegistration } from "../foundation/registration.ts";
 import type { IntegrationRegistration } from "../foundation/registration.ts";
+import { deepFreezeCopy } from "./deep-freeze-copy.ts";
+import { pluginRouteNamespace } from "./package-files.ts";
 import { PluginHostError } from "./process-host.ts";
+import { pluginFailureContext, pluginFailureText } from "./diagnostics.ts";
 import type {
 	PluginHostContract,
 	PluginProtocolRegistration,
@@ -23,15 +27,18 @@ class PluginTool implements ToolAdapter {
 	readonly definition: ToolDefinition;
 	readonly #host: PluginHostContract;
 	readonly #registration: PluginToolRegistration;
+	readonly #pluginId: string;
 
 	constructor(
 		host: PluginHostContract,
 		registration: PluginToolRegistration,
 		definition: ToolDefinition,
+		pluginId: string,
 	) {
 		this.#host = host;
 		this.#registration = registration;
 		this.definition = definition;
+		this.#pluginId = pluginId;
 	}
 
 	async execute(
@@ -45,7 +52,7 @@ class PluginTool implements ToolAdapter {
 				argumentsValue,
 				options.signal,
 			);
-			if (result.resultType !== "tool_result") return failedResult("protocol_invalid", this.definition.name);
+			if (result.resultType !== "tool_result") throw new PluginHostError("protocol_invalid");
 			const success = result.value.success === true;
 			const summary = safeText(result.value.summary, success ? "plugin tool completed" : "plugin tool failed", SUMMARY_LIMIT);
 			const modelOutput = safeText(
@@ -54,16 +61,24 @@ class PluginTool implements ToolAdapter {
 				MODEL_OUTPUT_LIMIT,
 			);
 			const errorKind = safeErrorKind(result.value.errorKind ?? result.value.error_kind ?? result.value.error);
+			const errorContext = !success && options.errorContextVersion === 1 ? pluginFailureContext(new PluginHostError("handler_failed"), {
+				pluginId: this.#pluginId, operation: "tools/call", scope: failureScope("tool_call", options.callId),
+			}) : undefined;
 			return Object.freeze({
 				success,
 				modelOutput,
 				summary,
 				...(!success ? { errorKind: errorKind ?? "plugin_tool_error" } : {}),
-				metadata: boundedMetadata(result.value.metadata),
+				...(errorContext ? { errorContext } : {}),
+				metadata: Object.freeze({ ...boundedMetadata(result.value.metadata), ...(errorContext ? { error_context: errorContext } : {}) }),
 			});
 		} catch (error) {
 			if (options.signal.aborted || isAbortError(error)) throw error;
-			return failedResult(error instanceof PluginHostError ? error.kind : "plugin_error", this.definition.name);
+			const errorContext = pluginFailureContext(error, { pluginId: this.#pluginId, operation: "tools/call", scope: failureScope("tool_call", options.callId) });
+			return Object.freeze({ success: false, modelOutput: pluginFailureText(errorContext), summary: `Plugin ${this.definition.name} failed`,
+				errorKind: `plugin_${error instanceof PluginHostError ? error.kind : "error"}`,
+				...(options.errorContextVersion === 1 ? { errorContext, metadata: { error_context: errorContext } } : { metadata: {} }),
+			});
 		}
 	}
 }
@@ -72,39 +87,32 @@ export function createPluginToolRegistration(
 	host: PluginHostContract,
 	pluginId: string,
 	registration: PluginToolRegistration,
+	sourceDescription?: string,
 ): IntegrationRegistration {
-	const id = createIntegrationId("plugin", pluginId, registration.name);
+	const owner = pluginRouteNamespace(pluginId);
+	const id = createIntegrationId("plugin", owner, registration.name);
 	const definition: ToolDefinition = Object.freeze({
 		id,
-		name: providerSafeToolName("plugin", pluginId, registration.name),
+		name: providerSafeToolName("plugin", owner, registration.name),
 		description: registration.description || `Plugin tool ${registration.name}`,
 		inputSchema: registration.input_schema,
 	});
-	const adapter = new PluginTool(host, registration, definition);
+	const adapter = new PluginTool(host, registration, definition, pluginId);
 	return defineIntegrationRegistration({
 		id,
 		source: "plugin",
 		definition,
 		adapter,
 		originMetadata: { plugin: pluginId, tool: registration.name },
-	});
-}
-
-function failedResult(kind: string, name: string): ToolAdapterResult {
-	const errorKind = safeErrorKind(kind) ?? "plugin_error";
-	return Object.freeze({
-		success: false,
-		modelOutput: `Plugin tool failed.\nError kind: ${errorKind}`,
-		summary: `Plugin ${name} failed`,
-		errorKind,
-		metadata: Object.freeze({}),
+		...(sourceDescription ? { sourceDescription: sourceDescription.replace(/\s+/gu, " ").trim().slice(0, 1_024) } : {}),
 	});
 }
 
 function boundedMetadata(value: unknown): Readonly<Record<string, unknown>> {
 	if (!isRecord(value)) return Object.freeze({});
 	try {
-		if (JSON.stringify(value).length <= METADATA_LIMIT) return deepFreezeCopy(value);
+		const metadata = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "error_context"));
+		if (JSON.stringify(metadata).length <= METADATA_LIMIT) return deepFreezeCopy(metadata);
 	} catch {
 		// Fall through to a bounded marker.
 	}
@@ -119,14 +127,6 @@ function safeText(value: unknown, fallback: string, maximum: number): string {
 
 function safeErrorKind(value: unknown): string | undefined {
 	return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(value) ? value : undefined;
-}
-
-function deepFreezeCopy<Value>(value: Value): Value {
-	if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeCopy)) as Value;
-	if (!isRecord(value)) return value;
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).map(([key, child]) => [key, deepFreezeCopy(child)]),
-	)) as Value;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

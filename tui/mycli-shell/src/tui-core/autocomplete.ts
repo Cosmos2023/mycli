@@ -272,7 +272,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	private basePath: string;
 	private fdPath: string | null;
 
-	constructor(commands: (SlashCommand | AutocompleteItem)[] = [], basePath: string, fdPath: string | null = null) {
+	constructor(
+		commands: (SlashCommand | AutocompleteItem)[] = [],
+		basePath: string,
+		fdPath: string | null = null,
+		private readonly presentation: { readonly descriptionSeparator?: () => string } = {},
+	) {
 		this.commands = commands;
 		this.basePath = basePath;
 		this.fdPath = fdPath;
@@ -311,7 +316,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					const name = "name" in cmd ? cmd.name : cmd.value;
 					const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
 					const desc = cmd.description ?? "";
-					const fullDesc = hint ? (desc ? `${hint} — ${desc}` : hint) : desc;
+					const separator = this.presentation.descriptionSeparator?.() ?? "—";
+					const fullDesc = hint ? (desc ? `${hint} ${separator} ${desc}` : hint) : desc;
 					return {
 						name,
 						label: name,

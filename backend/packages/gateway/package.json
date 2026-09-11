@@ -1,0 +1,27 @@
+{
+  "name": "@mycli/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "mycli-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./flow-control": {
+      "mycli-source": "./src/flow-control/index.ts",
+      "types": "./dist/flow-control/index.d.ts",
+      "import": "./dist/flow-control/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "@mycli/contracts": "0.1.0" },
+  "engines": { "node": ">=22.19.0" }
+}

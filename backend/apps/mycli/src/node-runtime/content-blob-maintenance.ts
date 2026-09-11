@@ -6,6 +6,8 @@ import {
 	SCHEMA_V10_VERSION,
 	SCHEMA_V11_VERSION,
 	SCHEMA_V12_VERSION,
+	SCHEMA_V13_VERSION,
+	SCHEMA_V14_VERSION,
 	SCHEMA_VERSION,
 	stageV10ContentBlobMigrationBatch,
 	StorageFailure,
@@ -23,7 +25,7 @@ interface NodeSqliteModule {
 
 const nodeRequire = createRequire(import.meta.url);
 
-export interface ContentBlobMigrationPreparation {
+interface ContentBlobMigrationPreparation {
 	readonly result: JsonObject;
 	readonly cutoverReady: boolean;
 	readonly report?: V10ContentBlobMigrationDryRunReport;
@@ -32,7 +34,8 @@ export interface ContentBlobMigrationPreparation {
 export function contentBlobMigrationReport(dbPath: string): JsonObject {
 	const version = sessionSchemaVersion(dbPath);
 	if (version === SCHEMA_VERSION) return requiresTranscriptNormalization(true);
-	if (version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION) {
+	if (version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION
+		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION) {
 		return Object.freeze({
 			content_blob_migration_status: "blob_backed",
 			content_blob_migration_schema_version: version,
@@ -55,7 +58,8 @@ export function prepareContentBlobMigration(
 			result: requiresTranscriptNormalization(false),
 		});
 	}
-	if (version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION) {
+	if (version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION
+		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION) {
 		return Object.freeze({
 			cutoverReady: false,
 			result: Object.freeze({

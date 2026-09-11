@@ -31,8 +31,13 @@ int RunElevatedSetup(
         L"--setup-for-user " + QuoteWindowsArgument(state_directory.wstring()) +
         L" " + QuoteWindowsArgument(owner_sid);
     launch.lpParameters = parameters.c_str();
-    launch.nShow = SW_SHOWNORMAL;
+    launch.nShow = SW_HIDE;
     if (ShellExecuteExW(&launch) == FALSE) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_CANCELLED) {
+            throw ElevationCanceled{};
+        }
+        SetLastError(error);
         throw Win32Error("ShellExecuteExW(runas)");
     }
     const UniqueHandle process{launch.hProcess};

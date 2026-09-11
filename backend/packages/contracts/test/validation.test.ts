@@ -22,6 +22,40 @@ test("rejects a gateway notification missing required payload fields", () => {
 	);
 });
 
+test("validates exact child interactive cancellation identity", () => {
+	const identity = {
+		session_id: "child-session",
+		child_session_id: "child-session",
+		generation: 3,
+		client_turn_id: "child-client-turn",
+		turn_id: "child-turn",
+	};
+	for (const request of [
+		{ decision_id: "child-decision" },
+		{ request_id: "child-question" },
+	]) {
+		const event = parseGatewayEvent({
+			jsonrpc: "2.0",
+			method: "interactive.cancelled",
+			params: { ...identity, ...request },
+		});
+		assert.equal(event.method, "interactive.cancelled");
+	}
+	for (const request of [
+		{},
+		{ decision_id: "child-decision", request_id: "child-question" },
+	]) {
+		assert.throws(
+			() => parseGatewayEvent({
+				jsonrpc: "2.0",
+				method: "interactive.cancelled",
+				params: { ...identity, ...request },
+			}),
+			ContractValidationError,
+		);
+	}
+});
+
 test("rejects malformed JSON-RPC envelopes", () => {
 	assert.throws(
 		() => parseJsonRpcMessage({ jsonrpc: "1.0", method: "turn.started", params: {} }),

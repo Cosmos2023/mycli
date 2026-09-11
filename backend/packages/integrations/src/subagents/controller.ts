@@ -295,7 +295,10 @@ export interface SubagentControllerOptions {
 	) => SubagentSupervisorContract;
 	readonly parentSessionId: string;
 	readonly parentTurnId: () => string;
-	readonly parentTools: () => readonly string[];
+	readonly parentTools: (input: {
+		readonly parentSessionId: string;
+		readonly parentTurnId: string;
+	}) => readonly string[];
 	readonly resolveSpawnContext: (
 		input: ResolveSubagentSpawnContextInput,
 	) => ResolvedSubagentSpawnContext | Promise<ResolvedSubagentSpawnContext>;
@@ -353,7 +356,10 @@ export class SubagentController implements SubagentControlContract, AgentCoordin
 			this.#options.parentSessionId,
 		);
 		const parentTurnId = input.parentTurnId ?? this.#options.parentTurnId();
-		const parentTools = Object.freeze([...this.#options.parentTools()]);
+		const parentTools = Object.freeze([...this.#options.parentTools({
+			parentSessionId,
+			parentTurnId,
+		})]);
 		const requestedTools = input.allowedTools ?? parentTools;
 		const candidateTools = resolveChildTools({
 			parentTools,

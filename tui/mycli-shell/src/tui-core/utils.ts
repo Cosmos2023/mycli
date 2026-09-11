@@ -1,4 +1,6 @@
+/// <reference path="./linebreak.d.ts" />
 import { eastAsianWidth } from "get-east-asian-width";
+import LineBreaker from "linebreak";
 
 // segmenters (shared instance)
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -633,7 +635,40 @@ function splitIntoTokensWithAnsi(text: string): string[] {
 		tokens.push(current);
 	}
 
-	return tokens;
+	return tokens.flatMap(splitUnicodeToken);
+}
+
+function splitUnicodeToken(token: string): string[] {
+	// Preserve ASCII word/path boundaries; add Unicode breaks inside non-ASCII runs.
+	if (!/[^\x00-\x7f]/u.test(token)) return [token];
+	let text = "";
+	const sourceEnds = [0];
+	for (let index = 0; index < token.length;) {
+		const ansi = extractAnsiCode(token, index);
+		if (ansi) {
+			index += ansi.length;
+		} else {
+			text += token[index++];
+			sourceEnds.push(index);
+		}
+	}
+
+	// Line-break data and the terminal's grapheme data may use different Unicode versions.
+	const graphemeEnds = new Set<number>();
+	for (const { index, segment } of graphemeSegmenter.segment(text)) {
+		graphemeEnds.add(index + segment.length);
+	}
+	const breaker = new LineBreaker(text);
+	const parts: string[] = [];
+	let start = 0;
+	for (let next = breaker.nextBreak(); next; next = breaker.nextBreak()) {
+		if (next.position === text.length || !graphemeEnds.has(next.position)) continue;
+		const end = sourceEnds[next.position]!;
+		parts.push(token.slice(start, end));
+		start = end;
+	}
+	parts.push(token.slice(start));
+	return parts;
 }
 
 /**

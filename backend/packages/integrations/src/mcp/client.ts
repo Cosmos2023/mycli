@@ -11,6 +11,8 @@ import {
 	type SandboxProfile,
 } from "@mycli/tools";
 import { LegacyHttpTransport } from "./legacy-http-transport.ts";
+import { McpConnection } from "./connection.ts";
+import { diagnosticMcpFetch } from "./http-fetch.ts";
 import { INTEGRATIONS_VERSION } from "../version.ts";
 import type {
 	McpClientContract,
@@ -18,6 +20,8 @@ import type {
 	McpProtocolClient,
 	McpResourceContent,
 	McpResourceDescriptor,
+	McpResourcePage,
+	McpResourceTemplatePage,
 	McpServerConfig,
 	McpToolCallResult,
 	McpToolDescriptor,
@@ -33,19 +37,20 @@ export interface McpClientOptions {
 
 export class McpClient implements McpClientContract {
 	readonly config: McpServerConfig;
-	readonly #protocol: McpProtocolClient;
-	#connectPromise?: Promise<void>;
-	#closePromise?: Promise<void>;
-	#closed = false;
+	readonly #connection: McpConnection;
 
 	constructor(options: McpClientOptions) {
 		this.config = options.config;
-		this.#protocol = options.protocol ?? createSdkProtocol(options);
+		this.#connection = new McpConnection({ createProtocol: () => options.protocol ?? createSdkProtocol(options),
+			transport: options.config.transport, timeoutMs: options.config.timeoutMs,
+			recoverSession: options.protocol === undefined && options.config.transport === "streamable_http" });
 	}
 
 	async listTools(signal: AbortSignal): Promise<readonly McpToolDescriptor[]> {
-		return this.#run(signal, async () => {
-			const result = await this.#protocol.listTools(signal);
+		return this.#connection.run("tools/list", signal, async (protocol, activeSignal) => {
+			const result = await protocol.listTools(activeSignal);
+			const serverInstructions = [this.config.pluginDescription, protocol.getInstructions?.()?.trim()]
+				.filter(Boolean).join("\n").slice(0, 4_096);
 			return Object.freeze(result.tools.flatMap((item) => {
 				const name = stringValue(item.name);
 				if (!name) return [];
@@ -53,6 +58,7 @@ export class McpClient implements McpClientContract {
 					serverId: this.config.id,
 					name,
 					description: stringValue(item.description) ?? "",
+					...(serverInstructions ? { serverInstructions } : {}),
 					inputSchema: frozenRecord(item.inputSchema),
 					supportsParallelToolCalls: this.config.supportsParallelToolCalls
 						|| readOnlyHint(item.annotations),
@@ -66,8 +72,8 @@ export class McpClient implements McpClientContract {
 		argumentsValue: Readonly<Record<string, unknown>>,
 		signal: AbortSignal,
 	): Promise<McpToolCallResult> {
-		return this.#run(signal, async () => {
-			const result = await this.#protocol.callTool(name, argumentsValue, signal);
+		return this.#connection.run("tools/call", signal, async (protocol, activeSignal) => {
+			const result = await protocol.callTool(name, argumentsValue, activeSignal);
 			return Object.freeze({
 				content: normalizeContent(result.content),
 				...(result.structuredContent === undefined
@@ -79,9 +85,22 @@ export class McpClient implements McpClientContract {
 	}
 
 	async listResources(signal: AbortSignal): Promise<readonly McpResourceDescriptor[]> {
-		return this.#run(signal, async () => {
-			const result = await this.#protocol.listResources(signal);
-			return Object.freeze(result.resources.flatMap((item) => {
+		return this.#connection.run("resources/list", signal, async (protocol, activeSignal) => {
+			const resources: Readonly<Record<string, unknown>>[] = [];
+			const seen = new Set<string>();
+			let cursor: string | undefined;
+			do {
+				activeSignal.throwIfAborted();
+				const page = await protocol.listResources(activeSignal, cursor);
+				resources.push(...page.resources);
+				cursor = page.nextCursor;
+				if (resources.length > 10_000 || seen.size >= 100
+					|| (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursor.length > 4_096 || seen.has(cursor)))) {
+					throw new Error("invalid_mcp_resource_pagination");
+				}
+				if (cursor) seen.add(cursor);
+			} while (cursor !== undefined);
+			return Object.freeze(resources.flatMap((item) => {
 				const uri = stringValue(item.uri);
 				if (!uri) return [];
 				return [Object.freeze({
@@ -96,8 +115,8 @@ export class McpClient implements McpClientContract {
 	}
 
 	async readResource(uri: string, signal: AbortSignal): Promise<readonly McpResourceContent[]> {
-		return this.#run(signal, async () => {
-			const result = await this.#protocol.readResource(uri, signal);
+		return this.#connection.run("resources/read", signal, async (protocol, activeSignal) => {
+			const result = await protocol.readResource(uri, activeSignal);
 			return Object.freeze(result.contents.flatMap((item) => {
 				const itemUri = stringValue(item.uri);
 				if (!itemUri) return [];
@@ -112,41 +131,38 @@ export class McpClient implements McpClientContract {
 		});
 	}
 
+	async listResourcesPage(signal: AbortSignal, cursor?: string): Promise<McpResourcePage> {
+		return this.#connection.run("resources/list", signal, async (protocol, activeSignal) => {
+			validateCursor(cursor);
+			const page = await protocol.listResources(activeSignal, cursor);
+			validateCursor(page.nextCursor, cursor);
+			if (page.resources.length > 10_000) throw new Error("invalid_mcp_resource_pagination");
+			return { resources: page.resources.flatMap((item) => {
+				const uri = stringValue(item.uri);
+				return uri ? [{ serverId: this.config.id, uri, name: stringValue(item.name) ?? uri,
+					description: stringValue(item.description) ?? "",
+					...(stringValue(item.mimeType) ? { mimeType: stringValue(item.mimeType) } : {}) }] : [];
+			}), ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+		});
+	}
+
+	async listResourceTemplates(signal: AbortSignal, cursor?: string): Promise<McpResourceTemplatePage> {
+		return this.#connection.run("resources/templates/list", signal, async (protocol, activeSignal) => {
+			validateCursor(cursor);
+			const page = await protocol.listResourceTemplates?.(activeSignal, cursor) ?? { resourceTemplates: [] };
+			validateCursor(page.nextCursor, cursor);
+			if (page.resourceTemplates.length > 10_000) throw new Error("invalid_mcp_resource_pagination");
+			return { resourceTemplates: page.resourceTemplates.flatMap((item) => {
+				const uriTemplate = stringValue(item.uriTemplate);
+				return uriTemplate ? [{ serverId: this.config.id, uriTemplate,
+					name: stringValue(item.name) ?? uriTemplate, description: stringValue(item.description) ?? "",
+					...(stringValue(item.mimeType) ? { mimeType: stringValue(item.mimeType) } : {}) }] : [];
+			}), ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+		});
+	}
+
 	close(): Promise<void> {
-		if (!this.#closePromise) {
-			this.#closed = true;
-			this.#closePromise = Promise.resolve().then(() => this.#protocol.close());
-		}
-		return this.#closePromise;
-	}
-
-	async #run<Value>(signal: AbortSignal, operation: () => Promise<Value>): Promise<Value> {
-		try {
-			await this.#connect(signal);
-			return await operation();
-		} catch (error) {
-			if (isTimeoutError(error)) {
-				if (this.config.transport === "stdio") await this.close().catch(() => undefined);
-				throw error;
-			}
-			if (signal.aborted || isAbortError(error)) {
-				if (this.config.transport === "stdio") await this.close().catch(() => undefined);
-				if (!isAbortError(error)) throw abortError();
-			}
-			throw error;
-		}
-	}
-
-	async #connect(signal: AbortSignal): Promise<void> {
-		if (signal.aborted) throw abortError();
-		if (this.#closed) throw new Error("mcp_client_closed");
-		if (!this.#connectPromise) {
-			this.#connectPromise = this.#protocol.connect(signal).catch((error: unknown) => {
-				this.#connectPromise = undefined;
-				throw error;
-			});
-		}
-		await this.#connectPromise;
+		return this.#connection.close();
 	}
 }
 
@@ -164,9 +180,14 @@ class SdkProtocolClient implements McpProtocolClient {
 		return this.#client.connect(this.#transport, this.#requestOptions(signal));
 	}
 
+	getInstructions(): string | undefined {
+		return this.#client.getInstructions();
+	}
+
 	async listTools(signal: AbortSignal): Promise<{
 		readonly tools: readonly Readonly<Record<string, unknown>>[];
 	}> {
+		if (!this.#client.getServerCapabilities()?.tools) return { tools: [] };
 		const result = await this.#client.listTools({}, this.#requestOptions(signal));
 		return { tools: result.tools as readonly Readonly<Record<string, unknown>>[] };
 	}
@@ -183,11 +204,14 @@ class SdkProtocolClient implements McpProtocolClient {
 		) as Readonly<Record<string, unknown>>;
 	}
 
-	async listResources(signal: AbortSignal): Promise<{
+	async listResources(signal: AbortSignal, cursor?: string): Promise<{
 		readonly resources: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
 	}> {
-		const result = await this.#client.listResources({}, this.#requestOptions(signal));
-		return { resources: result.resources as readonly Readonly<Record<string, unknown>>[] };
+		if (!this.#client.getServerCapabilities()?.resources) return { resources: [] };
+		const result = await this.#client.listResources(cursor === undefined ? {} : { cursor }, this.#requestOptions(signal));
+		return { resources: result.resources as readonly Readonly<Record<string, unknown>>[],
+			...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }) };
 	}
 
 	async readResource(uri: string, signal: AbortSignal): Promise<{
@@ -195,6 +219,16 @@ class SdkProtocolClient implements McpProtocolClient {
 	}> {
 		const result = await this.#client.readResource({ uri }, this.#requestOptions(signal));
 		return { contents: result.contents as readonly Readonly<Record<string, unknown>>[] };
+	}
+
+	async listResourceTemplates(signal: AbortSignal, cursor?: string): Promise<{
+		readonly resourceTemplates: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
+	}> {
+		if (!this.#client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
+		const result = await this.#client.listResourceTemplates(cursor === undefined ? {} : { cursor }, this.#requestOptions(signal));
+		return { resourceTemplates: result.resourceTemplates,
+			...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }) };
 	}
 
 	close(): Promise<void> {
@@ -206,6 +240,12 @@ class SdkProtocolClient implements McpProtocolClient {
 	}
 }
 
+function validateCursor(cursor: string | undefined, previous?: string): void {
+	if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursor.length > 4_096 || cursor === previous)) {
+		throw new Error("invalid_mcp_resource_pagination");
+	}
+}
+
 function createSdkProtocol(options: McpClientOptions): McpProtocolClient {
 	const { config } = options;
 	let transport: Transport;
@@ -214,14 +254,14 @@ function createSdkProtocol(options: McpClientOptions): McpProtocolClient {
 		if (!options.sandboxProfile) throw new Error("mcp_sandbox_required");
 		const launch = prepareSandboxedProcess(
 			[config.command, ...config.args],
-			options.sandboxProfile,
+			{ ...options.sandboxProfile, cwd: config.cwd ?? options.cwd ?? options.sandboxProfile.cwd },
 		);
 		const stdio = new StdioClientTransport({
 			command: launch.executable,
 			args: [...launch.args],
 			env: { ...config.env },
 			stderr: "pipe",
-			cwd: options.cwd ?? options.sandboxProfile.cwd,
+			cwd: config.cwd ?? options.cwd ?? options.sandboxProfile.cwd,
 			maxBufferSize: 1_048_576,
 		});
 		stdio.stderr?.on("data", () => undefined);
@@ -232,7 +272,7 @@ function createSdkProtocol(options: McpClientOptions): McpProtocolClient {
 		transport = config.transport === "streamable_http"
 			? new StreamableHTTPClientTransport(url, {
 				requestInit: { headers: { ...config.headers } },
-				...(options.fetch ? { fetch: options.fetch } : {}),
+				fetch: diagnosticMcpFetch(options.fetch),
 			})
 			: new LegacyHttpTransport({
 				url,
@@ -265,19 +305,4 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
-}
-
-function isAbortError(error: unknown): error is Error {
-	return error instanceof Error && error.name === "AbortError";
-}
-
-function isTimeoutError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	return error.name === "TimeoutError" || /timeout|timed out/iu.test(`${error.name} ${error.message}`);
-}
-
-function abortError(): Error {
-	const error = new Error("interrupted");
-	error.name = "AbortError";
-	return error;
 }

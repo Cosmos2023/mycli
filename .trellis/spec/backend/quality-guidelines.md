@@ -38,7 +38,102 @@ Questions to answer:
 
 ## Testing Requirements
 
-### Scenario: Read-only Doctor Diagnostics
+### Scenario: Repository Test Suite Taxonomy
+
+#### 1. Scope / Trigger
+
+- Trigger: adding, moving, renaming, or changing a Node test, root test command, smoke script, or
+  CI/release test gate.
+- `scripts/test-suite-catalog.mjs` is the canonical repository test classifier;
+  `scripts/run-test-suite.mjs` is the canonical root Node test orchestrator.
+
+#### 2. Signatures
+
+- Deterministic repository gate: `npm test` or `npm run test:ci`.
+- Focused suites: `test:unit`, `test:contract`, `test:integration`, `test:platform`, and
+  `test:release`.
+- Provider-free executable gate: `npm run test:smoke`.
+- Credential-gated provider probe: `npm run test:smoke:live`.
+- Catalog inspection: `npm run test:list [-- --json]`.
+
+#### 3. Contracts
+
+- Every discovered `*.test.*` file belongs to exactly one suite. CI expands to unit, contract,
+  integration, platform, and release in stable order and selects every catalog row once.
+- Ordinary workspace tests default to unit. The contracts workspace and repository test directory
+  default to contract. Whole-file `.integration.test.*`, `.platform.test.*`, and
+  `.contract.test.*` suffixes select the matching boundary.
+- A small explicit override map may classify legacy mixed filenames. Catalog discovery fails when
+  an override points to a missing file.
+- Unit tests are deterministic and in-process. Integration tests may own loopback servers, Workers,
+  subprocesses, SQLite concurrency, or extension hosts. Platform tests exercise real PTY, shell,
+  process transport, sandbox, or native behavior. Each test owns cleanup for every resource it
+  starts.
+- Smoke journeys are executable scripts, not ordinary test modules. Real provider traffic is never
+  part of `npm test` and remains explicit, credential-gated, bounded, and redacted.
+- Root tests resolve current TypeScript through `mycli-source`. Tests that intentionally inspect
+  compiled or packed output run after the root build boundary.
+- Package-local test scripts remain valid focused entry points. CI uses only the root catalog and
+  must not rerun milestone tests already selected by it.
+- Historical `test:m2` through `test:m8` scripts may remain as investigation shortcuts, but they are
+  not separate quality gates.
+
+#### 4. Validation & Error Matrix
+
+- Unknown suite selector -> `unknown_test_suite`; execute nothing.
+- Missing suite argument -> `test_suite_value_required`; execute nothing.
+- Duplicate discovered path -> `duplicate_test_catalog_path`; execute nothing.
+- Override points to a removed or renamed test -> `stale_test_suite_override`; execute nothing.
+- Test path escapes the repository -> `test_path_outside_repository`; execute nothing.
+- A smoke-named `node:test` file -> `smoke_test_must_be_an_explicit_script`; move the journey to an
+  explicit smoke script or classify the deterministic assertions correctly.
+- A target process fails or is interrupted -> stop later suites and preserve the failing exit code.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: add `queue-coordinator.test.ts`; it is discovered as a runtime unit test without editing a
+  second file list.
+- Good: add `mcp-process.integration.test.ts`; the suffix places it in integration automatically.
+- Good: keep native PTY coverage in platform and run it on every supported CI host.
+- Base: use an override while a large legacy file contains more than one execution boundary, then
+  remove the override when the file is split or renamed.
+- Bad: add a real-provider request to a package `test` command or silently skip it when credentials
+  are absent.
+- Bad: run `npm test` and then `test:m8` in the same CI job even though the catalog already includes
+  the M8 audit.
+- Bad: make the complete app suite serial to hide leaked ports, global environment changes, or
+  incomplete Worker/process cleanup.
+
+#### 6. Tests Required
+
+- Catalog tests prove unique paths, non-empty suites, complete CI selection, representative
+  classification, stale-override rejection, selector expansion, and argument forwarding.
+- Repository script tests keep root command names and suite mappings stable.
+- Workflow drift tests require `test:ci` and reject a second `test:m8` step.
+- Run each changed focused suite, then `npm test`, lint, type-check, contract drift, config drift, and
+  `git diff --check` before completion.
+- Changes to native/platform behavior also run provider-free packed smoke on every supported host.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```json
+{
+  "test": "npm run test --workspaces && npm run test:m8"
+}
+```
+
+Correct:
+
+```json
+{
+  "test": "node scripts/run-test-suite.mjs --suite ci",
+  "test:platform": "node scripts/run-test-suite.mjs --suite platform"
+}
+```
+
+### Scenario: Doctor Diagnostics And Explicit Recovery
 
 #### 1. Scope / Trigger
 - Trigger: Any change to `mycli doctor`, local runtime diagnostics, or health
@@ -47,24 +142,41 @@ Questions to answer:
   boundaries, but must stay outside model/runtime execution.
 
 #### 2. Signatures
-- CLI command: `mycli doctor`
+- CLI command: `mycli doctor [--fix [--confirm <plan-id>] | --support-bundle]`
 - Service API: `runDoctor(options, signal) -> Promise<DoctorReport>`.
-- Rendering API: `doctorResponseFromReport(report) -> DoctorManagementResponse`.
+- Management API: `DoctorManagementService.execute(command, signal)`.
+- Rendering API: `doctorResponseFromReport(report, options?) -> DoctorManagementResponse`.
 - Result fields: `DoctorCheck.name`, `DoctorCheck.status`,
   `DoctorCheck.message`, optional `DoctorCheck.detail`; status values are
   `ok`, `warning`, and `failed`.
 
 #### 3. Contracts
-- Doctor is read-only. It must not create config files, sessions DBs, log
-  files, file-history indexes, or MCP server processes.
+- Plain Doctor and an unconfirmed `--fix` preview are read-only. They must not
+  create config files, sessions DBs, log files, file-history indexes, or MCP
+  server processes. A confirmed repair may mutate only the actions shown in
+  the matching plan through the owning service. `--support-bundle` may write
+  only the private allowlisted support artifact.
 - Default doctor must not perform a real provider/model request.
 - Output is human-readable text headed by `mycli doctor` and ending with a
   summary count.
 - API keys, bearer tokens, and secret-like values must never be printed; report
   presence only, for example `api_key: present`.
 - Warnings return exit code `0`; one or more failed checks return exit code `1`.
+- Repair and support errors add one bounded operation issue. They do not become
+  runtime-turn failures or duplicate the primary TUI diagnostic.
 
 #### 4. Validation & Error Matrix
+- `doctor --fix` without confirmation -> value-free preview and no mutation.
+- Missing or truncated repair changes -> `repair_preview_failed`; expose no
+  plan that could mutate undisclosed state.
+- Matching `--confirm <plan-id>` -> rebuild the plan, then delegate only its
+  listed deterministic actions to their owners.
+- Stale plan -> `version_conflict`, with no newly discovered action applied.
+- Repair exception -> bounded failed result; never serialize the exception.
+- Support export -> one allowlisted JSON DTO at the fixed private location;
+  never copy raw logs or upload it.
+- Support config/sandbox probes fail -> export bounded fallback metadata.
+- Support write fails -> one `support_bundle_write_failed` issue.
 - Config resolves -> report provider, protocol, model, and base URL.
 - Config parse/validation fails -> `config=failed`; keep checking other areas.
 - API key missing -> `api_key=warning`.
@@ -98,8 +210,8 @@ Questions to answer:
 - Session maintenance diagnostics must not classify runtime-only sessions as
   empty. `history_items`, `turn_rollouts`, and `session_state` rows count as
   durable session content even when legacy `conversation_messages` is empty.
-- `/session-maintenance` is read-only by default. Empty-session cleanup requires
-  the explicit `/session-maintenance --apply-empty` form, must recompute
+- `/session maintenance` is read-only by default. Empty-session cleanup requires
+  the explicit `/session maintenance --apply-empty` form, must recompute
   candidates at apply time, and must only delete workspace-scoped sessions that
   still have no conversation messages, summaries, history items, turn rollouts,
   or session state.
@@ -107,10 +219,10 @@ Questions to answer:
   lineage as forked children or as parents of other sessions. Lineage pruning
   requires a separate explicit policy.
 - Orphan child-row cleanup requires the explicit
-  `/session-maintenance --apply-orphans` form. It may delete only known child
+  `/session maintenance --apply-orphans` form. It may delete only known child
   table rows whose `session_id` is absent from `sessions`; it must not delete
   sessions, repair lineage parent references, or run `VACUUM`.
-- SQLite vacuum requires the explicit `/session-maintenance --apply-vacuum`
+- SQLite vacuum requires the explicit `/session maintenance --apply-vacuum`
   form. It must report bounded before/after storage metrics, preserve sessions
   and child rows, and must not run from doctor, the default dry-run report,
   empty-session cleanup, or orphan cleanup.
@@ -281,12 +393,20 @@ Questions to answer:
   `0` with only warnings.
 - Good: A fresh machine without `~/.mycli/traces` or `~/.mycli/artifacts`
   reports `storage_layout=ok` without creating those directories.
+- Good: preview config migration, confirm the exact plan id, and let the
+  config transaction own locking, backup, validation, and atomic replacement.
+- Good: export a deterministic support bundle containing relative log
+  references but no log bodies, session ids, local paths, or credentials.
 - Base: A fresh machine with no prior sessions gets missing-storage warnings but
   no model request.
+- Base: no repair action exists, so `doctor --fix` reports `not_needed` without
+  creating any file.
 - Bad: Creating `traces/` or `artifacts/` just to check doctor health.
 - Bad: Calling `build_turn_service()` for doctor, because that can require an
   API key and initialize runtime dependencies unrelated to diagnostics.
 - Bad: Printing `sk-...` or MCP environment secret values in remediation text.
+- Bad: applying a replacement plan after a conflict or using a generic archive
+  of `.mycli` as a support bundle.
 
 #### 6. Tests Required
 - Unit test service success with config/storage/logs/history/MCP fixtures.
@@ -357,18 +477,26 @@ Questions to answer:
   missing/mismatch/malformed, and configured command path checks.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,
   runtime-state protection, lineage protection, bounded apply limits, and CLI
-  routing through `/session-maintenance --apply-empty`.
+  routing through `/session maintenance --apply-empty`.
 - Unit test explicit orphan child-row cleanup for multi-table orphan deletion,
   valid-row preservation, empty-session separation, and CLI/gateway routing
-  through `/session-maintenance --apply-orphans`.
+  through `/session maintenance --apply-orphans`.
 - Unit test explicit vacuum maintenance for before/after storage metrics,
   session preservation, cleanup-path separation, and CLI/gateway routing through
-  `/session-maintenance --apply-vacuum`.
+  `/session maintenance --apply-vacuum`.
 - Node protocol tests cover event methods plus required fields, property names, and enum values
   against canonical schemas.
 - Unit test runtime-contract discovery against both direct object payload schemas and generated
   non-empty `allOf` payload schemas; malformed, unnamed, and empty-composition schemas stay absent.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
+- Repair tests cover preview, exact confirmation, stale confirmation, no-op,
+  per-action failure, aggregate partial failure, idempotency, and no provider IO.
+- Support tests cover deterministic bytes/digest, private modes, structural
+  allowlisting, fallback metadata, write containment, and fuzzed nested
+  secrets, credential URLs, control characters, and cross-platform paths.
+- Text/JSON tests assert the same plan id, action list, support location, byte
+  count, and digest; existing gateway/TUI tests keep one root failure to one
+  primary diagnostic.
 - Full Node lint, type-check, tests, and contracts check must pass because doctor touches CLI
   startup paths.
 
@@ -384,6 +512,16 @@ Correct:
 ```typescript
 const report = await runDoctor(options, signal);
 const response = doctorResponseFromReport(report);
+```
+
+Explicit repair:
+
+```typescript
+// Wrong: confirmation is ignored and the newest migration is applied.
+await config.applyMigration((await config.previewMigration(signal)).expectedVersion!, signal);
+
+// Correct: the confirmed Doctor plan is rebuilt and matched first.
+await doctorRepairService.execute(command.expectedPlanId, signal);
 ```
 
 Nullable nested recovery validation:
@@ -650,6 +788,244 @@ const result = await runTree({ timeoutMs: 1_000 });
 const pid = Number(await readFileEventually(marker));
 assert.equal(result.kind, "timeout");
 await assertProcessStops(pid);
+```
+
+---
+
+### Scenario: Deterministic Agent Worker Integration Memory Tests
+
+#### 1. Scope / Trigger
+- Trigger: app integration tests that repeatedly construct real `AgentWorkerPool` instances in one
+  Node test-file process.
+- The production pool intentionally samples total process RSS. A long TypeScript integration file can
+  retain enough allocator/code memory between otherwise closed backends to cross the production soft
+  limit, even though the test is serial and every individual case passes.
+
+#### 2. Signatures
+- Direct-start test seam:
+  `StartNodeBackendOptions.agentWorkerReadProcessRssBytes?: () => number`.
+- Shared app-test composition:
+  `startTestNodeBackend(options) -> ReturnType<typeof startNodeBackend>`.
+- Production composition omits the seam and therefore keeps
+  `AgentWorkerPoolOptions.readProcessRssBytes = () => process.memoryUsage.rss()`.
+
+#### 3. Contracts
+- Tests whose subject is backend behavior rather than memory pressure must use
+  `test/support/offline-update-fetch.ts` so update I/O and process RSS are deterministic.
+- The shared helper supplies a fixed non-negative RSS value. It must not change production defaults,
+  exported memory limits, CLI environment behavior, or supervisor composition.
+- Agent Worker memory-pressure behavior remains covered in `@mycli/runtime` with injected RSS values
+  around the soft and hard boundaries.
+- Serial test execution limits concurrent process load but is not a substitute for RSS injection:
+  allocator-retained memory can still accumulate within one large test file.
+- Do not solve this failure class by increasing product thresholds, lengthening child wait timeouts,
+  or globally monkey-patching `process.memoryUsage`.
+
+#### 4. Validation & Error Matrix
+- Focused Worker test passes and the full app file passes -> accept the behavioral result.
+- Focused Worker test passes, full app file stalls, and sampled RSS is above the production soft limit
+  -> inspect shared test composition before changing runtime or timeout behavior.
+- A memory-pressure unit test uses the shared low-RSS helper -> invalid coverage; construct the pool
+  directly with explicit boundary RSS values.
+- Production or supervisor startup supplies the test seam -> invalid composition; remove the override
+  so real RSS protection remains active.
+- Test seam returns a negative, fractional, or non-finite value -> pool validation fails closed.
+
+#### 5. Good/Base/Bad Cases
+- Good: app backend integration tests use `startTestNodeBackend`, while runtime pool tests inject
+  soft/hard RSS values directly and assert queue/rejection outcomes.
+- Base: a direct production `startNodeBackend` call omits the test seam and samples real process RSS.
+- Bad: increase a 5-second child wait to 30 seconds when the child lease was deliberately held by
+  soft pressure and never started.
+- Bad: raise the production 1.5/2 GiB limits only to make one accumulated test process pass.
+
+#### 6. Tests Required
+- Run the affected Worker tests by exact name to prove their semantic path independently.
+- Run the complete `node-backend.integration.test.ts` file to exercise accumulated test-process RSS.
+- Run the complete `@mycli/app` suite and repository-wide `npm test` before completion.
+- Keep `AgentWorkerPool` unit coverage for normal, soft, hard, queue-timeout, idle-retirement, and
+  interactive-reuse behavior on the real production decision logic.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+// Hides a test-process artifact by weakening the product for every user.
+export const DEFAULT_AGENT_WORKER_RSS_SOFT_LIMIT_BYTES = 3 * 1024 ** 3;
+```
+
+Correct:
+```typescript
+return startNodeBackend({
+	updateFetch: offlineUpdateFetch,
+	agentWorkerReadProcessRssBytes: () => 0,
+	...options,
+});
+```
+
+Keep the deterministic override at the direct-start app-test boundary; production memory pressure
+must continue to observe the actual process.
+
+---
+
+### Scenario: Configuration And UX Baseline Drift Gate
+
+#### 1. Scope / Trigger
+- Trigger: adding or changing a provider-free management command, slash command, shell setting,
+  gateway contract, startup gate, or configuration/TUI journey covered by the UX baseline.
+- The gate keeps parser, help, docs, TUI descriptors, generated gateway contracts, and distributed
+  provider-free tests discoverable without adding another end-to-end framework.
+
+#### 2. Signatures
+- Manifest: `tests/fixtures/configuration_ux/baseline.json` with `schema_version: 1`.
+- Canonical CLI metadata: `CLI_COMMAND_CATALOG`, `ROOT_CLI_OPTIONS`, and `COMPLETION_SHELLS` in
+  `backend/apps/mycli/src/management/cli-command-catalog.ts`.
+- Derived CLI surfaces: `CLI_COMMAND_NAMES`, `MANAGEMENT_COMMAND_NAMES`, and `renderRootHelp()` from
+  the same catalog module.
+- Completion command: `mycli completion <bash|zsh|fish|powershell>`.
+- Completion renderer: `renderShellCompletion(shell: CompletionShell) -> string`.
+- Keymap catalog: `TUI_KEYMAP_ACTIONS` and `tui.keymap.<context>.<config-key>` paths in
+  `backend/packages/contracts/src/gateway/tui-keymap.ts`.
+- Settings RPCs: `settings.load`, `settings.save`, and `settings.keymap.reset`.
+- Settings snapshot fields: `settings`, `sources`, `keymap`, `terminal_capabilities`, and `catalog`.
+- Focused command: `npm run test:ux-contracts`.
+- Report: `docs/parity/configuration-ux-baseline.md`.
+
+#### 3. Contracts
+- The manifest keeps the required journey IDs in stable order and links each journey to at least one
+  repository-relative file plus an exact `test("...")` declaration.
+- Journey evidence is provider-free and covers `darwin`, `linux`, and `win32`; platform-specific
+  behavior may use a narrower platform list.
+- Checked-in measurements are deterministic structural values. Machine-dependent wall-clock
+  startup profiling remains explicit opt-in through `MYCLI_STARTUP_PROFILE=1`.
+- UX budgets explicitly cover first-paint network blocking, root-failure diagnostic count, selector
+  response, minimum terminal width, destructive defaults, Esc cancellation, draft preservation,
+  and PTY readiness.
+- The manifest and report contain no captured credentials, prompts, provider output, tool content,
+  secret-shaped values, or user-specific absolute paths.
+- `CLI_COMMAND_CATALOG` is the only production registry for root command names, execution lanes,
+  usage, descriptions, actions, options, and fixed candidate values. Parser membership, root help,
+  and all four completion renderers derive from it; shell-specific code may format metadata but must
+  not carry a second command list.
+- Completion is a distinct `CliMode`, writes plain text directly to stdout, and returns before
+  management composition, backend/provider construction, or TUI import. Missing, extra, or unknown
+  shell arguments return the ordinary bounded argument error with exit code `2`.
+- Interactive mode requires terminal stdin and stdout and returns one `tty_required` line otherwise.
+  Provider-free management and completion commands remain valid under non-TTY streams and never
+  emit TUI control sequences.
+- Effective keymaps derive from `TUI_KEYMAP_ACTIONS` plus layered config. Key names are normalized,
+  lists are bounded to eight unique entries, required actions cannot be unbound, and two actions in
+  one input context cannot claim the same key. A validation or persistence failure leaves the prior
+  effective keymap active.
+- `settings.keymap.reset` clears only the user `[tui.keymap]` table, re-resolves every layer, and
+  returns the same complete settings snapshot as load/save. The searchable settings catalog exposes
+  each effective binding, its source, overridden layers, and the reset action without private values.
+- Terminal capabilities are detected once per backend launch from bounded environment signals and
+  combined with `tui.color_mode`, `tui.glyph_mode`, `tui.reduced_motion`,
+  `tui.terminal_progress`, and `tui.high_contrast`. `NO_COLOR`, `MYCLI_TUI_COLOR=never`, and
+  `TERM=dumb` force no-color output; `TERM=dumb` also forces ASCII glyphs. The gateway projects only
+  the resolved enum/boolean state and at most two bounded guidance strings.
+- TUI chrome consumes semantic color and glyph tokens. `none` emits no ANSI color sequences, ASCII
+  mode removes product-owned non-ASCII chrome, and reduced motion uses a static progress indicator
+  without changing transcript meaning or layout dimensions.
+- `renderUnifiedDiff` expands tabs to three spaces before parsing, highlighting, wrapping, and
+  fallback rendering, matching `Text`, `Markdown`, and `visibleWidth`. Raw terminal tabs only move
+  the cursor: skipped cells keep their old background and terminal tab stops invalidate measured
+  widths. Added/removed rows must paint every cell, including indentation, blank source lines,
+  continuations, and trailing padding. Keep source file contents unchanged.
+- Diff background regressions inspect actual `HeadlessTerminal.visibleCell` background attributes,
+  not just the presence of ANSI color codes. Cover tabbed code, CJK text, widths 18/22/80, dark/light
+  themes, supported color modes, and incremental updates and resize in both terminal render modes.
+- Slash commands, aliases, and shell setting keys are generated or checked from their canonical
+  registries rather than copied into another production registry.
+- Gateway drift checks compare the generated contract catalog with the frozen M8 gateway evidence.
+
+#### 4. Validation & Error Matrix
+- Missing or reordered required journey -> focused gate fails with the manifest mismatch.
+- Absolute evidence path, path traversal, missing file, or stale test name -> focused gate fails
+  before accepting the baseline.
+- Secret-shaped manifest/report value or common user-home absolute path -> privacy assertion fails.
+- Root command/action/option added outside `CLI_COMMAND_CATALOG` -> help/completion/parser drift test
+  fails; move the metadata into the catalog instead of copying it to the missing surfaces.
+- Completion shell missing a catalog token, registration line, trailing newline, or plain-text
+  output guarantee -> completion unit or CLI isolation test fails.
+- Completion or management command starts the backend/provider/TUI under non-TTY streams -> CLI
+  isolation test fails.
+- Malformed key name, more than eight keys, an empty required action, or a same-context conflict ->
+  typed `invalid_value`; do not apply a partial map.
+- Keymap reset write/re-resolution failure -> retain the previous TUI state and show one bounded
+  selector error.
+- `NO_COLOR`, `MYCLI_TUI_COLOR=never`, or `TERM=dumb` paired with colored output -> capability/TUI
+  regression fails.
+- Slash command or alias omitted from docs -> canonical matrix comparison fails.
+- `SHELL_SETTING_DESCRIPTORS` key omitted from docs -> descriptor comparison fails.
+- Gateway method/event drift without updated frozen evidence -> count or required-surface assertion
+  fails.
+- Local startup timing varies while structural budgets remain unchanged -> no CI failure; investigate
+  with the opt-in stage profile and update a numeric release budget only through an explicit change.
+
+#### 5. Good/Base/Bad Cases
+- Good: add one command descriptor to `CLI_COMMAND_CATALOG`; parser, help, Bash, Zsh, Fish, and
+  PowerShell discover the same command through derived metadata.
+- Good: add a keymap action to `TUI_KEYMAP_ACTIONS`, consume its normalized effective binding in the
+  owning input context, and cover conflict/reset behavior.
+- Good: add a shell setting descriptor, document its canonical `tui.*` key, and map it through a
+  semantic TUI token rather than branching in every component.
+- Base: improve one journey's existing provider-free test and update only its exact evidence name.
+- Bad: add a second hand-maintained production command list solely for help, completion, or a drift
+  test.
+- Bad: inspect environment capability variables inside individual TUI components after the backend
+  has already projected a resolved capability snapshot.
+- Bad: check in a startup profile containing a local home path, session ID, prompt, or provider data.
+- Bad: assert shared-runner wall-clock milliseconds without a documented performance budget.
+
+#### 6. Tests Required
+- Run `npm run test:ux-contracts` for manifest schema/order, evidence, privacy, and cross-surface drift.
+- Run every added or renamed evidence test, not only the declaration-link check.
+- Test catalog derivation, parser routing, every catalog token in all four completion outputs, one
+  registration statement per shell, no ANSI, and a final newline. Parse Bash/Zsh output with the
+  real shell when installed; keep deterministic token drift coverage for Fish/PowerShell where the
+  host shell is unavailable.
+- Test completion under non-TTY streams with zero management/backend/provider/TUI starts. Keep one
+  concise `tty_required` assertion for interactive non-TTY invocation.
+- Test layered keymap precedence, normalization, conflicts, required actions, reset success/failure,
+  searchable catalog projection, custom action dispatch, and default restoration.
+- Test capability detection/resolution plus TUI no-color, ASCII-only chrome, reduced-motion, and
+  high-contrast projection. Keep CJK/IME paste and layout cases at widths `60`, `80`, `100`, and
+  `140` with long Unix and Windows paths.
+- Run `npm run lint`, `npm run typecheck`, and `npm run contracts:check`.
+- Run the packed CLI smoke when root help, command composition, or a published entry changes. If a
+  platform archive download is unavailable, record the external failure and still run the
+  provider-independent `--app-only` packed smoke.
+- Keep sixty-column CJK/IME, Esc/draft, one-root-failure/one-diagnostic, background-update, and native
+  PTY readiness regressions represented by provider-free tests.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```typescript
+const managementCommands = ["setup", "doctor"];
+const bashCommands = "setup doctor completion"; // A second registry can silently drift.
+```
+
+Correct:
+```typescript
+import {
+	CLI_COMMAND_CATALOG,
+	MANAGEMENT_COMMAND_NAMES,
+	renderRootHelp,
+} from "../src/management/cli-command-catalog.ts";
+import { renderShellCompletion } from "../src/management/completion.ts";
+
+for (const command of CLI_COMMAND_CATALOG) {
+	assert.ok(renderRootHelp().includes(command.usage));
+	assert.ok(renderShellCompletion("bash").includes(command.name));
+}
+assert.deepEqual(
+	MANAGEMENT_COMMAND_NAMES,
+	CLI_COMMAND_CATALOG.filter((command) => command.execution === "management")
+		.map((command) => command.name),
+);
 ```
 
 ---

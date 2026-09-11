@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { AssistantMessageComponent } from "../src/components/assistant-message.ts";
+import { AssistantMessageComponent } from "../src/components/transcript/assistant-message.ts";
 import {
 	renderTranscriptMessageLines,
 	transcriptMessageContentWidth,
-} from "../src/components/transcript-message-layout.ts";
-import { UserMessageComponent } from "../src/components/user-message.ts";
+} from "../src/components/transcript/transcript-message-layout.ts";
+import { UserMessageComponent } from "../src/components/transcript/user-message.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
 
 function stripAnsi(text: string): string {
@@ -20,10 +20,12 @@ function visibleContentLines(lines: string[]): string[] {
 
 function renderColoredUserMessage(): string[] {
 	const fixture = fileURLToPath(new URL("./fixtures/render-user-message-theme.ts", import.meta.url));
+	const env = { ...process.env };
+	delete env.NO_COLOR;
 	const result = spawnSync(process.execPath, ["--import", "tsx", fixture], {
 		encoding: "utf8",
 		env: {
-			...process.env,
+			...env,
 			MYCLI_TUI_COLOR: "always",
 			COLORTERM: "truecolor",
 		},

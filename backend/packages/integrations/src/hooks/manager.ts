@@ -5,6 +5,7 @@ import type {
 	HookResult,
 	HookRunnerContract,
 } from "@mycli/core";
+import { readErrorContext } from "@mycli/contracts";
 import { configuredHookMatches } from "./config.ts";
 import type {
 	ConfiguredHookExecutorContract,
@@ -183,9 +184,11 @@ function boundResult(
 				Object.freeze({ action: "error", message: "hook result invalid" }),
 			);
 		}
+		const errorContext = result.action === "error" ? readErrorContext(result.errorContext) : undefined;
 		return boundedResult(Object.freeze({
 			action: result.action,
 			message: safeText(result.message, "hook execution failed", MAX_MESSAGE_CHARS),
+			...(errorContext ? { errorContext } : {}),
 		}));
 	}
 	if (result.action !== "allow"

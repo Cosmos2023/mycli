@@ -1,7 +1,7 @@
 const OPEN_TAG = "<proposed_plan>";
 const CLOSE_TAG = "</proposed_plan>";
 
-export interface ProposedPlanExtraction {
+interface ProposedPlanExtraction {
 	readonly assistantText: string;
 	readonly planText: string;
 }

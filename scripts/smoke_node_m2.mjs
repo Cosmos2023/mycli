@@ -7,7 +7,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { resolveConfig } from "@mycli/config";
-import { OpenAIProviderRegistry } from "@mycli/providers";
+import { ProviderRegistry } from "@mycli/providers";
 import { NodeTurnRuntime } from "@mycli/runtime";
 import { openRuntimeSessionStore } from "@mycli/storage";
 
@@ -104,7 +104,7 @@ async function main() {
 	let store;
 	try {
 		store = openRuntimeSessionStore({ dbPath });
-		const registry = new OpenAIProviderRegistry();
+		const registry = new ProviderRegistry();
 		const runtimeConfig = {
 			...config,
 			protocol,
@@ -113,7 +113,7 @@ async function main() {
 			requestMaxRetries: 0,
 			streamMaxRetries: 0,
 			thinkingEnabled: false,
-			promptCacheKeyEnabled: false,
+			cacheRetention: "none",
 		};
 		const runtime = new NodeTurnRuntime({
 			sessionId,

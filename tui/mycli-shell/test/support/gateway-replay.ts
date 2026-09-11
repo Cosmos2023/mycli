@@ -1,9 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GatewayEventDeduper } from "../../src/adapters/gateway-events.ts";
-import type { GatewayEvent, RpcMessage } from "../../src/adapters/gateway-client.ts";
-import { initialRuntimeState, reduceRuntimeEvent, type RuntimeShellState } from "../../src/adapters/runtime-state.ts";
+import { GatewayEventDeduper } from "../../src/transport/gateway-events.ts";
+import type { GatewayEvent, RpcMessage } from "../../src/transport/gateway-client.ts";
+import {
+	initialRuntimeState,
+	type RuntimeShellState,
+} from "../../src/state/runtime-state-model.ts";
+import {
+	reduceDecodedRuntimeEvent,
+} from "../../src/state/runtime-event-reducer.ts";
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 
@@ -21,9 +27,8 @@ export function replayGatewayEvents(events: GatewayEvent[]): RuntimeShellState {
 	const deduper = new GatewayEventDeduper();
 	let state = initialRuntimeState();
 	for (const event of events) {
-		if (deduper.shouldConsume(event)) {
-			state = reduceRuntimeEvent(state, event.method, event.params);
-		}
+		const decoded = deduper.consume(event);
+		if (decoded) state = reduceDecodedRuntimeEvent(state, decoded);
 	}
 	return state;
 }

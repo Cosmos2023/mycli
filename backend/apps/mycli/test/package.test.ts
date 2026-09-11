@@ -21,6 +21,26 @@ type PackageManifest = {
 
 const ROOT = new URL("../../../../", import.meta.url);
 
+const WORKSPACE_IMPORTS = [
+	"@cosmos2023/mycli/backend",
+	"@cosmos2023/mycli/gateway",
+	"@mycli/config",
+	"@mycli/config/profile",
+	"@mycli/config/paths",
+	"@mycli/contracts",
+	"@mycli/core",
+	"@mycli/gateway",
+	"@mycli/integrations",
+	"@mycli/providers",
+	"@mycli/runtime",
+	"@mycli/storage",
+	"@mycli/tools",
+	"@mycli/tools/ripgrep-runtime",
+	"mycli-shell-tui",
+	"mycli-shell-tui/gateway",
+	"mycli-shell-tui/gateway-transport",
+] as const;
+
 const packages = [
 	{
 		name: "app",
@@ -93,9 +113,9 @@ test("TUI production exports target compiled JavaScript and declarations", () =>
 			import: "./dist/gateway.js",
 		},
 		"./gateway-transport": {
-			"mycli-source": "./src/adapters/gateway-transport.ts",
-			types: "./dist/adapters/gateway-transport.d.ts",
-			import: "./dist/adapters/gateway-transport.js",
+			"mycli-source": "./src/transport/gateway-transport.ts",
+			types: "./dist/transport/gateway-transport.d.ts",
+			import: "./dist/transport/gateway-transport.js",
 		},
 	});
 	assert.equal(manifest.types, "./dist/index.d.ts");
@@ -155,7 +175,7 @@ test("repository excludes the retired Python product and toolchain", () => {
 		assert.equal(existsSync(new URL(path, ROOT)), false, `${path} must stay retired`);
 	}
 	const sessionCorpusTest = readFileSync(
-		new URL("backend/packages/storage/test/session-corpus.test.ts", ROOT),
+		new URL("backend/packages/storage/test/sessions/session-corpus.test.ts", ROOT),
 		"utf8",
 	);
 	assert.doesNotMatch(sessionCorpusTest, /\b(?:python3?|PYTHONPATH)\b|from mycli\./iu);
@@ -184,22 +204,7 @@ test("compiled CLI does not load the backend implementation on the supervisor th
 });
 
 test("root development command resolves every workspace package from source", () => {
-
-	const packageNames = [
-		"@mycli/config",
-		"@mycli/contracts",
-		"@mycli/core",
-		"@mycli/integrations",
-		"@mycli/providers",
-		"@mycli/runtime",
-		"@mycli/storage",
-		"@mycli/tools",
-		"@mycli/tools/ripgrep-runtime",
-		"mycli-shell-tui",
-		"mycli-shell-tui/gateway",
-		"mycli-shell-tui/gateway-transport",
-	] as const;
-	const script = `process.stdout.write(JSON.stringify(${JSON.stringify(packageNames)}.map((name) => import.meta.resolve(name))))`;
+	const script = `process.stdout.write(JSON.stringify(${JSON.stringify(WORKSPACE_IMPORTS)}.map((name) => import.meta.resolve(name))))`;
 	const resolved = JSON.parse(execFileSync(
 		process.execPath,
 		["--conditions=mycli-source", "--input-type=module", "--eval", script],
@@ -207,25 +212,26 @@ test("root development command resolves every workspace package from source", ()
 	)) as string[];
 
 	for (const [index, value] of resolved.entries()) {
-		assert.match(value, /\/(?:backend\/packages\/[^/]+|tui\/mycli-shell)\/src\//u, packageNames[index]);
-		assert.match(value, /\.ts$/u, packageNames[index]);
+		assert.match(value, /\/(?:backend\/packages\/[^/]+|backend\/apps\/mycli|tui\/mycli-shell)\/src\//u, WORKSPACE_IMPORTS[index]);
+		assert.match(value, /\.ts$/u, WORKSPACE_IMPORTS[index]);
+		assert.ok(existsSync(new URL(value)), WORKSPACE_IMPORTS[index]);
 	}
 });
 
 test("default workspace imports keep production packages on compiled output", () => {
-	const script = `process.stdout.write(JSON.stringify([
-		import.meta.resolve('mycli-shell-tui/gateway-transport'),
-		import.meta.resolve('@mycli/tools/ripgrep-runtime'),
-	]))`;
-	const resolved = execFileSync(
+	const script = `process.stdout.write(JSON.stringify(${JSON.stringify(WORKSPACE_IMPORTS)}.map((name) => import.meta.resolve(name))))`;
+	const resolved = JSON.parse(execFileSync(
 		process.execPath,
 		["--input-type=module", "--eval", script],
 		{ cwd: fileURLToPath(ROOT), encoding: "utf8" },
-	);
+	)) as string[];
 
-	const [gatewayTransport, ripgrepRuntime] = JSON.parse(resolved) as string[];
-	assert.match(gatewayTransport ?? "", /\/tui\/mycli-shell\/dist\/adapters\/gateway-transport\.js$/u);
-	assert.match(ripgrepRuntime ?? "", /\/backend\/packages\/tools\/dist\/ripgrep-runtime\.js$/u);
+	for (const [index, value] of resolved.entries()) {
+		assert.match(value, /\/(?:backend\/packages\/[^/]+|backend\/apps\/mycli|tui\/mycli-shell)\/dist\//u, WORKSPACE_IMPORTS[index]);
+		assert.match(value, /\.js$/u, WORKSPACE_IMPORTS[index]);
+		assert.ok(existsSync(new URL(value)), WORKSPACE_IMPORTS[index]);
+		assert.ok(existsSync(new URL(value.replace(/\.js$/u, ".d.ts"))), WORKSPACE_IMPORTS[index]);
+	}
 });
 
 test("packed CLI smoke vendors internal workspaces into the application tarball", () => {

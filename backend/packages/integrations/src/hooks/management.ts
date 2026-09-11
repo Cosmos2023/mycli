@@ -145,6 +145,9 @@ export class HookManagementService {
 		return discoverHookConfig({
 			workspaceRoot: this.#options.workspaceRoot,
 			homeDir: this.#options.homeDir,
+			...(this.#options.includeRepository === undefined
+				? {}
+				: { includeRepository: this.#options.includeRepository }),
 			...(this.#options.platform ? { platform: this.#options.platform } : {}),
 			...(this.#options.env ? { env: this.#options.env } : {}),
 			...(this.#options.shellPath ? { shellPath: this.#options.shellPath } : {}),

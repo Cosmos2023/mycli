@@ -48,8 +48,13 @@
   constraints still cap it; the approval boolean alone never constructs unrestricted access.
 - `web_fetch` checks the initial URL and every redirect against the effective domain list. Exact
   entries match one host. `*.example.com` matches subdomains only, not the apex.
-- Domain-constrained Shell execution remains network-disabled on macOS, Linux, and Windows until a
-  sandbox proxy can enforce host-level policy. It must never degrade to unrestricted networking.
+- Domain-constrained Shell on macOS uses a process-owned HTTP/CONNECT proxy and a Seatbelt rule
+  allowing only its loopback TCP port. Linux and Windows reject enabled, non-empty domain policies
+  with `network_proxy_unavailable` until native routing exists. Disabled/empty policies stay offline;
+  raw sandbox launches without a proxy stay offline on every platform.
+- File-system full access does not discard network constraints. A model escalation request alone
+  retains the original policy; an approved fallback without an explicit override preserves any
+  existing domain bound. See [Network Proxy Contract](./network-proxy-contract.md).
 - Subagent spawn snapshots preserve readable roots, writable roots, and network domains. The child
   runtime installs them as runtime constraints and seeds only the inherited effective grants.
 
@@ -70,7 +75,9 @@
 | Read outside all effective roots | Return `workspace_escape` |
 | Initial web host outside allowlist | Return `network_domain_denied`; make no request |
 | Redirect outside allowlist | Return `network_domain_denied`; do not fetch the redirect target |
-| Domain-constrained Shell | Launch in the platform sandbox with networking disabled |
+| Enabled, non-empty domain-constrained Shell on macOS | Use a frozen per-process proxy and deny direct egress |
+| Enabled, non-empty domain-constrained Shell on Linux/Windows | Return `network_proxy_unavailable`; start no process |
+| Network-disabled, empty domain list, or raw launch without a proxy | Preserve offline sandbox enforcement |
 | Child requests broader roots/domains | Reject with `AgentAuthorityError` |
 
 ### 5. Good/Base/Bad Cases

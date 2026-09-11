@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "application": {
+    "package": "@cosmos2023/mycli",
+    "binary": "mycli",
+    "predecessor": {
+      "package": "@cosmos2023/app",
+      "version": "0.1.0"
+    }
+  },
+  "node": {
+    "minimum": "22.19.0",
+    "tested": [
+      "22.19.0",
+      "24.x"
+    ]
+  },
+  "platforms": {
+    "supported": [
+      {
+        "id": "darwin",
+        "runner": "macos-latest"
+      },
+      {
+        "id": "linux",
+        "runner": "ubuntu-latest"
+      },
+      {
+        "id": "win32",
+        "runner": "windows-2022"
+      }
+    ]
+  },
+  "configuration": {
+    "migration_contract_version": 1,
+    "canonical_path": "~/.mycli/config.toml",
+    "legacy_path": "~/.config/mycli/config.toml",
+    "rollback": "explicit_backup"
+  },
+  "model_catalog": {
+    "preferred_format": "provider_grouped",
+    "readable_formats": [
+      "provider_grouped",
+      "legacy_flat"
+    ]
+  },
+  "sessions": {
+    "runtime_schema": 12,
+    "directly_readable_schemas": [
+      12
+    ],
+    "maintenance_inspectable_schemas": [
+      9,
+      10,
+      11,
+      12
+    ],
+    "maintenance_migrations": [
+      {
+        "from": 9,
+        "to": 10,
+        "action": "/session maintenance --apply-transcript-normalization"
+      },
+      {
+        "from": 10,
+        "to": 11,
+        "action": "/session maintenance --apply-content-blobs"
+      }
+    ],
+    "downgrade": "same_schema_only"
+  },
+  "startup_budget_fixture": "tests/fixtures/configuration_ux/baseline.json",
+  "deprecations": [
+    {
+      "id": "npm-package-cosmos2023-app",
+      "subject": "@cosmos2023/app",
+      "introduced_in": "0.1.0",
+      "deprecated_in": "0.1.0",
+      "removed_in": null,
+      "replacement": "@cosmos2023/mycli",
+      "migration_guide": "docs/upgrading.md#package-name-migration"
+    }
+  ],
+  "documentation": {
+    "compatibility": "docs/compatibility.md",
+    "upgrade": "docs/upgrading.md",
+    "release": "docs/releasing.md",
+    "release_notes": "docs/release-notes.md",
+    "changelog": "CHANGELOG.md",
+    "evidence": "docs/parity/configuration-ux-release-evidence.md",
+    "troubleshooting": "docs/troubleshooting.md",
+    "windows": "docs/windows.md"
+  }
+}

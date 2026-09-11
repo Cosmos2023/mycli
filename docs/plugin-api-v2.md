@@ -10,6 +10,11 @@ or import mycli runtime internals at execution time.
 Repository plugins live at `<workspace>/.mycli/plugins/<plugin-id>/`; user plugins live at
 `~/.mycli/plugins/<plugin-id>/`.
 
+Compiled v2 directories can also be installed using `mycli plugins add ./example-plugin` and
+managed with `plugins update|remove|enable|disable`. Managed packages use immutable user-cache
+snapshots and are enabled on installation unless configuration disables them. Codex-style bundles
+are an additional format, documented in [plugin-codex-parity.md](plugin-codex-parity.md).
+
 ```text
 example-plugin/
   plugin.yaml
@@ -190,6 +195,21 @@ Host diagnostics may expose plugin id, source, lifecycle status, declared regist
 counts, and stable failure categories. They never include environment values, headers, raw
 stdin/stdout/stderr, plugin exception messages, stack traces, provider payloads, prompts, tool
 arguments, or file contents.
+
+Failures use the shared `integration.*` error catalog. Structured host evidence can include the
+operation, phase, timeout, numeric exit code, allowlisted termination signal/errno, and one previous
+failure. `error_context` is reserved host metadata; plugin-returned values are discarded. Existing
+tool sessions without version-1 error-context support still receive bounded diagnostic text.
+
+After a crash, timeout, or cancellation, a new invocation may start a replacement worker. It must
+register exactly the original tools, hooks, commands, descriptions, and schemas. Keep registration
+deterministic and avoid depending on process-local state surviving between calls. Concurrent new
+invocations share startup. Cancelling all waiters or closing the runtime stops further dispatch.
+The failed invocation is never automatically replayed because its effects may already have occurred.
+Protocol corruption and registration mismatch require correction and an explicit runtime reload.
+
+`/plugins` shows live process status and package capabilities. In-session command routes use
+`/plugin:<plugin-id>:<command> [json-args]`.
 
 Validate an installation with:
 

@@ -65,7 +65,8 @@ export interface QueuedInput {
   client_turn_id: Identifier;
   target_turn_id: NullableIdentifier;
   kind: "pending_steer" | "rejected_steer" | "follow_up";
-  state: "queued" | "accepted" | "committed";
+  state: "queued" | "accepted" | "claimed" | "committed";
+  claim_turn_id?: NullableIdentifier;
   text: string;
   /**
    * @maxItems 16
@@ -221,6 +222,7 @@ export interface SuspendedTurnPayload {
   continuation?: {
     [k: string]: any;
   };
+  parallel_batch?: ParallelApprovalBatch;
   [k: string]: any;
 }
 export interface Message {
@@ -269,6 +271,27 @@ export interface PendingClarification {
   header?: ShortString;
   multi_select: boolean;
   [k: string]: any;
+}
+export interface ParallelApprovalBatch {
+  batch_id: Identifier;
+  revision: number;
+  /**
+   * @minItems 1
+   * @maxItems 128
+   */
+  calls: [ParallelApprovalCall, ...ParallelApprovalCall[]];
+}
+export interface ParallelApprovalCall {
+  call: CanonicalToolCall;
+  execution_call: CanonicalToolCall;
+  sandbox_override_approved: boolean;
+  approval?: PendingDecisionPayload;
+  choice?: "approve_once" | "allow_session" | "always_allow" | "reject";
+}
+export interface CanonicalToolCall {
+  callId: Identifier;
+  name: Identifier;
+  argumentsJson: string;
 }
 export interface EffectCheckpoint {
   kind: "effect_checkpoint";

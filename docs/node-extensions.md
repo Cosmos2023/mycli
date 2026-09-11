@@ -13,14 +13,31 @@ but do not construct a provider or start the interactive runtime.
 | Plugins | `~/.mycli/plugins/<id>/` | `<workspace>/.mycli/plugins/<id>/` | User plugin ids replace repository ids; disabled wins |
 | Skills | `~/.mycli/skills/` | `<workspace>/.agents/skills/`, then `<workspace>/.mycli/skills/` | Later sources replace earlier skill names |
 
+Repository paths are excluded from discovery while workspace trust is `unknown` or `untrusted`.
+This includes repository hooks, MCP servers, plugins, skills, plugin enablement in project
+`config.toml`, and project execution rules. User-scoped integrations remain available. Granting
+trust reloads repository sources before the decision is reported as successful. Revoking trust
+removes their tools, hooks, commands, and resources and closes project MCP/plugin hosts before the
+request completes; no restart is required.
+
 Every parser bounds file size, item count, names, and diagnostic output. A malformed entry remains
 visible as a diagnostic and does not prevent unrelated entries from loading.
 
 ## Deferred Tool Discovery
 
 MCP and plugin adapters start with the runtime and remain routable, but their provider schemas are
-not included in the initial request. The stable `tool_search` built-in searches their bounded name,
-description, source, and origin metadata. A successful result activates at most 16 matching routes
+not included in the initial request. The stable `tool_search` built-in advertises a sorted,
+deduplicated catalog of searchable MCP servers and plugins in its description, including MCP
+initialization instructions when available. Only sources with tools allowed in the current run
+appear. This bounded description is frozen with the run's tool catalog; background refresh affects
+the next run. Cached MCP discovery preserves the optional server instructions.
+
+The model may choose relevant tools from the task context without an explicit MCP or plugin
+mention. It uses `tool_search` to find missing tools, and uses the MCP resource tools to discover
+or read resources. Source descriptions are external capability metadata, not permission grants.
+
+`tool_search` searches bounded name, description, source, and origin metadata, including the
+server capability description. A successful result activates at most 16 matching routes
 for later provider steps in the same turn.
 
 Activation metadata is appended atomically with the `tool_search` result before any selected schema
@@ -36,6 +53,14 @@ These commands work without a TTY and before backend/provider/TUI startup:
 ```bash
 mycli doctor
 mycli doctor --json
+mycli doctor --fix --json
+mycli doctor --support-bundle --json
+mycli sandbox status
+mycli sandbox status --json
+mycli sandbox setup
+mycli sandbox setup --confirm --json
+mycli sandbox reset
+mycli sandbox reset --confirm --json
 mycli hooks list --json
 mycli hooks inspect <identity> --json
 mycli hooks approve <identity>
@@ -112,6 +137,43 @@ MCP tool still requires one-time approval before execution.
 the same timeout, sandbox, cancellation, and cleanup path as runtime startup and close every client
 before returning.
 
+MCP tool and resource failures include bounded diagnostics: operation, connection/request phase,
+HTTP status, JSON-RPC code, and an allowlisted transport cause code when available. Version-1 error
+contexts preserve this evidence in tool results and session history. Endpoint URLs, session IDs,
+authorization headers, and raw upstream error bodies are never included in those diagnostics.
+
+For Streamable HTTP, a POST rejected with HTTP 404 while carrying an MCP session ID triggers a
+fresh initialization and at most one retry of the rejected operation. Concurrent failures share
+the replacement connection; already running requests can finish on the old connection. Cancellation
+or client close stops further recovery work. A 404 without a session ID, ordinary HTTP errors,
+timeouts, and ambiguous disconnections do not replay tool calls automatically. When execution
+cannot be confirmed, the error records an unknown outcome so callers can check remote state before
+retrying an operation that may have side effects. An unsupported optional GET stream (HTTP 405)
+remains compatible with POST-based MCP servers.
+
+## Images And MCP Resources
+
+`view_image` accepts a local `path`. It decodes PNG, JPEG, GIF and WebP by their actual content,
+checks the current file-read permissions, and scales large images to fit within 2048 x 2048.
+When the selected model supports original image detail, the schema also exposes
+`detail: "high" | "original"`; `original` retains the source dimensions. The tool does not crop,
+render SVG, run OCR, or call Quick Look. Image bytes and detail survive session recovery.
+Input/output files are bounded to 10 MB and decoding to 64 million pixels.
+Image decoding requires the platform binaries installed with npm optional dependencies. These load
+only when viewing an image; installations without them can still start and use other tools.
+
+`list_mcp_resources` and `list_mcp_resource_templates` accept optional `server` and `cursor`.
+Omitting `server` aggregates configured servers; a server-specific request returns one native MCP
+page. Send its `nextCursor` back as `cursor` with the same server. Templates return `uriTemplate`
+values such as `data:///notes/{name}`. Instantiate that template and pass the resulting URI to
+`read_mcp_resource({server, uri})`. These tools do not require MCP tool activation.
+
+Resource results remain bounded JSON and explicitly mark truncation. Image resources are attached
+as images rather than base64 text. Previously persisted `offset` calls still execute through a
+dispatch-only compatibility schema; new provider requests use the Codex-style parameters.
+
+See [the Codex comparison](parity/2026-09-09-image-resource-tools.md) for scope and differences.
+
 ## Skills
 
 A skill is either `<root>/<name>.md` or `<root>/<name>/SKILL.md` with TOML or YAML frontmatter:
@@ -161,7 +223,14 @@ agent configuration, permission, artifact, recovery, and TUI contract is documen
 
 ## Plugins
 
-Node plugins use the process-isolated Plugin API v2. Production entries must be compiled `.js` or
+Plugins may be Codex-style bundles installed with `mycli plugins add <directory|Git-source|name@marketplace>`.
+Bundles contribute namespaced skills, MCP servers and command hooks through the existing runtime
+systems. Use `mycli plugins marketplace add <source>` to register a catalog, then
+`mycli plugins list --available` to browse it. Install/update/enable/disable/remove take effect in
+new sessions; installation does not execute package code. Apps declarations are reported as
+unavailable. See [plugin-codex-parity.md](plugin-codex-parity.md) for formats, commands and limits.
+
+Executable ESM plugins use the process-isolated Plugin API v2. Production entries must be compiled `.js` or
 `.mjs`; raw TypeScript and Python source are not executed. See [plugin-api-v2.md](plugin-api-v2.md)
 for the author contract and [migration/python-plugins-to-v2.md](migration/python-plugins-to-v2.md)
 for Python migration.
@@ -172,22 +241,49 @@ the normal ordered hook pipeline. The worker receives only a minimal environment
 declared names, and every invocation is bounded by protocol size, timeout, outstanding-request, and
 output limits.
 
+`/plugins` reflects live process status: a crashed worker becomes `error`, a replacement is
+`loading`, and a successfully initialized worker becomes enabled again. Successful calls do not
+refresh the extension catalog. A retired or closed runtime cannot publish old plugin state.
+
+Failures identify the plugin, operation, phase, and safe process evidence such as exit code or
+timeout. The runtime may start one replacement for a new invocation after a crash, timeout, or
+cancellation. Concurrent callers share startup; cancelled callers are not dispatched. Calls with
+uncertain outcomes are never replayed automatically. Registration changes or protocol corruption
+require a runtime reload after correcting the plugin. Commands remain provider-free through
+`mycli plugins run` and the registered `/plugin:<id>:<command>` routes.
+
+See [plugin-codex-parity.md](plugin-codex-parity.md) for the Codex comparison and compatibility scope.
+
 ## Doctor And Troubleshooting
 
 `mycli doctor` runs collectors independently and sequentially. One exception becomes one failed
 check and later collectors still run. Warnings exit `0`; any failed check exits `1`.
+
+`mycli doctor --fix` previews deterministic repairs without mutation. Applying requires the exact
+displayed plan id through `--confirm <plan-id>`; the current repair delegates canonical user-config
+migration to the configuration owner. `--support-bundle` writes one private allowlisted JSON report
+without raw logs, extension payloads, commands, credentials, provider data, or automatic upload.
 
 The report covers config/auth presence, read-only SQLite/storage, logs/traces/redaction, package and
 gateway contracts, the built-in tool manifest, sandbox/process support, every extension source, and
 Python-plugin migration state. It never calls a model provider. SQLite opens read-only and doctor
 does not create, migrate, repair, delete, or vacuum local state.
 
+`mycli sandbox status [--json]` runs the same side-effect-free sandbox readiness classifier without
+loading extensions, starting the interactive backend/TUI, calling a provider, requesting elevation,
+or running setup. `sandbox setup` and `sandbox reset` return a typed preview by default and require
+`--confirm` before any state change. Their response includes the required privilege, bounded effects,
+result code, and post-operation readiness. Windows setup may request UAC; reset retains the restricted
+account and firewall rules. macOS/Linux missing dependencies remain manual recovery steps. Raw helper
+output and paths never enter any response.
+
 Common remediation:
 
 - `config=failed`: fix TOML syntax or provider/protocol compatibility, then rerun doctor.
 - `sessions_db=failed`: preserve the file and inspect schema/recovery diagnostics; doctor will not
   repair it.
-- `process_sandbox=failed`: install the platform sandbox prerequisite documented in
+- `process_sandbox=failed`: run `mycli sandbox status` for the stable readiness code and remediation,
+  then install or repair the platform prerequisite documented in
   [node-runtime-rollout.md](node-runtime-rollout.md).
 - `hooks=warning`: inspect and approve the current hook identity/digest.
 - `plugins=failed`: build the declared ESM entry and verify manifest declarations match runtime

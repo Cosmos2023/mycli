@@ -4,7 +4,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { writeProcessMarker } from "./process-marker.mjs";
 
-const server = new McpServer({ name: "mycli-test-stdio", version: "1.0.0" });
+const server = new McpServer(
+	{ name: "mycli-test-stdio", version: "1.0.0" },
+	{ instructions: "Echo text and read fixture resources." },
+);
 
 server.registerTool("echo", {
 	description: "Echo text.",

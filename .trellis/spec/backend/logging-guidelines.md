@@ -27,7 +27,7 @@ the local log root and must never become provider transcript inputs.
 - `WorkspaceLogService.write_raw_model_payload(kind: str, payload: Any, session_id: str, turn_id: str) -> Path`
 - `WorkspaceLogService.inspect_logs(tail: int = 20) -> tuple[str, ...]`
 - Slash command: `/logs` renders `TurnService.inspect_logs()` with `[log]` prefixes.
-- Slash command: `/trace-jsonl` renders `TurnService.export_trace_jsonl()` with
+- Slash command: `/trace export` renders `TurnService.export_trace_jsonl()` with
   `[trace-jsonl]` prefixes for machine-readable runtime trace rows.
 - Node gateway RPC: `trace.export` renders the same rows without slash-command
   prefixes for external/extension clients.
@@ -155,6 +155,45 @@ the local log root and must never become provider transcript inputs.
   a stream with fewer than two non-empty text deltas omits TBT. These diagnostics
   are local observability only and must not alter provider-visible transcript
   content.
+- Completion-tail fields are optional, finite milliseconds bounded to 24 hours:
+  `last_text_delta_ms`, `response_terminal_ms`, `sdk_terminal_ms`,
+  `completed_event_ms`, and `stream_settled_ms` are offsets from the attempt's
+  monotonic start. `terminal_persist_ms` is the duration of committing the
+  terminal attempt update (including Worker acknowledgement); `text_tail_ms`
+  spans the last nonempty text delta through diagnostic finalization. Fields
+  reset on retry. Missing observations are omitted, never synthesized as zero.
+- Worker execution opts into completion timings with `streamDiagnosticsVersion: 1`.
+  An absent version selects the fixed pre-timing diagnostic field allowlist, so
+  an in-memory older coordinator can accept a newly loaded Worker after a rebuild.
+  Do not add new diagnostic fields to a negotiated version without a compatibility
+  decision; TypeScript optionality does not relax an older strict wire parser.
+- Diagnostic delivery remains advisory across Worker RPC. Validate message size,
+  the exact envelope, request/lease/generation identity, and contiguous sequence
+  before considering its payload. Invalid advisory content is dropped without
+  publishing raw data or failing a provider result, and its received sequence is
+  consumed. Invalid envelopes or fences, and invalid event/result/attempt data,
+  remain fatal. A sender advances its sequence only after validation and sending,
+  so a contained diagnostic serialization failure cannot create a sequence gap.
+- `ModelProvider.stream` accepts optional `onPhase(response_terminal | sdk_terminal)`.
+  Pi-ai observes the first parsed terminal SSE event before delivering it to the
+  SDK, and SDK `done`/`error` before canonical normalization. Chat may complete at
+  a valid clean EOF. Native/non-SSE routes retain SDK/runtime timing but omit
+  unobservable transport timing. Callback failures cannot change outcomes.
+  The transport offset is observation at the body-reader boundary, not socket
+  arrival; buffered frames can place it before the SDK's last text delta.
+- Successful turn completion also emits `turn_completion_diagnostics` with
+  `commit_ms`, `continuation_ms`, `snapshot_ms`, `publish_ms`, `elapsed_ms`, and
+  `snapshot_written`. Durations cover synchronous canonical terminalization,
+  continuation persistence, awaited snapshot work, and terminal event emission,
+  respectively. Publication is measured at the runtime callback, not client
+  receipt/rendering. The event is published after the completion notification
+  and before auxiliary memory work; it never changes completion ordering.
+- Failed model attempts also retain bounded `retryable`, `retry_after_seconds`,
+  `additional_details`, `status`, `request_id`, `provider_error_code`, `provider_error_type`,
+  `transport_error_code`, `transport_error_name`, and `error_source` (`http`, `response_stream`, or
+  `transport`). The detail is the same sanitized public reason, not an exception message or raw body.
+  Both trace writes and reads apply this allowlist; legacy rows without these fields remain valid.
+  The attempt's original failure stays intact even if the final turn becomes `retry_exhausted`.
 - Tool execution diagnostics append local `tool_execution` rows at the actual
   execution terminal boundary. Payloads contain only bounded call/tool ids,
   duration, success, model-output character count, truncation state, and optional
@@ -210,6 +249,14 @@ the local log root and must never become provider transcript inputs.
   relative file/line or JSON-path references and must not print secret values.
 
 ### 4. Validation & Error Matrix
+
+- Optional provider timing is absent -> omit it through Worker parsing and trace export.
+- Invalid timing (negative, nonfinite, nonnumeric, or over 24 hours) -> Worker
+  rejects the frame; trace readers/writers drop the field. Unknown raw content
+  is never serialized. Older traces remain readable without the new fields.
+- Timing observer throws -> preserve the provider/turn outcome and cleanup.
+- Truncated stream or cancellation without a terminal -> do not fabricate a
+  transport/SDK terminal observation. Stream settlement still measures cleanup.
 - `logs_root=None` -> write under `<workspace_root>/log`.
 - `logs_root=<home>/.mycli/logs` -> write global operational logs under that
   directory and raw payloads under `model-raw/<session>/`.
@@ -265,7 +312,7 @@ the local log root and must never become provider transcript inputs.
   workspace log entry before re-raising the original model response error.
 - Ordinary safe auto approval -> do not emit `approval_auto_allowed`, because no
   prior user allowance was consumed.
-- `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
+- `/trace export` -> return bounded sanitized JSONL rows from the current
   session trace without mutating trace files.
 - `trace.export` -> return the same bounded sanitized JSONL rows as raw row
 	strings, not prefixed command output.
@@ -290,6 +337,16 @@ the local log root and must never become provider transcript inputs.
   prefixes when the gateway `trace.export` RPC is available.
 
 ### 6. Tests Required
+
+- Fake-clock provider tests separate terminal delivery, SDK normalization,
+  iterator cleanup and attempt persistence on failure and retry. SSE tests
+  cover terminal success/error, missing terminals, clean Chat EOF, delayed
+  remote cancellation acknowledgement, and throwing timing observers.
+- Fake-clock turn tests hold snapshot persistence open, retain existing
+  completion ordering, and measure publication separately from snapshot work.
+- Worker round trips accept each optional timing field and reject invalid
+  values. Backend Worker/loopback-SSE tests export real timing rows; trace
+  write/read tests verify allowlisting and no model-visible history changes.
 - Unit test global and compatibility log roots.
 - Unit test `agent.log`, `errors.log`, `model-events.jsonl`, and
   `model-raw/<session>/` paths.
@@ -297,7 +354,7 @@ the local log root and must never become provider transcript inputs.
 - Unit test `set_session_id()` / runtime `rebind_session()` changes the active
   log tag and raw payload bucket.
 - CLI/REPL tests for `/logs` help, completion, and command routing.
-- CLI/REPL tests for `/trace-jsonl` completion, command routing, and JSONL
+- CLI/REPL tests for `/trace export` completion, command routing, and JSONL
   export sanitization.
 - Gateway tests for `trace.export` raw rows and tail bounding.
 - Integration test for session allowance hits proving `approval_auto_allowed`

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { CURSOR_MARKER, TUI, type Component } from "../src/tui-core/tui.ts";
+import { getCapabilities } from "../src/tui-core/terminal-image.ts";
 import { HeadlessTerminal } from "./support/headless-terminal.ts";
 
 class MutableLines implements Component {
@@ -70,6 +71,44 @@ async function renderFrame(ui: TUI, terminal: HeadlessTerminal): Promise<void> {
 	await delay(25);
 	await terminal.flush();
 }
+
+test("unused pixel cell-size reports neither invalidate rendering nor reach the editor", async (t) => {
+	const capabilities = getCapabilities();
+	const previousImageProtocol = capabilities.images;
+	capabilities.images = "kitty";
+	const terminal = new HeadlessTerminal({ columns: 40, rows: 6 });
+	const ui = new TUI(terminal);
+	let renders = 0;
+	let invalidations = 0;
+	const input: string[] = [];
+	const component: Component = {
+		render: (): string[] => { renders += 1; return ["ready"]; },
+		invalidate: (): void => { invalidations += 1; },
+		handleInput: (data: string): void => { input.push(data); },
+	};
+	t.after(async () => {
+		capabilities.images = previousImageProtocol;
+		ui.stop();
+		await terminal.flush();
+		terminal.dispose();
+	});
+	ui.addChild(component);
+	ui.setFocus(component);
+	ui.start();
+	await renderFrame(ui, terminal);
+	assert.ok(!terminal.writes.join("").includes("\x1b[16t"));
+	terminal.writes.length = 0;
+	const before = renders;
+	terminal.sendInput("\x1b[6;18;9t");
+	await delay(25);
+	await terminal.flush();
+	assert.equal(invalidations, 0);
+	assert.equal(renders, before);
+	assert.deepEqual(input, []);
+	assert.equal(terminal.writes.length, 0);
+	terminal.sendInput("a");
+	assert.deepEqual(input, ["a"]);
+});
 
 test("fatal render failures restore the terminal before invoking the owner", async (t) => {
 	const events: string[] = [];
@@ -176,6 +215,22 @@ test("coalesced streaming updates leave only the newest frame visible", async (t
 	await terminal.flush();
 
 	assert.equal(terminal.visibleLines()[0], "final answer");
+});
+
+test("native full and incremental rendering compare the same rows when a component exceeds the frame", async (t) => {
+	const terminal = new HeadlessTerminal({ columns: 40, rows: 4, nativeScrollback: true });
+	const ui = new TUI(terminal);
+	const component = new MutableLines(["first", "second", "third", "fourth", "hidden fifth", "hidden sixth"]);
+	t.after(async () => { ui.stop(); await terminal.flush(); terminal.dispose(); });
+	ui.addChild(component);
+	ui.insertHistoryBeforeNextFrame(["committed history"]);
+	ui.start();
+	await renderFrame(ui, terminal);
+	assert.deepEqual(terminal.visibleLines(), ["first", "second", "third", "fourth"]);
+	component.setLines(["first", "updated second", "third", "fourth", "hidden fifth", "hidden sixth"]);
+	await renderFrame(ui, terminal);
+	assert.deepEqual(terminal.visibleLines(), ["first", "updated second", "third", "fourth"]);
+	assert.deepEqual(terminal.historyLines().filter((line) => line.trim()), ["committed history"]);
 });
 
 test("unchanged frames emit no terminal writes", async (t) => {

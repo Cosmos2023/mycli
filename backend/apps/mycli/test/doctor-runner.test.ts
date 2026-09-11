@@ -25,9 +25,9 @@ import {
 	createV10SessionDatabase,
 	createV11SessionDatabase,
 	SQLiteTranscriptEventRepository,
-} from "../../../packages/storage/src/transcript-event-repository.ts";
-import { applyV9TranscriptNormalizationCutover } from "../../../packages/storage/src/v9-normalization-cutover.ts";
-import { V9_TRANSCRIPT_NORMALIZATION_STAGING_SQL } from "../../../packages/storage/src/v9-normalization-staging.ts";
+} from "../../../packages/storage/src/transcript/transcript-event-repository.ts";
+import { applyV9TranscriptNormalizationCutover } from "../../../packages/storage/src/migrations/v9/v9-normalization-cutover.ts";
+import { V9_TRANSCRIPT_NORMALIZATION_STAGING_SQL } from "../../../packages/storage/src/migrations/v9/v9-normalization-staging.ts";
 import { renderManagementResponse } from "../src/management/render.ts";
 import { collectConfigChecks } from "../src/management/doctor/check-config.ts";
 import { collectProcessChecks } from "../src/management/doctor/check-process.ts";
@@ -109,28 +109,82 @@ test("doctor bounds a collector, aborts its cleanup, and continues", { timeout: 
 	assert.doesNotMatch(JSON.stringify(report), /private-output/u);
 });
 
+test("doctor contains malformed collector rows at the sanitization boundary", async () => {
+	const report = await runDoctorCollectors([{
+		name: "malformed",
+		collect: () => ({
+			name: 7,
+			status: "unknown",
+			message: null,
+			details: ["safe detail", 9, "Authorization: Bearer collector-secret"],
+			remediation: { private: true },
+			recoveryActions: [null, { id: "run_doctor", label: "untrusted label" }],
+		}) as never,
+	}]);
+
+	assert.deepEqual(report.checks.map((check) => ({
+		name: check.name,
+		status: check.status,
+		message: check.message,
+		details: check.details,
+		recoveryActionIds: check.recoveryActions.map((action) => action.id),
+	})), [{
+		name: "malformed",
+		status: "failed",
+		message: "check completed",
+		details: ["safe detail", "[REDACTED]"],
+		recoveryActionIds: ["run_doctor"],
+	}]);
+	assert.doesNotMatch(JSON.stringify(report), /collector-secret|untrusted label/u);
+});
+
 test("doctor human and JSON output consume one report and share exit semantics", async () => {
 	const warningReport = await runDoctorCollectors([{
 		name: "config",
-		collect: () => ({ name: "config", status: "warning", message: "api key missing" }),
+		collect: () => ({
+			name: "config",
+			status: "warning",
+			message: "api key missing",
+			details: ["layer=user", "Authorization: Bearer private-doctor-token"],
+			remediation: "Run mycli config validate.",
+		}),
 	}]);
 	const warningResponse = doctorResponseFromReport(warningReport);
 	const human = renderManagementResponse(
-		{ kind: "doctor", json: false },
+		{ kind: "doctor", operation: "check", json: false, verbose: false },
+		warningResponse,
+	);
+	const verbose = renderManagementResponse(
+		{ kind: "doctor", operation: "check", json: false, verbose: true },
 		warningResponse,
 	);
 	const json = JSON.parse(renderManagementResponse(
-		{ kind: "doctor", json: true },
+		{ kind: "doctor", operation: "check", json: true, verbose: false },
 		warningResponse,
 	)) as Readonly<Record<string, unknown>>;
 
 	assert.equal(warningResponse.ok, true);
 	assert.equal(warningResponse.exitCode, 0);
 	assert.deepEqual(json.checks, warningReport.checks);
+	assert.deepEqual(json.support, warningReport.support);
 	assert.equal(json.warningCount, warningReport.warningCount);
 	assert.match(human, /^mycli doctor\n/u);
 	assert.match(human, /\[WARN\] config: api key missing/u);
 	assert.match(human, /Summary: 0 ok, 1 warning, 0 failed/u);
+	assert.doesNotMatch(human, /layer=user|private-doctor-token|duration_ms/u);
+	assert.match(verbose, /detail: layer=user/u);
+	assert.match(verbose, /detail: \[REDACTED\]/u);
+	assert.match(verbose, /remedy: Run mycli config validate\./u);
+	assert.match(verbose, /duration_ms: \d+/u);
+	assert.doesNotMatch(verbose, /private-doctor-token/u);
+	assert.deepEqual(warningReport.support.diagnosticCodes, ["config"]);
+	assert.deepEqual(warningReport.support.logReferences, [
+		"logs/agent.log",
+		"logs/errors.log",
+		"logs/model-events.jsonl",
+		"logs/model-raw/",
+		"traces/",
+	]);
 
 	const failedReport = await runDoctorCollectors([{
 		name: "storage",
@@ -169,9 +223,79 @@ test("config doctor validates profiles and reports API key presence without expo
 		homeDir: root.homeDir,
 		env: {},
 	});
-	assert.equal(malformed[0]?.status, "failed");
+	assert.deepEqual(
+		malformed.map((check) => [check.name, check.status]),
+		[
+			["config_invalid_toml_1", "failed"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(malformed[0]?.message ?? "", /project config contains invalid TOML/u);
+	assert.match(malformed[0]?.detail ?? "", /layer=project line=1 column=2/u);
 	assert.equal(malformed[1]?.status, "warning");
-	assert.doesNotMatch(JSON.stringify(malformed), /file-test-secret|invalid TOML in .*config/u);
+	assert.doesNotMatch(JSON.stringify(malformed), /file-test-secret|\[model/u);
+
+	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'name = "gpt-5"',
+		'nmae = "must-not-leak"',
+	].join("\n"), "utf8");
+	const unknown = await collectConfigChecks({
+		workspaceRoot: root.workspaceRoot,
+		homeDir: root.homeDir,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+	assert.deepEqual(
+		unknown.map((check) => [check.name, check.status]),
+		[
+			["config", "ok"],
+			["config_unknown_key_1", "warning"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(unknown[1]?.detail ?? "", /layer=project key=model\.nmae/u);
+	assert.doesNotMatch(JSON.stringify(unknown), /must-not-leak/u);
+
+	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'api_key = "must-not-leak"',
+	].join("\n"), "utf8");
+	const forbidden = await collectConfigChecks({
+		workspaceRoot: root.workspaceRoot,
+		homeDir: root.homeDir,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+	assert.deepEqual(
+		forbidden.map((check) => [check.name, check.status]),
+		[
+			["config_forbidden_inline_secret_1", "failed"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(forbidden[0]?.detail ?? "", /layer=project key=model\.api_key/u);
+	assert.doesNotMatch(JSON.stringify(forbidden), /must-not-leak/u);
+
+	await writeFile(join(root.workspaceRoot, ".mycli", "config.toml"), [
+		"[model]",
+		'provider = "must-not-leak!"',
+	].join("\n"), "utf8");
+	const unsupportedProvider = await collectConfigChecks({
+		workspaceRoot: root.workspaceRoot,
+		homeDir: root.homeDir,
+		env: {},
+		workspaceTrust: "trusted",
+	});
+	assert.deepEqual(
+		unsupportedProvider.map((check) => [check.name, check.status]),
+		[
+			["config_invalid_value_1", "failed"],
+			["api_key", "warning"],
+		],
+	);
+	assert.match(unsupportedProvider[0]?.detail ?? "", /key=provider/u);
+	assert.doesNotMatch(JSON.stringify(unsupportedProvider), /must-not-leak/u);
 });
 
 test("storage doctor validates SQLite through a read-only connection and creates nothing", async (t) => {
@@ -1002,15 +1126,24 @@ test("storage doctor accepts a reconstructable persisted provider step", async (
 		clock: () => now,
 		createId: (kind) => `${kind}-${++sequence}`,
 	});
+	store.completeTurn({
+		sessionId: "healthy-ledger-session",
+		clientTurnId: "healthy-client-turn",
+		assistantText: "README inspected.",
+		usage: {},
+		completedAt: now,
+	});
 	store.close();
 	const before = await stat(databasePath);
 
-	const ledger = (await collectStorageChecks(root)).find(
-		(check) => check.name === "model_input_ledger",
-	);
+	const checks = await collectStorageChecks(root);
+	const ledger = checks.find((check) => check.name === "model_input_ledger");
+	const sessions = checks.find((check) => check.name === "sessions_db");
 
 	assert.equal(ledger?.status, "ok");
 	assert.match(ledger?.message ?? "", /manifests=1 issues=0/u);
+	assert.equal(sessions?.status, "ok", sessions?.detail ?? sessions?.message);
+	assert.match(sessions?.message ?? "", /schema_version=14 integrity=ok/u);
 	assert.equal((await stat(databasePath)).mtimeMs, before.mtimeMs);
 });
 
@@ -1018,15 +1151,13 @@ test("runtime and process doctor validate local contracts without starting work"
 	const root = await doctorFixture(t);
 	const runtime = await collectRuntimeChecks();
 	let executableProbes = 0;
-	const processChecks = collectProcessChecks({
+	const processChecks = await collectProcessChecks({
 		workspaceRoot: root.workspaceRoot,
 		platform: "darwin",
 		isExecutable: () => {
 			executableProbes += 1;
 			return true;
 		},
-		pathExists: () => false,
-		isSymbolicLink: () => false,
 	});
 
 	assert.deepEqual(runtime.map((check) => [check.name, check.status]), [

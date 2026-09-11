@@ -5,15 +5,19 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { parseConfigProfileName } from "@mycli/config/profile";
 import { initializeRipgrepEnvironment } from "@mycli/tools/ripgrep-runtime";
 import {
 	configureGatewayTransport,
 	type GatewayTransport,
 } from "mycli-shell-tui/gateway-transport";
+import { renderCommandHelp, renderRootHelp } from "./management/cli-command-catalog.ts";
+import { renderShellCompletion } from "./management/completion.ts";
 import { parseCliMode } from "./management/parser.ts";
 import { renderManagementResponse } from "./management/render.ts";
 import type { SetupInputStream, SetupOutputStream } from "./management/setup.ts";
-import type { ManagementExecutor } from "./management/types.ts";
+import { readApiKeyFromStdin, type AuthInputStream } from "./management/auth.ts";
+import type { ManagementCommand, ManagementExecutor } from "./management/types.ts";
 import type {
 	NodeBackend,
 	StartNodeBackendOptions,
@@ -25,24 +29,11 @@ import {
 	writeStartupProfile,
 } from "./node-runtime/startup-profile.ts";
 import { MYCLI_VERSION } from "./version.ts";
+import type { HeadlessInput } from "./headless/io.ts";
 
-const HELP = `Usage: mycli [options]
-       mycli <command> [arguments]
+export const ROOT_HELP = renderRootHelp();
 
-Commands:
-  setup                             Configure provider credentials
-  doctor [--json]                   Check local runtime health
-  hooks list|inspect|approve|revoke Manage configured hooks
-  plugins list|inspect|run          Manage local plugins
-  mcp list|inspect                  Inspect MCP servers
-Options:
-  --session <id>                    Resume or create a session
-  --model <model>                   Override the configured model
-  -h, --help                        Show help
-  -V, --version                     Show version
-`;
-
-type InputStream = { isTTY?: boolean };
+type InputStream = { isTTY?: boolean; on?: NodeJS.ReadableStream["on"] };
 type OutputStream = { isTTY?: boolean; write(value: string): unknown };
 type ProcessHooks = {
 	once(event: "exit", listener: (code: number) => void): unknown;
@@ -51,7 +42,7 @@ type ProcessHooks = {
 	off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 };
 
-export type RunCliOptions = {
+type RunCliOptions = {
 	argv?: readonly string[];
 	env?: NodeJS.ProcessEnv;
 	cwd?: string;
@@ -81,11 +72,12 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	const stdout = options.stdout ?? process.stdout;
 	const stderr = options.stderr ?? process.stderr;
 
-	if (argv.includes("--help") || argv.includes("-h")) {
-		stdout.write(HELP);
+	const optionArguments = argv.slice(0, argv.indexOf("--") < 0 ? argv.length : argv.indexOf("--"));
+	if (optionArguments.includes("--help") || optionArguments.includes("-h")) {
+		stdout.write(argv[0] === "exec" || argv[0] === "review" || argv[0] === "app-server" ? renderCommandHelp(argv[0]) : ROOT_HELP);
 		return 0;
 	}
-	if (argv.includes("--version") || argv.includes("-V")) {
+	if (optionArguments.includes("--version") || optionArguments.includes("-V")) {
 		stdout.write(`${MYCLI_VERSION}\n`);
 		return 0;
 	}
@@ -97,33 +89,97 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 		stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
 		return 2;
 	}
+	if (mode.kind === "completion") {
+		stdout.write(renderShellCompletion(mode.shell));
+		return 0;
+	}
+	if (mode.kind === "headless") {
+		const { runHeadlessCommand } = await import("./headless/run.ts");
+		return runHeadlessCommand({
+			command: mode.command, cwd, env,
+			stdin: stdin as HeadlessInput,
+			stdout, stderr, processHooks: options.processHooks ?? process,
+			...(options.startNodeBackend ? { startBackend: options.startNodeBackend } : {}),
+		});
+	}
+	if (mode.kind === "app-server") {
+		let args: readonly string[];
+		try { args = parseRuntimeArguments(mode.runtimeArgs); }
+		catch (error) {
+			stderr.write(`[mycli] ${stableMessage(error, "invalid_arguments")}\n`);
+			return 2;
+		}
+		const { runStdioAppServer } = await import("./app-server/stdio.ts");
+		return runStdioAppServer({
+			cwd, env, args, input: stdin as NodeJS.ReadableStream, output: stdout as NodeJS.WritableStream,
+			stderr, processHooks: options.processHooks ?? process,
+			...(options.startNodeBackend ? { startBackend: options.startNodeBackend } : {}),
+		});
+	}
 	if (mode.kind === "management") {
+		const managementController = new AbortController();
+		const managementHooks = options.processHooks ?? process;
+		const abortManagement = (): void => managementController.abort();
+		managementHooks.once("SIGINT", abortManagement);
+		managementHooks.once("SIGTERM", abortManagement);
 		try {
 			const homeDir = options.homeDir ?? homedir();
 			const management = options.management ?? await (async () => {
-				const [{ createDefaultManagementServices }, { runSetupCommand }] = await Promise.all([
+				if (mode.command.kind === "sandbox") {
+					const { SandboxManagementService } = await import("./management/sandbox.ts");
+					const sandbox = new SandboxManagementService();
+					const executor: ManagementExecutor = {
+						execute: (
+							command: ManagementCommand,
+							signal = new AbortController().signal,
+						) => sandbox.execute(command as Extract<ManagementCommand, { kind: "sandbox" }>, signal),
+					};
+					return executor;
+				}
+				const [{ createDefaultManagementServices }, { runSetupCommand }, { createNativeAuthInteraction }] = await Promise.all([
 					import("./management/services.ts"),
 					import("./management/setup.ts"),
+					import("./management/auth-interaction.ts"),
 				]);
 				return createDefaultManagementServices({
 					workspaceRoot: cwd,
 					homeDir,
 					env,
-					setup: (signal) => runSetupCommand({
+					setup: (command, signal) => runSetupCommand({
 						homeDir,
 						isTty: stdin.isTTY === true && stdout.isTTY === true,
 						input: stdin as SetupInputStream,
 						output: stdout as SetupOutputStream,
 						signal,
+						...(command.nonInteractive && command.provider
+							? {
+								nonInteractive: {
+									provider: command.provider,
+									...(command.model ? { model: command.model } : {}),
+									...(command.apiBaseUrl ? { apiBaseUrl: command.apiBaseUrl } : {}),
+									readApiKeyInput: (readSignal: AbortSignal) => readApiKeyFromStdin(
+										stdin as AuthInputStream,
+										readSignal,
+									),
+								},
+							}
+							: {}),
 					}),
+					readApiKeyInput: (signal) => readApiKeyFromStdin(stdin as AuthInputStream, signal),
+					...(stdin.isTTY === true ? {
+						createAuthInteraction: (signal: AbortSignal) => createNativeAuthInteraction({ input: stdin as AuthInputStream, output: stderr, signal }),
+					} : {}),
 				});
 			})();
-			const response = await management.execute(mode.command, new AbortController().signal);
+			const response = await management.execute(mode.command, managementController.signal);
 			stdout.write(renderManagementResponse(mode.command, response));
 			return response.exitCode ?? (response.ok ? 0 : 1);
 		} catch {
 			stderr.write("[mycli] management_start_failed: unable to run management command\n");
 			return 1;
+		} finally {
+			managementHooks.off("SIGINT", abortManagement);
+			managementHooks.off("SIGTERM", abortManagement);
 		}
 	}
 
@@ -168,6 +224,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 	const transport: GatewayTransport = {
 		input: deferredInput,
 		output: deferredOutput,
+		diagnostic: () => resolvedBackend?.diagnostic() ?? "",
 		close: async () => {
 			expectedShutdown = true;
 			const running = await backendStart.catch(() => undefined);
@@ -273,30 +330,57 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 
 function parseRuntimeArguments(argv: readonly string[]): readonly string[] {
 	const runtimeArgs: string[] = [];
+	let profileSeen = false;
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
-		if (argument === "--session" || argument === "--model") {
+		if (argument === "--session" || argument === "--model"
+			|| argument === "--profile" || argument === "-p") {
 			const value = argv[index + 1];
 			if (value === undefined) {
 				throw new Error(`invalid_arguments: ${argument} requires a value`);
 			}
-			runtimeArgs.push(argument, value);
+			if (argument === "--profile" || argument === "-p") {
+				if (profileSeen) throw new Error("invalid_arguments: duplicate --profile");
+				profileSeen = true;
+				runtimeArgs.push("--profile", validatedProfileName(value));
+			} else {
+				runtimeArgs.push(argument, value);
+			}
 			index += 1;
 			continue;
 		}
-		if (argument?.startsWith("--session=") || argument?.startsWith("--model=")) {
+		if (argument?.startsWith("--session=")
+			|| argument?.startsWith("--model=")
+			|| argument?.startsWith("--profile=")
+			|| argument?.startsWith("-p=")) {
 			const separator = argument.indexOf("=");
 			const flag = argument.slice(0, separator);
 			const value = argument.slice(separator + 1);
 			if (!value) {
 				throw new Error(`invalid_arguments: ${flag} requires a value`);
 			}
-			runtimeArgs.push(flag, value);
+			if (flag === "--profile" || flag === "-p") {
+				if (profileSeen) throw new Error("invalid_arguments: duplicate --profile");
+				profileSeen = true;
+				runtimeArgs.push("--profile", validatedProfileName(value));
+			} else {
+				runtimeArgs.push(flag, value);
+			}
 			continue;
 		}
 		throw new Error("invalid_arguments: unsupported command or option");
 	}
 	return runtimeArgs;
+}
+
+function validatedProfileName(value: string): string {
+	try {
+		return parseConfigProfileName(value);
+	} catch {
+		throw new Error(
+			"invalid_arguments: profile name may contain only ASCII letters, digits, '_' or '-'",
+		);
+	}
 }
 
 function stableMessage(error: unknown, fallback: string): string {

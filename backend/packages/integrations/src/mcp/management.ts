@@ -28,6 +28,7 @@ export interface McpManagementServiceOptions {
 	readonly workspaceRoot: string;
 	readonly homeDir: string;
 	readonly env: Readonly<Record<string, string | undefined>>;
+	readonly includeRepository?: boolean;
 	readonly createClient: (config: McpServerConfig) => McpManagedClient;
 }
 

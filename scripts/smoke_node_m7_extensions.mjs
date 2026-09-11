@@ -9,7 +9,7 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolveConfig } from "@mycli/config";
+import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
 	discoverHookConfig,
@@ -119,6 +119,7 @@ async function runSmoke(sourceConfig, protocol) {
 			mcpPidFile,
 			pluginPidFile,
 		});
+		await new WorkspaceTrustStore({ homeDir }).save(workspaceRoot, "trusted");
 		const hookDiscovery = await discoverHookConfig({ homeDir, workspaceRoot });
 		if (hookDiscovery.hooks.length !== 1) throw new Error("hook discovery failed");
 		await new HookAllowlistStore({ homeDir }).approve(hookDiscovery.hooks[0]);

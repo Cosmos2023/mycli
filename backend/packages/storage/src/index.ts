@@ -2,20 +2,21 @@ export {
 	MessageIdConflictError,
 	projectMutationMetadata,
 	SessionInUseError,
+	SessionMetadataConflictError,
 	SessionStateError,
 	StorageFailure,
-} from "./session-store.ts";
+} from "./sessions/session-store.ts";
 export {
 	SESSION_CONTENT_BLOB_LOAD_MANY_MAX_IDS,
 	SQLiteSessionContentBlobRepository,
-} from "./session-content-blob-repository.ts";
+} from "./artifacts/session-content-blob-repository.ts";
 export type {
 	SessionContentBlobCollectionResult,
 	SessionContentBlobMetrics,
 	SessionContentBlobRepository,
 	SQLiteSessionContentBlobRepositoryOptions,
-} from "./session-content-blob-repository.ts";
-export { analyzeV10ContentBlobMigration } from "./v10-content-blob-migration-dry-run.ts";
+} from "./artifacts/session-content-blob-repository.ts";
+export { analyzeV10ContentBlobMigration } from "./migrations/v10/v10-content-blob-migration-dry-run.ts";
 export type {
 	V10ContentBlobActiveWriterState,
 	V10ContentBlobFtsRebuildWork,
@@ -23,7 +24,7 @@ export type {
 	V10ContentBlobMigrationDryRunOptions,
 	V10ContentBlobMigrationDryRunReport,
 	V10ContentBlobTemporarySpace,
-} from "./v10-content-blob-migration-dry-run.ts";
+} from "./migrations/v10/v10-content-blob-migration-dry-run.ts";
 export {
 	discardV10ContentBlobMigrationStaging,
 	reconcileV10ContentBlobMigrationBatchInTransaction,
@@ -33,15 +34,15 @@ export {
 	V10_CONTENT_BLOB_MIGRATION_STAGING_SQL,
 	V10_CONTENT_BLOB_MIGRATION_STAGING_TABLES,
 	V10_CONTENT_BLOB_MIGRATION_STAGING_VERSION,
-} from "./v10-content-blob-migration-staging.ts";
+} from "./migrations/v10/v10-content-blob-migration-staging.ts";
 export {
 	v10ModelInputSourceHash,
 	v10TranscriptSourceHash,
-} from "./v10-content-blob-migration-source-hash.ts";
+} from "./migrations/v10/v10-content-blob-migration-source-hash.ts";
 export type {
 	V10ModelInputSourceHashRow,
 	V10TranscriptSourceHashRow,
-} from "./v10-content-blob-migration-source-hash.ts";
+} from "./migrations/v10/v10-content-blob-migration-source-hash.ts";
 export type {
 	DiscardV10ContentBlobMigrationStagingOptions,
 	ReconcileV10ContentBlobMigrationBatchOptions,
@@ -49,17 +50,17 @@ export type {
 	V10ContentBlobMigrationStagingBatchResult,
 	V10ContentBlobMigrationStagingDiscardResult,
 	V10ContentBlobMigrationStagingFailpoint,
-} from "./v10-content-blob-migration-staging.ts";
+} from "./migrations/v10/v10-content-blob-migration-staging.ts";
 export {
 	applyV10ContentBlobMigrationCutover,
 	V10_CONTENT_BLOB_CUTOVER_MINIMUM_FREE_BYTES,
 	V10_CONTENT_BLOB_CUTOVER_STAGES,
-} from "./v10-content-blob-migration-cutover.ts";
+} from "./migrations/v10/v10-content-blob-migration-cutover.ts";
 export type {
 	ApplyV10ContentBlobMigrationCutoverOptions,
 	V10ContentBlobCutoverStage,
 	V10ContentBlobMigrationCutoverResult,
-} from "./v10-content-blob-migration-cutover.ts";
+} from "./migrations/v10/v10-content-blob-migration-cutover.ts";
 export type {
 	AppendSessionSummaryInput,
 	AppendAssistantToolCallsInput,
@@ -70,6 +71,7 @@ export type {
 	ApprovalCheckpoint,
 	ApprovalTransitionInput,
 	CommitCompactionInput,
+	CompareAndSetStateInput,
 	CommitApprovalResultInput,
 	CommitClarificationResponseInput,
 	CommitQueuedInputsInput,
@@ -86,9 +88,11 @@ export type {
 	ProjectedFileChange,
 	ProjectedMutationMetadata,
 	ReserveTurnInput,
+	RuntimeTurnStore,
 	RuntimeStateKey,
 	SaveQueueSnapshotInput,
 	SaveApprovalSuspensionInput,
+	SaveParallelApprovalBatchInput,
 	SaveClarificationSuspensionInput,
 	SaveStateInput,
 	SessionLineageNode,
@@ -102,6 +106,10 @@ export type {
 	SessionPayloadCleanupResult,
 	SessionOrphanCleanupResult,
 	SessionOverview,
+	SessionLeaseState,
+	SessionMetadata,
+	SessionPendingState,
+	SessionStateBatchEntry,
 	SequencedHistoryItem,
 	SessionSearchQuery,
 	SessionSearchResult,
@@ -114,7 +122,25 @@ export type {
 	SessionVacuumResult,
 	TurnStore,
 	TurnReservation,
-} from "./session-store.ts";
+	StoredTurnTerminalization,
+	TerminalizeStoredTurnInput,
+	TurnTerminalizationStore,
+	UpdateSessionMetadataInput,
+} from "./sessions/session-store.ts";
+export { SQLiteTurnTerminalizationRepository } from "./sessions/turn-terminalization-repository.ts";
+export { SQLiteProviderAttemptLedger } from "./projections/provider-attempt-ledger.ts";
+export type {
+	ProviderAttemptLedgerStore,
+	AppendProviderAttemptInput,
+	ListProviderAttemptsInput,
+	CloseInterruptedProviderAttemptsInput,
+	ProviderAttemptLedgerFailpoint,
+	SQLiteProviderAttemptLedgerOptions,
+} from "./projections/provider-attempt-ledger.ts";
+export type {
+	SQLiteTurnTerminalizationRepositoryOptions,
+	TurnTerminalizationFailpoint,
+} from "./sessions/turn-terminalization-repository.ts";
 export {
 	BACKFILL_SEARCH_SQL,
 	SCHEMA_V2_SQL,
@@ -137,6 +163,10 @@ export {
 	SCHEMA_V12_PROVIDER_LEDGER_SQL,
 	SCHEMA_V12_SQL,
 	SCHEMA_V12_VERSION,
+	SCHEMA_V13_SQL,
+	SCHEMA_V13_PROVIDER_ATTEMPTS_SQL,
+	SCHEMA_V13_VERSION,
+	SCHEMA_V14_VERSION,
 	SESSION_RUNTIME_LEASE_SQL,
 	SCHEMA_VERSION,
 	TRANSCRIPT_PROJECTION_INDEX_SQL,
@@ -146,12 +176,12 @@ export {
 	createV11SessionDatabase,
 	createV12SessionDatabase,
 	SQLiteTranscriptEventRepository,
-} from "./transcript-event-repository.ts";
-export { projectTranscriptEventsToProviderItems } from "./transcript-provider-projector.ts";
-export type { TranscriptProviderProjectionOptions } from "./transcript-provider-projector.ts";
-export { projectTranscriptEventsToReadableItems } from "./transcript-readable-projector.ts";
-export { projectTranscriptEventToSearchDocument } from "./transcript-search-projector.ts";
-export type { TranscriptSearchDocument } from "./transcript-search-projector.ts";
+} from "./transcript/transcript-event-repository.ts";
+export { projectTranscriptEventsToProviderItems } from "./projections/transcript-provider-projector.ts";
+export type { TranscriptProviderProjectionOptions } from "./projections/transcript-provider-projector.ts";
+export { projectTranscriptEventsToReadableItems } from "./projections/transcript-readable-projector.ts";
+export { projectTranscriptEventToSearchDocument } from "./projections/transcript-search-projector.ts";
+export type { TranscriptSearchDocument } from "./projections/transcript-search-projector.ts";
 export type {
 	SQLiteTranscriptEventRepositoryOptions,
 	TranscriptEventWindow,
@@ -160,8 +190,8 @@ export type {
 	TranscriptReadablePage,
 	TranscriptReadablePageOptions,
 	TranscriptTurnEventWindowOptions,
-} from "./transcript-event-repository.ts";
-export { SQLiteAgentEffectLedger } from "./agent-effect-ledger.ts";
+} from "./transcript/transcript-event-repository.ts";
+export { SQLiteAgentEffectLedger } from "./agents/agent-effect-ledger.ts";
 export type {
 	AgentEffectAttempt,
 	AgentEffectAttemptKind,
@@ -173,18 +203,18 @@ export type {
 	RecoverInterruptedToolAttemptsInput,
 	ReserveAgentEffectAttemptInput,
 	SQLiteAgentEffectLedgerOptions,
-} from "./agent-effect-ledger.ts";
-export { SQLiteSessionStore } from "./sqlite-session-store.ts";
-export type { SQLiteSessionStoreOptions } from "./sqlite-session-store.ts";
-export { openRuntimeSessionStore } from "./runtime-session-store.ts";
+} from "./agents/agent-effect-ledger.ts";
+export { SQLiteSessionStore } from "./sessions/sqlite-session-store.ts";
+export type { SQLiteSessionStoreOptions } from "./sessions/sqlite-session-store.ts";
+export { openRuntimeSessionStore } from "./sessions/runtime-session-store.ts";
 export type {
 	OpenRuntimeSessionStoreOptions,
 	RuntimeSessionStore,
-} from "./runtime-session-store.ts";
+} from "./sessions/runtime-session-store.ts";
 export {
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
 	SQLiteModelInputLedger,
-} from "./model-input-ledger.ts";
+} from "./projections/model-input-ledger.ts";
 export type {
 	AppendProviderStepEventInput,
 	CommitProviderStepInput,
@@ -194,13 +224,13 @@ export type {
 	RecoverUnconfirmedProviderStepsInput,
 	SQLiteModelInputLedgerOptions,
 	UnconfirmedProviderStep,
-} from "./model-input-ledger.ts";
+} from "./projections/model-input-ledger.ts";
 export type {
 	ProviderStepLifecycleEvent,
 	ProviderStepLifecyclePayload,
 	ProviderStepLifecycleState,
-} from "./model-input-validation.ts";
-export { SQLiteAgentThreadRepository } from "./agent-thread-store.ts";
+} from "./projections/model-input-validation.ts";
+export { SQLiteAgentThreadRepository } from "./agents/agent-thread-store.ts";
 export type {
 	AgentRuntimeCheckpoint,
 	AgentRuntimeLease,
@@ -215,8 +245,15 @@ export type {
 	SaveAgentRuntimeLeaseInput,
 	SQLiteAgentThreadRepositoryOptions,
 	TransitionAgentThreadInput,
-} from "./agent-thread-store.ts";
-export { SQLiteAgentMailboxRepository } from "./agent-mailbox-store.ts";
+} from "./agents/agent-thread-store.ts";
+export { SQLiteAgentLifecycleRepository } from "./agents/agent-lifecycle-store.ts";
+export type {
+	AgentLifecycleFailpoint,
+	AgentLifecycleStore,
+	AgentLifecycleTransition,
+	SQLiteAgentLifecycleRepositoryOptions,
+} from "./agents/agent-lifecycle-store.ts";
+export { SQLiteAgentMailboxRepository } from "./agents/agent-mailbox-store.ts";
 export type {
 	AgentMailboxEnqueueResult,
 	AgentMailboxListQuery,
@@ -224,17 +261,17 @@ export type {
 	EnqueueAgentMailboxItemInput,
 	SQLiteAgentMailboxRepositoryOptions,
 	TransitionAgentMailboxItemInput,
-} from "./agent-mailbox-store.ts";
+} from "./agents/agent-mailbox-store.ts";
 export {
 	SessionArtifactPaths,
 	StorageIdentityError,
 	subagentRunId,
 	validateStorageIdentity,
-} from "./session-artifact-paths.ts";
+} from "./artifacts/session-artifact-paths.ts";
 export {
 	SessionArtifactStore,
 	sessionSubagentIndexEntry,
-} from "./session-artifact-store.ts";
+} from "./artifacts/session-artifact-store.ts";
 export type {
 	AppendSessionArtifactEventInput,
 	SessionArtifactEventType,
@@ -245,14 +282,14 @@ export type {
 	SessionSubagentSnapshot,
 	WriteSubagentSnapshotInput,
 	WriteTaskOutputInput,
-} from "./session-artifact-store.ts";
+} from "./artifacts/session-artifact-store.ts";
 export {
 	SUBAGENT_TASK_DESCRIPTION_MAX_CHARS,
 	SUBAGENT_TASK_ERROR_MAX_CHARS,
 	SUBAGENT_TASK_OUTPUT_REFERENCE_MAX_CHARS,
 	SUBAGENT_TASK_PROGRESS_MAX_CHARS,
 	SUBAGENT_TASK_REPORT_MAX_CHARS,
-} from "./subagent-task-store.ts";
+} from "./agents/subagent-task-store.ts";
 export type {
 	CompleteSubagentTaskInput,
 	FailSubagentTaskInput,
@@ -265,9 +302,9 @@ export type {
 	SubagentTaskStore,
 	SubagentTaskUsage,
 	UpdateSubagentTaskProgressInput,
-} from "./subagent-task-store.ts";
-export { SQLiteSessionStateRepository } from "./sqlite-session-state.ts";
-export type { SQLiteSessionStateRepositoryOptions } from "./sqlite-session-state.ts";
+} from "./agents/subagent-task-store.ts";
+export { SQLiteSessionStateRepository } from "./sessions/sqlite-session-state.ts";
+export type { SQLiteSessionStateRepositoryOptions } from "./sessions/sqlite-session-state.ts";
 export {
 	SHELL_TRANSCRIPT_OUTPUT_MAX_CHARS,
 	SHELL_TRANSCRIPT_CHUNK_MAX_CHARS,
@@ -278,7 +315,7 @@ export {
 	shellHistoryItem,
 	validateShellOutputChunk,
 	validateShellOutputPageInput,
-} from "./shell-transcript-store.ts";
+} from "./transcript/shell-transcript-store.ts";
 export type {
 	LoadShellOutputPageInput,
 	ShellOutputChunk,
@@ -288,16 +325,16 @@ export type {
 	ValidatedShellOutputPageInput,
 	ShellTranscriptStore,
 	UpsertShellSnapshotInput,
-} from "./shell-transcript-store.ts";
+} from "./transcript/shell-transcript-store.ts";
 export {
 	projectTranscript,
 	TRANSCRIPT_TEXT_MAX_CHARS,
-} from "./transcript-projector.ts";
+} from "./projections/transcript-projector.ts";
 export type {
 	TranscriptItem,
 	TranscriptItemType,
 	TranscriptProjectionOptions,
-} from "./transcript-projector.ts";
+} from "./projections/transcript-projector.ts";
 export {
 	compareTranscriptEventOrder,
 	deterministicLegacyTranscriptEventId,
@@ -306,11 +343,12 @@ export {
 	TranscriptEventContractError,
 	TRANSCRIPT_EVENT_MAX_BATCH_ITEMS,
 	TRANSCRIPT_EVENT_SCHEMA_VERSION,
-} from "./transcript-events.ts";
+} from "./transcript/transcript-events.ts";
 export type {
 	AssistantOutputTranscriptPayload,
 	AssistantToolCallBatchTranscriptPayload,
 	AppendTranscriptDisplayActivityInput,
+	AppendCompactionActivityInput,
 	CompactionTranscriptPayload,
 	ContextTranscriptPayload,
 	DisplayActivityTranscriptPayload,
@@ -329,7 +367,7 @@ export type {
 	TranscriptReadableProjection,
 	TurnLifecycleTranscriptPayload,
 	UserInputTranscriptPayload,
-} from "./transcript-events.ts";
+} from "./transcript/transcript-events.ts";
 export {
 	contentBlobId,
 	decodeSessionContentBlob,
@@ -338,32 +376,32 @@ export {
 	SESSION_CONTENT_BLOB_EXTERNALIZATION_THRESHOLD_BYTES,
 	SESSION_CONTENT_BLOB_MAX_RAW_BYTES,
 	SESSION_CONTENT_BLOB_MIN_COMPRESSION_SAVINGS_BYTES,
-} from "./session-content-blob.ts";
+} from "./artifacts/session-content-blob.ts";
 export type {
 	EncodedSessionContentBlob,
 	SessionContentBlobCodec,
 	StoredSessionContentBlob,
-} from "./session-content-blob.ts";
+} from "./artifacts/session-content-blob.ts";
 export {
 	externalizeTranscriptPayload,
 	hydrateTranscriptPayload,
-} from "./transcript-payload-blobs.ts";
+} from "./artifacts/transcript-payload-blobs.ts";
 export type {
 	ExternalizedTranscriptPayload,
 	ExternalizeTranscriptPayloadOptions,
 	HydrateTranscriptPayloadOptions,
 	LoadSessionContentBlob,
 	TranscriptPayloadBlobReference,
-} from "./transcript-payload-blobs.ts";
-export { analyzeV10ContentBlobs } from "./v10-content-blob-analyzer.ts";
+} from "./artifacts/transcript-payload-blobs.ts";
+export { analyzeV10ContentBlobs } from "./migrations/v10/v10-content-blob-analyzer.ts";
 export type {
 	AnalyzeV10ContentBlobsOptions,
 	V10ContentBlobAnalysis,
 	V10ContentBlobMigrationHeadroom,
 	V10ContentBlobSourceAnalysis,
 	V10ContentBlobSourceName,
-} from "./v10-content-blob-analyzer.ts";
-export { analyzeV9TranscriptStorage } from "./v9-transcript-analyzer.ts";
+} from "./migrations/v10/v10-content-blob-analyzer.ts";
+export { analyzeV9TranscriptStorage } from "./migrations/v9/v9-transcript-analyzer.ts";
 export type {
 	AnalyzeV9TranscriptStorageOptions,
 	V9TranscriptInvalidProjectionMetrics,
@@ -375,27 +413,27 @@ export type {
 	V9TranscriptTableMetrics,
 	V9TranscriptTableName,
 	V9TranscriptTurnAmplificationMetrics,
-} from "./v9-transcript-analyzer.ts";
+} from "./migrations/v9/v9-transcript-analyzer.ts";
 export {
 	stageV9TranscriptNormalizationBatch,
 	V9_TRANSCRIPT_NORMALIZATION_MINIMUM_FREE_BYTES,
 	V9_TRANSCRIPT_NORMALIZATION_STAGING_SQL,
 	V9_TRANSCRIPT_NORMALIZATION_STAGING_VERSION,
-} from "./v9-normalization-staging.ts";
+} from "./migrations/v9/v9-normalization-staging.ts";
 export type {
 	StageV9TranscriptNormalizationBatchOptions,
 	V9TranscriptNormalizationStagingBatchResult,
-} from "./v9-normalization-staging.ts";
+} from "./migrations/v9/v9-normalization-staging.ts";
 export {
 	applyV9TranscriptNormalizationCutover,
 	V9_TRANSCRIPT_NORMALIZATION_CUTOVER_STAGES,
-} from "./v9-normalization-cutover.ts";
+} from "./migrations/v9/v9-normalization-cutover.ts";
 export type {
 	ApplyV9TranscriptNormalizationCutoverOptions,
 	V9TranscriptNormalizationCutoverStage,
 	V9TranscriptNormalizationCutoverResult,
-} from "./v9-normalization-cutover.ts";
-export { analyzeV9TranscriptNormalization } from "./v9-normalization-dry-run.ts";
+} from "./migrations/v9/v9-normalization-cutover.ts";
+export { analyzeV9TranscriptNormalization } from "./migrations/v9/v9-normalization-dry-run.ts";
 export type {
 	AnalyzeV9TranscriptNormalizationOptions,
 	V9TranscriptNormalizationBatchProgress,
@@ -403,11 +441,11 @@ export type {
 	V9TranscriptNormalizationSavings,
 	V9TranscriptNormalizationSourceCoverage,
 	V9TranscriptNormalizationTemporarySpace,
-} from "./v9-normalization-dry-run.ts";
+} from "./migrations/v9/v9-normalization-dry-run.ts";
 export {
 	createV9ProjectionManifest,
 	V9_PROJECTION_MANIFEST_VERSION,
-} from "./v9-projection-manifest.ts";
+} from "./migrations/v9/v9-projection-manifest.ts";
 export type {
 	CreateV9ProjectionManifestOptions,
 	V9ProjectionDigest,
@@ -416,11 +454,11 @@ export type {
 	V9ProviderLedgerManifest,
 	V9ProviderLedgerTableManifest,
 	V9SessionProjectionManifest,
-} from "./v9-projection-manifest.ts";
+} from "./migrations/v9/v9-projection-manifest.ts";
 export {
 	SnapshotStateError,
 	TranscriptSnapshotStore,
-} from "./transcript-snapshot-store.ts";
+} from "./transcript/transcript-snapshot-store.ts";
 export type {
 	LegacySnapshotMessage,
 	TranscriptSessionState,
@@ -431,4 +469,4 @@ export type {
 	TranscriptSnapshotStoreOptions,
 	TranscriptSnapshotV2,
 	TranscriptSubagentIndexEntry,
-} from "./transcript-snapshot-store.ts";
+} from "./transcript/transcript-snapshot-store.ts";

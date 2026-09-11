@@ -8,12 +8,11 @@ const DEFAULT_MAX_FILES = 64;
 const DEFAULT_MAX_FILE_BYTES = 1_048_576;
 const DEFAULT_MAX_REFERENCES = 64;
 
-const SENSITIVE_KEY = /^(?:authorization|proxy[-_]?authorization|api[-_]?key|token|secret|password|credential|cookie|headers?|env(?:ironment)?|command|args?|argv|prompt|provider[-_]?payload|request[-_]?payload|response[-_]?payload|stdout|stderr|content)$/iu;
 const SECRET_FIELD_KEY = /(?:^|[_-])(?:api[-_]?key|authorization|cookie|password|secret|token|credential)(?:$|[_-])/iu;
 const SECRET_CONTAINER_KEY = /^(?:headers?|env(?:ironment)?)$/iu;
 const SENSITIVE_TEXT = /(?:\bBearer\s+[^\s,;]+|\bsk-[A-Za-z0-9_-]{8,}|\b(?:api[-_]?key|token|secret|password|authorization|credential)\b\s*(?:=|:)\s*[^\s,;]+)/iu;
 
-export interface DoctorFileScanOptions {
+interface DoctorFileScanOptions {
 	readonly root: string;
 	readonly paths: readonly string[];
 	readonly maxFiles?: number;
@@ -21,7 +20,7 @@ export interface DoctorFileScanOptions {
 	readonly maxReferences?: number;
 }
 
-export interface DoctorFileScan {
+interface DoctorFileScan {
 	readonly scannedFileCount: number;
 	readonly findingCount: number;
 	readonly unreadableCount: number;
@@ -57,10 +56,6 @@ function stripControlCharacters(value: string): string {
 		const permittedWhitespace = code === 0x09 || code === 0x0a || code === 0x0d;
 		return (code < 0x20 && !permittedWhitespace) || code === 0x7f ? " " : character;
 	}).join("");
-}
-
-export function redactDoctorValue(value: unknown): unknown {
-	return redactNested(value, 0);
 }
 
 export async function scanDoctorFiles(options: DoctorFileScanOptions): Promise<DoctorFileScan> {
@@ -111,20 +106,6 @@ export async function scanDoctorFiles(options: DoctorFileScanOptions): Promise<D
 		truncated,
 		references: Object.freeze(references),
 	});
-}
-
-function redactNested(value: unknown, depth: number): unknown {
-	if (depth >= MAX_VALUE_DEPTH) return REDACTED;
-	if (Array.isArray(value)) {
-		return Object.freeze(value.slice(0, MAX_ARRAY_ITEMS).map((item) => redactNested(item, depth + 1)));
-	}
-	if (!isRecord(value)) return typeof value === "string" ? redactDoctorText(value) : value;
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).slice(0, MAX_ARRAY_ITEMS).map(([key, item]) => [
-			key,
-			SENSITIVE_KEY.test(key) ? REDACTED : redactNested(item, depth + 1),
-		]),
-	));
 }
 
 async function readPrefix(

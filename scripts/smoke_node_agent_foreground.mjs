@@ -9,7 +9,7 @@ import process from "node:process";
 import { resolveConfig } from "@mycli/config";
 import { rootAgentPath } from "@mycli/core";
 import { SubagentController } from "@mycli/integrations";
-import { OpenAIProviderRegistry } from "@mycli/providers";
+import { ProviderRegistry } from "@mycli/providers";
 import {
 	AgentSupervisor,
 	AgentWorkerPool,
@@ -58,7 +58,7 @@ async function main() {
 		store = openRuntimeSessionStore({ dbPath });
 		pool = new AgentWorkerPool({ maxWorkers: 1, maxQueue: 1, warmWorkers: 0 });
 		await pool.start();
-		const providers = new OpenAIProviderRegistry();
+		const providers = new ProviderRegistry();
 		let workerLeaseObserved = false;
 		const delegate = {
 			create: async (input) => {
@@ -72,7 +72,7 @@ async function main() {
 					requestMaxRetries: 0,
 					streamMaxRetries: 0,
 					thinkingEnabled: false,
-					promptCacheKeyEnabled: false,
+					cacheRetention: "none",
 					memoryEnabled: false,
 				});
 				const runtime = new NodeTurnRuntime({

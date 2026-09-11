@@ -1,16 +1,31 @@
+import { randomUUID } from "node:crypto";
 import {
 	canonicalRuntimeFailureMessage,
+	createErrorContext,
+	errorSummary,
+	legacyRuntimeReason,
 	RUNTIME_RETRY_AFTER_MAX_SECONDS,
 	runtimeErrorPublicMessage,
 	sanitizeRuntimeErrorDetail,
 } from "@mycli/contracts";
 import type {
+	ErrorReasonDetails,
+	ErrorOccurrence,
+	FailureSource,
+	FailureOutcome,
+	FailureScope,
 	RuntimeErrorCode,
 	RuntimeFailure,
 	RuntimeFailureDiagnostics,
 } from "@mycli/contracts";
 
 export interface ProviderFailureOptions {
+	readonly source?: FailureSource;
+	readonly scope?: Readonly<FailureScope>;
+	readonly causes?: readonly ErrorOccurrence[];
+	readonly errorReason?: ErrorReasonDetails;
+	readonly errorId?: string;
+	readonly outcome?: Readonly<FailureOutcome>;
 	readonly code: RuntimeErrorCode;
 	readonly message: string;
 	readonly publicDetail?: string;
@@ -19,7 +34,21 @@ export interface ProviderFailureOptions {
 	readonly diagnostics?: RuntimeFailureDiagnostics;
 }
 
+export interface ProviderErrorContext {
+	readonly source: "http" | "response_stream" | "transport";
+	readonly response?: {
+		readonly status: number;
+		readonly headers: Readonly<Record<string, string>>;
+	};
+}
+
 export class ProviderFailure extends Error {
+	readonly source: FailureSource;
+	readonly scope: Readonly<FailureScope> | undefined;
+	readonly causes: readonly ErrorOccurrence[] | undefined;
+	readonly errorReason: ErrorReasonDetails | undefined;
+	readonly errorId: string;
+	readonly outcome: Readonly<FailureOutcome> | undefined;
 	readonly code: RuntimeErrorCode;
 	readonly retryable: boolean;
 	readonly retryAfterSeconds?: number;
@@ -29,6 +58,12 @@ export class ProviderFailure extends Error {
 	constructor(options: ProviderFailureOptions) {
 		super(`${options.code}: ${options.message}`);
 		this.name = "ProviderFailure";
+		this.source = options.source ?? "provider";
+		this.scope = options.scope;
+		this.causes = options.causes;
+		this.errorReason = options.errorReason;
+		this.errorId = options.errorId ?? `error:${randomUUID()}`;
+		this.outcome = options.outcome;
 		this.code = options.code;
 		this.retryable = options.retryable ?? false;
 		this.retryAfterSeconds = boundedRetryAfterSeconds(options.retryAfterSeconds);
@@ -56,6 +91,7 @@ const CONNECTION_ERROR_CODES = new Set([
 	"EPIPE",
 	"ETIMEDOUT",
 	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_BODY_TIMEOUT",
 	"UND_ERR_HEADERS_TIMEOUT",
 	"UND_ERR_SOCKET",
 ]);
@@ -78,21 +114,30 @@ const RETRYABLE_SERVER_ERROR_TOKENS = new Set([
 	"service_unavailable",
 	"temporarily_unavailable",
 ]);
+const AUTH_ERROR_TOKENS = new Set(["invalid_api_key", "authentication_error", "invalid_authentication"]);
+const PERMISSION_ERROR_TOKENS = new Set(["permission_error", "permission_denied", "access_denied"]);
+const INVALID_REQUEST_ERROR_TOKENS = new Set([
+	"invalid_request", "invalid_request_error", "invalid_prompt", "invalid_argument",
+	"invalid_function_parameters", "unsupported_parameter", "content_policy_violation",
+]);
+const RATE_LIMIT_ERROR_TOKENS = new Set(["rate_limit_error", "rate_limit_exceeded", "too_many_requests"]);
 
-export function classifyProviderError(error: unknown): ProviderFailure {
+export function classifyProviderError(error: unknown, context?: ProviderErrorContext): ProviderFailure {
 	if (error instanceof ProviderFailure) {
 		return error;
 	}
 	const record = isRecord(error) ? error : {};
-	const status = integerValue(record.status) ?? integerValue(record.statusCode);
+	const status = context?.response?.status ?? integerValue(record.status) ?? integerValue(record.statusCode);
+	const headers = context?.response?.headers ?? record.headers;
 	const diagnostics: Record<string, string | number | boolean | null> = {};
+	if (context) diagnostics.error_source = context.source;
 	if (status !== undefined) {
 		diagnostics.status = status;
 	}
 	const requestId = stringValue(record.request_id)
 		?? stringValue(record.requestId)
 		?? stringValue(record.requestID)
-		?? requestIdFromHeaders(record.headers);
+		?? requestIdFromHeaders(headers);
 	const safeRequestId = sanitizePublicToken(requestId);
 	if (safeRequestId) {
 		diagnostics.request_id = safeRequestId;
@@ -114,12 +159,12 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 	if (transport.code) diagnostics.transport_error_code = transport.code;
 	if (transport.name) diagnostics.transport_error_name = transport.name;
 	const errorTokens = providerErrorTokens(record, nested, nestedError);
-	const publicDetail = extractPublicDetail(error, record, nested, {
+	const publicDetail = context?.source === "transport" ? undefined : extractPublicDetail(error, record, nested, {
 		status,
 		providerErrorCode,
 		providerErrorType,
 	});
-	const retryAfter = retryAfterSeconds(record.headers)
+	const retryAfter = retryAfterSeconds(headers)
 		?? retryAfterSecondsFromMessage(publicDetail, errorTokens);
 	if (isAbortError(error, errorNames)) {
 		return new ProviderFailure({
@@ -135,7 +180,7 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 			diagnostics,
 		});
 	}
-	if (status === 401) {
+	if (status === 401 || hasErrorToken(errorTokens, AUTH_ERROR_TOKENS)) {
 		return new ProviderFailure({
 			code: "auth_error",
 			message: "provider authentication failed",
@@ -143,7 +188,7 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 			diagnostics,
 		});
 	}
-	if (status === 403) {
+	if (status === 403 || hasErrorToken(errorTokens, PERMISSION_ERROR_TOKENS)) {
 		return new ProviderFailure({
 			code: "permission_denied",
 			message: "provider access was denied",
@@ -167,6 +212,14 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 			diagnostics,
 		});
 	}
+	if (hasErrorToken(errorTokens, INVALID_REQUEST_ERROR_TOKENS)) {
+		return new ProviderFailure({
+			code: "invalid_request",
+			message: "provider rejected the request",
+			...(publicDetail ? { publicDetail } : {}),
+			diagnostics,
+		});
+	}
 	if (status === 503 || status === 529 || hasErrorToken(errorTokens, OVERLOAD_ERROR_TOKENS)) {
 		return new ProviderFailure({
 			code: "server_overloaded",
@@ -177,7 +230,7 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 			diagnostics,
 		});
 	}
-	if (status === 429) {
+	if (status === 429 || hasErrorToken(errorTokens, RATE_LIMIT_ERROR_TOKENS)) {
 		return new ProviderFailure({
 			code: "rate_limited",
 			message: "provider rate limit exceeded",
@@ -199,6 +252,11 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 	if (status === 408 || transport.name !== undefined || transport.code !== undefined) {
 		return new ProviderFailure({
 			code: "connection_error",
+			errorReason: {
+				reason: status === 408 || transport.code === "ETIMEDOUT" || transport.code?.includes("TIMEOUT")
+					|| transport.name?.includes("Timeout") ? "transport.timed_out" : "transport.connect_failed",
+				details: { ...(transport.code ? { transport_code: transport.code } : {}) },
+			},
 			message: "provider connection failed",
 			...(publicDetail ? { publicDetail } : {}),
 			retryable: true,
@@ -208,9 +266,13 @@ export function classifyProviderError(error: unknown): ProviderFailure {
 	}
 	const retryable = (status !== undefined && status >= 500 && status <= 599)
 		|| hasErrorToken(errorTokens, RETRYABLE_SERVER_ERROR_TOKENS)
+		|| context?.source === "response_stream"
 		|| errorNames.includes("RetryableError");
 	return new ProviderFailure({
 		code: "provider_error",
+		errorReason: { reason: status !== undefined && status >= 500 && status <= 599
+			? "provider.service_failed" : context?.source === "response_stream"
+				? "transport.stream_interrupted" : "provider.failure_unclassified" },
 		message: "provider request failed",
 		...(publicDetail ? { publicDetail } : {}),
 		retryable,
@@ -233,11 +295,27 @@ export function providerFailurePublicMessage(failure: ProviderFailure): string {
 	return canonicalRuntimeFailureMessage(failure.code, candidate);
 }
 
-export function providerFailureToRuntimeFailure(failure: ProviderFailure): RuntimeFailure {
+export interface ProviderFailureProjection {
+	readonly scope: Readonly<FailureScope>;
+	readonly errorContextVersion?: 1;
+	readonly outcome?: Readonly<FailureOutcome>;
+}
+
+export function providerFailureToRuntimeFailure(
+	failure: ProviderFailure,
+	projection?: ProviderFailureProjection,
+): RuntimeFailure {
 	const additionalDetails = providerFailureAdditionalDetails(failure);
+	const errorContext = projection?.errorContextVersion === 1 ? createErrorContext({
+		...providerFailureReason(failure),
+		id: failure.errorId, source: failure.source, scope: failure.scope ?? projection.scope,
+		...(failure.causes ? { causes: failure.causes } : {}),
+		outcome: failure.outcome ?? projection.outcome ?? { state: "failed", effects: "none" },
+	}) : undefined;
 	return {
 		code: failure.code,
-		message: runtimeErrorPublicMessage(failure.code),
+		message: errorContext ? errorSummary(errorContext) : runtimeErrorPublicMessage(failure.code),
+		...(errorContext ? { errorContext } : {}),
 		...(additionalDetails ? { additionalDetails } : {}),
 		retryable: failure.retryable,
 		...(Object.keys(failure.diagnostics).length > 0
@@ -247,6 +325,20 @@ export function providerFailureToRuntimeFailure(failure: ProviderFailure): Runti
 			? {}
 			: { retryAfterSeconds: failure.retryAfterSeconds }),
 	};
+}
+
+export function providerFailureReason(failure: ProviderFailure): ErrorReasonDetails {
+	const base = failure.errorReason ?? { reason: legacyRuntimeReason(failure.code) };
+	const reason = base.reason;
+	if (!reason.startsWith("provider.") && !reason.startsWith("auth.")) return base as ErrorReasonDetails;
+	return { reason, details: {
+		...(typeof failure.diagnostics.status === "number" ? { http_status: failure.diagnostics.status } : {}),
+		...(typeof failure.diagnostics.request_id === "string" ? { request_id: failure.diagnostics.request_id } : {}),
+		...(typeof failure.diagnostics.provider_error_code === "string" ? { provider_code: failure.diagnostics.provider_error_code } : {}),
+		...(typeof failure.diagnostics.provider_error_type === "string" ? { provider_type: failure.diagnostics.provider_error_type } : {}),
+		...(failure.retryAfterSeconds === undefined ? {} : { retry_after_seconds: failure.retryAfterSeconds }),
+		...("details" in base ? base.details : {}),
+	} } as ErrorReasonDetails;
 }
 
 function providerFailureAdditionalDetails(failure: ProviderFailure): string | undefined {
@@ -300,7 +392,7 @@ function structuredBodyMessage(value: unknown): string | undefined {
 
 function sanitizePublicToken(value: unknown): string | undefined {
 	const token = typeof value === "string" ? value.slice(0, 128) : "";
-	return /^[A-Za-z0-9_.:-]{1,128}$/u.test(token) ? token : undefined;
+	return /^[A-Za-z0-9_.:-]{1,128}$/u.test(token) && sanitizeRuntimeErrorDetail(token) === token ? token : undefined;
 }
 
 function retryAfterSeconds(headers: unknown): number | undefined {
@@ -384,6 +476,7 @@ function isContextWindowError(error: Record<string, unknown>): boolean {
 	];
 	return values.some((value) => typeof value === "string" && (
 		value.toLowerCase().includes("context_window")
+		|| value.toLowerCase().includes("context_length_exceeded")
 		|| value.toLowerCase().includes("maximum context length")
 	));
 }
@@ -461,6 +554,7 @@ function stringValue(value: unknown): string | undefined {
 
 function safeErrorToken(value: unknown): string | undefined {
 	return typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value)
+		&& sanitizeRuntimeErrorDetail(value) === value
 		? value
 		: undefined;
 }

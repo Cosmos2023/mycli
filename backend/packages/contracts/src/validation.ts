@@ -1,13 +1,19 @@
 import { readFileSync } from "node:fs";
-import type { ErrorObject, ValidateFunction } from "ajv";
+import type { ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { GatewayContractCatalog } from "./generated/catalog.ts";
 import type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
+import type { GatewayToolRecord } from "./generated/gateway-tool-record.ts";
 import type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
 import type { PluginV2Manifest } from "./generated/plugin-v2-manifest.ts";
 import type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts";
 import type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
 import type { RuntimeTurnRecord } from "./generated/runtime-turn-record.ts";
+import { parseProviderAttemptRecord } from "./provider-attempt.ts";
+import { ContractValidationError } from "./contract-validation-error.ts";
+import { errorContextSchema } from "./errors/error-context.ts";
+import { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
+export { ContractValidationError } from "./contract-validation-error.ts";
 
 const ajv = new Ajv2020({
 	allErrors: true,
@@ -16,6 +22,7 @@ const ajv = new Ajv2020({
 	strictRequired: false,
 });
 ajv.addKeyword({ keyword: "name", schemaType: "string", valid: true });
+ajv.addSchema(errorContextSchema, "https://mycli.local/contracts/error-context.schema.json");
 
 function compile(name: string): ValidateFunction {
 	const url = new URL(`../schemas/${name}`, import.meta.url);
@@ -23,22 +30,18 @@ function compile(name: string): ValidateFunction {
 }
 
 const validateCatalog = compile("catalog.schema.json");
+const validateGatewayToolRecord = compile("gateway-tool-record.schema.json");
+const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
+ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/provider-attempt.schema.json", import.meta.url), "utf8")) as object,
+	"https://mycli.local/contracts/provider-attempt.schema.json");
 const validateGatewayEvent = compile("gateway-events.schema.json");
+const validateGatewayErrorCode = ajv.compile({
+	$ref: "https://mycli.local/contracts/gateway-events.schema.json#/$defs/gateway.error/properties/code",
+});
 const validateJsonRpcMessage = compile("json-rpc.schema.json");
 const validatePluginV2Manifest = compile("plugin-v2-manifest.schema.json");
 const validatePluginV2ProtocolMessage = compile("plugin-v2-protocol.schema.json");
 const validateRuntimeState = compile("runtime-state.schema.json");
-const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
-
-export class ContractValidationError extends Error {
-	readonly errors: readonly ErrorObject[];
-
-	constructor(message: string, errors: readonly ErrorObject[] = []) {
-		super(message);
-		this.name = "ContractValidationError";
-		this.errors = errors;
-	}
-}
 
 function parse<T>(value: unknown, validator: ValidateFunction, label: string): T {
 	if (!validator(value)) {
@@ -47,8 +50,44 @@ function parse<T>(value: unknown, validator: ValidateFunction, label: string): T
 	return value as T;
 }
 
+export function isGatewayErrorCode(value: unknown): value is Extract<GatewayEventNotification, { method: "gateway.error" }>["params"]["code"] {
+	return validateGatewayErrorCode(value) === true;
+}
+
 export function parseGatewayEvent(value: unknown): GatewayEventNotification {
-	return parse(value, validateGatewayEvent, "gateway event");
+	if (typeof value === "object" && value !== null && "method" in value && "params" in value && typeof value.method === "string") {
+		value = { ...value, params: projectGatewayErrorPayload(value.method, value.params, "read") };
+	}
+	const event = parse<GatewayEventNotification>(value, validateGatewayEvent, "gateway event");
+	const method = event.method === "runtime.event" ? event.params.type : event.method;
+	const params: unknown = event.method === "runtime.event" ? event.params.payload : event.params;
+	if (method === "provider.attempt.updated" && typeof params === "object" && params !== null && "record" in params) {
+		const record = parseProviderAttemptRecord(params.record);
+		if (!("session_id" in params) || params.session_id !== record.sessionId
+			|| !("turn_id" in params) || params.turn_id !== record.turnId
+			|| (event.method === "runtime.event" && (event.params.session_id !== record.sessionId
+				|| event.params.turn_id !== record.turnId))) {
+			throw new ContractValidationError("Invalid provider attempt event identity.");
+		}
+		const normalized = { ...params, record };
+		return (event.method === "runtime.event"
+			? { ...event, params: { ...event.params, payload: normalized } }
+			: { ...event, params: normalized }) as GatewayEventNotification;
+	}
+	if ((method === "tool.start" || method === "tool.complete" || method === "tool.failed")
+		&& typeof params === "object" && params !== null && "tool_record" in params
+		&& params.tool_record !== undefined) {
+		const record = parseGatewayToolRecord(params.tool_record);
+		if (("call_id" in params && record.call_id !== params.call_id)
+			|| ("name" in params && record.name !== params.name)) {
+			throw new ContractValidationError("Invalid gateway tool record identity.");
+		}
+	}
+	return event;
+}
+
+export function parseGatewayToolRecord(value: unknown): GatewayToolRecord {
+	return parse(projectGatewayErrorData(value, "read"), validateGatewayToolRecord, "gateway tool record");
 }
 
 export function parseGatewayContractCatalog(value: unknown): GatewayContractCatalog {

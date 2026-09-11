@@ -109,6 +109,10 @@ export type {
 export { loadPluginManifest } from "./plugins/manifest.ts";
 export type { LoadPluginManifestOptions } from "./plugins/manifest.ts";
 export { discoverPlugins } from "./plugins/discovery.ts";
+export { pluginBundleContributions } from "./plugins/bundle-contributions.ts";
+export type { PluginBundleContributions } from "./plugins/bundle-contributions.ts";
+export { PluginPackageManager } from "./plugins/package-management.ts";
+export type { PluginPackageRequest, PluginPackageResponse } from "./plugins/package-management.ts";
 export type { DiscoverPluginsOptions } from "./plugins/discovery.ts";
 export {
 	PluginHostError,
@@ -167,6 +171,7 @@ export { SkillRegistry } from "./skills/registry.ts";
 export type { SkillRegistryOptions } from "./skills/registry.ts";
 export {
 	createSkillToolRegistration,
+	type SkillLookup,
 	SKILL_TOOL_DEFINITION,
 	skillInvocationArtifactFromMetadata,
 	SkillTool,
@@ -249,3 +254,6 @@ export {
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS,
 } from "./subagents/task-notification.ts";
+export { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool } from "./mcp/resource-tools.ts";
+export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
+	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";
