@@ -61,7 +61,8 @@ After matching against authorized schemas, pi-ai receives `addedToolNames` at th
 It serializes native Responses tool-search/additional-tools history or Anthropic tool references
 where supported, and ordinary functions elsewhere. Local search stays a regular mycli tool adapter;
 the SDK supplies the native schema-load items. This does not claim an identical Codex dispatcher or
-measure actual cache hits. Plugin-contributed OAuth login management remains future plugin work.
+measure actual cache hits. The subsequent [plugin lifecycle work](../plugin-codex-parity.md)
+integrates plugin-contributed OAuth management and safe configuration refresh before later turns.
 
 Deterministic coverage includes real loopback OAuth state/PKCE/rotation/logout, SDK MCP requests
 through the application gateway, delayed/cancelled input, narrow/CJK TUI rendering, and real pi-ai

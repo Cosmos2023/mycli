@@ -28,7 +28,7 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - Recognize `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`. Resolve component paths
   beneath the real package root. Default components are `skills/`, `.mcp.json`, `hooks/hooks.json`
   and `.app.json`. Apps produce `plugin_apps_unavailable`; they never appear usable.
-- One startup discovery is shared across bundle skills, MCP, hooks and PluginRuntime. Disabled or
+- One discovery per configuration generation is shared across bundle skills, MCP, hooks and PluginRuntime. Disabled or
   untrusted repository bundles contribute nothing. Invalid component entries remain diagnostic
   visible and give the bundle `partial` status while valid entries can load.
 - Skill references use `plugin:skill` or `plugin@marketplace:skill`; `isSkillReferenceName` in core
@@ -53,6 +53,45 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - Regressions cover package defaults, realpath aliases/escapes/cycles, cancellation, failed update,
   concurrent commits, qualified names, actual MCP/hook execution, trust/enablement, CLI routing,
   and skill instructions surviving runtime context validation.
+
+## MCP Authentication And Live Configuration
+
+- `pluginMcpServers(discovery, env)` normalizes bundle MCP declarations without executing code.
+  `discoverConfiguredMcpServers(options, discovery?)` is the shared authority for runtime and MCP
+  management. Preserve plugin discovery diagnostics and per-server normalization failures.
+- Preserve stable `pluginMcpServerId(pluginId, serverName)` identities. Add structured plugin
+  ID/source/raw-server provenance and accept the readable `pluginId/serverName` selector in
+  list/inspect, login/logout and revocation. An exact standalone ID override wins and does not
+  inherit plugin aliases or credentials. Required plugin failures use the stable internal ID.
+- Normalize bundle OAuth `clientId`/`callbackPort` aliases with canonical snake-case keys winning.
+  The per-server callback setting is a documented mycli extension to the inspected Codex behavior.
+  OAuth management starts no plugin worker, hook, model or unrelated MCP client.
+- Bind plugin credentials to plugin ID/source/raw server plus normal endpoint/header/OAuth
+  identity, excluding the immutable package cache path. Bind MCP tool approvals to the full
+  configuration/package/schema fingerprint; a preserved OAuth login does not preserve approval.
+- `loadRuntimeIntegrationConfiguration` fingerprints effective plugin discovery, MCP config and
+  the private OAuth directory modification stamp. Read no credential values into the fingerprint
+  or diagnostics. Unchanged configurations keep their clients. Standalone skill/hook file edits
+  are not watched independently by this package-change mechanism.
+- `RuntimeIntegrationComposition.prepareRun(owner, signal)` serializes configuration refresh
+  before catalog capture, then retains ownership. `finishRun(owner)` releases it. Session/turn
+  owner keys are collision-safe; plugin commands acquire their own temporary owner.
+- Shared root, child, command and suspended runs defer configuration replacement until all owners
+  finish. MCP elicitation belongs to its active tool call and therefore retains the same client.
+  Explicit workspace trust changes keep their existing immediate trust-gating behavior.
+- On a configuration change, finish MCP discovery and validate required servers before publishing
+  replacement tools/skills/hooks/commands/resources. Candidate failure closes candidate clients,
+  retains the previous content and rejects the refresh. Optional server failures stay isolated.
+  Once published, retire/close prior content; stale callbacks cannot change the new catalog.
+- Idle integration slash inspections and `resource.list` invoke the same refresh boundary. Keep
+  `/plugins`, `/mcp`, `/skills`, `/hooks` and diagnostic `/tools` distinct. `/mcp` uses readable
+  plugin selectors, preserving the opaque ID in its inspection detail.
+- Cancellation must not add a run owner after preparation; failure must not strand an owner.
+  Shutdown aborts candidate discovery/loading, drains replacement work, and fences publication.
+  Immutable package snapshots remain retained on disk; automatic GC is not implemented.
+- Regressions cover real loopback login/logout, trust/disable/overrides, credential/approval
+  identity, package lifecycle, multiple owners, continuation/interruption cleanup, failed/cancelled
+  preparation, concurrent refresh, shutdown, and a same-backend SDK/gateway update during approval.
 
 ## Manifest Contract
 

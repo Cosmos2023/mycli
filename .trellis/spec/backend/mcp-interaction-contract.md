@@ -26,6 +26,13 @@ OAuth:
   Configured bearer auth and OAuth are separate identities. No automatic login during discovery.
 - Credentials are private, bounded, atomic and isolated by config identity; never log tokens,
   metadata bodies, verifiers, codes, authorization headers or secret URL paths.
+- Enabled plugin MCP servers use the same login/logout/configuration service. Plugin ID/source/raw
+  server are part of credential identity; immutable package-cache paths are not. Same-identity
+  package updates preserve OAuth while tool approval fingerprints still change. Management
+  `not_logged_in` means no saved OAuth record, not proof that a server requires authentication.
+- Login/logout directory changes trigger discovery at the next idle integration refresh or turn
+  preparation. Active/suspended owners retain their clients; logout still removes saved tokens for
+  subsequent requests. No refresh automatically opens a browser.
 - Token refresh and logout serialize using the private-file lock. Refresh cannot revive credentials
   removed by logout, overwrite a newer rotated token with a stale response, or initiate a browser
   flow. Configuration changes do not inherit old credentials.

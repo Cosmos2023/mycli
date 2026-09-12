@@ -29,6 +29,8 @@
 - Tool route binding:
   `ToolRouter.beginTurn(turnId, catalog?) -> void` and
   `ToolAdapter.beginTurn?(turnId, catalog?) -> void`.
+- Optional integration lifecycle port:
+  `NodeTurnRuntimeOptions.runLifecycle.prepare(turnId, signal)` and `finish(turnId)`.
 - Durable suspension field:
   `suspended_turn.payload.continuation.run_snapshot`.
 - Compaction factory:
@@ -43,6 +45,11 @@
   deferred definitions, optional rendered skill catalog, and a deterministic SHA-256 fingerprint.
 - Snapshot construction validates and copies all nested values. Callers cannot mutate policy roots,
   tool arrays, definitions, schemas, or skill text after the snapshot is created.
+- Await the optional run lifecycle preparation before snapshot/catalog capture. The app uses it
+  to refresh integrations and retain the shared content owner; runtime does not depend on the
+  integrations implementation. Terminal cleanup releases ownership even after preparation failure
+  or cancellation. Approval/clarification suspension, including a retryable resolution failure,
+  keeps ownership until completion/interruption. Repeated preparation for that owner is idempotent.
 - The first provider step and every later step in the run use the same collaboration mode, direct
   catalog, deferred catalog, and skill catalog. Trust, permission, MCP, plugin, or skill discovery
   changes affect only a later run.
@@ -125,6 +132,9 @@
   steps and assert the active run is unchanged while the next run observes the refresh.
 - Approval and clarification tests recreate continuation coordinators and recover the exact stored
   snapshot; same-process mismatch tests assert resolution has not started.
+- Lifecycle tests prove refresh-before-capture, no provider request before preparation, release
+  after failure/cancellation/completion, and retention through approvals/questions and retryable
+  resolution failures. App tests prove shared root/child ownership protects live MCP clients.
 - Router and `tool_search` tests restore an old catalog after dynamic refresh and assert newly added
   or schema-changed routes cannot be discovered or executed.
 - Compaction tests change durable activations between estimates and assert the lazy base-context

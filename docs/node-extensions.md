@@ -190,7 +190,7 @@ servers contributed by enabled plugins.
 
 ### OAuth Authentication
 
-For a directly configured Streamable HTTP server that requires OAuth:
+For a Streamable HTTP server that requires OAuth:
 
 ```bash
 mycli mcp add service --url https://mcp.example.com/mcp
@@ -198,6 +198,14 @@ mycli mcp login service
 # Open the displayed authorization link, then return to the terminal.
 mycli mcp logout service
 ```
+
+The same commands support MCP servers from enabled plugins. Use the `plugin-id/server-name`
+selector displayed by `mycli mcp list` and `/mcp`, for example `mycli mcp login my-plugin/docs`
+or `mycli mcp login my-plugin@personal/docs`. Internal server IDs remain accepted. Login/logout
+resolve the same effective configuration as runtime discovery, without starting plugin workers,
+hooks, models, or unrelated MCP clients. Disabled plugins and untrusted repository plugins do not
+contribute servers. Explicit standalone MCP configuration takes precedence for an identical
+internal server ID.
 
 Login uses the MCP SDK's protected-resource/authorization-server discovery, dynamic client
 registration, authorization code and PKCE flow. The callback listens only on `127.0.0.1`, validates
@@ -219,14 +227,25 @@ isolated by server/source, endpoint, configured headers and OAuth settings. This
 storage, not OS keychain storage. Codes, state and PKCE verifiers are kept only for the active login.
 Runtime requests read saved tokens and serialize refresh across processes, preserving rotated
 refresh tokens. Refresh never opens a browser. Missing/expired authorization directs the user to
-`mycli mcp login <server-id>`. Restart mycli after login to rerun failed discovery; logout removes
+`mycli mcp login <server-id>`. After login, open `/mcp` while idle or start the next turn to refresh
+discovery. Refresh waits while any shared run remains active or suspended. Logout removes
 the active configuration's saved credentials and takes effect on subsequent requests. It does not
 revoke tokens at the remote authorization server or reverse requests already in flight.
 
 Configured `Authorization` headers and `bearer_token_env_var` remain independent of OAuth and take
 precedence. OAuth login rejects such configurations rather than silently replacing their identity.
-Legacy `http` and stdio do not use this OAuth flow. Plugin-contributed server login management
-remains part of the later plugin lifecycle work; direct MCP configuration is managed here.
+Legacy standalone `http` and stdio do not use this OAuth flow. Codex bundles normalize `type: "http"`
+to Streamable HTTP and accept OAuth `clientId` / `callbackPort` aliases, with canonical `client_id`
+/ `callback_port` taking precedence. Keeping a per-server callback port is a mycli extension;
+the inspected Codex source uses its global callback setting.
+
+Plugin credentials are also bound to the plugin ID, source and declared server name. Updating an
+immutable package snapshot preserves the login when the endpoint, headers and OAuth settings
+remain unchanged. Changed identities do not inherit credentials. Tool approvals include the
+package/configuration and tool definition fingerprints, so a package update still requires a new
+approval where applicable. `mcp list` reports `oauth`, `configured_header`, `not_logged_in`,
+`unsupported` or `unavailable`; `not_logged_in` only means there are no saved OAuth credentials,
+not that the server necessarily requires authentication.
 
 ### Server-Initiated Questions (Elicitation)
 
@@ -300,8 +319,8 @@ continues to authorize tools until the configuration is changed.
 
 `mcp add` and `mcp remove` update **user configuration only** using a private atomic writer. Add
 rejects an existing user ID, and edits preserve unrelated TOML values (comments may be reformatted).
-They validate without starting clients, report active repository overrides, and require a restart
-to adopt changed user configuration. Removal leaves remembered grants intact; revoke them separately
+They validate without starting clients and report active repository overrides. Configuration changes
+apply before the next idle turn or catalog inspection. Removal leaves remembered grants intact; revoke them separately
 when desired. Use `mycli mcp add --help` for environment, timeout, filter, approval, and sandbox flags.
 The `--` separator preserves the server's arguments, including its own `--json` flag.
 
@@ -419,8 +438,12 @@ agent configuration, permission, artifact, recovery, and TUI contract is documen
 Plugins may be Codex-style bundles installed with `mycli plugins add <directory|Git-source|name@marketplace>`.
 Bundles contribute namespaced skills, MCP servers and command hooks through the existing runtime
 systems. Use `mycli plugins marketplace add <source>` to register a catalog, then
-`mycli plugins list --available` to browse it. Install/update/enable/disable/remove take effect in
-new sessions; installation does not execute package code. Apps declarations are reported as
+`mycli plugins list --available` to browse it. Install/update/enable/disable/remove take effect before
+the next turn or idle catalog inspection; installation does not execute package code. Existing
+active or suspended runs keep the previous tools, skills, hooks and connections until all owners
+finish. New configuration discovery completes before the next run captures its catalog. An unchanged
+configuration reuses its connections. Required-server or composition failure retains the previous
+content and rejects the refresh; correct the configuration and retry. Apps declarations are reported as
 unavailable. See [plugin-codex-parity.md](plugin-codex-parity.md) for formats, commands and limits.
 
 Executable ESM plugins use the process-isolated Plugin API v2. Production entries must be compiled `.js` or

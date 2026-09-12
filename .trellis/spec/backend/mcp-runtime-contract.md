@@ -10,6 +10,7 @@ their protocol clients and process hosts remain source-owned.
 
 - `McpManager.loadCached(signal)`, `discover(signal)`, `refresh(signal)`, `close()`.
 - `McpConnection.run(operation, signal, request)` owns replaceable protocol generations.
+- `discoverConfiguredMcpServers(options, discovery?)` unifies standalone and enabled-plugin config.
 - `normalizeIntegrationToolNames(registrations, reservedNames?)` preserves raw identities.
 - `ExtensionToolCatalog.replace(snapshot, policies)` publishes one prepared runtime view.
 - `planExtensionToolExposure(definitions, discoveries)` selects generic provider exposure.
@@ -21,6 +22,13 @@ their protocol clients and process hosts remain source-owned.
 
 - A manager owns one reusable client per immutable server configuration. Cached and live tool
   registrations share it. Configuration replacement belongs to the owning composition lifecycle.
+- Runtime and list/inspect/login/logout/revoke use the same effective configured-server identities.
+  Plugin provenance remains structured; readable selectors map to existing internal IDs. Exact
+  standalone ID overrides win. Auth management never starts unrelated clients or plugin code.
+- Package/config/auth changes refresh shared integration content before new-run catalog capture
+  or idle inspection, after all active/suspended owners finish. Replacement discovery validates
+  required servers, retains prior content on failure, and closes retired clients after publication.
+  Initial optional discovery still uses the cached/background startup path. See the plugin contract.
 - Coalesce in-flight refreshes only. One waiter cancellation detaches that waiter; the last waiter
   cancels discovery. Later explicit refresh can retry after failure/cancellation. Close rejects
   new work, aborts and drains owned operations/cache effects, then closes each client once.

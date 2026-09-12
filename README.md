@@ -460,8 +460,17 @@ Codex-style bundles use `.codex-plugin/plugin.json` or `.claude-plugin/plugin.js
 contribute skills, MCP servers, and supported command hooks. Plugin API v2 uses `plugin.yaml`
 and compiled ESM for process-hosted tools, hooks, and commands.
 
-Package changes apply on the next runtime launch. `/plugins` inspects packages and their
-capabilities; installation, updates, enablement, and marketplace management use the CLI.
+Package changes apply before the next turn or an idle catalog inspection. Active turns, including
+approval waits, keep their original tools and connections until they finish. `/plugins` inspects
+packages and their capabilities; installation, updates, enablement, and marketplace management
+use the CLI. Plugin MCP servers use the same login commands, with readable selectors:
+
+```bash
+mycli mcp inspect my-plugin/server-name
+mycli mcp login my-plugin/server-name
+mycli mcp logout my-plugin/server-name
+```
+
 OpenAI-hosted Apps and prompt/agent hook types are not supported. See
 [plugin installation and compatibility](docs/plugin-codex-parity.md) for package formats,
 marketplaces, and the supported Codex subset.
