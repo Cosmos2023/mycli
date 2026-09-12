@@ -262,16 +262,17 @@ accept spaces, tabs, or line breaks as separators. Retired names remain reserved
 with a replacement hint; they cannot execute or become model input. Unregistered absolute paths
 remain chat input.
 
-`/clear` clears this TUI's transcript view and cancels pending history loads without deleting saved
-messages or changing model context. `/view` changes local display settings without writing user
-configuration; its selection survives gateway updates and settings reloads.
+`/clear` starts a fresh backend session and then clears the terminal view and scrollback. Saved
+messages remain available through `/resume`. A failed transition preserves the previous conversation.
+`/view` changes local display settings without writing user configuration; its selection survives
+gateway updates and settings reloads.
 Changing the view in `/settings` replaces that local selection; explicitly saving a user default
 also clears the temporary override so the saved choice takes effect.
 
 | Command | Arguments | TUI behavior | During turn | Discovery |
 | --- | --- | --- | --- | --- |
 | `/model` | optional `[model] [--thinking-effort level]` | provider/model picker when bare; validated session-scoped selection when inline | yes | common |
-| `/plan` | none | backend | no | common |
+| `/plan` | optional `[task]` | enters Plan mode; an inline task starts a turn with its attachments | no | common |
 | `/mode` | optional `[default\|plan]` | backend | no | search-only |
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | common |
 | `/sandbox` | optional `[read-only\|workspace-write\|danger-full-access\|next]` | backend | no | search-only |
@@ -285,23 +286,27 @@ also clears the temporary override so the saved choice takes effect.
 | `/context` | none | backend | yes | search-only |
 | `/compact` | none | backend | no | common |
 | `/stats` | none | backend | yes | search-only |
-| `/skills` | none | overlay | yes | common |
+| `/skills` | none | skill invocation and persistent enable/disable picker | yes | common |
 | `/mcp` | optional `[verbose]` | server connections and tools; verbose adds transport and resources | yes | common |
 | `/plugins` | none | plugin and marketplace browser, capabilities, installation and management | yes | common |
-| `/hooks` | none | configured and plugin-provided hooks | yes | common |
+| `/hooks` | none | event groups, commands, enablement and trust | yes | common |
 | `/tools` | optional `[list\|sets]` | actual tool inventory | yes | search-only |
 | `/resources` | none | opens resources | yes | search-only |
 | `/memory` | optional `[list\|path\|search\|add\|forget]` | overlay | yes | search-only |
 | `/agents` | optional `[child-session-id\|kill <child-session-id>\|kill-all]` | agent view when bare; backend when inline | yes | common |
 | `/ps` | optional `[stop-all]` | lists or stops background terminals | yes | common |
-| `/changes` | none | backend | yes | common |
+| `/diff` | none | scrollable staged, unstaged and untracked Git diff | yes | common |
+| `/review` | none | read-only review of uncommitted changes, a base branch, a commit, or custom instructions | no | common |
+| `/rename` | optional `[title]` | edits the current session title | no | common |
+| `/init` | none | asks the agent to create AGENTS.md only when it does not exist | no | common |
+| `/changes` | none | session file history | yes | common |
 | `/undo` | none | backend | yes | search-only |
 | `/trace` | optional `[export\|logs]` | overlay | yes | search-only |
 | `/details` | none | toggles compact tool details | yes | search-only |
 | `/view` | optional `[default\|verbose\|focus]` | changes transcript density; tools remain visible | yes | search-only |
 | `/hotkeys` | none | opens keyboard help | yes | search-only |
 | `/copy` | none | copies the last assistant response | yes | search-only |
-| `/clear` | none | clears the local transcript view | no | search-only |
+| `/clear` | none | creates a fresh session, then clears the terminal | no | search-only |
 | `/login` | none | opens masked provider credential setup | yes | search-only |
 | `/trust` | none | opens workspace trust | yes | search-only |
 | `/help` | none | opens unified shortcut and command help | yes | common |
@@ -342,11 +347,35 @@ at the previewed metadata revision, while Esc cancels without changing the sourc
 `/resume <session-id>` uses the same backend transition. See [sessions.md](sessions.md) for the
 provider-free management commands and recovery matrix.
 
-The `/mcp`, `/skills`, `/hooks`, and `/tools` inspection lists support text filtering, arrow-key selection,
-Page Up/Down, and Home/End. Enter opens the selected item's complete returned description and
-status; Esc returns to the list, then closes it without changing the composer draft. The panel
-adapts to the available terminal height. A result capped by the backend reports the loaded count
-separately from the total. `/hooks` lists configured hooks, including disabled ones, and plugin hooks.
+`/skills` offers **List skills** and **Enable/Disable Skills**. The invocation picker searches the
+complete discovered catalog and inserts `$name` into the draft, retaining the selected file's identity
+and content revision. Removing the mention removes its selection. Queued input, restored drafts and
+session recovery retain these references; disabled or changed selections are rejected before a model
+request. Enablement overrides are saved under `~/.mycli/integration-enablement.json` and apply to
+subsequent turns. Catalog refresh reads configuration and skill files without starting extension hosts.
+
+`/hooks` groups configured and plugin-provided hooks by event. Enter shows the command and source.
+Availability and command trust are separate: enabling an untrusted configured hook does not authorize
+execution. Trust requires reviewing the command and explicitly confirming it; a changed command
+invalidates the preview. Plugin handlers are marked as trusted through their enabled plugin.
+Ctrl+R refreshes skill/hook catalogs; Ctrl+A inspects full details. Closing a selector or switching
+sessions discards late results. Active turns retain their captured integration settings.
+
+`/diff` reads Git state with external diff drivers disabled. It keeps staged and unstaged changes
+separate, includes untracked text, and labels binary files and symlinks. The view is bounded to 256 KiB;
+very large Git contexts produce a visible load failure. Arrow keys/Page Up/Page Down scroll; Ctrl+R
+refreshes. `/changes` continues to show file history recorded by this session.
+
+`/review` uses the existing supervised runtime with only `Read` exposed, including no native web
+search. Branch and commit reviews pin file reads to the selected revision. Custom review accepts a
+focus and a bounded repository file listing, including clean repositories. The review runtime is
+released when the turn ends, so later ordinary turns use their normal tools. Review preparation can
+be cancelled. `/resume` supports an on-demand conversation preview with Ctrl+P; it does not resume
+the selected session until Enter. `/rename` changes only the current conversation's title.
+
+The `/mcp` and diagnostic `/tools` inspection lists support filtering and item details. Enter opens
+the selected item's description; Esc returns to the list, then closes it. Capped results report how
+many rows were loaded.
 
 MCP servers, plugin packages, and callable tools have separate inventories. `/mcp` includes servers
 that are loading, disabled, failed, or serving cached discovery, including servers without resources.

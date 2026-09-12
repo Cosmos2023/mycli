@@ -1,3 +1,7 @@
+import type { ReviewSelection } from "@mycli/contracts";
+import { createHookManagerClient } from "./hook-manager-client.ts";
+import { parseSkillReferences } from "@mycli/contracts";
+import { createSkillManagerClient } from "./skill-manager-client.ts";
 import process from "node:process";
 import { createPluginManagerClient } from "./plugin-manager-client.ts";
 import { parseGatewayParams, readErrorContext, type GatewayMethod, type GatewayParams, type GatewayResult } from "@mycli/contracts";
@@ -166,15 +170,11 @@ const sessionTransitions = new SessionTransitionController({
 const uiActions = createMycliUiActionDispatcher(async (action) => {
 	switch (action.type) {
 		case "submit":
-			return submitTurn(action.text, { localImages: action.localImages ?? [] });
+			return submitTurn(action.text, { localImages: action.localImages ?? [], skillReferences: action.skillReferences }, undefined, { collaborationMode: action.collaborationMode, review: action.review, signal: action.signal });
 		case "follow_up":
-			return submitFollowUp(action.text, { localImages: action.localImages ?? [] });
+			return submitFollowUp(action.text, { localImages: action.localImages ?? [], skillReferences: action.skillReferences });
 		case "command":
 			return runCommand(action.command);
-		case "transcript.clear":
-			sessionTransitions.invalidate();
-			setRuntimeState({ ...runtimeState, transcript: [], transcriptNextBefore: null, providerAttemptsNextBefore: null });
-			return;
 		case "view.set":
 			viewModeOverride = action.mode;
 			setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, withViewModeOverride({
@@ -270,6 +270,7 @@ function handleGatewayEvent(event: GatewayEvent): void {
 			resolution.restoreToComposer.map((input) => ({
 				text: input.message,
 				...(input.attachments.length ? { localImages: input.attachments } : {}),
+			...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 			})),
 			{
 				restoreSubmittedInput: params.input_rolled_back === true,
@@ -455,9 +456,11 @@ async function submitTurn(
 	message: string,
 	attachments: MycliShellSubmitAttachments = {},
 	clientUserMessageId = nextClientTurnId("user"),
-	options: { collaborationMode?: "default" | "plan" } = {},
+	options: { collaborationMode?: "default" | "plan"; review?: ReviewSelection; signal?: AbortSignal } = {},
 ): Promise<void> {
+	options.signal?.throwIfAborted();
 	const text = message.trim();
+	if ((options.review || options.collaborationMode) && (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId)) throw new Error("Wait for the current turn to finish first.");
 	if (!text) {
 		return;
 	}
@@ -508,17 +511,23 @@ async function submitTurn(
 	const localInput = runtimeLocalInput(clientUserMessageId, text, attachments);
 	setRuntimeState({ ...runtimeStateWithSubmittingMessage(runtimeState, localInput), activeClientTurnId: clientTurnId });
 	backendTurnBusy = true;
+	const cancelPreparation = (): void => {
+		if (sessionMutationContextIsCurrent(context) && runtimeState.activeClientTurnId === clientTurnId) void interruptTurn({ rollbackUserInput: true }).catch(() => undefined);
+	};
+	options.signal?.addEventListener("abort", cancelPreparation, { once: true });
 	try {
 		const result = await send(
 			"turn.submit",
-				{
+				parseGatewayParams("turn.submit", {
 					message: text,
 					client_turn_id: clientTurnId,
 					client_user_message_id: clientUserMessageId,
 					...sessionMutationFields(context),
 					...(options.collaborationMode ? { collaboration_mode: options.collaborationMode } : {}),
+					...(options.review ? { review: options.review } : {}),
+					...(attachments?.skillReferences?.length ? { skill_references: attachments.skillReferences } : {}),
 					...(attachments?.localImages?.length ? { local_images: attachments.localImages.map((image) => image.path) } : {}),
-				},
+				}),
 			{ recordErrors: false },
 		);
 		if (!sessionMutationContextIsCurrent(context) || latestSubmissionClientTurnId !== clientTurnId) return;
@@ -569,7 +578,7 @@ async function submitTurn(
 		);
 		backendTurnBusy = false;
 		throw error;
-	}
+	} finally { options.signal?.removeEventListener("abort", cancelPreparation); }
 }
 
 async function startPlanImplementation(
@@ -607,6 +616,7 @@ function runtimeLocalInput(
 		clientUserMessageId,
 		message,
 		attachments: [...(attachments?.localImages ?? [])],
+		...(attachments?.skillReferences?.length ? { skillReferences: attachments.skillReferences } : {}),
 	};
 }
 
@@ -645,7 +655,7 @@ async function dispatchNextLocalInput(): Promise<void> {
 	try {
 		await submitTurn(
 			next.input.message,
-			{ localImages: next.input.attachments },
+			{ localImages: next.input.attachments, skillReferences: next.input.skillReferences },
 			next.input.clientUserMessageId,
 		);
 	} catch {
@@ -691,14 +701,15 @@ async function queueFollowUp(input: QueuedTurnInput): Promise<void> {
 	);
 	setRuntimeState(runtimeStateWithLocalFollowUp(runtimeState, localInput));
 	try {
-		const result = await send("turn.follow_up", {
+		const result = await send("turn.follow_up", parseGatewayParams("turn.follow_up", {
 			message: input.message,
 			client_turn_id: input.clientUserMessageId,
 			...sessionMutationFields(context),
+			...(input.attachments?.skillReferences?.length ? { skill_references: input.attachments.skillReferences } : {}),
 			...(input.attachments?.localImages?.length
 				? { local_images: input.attachments.localImages }
 				: {}),
-		}, { recordErrors: false });
+		}), { recordErrors: false });
 		setRuntimeState(runtimeStateAcknowledgeQueuedInput(
 			runtimeState,
 			input.clientUserMessageId,
@@ -729,15 +740,16 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			if (!expectedTurnId) throw new GatewayRequestError({ method: "turn.steer", code: "invalid_params", message: "Active turn is unavailable." });
-			const result = await send("turn.steer", {
+			const result = await send("turn.steer", parseGatewayParams("turn.steer", {
 				message: input.message,
 				client_user_message_id: input.clientUserMessageId,
 				expected_turn_id: expectedTurnId,
 				...sessionMutationFields(context),
-				...(input.attachments?.localImages?.length
+				...(input.attachments?.skillReferences?.length ? { skill_references: input.attachments.skillReferences } : {}),
+			...(input.attachments?.localImages?.length
 					? { local_images: input.attachments.localImages }
 					: {}),
-			}, { recordErrors: false });
+			}), { recordErrors: false });
 			setRuntimeState(runtimeStateAcknowledgeQueuedInput(
 				runtimeState,
 				input.clientUserMessageId,
@@ -793,6 +805,7 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 	return {
 		text,
 		...(localImages.length > 0 ? { localImages } : {}),
+		...(item.skill_references ? { skillReferences: parseSkillReferences(item.skill_references) } : {}),
 	};
 }
 
@@ -952,6 +965,7 @@ async function resolveRequestedInterrupt(
 		restoreInputs.map((input) => ({
 			text: input.message,
 			...(input.attachments.length ? { localImages: input.attachments } : {}),
+			...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 		})),
 		{ restoreSubmittedInput: result.input_rolled_back === true },
 	);
@@ -1131,7 +1145,7 @@ async function loadProviderModels(providerId: string): Promise<MycliShellModel[]
 
 async function runCommand(command: string): Promise<void> {
 	const source = currentSessionMutationContext();
-	const result = await send("command.run", { command, surface: commandSurface });
+	const result = await send("command.run", { command, surface: commandSurface, ...sessionMutationFields(source) });
 	if (shuttingDown) return;
 	const destination = stringValue(result.session_id);
 	const generation = generationValue(result.generation);
@@ -1140,7 +1154,8 @@ async function runCommand(command: string): Promise<void> {
 		if (!await sessionTransitions.resume(result, undefined, source)) return;
 		if (runtimeState.sessionId !== destination
 			|| (generation !== null && runtimeState.sessionGeneration !== generation)) return;
-		setRuntimeState(runtimeStateWithSessionCommandNotice(runtimeState, command, result));
+		if (command.trim() === "/clear") runtime?.clearTerminalView();
+		else setRuntimeState(runtimeStateWithSessionCommandNotice(runtimeState, command, result));
 		await loadRetryHistory();
 		return;
 	}
@@ -1158,6 +1173,8 @@ async function runCommand(command: string): Promise<void> {
 		return;
 	}
 	setRuntimeState(runtimeStateWithCommandResult(runtimeState, command, result));
+	if (typeof result.session_title === "string") { setRuntimeState({ ...runtimeState, sessionTitle: result.session_title }); await loadSessions(); }
+	if (typeof result.submit_prompt === "string") await submitTurn(result.submit_prompt);
 	if (result.exit_requested === true) {
 		await shutdown(0);
 	}
@@ -1412,6 +1429,30 @@ async function main(): Promise<void> {
 		onSettingsChange: saveSettings,
 		onSettingsKeymapReset: resetSettingsKeymap,
 		onResourceLoad: loadResources,
+		onWorkspaceDiffLoad: async (signal) => {
+			signal.throwIfAborted();
+			const result = await send("workspace.diff", parseGatewayParams("workspace.diff", sessionMutationFields(currentSessionMutationContext())), { recordErrors: false });
+			signal.throwIfAborted(); return result.text;
+		},
+		onSessionConversationPreview: async (sessionId, signal) => {
+			signal.throwIfAborted();
+			const result = await send("session.preview", parseGatewayParams("session.preview", { ...sessionMutationFields(currentSessionMutationContext()), target_session_id: sessionId }), { recordErrors: false });
+			signal.throwIfAborted(); return result.text;
+		},
+		hookManager: createHookManagerClient({
+			request: (method, params) => send(method, params, { recordErrors: false }),
+			context: () => {
+				if (!runtimeState.sessionId || runtimeState.sessionGeneration === null) throw new Error("No active hook management session.");
+				return { session_id: runtimeState.sessionId, generation: runtimeState.sessionGeneration };
+			},
+		}),
+		skillManager: createSkillManagerClient({
+			request: (method, params) => send(method, params, { recordErrors: false }),
+			context: () => {
+				if (!runtimeState.sessionId || runtimeState.sessionGeneration === null) throw new Error("No active skill management session.");
+				return { session_id: runtimeState.sessionId, generation: runtimeState.sessionGeneration };
+			},
+		}),
 		pluginManager: createPluginManagerClient({
 			request: (method, params) => send(method, params, { recordErrors: false }),
 			context: () => {
@@ -1507,6 +1548,7 @@ function queueInputsFromUnknown(
 			) ?? `interrupt-restore-${kind}-${index}`,
 			message,
 			attachments: localImageAttachmentsFromGateway(record.local_images),
+			...(record.skill_references ? { skillReferences: parseSkillReferences(record.skill_references) } : {}),
 			kind,
 		}];
 	});

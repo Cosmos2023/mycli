@@ -1,3 +1,9 @@
+import { ReviewSelectorComponent } from "../components/selectors/review-selector.ts";
+import { TextEntrySelectorComponent } from "../components/selectors/text-entry-selector.ts";
+import { TextViewerSelectorComponent } from "../components/selectors/text-viewer-selector.ts";
+import { HooksSelectorComponent } from "../components/selectors/hooks-selector.ts";
+import { parseSkillReferences, skillReferencesInText, MAX_SKILL_REFERENCES, type SkillReference } from "@mycli/contracts";
+import { SkillsSelectorComponent } from "../components/selectors/skills-selector.ts";
 import type { ModelSelectionScope } from "@mycli/contracts";
 import { CustomEditor } from "../components/composer/custom-editor.ts";
 import { FooterComponent } from "../components/composer/footer.ts";
@@ -119,6 +125,7 @@ import { StartupOnboardingCoordinator, type StartupOnboardingStage } from "./sta
 type ComposerSessionSnapshot = {
 	draft: string;
 	pendingLocalImages: MycliShellLocalImageAttachment[];
+	skillReferences: readonly SkillReference[];
 	lastSubmittedInput: MycliShellQueuedInput | null;
 	lastSubmittedInputEligible: boolean;
 	lastSubmittedActivitySignature: string;
@@ -181,6 +188,7 @@ export class MycliShellRuntime {
 	private userTurnPendingStart = false;
 	private interruptRequestPending = false;
 	private dismissedSubagentIds = new Set<string>();
+	private skillReferences: readonly SkillReference[] = [];
 	private pendingLocalImages: MycliShellLocalImageAttachment[] = [];
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
@@ -857,6 +865,11 @@ export class MycliShellRuntime {
 			open_settings: () => this.showSettingsSelector(),
 			open_session_selector: () => this.showSessionSelector(),
 			open_resources: () => this.showResourceSelector(),
+			open_review: () => this.showReviewSelector(),
+			open_diff: () => this.showWorkspaceDiff(),
+			open_rename: () => this.showRenameSelector(),
+			open_hooks: () => this.showHooksSelector(),
+			open_skills: () => this.showSkillsSelector(),
 			open_plugins: () => this.showPluginSelector(),
 			open_agents: () => this.showBackgroundSubagents(),
 			open_tasks: () => this.showBackgroundSubagents(),
@@ -864,7 +877,6 @@ export class MycliShellRuntime {
 			set_view_mode: () => this.setViewMode(args),
 			open_hotkeys: () => this.showHelp(),
 			copy_last_response: () => this.copyLastAssistantMessage(),
-			clear_transcript: () => this.clearTranscript(),
 			open_login: () => this.showLoginFlow(args || undefined),
 			open_trust: () => this.showTrustGate(),
 			quit: () => this.shutdown(),
@@ -1023,6 +1035,7 @@ export class MycliShellRuntime {
 				tui: this.ui,
 				sessions: this.state.sessions ?? [],
 				currentWorkspace: this.state.footer.cwd,
+				onPreview: this.options.onSessionConversationPreview ? (session) => this.showTextViewer(`Conversation · ${session.title ?? session.id}`, (signal) => this.options.onSessionConversationPreview!(session.id, signal)) : undefined,
 				onSelect: (session) => {
 					void this.prepareSessionResume(session, selector, done);
 				},
@@ -1123,6 +1136,70 @@ export class MycliShellRuntime {
 				onCancel: () => done(),
 			});
 			return { component: selector, focus: selector };
+		});
+	}
+
+	showReviewSelector(): void {
+		if (this.isTurnRunning()) { this.addSystemNotice("Wait for the current turn before starting a review."); return; }
+		this.showSelector((done) => {
+			const component = new ReviewSelectorComponent({ ...this.decisionPanelOptions(), onCancel: done,
+				onSelect: async (review, signal) => {
+					signal.throwIfAborted();
+					const text = review.kind === "uncommitted" ? "Review uncommitted changes." : review.kind === "custom" ? `Review: ${review.instructions}` : `Review ${review.kind === "base" ? "changes against" : "commit"} ${review.ref}.`;
+					await this.dispatchAction({ type: "submit", text, review, signal });
+					if (!signal.aborted) done();
+				},
+			});
+			return { component, focus: component, dispose: () => component.dispose() };
+		});
+	}
+
+	showWorkspaceDiff(): void {
+		const load = this.options.onWorkspaceDiffLoad;
+		if (!load) { this.addSystemNotice("Git diff is unavailable."); return; }
+		this.showTextViewer("Git diff", load, true);
+	}
+
+	private showTextViewer(title: string, load: (signal: AbortSignal) => Promise<string>, diff = false): void {
+		this.showSelector((done) => {
+			const component = new TextViewerSelectorComponent({ ...this.decisionPanelOptions(), title, load, diff, onCancel: done });
+			return { component, focus: component, dispose: () => component.dispose() };
+		});
+	}
+
+	showRenameSelector(): void {
+		this.showSelector((done) => {
+			const component = new TextEntrySelectorComponent({ ...this.decisionPanelOptions(), title: "Rename session", description: "Enter a title for this conversation.", initialValue: this.state.footer.sessionName ?? "", maxLength: 200, onCancel: done,
+				onSubmit: async (value, signal) => { signal.throwIfAborted(); await this.dispatchAction({ type: "command", command: `/rename ${value}` }); if (!signal.aborted) done(); },
+			});
+			return { component, focus: component, dispose: () => component.dispose() };
+		});
+	}
+
+	showHooksSelector(): void {
+		const manager = this.options.hookManager;
+		if (!manager) { this.addSystemNotice("Hook management is unavailable."); return; }
+		this.showSelector((done) => {
+			const selector = new HooksSelectorComponent({ ...this.decisionPanelOptions(), manager, onCancel: done });
+			return { component: selector, focus: selector, dispose: () => selector.dispose() };
+		});
+	}
+
+	showSkillsSelector(): void {
+		const manager = this.options.skillManager;
+		if (!manager) { this.addSystemNotice("Skill management is unavailable."); return; }
+		this.showSelector((done) => {
+			const selector = new SkillsSelectorComponent({ ...this.decisionPanelOptions(), manager, onCancel: done,
+				onSelect: (skill) => {
+					done();
+					const retained = skillReferencesInText(this.skillReferences, this.editor.getText()).filter((item) => item.name !== skill.name);
+					if (retained.length >= MAX_SKILL_REFERENCES) { this.addSystemNotice(`Select at most ${MAX_SKILL_REFERENCES} skills per message.`); return; }
+					this.skillReferences = [...retained, { id: skill.id, name: skill.name, revision: skill.revision }];
+					this.editor.insertTextAtCursor(`$${skill.name} `);
+					this.ui.requestRender();
+				},
+			});
+			return { component: selector, focus: selector, dispose: () => selector.dispose() };
 		});
 	}
 
@@ -1996,6 +2073,8 @@ export class MycliShellRuntime {
 
 	private async handleSubmit(text: string): Promise<void> {
 		const input = text.trim();
+		const planTask = /^\/plan\s+([\s\S]+)$/u.exec(input)?.[1];
+		if (planTask && this.isTurnRunning()) { this.addSystemNotice("Wait for the current turn before switching to Plan mode."); return; }
 		if (!input) {
 			return;
 		}
@@ -2004,7 +2083,7 @@ export class MycliShellRuntime {
 			this.showCommandPalette();
 			return;
 		}
-		if (isSlashCommandSubmission(input, this.commandNames())) {
+		if (!planTask && isSlashCommandSubmission(input, this.commandNames())) {
 			this.editor.addToHistory(input);
 			this.editor.setText("");
 			try {
@@ -2015,7 +2094,8 @@ export class MycliShellRuntime {
 			}
 			return;
 		}
-		const submitted = this.extractLocalImageAttachments(input);
+		if (!this.validateDraftSkills(planTask ?? input)) return;
+		const submitted = this.extractLocalImageAttachments(planTask ?? input);
 		this.editor.addToHistory(input, submitted.localImages);
 		this.editor.setText("");
 		this.editor.clearUndoHistory();
@@ -2024,6 +2104,7 @@ export class MycliShellRuntime {
 			this.lastSubmittedInput = {
 				text: input,
 				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
+				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			};
 			this.lastSubmittedInputEligible = true;
 			this.lastSubmittedActivitySignature = this.visibleTurnActivitySignature(this.state);
@@ -2033,14 +2114,17 @@ export class MycliShellRuntime {
 		try {
 			await this.dispatchAction({
 				type: "submit",
+				...(planTask ? { collaborationMode: "plan" } : {}),
 				text: submitted.text,
 				localImages: submitted.localImages,
+				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			});
 		} catch (error) {
 			if (startsNewTurn) this.userTurnPendingStart = false;
 			this.restoreQueuedInputToEditor({
 				text: input,
 				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
+				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			});
 			const authRecovery = authRecoveryFromError(error);
 			if (authRecovery) {
@@ -2061,7 +2145,17 @@ export class MycliShellRuntime {
 		}
 	}
 
-	private extractLocalImageAttachments(input: string): { text: string; localImages: MycliShellLocalImageAttachment[] } {
+	private validateDraftSkills(input: string): boolean {
+		try {
+			parseSkillReferences(skillReferencesInText(this.skillReferences, input));
+			return true;
+		} catch {
+			this.addSystemNotice(`Select at most ${MAX_SKILL_REFERENCES} skills with one source per name. Reopen /skills to resolve conflicting selections.`);
+			return false;
+		}
+	}
+
+	private extractLocalImageAttachments(input: string): { text: string; localImages: MycliShellLocalImageAttachment[]; skillReferences: readonly SkillReference[] } {
 		const pendingImages = this.pendingLocalImages.filter((image) => input.includes(image.placeholder));
 		const localImages: MycliShellLocalImageAttachment[] = [...pendingImages];
 		const text = input.replace(/(^|\s)@([^\s]+)(?=\s|$)/g, (match, prefix: string, path: string) => {
@@ -2073,7 +2167,9 @@ export class MycliShellRuntime {
 			return `${prefix}${placeholder}`;
 		});
 		this.pendingLocalImages = [];
-		return { text: text.trim(), localImages };
+		const skillReferences = skillReferencesInText(this.skillReferences, text);
+		this.skillReferences = [];
+		return { text: text.trim(), localImages, skillReferences };
 	}
 
 	private registerDroppedImageFile(path: string): string {
@@ -2118,6 +2214,7 @@ export class MycliShellRuntime {
 		if (!input) {
 			return;
 		}
+		if (!this.validateDraftSkills(input)) return;
 		const submitted = this.extractLocalImageAttachments(input);
 		this.editor.addToHistory(input, submitted.localImages);
 		this.editor.setText("");
@@ -2127,11 +2224,13 @@ export class MycliShellRuntime {
 				type: "follow_up",
 				text: submitted.text,
 				localImages: submitted.localImages,
+				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			});
 		} catch (error) {
 			this.restoreQueuedInputToEditor({
 				text: input,
 				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
+				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			});
 			throw error;
 		}
@@ -2232,6 +2331,7 @@ export class MycliShellRuntime {
 		this.composerSnapshots.set(sessionId, {
 			draft,
 			pendingLocalImages,
+			skillReferences: skillReferencesInText(this.skillReferences, draft),
 			lastSubmittedInput: cloneQueuedInput(this.lastSubmittedInput),
 			lastSubmittedInputEligible: this.lastSubmittedInputEligible,
 			lastSubmittedActivitySignature: this.lastSubmittedActivitySignature,
@@ -2241,6 +2341,7 @@ export class MycliShellRuntime {
 
 	private restoreComposerSession(sessionId: string | undefined): void {
 		const snapshot = sessionId ? this.composerSnapshots.get(sessionId) : undefined;
+		this.skillReferences = snapshot?.skillReferences ?? [];
 		this.lastSubmittedInput = cloneQueuedInput(snapshot?.lastSubmittedInput ?? null);
 		this.lastSubmittedInputEligible = snapshot?.lastSubmittedInputEligible ?? false;
 		this.lastSubmittedActivitySignature = snapshot?.lastSubmittedActivitySignature ?? "";
@@ -2257,6 +2358,7 @@ export class MycliShellRuntime {
 		if (currentText) {
 			parts.push({
 				text: currentText,
+				skillReferences: skillReferencesInText(this.skillReferences, currentText),
 				...(this.pendingLocalImages.length > 0
 					? { localImages: this.pendingLocalImages.map((image) => ({ ...image })) }
 					: {}),
@@ -2283,6 +2385,8 @@ export class MycliShellRuntime {
 			}
 			return [text];
 		}).join("\n\n");
+		this.skillReferences = [...new Map(parts.flatMap((part) => skillReferencesInText(part.skillReferences ?? [], part.text))
+			.map((skill) => [JSON.stringify([skill.id, skill.name, skill.revision]), skill])).values()];
 		this.editor.setText(mergedText, mergedImages);
 	}
 
@@ -2383,21 +2487,10 @@ export class MycliShellRuntime {
 		return this.toolDetailProjector.project(state, this.toolDetailMode, transcriptUpdate);
 	}
 
-	private async clearTranscript(): Promise<void> {
-		if (this.options.actions) {
-			await this.dispatchAction({ type: "transcript.clear" });
-			return;
-		}
-		this.setState({
-			...this.state,
-			messages: [],
-			tools: [],
-			bash: [],
-			transcript: [],
-			transcriptNextBefore: null,
-			providerAttemptsNextBefore: null,
-			pendingNotice: undefined,
-		});
+	clearTerminalView(): void {
+		this.ui.insertHistoryBeforeNextFrame([], { clearViewport: true, replaceScrollback: true });
+		this.queueNativeTranscriptHistory(true);
+		this.ui.requestRender();
 	}
 
 	private async setViewMode(rawMode: string): Promise<void> {
@@ -2799,17 +2892,16 @@ export class MycliShellRuntime {
 		if (this.options.actions) return this.options.actions.dispatch(action);
 		switch (action.type) {
 			case "submit":
-				return this.options.onSubmit?.(action.text, { localImages: action.localImages ?? [] });
+				return this.options.onSubmit?.(action.text, { localImages: action.localImages ?? [], skillReferences: action.skillReferences, collaborationMode: action.collaborationMode, review: action.review });
 			case "follow_up":
 				return (this.options.onFollowUp ?? this.options.onSubmit)?.(
 					action.text,
-					{ localImages: action.localImages ?? [] },
+					{ localImages: action.localImages ?? [], skillReferences: action.skillReferences, collaborationMode: action.collaborationMode, review: action.review },
 				);
 			case "command":
 				return this.options.onCommandSubmit
 					? this.options.onCommandSubmit(action.command)
 					: this.options.onSubmit?.(action.command);
-			case "transcript.clear":
 			case "view.set":
 				return undefined;
 			case "interrupt":
@@ -2840,6 +2932,7 @@ function cloneQueuedInput(input: MycliShellQueuedInput | null): MycliShellQueued
 	if (!input) return null;
 	return {
 		text: input.text,
+		...(input.skillReferences?.length ? { skillReferences: input.skillReferences.map((skill) => ({ ...skill })) } : {}),
 		...(input.localImages
 			? { localImages: input.localImages.map((image) => ({ ...image })) }
 			: {}),

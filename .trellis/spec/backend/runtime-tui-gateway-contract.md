@@ -7097,3 +7097,92 @@ return gateway.send("session.resume", {
 	metadata_revision: preview.session.metadata_revision,
 });
 ```
+
+
+## Scenario: Interactive slash workflows (2026-09-12)
+
+### 1. Scope / Trigger
+
+Changes to slash workflow dispatch, integration management, selected skill input, Git review,
+or session previews. Backend owns durable mutations; TUI selectors use contracts and gateway clients.
+
+### 2. Signatures
+
+- `skills.list({session_id, generation}) -> {revision, skills}`.
+- `skills.config.write({session_id, generation, id, skill_revision, revision, enabled})` returns the catalog.
+- `hooks.list({session_id, generation}) -> {revision, hooks}`.
+- `hooks.config.write({session_id, generation, id, hook_revision, revision, action})`, where action is
+  `enable | disable | trust | revoke`, returns the catalog.
+- `workspace.diff({session_id, generation}) -> {text, truncated}`.
+- `session.preview({session_id, generation, target_session_id}) -> {text, truncated}`.
+- `turn.submit` accepts optional `review: {kind: "uncommitted"} | {kind: "base" | "commit", ref}
+  | {kind: "custom", instructions}`. Submit/steer/follow-up accept `skill_references`.
+- `command.run` accepts optional session/generation ownership, including `/clear`, `/rename [title]`,
+  `/plan [task]`, and `/init`; TUI callers supply ownership.
+
+### 3. Contracts
+
+- `/clear` shares `/new` backend lifecycle. Clear terminal/scrollback only after a successful session
+  transition; preserve the source session and visible transcript on failure.
+- Skill selection carries bounded `{id,name,revision}` references. Preserve them through composer
+  snapshots, submit/steer/follow-up, queue conflicts/restoration, canonical user-input events and
+  selected instruction loading. Empty reference lists must retain legacy submission fingerprints.
+  Each input supports at most eight distinct references. Interrupted inputs with incompatible
+  same-name identities or a combined selection above that limit remain separate queue records.
+  Restoring them into a draft preserves all identities and requires explicit reselection before
+  submitting an ambiguous or excessive selection; it must not silently select the last source.
+- `skills.list` / `skills.config.write` and `hooks.list` / `hooks.config.write` carry current session
+  ID and generation. Settings writes use source/content revisions and atomic enablement CAS.
+  Selected skills are validated against the active run's captured registry before provider input.
+- `/hooks` separates availability from exact-command allowlist trust. Plugin handlers identify their
+  source and preserve plugin authority. Inspection must not launch a host or model. Trust/enablement
+  updates apply on later turns, including externally changed skill and hook files.
+  Bundle hook handlers honor their default enabled state unless an explicit captured override exists.
+- `workspace.diff` and `session.preview` are read-only, owned by the requesting session/generation,
+  bounded, cancellable views. Async results cannot replace another selector/session.
+- `/review` reuses runtime composition in review mode with only Read exposed and native web search
+  disabled. Its runtime shares the active queue but has a separate lifecycle. Dispose it before
+  publishing terminal completion, then release the active claim without another asynchronous gap.
+  Historical Read resolves pinned Git blobs; normal chat restores normal tools. Read and custom file
+  listings use the Git root even when the session started in a subdirectory; session ownership and
+  configuration stay rooted in the original workspace.
+- `/plan <task>` carries attachments and Plan mode in one turn admission. `/init` checks AGENTS.md
+  before requesting generation and tells the agent to recheck immediately before writing.
+- `/rename` materializes preferences for a new empty session before calling `SessionService.rename`.
+- Diff text is limited to 256 KiB. Preview reads at most 20 transcript items, includes the last eight
+  user/assistant messages and at most 2,000 characters each, and marks shortening explicitly.
+- Maintain the slash matrix checksum, M8 capability counts and command documentation together.
+
+### 4. Validation & Error Matrix
+
+- Stale session/generation -> `session_changed`; cancel pending work on transitions and trust changes.
+- Changed skill/source/settings revision -> `invalid_params` in management; a stale submitted skill
+  fails with `config_error` before contacting a provider. Invalid steering leaves the active turn alive.
+- Invalid settings/allowlist file -> `config_error`; preserve malformed files instead of overwriting them.
+- Bad Git reference, excessive context, or empty review -> `invalid_params` with actionable detail.
+- Existing AGENTS.md (including a symlink) -> notice without generation.
+
+### 5. Good / Base / Bad Cases
+
+- Good: disable a hook while a turn runs; that turn retains its configuration, the next turn uses the change.
+- Base: select a skill and submit `$name`; its selected source and revision reach durable user input.
+- Bad: merge text but omit selected skill references, or load revision paths relative to a nested cwd.
+- Bad: signal review completion while runtime cleanup still prevents a new submission.
+
+### 6. Tests Required
+
+- `node-gateway.test.ts`: failed clear preserves history; stale ownership and cancellation; rejected skill steering.
+- `node-backend.integration.test.ts`: skill body reaches provider once, disabled selections fail before another
+  request; nested workspace and historical review reads; writes denied; immediate next review/chat; empty rename.
+- `queue-state.test.ts`: skills survive recovery and merging; conflicting or excessive selections remain separate.
+- `plugin-bundle.integration.test.ts`: disabled hooks never execute without a captured override.
+- TUI selector/runtime tests: draft bindings, late-load disposal, trust confirmation, Plan attachments,
+  narrow/CJK reflow, and refresh ownership. Git/init tests preserve source files and separate staged/unstaged diffs.
+
+### 7. Wrong vs Correct
+
+Wrong: `publishCompleted(); await closeReview(); releaseExecution();` exposes an unusable idle state.
+
+Correct: capture the review terminal event, await review cleanup, then publish the event and release
+execution synchronously. Guard optional cleanup with `if (closeReview)` so ordinary turns do not acquire
+an unnecessary `await undefined` gap.

@@ -275,7 +275,6 @@ export class NativeChatRuntime {
 					? this.options.onInterruptExit?.()
 					: this.options.onExit?.();
 			case "dequeue_queued_input":
-			case "transcript.clear":
 			case "view.set":
 				return undefined;
 		}

@@ -1,3 +1,4 @@
+import type { SkillReference } from "@mycli/contracts";
 import type {
 	MycliShellAuthProvider,
 	MycliShellCredentialReadiness,
@@ -56,6 +57,7 @@ export type RuntimeQueuedInputPreview = {
 	state?: string;
 	message: string;
 	attachments: MycliShellLocalImageAttachment[];
+	skillReferences?: readonly SkillReference[];
 	source?: string;
 };
 
@@ -63,6 +65,7 @@ export type RuntimeLocalUserInput = {
 	clientUserMessageId: string;
 	message: string;
 	attachments: MycliShellLocalImageAttachment[];
+	skillReferences?: readonly SkillReference[];
 };
 
 export type RuntimeSessionLocalInputs = {

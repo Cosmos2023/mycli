@@ -153,7 +153,7 @@ Common commands:
 | Command | Purpose |
 | --- | --- |
 | `/model` | Select a provider, model, and reasoning level |
-| `/plan` | Enter Plan mode |
+| `/plan [task]` | Enter Plan mode; optionally start planning a task |
 | `/permissions` | Review or change execution permissions |
 | `/settings` | Change appearance and navigate runtime settings |
 | `/new` | Start a new session |
@@ -161,7 +161,10 @@ Common commands:
 | `/fork` | Branch a saved session |
 | `/status`, `/usage`, `/context` | Inspect runtime state, token usage, and context |
 | `/compact` | Compact the current model context |
-| `/changes`, `/undo` | Inspect file changes or undo a recoverable change |
+| `/diff`, `/review` | Inspect Git changes or start a read-only code review |
+| `/changes`, `/undo` | Inspect session file history or undo a recoverable change |
+| `/rename [title]`, `/clear` | Rename the conversation or start a fresh session and clear the terminal |
+| `/init` | Create repository guidance in AGENTS.md, preserving an existing file |
 | `/agents`, `/ps` | Inspect background agents and terminals |
 | `/mcp`, `/plugins`, `/skills`, `/hooks` | Browse each integration separately |
 | `/help`, `/quit` | Open help or exit |
@@ -380,7 +383,9 @@ Inspect the diff, identify behavioral regressions, and report findings with file
 ```
 
 User skills live under `~/.mycli/skills/`. Trusted repositories can also use `.mycli/skills/`.
-Restart mycli after adding files, inspect them with `/skills`, and ask the agent to use the skill
+Open `/skills` to search the catalog, insert a selected `$skill` into your draft, or enable/disable skills.
+Selections retain their source identity through queued input and session recovery. Changes to skill files
+and availability are picked up for subsequent turns. You can also ask the agent to use the skill
 for the relevant task.
 
 ### MCP Servers
@@ -482,6 +487,9 @@ marketplaces, and the supported Codex subset.
 ### Hooks
 
 User and repository hooks live in `~/.mycli/hooks.json` and `.mycli/hooks.json`.
+`/hooks` groups them by event and shows the command, source, availability and trust. Enable/disable
+a hook separately from trusting its exact command; changes apply to subsequent turns. Plugin hooks
+show their plugin ownership and inherit the enabled plugin’s trust.
 Use `mycli hooks list` to find their identities, `mycli hooks inspect <identity>` to inspect them,
 and `mycli hooks approve <identity>` to authorize the current configured command.
 Changing that command requires approval again.

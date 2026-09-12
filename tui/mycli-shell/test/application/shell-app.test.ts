@@ -6283,7 +6283,7 @@ test("mycli shell session tree selection jumps to matching transcript anchor", a
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /message 2/);
 });
 
-test("mycli shell runtime submits messages and local slash commands", async () => {
+test("clearing terminal scrollback preserves the current durable display state", async () => {
 	const terminal = new TestTerminal();
 	const submitted: string[] = [];
 	const runtime = new MycliShellRuntime({
@@ -6299,10 +6299,9 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.deepEqual(submitted, ["hello"]);
 	assert.equal(runtime.editor.getText(), "");
 
-	await runtime.handleClientAction("clear_transcript", "");
-	assert.equal(runtime.getState().messages.length, 0);
-	assert.equal(runtime.getState().tools.length, 0);
-	assert.equal(runtime.getState().transcript?.length, 0);
+	const state = runtime.getState();
+	runtime.clearTerminalView();
+	assert.equal(runtime.getState(), state);
 });
 
 test("ctrl+t owns the alternate screen and restores editor focus on close", async () => {

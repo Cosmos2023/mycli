@@ -507,3 +507,10 @@ Common remediation:
 - `plugin_migration=warning`: migrate Python plugins; Node never imports them.
 - `mcp=failed`: verify transport availability and referenced environment names, without putting
   credential values in configuration or command output.
+
+
+Skills and hooks can also be managed interactively with `/skills` and `/hooks`. User enablement
+overrides are stored in `~/.mycli/integration-enablement.json`, keyed to each capability's source
+identity. Hook command trust remains in `~/.mycli/hook-allowlist.json`. Changing availability does
+not grant command trust. File/catalog changes and trust changes apply to subsequent turns; an active
+run keeps its captured definitions and approvals. Plugin hooks retain their plugin authority.

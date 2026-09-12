@@ -40,6 +40,7 @@ let generation = 1;
 let pluginEnabled = false;
 let extensionVersion = 1;
 let savedViewMode = "default";
+let rejectNextClear = true;
 const sessions = [{ id: "initial", title: "Initial session", cwd: "/tmp" }];
 const commands = ["new", "resume", "clear", "view", "settings"].map((id) => ({
 	id, name: `/${id}`, description: `Run ${id}`, argument_policy: "optional", available_during_turn: false,
@@ -64,7 +65,12 @@ function activate(sessionId: string): Record<string, unknown> {
 function runCommand(request: Request): void {
 	const command = String(request.params.command);
 	const target = slashCommandArguments(command, "/resume");
-	if (command === "/new") {
+	if (command === "/clear" && rejectNextClear) {
+		rejectNextClear = false;
+		input.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id,
+			error: { code: "turn_in_progress", message: "Session transition is busy." },
+		})}\n`);
+	} else if (command === "/new" || command === "/clear") {
 		respond(request, activate(`fresh-${generation}`));
 	} else if (target) {
 		const result = activate(target);
@@ -91,7 +97,7 @@ function runCommand(request: Request): void {
 		})}\n`);
 	} else {
 		const id = command.trim().split(/\s+/u)[0]!.slice(1);
-		const action = { clear: "clear_transcript", view: "set_view_mode", resume: "open_session_selector", settings: "open_settings" }[id];
+		const action = { view: "set_view_mode", resume: "open_session_selector", settings: "open_settings" }[id];
 		assert.ok(action, `Unexpected fixture command: ${command}`);
 		respond(request, { execution: "tui", command_id: id, client_action: action, args: slashCommandArguments(command, `/${id}`) ?? "" });
 	}
@@ -179,7 +185,14 @@ try {
 	runtime.editor.setText("");
 
 	submit("/clear");
-	await waitFor(() => runtime.getState().transcript?.length === 0);
+	await waitFor(() => requests.some((request) => request.method === "command.run" && request.params.command === "/clear"));
+	await setImmediate();
+	assert.equal(runtime.getState().sessionId, "initial");
+	assert.equal(runtime.getState().messages.some((message) => message.text === "Saved answer"), true,
+		"failed clear must retain the visible history and its session");
+	submit("/clear");
+	await waitFor(() => runtime.getState().sessionId === "fresh-1" && runtime.getState().transcript?.length === 0);
+	assert.equal(activeSession, "fresh-1", "clear must also reset the backend model context");
 	await refreshExtensions();
 	assert.equal(runtime.getState().transcript?.length, 0, "refresh must not restore cleared history");
 
@@ -219,12 +232,12 @@ try {
 	terminal.sendInput("\x1b");
 
 	submit("/new");
-	await waitFor(() => runtime.getState().sessionId === "fresh-1" && runtime.getState().sessions?.some((session) => session.id === "fresh-1") === true);
+	await waitFor(() => runtime.getState().sessionId === "fresh-2" && runtime.getState().sessions?.some((session) => session.id === "fresh-2") === true);
 	const listRequests = requests.filter((request) => request.method === "session.list").length;
 	submit("/resume");
 	await waitFor(() => requests.filter((request) => request.method === "session.list").length > listRequests);
 	await setImmediate();
-	assert.match(runtime.ui.render(110).join("\n"), /fresh-1/);
+	assert.match(runtime.ui.render(110).join("\n"), /fresh-2/);
 	terminal.sendInput("\x1b");
 
 	pluginEnabled = true;
@@ -239,11 +252,11 @@ try {
 	submit("/resume delayed");
 	await waitFor(() => heldHistory.length === 1);
 	submit("/new");
-	await waitFor(() => runtime.getState().sessionId === "fresh-3");
+	await waitFor(() => runtime.getState().sessionId === "fresh-4");
 	respond(heldHistory.shift()!, { session_id: "delayed", next_before: null, items: [] });
 	await setImmediate();
-	assert.equal(runtime.getState().sessionId, "fresh-3", "old history must not replace the newest session");
-	assert.equal(activeSession, "fresh-3");
+	assert.equal(runtime.getState().sessionId, "fresh-4", "old history must not replace the newest session");
+	assert.equal(activeSession, "fresh-4");
 
 	submit("/resume waiting");
 	await waitFor(() => runtime.getState().transcript?.some((block) => block.kind === "message" && block.message.text === "Session waiting") === true);

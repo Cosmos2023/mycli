@@ -25,6 +25,9 @@ not plugin packages and do not appear as separate plugin rows.
 
 mycli retains `/tools [list|sets]` as a search-only diagnostic inventory of actual callable tools.
 The old `/tools plugins`, `/tools hooks`, and `/tools extensions` forms return replacement hints.
+`/skills` provides searchable invocation and persistent enablement. Selected skills carry their source
+identity in the composer and queued input. `/hooks` groups hooks by event, shows their command and
+source, and separates enablement from exact-command trust. Plugin hook trust belongs to its package.
 Codex's plugin browser has All Plugins, Installed, and marketplace tabs, search, capability details,
 and installation/enablement actions (`chatwidget/plugins.rs`). mycli follows that interaction for
 registered local/Git marketplaces. Left/Right selects a tab, typing searches, Enter opens details,
@@ -85,11 +88,11 @@ local Git transports and arbitrary Git transport helpers are rejected; use SSH a
 private repositories. Git execution disables user Git config, templates and hooks. It does not run
 package install scripts or download submodules; dependencies must already be available.
 
-Package changes apply before the next turn or an idle `/plugins`, `/mcp`, `/skills`, `/hooks`,
-or `/tools` inspection. Existing active or suspended turns keep their original integration content;
+Package changes apply before the next turn or an idle integration refresh. Skills and hook management
+read catalog metadata without starting extension hosts. Existing active or suspended turns keep their original integration content;
 each session refreshes independently, so a waiting child does not block its parent. A changed
 configuration completes MCP discovery before a new run captures its tools. Unchanged turns reuse the existing clients.
-In-session `/plugins` shows package state, `/skills` lists namespaced skills, and MCP tools enter
+In-session `/plugins` shows package state, `/skills` selects or configures namespaced skills, and MCP tools enter
 the session integration catalog with direct/deferred exposure and session discovery reuse.
 
 Plugin MCP servers use the common management and OAuth flow:
