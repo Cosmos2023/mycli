@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,75 @@ import { McpOAuthStore } from "../../src/mcp/oauth-store.ts";
 import { authenticatedMcpFetch } from "../../src/mcp/oauth-fetch.ts";
 import { diagnosticMcpFetch, policyMcpFetch } from "../../src/mcp/http-fetch.ts";
 import { parseMcpServerConfig } from "../../src/mcp/config.ts";
+import { createMcpToolRegistration, discoverConfiguredMcpServers, IntegrationToolApprovalStore,
+	McpManagementService, PluginPackageManager, PluginRuntime, type McpServerConfig } from "../../src/index.ts";
+
+test("plugin MCP login and logout share runtime identity across immutable package updates", { timeout: 10_000 }, async (t) => {
+	const f = await fixture(t);
+	const signal = new AbortController().signal;
+	const workspaceRoot = join(f.homeDir, "workspace");
+	const source = join(f.homeDir, "bundle");
+	await mkdir(workspaceRoot);
+	await mkdir(join(source, ".codex-plugin"), { recursive: true });
+	const manifest = (version: string): string => JSON.stringify({ name: "docs", version,
+		mcpServers: { mcpServers: { search: { type: "http", url: f.config.url, headers: f.config.headers, oauth: { clientId: "fixture-client" } } } },
+		hooks: { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "must-not-execute" }] }] } },
+	});
+	await writeFile(join(source, ".codex-plugin/plugin.json"), manifest("1.0.0"));
+	const options = { homeDir: f.homeDir, workspaceRoot, env: {} };
+	const packages = new PluginPackageManager(options);
+	assert.equal((await packages.execute({ action: "add", source }, signal)).ok, true);
+	t.mock.method(PluginRuntime, "load", () => assert.fail("authentication must not start plugin code or hooks"));
+	const service = new McpManagementService({ ...options,
+		createClient: () => assert.fail("authentication must not start unrelated MCP clients"),
+		oauthFetch: () => policyMcpFetch(undefined), onAuthorization: async (value) => {
+			const url = new URL(value);
+			f.authorization(url);
+			const callback = new URL(url.searchParams.get("redirect_uri")!);
+			callback.searchParams.set("state", url.searchParams.get("state")!);
+			callback.searchParams.set("code", "fixture-code");
+			assert.equal((await fetch(callback)).status, 200);
+		},
+	});
+	const login = await service.login("docs/search", signal);
+	assert.equal(login.ok, true, JSON.stringify(login));
+	assert.match(login.message, /docs\/search/u);
+	const original = (await discoverConfiguredMcpServers(options)).get("docs/search")!;
+	assert.equal((await new McpOAuthStore(f.homeDir, original).load())?.tokens.access_token, "token-1");
+	const registration = (config: McpServerConfig) => createMcpToolRegistration({ callTool: async () => ({ content: [], isError: false }) }, {
+		serverId: config.id, name: "read", description: "Read docs", inputSchema: { type: "object" }, supportsParallelToolCalls: true,
+	}, config);
+	const before = registration(original);
+	const grants = new IntegrationToolApprovalStore(f.homeDir);
+	await grants.allow(before.approvalScope!);
+	assert.equal(before.originMetadata.plugin, "docs");
+	assert.equal(before.originMetadata.plugin_server, "search");
+
+	await writeFile(join(source, ".codex-plugin/plugin.json"), manifest("2.0.0"));
+	assert.equal((await packages.execute({ action: "update", pluginId: "docs" }, signal)).ok, true);
+	const updated = (await discoverConfiguredMcpServers(options)).get("docs/search")!;
+	assert.equal(updated.id, original.id);
+	assert.notEqual(updated.cwd, original.cwd);
+	assert.equal((await new McpOAuthStore(f.homeDir, updated).load())?.tokens.access_token, "token-1");
+	assert.notEqual(registration(updated).approvalScope?.fingerprint, before.approvalScope?.fingerprint);
+	assert.equal((await grants.load()).some((grant) => grant.fingerprint === registration(updated).approvalScope?.fingerprint), false);
+	for (const changed of [
+		{ ...updated, plugin: { ...updated.plugin!, id: "other" } },
+		{ ...updated, plugin: { ...updated.plugin!, source: "repo" as const } },
+		{ ...updated, url: `${updated.url}/other` },
+		{ ...updated, oauth: { clientId: "another-client" } },
+	]) assert.equal(await new McpOAuthStore(f.homeDir, changed).load(), undefined);
+	assert.equal((await service.revoke("docs/search")).ok, true);
+	assert.deepEqual(await grants.load(), []);
+	assert.equal((await service.logout(updated.id, signal)).ok, true);
+	assert.equal(await new McpOAuthStore(f.homeDir, original).load(), undefined);
+	assert.equal(f.counters.exchange, 1);
+	assert.equal(f.counters.leakedHeaders, 0);
+	assert.doesNotMatch(JSON.stringify(login), /token-1|fixture-secret/u);
+	await packages.execute({ action: "disable", pluginId: "docs" }, signal);
+	assert.equal((await service.login("docs/search", signal)).ok, false);
+	assert.equal(f.counters.exchange, 1);
+});
 
 test("MCP OAuth validates state/PKCE, stores private credentials, and serializes rotated refresh tokens", { timeout: 10_000 }, async (t) => {
 	const f = await fixture(t);

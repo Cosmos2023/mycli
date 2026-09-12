@@ -7,8 +7,6 @@ import {
 	createSkillToolRegistration,
 	defineIntegrationRegistration,
 	discoverHookConfig,
-	discoverMcpConfig,
-	discoverPlugins,
 	pluginBundleContributions,
 	FOLLOWUP_TASK_TOOL_DEFINITION,
 	HookAllowlistStore,
@@ -63,6 +61,7 @@ import {
 	workspaceSandboxProfile,
 } from "./integration-sandbox.ts";
 import { mcpCatalogResources, pluginCatalogResources, type McpCatalogPhase } from "./integration-resource-catalog.ts";
+import { loadRuntimeIntegrationConfiguration, type RuntimeIntegrationConfiguration } from "./integration-configuration.ts";
 
 type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
 
@@ -157,6 +156,9 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	): () => void;
 	publishSubagent(subagent: Readonly<Record<string, unknown>>): void;
 	subscribeExtensions(listener: (version: number) => void): () => void;
+	prepareRun(turnId: string, signal: AbortSignal): Promise<void>;
+	finishRun(turnId: string): void;
+	refreshConfiguration(): Promise<void>;
 	reloadProjectConfiguration(input: {
 		readonly workspaceRoot: string;
 		readonly enabled: boolean;
@@ -284,6 +286,9 @@ export async function createRuntimeIntegrationComposition(
 			publishSubagent: () => undefined,
 			subscribeExtensions: () => () => undefined,
 			reloadProjectConfiguration: async () => undefined,
+			prepareRun: async (_turnId: string, signal: AbortSignal) => { signal.throwIfAborted(); },
+			finishRun: () => undefined,
+			refreshConfiguration: async () => undefined,
 		});
 	}
 	const subagentListeners = new Set<(
@@ -360,6 +365,8 @@ export async function createRuntimeIntegrationComposition(
 		subagentComposition.registrations,
 	);
 	let closed = false;
+	const activeRuns = new Set<string>();
+	const configurationController = new AbortController();
 	let reloadQueue = Promise.resolve();
 	let closePromise: Promise<void> | undefined;
 
@@ -411,52 +418,70 @@ export async function createRuntimeIntegrationComposition(
 			(contribution) => publishMcp(owner, contribution),
 		));
 	};
-	const reloadProjectConfiguration = (input: {
+	const replaceConfiguration = async (input: {
 		readonly workspaceRoot: string;
 		readonly enabled: boolean;
-	}): Promise<void> => {
-		const run = reloadQueue.then(async () => {
-			if (closed) throw new Error("integration_composition_closed");
-			if (input.workspaceRoot === workspaceRoot && input.enabled === projectConfigurationEnabled) {
-				return;
-			}
-			const next = await createRuntimeIntegrationContent({
-				options,
-				workspaceRoot: input.workspaceRoot,
-				projectConfigurationEnabled: input.enabled,
-				reportStartup: false,
-			});
-			let nextSnapshot: RuntimeIntegrationSnapshot;
-			try {
-				nextSnapshot = runtimeContentSnapshot(
-					options.builtinManifest,
-					snapshot.version + 1,
-					next,
-					skillRegistration,
-					subagentComposition.registrations,
-				);
-			} catch (error) {
-				await next.close().catch(() => undefined);
-				throw error;
-			}
-			const previous = content;
-			previous.retire();
-			content = next;
-			activeSkillRegistry = next.skillRegistry;
-			activeHookRunner = createRuntimeHookRunner(options, next);
-			workspaceRoot = input.workspaceRoot;
-			projectConfigurationEnabled = input.enabled;
-			snapshot = nextSnapshot;
-			notifyExtensions();
-			startRefresh(next);
-			try {
-				await previous.close();
-			} catch {
-				retiredContents.push(previous);
-			}
+	}, configuration?: RuntimeIntegrationConfiguration): Promise<void> => {
+		if (closed) throw new Error("integration_composition_closed");
+		const next = await createRuntimeIntegrationContent({
+			options,
+			workspaceRoot: input.workspaceRoot,
+			projectConfigurationEnabled: input.enabled,
+			reportStartup: false,
+			configuration,
+			waitForMcpDiscovery: configuration !== undefined,
+			signal: configurationController.signal,
 		});
-		reloadQueue = run.catch(() => undefined);
-		return run;
+		let nextSnapshot: RuntimeIntegrationSnapshot;
+		try {
+			configurationController.signal.throwIfAborted();
+			nextSnapshot = runtimeContentSnapshot(
+				options.builtinManifest,
+				snapshot.version + 1,
+				next,
+				skillRegistration,
+				subagentComposition.registrations,
+			);
+		} catch (error) {
+			await next.close().catch(() => undefined);
+			throw error;
+		}
+		const previous = content;
+		previous.retire();
+		content = next;
+		activeSkillRegistry = next.skillRegistry;
+		activeHookRunner = createRuntimeHookRunner(options, next);
+		workspaceRoot = input.workspaceRoot;
+		projectConfigurationEnabled = input.enabled;
+		snapshot = nextSnapshot;
+		notifyExtensions();
+		startRefresh(next);
+		try {
+			await previous.close();
+		} catch {
+			retiredContents.push(previous);
+		}
+	};
+	const enqueue = (operation: () => Promise<void>): Promise<void> => {
+		const task = reloadQueue.then(operation);
+		reloadQueue = task.catch(() => undefined);
+		return task;
+	};
+	const refreshConfiguration = async (): Promise<void> => {
+		if (closed) throw new Error("integration_composition_closed");
+		if (activeRuns.size) return;
+		const configuration = await loadRuntimeIntegrationConfiguration({ workspaceRoot, homeDir: options.homeDir,
+			env: options.env, includeRepository: projectConfigurationEnabled });
+		configurationController.signal.throwIfAborted();
+		if (configuration.fingerprint === content.configurationFingerprint) return;
+		await replaceConfiguration({ workspaceRoot, enabled: projectConfigurationEnabled }, configuration);
+	};
+	const reloadProjectConfiguration = (input: { readonly workspaceRoot: string; readonly enabled: boolean }): Promise<void> => {
+		return enqueue(async () => {
+			if (closed) throw new Error("integration_composition_closed");
+			if (input.workspaceRoot === workspaceRoot && input.enabled === projectConfigurationEnabled) return;
+			await replaceConfiguration(input);
+		});
 	};
 
 	const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
@@ -500,8 +525,19 @@ export async function createRuntimeIntegrationComposition(
 			return () => { extensionListeners.delete(listener); };
 		},
 		reloadProjectConfiguration,
+		refreshConfiguration: () => enqueue(refreshConfiguration),
+		prepareRun: (turnId: string, signal: AbortSignal) => enqueue(async () => {
+			if (closed) throw new Error("integration_composition_closed");
+			signal.throwIfAborted();
+			if (activeRuns.has(turnId)) return;
+			await refreshConfiguration();
+			signal.throwIfAborted();
+			activeRuns.add(turnId);
+		}),
+		finishRun: (turnId: string) => { activeRuns.delete(turnId); },
 		close: () => closePromise ??= (async () => {
 			closed = true;
+			configurationController.abort();
 			await reloadQueue;
 			content.retire();
 			let failed = false;
@@ -527,6 +563,7 @@ export async function createRuntimeIntegrationComposition(
 }
 
 interface RuntimeIntegrationContent {
+	readonly configurationFingerprint: string;
 	readonly mcpResourceService: McpResourceService;
 	readonly workspaceRoot: string;
 	readonly composition: IntegrationComposition;
@@ -546,6 +583,9 @@ async function createRuntimeIntegrationContent(input: {
 	readonly workspaceRoot: string;
 	readonly projectConfigurationEnabled: boolean;
 	readonly reportStartup: boolean;
+	readonly configuration?: RuntimeIntegrationConfiguration;
+	readonly waitForMcpDiscovery?: boolean;
+	readonly signal?: AbortSignal;
 }): Promise<RuntimeIntegrationContent> {
 	const { options } = input;
 	const mcpRefreshController = new AbortController();
@@ -556,8 +596,9 @@ async function createRuntimeIntegrationContent(input: {
 	let startMcpRefresh: ((
 		publish: (contribution: IntegrationCompositionContribution) => void,
 	) => void) | undefined;
-	const pluginDiscovery = await discoverPlugins({ workspaceRoot: input.workspaceRoot, homeDir: options.homeDir,
-		includeRepository: input.projectConfigurationEnabled });
+	const configuration = input.configuration ?? await loadRuntimeIntegrationConfiguration({ workspaceRoot: input.workspaceRoot,
+		homeDir: options.homeDir, env: options.env, includeRepository: input.projectConfigurationEnabled });
+	const pluginDiscovery = configuration.plugins;
 	const bundles = pluginBundleContributions(pluginDiscovery, { workspaceRoot: input.workspaceRoot, env: options.env,
 		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd) });
 	const hookDiscovery = await discoverHookConfig({
@@ -595,15 +636,10 @@ async function createRuntimeIntegrationContent(input: {
 				{
 					id: "mcp",
 					start: async (signal) => {
-						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal]);
-						const config = await discoverMcpConfig({
-							workspaceRoot: input.workspaceRoot,
-							homeDir: options.homeDir,
-							env: options.env,
-							includeRepository: input.projectConfigurationEnabled,
-						});
-						const servers = [...config.servers, ...bundles.mcpServers];
-						const invalidRequired = [...config.diagnostics.filter((issue) => issue.required).map((issue) => issue.serverId), ...bundles.requiredMcpFailures];
+						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal, ...(input.signal ? [input.signal] : [])]);
+						const config = configuration.mcp;
+						const servers = config.servers;
+						const invalidRequired = [...config.diagnostics.filter((issue) => issue.required).map((issue) => issue.serverId), ...config.requiredPluginFailures];
 						if (invalidRequired.length) throw new McpRequiredServerError(invalidRequired);
 						const manager = new McpManager({
 							configs: servers,
@@ -619,9 +655,18 @@ async function createRuntimeIntegrationContent(input: {
 							}),
 						});
 						mcpManager = manager;
-						let cached = await manager.loadCached(discoverySignal);
-						if (servers.some((server) => server.enabled && server.required)) {
-							try {
+						let cached: McpManagerDiscovery | undefined;
+						try {
+							cached = await manager.loadCached(discoverySignal);
+							// Changed configuration must be discovered before the next run captures its catalog.
+							if (input.waitForMcpDiscovery) {
+								const live = await manager.refresh(discoverySignal);
+								const requiredIds = new Set(servers.filter((server) => server.enabled && server.required).map((server) => server.id));
+								const failed = live.servers.filter((server) => requiredIds.has(server.serverId) && (server.status === "failed"
+									|| server.failures?.some((failure) => failure.capability === "tools" && !failure.tool)));
+								if (failed.length) throw new McpRequiredServerError(failed.map((server) => server.serverId));
+								cached = mergeMcpRefresh(cached, live);
+							} else if (servers.some((server) => server.enabled && server.required)) {
 								const required = await manager.discoverRequired(discoverySignal);
 								const ids = new Set(required.servers.map((server) => server.serverId));
 								cached = {
@@ -629,10 +674,11 @@ async function createRuntimeIntegrationContent(input: {
 									resources: [...(cached?.resources.filter((resource) => !ids.has(resource.serverId)) ?? []), ...required.resources],
 									servers: [...(cached?.servers.filter((server) => !ids.has(server.serverId)) ?? []), ...required.servers],
 								};
-							} catch (error) { await manager.close().catch(() => undefined); throw error; }
-						}
+							}
+						} catch (error) { await manager.close().catch(() => undefined); throw error; }
 						if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
 						startMcpRefresh = (publish) => {
+							if (input.waitForMcpDiscovery) return;
 							void manager.refresh(discoverySignal).then(
 								(discovery) => {
 									if (!discoverySignal.aborted) {
@@ -651,7 +697,7 @@ async function createRuntimeIntegrationContent(input: {
 							);
 						};
 						return {
-							...mcpContribution(servers, config.diagnostics, cached, cached ? "cached" : "loading"),
+							...mcpContribution(servers, config.diagnostics, cached, input.waitForMcpDiscovery ? "ready" : cached ? "cached" : "loading"),
 							close: () => manager.close(),
 						};
 					},
@@ -669,13 +715,13 @@ async function createRuntimeIntegrationContent(input: {
 							bundleIssues: [...bundles.issues, ...(skillRegistry?.diagnostics().issues ?? [])
 								.filter((issue) => bundles.skills.some((skill) => skill.pluginId === issue.fileLabel))
 								.map((issue) => ({ pluginId: issue.fileLabel, errorClass: issue.errorClass }))],
-						}, signal);
+						}, input.signal ? AbortSignal.any([signal, input.signal]) : signal);
 						pluginRuntime = runtime;
 						if (input.reportStartup) options.onStartupStage?.("plugins_ready");
 						return {
 							registrations: runtime.tools,
 							hooks: [...runtime.hooks, ...bundles.hooks],
-							resources: pluginCatalogResources(runtime),
+							resources: pluginCatalogResources(runtime, configuration.mcp.servers),
 							diagnostics: runtime.issues.map((issue) => ({
 								source: "plugin",
 								label: "runtime",
@@ -699,11 +745,12 @@ async function createRuntimeIntegrationContent(input: {
 	}
 	return Object.freeze({
 		workspaceRoot: input.workspaceRoot,
+		configurationFingerprint: configuration.fingerprint,
 		mcpResourceService: mcpManager,
 		composition,
 		hookDiscovery,
 		skillRegistry,
-		pluginContribution: () => pluginContribution(pluginRuntime!),
+		pluginContribution: () => pluginContribution(pluginRuntime!, configuration.mcp.servers),
 		startPluginUpdates: (publish: () => void) => {
 			unsubscribePlugins?.();
 			unsubscribePlugins = pluginRuntime!.subscribe(publish);
@@ -921,8 +968,8 @@ function isPluginResource(resource: Readonly<Record<string, unknown>>): boolean 
 	return typeof resource.id === "string" && resource.id.startsWith("plugin:");
 }
 
-function pluginContribution(runtime: PluginRuntime): IntegrationCompositionContribution {
-	return Object.freeze({ resources: pluginCatalogResources(runtime),
+function pluginContribution(runtime: PluginRuntime, servers: readonly McpServerConfig[]): IntegrationCompositionContribution {
+	return Object.freeze({ resources: pluginCatalogResources(runtime, servers),
 		diagnostics: runtime.issues.map((errorClass) => ({ source: "plugin", label: "runtime", errorClass })) });
 }
 

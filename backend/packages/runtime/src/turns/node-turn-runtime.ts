@@ -169,6 +169,10 @@ export interface NodeTurnRuntimeOptions {
 	) => string;
 	readonly agentBudget?: AgentBudget;
 	readonly store: RuntimeTurnStore;
+	readonly runLifecycle?: {
+		prepare(turnId: string, signal: AbortSignal): Promise<void>;
+		finish(turnId: string): void;
+	};
 	readonly resolveConfig: (
 		submission: TurnSubmission,
 	) => NodeRuntimeConfig | Promise<NodeRuntimeConfig>;
@@ -514,6 +518,7 @@ export class NodeTurnRuntime {
 		this.#options.toolRouter?.finishTurn?.(turnId);
 		this.#options.approvalPolicy?.finishTurn?.(turnId);
 		this.#runExecutions.finish(turnId);
+		this.#options.runLifecycle?.finish(turnId);
 	}
 
 	configureRuntimeContext(input: {
@@ -885,6 +890,8 @@ export class NodeTurnRuntime {
 		expectedProtocol?: NodeRuntimeConfig["protocol"],
 		restoredSnapshot?: RunExecutionSnapshot,
 	): Promise<TurnExecutionContext> {
+		assertNotAborted(signal);
+		if (this.#options.runLifecycle) await this.#options.runLifecycle.prepare(turnId, signal);
 		assertNotAborted(signal);
 		const runSnapshot = this.#runExecutions.resolve(turnId, restoredSnapshot);
 		const collaborationMode = runSnapshot.collaborationMode;

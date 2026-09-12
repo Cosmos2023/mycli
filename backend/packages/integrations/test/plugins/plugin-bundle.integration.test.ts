@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { SandboxProfile } from "@mycli/tools";
-import { discoverPlugins, McpClient, PluginPackageManager, pluginBundleContributions, PluginRuntime,
+import { discoverPlugins, McpClient, PluginPackageManager, pluginBundleContributions, pluginMcpServerId, PluginRuntime,
 	skillInvocationArtifactFromMetadata, SkillRegistry, SkillTool } from "../../src/index.ts";
 
 const signal = new AbortController().signal;
@@ -34,7 +34,7 @@ test("installed bundles activate namespaced skills, real MCP tools and root-awar
 	const discovery = await discoverPlugins({ homeDir, workspaceRoot });
 	const contributions = pluginBundleContributions(discovery, { workspaceRoot, env: process.env, sandboxProfile: unrestricted });
 	assert.equal(contributions.mcpServers.length, 1);
-	assert.deepEqual(contributions.requiredMcpFailures, ["broken"]);
+	assert.deepEqual(contributions.requiredMcpFailures, [pluginMcpServerId("demo", "broken")]);
 	assert.deepEqual(contributions.issues, [{ pluginId: "demo", errorClass: "plugin_mcp_env_invalid" }]);
 	const config = contributions.mcpServers[0]!;
 	const client = new McpClient({ config, sandboxProfile: unrestricted(workspaceRoot) });

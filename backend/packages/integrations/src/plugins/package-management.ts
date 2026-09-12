@@ -57,7 +57,7 @@ export class PluginPackageManager {
 					return { ...success(request.action, `Plugin ${request.pluginId} remains disabled by repository configuration.`),
 						ok: false, issues: ["plugin_disabled_by_configuration"] };
 				}
-				return success(request.action, `Plugin ${request.pluginId} ${enabled ? "enabled" : "disabled"}. Restart active sessions to apply.`);
+				return success(request.action, `Plugin ${request.pluginId} ${enabled ? "enabled" : "disabled"}. Changes apply before the next idle turn or catalog inspection.`);
 			}
 			if (!previous) throw new PluginPackageError("plugin_not_managed");
 			if (request.action === "update") return await this.#install({ action: "add", source: previous.id }, signal, previous);
@@ -66,7 +66,7 @@ export class PluginPackageManager {
 				return { ...state, plugins: state.plugins.filter((item) => item.id !== previous.id) };
 			});
 			// Active sessions retain the immutable snapshot until they close.
-			return success("remove", `Plugin ${previous.id} removed. Restart active sessions to apply.`);
+			return success("remove", `Plugin ${previous.id} removed. Changes apply before the next idle turn or catalog inspection.`);
 		} catch (error) {
 			if (signal.aborted) throw error;
 			const code = error instanceof PluginPackageError ? error.code : "plugin_package_operation_failed";
@@ -113,7 +113,7 @@ export class PluginPackageManager {
 			});
 			committed = true;
 			const enabled = (await discoverPlugins(this.#options)).enablement.isEnabled(id);
-			return { ...success(previous ? "update" : "add", `Plugin ${id} ${previous ? "updated" : "installed"}. Restart active sessions to apply.`),
+			return { ...success(previous ? "update" : "add", `Plugin ${id} ${previous ? "updated" : "installed"}. Changes apply before the next idle turn or catalog inspection.`),
 				issues: manifest.issues, plugins: [{ pluginId: id, enabled, status: manifest.issues.length ? "partial" : "installed", version: installed.version }] };
 		} finally {
 			if (!committed) await rm(root, { recursive: true, force: true });

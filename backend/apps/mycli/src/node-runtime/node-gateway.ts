@@ -869,6 +869,7 @@ class InProcessNodeGateway implements NodeGateway {
 			]);
 		}
 		if (["tools", "skills", "mcp", "plugins", "hooks"].includes(invocation.commandId)) {
+			await this.#options.integrations?.refresh?.();
 			return integrationInspectionResult(invocation, {
 				manifest: integrationToolManifest(this.#options.integrations),
 				resources: invocation.commandId === "tools" ? [] : await this.#options.integrations?.listResources?.() ?? [],
@@ -1353,6 +1354,7 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #resourceList(): Promise<JsonObject> {
+		await this.#options.integrations?.refresh?.();
 		const resources = await this.#options.integrations?.listResources?.() ?? [];
 		return { resources: resources.map(boundedResource).filter(isObject) };
 	}

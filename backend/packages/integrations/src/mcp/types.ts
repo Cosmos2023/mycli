@@ -42,6 +42,11 @@ export interface McpServerConfig {
 		readonly callbackPort?: number;
 	};
 	readonly pluginDescription?: string;
+	readonly plugin?: {
+		readonly id: string;
+		readonly source: "user" | "repo";
+		readonly serverName: string;
+	};
 	readonly source?: "user" | "repository" | "plugin";
 }
 

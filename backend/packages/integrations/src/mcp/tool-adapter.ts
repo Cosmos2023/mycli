@@ -121,7 +121,8 @@ export function createMcpToolRegistration(
 			approvalScope: { id, fingerprint: modelInputSha256({ server: mcpConfigFingerprint([config]), definition,
 				annotations: descriptor.annotations ?? null }) },
 		} : {}),
-		originMetadata: { server: descriptor.serverId, tool: descriptor.name },
+		originMetadata: { server: descriptor.serverId, tool: descriptor.name,
+			...(config?.plugin ? { plugin: config.plugin.id, plugin_server: config.plugin.serverName } : {}) },
 		...(descriptor.serverInstructions ? { sourceDescription: descriptor.serverInstructions } : {}),
 	});
 }

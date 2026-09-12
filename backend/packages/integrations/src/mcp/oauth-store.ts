@@ -29,7 +29,8 @@ export class McpOAuthStore {
 	constructor(homeDir: string, config: McpServerConfig) {
 		this.#directory = join(homeDir, ".mycli", "mcp-auth");
 		this.#fileName = `${modelInputSha256({ id: config.id, source: config.source, transport: config.transport,
-			url: config.url, headers: config.headers, oauth: config.oauth })}.json`;
+			url: config.url, headers: config.headers, oauth: config.oauth,
+			...(config.plugin ? { plugin: config.plugin } : {}) })}.json`;
 	}
 
 	async load(): Promise<McpOAuthRecord | undefined> {

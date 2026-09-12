@@ -83,6 +83,46 @@ const ASK_ARGUMENTS = JSON.stringify({
 	multi_select: false,
 });
 
+test("prepares integrations before capturing a run catalog and releases them at terminal completion", async () => {
+	const trace: string[] = [];
+	const requests: ProviderRequest[] = [];
+	const prepared = Promise.withResolvers<void>();
+	let ready = false;
+	const finished: string[] = [];
+	const runtime = createRuntime({ store: new FakeStore(trace), toolRouter: new SequencedRouter(trace),
+		provider: scriptedProvider(trace, requests, [[{ type: "text_delta", text: "Ready." }, { type: "completed", responseId: "complete" }]]),
+		runLifecycle: {
+			prepare: async () => { await prepared.promise; ready = true; },
+			finish: (turnId) => { finished.push(turnId); },
+		},
+		planTools: () => { assert.equal(ready, true, "catalog capture must follow integration preparation"); return [READ_TOOL_DEFINITION]; },
+	});
+	const pending = runtime.submit(submission(), () => undefined, { signal: new AbortController().signal });
+	assert.equal(requests.length, 0);
+	prepared.resolve();
+	assert.equal((await pending).status, "completed");
+	assert.deepEqual(finished, ["turn-1"]);
+	assert.equal(requests[0]?.tools?.some((tool) => tool.name === "Read"), true);
+});
+
+for (const failure of ["prepare", "cancel"] as const) {
+	test(`integration ${failure} during preparation cannot retain a run owner`, async () => {
+		const owners = new Set<string>();
+		const controller = new AbortController();
+		const requests: ProviderRequest[] = [];
+		const runtime = createRuntime({ store: new FakeStore([]), toolRouter: new SequencedRouter([]),
+			provider: scriptedProvider([], requests, []), runLifecycle: {
+				prepare: async (turnId) => { owners.add(turnId); if (failure === "prepare") throw new Error("integration_start_failed"); controller.abort(); },
+				finish: (turnId) => { owners.delete(turnId); },
+			},
+		});
+		const result = await runtime.submit(submission(), () => undefined, { signal: controller.signal });
+		assert.equal(result.status, failure === "prepare" ? "failed" : "interrupted");
+		assert.equal(requests.length, 0);
+		assert.equal(owners.size, 0);
+	});
+}
+
 test("runs unchanged provider and live-event contracts on the normalized turn store", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-normalized-runtime-"));
 	t.after(async () => rm(root, { recursive: true, force: true }));
@@ -2398,6 +2438,7 @@ test("policy denials preserve file sandbox error kinds", async () => {
 
 test("approval resolution continues the original turn without reserving or duplicating the user", async () => {
 	const trace: string[] = [];
+	const owners = new Set<string>();
 	const store = new FakeStore(trace);
 	const provider = scriptedProvider(trace, [], [
 		[
@@ -2413,6 +2454,7 @@ test("approval resolution continues the original turn without reserving or dupli
 	const router = new SequencedRouter(trace);
 	const approvals = approvalRuntimeFixture(trace, router, store);
 	const instance = createRuntime({
+		runLifecycle: { prepare: async (id) => { owners.add(id); }, finish: (id) => { owners.delete(id); } },
 		store,
 		provider,
 		toolRouter: router,
@@ -2424,6 +2466,7 @@ test("approval resolution continues the original turn without reserving or dupli
 		...submission(),
 		clientUserMessageId: "client-user-message-1",
 	}, () => {}, { signal: new AbortController().signal });
+	assert.deepEqual([...owners], ["turn-1"]);
 	assert.equal(approvals.pending()?.clientUserMessageId, "client-user-message-1");
 	const userCountBefore = store.items.filter((item) => item.type === "user").length;
 
@@ -2433,6 +2476,7 @@ test("approval resolution continues the original turn without reserving or dupli
 	}, (event) => { trace.push(`event:${event.type}`); }, new AbortController().signal);
 
 	assert.equal(result.status, "completed");
+	assert.equal(owners.size, 0);
 	assert.equal(trace.filter((item) => item === "reserve").length, 1);
 	assert.equal(store.items.filter((item) => item.type === "user").length, userCountBefore);
 	assert.ok(trace.indexOf("approval:resolve:call-write") < trace.indexOf("tool:call-read"));
@@ -2511,6 +2555,7 @@ test("approval interruption closes the claimed tool lifecycle with an unknown ou
 
 test("approval finalization failure preserves the running turn for retry", async () => {
 	const trace: string[] = [];
+	const owners = new Set<string>();
 	const store = new FakeStore(trace);
 	const provider = scriptedProvider(trace, [], [[
 		{ type: "tool_call", callId: "call-write", name: "Write", argumentsJson: WRITE_ARGUMENTS },
@@ -2519,6 +2564,7 @@ test("approval finalization failure preserves the running turn for retry", async
 	const router = new SequencedRouter(trace);
 	const approvals = approvalRuntimeFixture(trace, router, store, { finishFailure: true });
 	const instance = createRuntime({
+		runLifecycle: { prepare: async (id) => { owners.add(id); }, finish: (id) => { owners.delete(id); } },
 		store,
 		provider,
 		toolRouter: router,
@@ -2527,6 +2573,7 @@ test("approval finalization failure preserves the running turn for retry", async
 		toolDefinitions: [WRITE_TOOL_DEFINITION],
 	});
 	await instance.submit(submission(), () => {}, { signal: new AbortController().signal });
+	assert.deepEqual([...owners], ["turn-1"]);
 	const emitted: RuntimeEvent[] = [];
 
 	await assert.rejects(resolveApproval(instance, {
@@ -2535,6 +2582,7 @@ test("approval finalization failure preserves the running turn for retry", async
 	}, emitted.push.bind(emitted), new AbortController().signal), StorageFailure);
 
 	assert.equal(store.turn?.status, "in_progress");
+	assert.equal(owners.size, 1);
 	assert.equal(emitted.some((event) => event.type === "turn_failed"), false);
 });
 
@@ -2592,6 +2640,7 @@ test("one provider batch can pause for multiple approvals in original order", as
 
 test("clarification response resumes the original provider loop without a new user turn", async () => {
 	const trace: string[] = [];
+	const owners = new Set<string>();
 	const store = new FakeStore(trace);
 	const provider = scriptedProvider(trace, [], [
 		[
@@ -2634,6 +2683,7 @@ test("clarification response resumes the original provider loop without a new us
 	};
 	const emitted: RuntimeEvent[] = [];
 	const instance = createRuntime({
+		runLifecycle: { prepare: async (id) => { owners.add(id); }, finish: (id) => { owners.delete(id); } },
 		store,
 		provider,
 		toolRouter: router,
@@ -2646,6 +2696,7 @@ test("clarification response resumes the original provider loop without a new us
 	const waiting = await instance.submit(submission(), emitted.push.bind(emitted), {
 		signal: new AbortController().signal,
 	});
+	assert.deepEqual([...owners], ["turn-1"]);
 	assert.equal(waiting.status, "in_progress");
 	assert.equal(instance.continuationTurnId(), "turn-1");
 	assert.equal(trace.includes("persist:result:call-question"), false);
@@ -2661,6 +2712,7 @@ test("clarification response resumes the original provider loop without a new us
 		new AbortController().signal,
 	);
 	assert.equal(completed.status, "completed");
+	assert.equal(owners.size, 0);
 	assert.equal(store.items.filter((item) => item.type === "user").length, 1);
 	assert.ok(trace.indexOf("clarification:resolve:call-question") < trace.indexOf("tool:call-read"));
 	assert.equal(trace.filter((item) => item.startsWith("provider:")).length, 2);
@@ -2668,6 +2720,7 @@ test("clarification response resumes the original provider loop without a new us
 
 test("force interrupt clears a pending clarification before terminalizing the turn", async () => {
 	const trace: string[] = [];
+	const owners = new Set<string>();
 	const store = new FakeStore(trace);
 	const provider = scriptedProvider(trace, [], [[
 		{ type: "tool_call", callId: "call-question", name: "AskUserQuestion", argumentsJson: ASK_ARGUMENTS },
@@ -2698,6 +2751,7 @@ test("force interrupt clears a pending clarification before terminalizing the tu
 	};
 	const emitted: RuntimeEvent[] = [];
 	const instance = createRuntime({
+		runLifecycle: { prepare: async (id) => { owners.add(id); }, finish: (id) => { owners.delete(id); } },
 		store,
 		provider,
 		toolRouter: router,
@@ -2710,6 +2764,7 @@ test("force interrupt clears a pending clarification before terminalizing the tu
 	const waiting = await instance.submit(submission(), emitted.push.bind(emitted), {
 		signal: new AbortController().signal,
 	});
+	assert.deepEqual([...owners], ["turn-1"]);
 	assert.equal(waiting.status, "in_progress");
 	assert.ok(clarifications.coordinator.pending());
 
@@ -2719,6 +2774,7 @@ test("force interrupt clears a pending clarification before terminalizing the tu
 	);
 
 	assert.equal(interrupted.status, "interrupted");
+	assert.equal(owners.size, 0);
 	assert.equal(store.loadTurn()?.status, "interrupted");
 	assert.equal(clarifications.coordinator.pending(), undefined);
 	assert.deepEqual(
@@ -4090,6 +4146,7 @@ test("enforces explicit token no-progress and wall-clock budgets", async () => {
 
 function createRuntime(options: {
 	readonly store: RuntimeTurnStore;
+	readonly runLifecycle?: NodeTurnRuntimeOptions["runLifecycle"];
 	readonly provider: ModelProvider;
 	readonly toolRouter: ToolRouterContract;
 	readonly queueCoordinator?: QueueCoordinator;
@@ -4126,6 +4183,7 @@ function createRuntime(options: {
 		instructions: "You are mycli.",
 		...(options.agentBudget ? { agentBudget: options.agentBudget } : {}),
 		store: options.store,
+		...(options.runLifecycle ? { runLifecycle: options.runLifecycle } : {}),
 		resolveConfig: () => options.runtimeConfig ?? config(),
 		createProvider: () => options.provider,
 		...(options.providerStepExecutor ? { providerStepExecutor: options.providerStepExecutor } : {}),

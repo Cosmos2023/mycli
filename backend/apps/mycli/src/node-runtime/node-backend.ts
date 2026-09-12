@@ -1199,6 +1199,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				createEventId: () => `lifecycle-${randomUUID()}`,
 			});
 			const coordinatorRuntime = new NodeTurnRuntime({
+			runLifecycle: {
+				prepare: (turnId, signal) => integrationComposition.prepareRun(JSON.stringify([sessionId, turnId]), signal),
+				finish: (turnId) => integrationComposition.finishRun(JSON.stringify([sessionId, turnId])),
+			},
 			sessionId,
 			workspaceRoot,
 			threadId,
@@ -2538,18 +2542,28 @@ function integrationGateway(
 	composition: RuntimeIntegrationComposition,
 	toolNames: () => readonly string[],
 ): NodeGatewayIntegrations {
-		const integrations: NodeGatewayIntegrations = {
-			toolManifest: () => composition.manifest as unknown as Record<string, unknown>,
-			diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
-			toolNames,
-			listResources: () => composition.resources.map((resource) => ({ ...resource })),
-		commands: combinedIntegrationCommands(() => composition.commands),
-			subscribeSubagents: (
+	const commands = combinedIntegrationCommands(() => composition.commands);
+	const integrations: NodeGatewayIntegrations = {
+		refresh: () => composition.refreshConfiguration(),
+		toolManifest: () => composition.manifest as unknown as Record<string, unknown>,
+		diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+		toolNames,
+		listResources: () => composition.resources.map((resource) => ({ ...resource })),
+		commands: {
+			list: () => commands.list(),
+			run: async (command, signal) => {
+				const owner = `plugin-command:${randomUUID()}`;
+				await composition.prepareRun(owner, signal);
+				try { return await commands.run(command, signal); }
+				finally { composition.finishRun(owner); }
+			},
+		},
+		subscribeSubagents: (
 			listener: (subagent: Readonly<Record<string, unknown>>) => void,
-			) => composition.subscribeSubagents(listener),
-			subscribeExtensions: (listener: (version: number) => void) => (
-				composition.subscribeExtensions(listener)
-			),
+		) => composition.subscribeSubagents(listener),
+		subscribeExtensions: (listener: (version: number) => void) => (
+			composition.subscribeExtensions(listener)
+		),
 	};
 	return Object.freeze(integrations);
 }

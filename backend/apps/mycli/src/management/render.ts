@@ -361,7 +361,7 @@ function responseRows(
 	if (command.kind === "mcp") {
 		return [
 			...rows(response, "servers").map((row) => fields("mcp", row, [
-				"serverId", "source", "transport", "enabled", "required", "status", "toolCount", "startupTimeoutMs", "toolTimeoutMs", "defaultToolsApprovalMode",
+				"serverId", "selector", "pluginId", "pluginServerName", "source", "transport", "enabled", "required", "status", "authStatus", "toolCount", "startupTimeoutMs", "toolTimeoutMs", "defaultToolsApprovalMode",
 			])),
 			...rows(response, "approvals").map((row) => fields("approval", row, ["id"])),
 		];

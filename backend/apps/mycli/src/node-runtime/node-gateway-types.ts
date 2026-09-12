@@ -231,6 +231,7 @@ export interface NodeGatewayIntegrationCommands {
 }
 
 export interface NodeGatewayIntegrations {
+	refresh?(): Promise<void>;
 	readonly toolManifest?: JsonObject | (() => JsonObject | undefined);
 	readonly diagnostics?: readonly JsonObject[] | (() => readonly JsonObject[]);
 	toolNames?(): readonly string[];

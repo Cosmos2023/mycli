@@ -1,4 +1,5 @@
 import { discoverMcpConfig } from "./config.ts";
+import { discoverConfiguredMcpServers, mcpServerSelector } from "./configured-servers.ts";
 import { McpManager } from "./manager.ts";
 import { McpConfigStore } from "./config-store.ts";
 import { McpConfigError } from "./config.ts";
@@ -14,6 +15,10 @@ import type {
 
 export interface McpManagementRow {
 	readonly serverId: string;
+	readonly selector: string;
+	readonly pluginId?: string;
+	readonly pluginServerName?: string;
+	readonly authStatus: "unsupported" | "configured_header" | "oauth" | "not_logged_in" | "unavailable";
 	readonly transport: McpServerConfig["transport"];
 	readonly enabled: boolean;
 	readonly status: McpServerDiscovery["status"];
@@ -65,7 +70,7 @@ export class McpManagementService {
 
 	async #auth(action: "login" | "logout", serverId: string, signal: AbortSignal): Promise<McpManagementResponse> {
 		try {
-			const config = (await discoverMcpConfig(this.#options)).get(serverId);
+			const config = (await discoverConfiguredMcpServers(this.#options)).get(serverId);
 			if (!config || config.transport !== "streamable_http") throw new McpOAuthError("mcp_oauth_unsupported");
 			if (action === "logout") await new McpOAuthStore(this.#options.homeDir, config).update(async () => undefined, signal);
 			else {
@@ -73,8 +78,8 @@ export class McpManagementService {
 				await loginMcpOAuth({ config, homeDir: this.#options.homeDir, signal, fetch: this.#options.oauthFetch(config),
 					onAuthorization: (url) => this.#options.onAuthorization!(url, signal) });
 			}
-			return response(true, action, action === "login" ? `MCP login completed: ${boundedId(serverId)}. Restart mycli to refresh discovery.`
-				: `MCP credentials removed: ${boundedId(serverId)}.`, [], []);
+			return response(true, action, action === "login" ? `MCP login completed: ${mcpServerSelector(config)}. Open /mcp or start the next turn to refresh discovery.`
+				: `MCP credentials removed: ${mcpServerSelector(config)}.`, [], []);
 		} catch (error) {
 			if (signal.aborted) throw error;
 			return response(false, action, action === "login" ? "MCP login did not complete." : "MCP credentials could not be removed.", [],
@@ -100,8 +105,9 @@ export class McpManagementService {
 
 	async revoke(serverId: string): Promise<McpManagementResponse> {
 		try {
-			await new IntegrationToolApprovalStore(this.#options.homeDir).revokeMcpServer(serverId);
-			return response(true, "revoke", `Remembered MCP approvals removed: ${boundedId(serverId)}`, [], []);
+			const config = (await discoverConfiguredMcpServers(this.#options)).get(serverId);
+			await new IntegrationToolApprovalStore(this.#options.homeDir).revokeMcpServer(config?.id ?? serverId);
+			return response(true, "revoke", `Remembered MCP approvals removed: ${config ? mcpServerSelector(config) : boundedId(serverId)}`, [], []);
 		} catch { return response(false, "revoke", "MCP approvals could not be revoked.", [], ["integration_approval_store_failed"]); }
 	}
 
@@ -111,7 +117,7 @@ export class McpManagementService {
 			const active = (await discoverMcpConfig(this.#options)).get(serverId);
 			const project = active?.source === "repository";
 			return response(changed, action, changed
-				? `MCP user configuration ${action === "add" ? "added" : "removed"}: ${boundedId(serverId)}.${project ? " Repository configuration remains active." : " Restart mycli to apply the change."}`
+				? `MCP user configuration ${action === "add" ? "added" : "removed"}: ${boundedId(serverId)}.${project ? " Repository configuration remains active." : " Changes apply before the next idle turn or catalog inspection."}`
 				: `MCP server has no user configuration to remove: ${boundedId(serverId)}.${project ? " The server is configured by this repository." : ""}`,
 			[], changed ? [] : ["mcp_server_not_user_managed"]);
 		} catch (error) {
@@ -134,11 +140,11 @@ export class McpManagementService {
 
 	async inspect(serverId: string, signal: AbortSignal): Promise<McpManagementResponse> {
 		const result = await this.#discover(signal);
-		const row = result.rows.find((item) => item.serverId === serverId);
+		const row = result.rows.find((item) => item.serverId === serverId || item.selector === serverId);
 		return response(
 			result.ok && row !== undefined && row.status !== "failed",
 			"inspect",
-			row ? `mcp server: ${row.serverId}` : `mcp server not found: ${boundedId(serverId)}`,
+			row ? `mcp server: ${row.selector}` : `mcp server not found: ${boundedId(serverId)}`,
 			row ? [row] : [],
 			result.issues,
 		);
@@ -159,10 +165,10 @@ export class McpManagementService {
 		readonly rows: readonly McpManagementRow[];
 		readonly issues: readonly string[];
 	}> {
-		const config = await discoverMcpConfig(this.#options);
-		const issues = config.diagnostics.map((item) => (
+		const config = await discoverConfiguredMcpServers(this.#options);
+		const issues = [...config.diagnostics.map((item) => (
 			`${item.source}:${item.fileLabel}:${item.serverId}:${item.errorClass}`
-		));
+		)), ...config.pluginIssues.map((issue) => `plugin:${issue.pluginId}:${issue.errorClass}`)];
 		const manager = new McpManager({
 			configs: config.servers,
 			createClient: this.#options.createClient,
@@ -177,7 +183,16 @@ export class McpManagementService {
 				issues.push("mcp:cleanup_failed");
 			}
 		}
-		const rows = discovery.servers.map((server) => managementRow(server, config.get(server.serverId)!));
+		const rows = await Promise.all(discovery.servers.map(async (server) => {
+			const settings = config.get(server.serverId)!;
+			let authStatus: McpManagementRow["authStatus"];
+			try {
+				authStatus = settings.transport !== "streamable_http" ? "unsupported"
+					: new Headers(settings.headers).has("authorization") ? "configured_header"
+						: await new McpOAuthStore(this.#options.homeDir, settings).load() ? "oauth" : "not_logged_in";
+			} catch { authStatus = "unavailable"; issues.push(`mcp:${server.serverId}:mcp_oauth_store_failed`); }
+			return managementRow(server, settings, authStatus);
+		}));
 		return Object.freeze({
 			ok: issues.length === 0 && rows.every((row) => row.status !== "failed"),
 			rows: Object.freeze(rows),
@@ -186,9 +201,12 @@ export class McpManagementService {
 	}
 }
 
-function managementRow(server: McpServerDiscovery, config: McpServerConfig): McpManagementRow {
+function managementRow(server: McpServerDiscovery, config: McpServerConfig, authStatus: McpManagementRow["authStatus"]): McpManagementRow {
 	return Object.freeze({
 		serverId: server.serverId,
+		selector: mcpServerSelector(config),
+		authStatus,
+		...(config.plugin ? { pluginId: config.plugin.id, pluginServerName: config.plugin.serverName } : {}),
 		transport: server.transport,
 		enabled: server.enabled,
 		status: server.status,

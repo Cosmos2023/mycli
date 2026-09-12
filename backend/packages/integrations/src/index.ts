@@ -69,6 +69,8 @@ export type {
 	McpCatalogCacheOptions,
 } from "./mcp/catalog-cache.ts";
 export { discoverMcpConfig, parseMcpServerConfig, McpConfigError } from "./mcp/config.ts";
+export { discoverConfiguredMcpServers, mcpServerSelector } from "./mcp/configured-servers.ts";
+export { pluginMcpServers, pluginMcpServerId } from "./plugins/mcp-servers.ts";
 export { McpConfigStore } from "./mcp/config-store.ts";
 export type { DiscoverMcpConfigOptions } from "./mcp/config.ts";
 export {

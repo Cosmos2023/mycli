@@ -1,5 +1,6 @@
 import { basename, dirname } from "node:path";
 import type { McpManagerDiscovery, McpServerConfig, PluginRuntime } from "@mycli/integrations";
+import { mcpServerSelector } from "@mycli/integrations";
 
 type CatalogResource = {
 	readonly id: string;
@@ -36,12 +37,16 @@ export function mcpCatalogResources(
 		const toolCount = server?.toolCount ?? tools.length;
 		const resourceCount = server?.resourceCount ?? resources.length;
 		return Object.freeze({
-			id: `mcp:${config.id}`, type: "mcp", name: config.id, source: "runtime",
+			id: `mcp:${config.id}`, type: "mcp", name: mcpServerSelector(config), source: "runtime",
 			enabled: config.enabled, status,
 			detail: `${toolCount} tools, ${resourceCount} resources${failure ? `; ${failure}` : ""}`,
 			tool_names: Object.freeze(tools), tool_count: toolCount, resource_count: resourceCount,
 			inspection_detail: [
 				...(config.pluginDescription ? [config.pluginDescription] : []),
+				...(config.plugin ? [`Plugin: ${config.plugin.id} (${config.plugin.source}); declared server: ${config.plugin.serverName}`] : []),
+				...(config.plugin ? [`Server id: ${config.id}`] : []),
+				`Manage: mycli mcp inspect ${mcpServerSelector(config)}`,
+				...(config.transport === "streamable_http" ? [`Login: mycli mcp login ${mcpServerSelector(config)}`] : []),
 				`Transport: ${config.transport}`,
 				`Startup timeout: ${config.startupTimeoutMs ?? config.timeoutMs} ms; tool timeout: ${config.toolTimeoutMs ?? config.timeoutMs} ms`,
 				`Source: ${config.source ?? "user"}; required: ${config.required ?? false}; approval: ${config.defaultToolsApprovalMode ?? "auto"}`,
@@ -59,7 +64,7 @@ export function mcpCatalogResources(
 	}));
 }
 
-export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | "discovery" | "commands">): readonly CatalogResource[] {
+export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | "discovery" | "commands">, servers: readonly McpServerConfig[] = []): readonly CatalogResource[] {
 	return Object.freeze(runtime.records.map((record): CatalogResource => {
 		const candidate = runtime.discovery.get(record.pluginId);
 		const manifest = candidate?.kind === "plugin" || candidate?.kind === "bundle" ? candidate.manifest : undefined;
@@ -82,6 +87,8 @@ export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | 
 				...(manifest?.version ? [`Version: ${manifest.version}`] : []),
 				`Skills (${skills.length}): ${catalogNames(skills)}`,
 				`MCP servers (${mcp.length}): ${catalogNames(mcp)}`,
+				...servers.filter((server) => server.plugin?.id === record.pluginId).slice(0, 20)
+					.map((server) => `MCP: ${mcpServerSelector(server)} → ${server.id}`),
 				`Hooks (${hooks.length}): ${catalogNames(hooks)}`,
 				`Tools (${tools.length}): ${catalogNames(tools)}`,
 				`Commands (${declaredCommands.length}): ${catalogNames(commands.length ? commands : declaredCommands)}`,
