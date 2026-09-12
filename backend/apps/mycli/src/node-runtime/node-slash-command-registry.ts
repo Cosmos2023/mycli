@@ -207,7 +207,8 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		argumentPolicy: "optional",
 		presentation: "overlay",
 	}),
-	spec("plugins", "/plugins", "Browse installed plugins and their capabilities", {
+	spec("plugins", "/plugins", "Browse and manage plugins and marketplaces", {
+		tuiPolicy: tuiPolicy("open_plugins"),
 		presentation: "overlay",
 	}),
 	spec("hooks", "/hooks", "Inspect configured hooks", {

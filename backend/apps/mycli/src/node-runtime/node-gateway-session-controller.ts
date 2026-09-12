@@ -57,6 +57,7 @@ interface NodeGatewaySessionControllerOptions {
 	readonly isTurnAdmissionPending: () => boolean;
 	readonly hasPendingInteractiveRequest: () => boolean;
 	readonly hasPendingAgentRequest: () => boolean;
+	readonly onTransition?: () => void;
 	readonly activateSettings: (workspaceRoot: string, runtime: NodeGatewayRuntime) => Promise<void>;
 	readonly activeShellPayloads: () => readonly JsonObject[];
 	readonly authProviders: () => Promise<readonly JsonObject[]>;
@@ -351,6 +352,7 @@ export class NodeGatewaySessionController {
 		this.#assertTransitionAvailable(coordinator);
 		const claim: SessionAdmissionClaim = Object.freeze({ kind: "transition", identity: {} });
 		this.#admission = Object.freeze({ kind: "transitioning", claim });
+		this.#options.onTransition?.();
 		return claim;
 	}
 

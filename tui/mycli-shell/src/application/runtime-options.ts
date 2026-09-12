@@ -1,4 +1,5 @@
 import type { ModelSelectionScope } from "@mycli/contracts";
+import type { MycliShellPluginManager } from "../model.ts";
 import type { ProjectTrustDecision } from "../components/selectors/trust-selector.ts";
 import type { PlanImplementationAction } from "../interaction/plan-implementation.ts";
 import type { MycliUiActionDispatcher } from "../interaction/ui-actions.ts";
@@ -26,6 +27,7 @@ import type {
 import type { Terminal } from "../tui-core/terminal.ts";
 
 export type MycliShellRuntimeOptions = {
+	pluginManager?: MycliShellPluginManager;
 	initialState: MycliShellState;
 	terminal?: Terminal;
 	requireTrust?: boolean;

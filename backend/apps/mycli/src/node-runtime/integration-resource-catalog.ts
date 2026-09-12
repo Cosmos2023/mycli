@@ -1,6 +1,5 @@
-import { basename, dirname } from "node:path";
 import type { McpManagerDiscovery, McpServerConfig, PluginRuntime } from "@mycli/integrations";
-import { mcpServerSelector } from "@mycli/integrations";
+import { mcpServerSelector, pluginDeclarations } from "@mycli/integrations";
 
 type CatalogResource = {
 	readonly id: string;
@@ -69,13 +68,13 @@ export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | 
 		const candidate = runtime.discovery.get(record.pluginId);
 		const manifest = candidate?.kind === "plugin" || candidate?.kind === "bundle" ? candidate.manifest : undefined;
 		const bundle = candidate?.kind === "bundle" ? candidate.manifest : undefined;
-		const provides = candidate?.kind === "plugin" ? candidate.manifest.provides : undefined;
-		const tools = provides?.tools ?? record.tools;
-		const skills = bundle?.skillFiles.map((path) => basename(path) === "SKILL.md" ? basename(dirname(path)) : basename(path)) ?? [];
-		const mcp = bundle?.mcp.flatMap((document) => objectKeys(document.mcpServers ?? document.mcp_servers ?? document)) ?? [];
-		const hooks = provides?.hooks ?? bundle?.hooks.flatMap(declaredHookNames) ?? record.hooks;
+		const declared = pluginDeclarations(candidate);
+		const tools = manifest ? declared.tools : record.tools;
+		const skills = declared.skills;
+		const mcp = declared.mcpServers;
+		const hooks = manifest ? declared.hooks : record.hooks;
 		const commands = runtime.commands.list(record.pluginId).map((command) => `/plugin:${record.pluginId}:${command.name}`);
-		const declaredCommands = provides?.commands ?? record.commands;
+		const declaredCommands = manifest ? declared.commands : record.commands;
 		return Object.freeze({
 			id: `plugin:${record.pluginId}`, type: "plugin", name: record.pluginId,
 			source: record.source, enabled: record.enabled,
@@ -97,17 +96,6 @@ export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | 
 			command: "/plugins",
 		});
 	}));
-}
-
-function objectKeys(value: unknown): readonly string[] {
-	return typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : [];
-}
-
-function declaredHookNames(document: Readonly<Record<string, unknown>>): readonly string[] {
-	const hooks = document.hooks ?? document;
-	if (!Array.isArray(hooks)) return objectKeys(hooks);
-	return hooks.flatMap((hook: unknown) => typeof hook === "object" && hook !== null
-		&& "hook_point" in hook && typeof hook.hook_point === "string" ? [hook.hook_point] : []);
 }
 
 export function catalogNames(names: readonly string[], total = names.length): string {

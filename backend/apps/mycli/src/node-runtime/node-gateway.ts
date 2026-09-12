@@ -57,6 +57,7 @@ import {
 	type NodeGatewayRpcRequest,
 } from "./node-gateway-rpc-transport.ts";
 import { NodeGatewaySessionController } from "./node-gateway-session-controller.ts";
+import { NodeGatewayPluginController } from "./node-gateway-plugin-controller.ts";
 import {
 	gatewayQueueItem,
 	legacyMigrationRecord,
@@ -117,6 +118,7 @@ class InProcessNodeGateway implements NodeGateway {
 	readonly #settingsController: NodeGatewaySettingsController;
 	readonly #resolveCompletion: (code: number) => void;
 	#closed = false;
+	readonly #pluginController: NodeGatewayPluginController;
 	#errorContextVersion: 1 | undefined;
 	#closePromise: Promise<void> | null = null;
 	#manualCompaction: { readonly controller: AbortController; readonly task: Promise<NodeGatewayCompactionResult> } | null = null;
@@ -154,8 +156,10 @@ class InProcessNodeGateway implements NodeGateway {
 			hasPendingInteractiveRequest: () => this.#interactiveController.hasPending(),
 			hasPendingAgentRequest: () =>
 				(this.#options.agentInteractiveRequests?.pending().length ?? 0) > 0,
-			activateSettings: (workspaceRoot, runtime) =>
-				this.#settingsController.activateSession(workspaceRoot, runtime),
+			activateSettings: (workspaceRoot, runtime) => {
+				return this.#settingsController.activateSession(workspaceRoot, runtime);
+			},
+			onTransition: () => this.#pluginController.cancelPending(),
 			activeShellPayloads: () => this.#shellController.activePayloads(),
 			authProviders: () => this.#settingsController.authProviders(),
 			credentialReadiness: () => this.#settingsController.credentialReadiness(),
@@ -165,6 +169,7 @@ class InProcessNodeGateway implements NodeGateway {
 			publishDirect: (method, params) => { this.#emitDirect(method, params); },
 			requestNextQueuedTurn: () => { this.#turnController.requestNextQueuedTurn(); },
 		});
+		this.#pluginController = new NodeGatewayPluginController({ session: this.#sessionController, createCatalog: options.pluginCatalog });
 		this.#settingsController = new NodeGatewaySettingsController({
 			provider: options.provider,
 			model: options.model,
@@ -228,6 +233,7 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#closePromise ??= (async () => {
 			if (this.#closed) return;
 			this.#closed = true;
+			const pluginCleanup = this.#pluginController.close();
 			const manualCompaction = this.#manualCompaction;
 			manualCompaction?.controller.abort();
 			this.#sessionController.close();
@@ -246,6 +252,7 @@ class InProcessNodeGateway implements NodeGateway {
 			try {
 				await this.#turnController.close();
 				await manualCompaction?.task.catch(() => undefined);
+				await pluginCleanup;
 				await this.#options.close();
 			} catch {
 				exitCode = 1;
@@ -284,6 +291,7 @@ class InProcessNodeGateway implements NodeGateway {
 			case "workspace.trust.status":
 				return this.#settingsController.trustStatus();
 			case "workspace.trust.set":
+				this.#pluginController.cancelPending();
 				return this.#settingsController.setWorkspaceTrust(request.params);
 			case "permissions.list":
 				return this.#settingsController.permissions();
@@ -296,6 +304,16 @@ class InProcessNodeGateway implements NodeGateway {
 				);
 			case "resource.list":
 				return this.#resourceList();
+			case "plugin.catalog":
+				return this.#pluginController.catalog(request.params).then((catalog) => ({ ...catalog }));
+			case "plugin.inspect":
+				return this.#pluginController.inspect(request.params).then((detail) => ({ ...detail }));
+			case "plugin.operation.start":
+				return { ...this.#pluginController.start(request.params) };
+			case "plugin.operation.get":
+				return { ...this.#pluginController.get(request.params) };
+			case "plugin.operation.cancel":
+				return { ...this.#pluginController.cancel(request.params) };
 			case "session.bootstrap":
 				return this.#bootstrap(request.params, true);
 			case "transcript.load":

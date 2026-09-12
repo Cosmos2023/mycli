@@ -93,6 +93,11 @@
   ],
   "protocolVersion": 1,
   "rpcMethods": [
+    "plugin.inspect",
+    "plugin.catalog",
+    "plugin.operation.start",
+    "plugin.operation.get",
+    "plugin.operation.cancel",
     "approval.respond",
     "auth.api_key.save",
     "clarify.respond",

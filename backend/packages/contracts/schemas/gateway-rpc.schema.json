@@ -5,6 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "plugin.inspect",
     "initialize",
     "status.get",
     "status.inspect",
@@ -53,9 +54,229 @@
     "shell.stop",
     "shell.stop_all",
     "trace.export",
-    "shutdown"
+    "shutdown",
+    "plugin.catalog",
+    "plugin.operation.start",
+    "plugin.operation.get",
+    "plugin.operation.cancel"
   ],
   "properties": {
+    "plugin.inspect": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "generation",
+            "target",
+            "revision"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "target": {
+              "type": "string",
+              "maxLength": 129
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "title": "PluginDetail",
+          "required": [
+            "plugin",
+            "details"
+          ],
+          "properties": {
+            "plugin": {
+              "$ref": "#/$defs/PluginCatalogEntry"
+            },
+            "details": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "string",
+                "maxLength": 1024
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "plugin.catalog": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "marketplace": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginCatalog"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "plugin.operation.start": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "operation_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            },
+            "change": {
+              "$ref": "#/$defs/PluginChange"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "operation_id",
+            "change"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginOperation"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "plugin.operation.get": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "operation_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "operation_id"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginOperation"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "plugin.operation.cancel": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "operation_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "operation_id"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginOperation"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
     "mcp.elicitation.respond": {
       "type": "object",
       "required": [
@@ -974,6 +1195,316 @@
     }
   },
   "$defs": {
+    "PluginCatalogEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(@[a-z0-9][a-z0-9._-]{0,63})?$",
+          "maxLength": 129
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "marketplace": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "managed": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "installed",
+            "available",
+            "unavailable",
+            "invalid",
+            "migration_required"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "skills": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "mcpServers": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "hooks": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "tools": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "commands": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            }
+          },
+          "required": [
+            "skills",
+            "mcpServers",
+            "hooks",
+            "tools",
+            "commands"
+          ],
+          "additionalProperties": false,
+          "title": "PluginCapabilitySummary"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "name",
+        "description",
+        "source",
+        "installed",
+        "enabled",
+        "managed",
+        "status",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "title": "PluginCatalogEntry"
+    },
+    "PluginMarketplaceEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "name",
+        "revision",
+        "source",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "title": "PluginMarketplaceEntry"
+    },
+    "PluginCatalog": {
+      "type": "object",
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginCatalogEntry"
+          },
+          "maxItems": 2048
+        },
+        "marketplaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginMarketplaceEntry"
+          },
+          "maxItems": 128
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "repository_enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plugins",
+        "marketplaces",
+        "issues",
+        "truncated",
+        "repository_enabled"
+      ],
+      "additionalProperties": false,
+      "title": "PluginCatalog"
+    },
+    "PluginChange": {
+      "title": "PluginChange",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "install",
+                "enable",
+                "disable",
+                "update",
+                "remove"
+              ]
+            },
+            "target": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(@[a-z0-9][a-z0-9._-]{0,63})?$",
+              "maxLength": 129
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "marketplace_upgrade",
+                "marketplace_remove"
+              ]
+            },
+            "target": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "install_source",
+                "marketplace_add"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "action",
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginOperation": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "operation_id",
+        "state",
+        "message",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "title": "PluginOperation"
+    },
     "Identity": {
       "type": "string",
       "minLength": 1

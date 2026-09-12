@@ -1,4 +1,5 @@
 import process from "node:process";
+import { createPluginManagerClient } from "./plugin-manager-client.ts";
 import { parseGatewayParams, readErrorContext, type GatewayMethod, type GatewayParams, type GatewayResult } from "@mycli/contracts";
 import { GatewayClient, GatewayRequestError, type GatewayEvent } from "../transport/gateway-client.ts";
 import { loadEarlierProviderAttemptHistory } from "../state/provider-attempt-history.ts";
@@ -1411,6 +1412,13 @@ async function main(): Promise<void> {
 		onSettingsChange: saveSettings,
 		onSettingsKeymapReset: resetSettingsKeymap,
 		onResourceLoad: loadResources,
+		pluginManager: createPluginManagerClient({
+			request: (method, params) => send(method, params, { recordErrors: false }),
+			context: () => {
+				if (!runtimeState.sessionId || runtimeState.sessionGeneration === null) throw new Error("No active plugin management session.");
+				return { session_id: runtimeState.sessionId, generation: runtimeState.sessionGeneration };
+			},
+		}),
 		onTranscriptHistoryLoad: loadOlderTranscriptHistory,
 		commands: slashCommands,
 		commandNames: slashCommandNames,

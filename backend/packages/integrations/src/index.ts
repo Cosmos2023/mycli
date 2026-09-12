@@ -117,6 +117,8 @@ export { discoverPlugins } from "./plugins/discovery.ts";
 export { pluginBundleContributions } from "./plugins/bundle-contributions.ts";
 export type { PluginBundleContributions } from "./plugins/bundle-contributions.ts";
 export { PluginPackageManager } from "./plugins/package-management.ts";
+export { PluginCatalogService, packageIssue } from "./plugins/catalog.ts";
+export { pluginDeclarations } from "./plugins/declarations.ts";
 export type { PluginPackageRequest, PluginPackageResponse } from "./plugins/package-management.ts";
 export type { DiscoverPluginsOptions } from "./plugins/discovery.ts";
 export {

@@ -205,7 +205,7 @@ export function buildNodeSettingsCatalog(input: BuildNodeSettingsCatalogInput): 
 		}),
 		...([
 			["mcp", "MCP servers", "Inspect server connections and their tools"],
-			["plugins", "Plugins", "Browse installed plugins and their capabilities"],
+			["plugins", "Plugins", "Browse and manage plugins and marketplaces"],
 			["skills", "Skills", "Inspect available skill instructions"],
 			["hooks", "Hooks", "Inspect configured lifecycle hooks"],
 		] as const).map(([id, label, description]) => actionItem({

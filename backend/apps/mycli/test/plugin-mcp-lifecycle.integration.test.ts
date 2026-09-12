@@ -31,7 +31,7 @@ test("plugin MCP updates preserve a live approval, then refresh tools and approv
 			const rows = (await until(() => messages.find((message) => message.id === "during-approval"))).result?.resources;
 			assert.equal(rows?.find((row) => row.type === "plugin")?.name, "docs");
 			assert.equal(rows?.find((row) => row.type === "mcp")?.name, "docs/service");
-			send("plugin-inspection", "command.run", { command: "/plugins", surface: "tui" });
+			send("plugin-inspection", "command.run", { command: "/plugins", surface: "cli" });
 			assert.match(JSON.stringify((await until(() => messages.find((message) => message.id === "plugin-inspection"))).result), /Version: 1\.0\.0/u);
 			assert.equal(closedStreams.length, 0, "an update must not close a pending approval's client");
 		}
@@ -71,7 +71,7 @@ test("root refresh proceeds while its child waits on the original MCP approval",
 	await until(() => f.openedStreams.length === 2 || undefined);
 	await f.writeBundle("2.0.0");
 	assert.equal((await f.packages.execute({ action: "update", pluginId: "docs" }, f.signal)).ok, true);
-	f.send("updated-root", "command.run", { command: "/plugins", surface: "tui" });
+	f.send("updated-root", "command.run", { command: "/plugins", surface: "cli" });
 	const inspection = await until(() => f.messages.find((message) => message.id === "updated-root"));
 	assert.match(JSON.stringify(inspection.result), /Version: 2\.0\.0/u);
 	await until(() => f.closedStreams.length === 1 || undefined);
@@ -99,13 +99,13 @@ test("gateway catalogs follow session selection and repeated resume reuses conne
 	await until(() => f.openedStreams.length === 2 || undefined);
 	await f.writeBundle("2.0.0");
 	assert.equal((await f.packages.execute({ action: "update", pluginId: "docs" }, f.signal)).ok, true);
-	f.send("inspect-b", "command.run", { command: "/plugins", surface: "tui" });
+	f.send("inspect-b", "command.run", { command: "/plugins", surface: "cli" });
 	assert.match(JSON.stringify((await until(() => f.messages.find((message) => message.id === "inspect-b"))).result), /Version: 2\.0\.0/u);
 	await until(() => f.closedStreams.length === 1 || undefined);
 	for (const [index, sessionId] of ["plugin-lifecycle", b, "plugin-lifecycle", b].entries()) {
 		f.send(`resume-${index}`, "session.resume", { session_id: sessionId });
 		assert.equal((await until(() => f.messages.find((message) => message.id === `resume-${index}`))).error, undefined);
-		f.send(`inspect-${index}`, "command.run", { command: "/plugins", surface: "tui" });
+		f.send(`inspect-${index}`, "command.run", { command: "/plugins", surface: "cli" });
 		assert.match(JSON.stringify((await until(() => f.messages.find((message) => message.id === `inspect-${index}`))).result), /Version: 2\.0\.0/u);
 	}
 	await until(() => f.openedStreams.length === 4 || undefined);

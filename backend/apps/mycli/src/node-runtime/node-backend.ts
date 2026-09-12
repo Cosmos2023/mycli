@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PluginCatalogService } from "@mycli/integrations";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
 import { GitReviewReadTool } from "../review/git-read-tool.ts";
@@ -2292,6 +2293,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 			},
 			integrations: gatewayIntegrations,
+			pluginCatalog: async (workspaceRoot) => new PluginCatalogService({ homeDir, workspaceRoot,
+				includeRepository: await workspaceTrustStore.load(workspaceRoot) === "trusted" }),
 				close: () => resourceOwner.close(),
 		});
 			for (const recovered of recoveredInterrupts) {

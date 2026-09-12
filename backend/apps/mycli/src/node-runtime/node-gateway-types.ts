@@ -38,6 +38,7 @@ import type {
 	ShellSessionSnapshot,
 } from "@mycli/tools";
 import type { GatewayTransport } from "@mycli/gateway";
+import type { PluginCatalogService } from "@mycli/integrations";
 import type { AgentInteractiveRequestGateway } from "./agent-interactive-requests.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
 import type {
@@ -244,6 +245,7 @@ export interface NodeGatewayIntegrations {
 }
 
 export interface CreateNodeGatewayOptions {
+	readonly pluginCatalog?: (workspaceRoot: string) => Promise<Pick<PluginCatalogService, "list" | "inspect" | "change">>;
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
 	readonly provider: string;

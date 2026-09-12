@@ -17,6 +17,7 @@ export type {
 export { GATEWAY_RPC_METHODS, GatewayRpcValidationError, isGatewayMethod, parseGatewayParams, parseGatewayResult } from "./gateway/rpc.ts";
 export type { GatewayMethod, GatewayParams, GatewayResult, GatewayTranscriptItem } from "./gateway/rpc.ts";
 export type { GatewayRpcMethods } from "./generated/gateway-rpc.ts";
+export type { PluginCatalog, PluginCatalogEntry, PluginMarketplaceEntry, PluginChange, PluginOperation, PluginCapabilitySummary, PluginDetail } from "./generated/gateway-rpc.ts";
 export type { GatewayToolRecord, GatewayShellRecord, GatewayTerminalInteraction } from "./generated/gateway-tool-record.ts";
 export { terminalInteractionFromArguments, projectTerminalInteraction } from "./gateway/terminal-interaction.ts";
 export { GATEWAY_TOOL_PREVIEW_MAX_CHARS, projectGatewayToolRecord, gatewayToolLifecycleRecord } from "./gateway/tool-record.ts";

@@ -14,6 +14,7 @@ import { ModelSelectorComponent } from "../components/selectors/model-selector.t
 import { PermissionSelectorComponent } from "../components/selectors/permission-selector.ts";
 import { PlanImplementationSelectorComponent } from "../components/selectors/plan-implementation-selector.ts";
 import { ResourceSelectorComponent } from "../components/selectors/resource-selector.ts";
+import { PluginSelectorComponent } from "../components/selectors/plugin-selector.ts";
 import { SessionRepairSelectorComponent } from "../components/selectors/session-repair-selector.ts";
 import { SessionSelectorComponent } from "../components/selectors/session-selector.ts";
 import { SessionTreeSelectorComponent } from "../components/selectors/session-tree-selector.ts";
@@ -136,6 +137,7 @@ type ActiveTranscriptViewer = {
 type SelectorEntry = {
 	readonly component: Component;
 	readonly focus: Component;
+	readonly dispose?: () => void;
 };
 
 const NATIVE_RESIZE_REFLOW_DEBOUNCE_MS = 75;
@@ -298,6 +300,7 @@ export class MycliShellRuntime {
 		const sessionChanged = previousState.sessionId !== effectiveState.sessionId;
 		if (sessionChanged) {
 			this.sessionRevision += 1;
+			if (this.selectorStack.some((entry) => entry.dispose)) this.restoreEditor();
 			this.captureComposerSession(previousState.sessionId);
 			this.closeTranscriptViewer();
 		}
@@ -400,6 +403,7 @@ export class MycliShellRuntime {
 	}
 
 	async shutdown(): Promise<void> {
+		for (const entry of this.selectorStack) entry.dispose?.();
 		this.selectorStack = [];
 		this.stopTurnActivity();
 		this.closeTranscriptViewer();
@@ -853,6 +857,7 @@ export class MycliShellRuntime {
 			open_settings: () => this.showSettingsSelector(),
 			open_session_selector: () => this.showSessionSelector(),
 			open_resources: () => this.showResourceSelector(),
+			open_plugins: () => this.showPluginSelector(),
 			open_agents: () => this.showBackgroundSubagents(),
 			open_tasks: () => this.showBackgroundSubagents(),
 			toggle_details: () => this.toggleToolDetails(),
@@ -1121,6 +1126,15 @@ export class MycliShellRuntime {
 		});
 	}
 
+	showPluginSelector(): void {
+		const manager = this.options.pluginManager;
+		if (!manager) { this.addSystemNotice("Plugin management is unavailable."); return; }
+		this.showSelector((done) => {
+			const selector = new PluginSelectorComponent({ ...this.decisionPanelOptions(), manager, onCancel: done });
+			return { component: selector, focus: selector, dispose: () => selector.dispose() };
+		});
+	}
+
 	async showResourceSelector(): Promise<void> {
 		const resources = this.options.onResourceLoad ? await this.options.onResourceLoad() : (this.state.resources ?? []);
 		this.showSelector((done) => {
@@ -1261,7 +1275,7 @@ export class MycliShellRuntime {
 		return state.transcript?.length ?? state.messages.length + state.tools.length + state.bash.length;
 	}
 
-	private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+	private showSelector(create: (done: () => void) => SelectorEntry): void {
 		let entry: SelectorEntry | undefined;
 		const done = () => this.closeSelector(entry);
 		entry = create(done);
@@ -1272,6 +1286,7 @@ export class MycliShellRuntime {
 	private closeSelector(entry: SelectorEntry | undefined): void {
 		if (!entry || this.selectorStack.at(-1) !== entry) return;
 		this.selectorStack.pop();
+		entry.dispose?.();
 		const previous = this.selectorStack.at(-1);
 		if (previous) {
 			this.mountSelector(previous);
@@ -1290,6 +1305,7 @@ export class MycliShellRuntime {
 
 	private restoreEditor(): void {
 		this.selectorActive = false;
+		for (const entry of this.selectorStack) entry.dispose?.();
 		this.selectorStack = [];
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);

@@ -6,7 +6,18 @@ import type {
 	GatewayTerminalInteraction,
 	ErrorContext,
 	McpElicitationRequest,
+	PluginCatalog,
+	PluginCatalogEntry,
+	PluginChange,
+	PluginDetail,
+	PluginOperation,
 } from "@mycli/contracts";
+
+export interface MycliShellPluginManager {
+	load(signal: AbortSignal, marketplace?: string): Promise<PluginCatalog>;
+	inspect?(plugin: PluginCatalogEntry, signal: AbortSignal): Promise<PluginDetail>;
+	change(change: PluginChange, signal: AbortSignal): Promise<PluginOperation>;
+}
 
 export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
 

@@ -9,6 +9,7 @@ const OBSERVER_METHODS: ReadonlySet<string> = new Set<GatewayMethod>([
 	"workspace.trust.status", "permissions.list", "provider.list", "model.list",
 	"settings.load", "update.status", "command.list", "completion.slash",
 	"completion.path", "resource.list", "extension.manifest", "shell.list",
+	"plugin.catalog", "plugin.inspect", "plugin.operation.get",
 	"shell.output.load", "trace.export",
 ]);
 

@@ -2682,7 +2682,7 @@ test("integration commands separate servers, packages, and tools in bounded disp
 		["/mcp verbose", "MCP servers", ["docs"]],
 		["/plugins", "Plugins", ["demo"]],
 	] as const) {
-		const response = await harness.send("command.run", { command, surface: "tui" });
+		const response = await harness.send("command.run", { command, surface: command === "/plugins" ? "cli" : "tui" });
 		assert.ok("result" in response, `${command} returned ${JSON.stringify(response)}`);
 		if (!("result" in response)) continue;
 		const display = response.result.display as {

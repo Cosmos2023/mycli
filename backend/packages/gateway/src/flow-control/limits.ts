@@ -41,7 +41,7 @@ export function gatewayLimits(
 }
 
 export function isGatewayControlMethod(method: string): boolean {
-	return ["turn.interrupt", "approval.respond", "clarify.respond", "shell.stop", "shell.stop_all", "shutdown"]
+	return ["turn.interrupt", "approval.respond", "clarify.respond", "shell.stop", "shell.stop_all", "plugin.operation.cancel", "shutdown"]
 		.includes(method);
 }
 
