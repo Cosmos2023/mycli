@@ -123,6 +123,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#unsubscribeSubagents: (() => void) | null = null;
 	#unsubscribeExtensions: (() => void) | null = null;
 	#unsubscribeAgentInteractiveRequests: (() => void) | null = null;
+	#unsubscribeMcpElicitations: (() => void) | null = null;
 	readonly #closeAfterResponses = new WeakSet<JsonObject>();
 
 	constructor(options: CreateNodeGatewayOptions) {
@@ -213,6 +214,12 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#bindSubagents();
 		this.#bindExtensions();
 		this.#bindAgentInteractiveRequests();
+		this.#unsubscribeMcpElicitations = options.mcpElicitations?.subscribe((notification) => {
+			if (this.#closed) return;
+			const params = { ...notification.params };
+			if (params.session_id !== this.#sessionController.context().sessionId) params.child_session_id = params.session_id;
+			this.#emitRuntime(notification.method, params);
+		}) ?? null;
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionController.sessionId() });
 		this.#turnController.requestNextQueuedTurn();
 	}
@@ -231,6 +238,9 @@ class InProcessNodeGateway implements NodeGateway {
 				this.#unsubscribeExtensions = null;
 			this.#unsubscribeAgentInteractiveRequests?.();
 			this.#unsubscribeAgentInteractiveRequests = null;
+			this.#options.mcpElicitations?.close();
+			this.#unsubscribeMcpElicitations?.();
+			this.#unsubscribeMcpElicitations = null;
 			this.#interactiveController.clear();
 			let exitCode = 0;
 			try {
@@ -354,6 +364,8 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#turnController.respondApproval(request.params);
 			case "clarify.respond":
 				return this.#turnController.respondClarification(request.params);
+			case "mcp.elicitation.respond":
+				return this.#options.mcpElicitations?.respond(request.params) ?? { accepted: false };
 			case "turn.steer":
 				return this.#turnController.steer(request.params);
 			case "turn.follow_up":
@@ -1375,6 +1387,7 @@ class InProcessNodeGateway implements NodeGateway {
 			context_window: this.#turnController.contextWindow(),
 			pending_decision: session?.pendingApproval !== undefined,
 			pending_clarification: session?.pendingClarification !== undefined,
+			pending_mcp_elicitation: this.#options.mcpElicitations?.pending().some((request) => request.session_id === this.#sessionController.sessionId()) ?? false,
 			suspended_turn: session?.pendingApproval !== undefined
 				|| session?.pendingClarification !== undefined
 				|| session?.suspendedTurn === true,

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/mcp-elicitation.schema.json",
+  "title": "McpElicitationRequest",
+  "type": "object",
+  "required": ["request_id", "session_id", "server_id", "mode", "message", "fields"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "generation": {"type": "integer", "minimum": 1},
+    "child_session_id": {"type": "string", "maxLength": 256},
+    "server_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    "mode": {"enum": ["form", "url"]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "url": {"type": "string", "maxLength": 8192},
+    "fields": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/field"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "field": {
+      "title": "McpElicitationField",
+      "type": "object",
+      "required": ["name", "label", "type", "required"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "label": {"type": "string", "minLength": 1, "maxLength": 256},
+        "description": {"type": "string", "maxLength": 1024},
+        "type": {"enum": ["string", "number", "integer", "boolean", "array"]},
+        "required": {"type": "boolean"},
+        "options": {"type": "array", "maxItems": 64, "items": {
+          "type": "object", "required": ["value", "label"], "additionalProperties": false,
+          "properties": {"value": {"type": "string", "maxLength": 4096}, "label": {"type": "string", "maxLength": 256}}
+        }},
+        "defaultValue": {"$ref": "#/$defs/value"},
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "minLength": {"type": "integer", "minimum": 0},
+        "maxLength": {"type": "integer", "minimum": 0},
+        "minItems": {"type": "integer", "minimum": 0},
+        "maxItems": {"type": "integer", "minimum": 0},
+        "format": {"enum": ["email", "uri", "date", "date-time"]}
+      },
+      "additionalProperties": false
+    },
+    "value": {"anyOf": [
+      {"type": "string", "maxLength": 4096}, {"type": "number"}, {"type": "boolean"},
+      {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 4096}}
+    ]},
+    "response": {
+      "title": "McpElicitationResponse",
+      "type": "object",
+      "required": ["request_id", "session_id", "action"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "action": {"enum": ["accept", "decline", "cancel"]},
+        "content": {"type": "object", "maxProperties": 32, "additionalProperties": {"$ref": "#/$defs/value"}}
+      },
+      "additionalProperties": false
+    },
+    "resolved": {
+      "type": "object", "required": ["request_id", "session_id", "action"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "generation": {"type": "integer", "minimum": 1},
+        "turn_id": {"type": "string", "maxLength": 256},
+        "child_session_id": {"type": "string", "maxLength": 256},
+        "action": {"enum": ["accept", "decline", "cancel"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

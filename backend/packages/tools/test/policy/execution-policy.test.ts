@@ -25,7 +25,7 @@ test("execution policy maps read-only to an immutable restricted profile", async
 	assert.equal(Object.isFrozen(profile.writableRoots), true);
 });
 
-test("execution policy resolves the workspace-write root", async (t) => {
+test("execution policy enables workspace networking while confining writes", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const canonicalWorkspace = await realpath(workspace);
 
@@ -34,7 +34,7 @@ test("execution policy resolves the workspace-write root", async (t) => {
 	assert.deepEqual(profile, {
 		mode: "workspace-write",
 		filesystem: "workspace_write",
-		network: "disabled",
+		network: "enabled",
 		writableRoots: [canonicalWorkspace],
 	});
 });

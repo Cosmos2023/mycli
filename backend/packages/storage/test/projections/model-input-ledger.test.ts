@@ -12,6 +12,7 @@ import {
 	parseProviderRouteId,
 	projectProviderRequest,
 	providerTimelinePrefixSha256,
+	toolDiscovery,
 } from "@mycli/core";
 import type {
 	InstructionFragment,
@@ -38,7 +39,11 @@ import {
 	StorageFailure,
 	encodeSessionContentBlob,
 } from "../../src/index.ts";
-import { modelInputBlob } from "../../src/projections/model-input-validation.ts";
+import {
+	modelInputBlob,
+	normalizeProviderInputTimelineEvent,
+	normalizeProviderRequest,
+} from "../../src/projections/model-input-validation.ts";
 import type {
 	CommitProviderStepInput,
 	ModelInputLedgerFailpoint,
@@ -150,6 +155,31 @@ test("persists and reconstructs an immutable v2 provider input timeline", async 
 		/append-only/u,
 	);
 	database.close();
+});
+
+test("preserves tool discovery load points in model-input requests and hashed timeline events", () => {
+	const discovery = toolDiscovery({
+		id: "mcp:docs:search", name: "mcp_docs_search", description: "Search docs",
+		inputSchema: { type: "object" },
+	});
+	const item: CanonicalConversationItem = {
+		type: "tool_result", callId: "search-1", toolName: "tool_search",
+		output: "Found a documentation tool.", success: true, toolDiscoveries: [discovery],
+	};
+	const request: ProviderRequest = { ...providerStep().request, messages: [], items: [item] };
+	assert.deepEqual(normalizeProviderRequest(request), request);
+	const event: ProviderInputTimelineEvent = {
+		eventId: "timeline-discovery", sessionId: "session-1", windowId: "window-1",
+		turnId: "turn-1", providerStep: 1, kind: "conversation_item", sourceIndex: 2,
+		item, contentSha256: modelInputSha256(item), createdAt: NOW,
+	};
+	assert.deepEqual(normalizeProviderInputTimelineEvent(event), event);
+	assert.throws(() => normalizeProviderInputTimelineEvent({
+		...event, item: { ...item, toolDiscoveries: [{ ...discovery, definitionSha256: "invalid" }] },
+	}), StorageFailure);
+	assert.throws(() => normalizeProviderInputTimelineEvent({
+		...event, item: { ...item, toolDiscoveries: [] },
+	}), StorageFailure);
 });
 
 test("rolls back timeline events with the complete provider step", async (t) => {

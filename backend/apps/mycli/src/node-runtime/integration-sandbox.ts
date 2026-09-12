@@ -1,5 +1,17 @@
-import type { LoadedPluginManifest } from "@mycli/integrations";
+import type { LoadedPluginManifest, McpServerConfig } from "@mycli/integrations";
 import type { SandboxProfile } from "@mycli/tools";
+import { ExecutionPolicyCoordinator, type ExecutionPolicyConstraints } from "@mycli/runtime";
+
+export function mcpSandboxProfile(workspaceRoot: string, config: McpServerConfig, constraints?: ExecutionPolicyConstraints): SandboxProfile {
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot, ...(constraints ? { constraints } : {}) });
+	coordinator.configure({ trust: "trusted", permission: "workspace" });
+	const base = coordinator.snapshot().profile;
+	const readonly = config.sandbox?.mode === "read-only";
+	return Object.freeze({ ...base,
+		...(readonly ? { mode: "read-only" as const, filesystem: "read_only" as const, writableRoots: Object.freeze([]) } : {}),
+		network: config.sandbox?.network === "disabled" ? "disabled" : base.network,
+		workspaceRoot, cwd: config.cwd ?? workspaceRoot });
+}
 
 export function workspaceSandboxProfile(
 	workspaceRoot: string,

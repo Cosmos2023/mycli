@@ -2,8 +2,8 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 45,
-    "event_count": 45,
+	"rpc_count": 46,
+    "event_count": 47,
     "required_rpc": [
       "session.bootstrap",
 	  "session.new",
@@ -15,6 +15,7 @@
       "turn.submit",
       "approval.respond",
       "clarify.respond",
+      "mcp.elicitation.respond",
       "turn.steer",
       "turn.follow_up",
 	  "turn.queue.restore.ack",
@@ -36,6 +37,8 @@
       "item.completed",
       "approval.request",
       "clarify.request",
+      "mcp.elicitation.request",
+      "mcp.elicitation.respond",
 	  "interactive.cancelled",
       "turn.queue.updated",
       "shell.started",

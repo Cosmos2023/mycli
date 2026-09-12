@@ -10,6 +10,7 @@ import {
 } from "../types.ts";
 import { parseProviderNativeTransportSnapshot } from "./provider-native-transport.ts";
 import { isSkillReferenceName } from "../skill-reference.ts";
+import { parseToolDiscoveries } from "./tool-discovery.ts";
 
 export interface NoToolRequestProjectionInput {
 	readonly config: ProviderRequestConfig;
@@ -144,6 +145,12 @@ export function projectNoToolRequest(input: NoToolRequestProjectionInput): Provi
 }
 
 function copyConversationItem(item: CanonicalConversationItem): CanonicalConversationItem {
+	if (item.type === "tool_result" && item.toolDiscoveries) {
+		return Object.freeze({ ...item,
+			toolDiscoveries: parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }),
+			...(item.images ? { images: Object.freeze(item.images.map((image) => Object.freeze({ ...image }))) } : {}),
+		});
+	}
 	if ((item.type === "user" || item.type === "tool_result") && item.images) {
 		return Object.freeze({
 			...item,

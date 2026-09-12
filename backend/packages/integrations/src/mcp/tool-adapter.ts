@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@mycli/core";
+import { modelInputSha256 } from "@mycli/core";
 import type {
 	ToolAdapter,
 	ToolAdapterResult,
@@ -18,7 +19,9 @@ import type {
 	McpClientContract,
 	McpToolCallResult,
 	McpToolDescriptor,
+	McpServerConfig,
 } from "./types.ts";
+import { mcpConfigFingerprint } from "./config-identity.ts";
 import { boundMcpText as boundText, contentMetadata, jsonText, renderMcpContent } from "./result-content.ts";
 
 const MODEL_OUTPUT_LIMIT = 4_000;
@@ -52,6 +55,7 @@ class McpTool implements ToolAdapter {
 				this.#descriptor.name,
 				argumentsValue,
 				options.signal,
+				{ sessionId: options.ownerSessionId, ...(options.ownerTurnId ? { turnId: options.ownerTurnId } : {}) },
 			);
 		} catch (error) {
 			if (options.signal.aborted || isMcpAbort(error)) throw error;
@@ -94,6 +98,7 @@ class McpTool implements ToolAdapter {
 export function createMcpToolRegistration(
 	client: McpClientContract,
 	descriptor: McpToolDescriptor,
+	config?: McpServerConfig,
 ): IntegrationRegistration {
 	validateInputSchema(descriptor.inputSchema);
 	const inputSchema = hostInputSchema(descriptor.inputSchema);
@@ -105,11 +110,17 @@ export function createMcpToolRegistration(
 		inputSchema,
 	});
 	const adapter = new McpTool(client, descriptor, definition);
+	const mode = config?.tools?.[descriptor.name]?.approvalMode ?? config?.defaultToolsApprovalMode ?? "auto";
 	return defineIntegrationRegistration({
 		id,
 		source: "mcp",
 		definition,
 		adapter,
+		...(config ? {
+			approvalPolicy: mode === "approve" ? "auto_allow" as const : mode === "prompt" ? "always_request" as const : "request" as const,
+			approvalScope: { id, fingerprint: modelInputSha256({ server: mcpConfigFingerprint([config]), definition,
+				annotations: descriptor.annotations ?? null }) },
+		} : {}),
 		originMetadata: { server: descriptor.serverId, tool: descriptor.name },
 		...(descriptor.serverInstructions ? { sourceDescription: descriptor.serverInstructions } : {}),
 	});

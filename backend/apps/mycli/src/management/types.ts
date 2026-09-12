@@ -31,11 +31,18 @@ export type PluginsManagementCommand =
 	};
 
 export type McpManagementCommand =
-	| { readonly kind: "mcp"; readonly action: "list"; readonly json: boolean }
+	| { readonly kind: "mcp"; readonly action: "list" | "approvals"; readonly json: boolean }
 	| {
 		readonly kind: "mcp";
-		readonly action: "inspect";
+		readonly action: "inspect" | "remove" | "revoke" | "login" | "logout";
 		readonly serverId: string;
+		readonly json: boolean;
+	}
+	| {
+		readonly kind: "mcp";
+		readonly action: "add";
+		readonly serverId: string;
+		readonly config: Readonly<Record<string, unknown>>;
 		readonly json: boolean;
 	};
 

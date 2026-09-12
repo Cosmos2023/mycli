@@ -71,6 +71,12 @@ test("MCP stdio timeout rejects the call and closes the child process", {
 		/timeout|timed out/iu,
 	);
 	await eventually(() => !processExists(pid));
+	const next = await client.callTool("echo", { text: "after interruption" }, new AbortController().signal);
+	assert.equal(next.content[0]?.text, "echo:after interruption");
+	const replacementPid = Number(await readFile(pidFile, "utf8"));
+	assert.notEqual(replacementPid, pid);
+	await client.close();
+	await eventually(() => !processExists(replacementPid));
 });
 
 test("MCP stdio interruption propagates AbortError and closes the child process", {
@@ -95,6 +101,12 @@ test("MCP stdio interruption propagates AbortError and closes the child process"
 		(error: unknown) => error instanceof Error && error.name === "AbortError",
 	);
 	await eventually(() => !processExists(pid));
+	const next = await client.callTool("echo", { text: "after interruption" }, new AbortController().signal);
+	assert.equal(next.content[0]?.text, "echo:after interruption");
+	const replacementPid = Number(await readFile(pidFile, "utf8"));
+	assert.notEqual(replacementPid, pid);
+	await client.close();
+	await eventually(() => !processExists(replacementPid));
 });
 
 function stdioConfig(pidFile: string, timeoutMs: number): McpServerConfig {

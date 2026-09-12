@@ -120,6 +120,7 @@ test("macOS uses the fixed seatbelt executable and protects repository metadata"
 	}
 	const profile = launch.args[launch.args.indexOf("-p") + 1];
 	assert.match(profile ?? "", /deny file-write\*/u);
+	assert.match(profile ?? "", /\(allow network-outbound\)/u);
 });
 
 test("macOS denies protected metadata paths before they exist", async (t) => {
@@ -166,7 +167,7 @@ test("Linux Bubblewrap fixes the base argv, writable bind, metadata protection, 
 		const path = join(canonicalWorkspace, name);
 		assertArgumentWindow(launch.args, ["--ro-bind", path, path]);
 	}
-	assert.equal(launch.args.includes("--unshare-net"), true);
+	assert.equal(launch.args.includes("--unshare-net"), false);
 	assertArgumentWindow(launch.args, ["--chdir", canonicalWorkspace, "--"]);
 	assert.deepEqual(launch.args.slice(-3), ["/bin/sh", "-c", "printf ok"]);
 });
@@ -182,6 +183,7 @@ test("read-only Linux has no writable bind", async (t) => {
 
 	assert.equal(launch.executable, "/bin/bwrap");
 	assert.equal(launch.args.includes("--bind"), false);
+	assert.equal(launch.args.includes("--unshare-net"), true);
 });
 
 test("Windows uses protocol version 1 with the injected restricted-token helper", async (t) => {
@@ -208,7 +210,7 @@ test("Windows uses protocol version 1 with the injected restricted-token helper"
 		workspace_roots: [canonicalWorkspace],
 		writable_roots: [canonicalWorkspace],
 		filesystem: "workspace_write",
-		network: "disabled",
+		network: "enabled",
 		mode: "workspace-write",
 	});
 });

@@ -5,7 +5,7 @@ import type {
 } from "@mycli/core";
 import { normalizeCanonicalImages, stableModelInputJson, TOOL_RESULT_OUTPUT_MAX_CHARS } from "@mycli/core";
 import type { ValidateFunction } from "ajv";
-import { Ajv2020 } from "ajv/dist/2020.js";
+import { createToolSchemaValidator } from "./input-schema.ts";
 import { toolErrorContext } from "./tool-error-context.ts";
 import type {
 	ToolAdapter,
@@ -28,7 +28,7 @@ interface Route {
 }
 
 export class ToolRouter implements ToolRouterContract {
-	readonly #ajv = new Ajv2020({ allErrors: true, strict: true });
+	readonly #ajv = createToolSchemaValidator();
 	readonly #staticRoutes: ReadonlyMap<string, Route>;
 	#routes: ReadonlyMap<string, Route>;
 	#dynamicRoutes: ReadonlyMap<string, Route> = new Map();
@@ -43,7 +43,7 @@ export class ToolRouter implements ToolRouterContract {
 	beginTurn(turnId: string, catalog?: ToolTurnCatalog): void {
 		if (this.#turnRoutes.has(turnId)) return;
 		const dynamicRoutes = catalog
-			? matchingDynamicRoutes(this.#dynamicRoutes, catalog.deferredTools)
+			? matchingDynamicRoutes(this.#dynamicRoutes, [...(catalog.directTools ?? []), ...catalog.deferredTools])
 			: this.#dynamicRoutes;
 		const routes = new Map([...this.#staticRoutes, ...dynamicRoutes]);
 		this.#turnRoutes.set(turnId, routes);
@@ -60,9 +60,13 @@ export class ToolRouter implements ToolRouterContract {
 	}
 
 	replaceDynamicAdapters(adapters: readonly ToolAdapter[]): void {
+		this.prepareDynamicAdapters(adapters)();
+	}
+
+	prepareDynamicAdapters(adapters: readonly ToolAdapter[]): () => void {
 		const dynamic = this.#compileRoutes(adapters, this.#staticRoutes);
-		this.#dynamicRoutes = dynamic;
-		this.#routes = new Map([...this.#staticRoutes, ...dynamic]);
+		const routes = new Map([...this.#staticRoutes, ...dynamic]);
+		return () => { this.#dynamicRoutes = dynamic; this.#routes = routes; };
 	}
 
 	dynamicDefinitions(turnId?: string): readonly ToolDefinition[] {

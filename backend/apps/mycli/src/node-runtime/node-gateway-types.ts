@@ -299,6 +299,7 @@ export interface CreateNodeGatewayOptions {
 		): Promise<SessionPreferences | void>;
 	};
 	readonly agentInteractiveRequests?: AgentInteractiveRequestGateway;
+	readonly mcpElicitations?: McpElicitationBroker;
 	readonly integrations?: NodeGatewayIntegrations;
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
@@ -316,3 +317,4 @@ export interface NodeGateway {
 	kill(): void;
 	diagnostic(): string;
 }
+import type { McpElicitationBroker } from "./mcp-elicitation-broker.ts";

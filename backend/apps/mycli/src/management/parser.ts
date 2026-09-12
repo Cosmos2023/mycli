@@ -1,3 +1,4 @@
+import { parseMcpManagement } from "./mcp-parser.ts";
 import { CONFIG_PATH_SCOPES, type ConfigPathScope } from "@mycli/config/paths";
 import { parseHeadlessCommand } from "../headless/arguments.ts";
 import {
@@ -13,7 +14,6 @@ import type {
 	DoctorManagementCommand,
 	HooksManagementCommand,
 	ManagementCommand,
-	McpManagementCommand,
 	PluginsManagementCommand,
 	SandboxManagementCommand,
 	SessionManagementCommand,
@@ -65,6 +65,7 @@ function isCompletionShell(value: string | undefined): value is CompletionShell 
 }
 
 function parseManagementCommand(root: string, rawArgs: readonly string[]): ManagementCommand {
+	if (root === "mcp") return parseMcpManagement(rawArgs);
 	if (root === "setup") {
 		return parseSetup(rawArgs);
 	}
@@ -80,7 +81,6 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	if (root === "config") return parseConfig(args, json);
 	if (root === "hooks") return parseHooks(args, json);
 	if (root === "plugins") return parsePlugins(args, json);
-	if (root === "mcp") return parseMcp(args, json);
 	return parseSession(args, json);
 }
 
@@ -531,17 +531,6 @@ function parsePlugins(args: readonly string[], json: boolean): PluginsManagement
 		arguments: parseJsonArguments(extracted.value),
 		json,
 	});
-}
-
-function parseMcp(args: readonly string[], json: boolean): McpManagementCommand {
-	const action = args[0];
-	if (action === "list" && args.length === 1) {
-		return Object.freeze({ kind: "mcp", action, json });
-	}
-	if (action === "inspect" && args.length === 2) {
-		return Object.freeze({ kind: "mcp", action, serverId: nonEmpty(args[1]), json });
-	}
-	throw usage("mcp list|inspect [server_id] [--json]");
 }
 
 function parseJsonArguments(value: string | undefined): Readonly<Record<string, unknown>> {

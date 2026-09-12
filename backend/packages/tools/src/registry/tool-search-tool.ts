@@ -1,4 +1,4 @@
-import { stableModelInputJson } from "@mycli/core";
+import { stableModelInputJson, toolDiscovery } from "@mycli/core";
 import { TOOL_SEARCH_TOOL_DEFINITION } from "./manifest.ts";
 import { deepFreezeCopy } from "./manifest-helpers.ts";
 import type {
@@ -49,7 +49,12 @@ export class ToolSearchTool implements ToolAdapter {
 	}
 
 	replaceCandidates(candidates: readonly DeferredToolCandidate[]): void {
-		this.#candidates = Object.freeze(candidates.map(indexCandidate));
+		this.prepareCandidates(candidates)();
+	}
+
+	prepareCandidates(candidates: readonly DeferredToolCandidate[]): () => void {
+		const indexed = Object.freeze(candidates.map(indexCandidate));
+		return () => { this.#candidates = indexed; };
 	}
 
 	async execute(
@@ -88,6 +93,7 @@ export class ToolSearchTool implements ToolAdapter {
 			metadata: Object.freeze({
 				matched_count: names.length,
 				catalog_count: candidates.length,
+				tool_discovery: Object.freeze({ version: 1, tools: Object.freeze(matches.map(({ candidate }) => toolDiscovery(candidate.definition))) }),
 			}),
 			toolActivation: Object.freeze({ names }),
 		};

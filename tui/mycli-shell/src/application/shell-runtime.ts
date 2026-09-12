@@ -4,6 +4,7 @@ import { FooterComponent } from "../components/composer/footer.ts";
 import { PendingInputPreviewComponent } from "../components/composer/pending-input-preview.ts";
 import { ApprovalSelectorComponent } from "../components/selectors/approval-selector.ts";
 import { ClarificationSelectorComponent } from "../components/selectors/clarification-selector.ts";
+import { McpElicitationSelectorComponent } from "../components/selectors/mcp-elicitation-selector.ts";
 import { CommandPaletteComponent } from "../components/selectors/command-palette.ts";
 import { CommandResultOverlayComponent } from "../components/selectors/command-result-overlay.ts";
 import type { DecisionPanelOptions } from "../components/selectors/decision-panel.ts";
@@ -1575,7 +1576,10 @@ export class MycliShellRuntime {
 	}
 
 	private showClarificationSelector(clarification: MycliShellPendingClarification): void {
-		const selector = new ClarificationSelectorComponent({
+		const selector = clarification.elicitation ? new McpElicitationSelectorComponent({
+			...this.decisionPanelOptions(), request: clarification.elicitation,
+			onRespond: (response) => this.respondClarification(clarification, response),
+		}) : new ClarificationSelectorComponent({
 			...this.decisionPanelOptions(),
 			clarification,
 			onRespond: (response) => this.respondClarification(clarification, response),

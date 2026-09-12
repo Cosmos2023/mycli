@@ -470,6 +470,7 @@ async function submitTurn(
 		if (requestId) {
 			await respondClarification(requestId, text, {
 				requestId,
+				...(pendingClarification.elicitation ? { elicitation: pendingClarification.elicitation as NonNullable<MycliShellPendingClarification["elicitation"]> } : {}),
 				question: typeof pendingClarification.question === "string"
 					? pendingClarification.question
 					: "Clarification required",
@@ -1005,6 +1006,15 @@ async function respondClarification(
 	response: string,
 	clarification?: MycliShellPendingClarification,
 ): Promise<void> {
+	if (clarification?.elicitation) {
+		const value: unknown = JSON.parse(response);
+		if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid MCP response.");
+		const result = await send("mcp.elicitation.respond", parseGatewayParams("mcp.elicitation.respond", {
+			...value, request_id: requestId, session_id: clarification.elicitation.session_id,
+		}), { recordErrors: false });
+		if (!result.accepted) throw new Error("This MCP request is no longer pending.");
+		return;
+	}
 	try {
 		await send("clarify.respond", {
 			request_id: requestId,

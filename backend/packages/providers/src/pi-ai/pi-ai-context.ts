@@ -13,7 +13,7 @@ import type {
 	CanonicalImage,
 	ProviderRequest,
 } from "@mycli/core";
-import { normalizeCanonicalImages } from "@mycli/core";
+import { normalizeCanonicalImages, parseToolDiscoveries, toolDiscovery } from "@mycli/core";
 import { canRequestOriginalImageDetail } from "@mycli/config";
 import { ProviderFailure } from "../errors.ts";
 import { isJsonObject } from "./json-object.ts";
@@ -128,11 +128,26 @@ function conversationItem(
 				toolName: item.toolName,
 				content: [{ type: "text", text: item.output }, ...piAiImages(item.images)],
 				isError: !item.success,
+				...discoveryLoadPoint(request, item),
 				timestamp: 0,
 			});
 		case "context":
 			return item.metadata.role === "developer" ? undefined : piAiUserMessage(item.text);
 	}
+}
+
+function discoveryLoadPoint(
+	request: ProviderRequest,
+	item: Extract<CanonicalConversationItem, { type: "tool_result" }>,
+): Pick<ToolResultMessage, "addedToolNames"> {
+	if (!item.success || item.toolName !== "tool_search") return {};
+	const current = new Map(request.tools.map((tool) => [tool.id, toolDiscovery(tool)]));
+	const names = parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }).flatMap((discovery) => {
+		const tool = current.get(discovery.id);
+		return tool?.name === discovery.name && tool.definitionSha256 === discovery.definitionSha256 ? [tool.name] : [];
+	});
+	// pi-ai decides whether this becomes native history or ordinary top-level tools.
+	return names.length ? { addedToolNames: [...new Set(names)] } : {};
 }
 
 function piAiAssistantMessage(

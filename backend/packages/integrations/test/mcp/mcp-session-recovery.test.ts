@@ -17,6 +17,85 @@ test("expired Streamable HTTP sessions initialize again and replay the rejected 
 	assert.equal(fixture.count("initialize"), 2);
 });
 
+test("ModelScope SessionExpired HTTP 401 responses share one recovery connection", async (t) => {
+	const fixture = httpFixture((request) => request.method === "tools/call" && request.session === "session-1"
+		? modelscopeExpired() : undefined);
+	t.after(() => fixture.client.close());
+	await fixture.client.listTools(signal());
+	const results = await Promise.all(["a", "b"].map((name) => fixture.client.callTool(name, {}, signal())));
+	assert.ok(results.every((result) => !result.isError));
+	assert.equal(fixture.count("initialize"), 2);
+	assert.equal(fixture.count("tools/call"), 4);
+	assert.equal(fixture.effects(), 2);
+});
+
+test("repeated SessionExpired HTTP 401 responses retain safe evidence and stop after one recovery", async (t) => {
+	const fixture = httpFixture((request) => request.method === "tools/call" ? modelscopeExpired() : undefined);
+	t.after(() => fixture.client.close());
+	await assert.rejects(fixture.client.callTool("change", {}, signal()), (error: unknown) => {
+		assert.ok(error instanceof McpRequestError);
+		assert.deepEqual(error.failure.details, { operation: "tools/call", phase: "request", http_status: 401,
+			transport_code: "mcp_session_expired", recovery_attempts: 1 });
+		assert.deepEqual(error.failure.outcome, { state: "not_started", effects: "none" });
+		assert.doesNotMatch(error.message + JSON.stringify(error), /private|credential|request-secret/u);
+		return true;
+	});
+	assert.equal(fixture.count("initialize"), 2);
+	assert.equal(fixture.count("tools/call"), 2);
+	assert.equal(fixture.effects(), 0);
+});
+
+for (const [label, response] of [
+	["authentication rejection", () => new Response(JSON.stringify({ Code: "Unauthorized", Message: "SessionExpired private" }), { status: 401, headers: { "content-type": "application/json" } })],
+	["unstructured text", () => new Response("SessionExpired private", { status: 401 })],
+	["nested code", () => new Response(JSON.stringify({ error: { Code: "SessionExpired" } }), { status: 401, headers: { "content-type": "application/json" } })],
+	["malformed JSON", () => new Response('{"Code":"SessionExpired",', { status: 401, headers: { "content-type": "application/json" } })],
+	["oversized JSON", () => new Response(JSON.stringify({ Code: "SessionExpired", Message: "private".repeat(4_000) }), { status: 401, headers: { "content-type": "application/json" } })],
+] as const) {
+	test(`HTTP 401 with ${label} does not replay a tool invocation`, async (t) => {
+		const fixture = httpFixture((request) => request.method === "tools/call" ? response() : undefined);
+		t.after(() => fixture.client.close());
+		await assert.rejects(fixture.client.callTool("change", {}, signal()), (error: unknown) => {
+			assert.ok(error instanceof McpRequestError);
+			assert.deepEqual(error.failure.details, { operation: "tools/call", phase: "request", http_status: 401 });
+			assert.doesNotMatch(error.message + JSON.stringify(error), /private|SessionExpired/u);
+			return true;
+		});
+		assert.equal(fixture.count("initialize"), 1);
+		assert.equal(fixture.count("tools/call"), 1);
+	});
+}
+
+test("SessionExpired HTTP 401 without a session or during initialization does not trigger recovery", async (t) => {
+	for (const method of ["initialize", "tools/call"]) {
+		const fixture = httpFixture((request) => request.method === method ? modelscopeExpired() : undefined, { issueSession: false });
+		t.after(() => fixture.client.close());
+		await assert.rejects(fixture.client.callTool("change", {}, signal()), (error: unknown) => {
+			assert.ok(error instanceof McpRequestError);
+			assert.equal(error.failure.details.http_status, 401);
+			assert.equal(error.failure.details.transport_code, undefined);
+			return true;
+		});
+		assert.equal(fixture.count("initialize"), 1);
+	}
+});
+
+test("an unfinished HTTP 401 body is cancelled without inferring expiry from a partial response", { timeout: 5_000 }, async (t) => {
+	let cancelled = false;
+	const fixture = httpFixture((request) => request.method === "tools/call" ? new Response(new ReadableStream<Uint8Array>({
+		start(controller): void { controller.enqueue(new TextEncoder().encode('{"Code":"SessionExpired","Message":"')); },
+		cancel(): void { cancelled = true; },
+	}), { status: 401, headers: { "content-type": "application/json" } }) : undefined, { timeoutMs: 3_000 });
+	t.after(() => fixture.client.close());
+	await assert.rejects(fixture.client.callTool("change", {}, signal()), (error: unknown) => {
+		assert.ok(error instanceof McpRequestError);
+		assert.deepEqual(error.failure.details, { operation: "tools/call", phase: "request", http_status: 401 });
+		return true;
+	});
+	assert.equal(cancelled, true);
+	assert.equal(fixture.count("tools/call"), 1);
+});
+
 test("concurrent expirations share recovery and let other requests on the old connection finish", async (t) => {
 	const slowStarted = deferred<void>();
 	const finishSlow = deferred<void>();
@@ -249,6 +328,10 @@ function jsonResponse(value: unknown, headers: Readonly<Record<string, string>> 
 }
 
 function expired(): Response { return new Response("private expired-session body", { status: 404 }); }
+function modelscopeExpired(): Response {
+	return new Response(JSON.stringify({ Code: "SessionExpired", Message: "private endpoint credential", RequestId: "request-secret" }),
+		{ status: 401, headers: { "content-type": "application/json" } });
+}
 function signal(): AbortSignal { return new AbortController().signal; }
 function deferred<Value>(): ReturnType<typeof Promise.withResolvers<Value>> { return Promise.withResolvers<Value>(); }
 function untilAborted(signal: AbortSignal): Promise<never> {

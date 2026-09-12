@@ -359,9 +359,12 @@ function responseRows(
 		];
 	}
 	if (command.kind === "mcp") {
-		return rows(response, "servers").map((row) => fields("mcp", row, [
-			"serverId", "transport", "enabled", "status", "toolCount", "timeoutMs",
-		]));
+		return [
+			...rows(response, "servers").map((row) => fields("mcp", row, [
+				"serverId", "source", "transport", "enabled", "required", "status", "toolCount", "startupTimeoutMs", "toolTimeoutMs", "defaultToolsApprovalMode",
+			])),
+			...rows(response, "approvals").map((row) => fields("approval", row, ["id"])),
+		];
 	}
 	return [];
 }

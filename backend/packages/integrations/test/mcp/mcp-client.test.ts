@@ -1,10 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { McpRequestError } from "../../src/mcp/diagnostics.ts";
 import {
 	McpClient,
 	type McpProtocolClient,
 	type McpServerConfig,
 } from "../../src/index.ts";
+
+for (const phase of ["connect", "request"] as const) {
+	test(`MCP ${phase} timeout uses its own budget and never replays a timed-out call`, async (t) => {
+		let invocations = 0;
+		const protocol: McpProtocolClient = {
+			connect: async () => { await new Promise<void>((resolve) => setTimeout(resolve, 40)); },
+			listTools: async () => ({ tools: [] }), listResources: async () => ({ resources: [] }), readResource: async () => ({ contents: [] }),
+			callTool: async () => { invocations += 1; await new Promise<void>((resolve) => setTimeout(resolve, 80)); return { content: [] }; },
+			close: async () => undefined,
+		};
+		const client = new McpClient({ config: { ...config(), timeoutMs: 1, startupTimeoutMs: phase === "connect" ? 10 : 500,
+			toolTimeoutMs: phase === "request" ? 10 : 500 }, protocol });
+		t.after(() => client.close());
+		await assert.rejects(client.callTool("read", {}, new AbortController().signal), (error: unknown) => {
+			assert.ok(error instanceof McpRequestError);
+			assert.equal(error.failure.category, "timeout");
+			assert.equal(error.failure.details.phase, phase);
+			assert.equal(error.failure.details.timeout_ms, 10);
+			assert.equal(error.failure.details.rpc_code, -32001);
+			return true;
+		});
+		assert.equal(invocations, phase === "request" ? 1 : 0);
+	});
+}
 
 test("resource discovery follows native cursors and rejects repeated cursors", async () => {
 	for (const repeat of [false, true]) {
@@ -204,3 +230,72 @@ function config(supportsParallelToolCalls = false): McpServerConfig {
 		timeoutMs: 1_000,
 	};
 }
+
+test("tool discovery collects pages and rejects cursor cycles, duplicate identities, and excessive pages", async (t) => {
+	for (const mode of ["complete", "cycle", "duplicate", "unbounded", "cancel", "count", "bytes"] as const) {
+		await t.test(mode, async (t) => {
+			const controller = new AbortController();
+			let pages = 0;
+			const client = new McpClient({ config: config(), protocol: {
+				connect: async () => undefined, close: async () => undefined,
+				callTool: async () => ({ content: [] }), listResources: async () => ({ resources: [] }), readResource: async () => ({ contents: [] }),
+				listTools: async (_signal, cursor) => {
+					pages += 1;
+					if (mode === "count") return { tools: Array.from({ length: 10_001 }, () => ({ name: "large" })) };
+					if (mode === "bytes") return { tools: [{ name: "large", description: "x".repeat(8 * 1024 * 1024) }] };
+					if (mode === "cancel") controller.abort();
+					return { tools: [{ name: mode === "duplicate" ? "same" : `tool${pages}`, inputSchema: { type: "object" } }],
+						...(!cursor || mode === "cycle" || mode === "unbounded" ? { nextCursor: mode === "unbounded" ? `page${pages}` : "second" } : {}) };
+				},
+			} });
+			t.after(() => client.close());
+			if (mode === "complete") assert.deepEqual((await client.listTools(controller.signal)).map((tool) => tool.name), ["tool1", "tool2"]);
+			else if (mode === "cancel") await assert.rejects(client.listTools(controller.signal), { name: "AbortError" });
+			else await assert.rejects(client.listTools(controller.signal), /invalid_mcp_tool_pagination/u);
+			assert.equal(pages, mode === "unbounded" ? 100 : (mode === "cancel" || mode === "count" || mode === "bytes") ? 1 : 2);
+		});
+	}
+});
+
+test("retiring stdio reports an unknown sibling outcome and permits a fresh explicit call", async (t) => {
+	for (const mode of ["cancel", "timeout"] as const) {
+		await t.test(mode, async (t) => {
+			const started = Promise.withResolvers<void>();
+			const fail = Promise.withResolvers<void>();
+			const controller = new AbortController();
+			let generations = 0;
+			let calls = 0;
+			let closed = 0;
+			const client = new McpClient({ config: config(), createProtocol: () => {
+				const generation = ++generations;
+				return {
+					connect: async () => undefined, close: async () => { closed += 1; },
+					listTools: async () => ({ tools: [] }), listResources: async () => ({ resources: [] }), readResource: async () => ({ contents: [] }),
+					callTool: async (name, _arguments, signal) => {
+						calls += 1;
+						if (generation > 1) return { content: [{ type: "text", text: "recovered" }] };
+						if (name === "owner" && mode === "timeout") { await fail.promise; throw new McpError(ErrorCode.RequestTimeout, "timeout"); }
+						if (name === "sibling") started.resolve();
+						await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+						return { content: [] };
+					},
+				};
+			} });
+			t.after(() => client.close());
+			const owner = assert.rejects(client.callTool("owner", {}, controller.signal), mode === "cancel" ? { name: "AbortError" } : /timeout/u);
+			const sibling = assert.rejects(client.callTool("sibling", {}, new AbortController().signal), (error: unknown) => {
+				assert.ok(error instanceof McpRequestError);
+				assert.equal(error.failure.category, "transport_error");
+				assert.deepEqual(error.failure.outcome, { state: "unknown", effects: "possible" });
+				return true;
+			});
+			await started.promise;
+			if (mode === "cancel") controller.abort(); else fail.resolve();
+			await Promise.all([owner, sibling]);
+			assert.equal(closed, 1);
+			assert.equal((await client.callTool("next", {}, new AbortController().signal)).content[0]?.text, "recovered");
+			assert.equal(generations, 2);
+			assert.equal(calls, 3);
+		});
+	}
+});

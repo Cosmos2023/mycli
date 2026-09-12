@@ -1823,7 +1823,7 @@ test("persists a structured plan update before emitting its runtime event", asyn
 	});
 });
 
-test("exposes deferred tools only after a durable tool_search activation", async () => {
+test("separates deferred tool execution from durable schema exposure", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
 	const requests: ProviderRequest[] = [];
@@ -1840,6 +1840,10 @@ test("exposes deferred tools only after a durable tool_search activation", async
 		}),
 	});
 	const provider = scriptedProvider(trace, requests, [
+		[
+			{ type: "tool_call", callId: "call-unactivated", name: "docs_search", argumentsJson: '{"query":"runtime"}' },
+			{ type: "completed", responseId: "resp-unactivated" },
+		],
 		[
 			{ type: "tool_call", callId: "call-search", name: "tool_search", argumentsJson: '{"query":"docs"}' },
 			{ type: "completed", responseId: "resp-search" },
@@ -1894,11 +1898,14 @@ test("exposes deferred tools only after a durable tool_search activation", async
 
 	assert.equal(result.status, "completed");
 	assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["tool_search"]);
-	assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+	assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["tool_search"]);
+	assert.match(JSON.stringify(requests[1]?.items), /Document result/u);
+	assert.equal(trace.includes("tool:call-unactivated"), true);
 	assert.deepEqual(requests[2]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
-	assert.equal(requests[1]?.previousResponseId, undefined);
-	assert.ok(trace.indexOf("persist:result:call-search") < trace.indexOf("provider:2"));
-	assert.ok(trace.indexOf("tool:call-docs") < trace.indexOf("provider:3"));
+	assert.deepEqual(requests[3]?.tools.map((tool) => tool.name), ["tool_search", "docs_search"]);
+	assert.equal(requests[2]?.previousResponseId, undefined);
+	assert.ok(trace.indexOf("persist:result:call-search") < trace.indexOf("provider:3"));
+	assert.ok(trace.indexOf("tool:call-docs") < trace.indexOf("provider:4"));
 	assert.equal(trace.filter((item) => item === "continuation:invalid:tool_exposure_changed").length, 1);
 });
 
@@ -2031,8 +2038,8 @@ test("filters stale durable activations through the current deferred catalog", a
 
 	assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), [
 		"tool_search",
-		"docs_search",
 		"calendar_list",
+		"docs_search",
 	]);
 });
 
@@ -3722,6 +3729,42 @@ test("evaluates approvals with the frozen turn execution policy", async () => {
 
 	assert.equal(result.status, "completed");
 	assert.deepEqual(seenProfiles, [profile]);
+});
+
+test("a policy block is not reported as a user rejecting approval", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const events: RuntimeEvent[] = [];
+	const requests: ProviderRequest[] = [];
+	const runtime = createRuntime({
+		store,
+		provider: scriptedProvider(trace, requests, [[
+			{ type: "tool_call", callId: "blocked", name: "Read", argumentsJson: "{}" },
+			{ type: "completed", responseId: "blocked-response" },
+		], [
+			{ type: "text_delta", text: "The operation is blocked by policy." },
+			{ type: "completed", responseId: "final" },
+		]]),
+		toolRouter: {
+			execute: async () => assert.fail("a policy-denied call must not execute"),
+		},
+		planTools: () => [READ_TOOL_DEFINITION],
+		approvalPolicy: {
+			evaluate: (call) => ({
+				kind: "deny", callId: call.callId, toolName: call.name,
+				preview: "Read blocked", reason: "The operation is blocked by policy.",
+			}),
+		},
+	});
+
+	const result = await runtime.submit(submission(), (event) => events.push(event), {
+		signal: new AbortController().signal,
+	});
+	assert.equal(result.status, "completed");
+	assert.equal(store.toolResults[0]?.errorKind, "permission_denied");
+	assert.equal(events.some((event) => event.type === "approval_requested"), false);
+	assert.doesNotMatch(JSON.stringify(requests[1]), /approval_rejected/u);
+	assert.match(JSON.stringify(requests[1]), /permission_denied/u);
 });
 
 test("runtime forwards an exact Shell sandbox override authorization to the router", async () => {

@@ -92,7 +92,7 @@ test("integration composition closes initialized sources after startup failure",
 	assert.deepEqual(closed, ["mcp"]);
 });
 
-test("integration composition rejects duplicate routes and preserves the package DAG", async () => {
+test("integration composition rejects duplicate identities and preserves the package DAG", async () => {
 	const closed: string[] = [];
 	await assert.rejects(
 		() => createIntegrationComposition({
@@ -101,14 +101,14 @@ test("integration composition rejects duplicate routes and preserves the package
 				{
 					id: "mcp",
 					start: async () => ({
-						registrations: [registration("Read", "mcp")],
+						registrations: [registration("Read", "mcp"), registration("Read", "mcp")],
 						close: async () => { closed.push("mcp"); },
 					}),
 				},
 			],
 			closeTimeoutMs: 100,
 		}),
-		/duplicate_tool_route/u,
+		/duplicate_integration_tool/u,
 	);
 	assert.deepEqual(closed, ["mcp"]);
 

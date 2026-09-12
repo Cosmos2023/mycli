@@ -2,6 +2,7 @@ import {
 	HookManagementService,
 	McpClient,
 	McpManagementService,
+	policyMcpFetch,
 	PluginManagementService,
 } from "@mycli/integrations";
 import {
@@ -15,7 +16,7 @@ import type { McpServerConfig, PluginPackageRequest } from "@mycli/integrations"
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	pluginSandboxProfile,
-	workspaceSandboxProfile,
+	mcpSandboxProfile,
 } from "../node-runtime/integration-sandbox.ts";
 import { ProviderModelDirectory } from "../node-runtime/provider-model-directory.ts";
 import type {
@@ -68,6 +69,12 @@ export interface PluginManagementContract {
 export interface McpManagementContract {
 	list(signal: AbortSignal): MaybePromise<ManagementResponse>;
 	inspect(serverId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	add?(serverId: string, config: Readonly<Record<string, unknown>>, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	remove?(serverId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	approvals?(): MaybePromise<ManagementResponse>;
+	revoke?(serverId: string): MaybePromise<ManagementResponse>;
+	login?(serverId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
+	logout?(serverId: string, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
 export interface ConfigManagementContract {
@@ -221,9 +228,23 @@ export class ManagementServices implements ManagementExecutor {
 			);
 		}
 		if (command.kind === "mcp") {
-			return command.action === "list"
-				? this.#services.mcp.list(signal)
-				: this.#services.mcp.inspect(command.serverId, signal);
+			const mcp = this.#services.mcp;
+			switch (command.action) {
+				case "list": return mcp.list(signal);
+				case "inspect": return mcp.inspect(command.serverId, signal);
+				case "add": return mcp.add?.(command.serverId, command.config, signal)
+					?? failure(command.action, "MCP configuration management is unavailable", "management_unavailable");
+				case "remove": return mcp.remove?.(command.serverId, signal)
+					?? failure(command.action, "MCP configuration management is unavailable", "management_unavailable");
+				case "approvals": return mcp.approvals?.()
+					?? failure(command.action, "MCP approval management is unavailable", "management_unavailable");
+				case "revoke": return mcp.revoke?.(command.serverId)
+					?? failure(command.action, "MCP approval management is unavailable", "management_unavailable");
+				case "login": return mcp.login?.(command.serverId, signal)
+					?? failure(command.action, "MCP login is unavailable", "management_unavailable");
+				case "logout": return mcp.logout?.(command.serverId, signal)
+					?? failure(command.action, "MCP logout is unavailable", "management_unavailable");
+			}
 		}
 		if (command.kind === "session") {
 			return this.#services.session?.execute(command)
@@ -256,15 +277,20 @@ export async function createDefaultManagementServices(
 			sandboxProfile: pluginSandboxProfile,
 		},
 	});
+	const mcpConstraints = await loadManagedExecutionPolicy({ homeDir: options.homeDir });
 	const mcp = new McpManagementService({
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
 		env: options.env,
 		includeRepository,
+		oauthFetch: (config) => policyMcpFetch(mcpSandboxProfile(options.workspaceRoot, config, mcpConstraints)),
+		...(options.createAuthInteraction ? { onAuthorization: (url: string, signal: AbortSignal) =>
+			options.createAuthInteraction!(signal).notify({ type: "auth_url", url, instructions: "Open this link to authorize the MCP server:" }) } : {}),
 		createClient: (config: McpServerConfig) => new McpClient({
 			config,
+			homeDir: options.homeDir,
 			cwd: options.workspaceRoot,
-			sandboxProfile: workspaceSandboxProfile(options.workspaceRoot),
+			sandboxProfile: mcpSandboxProfile(options.workspaceRoot, config, mcpConstraints),
 		}),
 	});
 	const updateCache = new CachedUpdateService({

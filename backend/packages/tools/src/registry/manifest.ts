@@ -526,6 +526,8 @@ export const TOOL_SEARCH_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	description: [
 		"Search deferred MCP and plugin tools by name, description, source, and origin.",
 		"Matching tool schemas become available on the next model call in this turn.",
+		"Small extension catalogs are available directly. Discovered schemas may be retained across turns while their definitions and access remain valid.",
+		"Search when a needed tool schema is not available, including after a catalog change or when the retained schema budget is exceeded.",
 		"Use this tool to find capabilities relevant to the task, even when the user has not named the MCP server or plugin.",
 		"For MCP and plugin tool discovery, use tool_search instead of list_mcp_resources or list_mcp_resource_templates.",
 	].join("\n"),

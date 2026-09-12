@@ -37,6 +37,7 @@ test("execution policy coordinator freezes a turn and applies changes to the nex
 	assert.equal(first.toolsEnabled, true);
 	assert.equal(resumed, first);
 	assert.equal(resumed.profile.mode, "workspace-write");
+	assert.equal(resumed.profile.network, "enabled");
 	coordinator.finishTurn("turn-1");
 	const next = coordinator.beginTurn("turn-2");
 	assert.deepEqual(next.profile, {
@@ -95,7 +96,7 @@ test("execution policy coordinator applies turn grants and releases them at turn
 	assert.deepEqual(coordinator.beginTurn("turn-next").profile, {
 		mode: "workspace-write",
 		filesystem: "workspace_write",
-		network: "disabled",
+		network: "enabled",
 		writableRoots: [canonicalWorkspace],
 	});
 	coordinator.finishTurn("turn-next");
@@ -196,7 +197,7 @@ test("managed writable roots retain the narrower side of a workspace intersectio
 	assert.deepEqual(coordinator.beginTurn("turn-nested").profile, {
 		mode: "workspace-write",
 		filesystem: "workspace_write",
-		network: "disabled",
+		network: "enabled",
 		writableRoots: [canonicalNested],
 	});
 	assert.deepEqual(coordinator.sandboxOverrideProfile(), {
@@ -219,7 +220,9 @@ test("managed network domains constrain web access grants and sandbox overrides"
 		},
 	});
 	coordinator.configure({ trust: "trusted", permission: "workspace" });
-	coordinator.beginTurn("turn-domains");
+	const initial = coordinator.beginTurn("turn-domains");
+	assert.equal(initial.profile.network, "enabled");
+	assert.deepEqual(initial.profile.networkDomains, ["api.example.com", "*.assets.example.com"]);
 
 	const grant = coordinator.grant({
 		turnId: "turn-domains",
@@ -237,6 +240,23 @@ test("managed network domains constrain web access grants and sandbox overrides"
 		"*.assets.example.com",
 	]);
 	coordinator.finishTurn("turn-domains");
+});
+
+test("managed policy can disable networking in the default workspace profile", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const coordinator = new ExecutionPolicyCoordinator({
+		workspaceRoot: workspace,
+		constraints: { source: "managed", network: "disabled" },
+	});
+	coordinator.configure({ trust: "trusted", permission: "workspace" });
+	assert.equal(coordinator.beginTurn("managed-offline").profile.network, "disabled");
+	const grant = coordinator.grant({
+		turnId: "managed-offline", scope: "turn", permissions: { network: { enabled: true } },
+	});
+	assert.equal(grant.constrained, true);
+	assert.equal(grant.permissions.network, undefined);
+	assert.equal(coordinator.beginTurn("managed-offline").profile.network, "disabled");
+	coordinator.finishTurn("managed-offline");
 });
 
 test("managed readable roots cannot be bypassed by the full-access profile", async (t) => {

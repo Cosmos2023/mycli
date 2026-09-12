@@ -1,5 +1,13 @@
 {
 	"$defs": {
+		"mcp.elicitation.respond": {
+		  "name": "mcp.elicitation.respond",
+		  "$ref": "mcp-elicitation.schema.json#/$defs/resolved"
+		},
+		"mcp.elicitation.request": {
+		  "name": "mcp.elicitation.request",
+		  "$ref": "mcp-elicitation.schema.json"
+		},
 		"provider.attempt.updated": {
 			"name": "provider.attempt.updated",
 			"type": "object",
@@ -2670,6 +2678,47 @@
   "$id": "https://mycli.local/contracts/gateway-events.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
 	"oneOf": [
+		{
+		  "type": "object",
+		  "required": [
+		    "jsonrpc",
+		    "method",
+		    "params"
+		  ],
+		  "properties": {
+		    "jsonrpc": {
+		      "const": "2.0"
+		    },
+		    "method": {
+		      "const": "mcp.elicitation.respond"
+		    },
+		    "params": {
+		      "$ref": "#/$defs/mcp.elicitation.respond"
+		    }
+		  },
+		  "additionalProperties": false
+		},
+		{
+		  "type": "object",
+		  "required": [
+		    "jsonrpc",
+		    "method",
+		    "params"
+		  ],
+		  "properties": {
+		    "jsonrpc": {
+		      "const": "2.0"
+		    },
+		    "method": {
+		      "const": "mcp.elicitation.request"
+		    },
+		    "params": {
+		      "$ref": "#/$defs/mcp.elicitation.request"
+		    }
+		  },
+		  "additionalProperties": false
+		},
+
 		{
 			"additionalProperties": false,
 			"properties": {

@@ -212,7 +212,7 @@ function testExecutionPolicySnapshot(
 	const profile = configuration.permission === "read-only"
 		? { mode: "read-only" as const, filesystem: "read_only" as const, network: "disabled" as const, writableRoots: [] }
 		: configuration.permission === "workspace"
-			? { mode: "workspace-write" as const, filesystem: "workspace_write" as const, network: "disabled" as const, writableRoots: ["/repo"] }
+			? { mode: "workspace-write" as const, filesystem: "workspace_write" as const, network: "enabled" as const, writableRoots: ["/repo"] }
 			: { mode: "danger-full-access" as const, filesystem: "unrestricted" as const, network: "enabled" as const, writableRoots: ["/repo"] };
 	return {
 		trusted: configuration.trust === "trusted",
@@ -270,11 +270,11 @@ function permissionPayload(
 			{
 				id: "workspace",
 				label: "Ask for approval",
-				description: "Read and edit the current workspace; ask before network or outside access.",
+				description: "Read and edit the current workspace with network access; ask before outside access or risky commands.",
 				current: active === "workspace",
 				sandbox_mode: "workspace-write",
 				filesystem: "workspace_write",
-				network: "disabled",
+				network: "enabled",
 				approval_behavior: "on-request",
 			},
 			{

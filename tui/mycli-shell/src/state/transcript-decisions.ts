@@ -94,6 +94,7 @@ export function pendingClarificationFromRecord(
 	const turnId = stringValue(value.turn_id) ?? stringValue(value.turnId);
 	return {
 		requestId,
+		...(value.elicitation ? { elicitation: value.elicitation as NonNullable<MycliShellPendingClarification["elicitation"]> } : {}),
 		...(turnId ? { turnId } : {}),
 		sessionId: stringValue(value.session_id) ?? stringValue(value.sessionId) ?? undefined,
 		generation: numberValue(value.generation) ?? undefined,

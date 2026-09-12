@@ -10,7 +10,7 @@ import type {
 	ProviderReplayState,
 	ProviderUsage,
 } from "@mycli/core";
-import { isProviderRouteId } from "@mycli/core";
+import { isProviderRouteId, parseToolDiscoveries } from "@mycli/core";
 import { canonicalImages } from "../artifacts/canonical-images.ts";
 import { stableJson } from "../stable-json.ts";
 
@@ -718,7 +718,7 @@ function conversationItem(value: unknown, field: string): CanonicalConversationI
 		});
 	}
 	if (type === "tool_result") {
-		keys(item, ["type", "callId", "toolName", "output", "success", "images"], [
+		keys(item, ["type", "callId", "toolName", "output", "success", "images", "toolDiscoveries"], [
 			"type", "callId", "toolName", "output", "success",
 		], field);
 		return Object.freeze({
@@ -727,6 +727,9 @@ function conversationItem(value: unknown, field: string): CanonicalConversationI
 			toolName: identity(item.toolName, `${field}.toolName`),
 			output: string(item.output, `${field}.output`),
 			success: boolean(item.success, `${field}.success`),
+			...(item.toolDiscoveries === undefined ? {} : {
+				toolDiscoveries: parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }),
+			}),
 			...(item.images === undefined ? {} : { images: canonicalImagePayload(item.images) }),
 		});
 	}

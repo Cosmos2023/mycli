@@ -12,6 +12,8 @@ import {
 import type { RuntimeStateRecord, RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	selectAgentForkConversation,
+	parseToolDiscoveries,
+	type ToolDiscovery,
 	TOOL_RESULT_OUTPUT_MAX_CHARS,
 } from "@mycli/core";
 import Database from "better-sqlite3";
@@ -315,6 +317,7 @@ export interface TranscriptEventRepository extends SessionLeaseStore {
 	commitCompaction(input: CommitCompactionInput): boolean;
 	loadPendingToolCalls(sessionId: string, turnId: string): readonly CanonicalToolCall[];
 	loadToolActivations(sessionId: string, turnId: string): readonly string[];
+	loadToolDiscoveries(sessionId: string): readonly ToolDiscovery[];
 	loadContextItems(
 		sessionId: string,
 		turnId?: string,
@@ -2002,6 +2005,30 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				if (index >= 0) pending.splice(index, 1);
 			}
 			return Object.freeze(pending);
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	loadToolDiscoveries(sessionId: string): readonly ToolDiscovery[] {
+		try {
+			const rows = this.#database.prepare(`
+				SELECT payload_json FROM transcript_events
+				WHERE session_id = ? AND event_type = 'tool_result'
+				  AND json_extract(payload_json, '$.payload.result.toolName') = 'tool_search'
+				  AND json_extract(payload_json, '$.payload.result.success') = 1
+				  AND json_extract(payload_json, '$.payload.metadata.tool_discovery.version') = 1
+				ORDER BY sequence_no DESC LIMIT 512
+			`).all(identity(sessionId, "sessionId")) as readonly { readonly payload_json: string }[];
+			const discoveries = new Map<string, ToolDiscovery>();
+			for (const row of [...rows].reverse()) {
+				const stored: unknown = JSON.parse(row.payload_json);
+				if (!isRecord(stored) || !isRecord(stored.payload)) continue;
+				const payload = stored.payload;
+				if (!isRecord(payload.metadata)) continue;
+				for (const discovery of parseToolDiscoveries(payload.metadata.tool_discovery)) discoveries.set(discovery.id, discovery);
+			}
+			return Object.freeze([...discoveries.values()].slice(-512));
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -3708,6 +3735,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 								...(item.images?.length ? { images: item.images } : {}),
 							},
 							summary: item.output.slice(0, 500),
+							...(item.toolName === "tool_search" && item.success && item.toolDiscoveries?.length
+								? { metadata: { tool_discovery: { version: 1, tools: item.toolDiscoveries } } } : {}),
 						},
 					}));
 					break;
@@ -3884,7 +3913,10 @@ function eventToolResultMetadata(
 	const mutation = projectMutationMetadata(input.metadata, input.result.success);
 	const errorContext = input.result.success ? undefined : readErrorContext(input.metadata?.error_context);
 	const interaction = projectTerminalInteraction(input.metadata?.terminal_interaction);
+	const discoveries = input.result.success && input.result.toolName === "tool_search"
+		? parseToolDiscoveries(input.metadata?.tool_discovery) : [];
 	const metadata = {
+		...(discoveries.length ? { tool_discovery: { version: 1, tools: discoveries } } : {}),
 		...(errorContext ? { error_context: errorContext } : {}),
 		...(interaction ? { terminal_interaction: interaction } : {}),
 		...(mutation.file_changes ? { file_changes: mutation.file_changes } : {}),

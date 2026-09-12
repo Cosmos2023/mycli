@@ -23,6 +23,7 @@ const ajv = new Ajv2020({
 });
 ajv.addKeyword({ keyword: "name", schemaType: "string", valid: true });
 ajv.addSchema(errorContextSchema, "https://mycli.local/contracts/error-context.schema.json");
+ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/mcp-elicitation.schema.json", import.meta.url), "utf8")) as object);
 
 function compile(name: string): ValidateFunction {
 	const url = new URL(`../schemas/${name}`, import.meta.url);

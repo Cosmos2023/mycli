@@ -16,7 +16,9 @@ export type {
 	IntegrationLifecycleStackOptions,
 } from "./foundation/lifecycle.ts";
 export { defineIntegrationRegistration } from "./foundation/registration.ts";
+export { normalizeIntegrationToolNames } from "./foundation/tool-catalog.ts";
 export type { IntegrationRegistration } from "./foundation/registration.ts";
+export { IntegrationToolApprovalStore, IntegrationApprovalStoreError } from "./foundation/tool-approval-store.ts";
 export { HookAllowlistStore, HookAllowlistStoreError } from "./hooks/allowlist.ts";
 export {
 	hookCommandDigest,
@@ -66,7 +68,8 @@ export type {
 	McpCatalogCacheContract,
 	McpCatalogCacheOptions,
 } from "./mcp/catalog-cache.ts";
-export { discoverMcpConfig } from "./mcp/config.ts";
+export { discoverMcpConfig, parseMcpServerConfig, McpConfigError } from "./mcp/config.ts";
+export { McpConfigStore } from "./mcp/config-store.ts";
 export type { DiscoverMcpConfigOptions } from "./mcp/config.ts";
 export {
 	classifyMcpFailure,
@@ -257,3 +260,8 @@ export {
 export { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool } from "./mcp/resource-tools.ts";
 export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
 	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";
+export { McpRequiredServerError } from "./mcp/manager.ts";
+export { loginMcpOAuth } from "./mcp/oauth-login.ts";
+export { McpOAuthStore, McpOAuthError } from "./mcp/oauth-store.ts";
+export { policyMcpFetch } from "./mcp/http-fetch.ts";
+export type { McpElicitationPrompt, McpElicitationHandler, McpInvocationContext } from "./mcp/elicitation.ts";

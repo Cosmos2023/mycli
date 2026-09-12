@@ -714,7 +714,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		providerToolNames(capture.requestBody?.tools),
 			[
 				"Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch",
-				"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+				"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent", "web_search",
 			],
@@ -2061,7 +2061,7 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.equal(childRequests.length, 1);
 	assert.deepEqual(toolNames(childRequests[0]?.tools), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
 	const childAuthority = responsesAuthorityText(childRequests[0] ?? {});
@@ -2072,7 +2072,7 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.match(childAuthority, /Assigned task: explore/u);
 	assert.match(
 		childAuthority,
-		/Tool scope: Edit, Patch, Read, Skill, Write, list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, tool_search, update_plan, view_image, web_fetch/u,
+		/Tool scope: Edit, Patch, Read, Skill, Write, list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, update_plan, view_image, web_fetch/u,
 	);
 	assert.match(childAuthority, /Permission profile: workspace/u);
 	assert.match(childAuthority, /Sandbox mode: workspace-write/u);
@@ -3154,7 +3154,7 @@ test("Node backend preserves a disabled parent run profile without marking the c
 			permission: "workspace",
 			sandboxMode: "workspace-write",
 			filesystem: "workspace_write",
-			network: "disabled",
+			network: "enabled",
 			writableRoots: [await realpath(workspace)],
 		});
 	} finally {
@@ -4100,13 +4100,13 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 
 	assert.deepEqual(requestTools[0], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent", "web_search",
 	]);
 	assert.deepEqual(requestTools[1], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
 		"followup_task", "interrupt_agent", "list_agents", "wait_agent", "web_search",
 	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});

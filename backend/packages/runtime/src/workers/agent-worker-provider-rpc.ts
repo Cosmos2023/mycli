@@ -12,6 +12,7 @@ import type { ProviderAttemptUpdate } from "@mycli/contracts";
 import {
 	isProviderRouteId,
 	normalizeCanonicalImages,
+	parseToolDiscoveries,
 	parseProviderNativeTransportSnapshot,
 	providerNativeEndpointSha256,
 	providerNativeProtocol,
@@ -837,7 +838,7 @@ function parseConversationItem(value: unknown): CanonicalConversationItem {
 		case "tool_result":
 			assertObjectShape(item,
 				["type", "callId", "toolName", "output", "success"],
-				["images"],
+				["images", "toolDiscoveries"],
 				"provider tool result item");
 			return Object.freeze({
 				type: item.type,
@@ -845,6 +846,9 @@ function parseConversationItem(value: unknown): CanonicalConversationItem {
 				toolName: boundedString(item.toolName, "provider tool result name", IDENTITY_MAX_CHARS),
 				output: boundedText(item.output, "provider tool result output", TEXT_MAX_CHARS),
 				success: booleanValue(item.success, "provider tool result success"),
+				...(item.toolDiscoveries === undefined ? {} : {
+					toolDiscoveries: parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }),
+				}),
 				...(hasOwn(item, "images") ? {
 					images: normalizeCanonicalImages(boundedArray(item.images, "provider images", parseCanonicalImage)),
 				} : {}),

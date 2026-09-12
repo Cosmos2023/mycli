@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
 import { GitReviewReadTool } from "../review/git-read-tool.ts";
 import { readdir, realpath, stat } from "node:fs/promises";
@@ -60,6 +61,7 @@ import {
 	rootAgentPath,
 } from "@mycli/core";
 import {
+	IntegrationToolApprovalStore,
 	skillInvocationArtifactFromMetadata,
 	ListMcpResourcesTool,
 	ReadMcpResourceTool,
@@ -93,6 +95,7 @@ import {
 	MemoryContextService,
 	MemoryStore,
 	NodeTurnRuntime,
+	planExtensionToolExposure,
 	resolveAgentExecutionAdapters,
 	loadWorkspaceInstructions,
 	ProviderContinuationCoordinator,
@@ -148,6 +151,8 @@ import {
 	startNodePtyTransport,
 	startPipeTransport,
 	ToolRouter,
+	ExtensionToolCatalog,
+	type ExtensionCatalogTool,
 	ToolSearchTool,
 	ViewImageTool,
 	KillShellTool,
@@ -523,6 +528,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		: inProcessChildRuntimeFactory;
 	const runtimeRegistry = new NodeRuntimeRegistry<NodeGatewayRuntime>();
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
+	const mcpElicitations = new McpElicitationBroker();
 	const agentActivityBus = new AgentActivityBus();
 	let agentSupervisor: AgentSupervisor | undefined;
 	let publishSubagentProjection: (value: Readonly<Record<string, unknown>>) => void = () => undefined;
@@ -699,7 +705,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	let integrationComposition: RuntimeIntegrationComposition;
 	try {
 		integrationComposition = await createRuntimeIntegrationComposition({
+			onMcpElicitation: mcpElicitations.request,
 			disabled: options.executionMode === "review",
+			...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
 			builtinManifest: toolManifest,
 			workspaceRoot: config.workspaceRoot,
 			homeDir,
@@ -914,15 +922,17 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 		const shellProfile = resolveShellProfile({ env: runtimeEnvironment });
 		const execPolicyStore = new ExecPolicyStore({ homeDir, workspaceRoot });
+		const integrationApprovals = new IntegrationToolApprovalStore(homeDir);
 		const approvalPolicy = new ApprovalPolicy({
 			workspaceRoot,
 			autoApproveMedium: true,
 			shellKind: shellProfile.kind,
 			extensionTools: integrationComposition.registrations.map((registration) => ({
 				name: registration.definition.name,
-				approvalPolicy: registration.source === "skill" || registration.source === "subagent"
+				...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
+				approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
 					? "auto_allow" as const
-					: "request" as const,
+					: "request" as const),
 			})),
 		});
 		let loadExecPolicy: Promise<void> | undefined;
@@ -994,7 +1004,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					readonly shell: boolean;
 					readonly collaborationMode: string;
 				},
-				deferred = allowedDeferredRegistrations(),
+				deferred: readonly DeferredToolCandidate[] = deferredCandidates(allowedDeferredRegistrations()),
+				sources: readonly DeferredToolCandidate[] = deferred,
 			): readonly ToolDefinition[] => Object.freeze(filterToolDefinitions(
 				[
 					...planToolExposure(toolManifest, {
@@ -1004,23 +1015,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					...directExtensionDefinitions,
 				],
 				allowedTools,
-			).map((definition) => definition.name === "tool_search"
-				? createToolSearchDefinition(deferredCandidates(deferred))
+			).filter((definition) => definition.name !== "tool_search" || deferred.length > 0)
+			.map((definition) => definition.name === "tool_search"
+				? createToolSearchDefinition(sources)
 				: definition));
 				const toolRouter = new ToolRouter({
 					adapters: staticAdapters,
 					exposure: plannedTools({ shell: true, collaborationMode: "plan" }),
 			});
+			const extensionCatalog = new ExtensionToolCatalog(toolRouter, toolSearch, approvalPolicy);
 			const refreshExtensions = (): void => {
 				const deferred = allowedDeferredRegistrations();
-				toolSearch.replaceCandidates(deferredCandidates(deferred));
-				toolRouter.replaceDynamicAdapters(deferred.map((registration) => registration.adapter));
-				approvalPolicy.replaceExtensionTools(integrationComposition.registrations.map(
+				extensionCatalog.replace({ version: integrationComposition.version, tools: deferredCandidates(deferred),
+					skillCatalog: integrationComposition.skillCatalog }, integrationComposition.registrations.map(
 					(registration) => ({
 						name: registration.definition.name,
-						approvalPolicy: registration.source === "skill" || registration.source === "subagent"
+						...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
+						approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
 							? "auto_allow" as const
-							: "request" as const,
+							: "request" as const),
 					}),
 				));
 			};
@@ -1039,6 +1052,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				loadExecPolicy = Promise.resolve();
 			},
 			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
+			validateExtensionApproval: (scope, name, turnId) => approvalPolicy.matchesExtensionApproval(scope, name, turnId),
+			allowExtensionSession: (scope) => { approvalPolicy.allowExtensionSession(scope); },
+			rememberExtension: async (scope) => {
+				await integrationApprovals.allow(scope);
+				approvalPolicy.replaceRememberedExtensions(await integrationApprovals.load());
+			},
 			grantPermissions: (input) => executionPolicyCoordinator.grant(input),
 		});
 		const parallelApprovals = new ParallelApprovalCoordinator({
@@ -1236,15 +1255,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			executionPolicyCoordinator,
 			planTools: plannedTools,
 			resolveToolCatalog: (capabilities) => {
-				const catalogVersion = integrationComposition.version;
-				const deferred = allowedDeferredRegistrations();
+				const catalog = extensionCatalog.snapshot;
+				const exposure = planExtensionToolExposure(catalog.tools.map((tool) => tool.definition), store.loadToolDiscoveries(sessionId));
+				const deferredNames = new Set(exposure.deferred.map((definition) => definition.name));
+				const deferred = catalog.tools.filter((tool) => deferredNames.has(tool.definition.name));
 				return Object.freeze({
-					catalogVersion,
-					directTools: plannedTools(capabilities, deferred),
-					deferredTools: Object.freeze(deferred.map(
-						(registration) => registration.definition,
-					)),
-					skillCatalog: integrationComposition.skillCatalog,
+					catalogVersion: catalog.version,
+					directTools: Object.freeze([...plannedTools(capabilities, deferred, catalog.tools), ...exposure.direct]),
+					deferredTools: exposure.deferred,
+					skillCatalog: catalog.skillCatalog,
 				});
 			},
 			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
@@ -1264,6 +1283,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 				evaluate: async (call, executionPolicy, turnId) => {
 					await ensureExecPolicyLoaded();
+					if (approvalPolicy.hasScopedExtensionTool(call.name, turnId)) {
+						approvalPolicy.replaceRememberedExtensions([]);
+						approvalPolicy.replaceRememberedExtensions(await integrationApprovals.load());
+					}
 					return approvalPolicy.evaluate(call, executionPolicy, turnId);
 				},
 				recordResult: (call, result, executionPolicy, turnId) => {
@@ -1763,6 +1786,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			sandboxReadiness: await sandboxReadinessPromise,
 			runtime: initial.binding,
 			agentInteractiveRequests,
+			mcpElicitations,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
 			loadProviderAttempts: (input) => store.providerAttemptLedger.list(input),
 			loadTranscript: (sessionId) => {
@@ -2487,10 +2511,11 @@ function runtimeToolExposure(
 	]);
 }
 
-function deferredCandidates(registrations: readonly IntegrationRegistration[]): readonly DeferredToolCandidate[] {
+function deferredCandidates(registrations: readonly IntegrationRegistration[]): readonly ExtensionCatalogTool[] {
 	return registrations.flatMap((registration) => (
 		registration.source === "mcp" || registration.source === "plugin"
 			? [{
+				adapter: registration.adapter,
 				definition: registration.definition,
 				source: registration.source,
 				originMetadata: registration.originMetadata,

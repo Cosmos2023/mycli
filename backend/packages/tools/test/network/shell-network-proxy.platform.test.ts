@@ -16,6 +16,43 @@ import type { ToolAdapterResult } from "../../src/types.ts";
 
 const macOS = { skip: process.platform !== "darwin", timeout: 15_000 };
 
+test("macOS workspace Shell reaches the network while outside writes and explicit offline policy stay blocked", macOS, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-workspace-network-"));
+	const outside = await mkdtemp(join(tmpdir(), "mycli-workspace-network-outside-"));
+	t.after(async () => {
+		await rm(root, { recursive: true, force: true });
+		await rm(outside, { recursive: true, force: true });
+	});
+	let hits = 0;
+	const origin = http.createServer((_request, response) => { hits += 1; response.end("workspace-network"); });
+	origin.listen(0, "127.0.0.1");
+	await once(origin, "listening");
+	t.after(() => new Promise<void>((resolve) => { origin.closeAllConnections(); origin.close(() => resolve()); }));
+	const address = origin.address();
+	assert.ok(address && typeof address !== "string");
+	const manager = new ShellSessionManager();
+	t.after(() => manager.close());
+	const tool = new ShellTool({ workspaceRoot: root, manager, timeoutSeconds: 5,
+		profile: resolveShellProfile({ platform: "darwin", shellPath: "/bin/sh" }) });
+	const options = { signal: new AbortController().signal, ownerSessionId: "workspace-network",
+		publishLifecycle: () => undefined, executionPolicy: executionPolicy("workspace", root) };
+	const command = `/usr/bin/curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:${address.port}/`;
+	const connected = await tool.execute({ command, yield_time_ms: 5_000 }, { ...options, callId: "network" });
+	assert.equal(connected.success, true, connected.modelOutput);
+	assert.match(connected.modelOutput, /workspace-network/u);
+	assert.equal(hits, 1);
+	const blockedPath = join(outside, "blocked.txt");
+	const script = `require("node:fs").writeFileSync(${JSON.stringify(blockedPath)}, "unexpected")`;
+	const write = await tool.execute({ command: `${quote(process.execPath)} -e ${quote(script)}`, yield_time_ms: 5_000 },
+		{ ...options, callId: "outside-write" });
+	assert.equal(write.success, false);
+	await assert.rejects(readFile(blockedPath), { code: "ENOENT" });
+	const offline = await tool.execute({ command, yield_time_ms: 5_000 }, { ...options, callId: "offline",
+		executionPolicy: { ...options.executionPolicy, network: "disabled" } });
+	assert.equal(offline.success, false);
+	assert.equal(hits, 1);
+});
+
 test("macOS Shell reaches allowed HTTP through its owned proxy and rejects denied hosts", macOS, async (t) => {
 	const fixture = await shellFixture(t);
 	const result = await fixture.run("/usr/bin/curl --fail --silent --show-error --max-time 3 http://api.example.com/");

@@ -33,7 +33,7 @@ export function executionPolicy(
 		case "read-only":
 			return immutablePolicy("read-only", "read_only", "disabled", []);
 		case "workspace":
-			return immutablePolicy("workspace-write", "workspace_write", "disabled", [workspace]);
+			return immutablePolicy("workspace-write", "workspace_write", "enabled", [workspace]);
 		case "full-access":
 			return immutablePolicy("danger-full-access", "unrestricted", "enabled", [workspace]);
 	}

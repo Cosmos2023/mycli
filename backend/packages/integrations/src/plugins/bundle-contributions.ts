@@ -18,6 +18,7 @@ export interface PluginBundleContributions {
 	readonly skills: readonly PluginSkillFile[];
 	readonly mcpServers: readonly McpServerConfig[];
 	readonly hooks: readonly HookRegistration[];
+	readonly requiredMcpFailures: readonly string[];
 	readonly issues: readonly { readonly pluginId: string; readonly errorClass: string }[];
 }
 
@@ -29,6 +30,7 @@ export function pluginBundleContributions(discovery: PluginDiscovery, options: {
 	const skills: PluginSkillFile[] = [];
 	const mcpServers: McpServerConfig[] = [];
 	const hooks: HookRegistration[] = [];
+	const requiredMcpFailures: string[] = [];
 	const issues: { pluginId: string; errorClass: string }[] = [];
 	for (const plugin of discovery.selected) {
 		if (plugin.kind !== "bundle" || !plugin.enabled) continue;
@@ -44,29 +46,15 @@ export function pluginBundleContributions(discovery: PluginDiscovery, options: {
 					if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(name) || seen.has(name) || !isObject(raw)) throw new PluginPackageError("plugin_mcp_server_invalid");
 					seen.add(name);
 					const row = expandPluginRoot(raw, root);
-					const env = stringTable(row.env, "plugin_mcp_env_invalid");
-					if (row.env_vars !== undefined) {
-						if (!Array.isArray(row.env_vars)) throw new PluginPackageError("plugin_mcp_env_invalid");
-						for (const key of row.env_vars) {
-							if (typeof key !== "string" || options.env[key] === undefined) throw new PluginPackageError("missing_environment");
-							env[key] = options.env[key];
-						}
-					}
-					const headers = { ...stringTable(row.http_headers, "plugin_mcp_headers_invalid"), ...stringTable(row.headers, "plugin_mcp_headers_invalid") };
-					if (row.bearer_token_env_var !== undefined) {
-						if (typeof row.bearer_token_env_var !== "string") throw new PluginPackageError("plugin_mcp_env_invalid");
-						const token = options.env[row.bearer_token_env_var];
-						if (!token) throw new PluginPackageError("missing_environment");
-						Object.assign(headers, { Authorization: `Bearer ${token}` });
-					}
 					const id = `plugin-${namespace.slice(0, 20)}-${createHash("sha256").update(`${plugin.pluginId}:${name}`).digest("hex").slice(0, 16)}`;
 					const transport = row.transport ?? row.type ?? (row.url ? "streamable_http" : "stdio");
-					const config = parseMcpServerConfig(id, { ...row, transport: transport === "http" ? "streamable_http" : transport,
-						env, headers, timeout_seconds: row.tool_timeout_sec ?? row.timeout_seconds }, options.env);
+					const config = parseMcpServerConfig(id, { ...row, transport: transport === "http" ? "streamable_http" : transport }, options.env);
 					if (row.cwd !== undefined && (typeof row.cwd !== "string" || !row.cwd.trim())) throw new PluginPackageError("plugin_mcp_cwd_invalid");
 					const cwd = typeof row.cwd === "string" ? isAbsolute(row.cwd) ? row.cwd : resolve(root, row.cwd) : root;
-					mcpServers.push(Object.freeze({ ...config, cwd, pluginDescription: `${plugin.pluginId} ${name}: ${plugin.manifest.description}` }));
-				} catch (error) { issues.push({ pluginId: plugin.pluginId, errorClass: error instanceof McpConfigError ? error.errorClass : error instanceof PluginPackageError ? error.code : "plugin_mcp_invalid" }); }
+					mcpServers.push(Object.freeze({ ...config, cwd, source: "plugin", pluginDescription: `${plugin.pluginId} ${name}: ${plugin.manifest.description}` }));
+				} catch (error) {
+					if (isObject(raw) && raw.required === true && raw.enabled !== false) requiredMcpFailures.push(name);
+					issues.push({ pluginId: plugin.pluginId, errorClass: error instanceof McpConfigError ? pluginMcpConfigError(error.errorClass) : error instanceof PluginPackageError ? error.code : "plugin_mcp_invalid" }); }
 			}
 		}
 		const runner = new ConfiguredHookRunner({ workspaceRoot: options.workspaceRoot, env: options.env, sandboxProfile: options.sandboxProfile,
@@ -87,15 +75,7 @@ export function pluginBundleContributions(discovery: PluginDiscovery, options: {
 			}
 		}
 	}
-	return Object.freeze({ skills, mcpServers, hooks, issues });
-}
-
-function stringTable(value: unknown, code: string): Record<string, string> {
-	if (value === undefined) return {};
-	if (!isObject(value)) throw new PluginPackageError(code);
-	const entries = Object.entries(value);
-	if (entries.some(([, item]) => typeof item !== "string")) throw new PluginPackageError(code);
-	return Object.fromEntries(entries) as Record<string, string>;
+	return Object.freeze({ skills, mcpServers, hooks, issues, requiredMcpFailures });
 }
 
 function expandPluginRoot(value: Readonly<Record<string, unknown>>, root: string): Readonly<Record<string, unknown>> {
@@ -103,4 +83,13 @@ function expandPluginRoot(value: Readonly<Record<string, unknown>>, root: string
 		? item.replaceAll("${CLAUDE_PLUGIN_ROOT}", root).replaceAll("${CODEX_PLUGIN_ROOT}", root)
 		: Array.isArray(item) ? item.map(expand) : isObject(item) ? Object.fromEntries(Object.entries(item).map(([key, nested]) => [key, expand(nested)])) : item;
 	return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item)]));
+}
+
+function pluginMcpConfigError(code: string): string {
+	switch (code) {
+		case "invalid_env": return "plugin_mcp_env_invalid";
+		case "invalid_headers": return "plugin_mcp_headers_invalid";
+		case "invalid_cwd": return "plugin_mcp_cwd_invalid";
+		default: return code;
+	}
 }

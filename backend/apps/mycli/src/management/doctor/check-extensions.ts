@@ -1,3 +1,4 @@
+import { loadManagedExecutionPolicy } from "@mycli/config";
 import { join } from "node:path";
 import {
 	builtinSkillRoot as defaultBuiltinSkillRoot,
@@ -15,7 +16,7 @@ import type {
 } from "@mycli/integrations";
 import {
 	pluginSandboxProfile,
-	workspaceSandboxProfile,
+	mcpSandboxProfile,
 } from "../../node-runtime/integration-sandbox.ts";
 import type { DoctorCheck, DoctorStatus } from "./types.ts";
 
@@ -124,6 +125,7 @@ async function checkMcp(
 	options: ExtensionDoctorOptions,
 	signal: AbortSignal,
 ): Promise<DoctorCheck> {
+	const constraints = await loadManagedExecutionPolicy({ homeDir: options.homeDir });
 	const response = await new McpManagementService({
 		workspaceRoot: options.workspaceRoot,
 		homeDir: options.homeDir,
@@ -134,7 +136,7 @@ async function checkMcp(
 		createClient: options.createMcpClient ?? ((config) => new McpClient({
 			config,
 			cwd: options.workspaceRoot,
-			sandboxProfile: workspaceSandboxProfile(options.workspaceRoot),
+			sandboxProfile: mcpSandboxProfile(options.workspaceRoot, config, constraints),
 		})),
 	}).list(signal);
 	const failed = response.servers.filter((server) => server.status === "failed");

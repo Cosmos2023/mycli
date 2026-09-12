@@ -1,6 +1,20 @@
 import type { McpFailure } from "./diagnostics.ts";
 
 export type McpTransportKind = "stdio" | "http" | "streamable_http";
+export type McpToolApprovalMode = "auto" | "prompt" | "approve";
+
+export interface McpProcessPermissions {
+	readonly mode?: "read-only" | "workspace-write";
+	readonly network?: "enabled" | "disabled";
+}
+
+export interface McpToolAnnotations {
+	readonly title?: string;
+	readonly readOnlyHint?: boolean;
+	readonly destructiveHint?: boolean;
+	readonly idempotentHint?: boolean;
+	readonly openWorldHint?: boolean;
+}
 
 export interface McpServerConfig {
 	readonly id: string;
@@ -13,8 +27,22 @@ export interface McpServerConfig {
 	readonly enabled: boolean;
 	readonly supportsParallelToolCalls: boolean;
 	readonly timeoutMs: number;
+	readonly startupTimeoutMs?: number;
+	readonly toolTimeoutMs?: number;
+	readonly required?: boolean;
+	readonly enabledTools?: readonly string[];
+	readonly disabledTools?: readonly string[];
+	readonly defaultToolsApprovalMode?: McpToolApprovalMode;
+	readonly tools?: Readonly<Record<string, { readonly approvalMode?: McpToolApprovalMode }>>;
+	readonly sandbox?: McpProcessPermissions;
 	readonly cwd?: string;
+	readonly oauth?: {
+		readonly clientId?: string;
+		readonly scopes?: readonly string[];
+		readonly callbackPort?: number;
+	};
 	readonly pluginDescription?: string;
+	readonly source?: "user" | "repository" | "plugin";
 }
 
 export type McpConfigSource = "user" | "repository";
@@ -24,6 +52,7 @@ export interface McpConfigDiagnostic {
 	readonly fileLabel: string;
 	readonly serverId: string;
 	readonly errorClass: string;
+	readonly required?: boolean;
 }
 
 export interface McpConfigDiscovery {
@@ -39,6 +68,7 @@ export interface McpToolDescriptor {
 	readonly serverInstructions?: string;
 	readonly inputSchema: Readonly<Record<string, unknown>>;
 	readonly supportsParallelToolCalls: boolean;
+	readonly annotations?: McpToolAnnotations;
 }
 
 export interface McpContentItem {
@@ -110,14 +140,17 @@ export interface McpResourceService {
 
 export interface McpProtocolClient {
 	connect(signal: AbortSignal): Promise<void>;
+	isConnected?(): boolean;
 	getInstructions?(): string | undefined;
-	listTools(signal: AbortSignal): Promise<{
+	listTools(signal: AbortSignal, cursor?: string): Promise<{
 		readonly tools: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
 	}>;
 	callTool(
 		name: string,
 		argumentsValue: Readonly<Record<string, unknown>>,
 		signal: AbortSignal,
+		context?: McpInvocationContext,
 	): Promise<Readonly<Record<string, unknown>>>;
 	listResources(signal: AbortSignal, cursor?: string): Promise<{
 		readonly resources: readonly Readonly<Record<string, unknown>>[];
@@ -138,6 +171,7 @@ export interface McpClientContract {
 		name: string,
 		argumentsValue: Readonly<Record<string, unknown>>,
 		signal: AbortSignal,
+		context?: McpInvocationContext,
 	): Promise<McpToolCallResult>;
 }
 
@@ -157,9 +191,18 @@ export interface McpServerDiscovery {
 	readonly serverId: string;
 	readonly transport: McpTransportKind;
 	readonly enabled: boolean;
-	readonly status: "ok" | "disabled" | "failed";
+	readonly status: "ok" | "partial" | "disabled" | "failed";
 	readonly toolCount: number;
 	readonly resourceCount: number;
 	readonly timeoutMs: number;
 	readonly failureCategory?: string;
+	readonly failures?: readonly McpDiscoveryFailure[];
+	readonly failureCount?: number;
 }
+
+export interface McpDiscoveryFailure {
+	readonly capability: "tools" | "resources";
+	readonly tool?: string;
+	readonly category: string;
+}
+import type { McpInvocationContext } from "./elicitation.ts";

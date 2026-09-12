@@ -717,6 +717,21 @@ function reduceRuntimeEventUnchecked(
 			),
 		};
 	}
+	if (method === "mcp.elicitation.request") {
+		const child = runtimeEventTargetsChild(event);
+		return { ...state,
+			pendingClarification: { ...params, question: params.message, header: `MCP · ${String(params.server_id)}`,
+				options: [], multi_select: false, elicitation: params },
+			turnRunning: child ? state.turnRunning : false,
+			liveStatus: child ? state.liveStatus : { state: "waiting_clarification", kind: "clarification", text: "MCP needs your input" },
+		};
+	}
+	if (method === "mcp.elicitation.respond") {
+		if (!state.pendingClarification?.elicitation || !interactiveResponseMatches(state.pendingClarification, params, "request_id", "requestId")) return state;
+		const child = runtimeEventTargetsChild(event);
+		return { ...state, pendingClarification: null, turnRunning: child ? state.turnRunning : true,
+			liveStatus: child ? state.liveStatus : { state: "running", kind: "running", text: "Running" } };
+	}
 	if (method === "clarify.request") {
 		const childRequest = runtimeEventTargetsChild(event);
 		const duplicateRequest = interactiveResponseMatches(
@@ -834,7 +849,7 @@ function reduceRuntimeEventUnchecked(
 		const statusSessionId = stringValue(params.session_id) ?? stringValue(params.sessionId) ?? undefined;
 		const clearApproval = params.pending_decision === false
 			&& pendingRequestBelongsToStatusSession(state.pendingApproval, statusSessionId, state.sessionId ?? undefined);
-		const clearClarification = params.suspended_turn === false
+		const clearClarification = (state.pendingClarification?.elicitation ? params.pending_mcp_elicitation === false : params.suspended_turn === false)
 			&& pendingRequestBelongsToStatusSession(state.pendingClarification, statusSessionId, state.sessionId ?? undefined);
 		const approvalDecisionId = clearApproval
 			? stringValue(state.pendingApproval?.decision_id)

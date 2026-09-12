@@ -2,6 +2,16 @@
 export type GatewayEventNotification =
   | {
       jsonrpc: "2.0";
+      method: "mcp.elicitation.respond";
+      params: McpElicitation;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "mcp.elicitation.request";
+      params: McpElicitationRequest;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "extension.updated";
       params: Extension;
     }
@@ -545,6 +555,51 @@ export type ProviderAttemptRecord = ProviderAttemptFields & {
   [k: string]: any;
 };
 
+export interface McpElicitation {
+  request_id: string;
+  session_id: string;
+  generation?: number;
+  turn_id?: string;
+  child_session_id?: string;
+  action: "accept" | "decline" | "cancel";
+}
+export interface McpElicitationRequest {
+  request_id: string;
+  session_id: string;
+  turn_id?: string;
+  generation?: number;
+  child_session_id?: string;
+  server_id: string;
+  mode: "form" | "url";
+  message: string;
+  url?: string;
+  /**
+   * @maxItems 32
+   */
+  fields: McpElicitationField[];
+}
+export interface McpElicitationField {
+  name: string;
+  label: string;
+  description?: string;
+  type: "string" | "number" | "integer" | "boolean" | "array";
+  required: boolean;
+  /**
+   * @maxItems 64
+   */
+  options?: {
+    value: string;
+    label: string;
+  }[];
+  defaultValue?: string | number | boolean | string[];
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  minItems?: number;
+  maxItems?: number;
+  format?: "email" | "uri" | "date" | "date-time";
+}
 export interface Extension {
   version: number;
 }

@@ -197,12 +197,16 @@ test("file mutation approval previews preserve both sides of bounded Edit and Pa
 test("malformed and unsupported tool calls fail closed", () => {
 	const policy = approvalPolicy({ autoApproveMedium: true });
 
-	assert.equal(policy.evaluate({
+	const invalid = policy.evaluate({
 		callId: "call-invalid",
 		name: "Write",
 		argumentsJson: "not-json",
-	}).kind, "deny");
-	assert.equal(policy.evaluate(toolCall("Unknown", {})).kind, "deny");
+	});
+	assert.equal(invalid.kind, "deny");
+	assert.equal(invalid.errorKind, "invalid_arguments");
+	const unknown = policy.evaluate(toolCall("Unknown", {}));
+	assert.equal(unknown.kind, "deny");
+	assert.equal(unknown.errorKind, "unknown_tool");
 });
 
 test("extension approval metadata allows local controls and gates external tools", () => {

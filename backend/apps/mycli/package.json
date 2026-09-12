@@ -43,6 +43,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.6.0",
     "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.2",
     "cli-highlight": "2.1.11",
     "csv-parse": "^6.1.0",

@@ -675,7 +675,7 @@ function permissionPayload(
 			permissionProfileRow(
 				"workspace",
 				"Ask for approval",
-				"Read and edit the current workspace; ask before network or outside access.",
+				"Read and edit the current workspace with network access; ask before outside access or risky commands.",
 				active,
 			),
 			permissionProfileRow(
@@ -721,7 +721,7 @@ function nominalExecutionPolicy(active: PermissionProfile): ExecutionPolicySnaps
 		return {
 			mode: "workspace-write",
 			filesystem: "workspace_write",
-			network: "disabled",
+			network: "enabled",
 			writableRoots: [],
 		};
 	}

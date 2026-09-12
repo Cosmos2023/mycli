@@ -7,6 +7,7 @@ export type {
 	ProviderOutputBudgetInput,
 	ProviderOutputBudgetObservation,
 } from "./agents/agent-budget-tracker.ts";
+export { planExtensionToolExposure } from "./tools/extension-tool-exposure.ts";
 export {
 	ActiveToolExecutionRegistry,
 	boundedRuntimeToolName,

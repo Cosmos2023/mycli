@@ -31,6 +31,7 @@ const targets = [
 	["gateway-tool-record.schema.json", "gateway-tool-record.ts"],
 	["gateway-events.schema.json", "gateway-event-notification.ts"],
 	["gateway-rpc.schema.json", "gateway-rpc.ts"],
+	["mcp-elicitation.schema.json", "mcp-elicitation.ts"],
 	["runtime-turn.schema.json", "runtime-turn-record.ts"],
 	["provider-attempt.schema.json", "provider-attempt.ts"],
 	["runtime-state.schema.json", "runtime-state-record.ts"],

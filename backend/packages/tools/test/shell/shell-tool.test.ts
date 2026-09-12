@@ -344,7 +344,7 @@ test("Shell rejects unsupported proxy platforms and never creates a proxy when n
 		assert.equal(result.errorKind, "network_proxy_unavailable");
 		assert.equal(manager.starts.length, 0);
 		for (const policy of [
-			{ ...executionPolicy("workspace", root), networkDomains: ["api.example.com"] },
+			{ ...executionPolicy("workspace", root), network: "disabled" as const, networkDomains: ["api.example.com"] },
 			{ ...executionPolicy("workspace", root), network: "enabled" as const, networkDomains: [] },
 		]) {
 			assert.equal((await tool.execute({ command: "true" }, { ...executionOptions(root), executionPolicy: policy })).success, true);

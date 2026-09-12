@@ -107,3 +107,4 @@ export type {
 export { providerAttemptId } from "./provider-attempt.ts";
 export { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
 export { LOCAL_CONNECTION_REASONS, localConnectionReason, storageErrorReason } from "./errors/boundaries.ts";
+export type { McpElicitationRequest, McpElicitationField } from "./generated/mcp-elicitation.ts";

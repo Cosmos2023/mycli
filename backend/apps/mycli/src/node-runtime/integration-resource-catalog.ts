@@ -26,7 +26,7 @@ export function mcpCatalogResources(
 	return Object.freeze(configs.map((config): CatalogResource => {
 		const server = discovery?.servers.find((item) => item.serverId === config.id);
 		const failure = server?.failureCategory ?? (phase === "failed" ? "refresh_failed" : undefined);
-		const status = !config.enabled ? "disabled" : server?.status === "failed" ? "failed"
+		const status = !config.enabled ? "disabled" : server?.status === "partial" ? "partial" : server?.status === "failed" ? "failed"
 			: server?.status === "ok" ? phase === "cached" || failure ? "cached" : "ready"
 				: phase === "failed" ? "failed" : "loading";
 		const tools = discovery?.registrations.filter((item) => item.originMetadata.server === config.id)
@@ -42,9 +42,17 @@ export function mcpCatalogResources(
 			tool_names: Object.freeze(tools), tool_count: toolCount, resource_count: resourceCount,
 			inspection_detail: [
 				...(config.pluginDescription ? [config.pluginDescription] : []),
-				`Transport: ${config.transport}`, `Timeout: ${config.timeoutMs} ms`,
+				`Transport: ${config.transport}`,
+				`Startup timeout: ${config.startupTimeoutMs ?? config.timeoutMs} ms; tool timeout: ${config.toolTimeoutMs ?? config.timeoutMs} ms`,
+				`Source: ${config.source ?? "user"}; required: ${config.required ?? false}; approval: ${config.defaultToolsApprovalMode ?? "auto"}`,
+				...(config.enabledTools ? [`Enabled tools: ${catalogNames(config.enabledTools, config.enabledTools.length)}`] : []),
+				...(config.disabledTools?.length ? [`Disabled tools: ${catalogNames(config.disabledTools, config.disabledTools.length)}`] : []),
 				`Resources (${resourceCount}): ${catalogNames(resources, resourceCount)}`,
-				...(failure ? [`Connection issue: ${failure}`] : []),
+				...(server?.failures?.length
+					? server.failures.slice(0, 20).map((issue) => `${issue.capability}${issue.tool ? `/${issue.tool}` : ""}: ${issue.category}`)
+					: failure ? [`Connection issue: ${failure}`] : []),
+				...((server?.failureCount ?? 0) > (server?.failures?.length ?? 0)
+					? [`${server!.failureCount! - (server!.failures?.length ?? 0)} more issues`] : []),
 			].join("\n"),
 			command: "/mcp",
 		});

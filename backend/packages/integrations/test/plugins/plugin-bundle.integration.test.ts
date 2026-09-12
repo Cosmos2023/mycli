@@ -26,7 +26,7 @@ test("installed bundles activate namespaced skills, real MCP tools and root-awar
 	await writeFile(join(source, "hook.mjs"), 'console.log(process.env.CODEX_PLUGIN_ROOT === process.env.CLAUDE_PLUGIN_ROOT ? "bundle-hook-ready" : "bad-root");');
 	await writeFile(join(source, ".codex-plugin/plugin.json"), JSON.stringify({ name: "demo", description: "Repository review helpers",
 		mcpServers: { mcpServers: { fixture: { command: process.execPath, args: [fileURLToPath(new URL("../fixtures/mcp-stdio-server.mjs", import.meta.url))] },
-			broken: { command: "unreachable", env: "malformed" } } },
+			broken: { command: "unreachable", env: "malformed", required: true } } },
 		hooks: { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `"${process.execPath}" "$CODEX_PLUGIN_ROOT/hook.mjs"` }] }] } },
 	}));
 	const manager = new PluginPackageManager({ homeDir, workspaceRoot });
@@ -34,6 +34,7 @@ test("installed bundles activate namespaced skills, real MCP tools and root-awar
 	const discovery = await discoverPlugins({ homeDir, workspaceRoot });
 	const contributions = pluginBundleContributions(discovery, { workspaceRoot, env: process.env, sandboxProfile: unrestricted });
 	assert.equal(contributions.mcpServers.length, 1);
+	assert.deepEqual(contributions.requiredMcpFailures, ["broken"]);
 	assert.deepEqual(contributions.issues, [{ pluginId: "demo", errorClass: "plugin_mcp_env_invalid" }]);
 	const config = contributions.mcpServers[0]!;
 	const client = new McpClient({ config, sandboxProfile: unrestricted(workspaceRoot) });
@@ -60,7 +61,7 @@ test("installed bundles activate namespaced skills, real MCP tools and root-awar
 	assert.equal(runtime.records[0]?.status, "partial");
 	await manager.execute({ action: "disable", pluginId: "demo" }, signal);
 	const disabled = pluginBundleContributions(await discoverPlugins({ homeDir, workspaceRoot }), { workspaceRoot, env: {}, sandboxProfile: unrestricted });
-	assert.deepEqual(disabled, { skills: [], mcpServers: [], hooks: [], issues: [] });
+	assert.deepEqual(disabled, { skills: [], mcpServers: [], hooks: [], issues: [], requiredMcpFailures: [] });
 });
 
 test("qualified package names isolate identical skills and MCP server names; repository bundles require trust", async (t) => {
@@ -74,7 +75,8 @@ test("qualified package names isolate identical skills and MCP server names; rep
 		await mkdir(join(pluginRoot, ".codex-plugin"), { recursive: true });
 		await mkdir(join(pluginRoot, "skills/review"), { recursive: true });
 		await writeFile(join(pluginRoot, ".codex-plugin/plugin.json"), JSON.stringify({ name: "demo", mcpServers: {
-			mcpServers: { same: { type: "http", url: "https://example.invalid/mcp", http_headers: { "X-Test": "${API_TOKEN}" } } },
+			mcpServers: { same: { type: "http", url: "https://example.invalid/mcp", startup_timeout_sec: 2, tool_timeout_sec: 70, required: true,
+				default_tools_approval_mode: "prompt", enabled_tools: ["read"], sandbox: { network: "disabled" }, http_headers: { "X-Test": "${API_TOKEN}" } } },
 		} }));
 		await writeFile(join(pluginRoot, "skills/review/SKILL.md"), `---\nname: review\ndescription: Review\n---\n${id}`);
 	}
@@ -84,6 +86,13 @@ test("qualified package names isolate identical skills and MCP server names; rep
 	assert.equal(new Set(contributions.mcpServers.map((item) => item.id)).size, 2);
 	assert.equal(contributions.mcpServers[0]?.headers["X-Test"], "private-value");
 	assert.equal(contributions.mcpServers[0]?.transport, "streamable_http");
+	assert.equal(contributions.mcpServers[0]?.startupTimeoutMs, 2_000);
+	assert.equal(contributions.mcpServers[0]?.toolTimeoutMs, 70_000);
+	assert.equal(contributions.mcpServers[0]?.source, "plugin");
+	assert.equal(contributions.mcpServers[0]?.required, true);
+	assert.equal(contributions.mcpServers[0]?.defaultToolsApprovalMode, "prompt");
+	assert.deepEqual(contributions.mcpServers[0]?.enabledTools, ["read"]);
+	assert.deepEqual(contributions.mcpServers[0]?.sandbox, { network: "disabled" });
 	const registry = await SkillRegistry.discover({ builtinRoot: join(root, "empty"), userRoot: join(root, "empty"), pluginSkills: contributions.skills });
 	assert.deepEqual(registry.list().map((skill) => skill.name), ["demo@one:review", "demo@two:review"]);
 	assert.equal(registry.list()[0]?.sourceKind, "repo");

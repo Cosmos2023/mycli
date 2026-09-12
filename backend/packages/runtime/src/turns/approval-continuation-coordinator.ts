@@ -7,6 +7,7 @@ import type {
 import {
 	ApprovalConflictError,
 	createWaitingApproval,
+	parseExtensionApprovalScope,
 } from "@mycli/core";
 import type {
 	ApprovalChoice as CoreApprovalChoice,
@@ -15,6 +16,7 @@ import type {
 	CanonicalMessage,
 	CanonicalToolCall,
 	ExecPolicyRule,
+	ExtensionApprovalScope,
 	PermissionRequestProfile,
 	ProtocolId,
 	ProviderUsage,
@@ -68,6 +70,7 @@ export interface ApprovalSuspensionInput {
 	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly preparedMutationGuard?: PreparedMutationGuard;
 	readonly permissionRequest?: PermissionRequestProfile;
+	readonly extensionApproval?: ExtensionApprovalScope;
 }
 
 export interface PendingApprovalContinuation {
@@ -85,6 +88,7 @@ export interface PendingApprovalContinuation {
 	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly preparedMutationGuard?: PreparedMutationGuard;
 	readonly permissionRequest?: PermissionRequestProfile;
+	readonly extensionApproval?: ExtensionApprovalScope;
 	readonly providerProtocol: ProtocolId;
 	readonly userMessage: string;
 	readonly call: CanonicalToolCall;
@@ -169,6 +173,9 @@ export interface ApprovalContinuationCoordinatorOptions {
 	};
 	readonly publishExecPolicyRules?: (rules: readonly ExecPolicyRule[]) => void;
 	readonly allowSession?: (pattern: readonly string[]) => void;
+	readonly allowExtensionSession?: (scope: ExtensionApprovalScope) => void;
+	readonly rememberExtension?: (scope: ExtensionApprovalScope) => Promise<void>;
+	readonly validateExtensionApproval?: (scope: ExtensionApprovalScope, toolName: string, turnId: string) => boolean;
 	readonly grantPermissions?: (input: {
 		readonly turnId: string;
 		readonly scope: "turn" | "session";
@@ -197,6 +204,9 @@ export class ApprovalContinuationCoordinator {
 	readonly #ruleStore: ApprovalContinuationCoordinatorOptions["ruleStore"];
 	readonly #publishExecPolicyRules: ApprovalContinuationCoordinatorOptions["publishExecPolicyRules"];
 	readonly #allowSession: ApprovalContinuationCoordinatorOptions["allowSession"];
+	readonly #allowExtensionSession: ApprovalContinuationCoordinatorOptions["allowExtensionSession"];
+	readonly #rememberExtension: ApprovalContinuationCoordinatorOptions["rememberExtension"];
+	readonly #validateExtensionApproval: ApprovalContinuationCoordinatorOptions["validateExtensionApproval"];
 	readonly #grantPermissions: ApprovalContinuationCoordinatorOptions["grantPermissions"];
 	readonly #failpoint: RuntimeFailpointHook;
 
@@ -211,6 +221,9 @@ export class ApprovalContinuationCoordinator {
 		this.#ruleStore = options.ruleStore;
 		this.#publishExecPolicyRules = options.publishExecPolicyRules;
 		this.#allowSession = options.allowSession;
+		this.#allowExtensionSession = options.allowExtensionSession;
+		this.#rememberExtension = options.rememberExtension;
+		this.#validateExtensionApproval = options.validateExtensionApproval;
 		this.#grantPermissions = options.grantPermissions;
 		this.#failpoint = options.failpoint ?? NO_RUNTIME_FAILPOINT;
 	}
@@ -282,6 +295,17 @@ export class ApprovalContinuationCoordinator {
 		if (choice === "reject" || !pending.options.includes(choice)) {
 			throw new ApprovalConflictError("waiting", "approve_once");
 		}
+		if (pending.extensionApproval) {
+			if (this.#validateExtensionApproval && !this.#validateExtensionApproval(pending.extensionApproval, pending.toolName, pending.turnId)) throw new ApprovalNotPendingError();
+			if (choice === "always_allow") {
+				if (!this.#rememberExtension) throw new ApprovalPersistenceError("Persistent integration approval is not configured.");
+				await this.#rememberExtension(pending.extensionApproval);
+			} else if (choice === "allow_session") {
+				if (!this.#allowExtensionSession) throw new ApprovalPersistenceError("Session integration approval is not configured.");
+				this.#allowExtensionSession(pending.extensionApproval);
+			}
+			return;
+		}
 		if (choice === "always_allow") {
 			const pattern = requiredPattern(pending.proposedExecPolicyPattern, "persistent approval");
 			if (!this.#ruleStore || !this.#publishExecPolicyRules) {
@@ -343,7 +367,9 @@ export class ApprovalContinuationCoordinator {
 			});
 			return { status: "rejected", checkpoint: rejected, continuation: pending, toolResult: result };
 		}
+		input.signal.throwIfAborted();
 		await this.authorize(pending, input.choice);
+		input.signal.throwIfAborted();
 
 		const approved = this.#store.compareAndSetApproval({
 			sessionId: this.#sessionId,
@@ -471,6 +497,7 @@ function pendingFromInput(
 ): PendingApprovalContinuation {
 	const argumentsValue = parseArguments(input.call.argumentsJson);
 	if (!argumentsValue) throw new TypeError("approval tool arguments must be an object");
+	const extensionApproval = optionalExtensionApproval(input.extensionApproval);
 	return Object.freeze({
 		sessionId,
 		clientTurnId: nonEmpty(input.clientTurnId, "clientTurnId"),
@@ -489,10 +516,12 @@ function pendingFromInput(
 				input.commandPattern,
 				input.proposedExecPolicyPattern,
 				input.permissionRequest !== undefined,
+				extensionApproval !== undefined,
 			),
 			input.commandPattern,
 			input.proposedExecPolicyPattern,
 			input.permissionRequest !== undefined,
+			extensionApproval !== undefined,
 		),
 		...(input.commandPattern ? { commandPattern: requiredPattern(input.commandPattern, "command") } : {}),
 		...(input.proposedExecPolicyPattern ? {
@@ -504,6 +533,7 @@ function pendingFromInput(
 		...(input.permissionRequest ? {
 			permissionRequest: freezePermissionRequest(input.permissionRequest),
 		} : {}),
+		...(extensionApproval ? { extensionApproval } : {}),
 		providerProtocol: input.providerProtocol,
 		userMessage: input.userMessage,
 		call: freezeCall(input.call),
@@ -541,6 +571,9 @@ function pendingFromStates(
 		metadata.prepared_mutation_guard,
 	);
 	const permissionRequest = permissionRequestFromJson(metadata.permission_request);
+	const extensionApproval = optionalExtensionApproval(metadata.extension_approval);
+	const suspendedExtension = optionalExtensionApproval(record(payload.pending_approval?.metadata).extension_approval);
+	if (extensionApproval?.id !== suspendedExtension?.id || extensionApproval?.fingerprint !== suspendedExtension?.fingerprint) throw new ApprovalNotPendingError();
 	const suspendedProposal = optionalPattern(
 		suspended.payload.pending_approval?.proposed_execpolicy_pattern,
 	);
@@ -569,11 +602,13 @@ function pendingFromStates(
 			commandPattern,
 			proposedExecPolicyPattern,
 			permissionRequest !== undefined,
+			extensionApproval !== undefined,
 		),
 		...(commandPattern ? { commandPattern } : {}),
 		...(proposedExecPolicyPattern ? { proposedExecPolicyPattern } : {}),
 		...(preparedMutationGuard ? { preparedMutationGuard } : {}),
 		...(permissionRequest ? { permissionRequest } : {}),
+		...(extensionApproval ? { extensionApproval } : {}),
 		providerProtocol: payload.provider_protocol ?? "responses",
 		userMessage: payload.user_message,
 		call,
@@ -611,6 +646,7 @@ function pendingDecisionState(
 			} : {}),
 			metadata: {
 				source: "node_runtime",
+				...(pending.extensionApproval ? { extension_approval: { ...pending.extensionApproval } } : {}),
 				...(pending.commandPattern ? {
 					command_pattern_tokens: [...pending.commandPattern],
 				} : {}),
@@ -641,6 +677,7 @@ function suspendedTurnState(
 		} : {}),
 		metadata: {
 			source: "node_runtime",
+			...(pending.extensionApproval ? { extension_approval: { ...pending.extensionApproval } } : {}),
 			...(pending.commandPattern ? { command_pattern_tokens: [...pending.commandPattern] } : {}),
 		},
 	};
@@ -842,12 +879,13 @@ function approvalOptions(
 	commandPattern: readonly string[] | undefined,
 	proposedExecPolicyPattern: readonly string[] | undefined,
 	permissionRequest = false,
+	extensionApproval = false,
 ): readonly ApprovalChoice[] {
 	return Object.freeze([
 		"approve_once" as const,
 		"reject" as const,
-		...(commandPattern || permissionRequest ? ["allow_session" as const] : []),
-		...(proposedExecPolicyPattern ? ["always_allow" as const] : []),
+		...(commandPattern || permissionRequest || extensionApproval ? ["allow_session" as const] : []),
+		...(proposedExecPolicyPattern || extensionApproval ? ["always_allow" as const] : []),
 	]);
 }
 
@@ -856,16 +894,18 @@ function restoredApprovalOptions(
 	commandPattern: readonly string[] | undefined,
 	proposedExecPolicyPattern: readonly string[] | undefined,
 	permissionRequest = false,
+	extensionApproval = false,
 ): readonly ApprovalChoice[] {
 	const available = new Set(approvalOptions(
 		commandPattern,
 		proposedExecPolicyPattern,
 		permissionRequest,
+		extensionApproval,
 	));
 	const restored = value.filter((choice): choice is ApprovalChoice => available.has(choice));
 	return restored.includes("approve_once") && restored.includes("reject")
 		? Object.freeze(restored)
-		: approvalOptions(commandPattern, proposedExecPolicyPattern, permissionRequest);
+		: approvalOptions(commandPattern, proposedExecPolicyPattern, permissionRequest, extensionApproval);
 }
 
 function normalizedApprovalOptions(
@@ -873,12 +913,14 @@ function normalizedApprovalOptions(
 	commandPattern: readonly string[] | undefined,
 	proposedExecPolicyPattern: readonly string[] | undefined,
 	permissionRequest: boolean,
+	extensionApproval: boolean,
 ): readonly ApprovalChoice[] {
 	return restoredApprovalOptions(
 		persistedOptions(value),
 		commandPattern,
 		proposedExecPolicyPattern,
 		permissionRequest,
+		extensionApproval,
 	);
 }
 
@@ -1004,4 +1046,11 @@ function reasoningEffort(value: unknown): ReasoningEffort | undefined {
 			.has(value as ReasoningEffort)
 		? value as ReasoningEffort
 		: undefined;
+}
+
+function optionalExtensionApproval(value: unknown): ExtensionApprovalScope | undefined {
+	if (value === undefined) return undefined;
+	const scope = parseExtensionApprovalScope(value);
+	if (!scope) throw new ApprovalNotPendingError();
+	return scope;
 }

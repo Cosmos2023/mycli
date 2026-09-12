@@ -167,7 +167,7 @@ export class GatewayClient {
 
 	async request<M extends GatewayMethod>(method: M, params: GatewayParams<M>): Promise<GatewayResult<M>> {
 		parseGatewayParams(method, params);
-		return parseGatewayResult(method, await this.send(method, params));
+		return parseGatewayResult(method, await this.send(method, { ...params }));
 	}
 
 	send(method: string, params: JsonObject = {}): Promise<JsonObject> {

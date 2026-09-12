@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { ExecutionPolicyConstraints } from "@mycli/runtime";
 import type { HookRunnerContract } from "@mycli/core";
 import {
 	builtinSkillRoot,
@@ -20,9 +21,12 @@ import {
 	McpClient,
 	McpCatalogCache,
 	McpManager,
+	McpRequiredServerError,
+	normalizeIntegrationToolNames,
 	type McpManagerDiscovery,
 	type McpResourceService,
 	type McpServerConfig,
+	type McpElicitationHandler,
 	PluginRuntime,
 	renderSkillCatalog,
 	SEND_AGENT_MESSAGE_TOOL_DEFINITION,
@@ -55,6 +59,7 @@ import {
 } from "@mycli/tools";
 import {
 	pluginSandboxProfile,
+	mcpSandboxProfile,
 	workspaceSandboxProfile,
 } from "./integration-sandbox.ts";
 import { mcpCatalogResources, pluginCatalogResources, type McpCatalogPhase } from "./integration-resource-catalog.ts";
@@ -103,6 +108,8 @@ interface IntegrationComposition {
 }
 
 interface CreateRuntimeIntegrationCompositionOptions {
+	readonly onMcpElicitation?: McpElicitationHandler;
+	readonly managedExecutionPolicy?: ExecutionPolicyConstraints;
 	readonly disabled?: boolean;
 	readonly builtinManifest: BuiltInToolManifest;
 	readonly workspaceRoot: string;
@@ -203,8 +210,9 @@ export async function createIntegrationComposition(
 			let contribution: IntegrationCompositionContribution;
 			try {
 				contribution = await source.start(controller.signal);
-			} catch {
+			} catch (error) {
 				await lifecycles.close().catch(() => undefined);
+				if (error instanceof McpRequiredServerError) throw error;
 				throw new Error("integration_start_failed");
 			}
 			contributions.push(contribution);
@@ -213,11 +221,12 @@ export async function createIntegrationComposition(
 			}
 		}
 
-		const registrations = Object.freeze(contributions.flatMap(
-			(contribution) => [...(contribution.registrations ?? [])],
-		));
+		let registrations: readonly IntegrationRegistration[];
 		let manifest: CombinedToolManifest;
 		try {
+			registrations = normalizeIntegrationToolNames(contributions.flatMap(
+				(contribution) => [...(contribution.registrations ?? [])],
+			), options.builtinManifest.tools.map((tool) => tool.name));
 			manifest = combinedToolManifest(options.builtinManifest, registrations);
 		} catch (error) {
 			await lifecycles.close().catch(() => undefined);
@@ -594,19 +603,34 @@ async function createRuntimeIntegrationContent(input: {
 							includeRepository: input.projectConfigurationEnabled,
 						});
 						const servers = [...config.servers, ...bundles.mcpServers];
+						const invalidRequired = [...config.diagnostics.filter((issue) => issue.required).map((issue) => issue.serverId), ...bundles.requiredMcpFailures];
+						if (invalidRequired.length) throw new McpRequiredServerError(invalidRequired);
 						const manager = new McpManager({
 							configs: servers,
 							catalogCache: new McpCatalogCache({
 								directory: join(options.homeDir, ".mycli", "cache"),
 							}),
 							createClient: (server) => new McpClient({
+								homeDir: options.homeDir,
+								onElicitation: options.onMcpElicitation,
 								config: server,
 								cwd: input.workspaceRoot,
-								sandboxProfile: workspaceSandboxProfile(input.workspaceRoot),
+								sandboxProfile: mcpSandboxProfile(input.workspaceRoot, server, options.managedExecutionPolicy),
 							}),
 						});
 						mcpManager = manager;
-						const cached = await manager.loadCached(discoverySignal);
+						let cached = await manager.loadCached(discoverySignal);
+						if (servers.some((server) => server.enabled && server.required)) {
+							try {
+								const required = await manager.discoverRequired(discoverySignal);
+								const ids = new Set(required.servers.map((server) => server.serverId));
+								cached = {
+									registrations: [...(cached?.registrations.filter((tool) => !ids.has(tool.originMetadata.server ?? "")) ?? []), ...required.registrations],
+									resources: [...(cached?.resources.filter((resource) => !ids.has(resource.serverId)) ?? []), ...required.resources],
+									servers: [...(cached?.servers.filter((server) => !ids.has(server.serverId)) ?? []), ...required.servers],
+								};
+							} catch (error) { await manager.close().catch(() => undefined); throw error; }
+						}
 						if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
 						startMcpRefresh = (publish) => {
 							void manager.refresh(discoverySignal).then(
@@ -781,7 +805,7 @@ function runtimeIntegrationSnapshot(input: {
 	readonly resources: readonly Readonly<Record<string, unknown>>[];
 	readonly diagnostics: readonly Readonly<Record<string, unknown>>[];
 }): RuntimeIntegrationSnapshot {
-	const registrations = Object.freeze([...input.registrations]);
+	const registrations = normalizeIntegrationToolNames(input.registrations, input.builtinManifest.tools.map((tool) => tool.name));
 	return Object.freeze({
 		version: input.version,
 		registrations,

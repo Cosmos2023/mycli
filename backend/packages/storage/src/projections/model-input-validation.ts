@@ -6,6 +6,7 @@ import {
 	manifestTimelineLogicalInputSha256,
 	modelInputSha256,
 	normalizeCanonicalImages,
+	parseToolDiscoveries,
 } from "@mycli/core";
 import type {
 	CanonicalContextMetadata,
@@ -758,7 +759,7 @@ function normalizeCanonicalItem(value: unknown): CanonicalConversationItem {
 		});
 	}
 	if (record.type === "tool_result") {
-		assertKeys(record, ["type", "callId", "toolName", "output", "success", "images"], [
+		assertKeys(record, ["type", "callId", "toolName", "output", "success", "images", "toolDiscoveries"], [
 			"type", "callId", "toolName", "output", "success",
 		], "canonical tool-result item");
 		if (typeof record.success !== "boolean") throw invalid("canonical tool result is invalid");
@@ -768,6 +769,9 @@ function normalizeCanonicalItem(value: unknown): CanonicalConversationItem {
 			toolName: identifier(record.toolName, "canonical tool name"),
 			output: boundedString(record.output, "canonical tool output", CONTEXT_CONTENT_MAX_CHARS),
 			success: record.success,
+			...(record.toolDiscoveries === undefined ? {} : {
+				toolDiscoveries: parseToolDiscoveries({ version: 1, tools: record.toolDiscoveries }),
+			}),
 			...(record.images === undefined ? {} : { images: canonicalImages(record.images) }),
 		});
 	}

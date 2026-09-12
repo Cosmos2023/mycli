@@ -1,6 +1,7 @@
 import type { ErrorContext, GatewayTerminalInteraction, ProviderAttemptRecord, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
 import type { ShellLifecycleEvent } from "./lifecycle/shell-lifecycle.ts";
 import type { ProviderNativeTransportSnapshot } from "./conversation/provider-native-transport.ts";
+import type { ToolDiscovery } from "./conversation/tool-discovery.ts";
 
 type Brand<Value, Name extends string> = Value & { readonly __brand: Name };
 
@@ -81,6 +82,8 @@ export interface CanonicalToolResult {
 	readonly output: string;
 	readonly success: boolean;
 	readonly images?: readonly CanonicalImage[];
+	/** Validated load points; schemas are resolved from the current authorized request. */
+	readonly toolDiscoveries?: readonly ToolDiscovery[];
 }
 
 export interface ApprovalPreviewDetails {

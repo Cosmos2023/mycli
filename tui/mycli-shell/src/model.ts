@@ -5,6 +5,7 @@ import type {
 	ProviderAttemptRecord,
 	GatewayTerminalInteraction,
 	ErrorContext,
+	McpElicitationRequest,
 } from "@mycli/contracts";
 
 export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
@@ -645,6 +646,7 @@ type MycliShellClarificationOption = {
 };
 
 export type MycliShellPendingClarification = {
+	elicitation?: McpElicitationRequest;
 	requestId: string;
 	turnId?: string;
 	sessionId?: string;

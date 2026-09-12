@@ -213,6 +213,13 @@ export type SettingsMutation1 =
     };
 
 export interface GatewayRpcMethods {
+  "mcp.elicitation.respond": {
+    params: McpElicitationResponse;
+    result: {
+      accepted: boolean;
+    };
+    [k: string]: unknown;
+  };
   initialize: BootstrapMethod;
   "status.get": StatusMethod;
   "status.inspect": StatusMethod;
@@ -530,6 +537,14 @@ export interface GatewayRpcMethods {
     [k: string]: unknown;
   };
 }
+export interface McpElicitationResponse {
+  request_id: string;
+  session_id: string;
+  action: "accept" | "decline" | "cancel";
+  content?: {
+    [k: string]: string | number | boolean | string[];
+  };
+}
 export interface BootstrapMethod {
   params: {
     protocol_version?: number;
@@ -571,6 +586,7 @@ export interface Status {
   trust?: TrustState;
   permissions?: Permissions;
   pending_decision?: boolean;
+  pending_mcp_elicitation?: boolean;
   pending_clarification?: boolean;
   suspended_turn?: boolean;
   has_pending_input?: boolean;
