@@ -139,7 +139,9 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		argumentPolicy: "optional",
 		tuiPolicy: hybridPolicy("open_model_selector"),
 	}),
-	spec("plan", "/plan", "Switch to Plan mode", {
+	spec("plan", "/plan", "Switch to Plan mode or plan a task", {
+		argumentHint: "[task]",
+		argumentPolicy: "optional",
 		presentation: "none",
 		availableDuringTurn: false,
 	}),
@@ -199,7 +201,8 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	spec("stats", "/stats", "Show aggregate runtime stats", {
 		visible: false,
 	}),
-	spec("skills", "/skills", "Inspect available skills", {
+	spec("skills", "/skills", "Select skills or manage availability", {
+		tuiPolicy: tuiPolicy("open_skills"),
 		presentation: "overlay",
 	}),
 	spec("mcp", "/mcp", "Inspect MCP servers and their tools", {
@@ -211,7 +214,8 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		tuiPolicy: tuiPolicy("open_plugins"),
 		presentation: "overlay",
 	}),
-	spec("hooks", "/hooks", "Inspect configured hooks", {
+	spec("hooks", "/hooks", "Browse hook events, commands and trust", {
+		tuiPolicy: tuiPolicy("open_hooks"),
 		presentation: "overlay",
 	}),
 	spec("tools", "/tools", "Inspect the runtime tool inventory", {
@@ -241,7 +245,11 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		argumentHint: "[stop-all]",
 		argumentPolicy: "optional",
 	}),
-	spec("changes", "/changes", "Inspect file changes"),
+	spec("diff", "/diff", "Show staged, unstaged and untracked Git changes", { tuiPolicy: tuiPolicy("open_diff"), presentation: "overlay", surfaces: TUI_SURFACE }),
+	spec("review", "/review", "Review changes, a branch, or a commit", { tuiPolicy: tuiPolicy("open_review"), presentation: "overlay", availableDuringTurn: false, surfaces: TUI_SURFACE }),
+	spec("rename", "/rename", "Rename the current session", { argumentHint: "[title]", argumentPolicy: "optional", tuiPolicy: hybridPolicy("open_rename"), availableDuringTurn: false }),
+	spec("init", "/init", "Create repository guidance in AGENTS.md", { availableDuringTurn: false, surfaces: TUI_SURFACE }),
+	spec("changes", "/changes", "Inspect session file history"),
 	spec("undo", "/undo", "Undo the last recoverable file change", {
 		visible: false,
 	}),
@@ -276,8 +284,7 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		presentation: "none",
 		visible: false,
 	}),
-	spec("clear", "/clear", "Clear the local transcript view", {
-		tuiPolicy: tuiPolicy("clear_transcript"),
+	spec("clear", "/clear", "Clear the terminal and start a new session", {
 		surfaces: TUI_SURFACE,
 		presentation: "none",
 		availableDuringTurn: false,
@@ -439,11 +446,11 @@ function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestIte
 function commandCategory(id: string): SlashCommandCategory {
 	if (["model", "mode", "plan"].includes(id)) return "model";
 	if (["permissions", "sandbox", "trust"].includes(id)) return "safety";
-	if (["new", "resume", "fork", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
+	if (["new", "resume", "rename", "fork", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
 		return "session";
 	}
 	if (["skills", "mcp", "plugins", "hooks", "resources"].includes(id)) return "integrations";
-	if (["tools", "memory", "agents", "ps", "changes", "undo"].includes(id)) {
+	if (["tools", "memory", "agents", "ps", "changes", "undo", "diff", "review", "init"].includes(id)) {
 		return "tools";
 	}
 	if (["status", "usage", "context", "stats", "trace"].includes(id)) return "diagnostics";

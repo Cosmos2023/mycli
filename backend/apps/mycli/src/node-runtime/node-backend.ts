@@ -1,3 +1,6 @@
+import { GatewayFailure } from "./node-gateway-errors.ts";
+import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure } from "./workspace-slash-workflows.ts";
+import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { randomUUID } from "node:crypto";
 import { PluginCatalogService } from "@mycli/integrations";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
@@ -839,6 +842,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		initialContinuation?: unknown,
 		runtimeOptions: {
 			readonly allowedTools?: readonly string[];
+			readonly registryId?: string;
+			readonly review?: { readonly workspaceRoot: string; readonly revision?: string };
+			readonly queueCoordinator?: QueueCoordinator;
 			readonly instructions?: string;
 			readonly developerInstructions?: readonly string[];
 			readonly subagentContext?: ChildRuntimeCreateInput;
@@ -849,8 +855,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly agentCheckpoint?: NodeTurnRuntimeOptions["agentCheckpoint"];
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
-		): Promise<ComposedNodeRuntime> => runtimeRegistry.getOrCreate(sessionId, async (signal) => {
-			const allowedTools = options.executionMode === "review" ? ["Read"] : runtimeOptions.allowedTools;
+		): Promise<ComposedNodeRuntime> => runtimeRegistry.getOrCreate(runtimeOptions.registryId ?? sessionId, async (signal) => {
+			const reviewMode = options.executionMode === "review" || runtimeOptions.review !== undefined;
+			const reviewRevision = runtimeOptions.review?.revision ?? options.reviewRevision;
+			const readRoot = runtimeOptions.review?.workspaceRoot ?? workspaceRoot;
+			const allowedTools = reviewMode ? ["Read"] : runtimeOptions.allowedTools;
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
 				: loadSessionPreferences(store, sessionId);
@@ -885,7 +894,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					},
 				};
 				const resolveEffective = async (inputTokenLimit?: number): Promise<NodeRuntimeConfig> => {
-					const resolved = await resolveWorkspaceModelRuntimeConfig({
+					const rawResolved = await resolveWorkspaceModelRuntimeConfig({
 						...configInput,
 						...(inputTokenLimit === undefined
 							? {}
@@ -894,6 +903,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								maxPromptTokensCeiling: inputTokenLimit,
 							}),
 					});
+					const resolved: NodeRuntimeConfig = reviewMode ? Object.freeze({ ...rawResolved, webSearchMode: "disabled" }) : rawResolved;
 					return !runtimeOptions.provider ? resolved : Object.freeze({
 						...resolved,
 						provider: runtimeOptions.provider.provider,
@@ -929,7 +939,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				workspaceRoot, env: runtimeEnvironment, signal,
 				managedExecutionPolicy: executionPolicyConstraints,
 				projectConfigurationEnabled,
-				disabled: integrationOptions.disabled || !integrationAuthorized,
+				disabled: integrationOptions.disabled || reviewMode || !integrationAuthorized,
 				configuration: childConfiguration,
 				pinConfiguration: childContext !== undefined,
 				subagentServices: sharedSubagents,
@@ -1008,9 +1018,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
 				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
 				new ReadMcpResourceTool(integrationComposition.mcpResourceService),
-				options.executionMode === "review" && options.reviewRevision
-					? new GitReviewReadTool(workspaceRoot, options.reviewRevision)
-					: new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
+				reviewMode && reviewRevision
+					? new GitReviewReadTool(readRoot, reviewRevision)
+					: new ReadTool({ workspaceRoot: readRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
@@ -1120,7 +1130,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				cwd: workspaceRoot,
 				homeDir,
 			});
-			const queueCoordinator = new QueueCoordinator({
+			const queueCoordinator = runtimeOptions.queueCoordinator ?? new QueueCoordinator({
 			initial: initialQueue,
 			store: {
 				loadCommittedQueueIds: () => store.loadCommittedQueueIds(sessionId),
@@ -1242,6 +1252,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				createdAt: new Date().toISOString(),
 				createEventId: () => `lifecycle-${randomUUID()}`,
 			});
+			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
 			const coordinatorRuntime = new NodeTurnRuntime({
 			runLifecycle: {
 				prepare: (turnId, signal) => integrationComposition.prepareRun(JSON.stringify([sessionId, turnId]), signal),
@@ -1263,6 +1274,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
+				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
 				workspace: workspaceInstructionsForTrust(
 					workspaceRoot,
 					runSnapshot.policy?.configuration
@@ -1899,7 +1911,34 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						return interrupted;
 						},
 					},
+					validateSelectedSkills: (sessionId, references) => {
+						const skills = runtimeRegistry.get(sessionId)?.integrations.skills;
+						if (!skills) throw new Error("skills_unavailable");
+						for (const reference of references) skills.resolve(reference);
+					},
+					createReviewRuntime: async ({ sessionId, review, signal }) => {
+						const current = runtimeRegistry.get(sessionId);
+						if (!current) throw new GatewayFailure("session_changed", "Review session is unavailable.");
+						const prepared = await prepareInteractiveReview({ cwd: current.workspaceRoot, review, signal }).catch((error: unknown) => { signal.throwIfAborted(); throw workspaceWorkflowFailure(error); });
+						if (prepared.empty) throw new GatewayFailure("invalid_params", "No changes to review.", { additional_details: "No changes to review." });
+						signal.throwIfAborted();
+						const registryId = `${sessionId}:review:${randomUUID()}`;
+						const runtime = await createRuntime(sessionId, current.workspaceRoot, sessionId, current.queueCoordinator!.snapshot(), undefined, {
+							registryId, review: { workspaceRoot: prepared.workspaceRoot, revision: prepared.revision }, queueCoordinator: current.queueCoordinator,
+							developerInstructions: [prepared.prompt, `Review paths are relative to the Git root ${JSON.stringify(prepared.workspaceRoot)}. Use this root for Read.`, "Write the review as Markdown. For each supported finding include severity, file location, trigger and impact; finish with a concise assessment. If there are no findings, say so. Do not output JSON."],
+						});
+						let closing: Promise<void> | undefined;
+						const close = (): Promise<void> => closing ??= runtimeRegistry.dispose(registryId, runtime);
+						try {
+							signal.throwIfAborted();
+							runtime.configureExecutionPolicy?.({ trust: await workspaceTrustStore.load(current.workspaceRoot), permission: "read-only" });
+							signal.throwIfAborted();
+							return { runtime, close };
+						} catch (error) { await close(); throw error; }
+					},
+					workspaceCommands: { diff: loadGitWorkspaceDiff, init: repositoryInitPrompt },
 					sessionCommands: {
+						rename: (sessionId, title) => sessionService.rename(sessionId, title),
 						list: (query) => sessionService.list(query),
 						inspect: (sessionId) => sessionService.inspect(sessionId),
 						previewResume: (sessionId) => sessionService.previewResume(sessionId),
@@ -2609,6 +2648,8 @@ function integrationGateway(
 ): NodeGatewayIntegrations {
 	const commands = combinedIntegrationCommands(() => current()?.commands ?? []);
 	const integrations: NodeGatewayIntegrations = {
+		get skills() { return current()?.skills; },
+		get hookManagement() { return current()?.hookManagement; },
 		refresh: () => current()?.refreshConfiguration() ?? Promise.resolve(),
 		toolManifest: () => current()?.manifest as unknown as Record<string, unknown>,
 		diagnostics: () => current()?.diagnostics.map((diagnostic) => ({ ...diagnostic })) ?? [],

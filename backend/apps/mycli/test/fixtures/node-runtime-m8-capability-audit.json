@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 51,
+	"rpc_count": 57,
     "event_count": 47,
     "required_rpc": [
       "session.bootstrap",
@@ -50,9 +50,9 @@
     ]
   },
   "slash_commands": {
-	"command_count": 38,
+	"command_count": 42,
 	"retired_command_count": 39,
-	"sha256": "4bccec03ac1fb080ff5b65a15a1a3e9f906ca1ee56337064bdb6bb203ee7cbe5"
+	"sha256": "5d6e2229fde8417e8dc017826546d79761a7ea24b67fb592370bfe7a90ac718a"
   },
   "tools": {
     "retained": [

@@ -58,6 +58,7 @@ import {
 } from "./node-gateway-rpc-transport.ts";
 import { NodeGatewaySessionController } from "./node-gateway-session-controller.ts";
 import { NodeGatewayPluginController } from "./node-gateway-plugin-controller.ts";
+import { NodeGatewayCapabilityController } from "./node-gateway-capability-controller.ts";
 import {
 	gatewayQueueItem,
 	legacyMigrationRecord,
@@ -119,6 +120,7 @@ class InProcessNodeGateway implements NodeGateway {
 	readonly #resolveCompletion: (code: number) => void;
 	#closed = false;
 	readonly #pluginController: NodeGatewayPluginController;
+	readonly #capabilityController: NodeGatewayCapabilityController;
 	#errorContextVersion: 1 | undefined;
 	#closePromise: Promise<void> | null = null;
 	#manualCompaction: { readonly controller: AbortController; readonly task: Promise<NodeGatewayCompactionResult> } | null = null;
@@ -159,7 +161,10 @@ class InProcessNodeGateway implements NodeGateway {
 			activateSettings: (workspaceRoot, runtime) => {
 				return this.#settingsController.activateSession(workspaceRoot, runtime);
 			},
-			onTransition: () => this.#pluginController.cancelPending(),
+			onTransition: () => {
+				this.#pluginController.cancelPending();
+				this.#capabilityController.cancelPending();
+			},
 			activeShellPayloads: () => this.#shellController.activePayloads(),
 			authProviders: () => this.#settingsController.authProviders(),
 			credentialReadiness: () => this.#settingsController.credentialReadiness(),
@@ -170,6 +175,7 @@ class InProcessNodeGateway implements NodeGateway {
 			requestNextQueuedTurn: () => { this.#turnController.requestNextQueuedTurn(); },
 		});
 		this.#pluginController = new NodeGatewayPluginController({ session: this.#sessionController, createCatalog: options.pluginCatalog });
+		this.#capabilityController = new NodeGatewayCapabilityController({ session: this.#sessionController, integrations: () => options.integrations, workspace: options.workspaceCommands, loadTranscriptPage: options.loadTranscriptPage });
 		this.#settingsController = new NodeGatewaySettingsController({
 			provider: options.provider,
 			model: options.model,
@@ -234,6 +240,7 @@ class InProcessNodeGateway implements NodeGateway {
 			if (this.#closed) return;
 			this.#closed = true;
 			const pluginCleanup = this.#pluginController.close();
+			const capabilityCleanup = this.#capabilityController.close();
 			const manualCompaction = this.#manualCompaction;
 			manualCompaction?.controller.abort();
 			this.#sessionController.close();
@@ -253,6 +260,7 @@ class InProcessNodeGateway implements NodeGateway {
 				await this.#turnController.close();
 				await manualCompaction?.task.catch(() => undefined);
 				await pluginCleanup;
+				await capabilityCleanup;
 				await this.#options.close();
 			} catch {
 				exitCode = 1;
@@ -291,6 +299,7 @@ class InProcessNodeGateway implements NodeGateway {
 			case "workspace.trust.status":
 				return this.#settingsController.trustStatus();
 			case "workspace.trust.set":
+				this.#capabilityController.cancelPending();
 				this.#pluginController.cancelPending();
 				return this.#settingsController.setWorkspaceTrust(request.params);
 			case "permissions.list":
@@ -306,6 +315,18 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#resourceList();
 			case "plugin.catalog":
 				return this.#pluginController.catalog(request.params).then((catalog) => ({ ...catalog }));
+			case "workspace.diff":
+				return this.#capabilityController.workspaceDiff(request.params).then((result) => ({ ...result }));
+			case "session.preview":
+				return this.#capabilityController.sessionPreview(request.params).then((result) => ({ ...result }));
+			case "hooks.list":
+				return this.#capabilityController.hooksList(request.params).then((result) => ({ ...result }));
+			case "hooks.config.write":
+				return this.#capabilityController.hooksWrite(request.params).then((result) => ({ ...result }));
+			case "skills.list":
+				return this.#capabilityController.skillsList(request.params).then((result) => ({ ...result }));
+			case "skills.config.write":
+				return this.#capabilityController.skillsWrite(request.params).then((result) => ({ ...result }));
 			case "plugin.inspect":
 				return this.#pluginController.inspect(request.params).then((detail) => ({ ...detail }));
 			case "plugin.operation.start":
@@ -753,6 +774,7 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #commandRun(params: JsonObject): Promise<JsonObject> {
+		this.#sessionController.assertMutationContext(params);
 		const command = requiredString(params.command, "command").trim();
 		const surface = slashCommandSurface(params.surface);
 		let invocation;
@@ -797,7 +819,20 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	async #coreCommand(invocation: ReturnType<typeof resolveSlashCommand>): Promise<JsonObject | undefined> {
-		if (invocation.commandId === "new") {
+		if (invocation.commandId === "rename") {
+			const rename = this.#options.sessionCommands?.rename;
+			if (!rename) throw new GatewayFailure("unavailable_feature", "Session rename is unavailable.");
+			this.#settingsController.ensureSessionPreferences(this.#settingsController.collaborationMode);
+			const summary = rename(this.#sessionController.sessionId(), invocation.args);
+			this.#emitRuntime("status.changed", this.#status());
+			return noticeCommandResult(invocation, "Session renamed", summary.title ?? invocation.args, { extra: { session_title: summary.title ?? invocation.args } });
+		}
+		if (invocation.commandId === "init") {
+			if (!this.#options.workspaceCommands) throw new GatewayFailure("unavailable_feature", "Repository initialization is unavailable.");
+			const prompt = await this.#options.workspaceCommands.init(this.#sessionController.workspaceRoot());
+			return noticeCommandResult(invocation, "Repository guide", prompt ? "Preparing AGENTS.md" : "AGENTS.md already exists.", { extra: prompt ? { submit_prompt: prompt } : {} });
+		}
+		if (invocation.commandId === "new" || invocation.commandId === "clear") {
 			const created = await this.#sessionController.startNew();
 			return {
 				...created,
@@ -1220,6 +1255,7 @@ class InProcessNodeGateway implements NodeGateway {
 				extra: {
 					mutated_mode: mutated,
 					collaboration_mode: requested,
+					...(invocation.commandId === "plan" && invocation.args ? { submit_prompt: invocation.args } : {}),
 				},
 			});
 		}

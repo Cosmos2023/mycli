@@ -6668,3 +6668,109 @@ async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 3_000):
 	}
 	throw new Error("timed out waiting for Node backend");
 }
+
+test("selected skills reach one provider request and disabled selections cannot be invoked on later turns", async (t) => {
+ const root = await mkdtemp(join(tmpdir(), "mycli-selected-skill-"));
+ const home = join(root, "home"); const workspace = join(root, "workspace");
+ await mkdir(join(workspace, ".mycli", "skills"), { recursive: true }); await mkdir(home);
+ await writeFile(join(workspace, ".mycli", "skills", "review.md"), "---\nname: review\ndescription: Inspect changes\n---\nSELECTED_SKILL_BODY_72641\n");
+ await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
+ const requests: Record<string, unknown>[] = [];
+ const server = createServer((request, reply) => {
+  let body = ""; request.setEncoding("utf8"); request.on("data", (chunk) => { body += chunk; });
+  request.on("end", () => { requests.push(JSON.parse(body) as Record<string, unknown>); reply.writeHead(200, { "content-type": "text/event-stream" }); writeResponsesText(reply, "Reviewed.", `skill-response-${requests.length}`); reply.end("data: [DONE]\n\n"); });
+ });
+ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+ const address = server.address(); assert.ok(address && typeof address === "object");
+ const backend = await startNodeBackend({ cwd: workspace, args: ["--session", "selected-skill", "--model", "gpt-test"], env: {
+  HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`, MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses",
+  MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+ } });
+ t.after(async () => { await backend.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
+ const messages: Record<string, unknown>[] = [];
+ createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => { messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>); });
+ await waitFor(() => event(messages, "runtime.ready"));
+ const context = { session_id: "selected-skill", generation: 1 };
+ writeRequest(backend, "list-skills", "skills.list", context);
+ const listing = await waitFor(() => response(messages, "list-skills"));
+ const skills = resultValue(listing, "skills") as Record<string, unknown>[];
+ const skill = skills.find((entry) => entry.name === "review")!; assert.ok(skill);
+ assert.doesNotMatch(JSON.stringify(listing), /SELECTED_SKILL_BODY/);
+ const reference = { id: skill.id, name: skill.name, revision: skill.revision };
+ writeRequest(backend, "invoke-skill", "turn.submit", { ...context, client_turn_id: "skill-first", client_user_message_id: "skill-first", message: "Use $review", skill_references: [reference] });
+ await waitFor(() => finalMessageCount(messages) === 1 || event(messages, "turn.failed"), 10000);
+ assert.equal(requests.length, 1); assert.match(JSON.stringify(requests[0]), /SELECTED_SKILL_BODY_72641/);
+ writeRequest(backend, "disable-skill", "skills.config.write", { ...context, id: skill.id, skill_revision: skill.revision, revision: resultValue(listing, "revision"), enabled: false });
+ const disabled = await waitFor(() => response(messages, "disable-skill")); assert.equal(disabled.error, undefined);
+ writeRequest(backend, "invoke-disabled", "turn.submit", { ...context, client_turn_id: "skill-second", client_user_message_id: "skill-second", message: "Use $review again", skill_references: [reference] });
+ await waitFor(() => messages.some((message) => message.method === "turn.failed" && paramValue(message, "client_turn_id") === "skill-second"), 10000);
+ assert.equal(requests.length, 1, "disabled selection must fail before another model request");
+});
+
+test("TUI review uses read-only tools and releases its runtime before ordinary chat", async (t) => {
+ const { execFileSync } = await import("node:child_process");
+ const root = await mkdtemp(join(tmpdir(), "mycli-tui-review-"));
+ const home = join(root, "home"); const workspace = join(root, "workspace");
+ const nested = join(workspace, "src");
+ await mkdir(nested, { recursive: true }); await mkdir(home);
+ execFileSync("git", ["init", "-q", workspace], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+ await writeFile(join(workspace, "sample.ts"), "export const value = 1;\n");
+ const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+ execFileSync("git", ["-C", workspace, "add", "sample.ts"], { env: gitEnv });
+ execFileSync("git", ["-C", workspace, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "baseline"], { env: gitEnv });
+ await writeFile(join(workspace, "sample.ts"), "export const value = 2;\n");
+ await new WorkspaceTrustStore({ homeDir: home }).save(nested, "trusted");
+ const requests: Record<string, unknown>[] = [];
+ const server = createServer((request, reply) => {
+  let body = ""; request.setEncoding("utf8"); request.on("data", (chunk) => { body += chunk; });
+  request.on("end", () => {
+   requests.push(JSON.parse(body) as Record<string, unknown>); reply.writeHead(200, { "content-type": "text/event-stream" });
+   if (requests.length === 1 || requests.length === 5) writeResponsesTool(reply, `review-read-call-${requests.length}`, "Read", { file_path: "sample.ts", offset: 1, limit: 10 }, `review-read-${requests.length}`);
+   else if (requests.length === 3) writeResponsesTool(reply, "review-write-call", "Write", { file_path: join(workspace, "forbidden.txt"), content: "must never be written" }, "review-write");
+   else writeResponsesText(reply, "Review complete.", `review-${requests.length}`);
+   reply.end("data: [DONE]\n\n");
+  });
+ });
+ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+ const address = server.address(); assert.ok(address && typeof address === "object");
+ const backend = await startNodeBackend({ cwd: nested, args: ["--session", "review-session", "--model", "gpt-test"], env: {
+  HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`, MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0",
+ } });
+ t.after(async () => { await backend.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
+ const messages: Record<string, unknown>[] = [];
+ createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => { messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>); });
+ await waitFor(() => event(messages, "runtime.ready"));
+ writeRequest(backend, "rename-empty", "command.run", { command: "/rename Empty review session", surface: "tui", session_id: "review-session", generation: 1 });
+ const emptyRenamed = await waitFor(() => response(messages, "rename-empty"));
+ assert.equal(resultValue(emptyRenamed, "session_title"), "Empty review session");
+ assert.equal(requests.length, 0);
+ writeRequest(backend, "review-submit", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "review-turn", client_user_message_id: "review-turn", message: "Review uncommitted changes.", review: { kind: "uncommitted" } });
+ await waitFor(() => finalMessageCount(messages) === 1 || event(messages, "turn.failed") || response(messages, "review-submit")?.error, 10000);
+ assert.equal(response(messages, "review-submit")?.error, undefined);
+ assert.equal(finalMessageCount(messages), 1, JSON.stringify(messages.filter((message) => message.method === "turn.failed")));
+ assert.deepEqual((requests[0]!.tools as { name: string }[]).map((tool) => tool.name), ["Read"]);
+ assert.match(JSON.stringify(requests[0]), /sample.ts/);
+ const workingRead = (requests[1]!.input as Record<string, unknown>[]).find((item) => item.type === "function_call_output" && item.call_id === "review-read-call-1");
+ assert.match(JSON.stringify(workingRead), /export const value = 2/);
+ writeRequest(backend, "malicious-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "malicious-review", client_user_message_id: "malicious-review", message: "Review again.", review: { kind: "uncommitted" } });
+ const maliciousResponse = await waitFor(() => response(messages, "malicious-review"));
+ assert.equal(maliciousResponse.error, undefined, JSON.stringify(maliciousResponse));
+ await waitFor(() => messages.some((message) => message.method === "turn.status" && paramValue(message, "terminal") === true && paramValue(message, "client_turn_id") === "malicious-review"), 10000);
+ assert.equal(existsSync(join(workspace, "forbidden.txt")), false);
+ const completedBeforeHistorical = finalMessageCount(messages);
+ writeRequest(backend, "historical-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "historical-review", client_user_message_id: "historical-review", message: "Review the initial commit.", review: { kind: "commit", ref: "HEAD" } });
+ await waitFor(() => finalMessageCount(messages) === completedBeforeHistorical + 1, 10000);
+ const historicalRead = (requests[5]!.input as Record<string, unknown>[]).find((item) => item.type === "function_call_output" && item.call_id === "review-read-call-5");
+ assert.match(JSON.stringify(historicalRead), /export const value = 1/);
+ assert.doesNotMatch(JSON.stringify(historicalRead), /export const value = 2/);
+ const completedBeforeNormal = finalMessageCount(messages);
+ writeRequest(backend, "normal-after-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "normal-turn", client_user_message_id: "normal-turn", message: "Continue ordinary chat." });
+ await waitFor(() => finalMessageCount(messages) === completedBeforeNormal + 1, 10000);
+ assert.ok((requests.at(-1)!.tools as { name: string }[]).some((tool) => tool.name === "Shell"));
+ writeRequest(backend, "rename-reviewed", "command.run", { command: "/rename Reviewed session", surface: "tui", session_id: "review-session", generation: 1 });
+ const renamed = await waitFor(() => response(messages, "rename-reviewed"));
+ assert.equal(resultValue(renamed, "session_title"), "Reviewed session");
+ writeRequest(backend, "preview-reviewed", "session.preview", { session_id: "review-session", generation: 1, target_session_id: "review-session" });
+ const preview = await waitFor(() => response(messages, "preview-reviewed"));
+ assert.match(String(resultValue(preview, "text")), /Continue ordinary chat/);
+});

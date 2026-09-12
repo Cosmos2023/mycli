@@ -189,6 +189,10 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/hooks",
 	"/agents",
 	"/ps",
+	"/diff",
+	"/review",
+	"/rename",
+	"/init",
 	"/changes",
 	"/help",
 	"/quit",
@@ -302,6 +306,8 @@ function permissionPayload(
 }
 
 function gatewayHarness(options: {
+	validateSelectedSkills?: CreateNodeGatewayOptions["validateSelectedSkills"];
+	workspaceCommands?: CreateNodeGatewayOptions["workspaceCommands"];
 	conversation?: readonly { role: "user" | "assistant"; content: string }[];
 	existingTurn?: RuntimeTurnRecord;
 	reserve?: (submission: TurnSubmission) => {
@@ -707,6 +713,7 @@ function gatewayHarness(options: {
 		save: async () => undefined,
 	} : undefined);
 	const gateway = createNodeGateway({
+		validateSelectedSkills: options.validateSelectedSkills, workspaceCommands: options.workspaceCommands,
 		sessionId: "session-node",
 		workspaceRoot: "/repo",
 		provider: "openai",
@@ -2001,7 +2008,6 @@ test("built-in TUI slash commands resolve to their canonical client actions", as
 		["/view\tfocus", "view", "set_view_mode", "focus", "none"],
 		["/hotkeys", "hotkeys", "open_hotkeys", "", "none"],
 		["/copy", "copy", "copy_last_response", "", "none"],
-		["/clear", "clear", "clear_transcript", "", "none"],
 		["/login", "login", "open_login", "", "none"],
 		["/trust", "trust", "open_trust", "", "none"],
 		["/quit", "quit", "quit", "", "none"],
@@ -2023,7 +2029,7 @@ test("built-in slash validation returns stable local errors", async () => {
 	const harness = gatewayHarness();
 	for (const [command, surface, code] of [
 		["/does-not-exist", "tui", "unknown_command"],
-		["/plan now", "tui", "invalid_arguments"],
+		["/usage now", "tui", "invalid_arguments"],
 		["/new", "cli", "unavailable_surface"],
 	] as const) {
 		const response = await harness.send("command.run", { command, surface });
@@ -2148,7 +2154,7 @@ test("core backend slash commands return bounded versioned display results", asy
 		["/status", "tui", "status", "transcript"],
 		["/usage", "tui", "diagnostic", "transcript"],
 		["/tools", "tui", "list", "overlay"],
-		["/skills", "tui", "list", "overlay"],
+		["/skills", "cli", "list", "overlay"],
 		["/changes", "tui", "list", "transcript"],
 		["/help", "cli", "list", "none"],
 	] as const) {
@@ -2291,10 +2297,10 @@ test("Plan-mode completion emits one stripped proposed plan after the final mess
 	await harness.gateway.close();
 });
 
-test("new slash command switches to a fresh backend session generation", async () => {
+for (const command of ["/new", "/clear"]) test(`${command} switches to a fresh backend session generation`, async () => {
 	const harness = gatewayHarness({ sessions: {} });
 
-	const created = await harness.send("command.run", { command: "/new", surface: "tui" });
+	const created = await harness.send("command.run", { command, surface: "tui" });
 
 	assert.equal("result" in created ? created.result.mutated_session : false, true);
 	assert.equal("result" in created ? created.result.session_id : null, "fresh-1");
@@ -2731,13 +2737,13 @@ test("skill and tool inspection retain descriptions, availability, and configure
 	}] });
 	t.after(() => harness.gateway.close());
 	for (const command of ["/skills", "/skills\t", "/skills\n"]) {
-		const response = await harness.send("command.run", { command, surface: "tui" });
+		const response = await harness.send("command.run", { command, surface: "cli" });
 		assert.ok("result" in response);
 		const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
 		assert.deepEqual(display.rows.map((row) => [row.label, row.status, row.detail]), [["review", "enabled", "Review changes"]]);
 	}
 	for (const command of ["/hooks", "/hooks\t"]) {
-		const response = await harness.send("command.run", { command, surface: "tui" });
+		const response = await harness.send("command.run", { command, surface: "cli" });
 		assert.ok("result" in response);
 		const display = response.result.display as { rows: readonly { label: string; status: string; detail: string }[] };
 		assert.deepEqual(display.rows.map((row) => [row.label, row.status, row.detail]), [
@@ -6190,3 +6196,30 @@ function turnRecord(
 		completed_at: status === "in_progress" ? null : "2026-08-04T00:00:01.000Z",
 	};
 }
+
+
+test("invalid skill steering is rejected without failing the active turn", async (t) => {
+ const harness = gatewayHarness({ sessions: {}, queue: {}, validateSelectedSkills: () => { throw new Error("skill_changed"); } });
+ t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+ const started = await harness.send("turn.submit", { message: "continue working", client_turn_id: "active", client_user_message_id: "active" });
+ assert.ok("result" in started);
+ const rejected = await harness.send("turn.steer", { message: "$review", client_turn_id: "steer-skill", expected_turn_id: started.result.turn_id,
+  skill_references: [{ id: "a".repeat(64), revision: "b".repeat(64), name: "review" }],
+ });
+ assert.ok("error" in rejected); assert.equal(rejected.error.code, "invalid_params");
+ const status = await harness.send("status.inspect"); assert.ok("result" in status); assert.equal(status.result.turn_running, true);
+ assert.equal(notification(harness.messages, "turn.failed"), undefined);
+});
+
+test("diff reads use session ownership and session transitions cancel pending work", async (t) => {
+ const pending = Promise.withResolvers<void>(); let signal: AbortSignal | undefined;
+ const harness = gatewayHarness({ sessions: {}, workspaceCommands: { init: async () => undefined, diff: async (_cwd, current) => { signal = current; await pending.promise; current.throwIfAborted(); return { text: "old diff", truncated: false }; } } });
+ t.after(async () => { pending.resolve(); await harness.gateway.close(); });
+ const stale = await harness.send("workspace.diff", { session_id: "other", generation: 1 });
+ assert.ok("error" in stale); assert.equal(stale.error.code, "session_changed"); assert.equal(signal, undefined);
+ const loading = harness.send("workspace.diff", { session_id: "session-node", generation: 1 });
+ const activeSignal = await waitFor(() => signal);
+ const created = await harness.send("session.new"); assert.ok("result" in created);
+ assert.equal(activeSignal.aborted, true); pending.resolve();
+ const cancelled = await loading; assert.ok("error" in cancelled); assert.equal(cancelled.error.code, "interrupted");
+});

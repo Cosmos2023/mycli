@@ -1,13 +1,12 @@
+import { HookBrowserService, configuredHookEnablement, pluginHookIdentity, integrationEnabled } from "@mycli/integrations";
 import { join } from "node:path";
 import type { ExecutionPolicyConstraints } from "@mycli/runtime";
 import type { HookRunnerContract } from "@mycli/core";
 import {
-	builtinSkillRoot,
 	ConfiguredHookRunner,
 	createSkillToolRegistration,
 	discoverHookConfig,
 	pluginBundleContributions,
-	HookAllowlistStore,
 	HookManager,
 	IntegrationLifecycleStack,
 	McpClient,
@@ -21,7 +20,9 @@ import {
 	type McpElicitationHandler,
 	PluginRuntime,
 	renderSkillCatalog,
-	SkillRegistry,
+	type SkillRegistry,
+	type ConfiguredHookSpec,
+	SkillManagementService,
 } from "@mycli/integrations";
 import type {
 	CreateSubagentSupervisorOptions,
@@ -139,6 +140,8 @@ type IntegrationStartupStage =
 	| "subagents_ready";
 
 export interface RuntimeIntegrationComposition extends IntegrationComposition {
+	readonly skills?: SkillManagementService;
+	readonly hookManagement?: HookBrowserService;
 	readonly configuration?: RuntimeIntegrationConfiguration;
 	readonly mcpResourceService: McpResourceService;
 	readonly version: number;
@@ -469,6 +472,13 @@ export async function createRuntimeIntegrationComposition(
 	};
 
 	const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
+		hookManagement: new HookBrowserService({ homeDir: options.homeDir,
+			configured: async () => (await discoverHookConfig({ workspaceRoot: content.workspaceRoot, homeDir: options.homeDir, env: options.env, includeRepository: content.projectConfigurationEnabled })).hooks,
+			plugins: () => content.composition.hooks,
+		}),
+		skills: new SkillManagementService({ registry: () => activeSkillRegistry, homeDir: options.homeDir,
+			catalog: async () => (await loadRuntimeIntegrationConfiguration({ workspaceRoot: content.workspaceRoot, homeDir: options.homeDir, env: options.env, includeRepository: content.projectConfigurationEnabled })).skills,
+		}),
 		mcpResourceService: {
 			listResources: (signal: AbortSignal, serverId?: string) => content.mcpResourceService.listResources(signal, serverId),
 			listResourcesPage: async (serverId: string, signal: AbortSignal, cursor?: string) => {
@@ -539,6 +549,7 @@ export async function createRuntimeIntegrationComposition(
 }
 
 interface RuntimeIntegrationContent {
+	readonly projectConfigurationEnabled: boolean;
 	readonly configuration: RuntimeIntegrationConfiguration;
 	readonly configurationFingerprint: string;
 	readonly mcpResourceService: McpResourceService;
@@ -577,13 +588,10 @@ async function createRuntimeIntegrationContent(input: {
 		homeDir: options.homeDir, env: options.env, includeRepository: input.projectConfigurationEnabled });
 	const pluginDiscovery = configuration.plugins;
 	const bundles = pluginBundleContributions(pluginDiscovery, { workspaceRoot: input.workspaceRoot, env: options.env,
-		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd) });
-	const hookDiscovery = await discoverHookConfig({
-		workspaceRoot: input.workspaceRoot,
-		homeDir: options.homeDir,
-		env: options.env,
-		includeRepository: input.projectConfigurationEnabled,
+		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd),
+		hookEnabled: (hook) => integrationEnabled(configuration.enablement, "hook", pluginHookIdentity(hook), hook.origin?.enabled ?? true),
 	});
+	const hookDiscovery = configuration.hooks;
 	if (input.reportStartup) options.onStartupStage?.("hooks_ready");
 	let composition: IntegrationComposition;
 	try {
@@ -595,15 +603,7 @@ async function createRuntimeIntegrationContent(input: {
 				{
 					id: "skill",
 					start: async () => {
-						skillRegistry = await SkillRegistry.discover({
-							builtinRoot: builtinSkillRoot(),
-							userRoot: join(options.homeDir, ".mycli", "skills"),
-							pluginSkills: bundles.skills,
-							...(input.projectConfigurationEnabled ? {
-								sharedRepoRoot: join(input.workspaceRoot, ".agents", "skills"),
-								repoRoot: join(input.workspaceRoot, ".mycli", "skills"),
-							} : {}),
-						});
+						skillRegistry = configuration.skills;
 						if (input.reportStartup) options.onStartupStage?.("skills_ready");
 						return {
 							resources: skillResources(skillRegistry),
@@ -727,6 +727,7 @@ async function createRuntimeIntegrationContent(input: {
 		configurationFingerprint: configuration.fingerprint,
 		mcpResourceService: mcpManager,
 		composition,
+		projectConfigurationEnabled: input.projectConfigurationEnabled,
 		hookDiscovery,
 		skillRegistry,
 		pluginContribution: () => pluginContribution(pluginRuntime!, configuration.mcp.servers),
@@ -750,7 +751,10 @@ function createRuntimeHookRunner(
 	options: CreateRuntimeIntegrationCompositionOptions,
 	content: RuntimeIntegrationContent,
 ): HookManager {
-	const allowlistStore = new HookAllowlistStore({ homeDir: options.homeDir });
+	const allowlistStore = { statusFor: async (spec: ConfiguredHookSpec) => {
+		const index = content.hookDiscovery.hooks.findIndex((hook) => hook.configPath === spec.configPath && hook.hookId === spec.hookId && hook.hookPoint === spec.hookPoint);
+		return content.configuration.hookApprovals[index] ?? { allowed: false, reason: "entry_missing" as const, commandDigest: "" };
+	} };
 	const configuredExecutor = new ConfiguredHookRunner({
 		workspaceRoot: content.workspaceRoot,
 		allowlistStore,
@@ -758,9 +762,9 @@ function createRuntimeHookRunner(
 		sandboxProfile: (cwd) => workspaceSandboxProfile(content.workspaceRoot, cwd),
 	});
 	return new HookManager({
-		configuredHooks: content.hookDiscovery.hooks,
+		configuredHooks: content.hookDiscovery.hooks.map((hook) => configuredHookEnablement(hook, content.configuration.enablement)),
 		configuredExecutor,
-		pluginHooks: content.composition.hooks,
+		pluginHooks: content.composition.hooks.filter((hook) => integrationEnabled(content.configuration.enablement, "hook", pluginHookIdentity(hook), hook.origin?.enabled ?? true)),
 	});
 }
 
@@ -927,13 +931,13 @@ function isMcpDiagnostic(diagnostic: Readonly<Record<string, unknown>>): boolean
 }
 
 function skillResources(registry: SkillRegistry): readonly Readonly<Record<string, unknown>>[] {
-	return registry.list().map((skill) => Object.freeze({
+	return registry.listAll().map((skill) => Object.freeze({
 		id: `skill:${skill.name}`,
 		type: "skill",
 		name: skill.name,
 		source: resourceSource(skill.sourceKind),
-		enabled: true,
-		status: "enabled",
+		enabled: skill.enabled,
+		status: skill.enabled ? "enabled" : "disabled",
 		detail: skill.description,
 		command: "/skills",
 	}));

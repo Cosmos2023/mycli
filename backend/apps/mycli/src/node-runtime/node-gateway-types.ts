@@ -1,3 +1,5 @@
+import type { ReviewSelection, SkillReference } from "@mycli/contracts";
+import type { HookBrowserService } from "@mycli/integrations";
 import type {
 	RuntimeTurnRecord,
 	ProviderAttemptRecord,
@@ -38,7 +40,7 @@ import type {
 	ShellSessionSnapshot,
 } from "@mycli/tools";
 import type { GatewayTransport } from "@mycli/gateway";
-import type { PluginCatalogService } from "@mycli/integrations";
+import type { PluginCatalogService, SkillManagementService } from "@mycli/integrations";
 import type { AgentInteractiveRequestGateway } from "./agent-interactive-requests.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
 import type {
@@ -153,6 +155,7 @@ export interface NodeGatewayBackgroundTaskCommands {
 }
 
 export interface NodeGatewaySessionCommands {
+	rename?(sessionId: string, title: string): SessionSummary;
 	list?(query: SessionQuery): readonly SessionSummary[];
 	inspect?(sessionId: string): SessionSummary | undefined;
 	previewResume?(sessionId: string): Promise<ResumeRepairPreview>;
@@ -232,6 +235,8 @@ export interface NodeGatewayIntegrationCommands {
 }
 
 export interface NodeGatewayIntegrations {
+	readonly hookManagement?: Pick<HookBrowserService, "list" | "write">;
+	readonly skills?: Pick<SkillManagementService, "list" | "setEnabled">;
 	refresh?(): Promise<void>;
 	readonly toolManifest?: JsonObject | (() => JsonObject | undefined);
 	readonly diagnostics?: readonly JsonObject[] | (() => readonly JsonObject[]);
@@ -244,7 +249,13 @@ export interface NodeGatewayIntegrations {
 	subscribeExtensions?(listener: (version: number) => void): () => void;
 }
 
+export type NodeGatewayReviewRuntimeFactory = (input: {
+	readonly sessionId: string; readonly review: ReviewSelection; readonly signal: AbortSignal;
+}) => Promise<{ readonly runtime: NodeGatewayRuntime; readonly close: () => Promise<void> }>;
+
 export interface CreateNodeGatewayOptions {
+	readonly createReviewRuntime?: NodeGatewayReviewRuntimeFactory;
+	readonly validateSelectedSkills?: (sessionId: string, references: readonly SkillReference[]) => void;
 	readonly pluginCatalog?: (workspaceRoot: string) => Promise<Pick<PluginCatalogService, "list" | "inspect" | "change">>;
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
@@ -279,6 +290,10 @@ export interface CreateNodeGatewayOptions {
 	readonly backgroundTaskCommands?: NodeGatewayBackgroundTaskCommands;
 	readonly sessionCommands?: NodeGatewaySessionCommands;
 	readonly traceCommands?: NodeGatewayTraceCommands;
+	readonly workspaceCommands?: {
+		diff(workspaceRoot: string, signal: AbortSignal): Promise<{ readonly text: string; readonly truncated: boolean }>;
+		init(workspaceRoot: string): Promise<string | undefined>;
+	};
 	readonly fileHistoryCommands?: NodeGatewayFileHistoryCommands;
 	readonly controlCommands?: NodeGatewayControlCommands;
 	readonly updateStatus?: CachedUpdateStatus;
