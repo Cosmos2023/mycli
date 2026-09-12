@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -15,6 +15,106 @@ import { startTestNodeBackend } from "./support/offline-update-fetch.ts";
 import { responsesTextEvents, responsesToolEvents } from "./support/responses-sse.ts";
 
 test("plugin MCP updates preserve a live approval, then refresh tools and approvals in the same backend", { timeout: 25_000 }, async (t) => {
+	const { send, messages, closedStreams, calledVersions, catalogs, packages, signal, writeBundle } = await gatewayFixture(t);
+	for (const turn of [1, 2]) {
+		const offset = messages.length;
+		send(`submit-${turn}`, "turn.submit", { message: "Read docs using the plugin.", client_turn_id: `turn-${turn}`, client_user_message_id: `user-${turn}` });
+		const approval = await until(() => {
+			assert.equal(messages.slice(offset).find((message) => message.method === "turn.failed" || message.error), undefined);
+			return messages.slice(offset).find((message) => message.method === "approval.request");
+		});
+		assert.equal(calledVersions.length, turn - 1);
+		if (turn === 1) {
+			await writeBundle("2.0.0");
+			assert.equal((await packages.execute({ action: "update", pluginId: "docs" }, signal)).ok, true);
+			send("during-approval", "resource.list", {});
+			const rows = (await until(() => messages.find((message) => message.id === "during-approval"))).result?.resources;
+			assert.equal(rows?.find((row) => row.type === "plugin")?.name, "docs");
+			assert.equal(rows?.find((row) => row.type === "mcp")?.name, "docs/service");
+			send("plugin-inspection", "command.run", { command: "/plugins", surface: "tui" });
+			assert.match(JSON.stringify((await until(() => messages.find((message) => message.id === "plugin-inspection"))).result), /Version: 1\.0\.0/u);
+			assert.equal(closedStreams.length, 0, "an update must not close a pending approval's client");
+		}
+		send(`approve-${turn}`, "approval.respond", { decision_id: approval.params!.decision_id, choice: turn === 1 ? "always_allow" : "approve_once" });
+		const final = await until(() => messages.slice(offset).find((message) => message.method === "message.complete" && message.params?.final === true));
+		await until(() => messages.slice(messages.indexOf(final) + 1).find((message) => message.method === "status.changed" && message.params?.turn_running === false));
+		assert.deepEqual(catalogs[(turn - 1) * 2], catalogs[(turn - 1) * 2 + 1], "a continuation must retain the original catalog");
+	}
+	assert.deepEqual(calledVersions, ["1.0.0", "2.0.0"]);
+	assert.match(JSON.stringify(catalogs[2]), /Plugin version 2\.0\.0/u);
+	await until(() => closedStreams.includes("1.0.0") || undefined);
+	assert.equal(messages.some((message) => message.method === "tool.complete" && message.params?.success === false), false);
+	await packages.execute({ action: "remove", pluginId: "docs" }, signal);
+	send("idle", "resource.list", {});
+	const idle = await until(() => messages.find((message) => message.id === "idle"));
+	assert.equal(idle.result?.resources?.some((row) => row.type === "plugin" || row.type === "mcp"), false);
+	await until(() => closedStreams.includes("2.0.0") || undefined);
+});
+
+test("root refresh proceeds while its child waits on the original MCP approval", { timeout: 25_000 }, async (t) => {
+	let rootSteps = 0;
+	let childSteps = 0;
+	const f = await gatewayFixture(t, (payload, name) => {
+		if (JSON.stringify(payload).includes("You are a subagent operating under the parent agent's delegated authority.")) {
+			childSteps += 1;
+			return childSteps === 1 ? responsesToolEvents("child-read", name, {}) : responsesTextEvents("Child read completed.", "child-final");
+		}
+		rootSteps += 1;
+		if (rootSteps === 1) return responsesToolEvents("spawn-reader", "spawn_agent", { task_name: "reader", message: "Read docs using the plugin." });
+		return responsesTextEvents("Delegation started.", `root-${rootSteps}`);
+	});
+	f.send("start-parent", "turn.submit", { message: "Delegate the docs read.", client_turn_id: "parent", client_user_message_id: "parent-user" });
+	const approval = await until(() => f.messages.find((message) => message.method === "approval.request"));
+	assert.notEqual(approval.params?.session_id, "plugin-lifecycle");
+	const final = await until(() => f.messages.find((message) => message.method === "message.complete" && message.params?.final === true));
+	await until(() => f.messages.slice(f.messages.indexOf(final) + 1).find((message) => message.method === "status.changed" && message.params?.turn_running === false));
+	await until(() => f.openedStreams.length === 2 || undefined);
+	await f.writeBundle("2.0.0");
+	assert.equal((await f.packages.execute({ action: "update", pluginId: "docs" }, f.signal)).ok, true);
+	f.send("updated-root", "command.run", { command: "/plugins", surface: "tui" });
+	const inspection = await until(() => f.messages.find((message) => message.id === "updated-root"));
+	assert.match(JSON.stringify(inspection.result), /Version: 2\.0\.0/u);
+	await until(() => f.closedStreams.length === 1 || undefined);
+	assert.equal(f.calledVersions.length, 0, "refresh must not execute the pending child call");
+	f.send("approve-child", "approval.respond", { session_id: approval.params!.session_id,
+		generation: approval.params!.generation, decision_id: approval.params!.decision_id, choice: "approve_once" });
+	assert.equal((await until(() => f.messages.find((message) => message.id === "approve-child"))).error, undefined);
+	await until(() => f.calledVersions.length === 1 || undefined);
+	assert.deepEqual(f.calledVersions, ["1.0.0"]);
+	await until(() => f.messages.find((message) => message.method === "subagent.updated"
+		&& (message.params?.subagent as { status?: string } | undefined)?.status === "completed"));
+	assert.equal(f.messages.some((message) => message.error || (message.method === "tool.complete" && message.params?.success === false)), false);
+});
+
+test("gateway catalogs follow session selection and repeated resume reuses connections", { timeout: 25_000 }, async (t) => {
+	const f = await gatewayFixture(t, () => responsesTextEvents("Session saved.", "saved"));
+	f.send("seed-a", "turn.submit", { message: "Save this session.", client_turn_id: "seed", client_user_message_id: "seed-user" });
+	const final = await until(() => f.messages.find((message) => message.method === "message.complete" && message.params?.final === true));
+	await until(() => f.messages.slice(f.messages.indexOf(final) + 1).find((message) => message.method === "status.changed" && message.params?.turn_running === false));
+	f.send("new-b", "session.new", {});
+	const created = await until(() => f.messages.find((message) => message.id === "new-b"));
+	assert.equal(created.error, undefined);
+	const b = created.result?.session_id;
+	assert.equal(typeof b, "string");
+	await until(() => f.openedStreams.length === 2 || undefined);
+	await f.writeBundle("2.0.0");
+	assert.equal((await f.packages.execute({ action: "update", pluginId: "docs" }, f.signal)).ok, true);
+	f.send("inspect-b", "command.run", { command: "/plugins", surface: "tui" });
+	assert.match(JSON.stringify((await until(() => f.messages.find((message) => message.id === "inspect-b"))).result), /Version: 2\.0\.0/u);
+	await until(() => f.closedStreams.length === 1 || undefined);
+	for (const [index, sessionId] of ["plugin-lifecycle", b, "plugin-lifecycle", b].entries()) {
+		f.send(`resume-${index}`, "session.resume", { session_id: sessionId });
+		assert.equal((await until(() => f.messages.find((message) => message.id === `resume-${index}`))).error, undefined);
+		f.send(`inspect-${index}`, "command.run", { command: "/plugins", surface: "tui" });
+		assert.match(JSON.stringify((await until(() => f.messages.find((message) => message.id === `inspect-${index}`))).result), /Version: 2\.0\.0/u);
+	}
+	await until(() => f.openedStreams.length === 4 || undefined);
+	assert.equal(f.closedStreams.length, 2);
+});
+
+async function gatewayFixture(t: TestContext, providerEvents?: (
+	payload: Readonly<Record<string, unknown>>, name: string,
+) => readonly unknown[]) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-gateway-"));
 	const homeDir = join(root, "home");
 	const workspace = join(root, "repo");
@@ -65,7 +165,7 @@ test("plugin MCP updates preserve a live approval, then refresh tools and approv
 			const step = catalogs.length;
 			const name = tools.find((tool) => tool.description?.startsWith("Plugin version"))?.name;
 			assert.ok(name, "a turn must capture the configured plugin tool");
-			const events = step % 2 === 1 ? responsesToolEvents(`read-${step}`, name, {}) : responsesTextEvents("Read completed.", `final-${step}`);
+			const events = providerEvents?.(payload!, name) ?? (step % 2 === 1 ? responsesToolEvents(`read-${step}`, name, {}) : responsesTextEvents("Read completed.", `final-${step}`));
 			response.writeHead(200, { "content-type": "text/event-stream" }).end(sse(events));
 		} catch { if (!response.headersSent) response.writeHead(500); response.end(); }
 	});
@@ -103,46 +203,14 @@ test("plugin MCP updates preserve a live approval, then refresh tools and approv
 	createInterface({ input: owned.backend.transport.input, crlfDelay: Infinity }).on("line", (line) => messages.push(JSON.parse(line) as Message));
 	await until(() => messages.find((message) => message.method === "runtime.ready"));
 	await until(() => openedStreams.includes("1.0.0") || undefined);
-	for (const turn of [1, 2]) {
-		const offset = messages.length;
-		send(`submit-${turn}`, "turn.submit", { message: "Read docs using the plugin.", client_turn_id: `turn-${turn}`, client_user_message_id: `user-${turn}` });
-		const approval = await until(() => {
-			assert.equal(messages.slice(offset).find((message) => message.method === "turn.failed" || message.error), undefined);
-			return messages.slice(offset).find((message) => message.method === "approval.request");
-		});
-		assert.equal(calledVersions.length, turn - 1);
-		if (turn === 1) {
-			await writeBundle("2.0.0");
-			assert.equal((await packages.execute({ action: "update", pluginId: "docs" }, signal)).ok, true);
-			send("during-approval", "resource.list", {});
-			const rows = (await until(() => messages.find((message) => message.id === "during-approval"))).result?.resources;
-			assert.equal(rows?.find((row) => row.type === "plugin")?.name, "docs");
-			assert.equal(rows?.find((row) => row.type === "mcp")?.name, "docs/service");
-			send("plugin-inspection", "command.run", { command: "/plugins", surface: "tui" });
-			assert.match(JSON.stringify((await until(() => messages.find((message) => message.id === "plugin-inspection"))).result), /Version: 1\.0\.0/u);
-			assert.equal(closedStreams.length, 0, "an update must not close a pending approval's client");
-		}
-		send(`approve-${turn}`, "approval.respond", { decision_id: approval.params!.decision_id, choice: turn === 1 ? "always_allow" : "approve_once" });
-		const final = await until(() => messages.slice(offset).find((message) => message.method === "message.complete" && message.params?.final === true));
-		await until(() => messages.slice(messages.indexOf(final) + 1).find((message) => message.method === "status.changed" && message.params?.turn_running === false));
-		assert.deepEqual(catalogs[(turn - 1) * 2], catalogs[(turn - 1) * 2 + 1], "a continuation must retain the original catalog");
-	}
-	assert.deepEqual(calledVersions, ["1.0.0", "2.0.0"]);
-	assert.match(JSON.stringify(catalogs[2]), /Plugin version 2\.0\.0/u);
-	await until(() => closedStreams.includes("1.0.0") || undefined);
-	assert.equal(messages.some((message) => message.method === "tool.complete" && message.params?.success === false), false);
-	await packages.execute({ action: "remove", pluginId: "docs" }, signal);
-	send("idle", "resource.list", {});
-	const idle = await until(() => messages.find((message) => message.id === "idle"));
-	assert.equal(idle.result?.resources?.some((row) => row.type === "plugin" || row.type === "mcp"), false);
-	await until(() => closedStreams.includes("2.0.0") || undefined);
-});
+	return { send, messages, openedStreams, closedStreams, calledVersions, catalogs, packages, signal, writeBundle };
+}
 
 interface Message {
 	readonly id?: string;
 	readonly method?: string;
 	readonly params?: Readonly<Record<string, unknown>>;
-	readonly result?: { readonly resources?: readonly Readonly<Record<string, unknown>>[] };
+	readonly result?: { readonly resources?: readonly Readonly<Record<string, unknown>>[]; readonly session_id?: string };
 	readonly error?: { readonly code: string };
 }
 

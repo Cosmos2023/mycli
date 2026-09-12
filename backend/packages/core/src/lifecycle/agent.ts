@@ -118,6 +118,11 @@ export interface AgentSpawnConfigSnapshot {
 	readonly provider: AgentProviderSnapshot;
 	readonly instructions: AgentInstructionSnapshot;
 	readonly tools: readonly string[];
+	/** Non-secret authority retained across child unload/reload. */
+	readonly integrationAuthority?: {
+		readonly configurationFingerprint: string;
+		readonly toolFingerprints: Readonly<Record<string, string>>;
+	};
 	readonly budget?: AgentBudget;
 	readonly forkTurns: AgentForkTurns;
 }

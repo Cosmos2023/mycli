@@ -168,11 +168,15 @@ import {
 	WriteTool,
 } from "@mycli/tools";
 import type { ToolDefinition } from "@mycli/core";
+import { loadRuntimeIntegrationConfiguration } from "./integration-configuration.ts";
+import { captureChildIntegrationAuthority, inheritedIntegrationRegistrations } from "./child-integration-authority.ts";
+import { createRuntimeSubagentServices } from "./runtime-subagent-services.ts";
 import {
 	createRuntimeIntegrationComposition,
 	partitionRuntimeToolRegistrations,
 	type IntegrationCommandService,
 	type RuntimeIntegrationComposition,
+	type CreateRuntimeIntegrationCompositionOptions,
 } from "./integration-composition.ts";
 import {
 	createNodeGateway,
@@ -286,7 +290,12 @@ export interface StartNodeBackendOptions {
 type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
 	NodeTurnRuntime,
 	"bindProviderStepExecutor"
->;
+> & {
+	readonly integrations: RuntimeIntegrationComposition;
+	readonly workspaceRoot: string;
+	toolNames(): readonly string[];
+	closeExtensions(): Promise<void>;
+};
 
 const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
@@ -526,7 +535,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			delegate: inProcessChildRuntimeFactory,
 		})
 		: inProcessChildRuntimeFactory;
-	const runtimeRegistry = new NodeRuntimeRegistry<NodeGatewayRuntime>();
+	const runtimeRegistry = new NodeRuntimeRegistry<ComposedNodeRuntime>();
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
 	const mcpElicitations = new McpElicitationBroker();
 	const agentActivityBus = new AgentActivityBus();
@@ -702,131 +711,121 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		},
 	});
 	startupProfiler.mark("runtime_components_ready");
-	let integrationComposition: RuntimeIntegrationComposition;
-	try {
-		integrationComposition = await createRuntimeIntegrationComposition({
-			onMcpElicitation: mcpElicitations.request,
-			disabled: options.executionMode === "review",
-			...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
-			builtinManifest: toolManifest,
-			workspaceRoot: config.workspaceRoot,
-			homeDir,
-			env: options.env,
-			projectConfigurationEnabled: startupTrustState === "trusted",
-			parentSessionId: config.sessionId,
-			parentTurnId: () => "parent-turn-unavailable",
-			parentTools: ({ parentSessionId, parentTurnId }) => {
-				const runSnapshot = runtimeRegistry.get(parentSessionId)
-					?.runExecutionSnapshot?.(parentTurnId);
-				return runSnapshot
-					? toolExposureForSnapshot(
-						runSnapshot.toolCatalog,
-						store.loadToolActivations(parentSessionId, parentTurnId),
-					).map((tool) => tool.name)
-					: Object.freeze([]);
-			},
-			createSubagentSupervisor: (supervisorOptions) => {
-					agentSupervisor = new AgentSupervisor({
-						lifecycleStore: store.agentLifecycle,
-						threadStore: store.agentThreads,
-					taskStore: store.subagentTasks,
-					runtimeFactory: childRuntimeFactory,
-					maxResidents: DEFAULT_AGENT_MAX_RESIDENTS,
-					maxDepth: DEFAULT_AGENT_MAX_DEPTH,
-					onEvent: consumeAgentEvent,
-					...supervisorOptions,
-					...(agentExecutionAdapters.subagent === "worker"
-						&& supervisorOptions.shutdownTimeoutMs === undefined
-						? { shutdownTimeoutMs: DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS }
-						: {}),
-				});
-				return agentSupervisor;
-			},
-			maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
-			resolveSubagentSpawnContext: async (input) => {
-				const overview = store.loadSession(input.parentSessionId);
-				const parentThreadId = overview?.threadId ?? input.parentSessionId;
-				const parentAgent = store.agentThreads.get(parentThreadId);
-				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
-				const parentRuntime = runtimeRegistry.get(input.parentSessionId);
-				const parentRunSnapshot = parentRuntime
-					?.runExecutionSnapshot?.(input.parentTurnId);
-				const parentPreferences = parentRuntime?.sessionPreferences?.();
-				const resolved = await resolveWorkspaceModelRuntimeConfig({
-					homeDir,
-					workspaceRoot,
-					env: options.env,
-					overrides: sessionPreferenceOverrides(
-						input.childSessionId,
-						parentPreferences ?? defaultPreferences,
-					),
-				});
-				const executionPolicy = narrowAgentExecutionPolicy(
-					agentExecutionPolicyForRun(parentRunSnapshot),
-				);
-				return Object.freeze({
-					parentThreadId,
-					rootThreadId: parentAgent?.rootThreadId ?? parentThreadId,
-					parentPath: parentAgent?.path ?? rootAgentPath(),
-					config: Object.freeze({
-						workspaceRoot,
-						cwd: workspaceRoot,
-						environment: agentEnvironmentSnapshot(options.env),
-						executionPolicy,
-						provider: Object.freeze({
-							provider: resolved.provider,
-							protocol: resolved.protocol,
-							model: resolved.model,
-							reasoningEffort: resolved.thinkingEnabled
-								? resolved.reasoningEffort
-								: "none",
-						}),
-						instructions: Object.freeze({
-							project: productSystemPrompt.content,
-						}),
-						tools: Object.freeze([...input.tools]),
-						forkTurns: "none" as const,
-					}),
-				});
-			},
-			agentActivity,
-				agentMailbox,
-			resolveAgentRouteContext,
-			onStartupStage: (stage) => { startupProfiler.mark(stage); },
+	const integrationOptions: CreateRuntimeIntegrationCompositionOptions = {
+		onMcpElicitation: mcpElicitations.request,
+		disabled: options.executionMode === "review",
+		...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
+		builtinManifest: toolManifest,
+		workspaceRoot: config.workspaceRoot,
+		homeDir,
+		env: options.env,
+		projectConfigurationEnabled: startupTrustState === "trusted",
+		parentSessionId: config.sessionId,
+		parentTurnId: () => "parent-turn-unavailable",
+		parentTools: ({ parentSessionId, parentTurnId }) => {
+			const runSnapshot = runtimeRegistry.get(parentSessionId)
+				?.runExecutionSnapshot?.(parentTurnId);
+			return runSnapshot
+				? toolExposureForSnapshot(
+					runSnapshot.toolCatalog,
+					store.loadToolActivations(parentSessionId, parentTurnId),
+				).map((tool) => tool.name)
+				: Object.freeze([]);
+		},
+		createSubagentSupervisor: (supervisorOptions) => {
+				agentSupervisor = new AgentSupervisor({
+					lifecycleStore: store.agentLifecycle,
+					threadStore: store.agentThreads,
+				taskStore: store.subagentTasks,
+				runtimeFactory: childRuntimeFactory,
+				maxResidents: DEFAULT_AGENT_MAX_RESIDENTS,
+				maxDepth: DEFAULT_AGENT_MAX_DEPTH,
+				onEvent: consumeAgentEvent,
+				...supervisorOptions,
+				...(agentExecutionAdapters.subagent === "worker"
+					&& supervisorOptions.shutdownTimeoutMs === undefined
+					? { shutdownTimeoutMs: DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS }
+					: {}),
 			});
-		publishSubagentProjection = (value) => { integrationComposition.publishSubagent(value); };
-		resourceOwner.bindIntegration(() => integrationComposition.close());
-		startupProfiler.mark("integrations_ready");
+			return agentSupervisor;
+		},
+		maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
+		resolveSubagentSpawnContext: async (input) => {
+			const overview = store.loadSession(input.parentSessionId);
+			const parentThreadId = overview?.threadId ?? input.parentSessionId;
+			const parentAgent = store.agentThreads.get(parentThreadId);
+			const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
+			const parentRuntime = runtimeRegistry.get(input.parentSessionId);
+			const parentRunSnapshot = parentRuntime
+				?.runExecutionSnapshot?.(input.parentTurnId);
+			const parentPreferences = parentRuntime?.sessionPreferences?.();
+			const resolved = await resolveWorkspaceModelRuntimeConfig({
+				homeDir,
+				workspaceRoot,
+				env: options.env,
+				overrides: sessionPreferenceOverrides(
+					input.childSessionId,
+					parentPreferences ?? defaultPreferences,
+				),
+			});
+			const executionPolicy = narrowAgentExecutionPolicy(
+				agentExecutionPolicyForRun(parentRunSnapshot),
+			);
+			const integrationAuthority = captureChildIntegrationAuthority(parentRuntime?.integrations, parentRunSnapshot, input.tools);
+			return Object.freeze({
+				parentThreadId,
+				rootThreadId: parentAgent?.rootThreadId ?? parentThreadId,
+				parentPath: parentAgent?.path ?? rootAgentPath(),
+				config: Object.freeze({
+					workspaceRoot,
+					cwd: workspaceRoot,
+					environment: agentEnvironmentSnapshot(options.env),
+					executionPolicy,
+					provider: Object.freeze({
+						provider: resolved.provider,
+						protocol: resolved.protocol,
+						model: resolved.model,
+						reasoningEffort: resolved.thinkingEnabled
+							? resolved.reasoningEffort
+							: "none",
+					}),
+					instructions: Object.freeze({
+						project: productSystemPrompt.content,
+					}),
+					tools: Object.freeze([...input.tools]),
+					...(integrationAuthority ? { integrationAuthority } : {}),
+					forkTurns: "none" as const,
+				}),
+			});
+		},
+		agentActivity,
+			agentMailbox,
+		resolveAgentRouteContext,
+		onStartupStage: (stage) => { startupProfiler.mark(stage); },
+	};
+	let sharedSubagents: ReturnType<typeof createRuntimeSubagentServices> | undefined;
+	try {
+		sharedSubagents = options.executionMode === "review" ? undefined : createRuntimeSubagentServices({
+			createSupervisor: integrationOptions.createSubagentSupervisor,
+			parentSessionId: config.sessionId,
+			parentTurnId: integrationOptions.parentTurnId,
+			parentTools: integrationOptions.parentTools,
+			resolveSpawnContext: integrationOptions.resolveSubagentSpawnContext,
+			agentActivity, mailbox: agentMailbox, resolveAgentRouteContext,
+			maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
+		});
 	} catch (error) {
+		await agentSupervisor?.close().catch(() => undefined);
 		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
-	const partitionedRegistrations = partitionRuntimeToolRegistrations(integrationComposition.registrations);
-	const directExtensionRegistrations = partitionedRegistrations.direct;
-	const directExtensionDefinitions = Object.freeze(directExtensionRegistrations
-		.map((registration) => registration.definition));
-	const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(
-		integrationComposition.registrations,
-	).deferred;
-	let allToolExposure = runtimeToolExposure(
-		toolManifest,
-		directExtensionDefinitions,
-		currentDeferredRegistrations(),
-		requestPermissionsToolEnabled,
-	);
-	const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
-	const refreshRuntimeExtensions = (): void => {
-		allToolExposure = runtimeToolExposure(
-			toolManifest,
-			directExtensionDefinitions,
-			currentDeferredRegistrations(),
-			requestPermissionsToolEnabled,
-		);
-		for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
-		runtimeRegistry.refreshExtensions();
-	};
-	const unsubscribeRuntimeExtensions = integrationComposition.subscribeExtensions(() => {
-		refreshRuntimeExtensions();
+	const extensionListeners = new Set<(sessionId: string, version: number) => void>();
+	publishSubagentProjection = (value) => { sharedSubagents?.publish(value); };
+	resourceOwner.bindIntegration(async () => {
+		runtimeRegistry.stop();
+		extensionListeners.clear();
+		try { await sharedSubagents?.close(); }
+		finally { await runtimeRegistry.close(); }
 	});
 	const contextItemCoordinator = new ContextItemCoordinator({
 		extractArtifact: skillInvocationArtifactFromMetadata,
@@ -849,7 +848,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly agentCheckpoint?: NodeTurnRuntimeOptions["agentCheckpoint"];
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
-		): ComposedNodeRuntime => {
+		): Promise<ComposedNodeRuntime> => runtimeRegistry.getOrCreate(sessionId, async (signal) => {
 			const allowedTools = options.executionMode === "review" ? ["Read"] : runtimeOptions.allowedTools;
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
@@ -910,6 +909,44 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const executionPolicyConstraints = runtimeOptions.executionPolicy
 				? inheritedAgentExecutionPolicyConstraints(runtimeOptions.executionPolicy)
 				: managedExecutionPolicy;
+			const projectConfigurationEnabled = (!runtimeOptions.executionPolicy || runtimeOptions.executionPolicy.trusted)
+				&& await workspaceTrustStore.load(workspaceRoot) === "trusted";
+			const childContext = runtimeOptions.subagentContext;
+			const inheritedAuthority = childContext?.config.integrationAuthority;
+			const parentConfiguration = childContext && projectConfigurationEnabled
+				? runtimeRegistry.get(childContext.parentSessionId)?.integrations.configuration : undefined;
+			const childConfiguration = childContext
+				? parentConfiguration?.fingerprint === inheritedAuthority?.configurationFingerprint && parentConfiguration
+					? parentConfiguration
+					: await loadRuntimeIntegrationConfiguration({ workspaceRoot, homeDir, env: runtimeEnvironment,
+						includeRepository: projectConfigurationEnabled })
+				: undefined;
+			const integrationAuthorized = !childContext || (inheritedAuthority !== undefined
+				&& inheritedAuthority.configurationFingerprint === childConfiguration?.fingerprint);
+			const integrationComposition = await createRuntimeIntegrationComposition({
+				...integrationOptions,
+				workspaceRoot, env: runtimeEnvironment, signal,
+				managedExecutionPolicy: executionPolicyConstraints,
+				projectConfigurationEnabled,
+				disabled: integrationOptions.disabled || !integrationAuthorized,
+				configuration: childConfiguration,
+				pinConfiguration: childContext !== undefined,
+				subagentServices: sharedSubagents,
+				onStartupStage: sessionId === config.sessionId ? integrationOptions.onStartupStage : undefined,
+			});
+			let unsubscribeExtensions: (() => void) | undefined;
+			try {
+			const currentRegistrations = () => childContext
+				? inheritedIntegrationRegistrations(integrationComposition, inheritedAuthority) : integrationComposition.registrations;
+			const currentSkillCatalog = (): string => currentRegistrations().some((registration) => registration.source === "skill")
+				? integrationComposition.skillCatalog : "";
+			const directExtensionRegistrations = partitionRuntimeToolRegistrations(currentRegistrations()).direct;
+			const directExtensionDefinitions = Object.freeze(directExtensionRegistrations.map((registration) => registration.definition));
+			const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(currentRegistrations()).deferred;
+			const currentToolExposure = (): readonly ToolDefinition[] => filterToolDefinitions(runtimeToolExposure(
+				toolManifest, directExtensionDefinitions, currentDeferredRegistrations(), requestPermissionsToolEnabled), allowedTools);
+			let allToolExposure = currentToolExposure();
+			const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
 			const executionPolicyCoordinator = new ExecutionPolicyCoordinator({
 				workspaceRoot,
 				...(executionPolicyConstraints ? { constraints: executionPolicyConstraints } : {}),
@@ -927,7 +964,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot,
 			autoApproveMedium: true,
 			shellKind: shellProfile.kind,
-			extensionTools: integrationComposition.registrations.map((registration) => ({
+			extensionTools: currentRegistrations().map((registration) => ({
 				name: registration.definition.name,
 				...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
 				approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
@@ -1025,9 +1062,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			const extensionCatalog = new ExtensionToolCatalog(toolRouter, toolSearch, approvalPolicy);
 			const refreshExtensions = (): void => {
+				allToolExposure = currentToolExposure();
+				for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
 				const deferred = allowedDeferredRegistrations();
 				extensionCatalog.replace({ version: integrationComposition.version, tools: deferredCandidates(deferred),
-					skillCatalog: integrationComposition.skillCatalog }, integrationComposition.registrations.map(
+					skillCatalog: currentSkillCatalog() }, currentRegistrations().map(
 					(registration) => ({
 						name: registration.definition.name,
 						...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
@@ -1038,6 +1077,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				));
 			};
 			refreshExtensions();
+			unsubscribeExtensions = integrationComposition.subscribeExtensions((version) => {
+				refreshExtensions();
+				for (const listener of extensionListeners) listener(sessionId, version);
+			});
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
 			sessionId,
 			workspaceRoot,
@@ -1415,6 +1458,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					}
 					return next;
 				},
+				integrations: integrationComposition,
+				workspaceRoot,
+				toolNames: () => allToolExposure.map((tool) => tool.name),
+				closeExtensions: () => {
+					unsubscribeExtensions?.();
+					return integrationComposition.close();
+				},
 				refreshExtensions,
 				listCommandAllowances: () => approvalPolicy.listSessionAllowances(),
 				addCommandAllowance: (value: string) => {
@@ -1460,7 +1510,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					};
 				},
 			});
-			runtimeRegistry.set(sessionId, binding);
+			return binding;
+			} catch (error) {
+				unsubscribeExtensions?.();
+				await integrationComposition.close().catch(() => undefined);
+				throw error;
+			}
+		}).then((binding) => {
+			// Mailbox delivery resolves queues through the registry; publish the runtime first.
 			const agent = store.agentThreads.get(threadId);
 			agentMailbox.repair(Object.freeze({
 				threadId: agentThreadId(threadId),
@@ -1469,7 +1526,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sessionId,
 			}));
 			return binding;
-		};
+		});
 		childRuntimeFactoryDelegate.create = async (input) => {
 			const runtimeGeneration = randomUUID();
 			const runtimeOwnerId = `agent-runtime-${runtimeGeneration}`;
@@ -1482,7 +1539,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					forkTurns: input.config.forkTurns,
 				});
 			}
-			const runtime = createRuntime(
+			const runtime = await createRuntime(
 				input.childSessionId,
 				input.config.workspaceRoot,
 				input.childSessionId,
@@ -1508,7 +1565,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							checkpoint,
 						});
 					},
-					isMutatingTool: (toolName) => mutatingAgentTools.has(toolName),
 					...(input.config.budget ? { agentBudget: input.config.budget } : {}),
 			},
 		);
@@ -1659,7 +1715,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				close: async () => {
 					localAbort?.abort();
 					store.agentThreads.clearLease(input.threadId, runtimeOwnerId);
-					runtimeRegistry.delete(input.childSessionId, runtime);
+					await runtimeRegistry.dispose(input.childSessionId, runtime);
 			},
 		};
 		};
@@ -1673,6 +1729,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			sessionArtifacts,
 			artifactQueue,
 			createRuntime,
+			liveRuntime: runtimeRegistry.get(sessionId),
 			fallbackWorkspaceRoot: config.workspaceRoot,
 			repairAgentCompletions,
 		});
@@ -1681,8 +1738,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			initial = await prepare(config.sessionId);
 		} catch (error) {
 			if (!hasCode(error, "session_not_found")) throw error;
-				initial = virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
+				initial = await virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
 			}
+			startupProfiler.mark("integrations_ready");
 			startupProfiler.mark("session_prepared");
 			const sessionCoordinator = new SessionCoordinator<NodeGatewayRuntime>({
 			initial,
@@ -1734,10 +1792,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			);
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
+		const activeRuntime = (): ComposedNodeRuntime | undefined => runtimeRegistry.get(sessionCoordinator.snapshot().sessionId);
 		const gatewayIntegrations = integrationGateway(
-			integrationComposition,
-			() => allToolExposure.map((tool) => tool.name),
+			() => activeRuntime()?.integrations,
+			() => activeRuntime()?.toolNames() ?? [],
+			(listener) => {
+				const selected = (sessionId: string, version: number): void => {
+					if (sessionId === sessionCoordinator.snapshot().sessionId) listener(version);
+				};
+				extensionListeners.add(selected);
+				return () => { extensionListeners.delete(selected); };
+			},
+			sharedSubagents?.subscribe,
 		);
+		const closeRuntimeResources = (): Promise<void> => resourceOwner.close();
 		const activeMemoryStore = () => new MemoryStore({
 			homeDir,
 			workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
@@ -1769,14 +1837,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 				...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
 			});
-			let runtimeExtensionsSubscribed = true;
-			const closeRuntimeResources = (): Promise<void> => {
-				if (runtimeExtensionsSubscribed) {
-					runtimeExtensionsSubscribed = false;
-					unsubscribeRuntimeExtensions();
-				}
-				return resourceOwner.close();
-			};
 			const gateway = createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
@@ -1785,7 +1845,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			reasoningEffort: controlConfig.thinkingEnabled
 				? controlConfig.reasoningEffort
 				: "none",
-			toolNames: allToolExposure.map((tool) => tool.name),
+			toolNames: activeRuntime()?.toolNames() ?? [],
 			maxPromptTokens: () => controlConfig.maxPromptTokens,
 			sandboxReadiness: await sandboxReadinessPromise,
 			runtime: initial.binding,
@@ -1824,14 +1884,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					interrupt: async (parentSessionId, childSessionId) => {
 						const task = store.subagentTasks.getByChildSession(parentSessionId, childSessionId);
 						if (task?.status !== "running") return false;
-						return await integrationComposition.subagentController?.interrupt(childSessionId) ?? false;
+						return await sharedSubagents?.controller.interrupt(childSessionId) ?? false;
 					},
 					interruptAll: async (parentSessionId) => {
 						const running = store.subagentTasks.list(parentSessionId)
 							.filter((task) => task.status === "running");
 						let interrupted = 0;
 						for (const task of running) {
-							if (await integrationComposition.subagentController?.interrupt(task.childSessionId)) {
+							if (await sharedSubagents?.controller.interrupt(task.childSessionId)) {
 								interrupted += 1;
 							}
 						}
@@ -2214,10 +2274,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							? sessionPreferenceOverrides(active.sessionId, persistedPreferences)
 							: { ...overrides, session: active.sessionId },
 					}, state);
-					await integrationComposition.reloadProjectConfiguration({
+					await activeRuntime()?.integrations.reloadProjectConfiguration({
 						workspaceRoot,
 						enabled: state === "trusted",
 					});
+					for (const listener of extensionListeners) listener(active.sessionId, activeRuntime()?.integrations.version ?? 1);
 					controlConfig = nextControlConfig;
 					const nextPreferences = sessionPreferencesFromConfig(
 						nextControlConfig,
@@ -2231,7 +2292,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 			},
 			integrations: gatewayIntegrations,
-				close: closeRuntimeResources,
+				close: () => resourceOwner.close(),
 		});
 			for (const recovered of recoveredInterrupts) {
 			gateway.publishRecoveredInterrupt(recovered.record, {
@@ -2249,7 +2310,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				startupProfile: () => startupProfiler.snapshot(),
 			});
 	} catch (error) {
-		unsubscribeRuntimeExtensions();
 		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
@@ -2539,31 +2599,31 @@ function mutatingTools(manifest: CombinedToolManifest): Set<string> {
 }
 
 function integrationGateway(
-	composition: RuntimeIntegrationComposition,
+	current: () => RuntimeIntegrationComposition | undefined,
 	toolNames: () => readonly string[],
+	subscribeExtensions: NonNullable<NodeGatewayIntegrations["subscribeExtensions"]>,
+	subscribeSubagents: NodeGatewayIntegrations["subscribeSubagents"],
 ): NodeGatewayIntegrations {
-	const commands = combinedIntegrationCommands(() => composition.commands);
+	const commands = combinedIntegrationCommands(() => current()?.commands ?? []);
 	const integrations: NodeGatewayIntegrations = {
-		refresh: () => composition.refreshConfiguration(),
-		toolManifest: () => composition.manifest as unknown as Record<string, unknown>,
-		diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+		refresh: () => current()?.refreshConfiguration() ?? Promise.resolve(),
+		toolManifest: () => current()?.manifest as unknown as Record<string, unknown>,
+		diagnostics: () => current()?.diagnostics.map((diagnostic) => ({ ...diagnostic })) ?? [],
 		toolNames,
-		listResources: () => composition.resources.map((resource) => ({ ...resource })),
+		listResources: () => current()?.resources.map((resource) => ({ ...resource })) ?? [],
 		commands: {
 			list: () => commands.list(),
 			run: async (command, signal) => {
+				const composition = current();
+				if (!composition) return undefined;
 				const owner = `plugin-command:${randomUUID()}`;
 				await composition.prepareRun(owner, signal);
-				try { return await commands.run(command, signal); }
+				try { return await combinedIntegrationCommands(() => composition.commands).run(command, signal); }
 				finally { composition.finishRun(owner); }
 			},
 		},
-		subscribeSubagents: (
-			listener: (subagent: Readonly<Record<string, unknown>>) => void,
-		) => composition.subscribeSubagents(listener),
-		subscribeExtensions: (listener: (version: number) => void) => (
-			composition.subscribeExtensions(listener)
-		),
+		subscribeSubagents,
+		subscribeExtensions,
 	};
 	return Object.freeze(integrations);
 }

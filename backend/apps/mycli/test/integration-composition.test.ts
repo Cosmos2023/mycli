@@ -92,6 +92,25 @@ test("integration composition closes initialized sources after startup failure",
 	assert.deepEqual(closed, ["mcp"]);
 });
 
+test("cancelled startup closes a late source result and starts no later source", async () => {
+	const controller = new AbortController();
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let closed = 0;
+	const pending = createIntegrationComposition({ builtinManifest: builtinToolManifest(), signal: controller.signal,
+		sources: [{ id: "mcp", start: async () => {
+			started.resolve();
+			await release.promise;
+			return { close: async () => { closed += 1; } };
+		} }, { id: "plugin", start: async () => assert.fail("cancelled startup must not launch plugins") }] });
+	const rejected = assert.rejects(pending, { name: "AbortError" });
+	await started.promise;
+	controller.abort();
+	release.resolve();
+	await rejected;
+	assert.equal(closed, 1);
+});
+
 test("integration composition rejects duplicate identities and preserves the package DAG", async () => {
 	const closed: string[] = [];
 	await assert.rejects(

@@ -21,6 +21,19 @@ const CREATED = "2026-08-08T00:00:00.000Z";
 const UPDATED = "2026-08-08T00:00:01.000Z";
 const COMPLETED = "2026-08-08T00:00:02.000Z";
 
+test("child integration authority survives storage and rejects malformed fingerprints", async (t) => {
+	const fixture = await storeFixture(t);
+	const integrationAuthority = { configurationFingerprint: "a".repeat(64), toolFingerprints: { mcp_docs_read: "b".repeat(64) } };
+	fixture.store.agentThreads.reserve({ ...reserveInput("authority", "authority"),
+		spawnConfig: { ...spawnConfig(), integrationAuthority } });
+	assert.deepEqual(fixture.store.agentThreads.get("authority")?.spawnConfig?.integrationAuthority, integrationAuthority);
+	for (const invalid of ["", "private-token", "b".repeat(65)]) {
+		assert.throws(() => fixture.store.agentThreads.reserve({ ...reserveInput("invalid", "invalid"),
+			spawnConfig: { ...spawnConfig(), integrationAuthority: { ...integrationAuthority, toolFingerprints: { mcp_docs_read: invalid } } } }), StorageFailure);
+	}
+	assert.equal(fixture.store.agentThreads.get("invalid"), undefined);
+});
+
 test("reserves canonical paths atomically and rejects sibling collisions", async (t) => {
 	const fixture = await storeFixture(t);
 	const first = fixture.store.agentThreads.reserve(reserveInput("child-1", "tests"));
