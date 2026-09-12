@@ -1,3 +1,4 @@
+import type { SkillReference, ReviewSelection } from "@mycli/contracts";
 import { resolveProviderRetryPolicy, type NodeRuntimeConfig } from "@mycli/config";
 import {
 	AgentBudgetExhaustedError,
@@ -140,12 +141,14 @@ import {
 } from "../tools/tool-batch-coordinator.ts";
 
 export interface TurnSubmission {
+	readonly review?: ReviewSelection;
 	readonly clientTurnId: string;
 	readonly clientUserMessageId?: string;
 	readonly turnId?: string;
 	readonly message: string;
 	readonly queueId?: string;
 	readonly inputSource?: "submit" | "steer" | "queued";
+	readonly skillReferences?: readonly SkillReference[];
 	readonly localImages?: readonly string[];
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
@@ -550,12 +553,15 @@ export class NodeTurnRuntime {
 			requestFingerprint: fingerprintSubmission({
 				message: submission.message,
 				localImages: submission.localImages,
+				skillReferences: submission.skillReferences,
+				review: submission.review,
 				modelOverride: submission.modelOverride,
 				reasoningEffort: submission.reasoningEffort,
 			}),
 			workspaceRoot: this.#options.workspaceRoot,
 			threadId: this.#options.threadId,
 			userText: submission.message,
+			...(submission.skillReferences?.length ? { skillReferences: submission.skillReferences } : {}),
 			...(submission.queueId ? { queueId: submission.queueId } : {}),
 			...(submission.inputSource ? { inputSource: submission.inputSource } : {}),
 			...(imagePaths.length > 0 ? { imagePaths, images } : {}),

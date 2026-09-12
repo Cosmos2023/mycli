@@ -167,6 +167,44 @@ export type ErrorReasonDetails =
       [k: string]: unknown;
     };
 export type ErrorOccurrenceV1 = ErrorIdentityV1 & ErrorReasonDetails;
+/**
+ * @maxItems 8
+ */
+export type SkillReferences =
+  | []
+  | [SkillReference]
+  | [SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference
+    ];
+export type ReviewSelection =
+  | {
+      kind: "uncommitted";
+    }
+  | {
+      kind: "base";
+      ref: string;
+    }
+  | {
+      kind: "commit";
+      ref: string;
+    }
+  | {
+      kind: "custom";
+      instructions: string;
+    };
 export type SteerParams = FollowUpParams & {
   expected_turn_id: Identity;
   [k: string]: unknown;
@@ -176,6 +214,7 @@ export type FollowUpParams = OwnerParams & {
   client_turn_id?: string;
   client_user_message_id?: string;
   local_images?: QueueImages;
+  skill_references?: SkillReferences;
   [k: string]: unknown;
 };
 export type QueueImages = (
@@ -590,6 +629,73 @@ export interface GatewayRpcMethods {
     params: EmptyParams;
     result: {
       ok: true;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  "skills.list": {
+    params: {
+      session_id: string;
+      generation: number;
+    };
+    result: SkillCatalog;
+    [k: string]: unknown;
+  };
+  "skills.config.write": {
+    params: {
+      session_id: string;
+      generation: number;
+      id: string;
+      revision: string;
+      skill_revision: string;
+      enabled: boolean;
+    };
+    result: SkillCatalog;
+    [k: string]: unknown;
+  };
+  "hooks.list": {
+    params: {
+      session_id: Identity;
+      generation: number;
+    };
+    result: HookCatalog;
+    [k: string]: unknown;
+  };
+  "hooks.config.write": {
+    params: {
+      session_id: Identity;
+      generation: number;
+      id: string;
+      revision: string;
+      hook_revision: string;
+      action: "enable" | "disable" | "trust" | "revoke";
+    };
+    result: HookCatalog;
+    [k: string]: unknown;
+  };
+  "workspace.diff": {
+    params: {
+      session_id: string;
+      generation: number;
+      [k: string]: unknown;
+    };
+    result: {
+      text: string;
+      truncated: boolean;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  "session.preview": {
+    params: {
+      session_id: string;
+      generation: number;
+      target_session_id: string;
+      [k: string]: unknown;
+    };
+    result: {
+      text: string;
+      truncated: boolean;
       [k: string]: unknown;
     };
     [k: string]: unknown;
@@ -1043,7 +1149,14 @@ export interface SubmitParams {
   client_user_message_id?: string;
   local_images?: Strings;
   collaboration_mode?: "default" | "plan";
+  skill_references?: SkillReferences;
+  review?: ReviewSelection;
   [k: string]: unknown;
+}
+export interface SkillReference {
+  id: string;
+  name: string;
+  revision: string;
 }
 export interface TurnAccepted {
   accepted: boolean;
@@ -1179,4 +1292,41 @@ export interface ShellOutputPage {
   next_sequence?: number | null;
   has_more?: boolean;
   [k: string]: unknown;
+}
+export interface SkillCatalog {
+  revision: string;
+  /**
+   * @maxItems 256
+   */
+  skills: {
+    id: string;
+    name: string;
+    revision: string;
+    description: string;
+    source: "builtin" | "user" | "shared_repo" | "repo";
+    path: string;
+    enabled: boolean;
+  }[];
+}
+export interface HookCatalog {
+  revision: string;
+  /**
+   * @maxItems 2048
+   */
+  hooks: {
+    id: string;
+    revision: string;
+    name: string;
+    point: string;
+    source: string;
+    path: string;
+    /**
+     * @maxItems 256
+     */
+    command: string[];
+    enabled: boolean;
+    trusted: boolean;
+    trustSource: "allowlist" | "plugin";
+    timeoutMs?: number;
+  }[];
 }

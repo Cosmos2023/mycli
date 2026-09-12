@@ -142,7 +142,9 @@ export class PluginRuntime {
 						pluginTools.push(createPluginToolRegistration(host, candidate.pluginId, registration, candidate.manifest.description));
 						pluginToolNames.push(registration.name);
 					} else if (registration.kind === "hook") {
-						pluginHooks.push(createPluginHookRegistration(host, candidate.pluginId, registration));
+						pluginHooks.push({ ...createPluginHookRegistration(host, candidate.pluginId, registration),
+							origin: { pluginId: candidate.pluginId, path: candidate.manifest.manifestPath },
+						});
 						pluginHookNames.push(registration.name);
 					} else {
 						pluginCommands.push(registration);

@@ -87,7 +87,10 @@
         },
         "source": {"$ref": "#/$defs/identifier"},
         "created_at": {"$ref": "#/$defs/identifier"},
-        "updated_at": {"$ref": "#/$defs/identifier"}
+        "updated_at": {"$ref": "#/$defs/identifier"},
+        "skill_references": {
+          "$ref": "#/$defs/SkillReferences"
+        }
       }
     },
     "input_queue_payload": {
@@ -563,6 +566,37 @@
         "kind": {"const": "responses_continuation"},
         "version": {"const": 1},
         "payload": {"$ref": "#/$defs/responses_continuation_payload"}
+      }
+    },
+    "SkillReference": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "SkillReferences": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/SkillReference"
       }
     }
   }

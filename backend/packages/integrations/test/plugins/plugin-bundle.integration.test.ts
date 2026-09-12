@@ -64,6 +64,36 @@ test("installed bundles activate namespaced skills, real MCP tools and root-awar
 	assert.deepEqual(disabled, { skills: [], mcpServers: [], hooks: [], issues: [], requiredMcpFailures: [] });
 });
 
+test("bundle hooks preserve default disablement and capture explicit overrides", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-bundle-hook-enablement-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const homeDir = join(root, "home");
+	const workspaceRoot = join(root, "workspace");
+	const source = join(root, "source");
+	await mkdir(homeDir);
+	await mkdir(workspaceRoot);
+	await mkdir(join(source, ".codex-plugin"), { recursive: true });
+	await writeFile(join(source, ".codex-plugin/plugin.json"), JSON.stringify({
+		name: "disabled-hook",
+		hooks: { hooks: [{ id: "probe", hook_point: "user_prompt_submit", enabled: false,
+			command: [process.execPath, "-e", "console.log('enabled-hook-ran')"] }] },
+	}));
+	const manager = new PluginPackageManager({ homeDir, workspaceRoot });
+	assert.equal((await manager.execute({ action: "add", source }, signal)).ok, true);
+	const discovery = await discoverPlugins({ homeDir, workspaceRoot });
+	const options = { workspaceRoot, env: {}, sandboxProfile: unrestricted };
+	const invocation = { point: "user_prompt_submit" as const, sessionId: "session", turnId: "turn", metadata: {} };
+	const defaults = pluginBundleContributions(discovery, options);
+	assert.equal(defaults.hooks[0]?.origin?.enabled, false);
+	assert.deepEqual(await defaults.hooks[0]!.handler(invocation, signal), { action: "allow" });
+	let enabled = true;
+	const overridden = pluginBundleContributions(discovery, { ...options, hookEnabled: () => enabled });
+	enabled = false;
+	assert.deepEqual(await overridden.hooks[0]!.handler(invocation, signal), { action: "allow", additionalContexts: ["enabled-hook-ran"] });
+	const nextRun = pluginBundleContributions(discovery, { ...options, hookEnabled: () => enabled });
+	assert.deepEqual(await nextRun.hooks[0]!.handler(invocation, signal), { action: "allow" });
+});
+
 test("qualified package names isolate identical skills and MCP server names; repository bundles require trust", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-bundle-namespaces-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

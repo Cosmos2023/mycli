@@ -72,7 +72,7 @@ export class SkillTool implements ToolAdapter {
 				metadata: Object.freeze({}),
 			});
 		}
-		const artifact = instructionArtifact(skill.name, skill.body, skill.sourceKind);
+		const artifact = skillInstructionArtifact(skill.name, skill.body, skill.sourceKind);
 		return Object.freeze({
 			success: true,
 			modelOutput: `Activated skill: ${skill.name}`,
@@ -126,7 +126,7 @@ function isSkillSourceKind(value: unknown): value is SkillSourceKind {
 	return typeof value === "string" && SKILL_SOURCE_KINDS.has(value);
 }
 
-function instructionArtifact(
+export function skillInstructionArtifact(
 	name: string,
 	body: string,
 	sourceKind: SkillInvocationArtifact["sourceKind"],

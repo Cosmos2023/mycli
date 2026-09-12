@@ -500,3 +500,31 @@ test("agent mailbox inputs remain internal and pending across restore and clear"
 	assert.equal(nextQueuedInput(restored), undefined);
 	assert.equal(clearQueue(restored).snapshot.pendingSteers.length, 1);
 });
+
+test("skill references survive steering resubmission and participate in queue conflicts", () => {
+ const reference = { id: "a".repeat(64), name: "review", revision: "b".repeat(64) };
+ const input = steerInput({ text: "$review", skillReferences: [reference] });
+ const queued = enqueueSteer(emptyQueue(), input);
+ assert.deepEqual(queued.record.skillReferences, [reference]);
+ assert.throws(() => enqueueSteer(queued.snapshot, { ...input, skillReferences: [] }), QueueConflictError);
+ const restored = restoreQueue(queued.snapshot, { activeTurnId: null, committedQueueIds: new Set(), now });
+ assert.deepEqual(restored.rejectedSteers[0]?.skillReferences, [reference]);
+});
+
+test("interrupted steer merging retains skills and keeps incompatible selections separate", () => {
+	const reference = (index: number, name = `skill${index}`) => ({
+		id: index.toString(16).padStart(64, "0"), name, revision: "b".repeat(64),
+	});
+	for (const [first, second, merged] of [
+		[[reference(1)], [reference(2)], true],
+		[Array.from({ length: 8 }, (_, index) => reference(index)), [reference(8)], false],
+		[[reference(1, "review")], [reference(2, "review")], false],
+	] as const) {
+		let snapshot = enqueueSteer(emptyQueue(), steerInput({ skillReferences: first })).snapshot;
+		snapshot = enqueueSteer(snapshot, steerInput({ queueId: "second", clientTurnId: "second", skillReferences: second })).snapshot;
+		const result = preparePendingSteersForResubmit(snapshot, "t1", now);
+		assert.equal(result.snapshot.pendingSteers.length, 0);
+		assert.equal(result.snapshot.rejectedSteers.length, merged ? 1 : 2);
+		assert.deepEqual(result.snapshot.rejectedSteers.flatMap((record) => record.skillReferences ?? []), [...first, ...second]);
+	}
+});

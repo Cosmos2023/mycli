@@ -1,3 +1,4 @@
+import { parseSkillReferences, type SkillReference } from "@mycli/contracts";
 import { createHash } from "node:crypto";
 import { isRuntimeErrorCode, readErrorContext, sanitizeRuntimeErrorDetail } from "@mycli/contracts";
 import type { ErrorContext, RuntimeErrorCode } from "@mycli/contracts";
@@ -103,6 +104,7 @@ export interface TranscriptReadableProjection {
 }
 
 export interface UserInputTranscriptPayload {
+	readonly skillReferences?: readonly SkillReference[];
 	readonly text: string;
 	readonly clientUserMessageId: string;
 	readonly queueId?: string;
@@ -417,7 +419,7 @@ function payloadFor(
 
 function userInput(value: unknown): UserInputTranscriptPayload {
 	const payload = record(value, "payload");
-	keys(payload, ["text", "clientUserMessageId", "queueId", "source", "images", "readableProjection"], [
+	keys(payload, ["text", "clientUserMessageId", "queueId", "source", "images", "readableProjection", "skillReferences"], [
 		"text", "clientUserMessageId", "source",
 	], "payload");
 	if (payload.source !== "submit" && payload.source !== "steer"
@@ -430,6 +432,7 @@ function userInput(value: unknown): UserInputTranscriptPayload {
 	const readableProjection = optionalReadableProjection(payload.readableProjection);
 	return Object.freeze({
 		text: string(payload.text, "payload.text"),
+		...(payload.skillReferences === undefined ? {} : { skillReferences: parseSkillReferences(payload.skillReferences) }),
 		clientUserMessageId: identity(payload.clientUserMessageId, "payload.clientUserMessageId"),
 		...(queueId ? { queueId } : {}),
 		source: payload.source,

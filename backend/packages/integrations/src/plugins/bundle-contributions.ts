@@ -24,6 +24,7 @@ export function pluginBundleContributions(discovery: PluginDiscovery, options: {
 	readonly workspaceRoot: string;
 	readonly env: Readonly<NodeJS.ProcessEnv>;
 	readonly sandboxProfile: (cwd: string) => SandboxProfile;
+	readonly hookEnabled?: (hook: Pick<HookRegistration, "id" | "hookPoint" | "origin">) => boolean;
 }): PluginBundleContributions {
 	const skills: PluginSkillFile[] = [];
 	const mcp = pluginMcpServers(discovery, options.env);
@@ -43,8 +44,10 @@ export function pluginBundleContributions(discovery: PluginDiscovery, options: {
 			issues.push(...diagnostics.map((issue) => ({ pluginId: plugin.pluginId, errorClass: issue.errorClass })));
 			for (const spec of specs) {
 				const id = `plugin:${namespace}:${documentIndex}-${spec.hookId}`;
-				hooks.push({ id, hookPoint: spec.hookPoint, handler: async (input, signal) => {
-					const result = await runner.run({ ...spec, pluginRoot: root }, input, signal);
+				const registration = { id, hookPoint: spec.hookPoint, origin: { pluginId: plugin.pluginId, path: plugin.manifest.manifestPath, command: spec.command, enabled: spec.enabled } };
+				const enabled = options.hookEnabled?.(registration) ?? spec.enabled;
+				hooks.push({ ...registration, handler: async (input, signal) => {
+					const result = await runner.run({ ...spec, enabled, pluginRoot: root }, input, signal);
 					return result.action === "error" ? { ...result, errorContext: pluginFailureContext(new PluginHostError("handler_failed"), {
 						pluginId: plugin.pluginId, operation: "hooks/run", scope: failureScope("request", `hook:${input.turnId}:${id}`),
 					}) } : result;

@@ -1383,6 +1383,9 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "skill_references": {
+                    "$ref": "#/$defs/SkillReferences"
                   }
                 },
                 "type": "object"
@@ -1455,6 +1458,9 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "skill_references": {
+                    "$ref": "#/$defs/SkillReferences"
                   }
                 },
                 "type": "object"
@@ -1527,6 +1533,9 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "skill_references": {
+                    "$ref": "#/$defs/SkillReferences"
                   }
                 },
                 "type": "object"
@@ -1578,6 +1587,9 @@
               },
               "text": {
                 "type": "string"
+              },
+              "skill_references": {
+                "$ref": "#/$defs/SkillReferences"
               }
             },
             "type": "object"
@@ -1623,6 +1635,9 @@
               },
               "text": {
                 "type": "string"
+              },
+              "skill_references": {
+                "$ref": "#/$defs/SkillReferences"
               }
             },
             "type": "object"
@@ -2281,6 +2296,9 @@
               },
               "text": {
                 "type": "string"
+              },
+              "skill_references": {
+                "$ref": "#/$defs/SkillReferences"
               }
             },
             "type": "object"
@@ -2358,6 +2376,9 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "skill_references": {
+                    "$ref": "#/$defs/SkillReferences"
                   }
                 },
                 "type": "object"
@@ -2430,6 +2451,9 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "skill_references": {
+                    "$ref": "#/$defs/SkillReferences"
                   }
                 },
                 "type": "object"
@@ -2502,6 +2526,9 @@
                   },
                   "updated_at": {
                     "type": "string"
+                  },
+                  "skill_references": {
+                    "$ref": "#/$defs/SkillReferences"
                   }
                 },
                 "type": "object"
@@ -2553,6 +2580,9 @@
               },
               "text": {
                 "type": "string"
+              },
+              "skill_references": {
+                "$ref": "#/$defs/SkillReferences"
               }
             },
             "type": "object"
@@ -2673,7 +2703,38 @@
         "enforced"
       ],
       "type": "object"
-    }
+    },
+	  "SkillReference": {
+	    "type": "object",
+	    "properties": {
+	      "id": {
+	        "type": "string",
+	        "pattern": "^[a-f0-9]{64}$"
+	      },
+	      "name": {
+	        "type": "string",
+	        "minLength": 1,
+	        "maxLength": 256
+	      },
+	      "revision": {
+	        "type": "string",
+	        "pattern": "^[a-f0-9]{64}$"
+	      }
+	    },
+	    "required": [
+	      "id",
+	      "name",
+	      "revision"
+	    ],
+	    "additionalProperties": false
+	  },
+	  "SkillReferences": {
+	    "type": "array",
+	    "maxItems": 8,
+	    "items": {
+	      "$ref": "#/$defs/SkillReference"
+	    }
+	  }
   },
   "$id": "https://mycli.local/contracts/gateway-events.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -1,3 +1,4 @@
+import type { SkillReference } from "@mycli/contracts";
 import {
 	canonicalTurnFailureMessage,
 	parseErrorContext,
@@ -44,6 +45,7 @@ export interface ReserveTurnInput {
 	readonly userText: string;
 	readonly queueId?: string;
 	readonly inputSource?: "submit" | "steer" | "queued";
+	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly images?: readonly CanonicalImage[];
 	readonly source?: "user" | "agent_mailbox";

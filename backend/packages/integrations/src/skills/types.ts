@@ -2,6 +2,8 @@ export type SkillSourceKind = "builtin" | "user" | "shared_repo" | "repo";
 
 export interface SkillDefinition {
 	readonly name: string;
+	readonly sourcePath: string;
+	readonly enabled: boolean;
 	readonly description: string;
 	readonly triggerHints: readonly string[];
 	readonly envDependencies: readonly string[];

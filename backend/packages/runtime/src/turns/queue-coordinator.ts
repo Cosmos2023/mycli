@@ -1,3 +1,4 @@
+import type { SkillReference } from "@mycli/contracts";
 import { createHash } from "node:crypto";
 import {
 	claimQueueForRestoration,
@@ -49,6 +50,7 @@ export interface QueueSteerInput {
 	readonly activeTurnId: string | null;
 	readonly steerable: boolean;
 	readonly text: string;
+	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly source?: string;
 }
@@ -91,6 +93,7 @@ export interface QueueFollowUpInput {
 	readonly sessionId?: string;
 	readonly clientTurnId: string;
 	readonly text: string;
+	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly source?: string;
 }
@@ -167,6 +170,7 @@ export class QueueCoordinator {
 			steerable: input.steerable,
 			text: input.text,
 			imagePaths: input.imagePaths,
+			skillReferences: input.skillReferences,
 			source: input.source ?? "user",
 			now: this.#clock(),
 		});
@@ -256,6 +260,7 @@ export class QueueCoordinator {
 			clientTurnId: input.clientTurnId,
 			text: input.text,
 			imagePaths: input.imagePaths,
+			skillReferences: input.skillReferences,
 			source: input.source ?? "user",
 			now: this.#clock(),
 		});

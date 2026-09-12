@@ -13,6 +13,7 @@ import type {
 } from "./types.ts";
 
 export interface HookRegistration {
+	readonly origin?: { readonly pluginId: string; readonly path: string; readonly command?: readonly string[]; readonly enabled?: boolean };
 	readonly id: string;
 	readonly hookPoint: HookPoint;
 	readonly handler: (

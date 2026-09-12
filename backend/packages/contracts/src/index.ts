@@ -109,3 +109,7 @@ export { providerAttemptId } from "./provider-attempt.ts";
 export { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
 export { LOCAL_CONNECTION_REASONS, localConnectionReason, storageErrorReason } from "./errors/boundaries.ts";
 export type { McpElicitationRequest, McpElicitationField } from "./generated/mcp-elicitation.ts";
+export { MAX_SKILL_REFERENCES, parseSkillReferences, skillReferencesInText } from "./gateway/skill-reference.ts";
+export type { SkillReference } from "./gateway/skill-reference.ts";
+
+export type { ReviewSelection } from "./generated/gateway-rpc.ts";

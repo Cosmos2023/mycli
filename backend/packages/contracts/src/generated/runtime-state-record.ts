@@ -3,6 +3,28 @@ export type RuntimeStateRecord =
   InputQueue | PendingDecision | SuspendedTurn | EffectCheckpoint | CompactCheckpoint | ResponsesContinuation;
 export type Identifier = string;
 export type NullableIdentifier = string | null;
+/**
+ * @maxItems 8
+ */
+export type SkillReferences =
+  | []
+  | [SkillReference]
+  | [SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference
+    ];
 export type ShortString = string;
 export type BoundedString = string;
 export type EffectCheckpointPayload =
@@ -125,7 +147,13 @@ export interface QueuedInput {
   source: Identifier;
   created_at: Identifier;
   updated_at: Identifier;
+  skill_references?: SkillReferences;
   [k: string]: any;
+}
+export interface SkillReference {
+  id: string;
+  name: string;
+  revision: string;
 }
 export interface PendingDecision {
   kind: "pending_decision";

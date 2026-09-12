@@ -58,7 +58,13 @@
     "plugin.catalog",
     "plugin.operation.start",
     "plugin.operation.get",
-    "plugin.operation.cancel"
+    "plugin.operation.cancel",
+    "skills.list",
+    "skills.config.write",
+    "hooks.list",
+    "hooks.config.write",
+    "workspace.diff",
+    "session.preview"
   ],
   "properties": {
     "plugin.inspect": {
@@ -1192,6 +1198,261 @@
           }
         }
       }
+    },
+    "skills.list": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/SkillCatalog"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ]
+    },
+    "skills.config.write": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "skill_revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "id",
+            "revision",
+            "skill_revision",
+            "enabled"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/SkillCatalog"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ]
+    },
+    "hooks.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/HookCatalog"
+        }
+      }
+    },
+    "hooks.config.write": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "generation",
+            "id",
+            "revision",
+            "hook_revision",
+            "action"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "hook_revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "action": {
+              "enum": [
+                "enable",
+                "disable",
+                "trust",
+                "revoke"
+              ]
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/HookCatalog"
+        }
+      }
+    },
+    "workspace.diff": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "text",
+            "truncated"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 262200
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "session.preview": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "generation",
+            "target_session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "target_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "text",
+            "truncated"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 262200
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -1924,6 +2185,12 @@
             "default",
             "plan"
           ]
+        },
+        "skill_references": {
+          "$ref": "#/$defs/SkillReferences"
+        },
+        "review": {
+          "$ref": "#/$defs/ReviewSelection"
         }
       }
     },
@@ -1950,6 +2217,9 @@
             },
             "local_images": {
               "$ref": "#/$defs/QueueImages"
+            },
+            "skill_references": {
+              "$ref": "#/$defs/SkillReferences"
             }
           }
         }
@@ -2527,6 +2797,258 @@
         "has_more": {
           "type": "boolean"
         }
+      }
+    },
+    "SkillReference": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "SkillCatalog": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "revision": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "builtin",
+                  "user",
+                  "shared_repo",
+                  "repo"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "revision",
+              "description",
+              "source",
+              "path",
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 256
+        }
+      },
+      "required": [
+        "revision",
+        "skills"
+      ],
+      "additionalProperties": false
+    },
+    "HookCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "hooks"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "hooks": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "revision",
+              "name",
+              "point",
+              "source",
+              "path",
+              "command",
+              "enabled",
+              "trusted",
+              "trustSource"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "revision": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "point": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "source": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "command": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                  "type": "string",
+                  "maxLength": 65536
+                }
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "trusted": {
+                "type": "boolean"
+              },
+              "trustSource": {
+                "enum": [
+                  "allowlist",
+                  "plugin"
+                ]
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "ReviewSelection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "uncommitted"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "base"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "commit"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "instructions"
+          ],
+          "properties": {
+            "kind": {
+              "const": "custom"
+            },
+            "instructions": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          }
+        }
+      ]
+    },
+    "SkillReferences": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/SkillReference"
       }
     }
   }

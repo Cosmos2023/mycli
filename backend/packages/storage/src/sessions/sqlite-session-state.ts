@@ -1,3 +1,4 @@
+import { parseSkillReferences, type SkillReference } from "@mycli/contracts";
 import { ContractValidationError, parseRuntimeState } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
@@ -1514,6 +1515,7 @@ function queueRecordFromPayload(payload: {
 	readonly claim_turn_id?: string | null;
 	readonly text: string;
 	readonly image_paths: readonly string[];
+	readonly skill_references?: readonly SkillReference[];
 	readonly source: string;
 	readonly created_at: string;
 	readonly updated_at: string;
@@ -1528,6 +1530,7 @@ function queueRecordFromPayload(payload: {
 		...(payload.claim_turn_id ? { claimTurnId: payload.claim_turn_id } : {}),
 		text: payload.text,
 		imagePaths: Object.freeze([...payload.image_paths]),
+		...(payload.skill_references?.length ? { skillReferences: parseSkillReferences(payload.skill_references) } : {}),
 		source: payload.source,
 		createdAt: payload.created_at,
 		updatedAt: payload.updated_at,
@@ -1570,6 +1573,7 @@ function queueRecordPayload(
 		claim_turn_id: record.claimTurnId ?? null,
 		text: record.text,
 		image_paths: [...record.imagePaths],
+		...(record.skillReferences?.length ? { skill_references: record.skillReferences } : {}),
 		source: record.source,
 		created_at: record.createdAt,
 		updated_at: record.updatedAt,
@@ -1652,6 +1656,7 @@ function queuedUserMessage(
 			queue_id: record.queueId,
 			source: record.source,
 			image_paths: [...record.imagePaths],
+		...(record.skillReferences?.length ? { skill_references: record.skillReferences } : {}),
 		},
 		blocks: imageBlocks(images),
 		tool_calls: [],
@@ -1676,6 +1681,7 @@ function queuedHistoryItem(
 			queue_id: record.queueId,
 			source: record.source,
 			image_paths: [...record.imagePaths],
+		...(record.skillReferences?.length ? { skill_references: record.skillReferences } : {}),
 		},
 	};
 }

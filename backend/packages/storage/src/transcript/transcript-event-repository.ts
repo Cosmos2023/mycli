@@ -540,6 +540,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 								clientUserMessageId: record.clientTurnId,
 								queueId: record.queueId,
 								source: queuedInputSource(record),
+								...(record.skillReferences?.length ? { skillReferences: record.skillReferences } : {}),
 								...(images.length > 0 ? { images } : {}),
 							},
 						}));
@@ -695,6 +696,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 							clientUserMessageId: input.clientUserMessageId,
 							...(input.queueId ? { queueId: input.queueId } : {}),
 							source: input.inputSource ?? "submit",
+							...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 							...(images.length > 0 ? { images } : {}),
 						},
 					}));
@@ -3989,6 +3991,7 @@ function projectEventsToLegacyHistory(
 						source: event.payload.source,
 						...(event.payload.queueId ? { queue_id: event.payload.queueId } : {}),
 						image_paths: Object.freeze([]),
+						...(event.payload.skillReferences?.length ? { skill_references: event.payload.skillReferences } : {}),
 					}),
 				})];
 			}

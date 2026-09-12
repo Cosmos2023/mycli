@@ -541,6 +541,28 @@ export type ShellOutput = Shell & {
 };
 export type ShellRemoved = Shell;
 export type ShellStarted = Shell;
+/**
+ * @maxItems 8
+ */
+export type SkillReferences =
+  | []
+  | [SkillReference]
+  | [SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference
+    ];
 export type ProviderAttemptRecord = ProviderAttemptFields & {
   eventId: string;
   attemptId: string;
@@ -1207,6 +1229,7 @@ export interface Status {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     pending_steers?: {
@@ -1227,6 +1250,7 @@ export interface Status {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     rejected_steers?: {
@@ -1247,6 +1271,7 @@ export interface Status {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     [k: string]: any;
@@ -1264,6 +1289,7 @@ export interface Status {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   queued_steering: any[];
@@ -1278,6 +1304,7 @@ export interface Status {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   session_id: string;
@@ -1289,6 +1316,11 @@ export interface Status {
   turn_running: boolean;
   workspace: string;
   [k: string]: any;
+}
+export interface SkillReference {
+  id: string;
+  name: string;
+  revision: string;
 }
 export interface Status1 {
   session_id?: string;
@@ -1559,6 +1591,7 @@ export interface TurnQueue {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   has_pending_input?: boolean;
@@ -1581,6 +1614,7 @@ export interface TurnQueue {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     pending_steers?: {
@@ -1601,6 +1635,7 @@ export interface TurnQueue {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     rejected_steers?: {
@@ -1621,6 +1656,7 @@ export interface TurnQueue {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     [k: string]: any;
@@ -1638,6 +1674,7 @@ export interface TurnQueue {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   [k: string]: any;

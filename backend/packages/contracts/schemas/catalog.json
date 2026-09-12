@@ -93,6 +93,12 @@
   ],
   "protocolVersion": 1,
   "rpcMethods": [
+    "skills.list",
+    "skills.config.write",
+    "hooks.list",
+    "hooks.config.write",
+    "workspace.diff",
+    "session.preview",
     "plugin.inspect",
     "plugin.catalog",
     "plugin.operation.start",

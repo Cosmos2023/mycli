@@ -1,7 +1,8 @@
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
+import { integrationEnabled, integrationSourceIdentity, type IntegrationEnablementSnapshot } from "../foundation/enablement-store.ts";
 import type {
 	SkillDefinition,
 	SkillDiagnosticIssue,
@@ -19,6 +20,7 @@ export interface SkillRegistryOptions {
 	readonly maxBodyChars?: number;
 	readonly maxSkills?: number;
 	readonly pluginSkills?: readonly PluginSkillFile[];
+	readonly enablement?: IntegrationEnablementSnapshot;
 }
 
 export interface PluginSkillFile {
@@ -131,7 +133,12 @@ export class SkillRegistry {
 			shared_repo: 0,
 			repo: 0,
 		} satisfies Record<SkillSourceKind, number>;
-		for (const definition of skills.values()) sourceCounts[definition.sourceKind] += 1;
+		for (const [name, definition] of skills) {
+			sourceCounts[definition.sourceKind] += 1;
+			if (options.enablement) skills.set(name, Object.freeze({ ...definition,
+				enabled: integrationEnabled(options.enablement, "skill", skillIdentity(definition)),
+			}));
+		}
 		const diagnostics: SkillRegistryDiagnostics = Object.freeze({
 			directoryCount: directories.length,
 			discoveredCount,
@@ -145,12 +152,16 @@ export class SkillRegistry {
 	}
 
 	get(name: string): SkillDefinition | undefined {
-		if (name.includes(":")) return this.#skills.get(name);
-		const normalized = tryNormalizeSkillName(name);
-		return normalized ? this.#skills.get(normalized) : undefined;
+		const normalized = name.includes(":") ? name : tryNormalizeSkillName(name);
+		const skill = normalized ? this.#skills.get(normalized) : undefined;
+		return skill?.enabled ? skill : undefined;
 	}
 
 	list(): readonly SkillDefinition[] {
+		return Object.freeze(this.listAll().filter((skill) => skill.enabled));
+	}
+
+	listAll(): readonly SkillDefinition[] {
 		return Object.freeze([...this.#skills.values()].sort((left, right) => compareText(
 			left.name,
 			right.name,
@@ -239,6 +250,8 @@ async function parseSkill(
 	}
 	return Object.freeze({
 		name,
+		sourcePath: resolve(path),
+		enabled: true,
 		description,
 		triggerHints: stringList(parsed.payload.trigger_hints),
 		envDependencies: stringList(parsed.payload.env_dependencies),
@@ -248,6 +261,14 @@ async function parseSkill(
 		sourceKind,
 		fileLabel: basename(path).slice(0, 128),
 	});
+}
+
+export function skillIdentity(skill: SkillDefinition): string {
+	return integrationSourceIdentity(["skill", skill.sourcePath, skill.name]);
+}
+
+export function skillRevision(skill: SkillDefinition): string {
+	return integrationSourceIdentity([skillIdentity(skill), skill.description, skill.body]);
 }
 
 function splitSkillFile(raw: string, limits: ResolvedLimits): ParsedSkillFile {

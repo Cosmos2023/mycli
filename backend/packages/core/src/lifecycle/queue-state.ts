@@ -1,3 +1,5 @@
+import { MAX_SKILL_REFERENCES, parseSkillReferences, type SkillReference } from "@mycli/contracts";
+
 export type QueueItemKind = "pending_steer" | "rejected_steer" | "follow_up";
 export type QueueDeliveryState = "queued" | "accepted" | "claimed" | "committed";
 export type QueueDisposition =
@@ -22,6 +24,7 @@ export interface QueuedInput {
 	readonly state: QueueDeliveryState;
 	readonly claimTurnId?: string;
 	readonly text: string;
+	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths: readonly string[];
 	readonly source: string;
 	readonly createdAt: string;
@@ -50,6 +53,7 @@ export interface EnqueueSteerInput {
 	readonly activeTurnId: string | null;
 	readonly steerable: boolean;
 	readonly text: string;
+	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly source: string;
 	readonly now: string;
@@ -60,6 +64,7 @@ export interface EnqueueFollowUpInput {
 	readonly sessionId?: string;
 	readonly clientTurnId: string;
 	readonly text: string;
+	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly source: string;
 	readonly now: string;
@@ -129,11 +134,12 @@ export function enqueueSteer(
 	validateInputSession(snapshot.sessionId, input.sessionId);
 	const clientTurnId = nonEmpty(input.clientTurnId, "clientTurnId");
 	const expectedTurnId = nonEmpty(input.expectedTurnId, "expectedTurnId");
-	const normalized = normalizedPayload(input.text, input.imagePaths, input.source);
+	const normalized = normalizedPayload(input.text, input.imagePaths, input.source, input.skillReferences);
 	const duplicate = duplicateOrConflict(snapshot, {
 		clientTurnId,
 		text: normalized.text,
 		imagePaths: normalized.imagePaths,
+		...(normalized.skillReferences?.length ? { skillReferences: normalized.skillReferences } : {}),
 		targetTurnId: expectedTurnId,
 		source: normalized.source,
 	});
@@ -157,6 +163,7 @@ export function enqueueSteer(
 		state: accepted ? "accepted" : "queued",
 		text: normalized.text,
 		imagePaths: normalized.imagePaths,
+		...(normalized.skillReferences?.length ? { skillReferences: normalized.skillReferences } : {}),
 		source: normalized.source,
 		createdAt: nonEmpty(input.now, "now"),
 		updatedAt: nonEmpty(input.now, "now"),
@@ -188,11 +195,12 @@ export function enqueueFollowUp(
 	validateSnapshot(snapshot, limits);
 	validateInputSession(snapshot.sessionId, input.sessionId);
 	const clientTurnId = nonEmpty(input.clientTurnId, "clientTurnId");
-	const normalized = normalizedPayload(input.text, input.imagePaths, input.source);
+	const normalized = normalizedPayload(input.text, input.imagePaths, input.source, input.skillReferences);
 	const duplicate = duplicateOrConflict(snapshot, {
 		clientTurnId,
 		text: normalized.text,
 		imagePaths: normalized.imagePaths,
+		...(normalized.skillReferences?.length ? { skillReferences: normalized.skillReferences } : {}),
 		targetTurnId: null,
 		source: normalized.source,
 	});
@@ -209,6 +217,7 @@ export function enqueueFollowUp(
 		state: "queued",
 		text: normalized.text,
 		imagePaths: normalized.imagePaths,
+		...(normalized.skillReferences?.length ? { skillReferences: normalized.skillReferences } : {}),
 		source: normalized.source,
 		createdAt: nonEmpty(input.now, "now"),
 		updatedAt: nonEmpty(input.now, "now"),
@@ -398,15 +407,17 @@ export function preparePendingSteersForResubmit(
 	const updatedAt = nonEmpty(now, "now");
 	const mergedPayload = mergeQueuedInputPayloads(matching);
 	const first = matching[0]!;
-	const merged = freezeRecord({
+	const merged = mergedPayload ? freezeRecord({
 		...first,
 		targetTurnId: normalizedTurnId,
 		kind: "rejected_steer",
 		state: "queued",
-		text: mergedPayload.text,
-		imagePaths: mergedPayload.imagePaths,
+		...mergedPayload,
 		updatedAt,
-	});
+	}) : undefined;
+	const rejected = merged ? [merged] : matching.map((record) => freezeRecord({
+		...record, kind: "rejected_steer", state: "queued", updatedAt,
+	}));
 	const matchingIds = new Set(matching.map((record) => record.queueId));
 	const candidate = freezeSnapshot({
 		...snapshot,
@@ -414,13 +425,13 @@ export function preparePendingSteersForResubmit(
 		pendingSteers: snapshot.pendingSteers.filter(
 			(record) => !matchingIds.has(record.queueId),
 		),
-		rejectedSteers: [merged, ...snapshot.rejectedSteers],
+		rejectedSteers: [...rejected, ...snapshot.rejectedSteers],
 	});
 	validateSnapshot(candidate, DEFAULT_QUEUE_CAPACITY);
 	return Object.freeze({
 		snapshot: candidate,
 		records: Object.freeze(matching),
-		merged,
+		...(merged ? { merged } : {}),
 	});
 }
 
@@ -689,9 +700,12 @@ function normalizedPayload(
 	text: string,
 	imagePaths: readonly string[] | undefined,
 	source: string,
-): { readonly text: string; readonly imagePaths: readonly string[]; readonly source: string } {
+	skillReferences?: readonly SkillReference[],
+): { readonly text: string; readonly skillReferences?: readonly SkillReference[];
+	readonly imagePaths: readonly string[]; readonly source: string } {
 	return {
 		text: nonEmpty(text, "text"),
+		...(skillReferences?.length ? { skillReferences: parseSkillReferences(skillReferences) } : {}),
 		imagePaths: Object.freeze([...new Set(
 			(imagePaths ?? []).map((path) => nonEmpty(path, "imagePath")),
 		)]),
@@ -701,7 +715,18 @@ function normalizedPayload(
 
 function mergeQueuedInputPayloads(
 	records: readonly QueuedInput[],
-): { readonly text: string; readonly imagePaths: readonly string[] } {
+): { readonly text: string; readonly skillReferences?: readonly SkillReference[];
+	readonly imagePaths: readonly string[] } | undefined {
+	const skills = new Map<string, SkillReference>();
+	for (const record of records) {
+		for (const skill of record.skillReferences ?? []) {
+			const existing = skills.get(skill.name);
+			// Keep inputs separate when merging would lose or change a selected skill.
+			if (existing && (existing.id !== skill.id || existing.revision !== skill.revision)) return undefined;
+			skills.set(skill.name, skill);
+			if (skills.size > MAX_SKILL_REFERENCES) return undefined;
+		}
+	}
 	let imageOffset = 0;
 	const imagePaths: string[] = [];
 	const text = records.map((record) => {
@@ -715,7 +740,9 @@ function mergeQueuedInputPayloads(
 		imageOffset += record.imagePaths.length;
 		return rebased;
 	}).join("\n\n");
-	return Object.freeze({ text, imagePaths: Object.freeze(imagePaths) });
+	return Object.freeze({ text, imagePaths: Object.freeze(imagePaths),
+		...(skills.size ? { skillReferences: parseSkillReferences([...skills.values()]) } : {}),
+	});
 }
 
 function duplicateOrConflict(
@@ -723,6 +750,7 @@ function duplicateOrConflict(
 	input: {
 		readonly clientTurnId: string;
 		readonly text: string;
+		readonly skillReferences?: readonly SkillReference[];
 		readonly imagePaths: readonly string[];
 		readonly targetTurnId: string | null;
 		readonly source: string;
@@ -737,6 +765,7 @@ function duplicateOrConflict(
 	if (
 		existing.text === input.text
 		&& arraysEqual(existing.imagePaths, input.imagePaths)
+		&& JSON.stringify(existing.skillReferences ?? []) === JSON.stringify(input.skillReferences ?? [])
 		&& existing.targetTurnId === input.targetTurnId
 		&& existing.source === input.source
 	) {
@@ -841,6 +870,7 @@ function freezeRecord(record: QueuedInput): QueuedInput {
 	return Object.freeze({
 		...record,
 		imagePaths: Object.freeze([...record.imagePaths]),
+		...(record.skillReferences?.length ? { skillReferences: parseSkillReferences(record.skillReferences) } : {}),
 	});
 }
 

@@ -174,13 +174,18 @@ export type {
 export { renderSkillCatalog } from "./skills/catalog.ts";
 export { builtinSkillRoot } from "./skills/builtin-root.ts";
 export type { RenderSkillCatalogOptions } from "./skills/catalog.ts";
-export { SkillRegistry } from "./skills/registry.ts";
+export { SkillRegistry, skillIdentity, skillRevision } from "./skills/registry.ts";
+export { SkillManagementService, SkillSelectionError } from "./skills/management.ts";
+export type { SkillManagementRow, SkillManagementSnapshot } from "./skills/management.ts";
+export { IntegrationEnablementStore, IntegrationEnablementError, integrationEnabled, integrationSourceIdentity } from "./foundation/enablement-store.ts";
+export type { IntegrationEnablementKind, IntegrationEnablementEntry, IntegrationEnablementSnapshot } from "./foundation/enablement-store.ts";
 export type { SkillRegistryOptions } from "./skills/registry.ts";
 export {
 	createSkillToolRegistration,
 	type SkillLookup,
 	SKILL_TOOL_DEFINITION,
 	skillInvocationArtifactFromMetadata,
+	skillInstructionArtifact,
 	SkillTool,
 } from "./skills/skill-tool.ts";
 export type { SkillToolOptions } from "./skills/skill-tool.ts";
@@ -269,3 +274,6 @@ export { loginMcpOAuth } from "./mcp/oauth-login.ts";
 export { McpOAuthStore, McpOAuthError } from "./mcp/oauth-store.ts";
 export { policyMcpFetch } from "./mcp/http-fetch.ts";
 export type { McpElicitationPrompt, McpElicitationHandler, McpInvocationContext } from "./mcp/elicitation.ts";
+
+export { HookBrowserService, HookSelectionError, configuredHookIdentity, configuredHookEnablement, pluginHookIdentity } from "./hooks/browser-service.ts";
+export type { HookBrowserRow, HookBrowserSnapshot } from "./hooks/browser-service.ts";
