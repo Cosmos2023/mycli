@@ -440,8 +440,8 @@ Bundles contribute namespaced skills, MCP servers and command hooks through the 
 systems. Use `mycli plugins marketplace add <source>` to register a catalog, then
 `mycli plugins list --available` to browse it. Install/update/enable/disable/remove take effect before
 the next turn or idle catalog inspection; installation does not execute package code. Existing
-active or suspended runs keep the previous tools, skills, hooks and connections until all owners
-finish. New configuration discovery completes before the next run captures its catalog. An unchanged
+active or suspended runs keep that session's previous tools, skills, hooks and connections until
+its owners finish. Other sessions refresh independently, including a parent with a waiting child. New configuration discovery completes before the next run captures its catalog. An unchanged
 configuration reuses its connections. Required-server or composition failure retains the previous
 content and rejects the refresh; correct the configuration and retry. Apps declarations are reported as
 unavailable. See [plugin-codex-parity.md](plugin-codex-parity.md) for formats, commands and limits.

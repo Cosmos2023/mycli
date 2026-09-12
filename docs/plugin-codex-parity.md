@@ -68,10 +68,10 @@ package install scripts or download submodules; dependencies must already be ava
 
 Package changes apply before the next turn or an idle `/plugins`, `/mcp`, `/skills`, `/hooks`,
 or `/tools` inspection. Existing active or suspended turns keep their original integration content;
-shared root/child runs must all finish before replacement. A changed configuration completes MCP
-discovery before a new run captures its tools. Unchanged turns reuse the existing clients.
+each session refreshes independently, so a waiting child does not block its parent. A changed
+configuration completes MCP discovery before a new run captures its tools. Unchanged turns reuse the existing clients.
 In-session `/plugins` shows package state, `/skills` lists namespaced skills, and MCP tools enter
-the shared integration catalog with direct/deferred exposure and session discovery reuse.
+the session integration catalog with direct/deferred exposure and session discovery reuse.
 
 Plugin MCP servers use the common management and OAuth flow:
 
@@ -193,16 +193,27 @@ existing immediate trust-gating behavior.
 | Diagnosis | Plugin load errors and MCP invocation errors retain their owning plugin/server context | Existing canonical integration errors retain plugin, operation, phase, timeout, exit/signal, and one prior failure |
 | Status | Configured enablement is separate from successful activation | The plugin catalog tracks actual process state separately from configured enablement |
 | MCP authentication | Login/logout resolve the combined standalone and plugin MCP configuration | Common configured-server discovery serves runtime, list/inspect, login/logout and approval revocation |
-| Package activation | Effective plugin changes clear caches and queue MCP refresh before subsequent turns | Package/config/auth changes refresh shared integration content at an idle boundary before catalog capture |
+| Package activation | Effective plugin changes clear caches and queue MCP refresh before subsequent turns | Package/config/auth changes refresh each session independently before catalog capture or idle inspection |
 
 Codex loading/cache evidence is in `codex-rs/core-plugins/src/manager.rs` (`plugins_for_config` and
 cache-generation checks). Per-server MCP configuration errors are in
 `codex-rs/codex-mcp/src/plugin_config.rs`; calls use `codex-rs/codex-mcp/src/connection_manager.rs`.
 OAuth management uses `core/src/mcp.rs::McpManager::configured_servers` and `cli/src/mcp_cmd.rs`.
 Activation evidence is in `app-server/src/request_processors/plugins.rs::on_effective_plugins_changed`,
-`app-server/src/mcp_refresh.rs`, and `core/src/session/handlers.rs`. Mycli's shared composition waits
-for all its run owners; Codex queues MCP refresh per thread. This phase does not introduce separate
-integration compositions for each mycli session.
+`app-server/src/mcp_refresh.rs`, `core/src/session/handlers.rs`, and `core/src/session/mcp.rs`.
+Both inspected implementations own MCP connections per session and apply refresh at a safe boundary.
+The local Codex source snapshot has no verified release revision; this is source-level comparison.
+
+Mycli reuses a session's live runtime when switching away and back. Merely inspecting history starts
+no plugin process or MCP connection. A session's pending turn retains its original tools, Skill,
+hooks and resource service; other sessions may adopt a package update immediately. Agent scheduling
+remains backend-owned, and closing one child does not close sibling or parent integration clients.
+
+Children inherit captured configuration with separate clients. Their durable authority contains only
+configuration/tool fingerprints, never MCP credentials. If an unloaded child is reloaded after its
+configuration changed, integrations remain unavailable under the old authority; spawn a fresh child
+from the updated parent to use them. Legacy children without fingerprints keep their built-in tools.
+Hosted Apps, marketplace TUI, OS keychain storage and package cache GC remain separate work.
 
 ## mycli Process Recovery
 

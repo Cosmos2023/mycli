@@ -37,6 +37,10 @@
   `createCompactionCoordinator(config, runSnapshot?) -> CompactionCoordinatorContract`.
 - Child inheritance callback:
   `parentTools({parentSessionId, parentTurnId}) -> string[]`.
+- Durable child extension authority:
+  `AgentSpawnConfigSnapshot.integrationAuthority?: {configurationFingerprint, toolFingerprints}`.
+  Both fingerprint kinds are lowercase 64-character SHA-256 strings; at most 512 tool entries
+  with non-empty names of at most 256 characters. Invalid values fail with `StorageFailure`.
 
 ### 3. Contracts
 
@@ -46,7 +50,7 @@
 - Snapshot construction validates and copies all nested values. Callers cannot mutate policy roots,
   tool arrays, definitions, schemas, or skill text after the snapshot is created.
 - Await the optional run lifecycle preparation before snapshot/catalog capture. The app uses it
-  to refresh integrations and retain the shared content owner; runtime does not depend on the
+  to refresh integrations and retain the session's content owner; runtime does not depend on the
   integrations implementation. Terminal cleanup releases ownership even after preparation failure
   or cancellation. Approval/clarification suspension, including a retryable resolution failure,
   keeps ownership until completion/interruption. Repeated preparation for that owner is idempotent.
@@ -84,7 +88,10 @@
 - A child agent inherits its parent tools and execution policy from the exact parent session/turn
   snapshot. Child-requested tools can narrow that set but cannot expand it. Missing parent snapshot
   state fails closed to an empty tool set and a read-only policy projection instead of consulting the
-  current global catalog or policy.
+  current global catalog or policy. Child spawn state also retains non-secret integration
+  configuration and tool fingerprints. Session-owned child clients pin the captured configuration;
+  reloaded children cannot adopt changed schemas, packages, hooks or Skill catalogs under old
+  authority. Missing legacy fingerprints disable integrations while preserving built-in tools.
 - Root Worker wrappers forward snapshot lookup without owning a second copy. Terminal cleanup asks
   `RunExecutionCoordinator` to end policy state and remove the in-memory mode/snapshot state
   together.
@@ -110,6 +117,8 @@
 | Activated name is absent from the frozen deferred catalog | Ignore it; do not expose or route the tool |
 | Current dynamic adapter definition differs from the frozen definition | Keep the route unavailable for that run |
 | Parent run snapshot is unavailable | Spawn inherits no tools and no elevated authority |
+| Child configuration or tool fingerprint differs on reload | Disable unmatched integrations before execution; preserve allowed built-ins |
+| Child authority contains invalid hashes or too many tool entries | Reject durable spawn state before reservation |
 
 ### 5. Good/Base/Bad Cases
 
@@ -134,7 +143,7 @@
   snapshot; same-process mismatch tests assert resolution has not started.
 - Lifecycle tests prove refresh-before-capture, no provider request before preparation, release
   after failure/cancellation/completion, and retention through approvals/questions and retryable
-  resolution failures. App tests prove shared root/child ownership protects live MCP clients.
+  resolution failures. App tests prove independent root/child ownership protects live MCP clients while allowing another session to refresh.
 - Router and `tool_search` tests restore an old catalog after dynamic refresh and assert newly added
   or schema-changed routes cannot be discovered or executed.
 - Compaction tests change durable activations between estimates and assert the lazy base-context

@@ -25,8 +25,8 @@ their protocol clients and process hosts remain source-owned.
 - Runtime and list/inspect/login/logout/revoke use the same effective configured-server identities.
   Plugin provenance remains structured; readable selectors map to existing internal IDs. Exact
   standalone ID overrides win. Auth management never starts unrelated clients or plugin code.
-- Package/config/auth changes refresh shared integration content before new-run catalog capture
-  or idle inspection, after all active/suspended owners finish. Replacement discovery validates
+- Package/config/auth changes refresh the owning session's integration content before new-run catalog capture
+  or idle inspection, after that session's active/suspended owners finish. Other sessions refresh independently. Replacement discovery validates
   required servers, retains prior content on failure, and closes retired clients after publication.
   Initial optional discovery still uses the cached/background startup path. See the plugin contract.
 - Coalesce in-flight refreshes only. One waiter cancellation detaches that waiter; the last waiter

@@ -76,9 +76,22 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - `RuntimeIntegrationComposition.prepareRun(owner, signal)` serializes configuration refresh
   before catalog capture, then retains ownership. `finishRun(owner)` releases it. Session/turn
   owner keys are collision-safe; plugin commands acquire their own temporary owner.
-- Shared root, child, command and suspended runs defer configuration replacement until all owners
-  finish. MCP elicitation belongs to its active tool call and therefore retains the same client.
+- Each session owns its content, clients, Skill adapter, hook runner and refresh queue. Only that
+  session's active/suspended turns and plugin commands defer its replacement. A waiting child must
+  not block its parent's next turn or idle inspection. MCP elicitation retains its calling client.
   Explicit workspace trust changes keep their existing immediate trust-gating behavior.
+- The backend owns one shared Agent supervisor. Session composition cleanup never closes it.
+  Async runtime preparation coalesces by session; transcript inspection starts no integration
+  processes. Resume reuses a live binding. Shutdown fences new preparation, cancels discovery,
+  closes the supervisor, and drains all session content before Workers and stores.
+- A child starts separate clients from its parent's captured configuration and pins that content.
+  Persist only configuration and full tool-definition/approval-scope fingerprints in child spawn
+  authority. On reload, changed or unavailable authority disables integrations before startup;
+  legacy name-only children retain built-in tools. A fresh spawn can inherit updated integrations.
+  Schema changes cannot borrow a same-name grant; Skill authority includes the rendered catalog.
+- Gateway inspection and plugin commands select one session owner; command execution retains that
+  owner through await. Extension events from other sessions are filtered, and session activation
+  refreshes the selected catalog. Read-only history has no executable integration binding.
 - On a configuration change, finish MCP discovery and validate required servers before publishing
   replacement tools/skills/hooks/commands/resources. Candidate failure closes candidate clients,
   retains the previous content and rejects the refresh. Optional server failures stay isolated.

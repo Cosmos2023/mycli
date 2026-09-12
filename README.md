@@ -461,7 +461,8 @@ contribute skills, MCP servers, and supported command hooks. Plugin API v2 uses 
 and compiled ESM for process-hosted tools, hooks, and commands.
 
 Package changes apply before the next turn or an idle catalog inspection. Active turns, including
-approval waits, keep their original tools and connections until they finish. `/plugins` inspects
+approval waits, keep their original tools and connections until they finish. Each session refreshes
+independently; a waiting child does not block its parent's updates. `/plugins` inspects
 packages and their capabilities; installation, updates, enablement, and marketplace management
 use the CLI. Plugin MCP servers use the same login commands, with readable selectors:
 
