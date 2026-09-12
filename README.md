@@ -425,8 +425,9 @@ mycli mcp login docs
 mycli mcp logout docs
 ```
 
-Stdio MCP servers enable networking by default while restricting writes to the workspace; managed
-network restrictions still apply. Server/tool approval modes, tool allow/deny lists, separate
+Stdio MCP servers run as ordinary local subprocesses with the current user's filesystem and network
+access by default, independently of the Shell permission preset. Explicit server sandbox settings
+and managed filesystem/network restrictions still apply. Server/tool approval modes, tool allow/deny lists, separate
 startup/call timeouts, and required-server readiness are configurable. Interactive approvals can
 allow one call, the session, or remember authorization for the unchanged server/tool definition.
 

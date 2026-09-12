@@ -273,12 +273,18 @@ guessing which conversation should answer. Sampling and task-augmented elicitati
 
 ### MCP Process And Network Permissions
 
-Stdio servers default to workspace writes and enabled networking inside the platform sandbox.
+Stdio servers run as ordinary local subprocesses with the current user's filesystem and network
+access by default, matching Codex's local MCP launch behavior. This lets servers such as Playwright
+use their browser profiles, caches, and system services without first changing the Shell permission
+preset. The browser's own sandbox is controlled by the browser/server configuration.
+
 These long-lived processes use a policy resolved at integration startup, capped by managed
 execution-policy bounds. They do not inherit temporary Shell grants or changes to the turn's
-permission selector. Hook permissions and Plugin API v2 capability declarations remain separate.
-Per-server `[servers.<id>.sandbox]` can set `mode = "read-only"` and/or `network = "disabled"`.
-Here read-only controls filesystem writes; networking is an independent setting.
+permission selector. Tool approvals, hook permissions, and Plugin API v2 capability declarations
+remain separate. Per-server `[servers.<id>.sandbox]` can set `mode = "workspace-write"` or
+`mode = "read-only"`, and/or `network = "disabled"`. These restrictions use the platform sandbox
+and fail closed if enforcement is unavailable. A configured `cwd` does not add writable roots to
+a restricted profile. Read-only controls filesystem writes; networking is an independent setting.
 
 Domain-restricted stdio networking uses the existing owned proxy on macOS. Linux and Windows reject
 a nonempty enabled domain restriction before starting the process because the proxy enforcement is

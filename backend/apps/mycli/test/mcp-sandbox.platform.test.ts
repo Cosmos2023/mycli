@@ -12,7 +12,7 @@ import { mcpSandboxProfile } from "../src/node-runtime/integration-sandbox.ts";
 const fixturePath = fileURLToPath(new URL("../../../packages/integrations/test/fixtures/mcp-policy-server.mjs", import.meta.url));
 const macOS = { skip: process.platform !== "darwin", timeout: 15_000 };
 
-test("default MCP networking works while outside writes and repository metadata stay protected, including an external cwd", macOS, async (t) => {
+test("MCP host defaults and explicit or managed restrictions work with an external cwd", macOS, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-sandbox-"));
 	const workspace = join(root, "repo");
 	const plugin = join(root, "plugin");
@@ -24,24 +24,30 @@ test("default MCP networking works while outside writes and repository metadata 
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
 	t.after(async () => { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
-	for (const mode of ["default", "offline", "managed-offline", "readonly"] as const) {
+	for (const mode of ["default", "offline", "managed-offline", "workspace", "managed-workspace", "readonly", "transport-workspace", "transport-readonly"] as const) {
+		const readonly = mode === "readonly" || mode === "transport-readonly";
+		const workspaceOnly = mode === "workspace" || mode === "managed-workspace" || mode === "transport-workspace";
 		const config = parseMcpServerConfig("fixture", { command: process.execPath, args: [fixturePath], cwd: plugin,
-			sandbox: mode === "readonly" ? { mode: "read-only" } : mode === "offline" ? { network: "disabled" } : {},
+			sandbox: readonly ? { mode: "read-only" } : mode === "workspace" || mode === "transport-workspace"
+				? { mode: "workspace-write" } : mode === "offline" ? { network: "disabled" } : {},
 			env: { MCP_LOCAL_URL: `http://127.0.0.1:${address.port}/`, MCP_INSIDE: join(workspace, "allowed"),
 				MCP_OUTSIDE: join(plugin, "denied"), MCP_METADATA: join(workspace, ".git/denied") } }, {});
-		const profile = mcpSandboxProfile(workspace, config, mode === "managed-offline" ? { source: "managed", network: "disabled" } : undefined);
+		// The transport must also narrow a caller-supplied unrestricted profile.
+		const profileConfig = mode.startsWith("transport-") ? { ...config, sandbox: undefined } : config;
+		const profile = mcpSandboxProfile(workspace, profileConfig, mode === "managed-offline" ? { source: "managed", network: "disabled" }
+			: mode === "managed-workspace" ? { source: "managed", writableRoots: [workspace] } : undefined);
 		const client = new McpClient({ config, sandboxProfile: profile });
 		t.after(() => client.close());
 		const response = await client.callTool("probe", {}, new AbortController().signal);
 		const result = JSON.parse(String(response.content[0]?.text)) as Record<string, unknown>;
 		assert.equal(result.cwd, await realpath(plugin));
-		assert.equal(result.network, mode === "default" || mode === "readonly");
-		assert.equal(result.inside, mode !== "readonly");
-		assert.equal(result.outside, false);
-		assert.equal(result.metadata, false);
+		assert.equal(result.network, mode !== "offline" && mode !== "managed-offline", mode);
+		assert.equal(result.inside, !readonly, mode);
+		assert.equal(result.outside, !readonly && !workspaceOnly, mode);
+		assert.equal(result.metadata, !readonly && !workspaceOnly, mode);
 		await client.close();
 	}
-	assert.equal(hits, 2);
+	assert.equal(hits, 6);
 });
 
 test("MCP domain proxy belongs to its process generation and closes after timeout, cancellation and shutdown", macOS, async (t) => {

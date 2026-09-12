@@ -34,6 +34,8 @@ export async function createMcpTransport(options: McpTransportOptions, signal: A
 			const profile: SandboxProfile = { ...options.sandboxProfile, cwd,
 				// The launch directory may be a plugin installation; writable roots remain independently bounded.
 				workspaceRoot: cwd,
+				...(config.sandbox?.mode === "workspace-write" && options.sandboxProfile.filesystem === "unrestricted"
+					? { mode: "workspace-write", filesystem: "workspace_write", writableRoots: [options.sandboxProfile.workspaceRoot] } : {}),
 				...(config.sandbox?.mode === "read-only" ? { mode: "read-only", filesystem: "read_only", writableRoots: [] } : {}),
 				network: config.sandbox?.network === "disabled" ? "disabled" : options.sandboxProfile.network };
 			let launchProfile = profile;

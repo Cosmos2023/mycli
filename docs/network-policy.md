@@ -69,10 +69,13 @@ host and runtime are trusted.
 
 ## MCP Networking
 
-MCP processes have a separate startup policy: workspace writes and enabled networking by default,
-capped by the same managed network and writable-root bounds. Temporary Shell grants and the turn
+MCP processes have a separate startup policy: ordinary host subprocesses with filesystem access and
+enabled networking by default, capped by managed network and writable-root bounds. Temporary Shell grants and the turn
 permission selector do not reconfigure a running MCP process. In `mcp_servers.toml`, set
-`[servers.<id>.sandbox] network = "disabled"` to keep an individual server offline.
+`[servers.<id>.sandbox] network = "disabled"` to keep an individual server offline, or set
+`mode = "workspace-write"` / `mode = "read-only"` to restrict filesystem writes. Explicit restrictions
+use the platform sandbox and fail closed if they cannot be enforced. Tool approvals remain independent
+of process isolation.
 
 Domain-constrained stdio MCP uses this same macOS proxy and traffic restrictions, with one proxy per
 process generation. Cancellation/timeout retires that generation and closes its proxy; a later

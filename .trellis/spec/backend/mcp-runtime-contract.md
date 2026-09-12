@@ -63,9 +63,14 @@ their protocol clients and process hosts remain source-owned.
   alter an otherwise identical request tool list. Schema changes may invalidate continuation;
   do not claim prompt-cache hits without provider usage evidence.
 - Resolve MCP process policy at startup from explicit configuration plus managed bounds, independent
-  of transient Shell grants. Default to workspace writes + networking; per-server mode/network
-  can narrow it. A configured cwd never adds writable roots. Unsupported readable-root bounds fail
-  before launch. Hooks and Plugin API v2 retain their own capability policies.
+  of the Shell permission preset and transient Shell grants. Default stdio MCP runs as a host
+  subprocess with unrestricted filesystem and enabled networking, matching local Codex MCP launch.
+  Per-server read-only/workspace-write mode and network settings can narrow it; managed/runtime
+  bounds always apply. Narrowing a caller-supplied unrestricted profile must also enforce an explicit
+  workspace-write server mode at the transport boundary. A configured cwd never adds writable roots
+  to restricted profiles. Unsupported restrictions fail before launch, without a host fallback.
+  Tool approval, project trust, Hooks and Plugin API v2 retain their own policies. Shell permission
+  changes alone do not restart a running MCP server or its browser.
 - Each stdio protocol generation owns its network proxy and releases it on launch failure, timeout,
   cancellation, unexpected process exit, retirement, or permanent close. Domain restrictions use the existing macOS proxy;
   unsupported enabled-domain platforms fail closed. HTTP checks bounds for every request and rejects
@@ -123,6 +128,8 @@ their protocol clients and process hosts remain source-owned.
 ## 6. Tests Required
 
 - Real SDK stdio timeout/cancel followed by a successful new call and deterministic PID cleanup.
+- Default host launch without an installed Shell sandbox backend; real stdio writes outside the
+  workspace; explicit read-only/workspace-write and managed network/filesystem enforcement.
 - Real SDK HTTP tools pagination; protocol cycle/duplicate/count/byte/cancel bounds.
 - Refresh concurrency, caller cancellation, retry after failure, close during cache save, client reuse.
 - Resource/schema failure isolation and diagnostic projection; shared alias routing and lifecycle.

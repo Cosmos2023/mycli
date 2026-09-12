@@ -4,7 +4,9 @@ import { ExecutionPolicyCoordinator, type ExecutionPolicyConstraints } from "@my
 
 export function mcpSandboxProfile(workspaceRoot: string, config: McpServerConfig, constraints?: ExecutionPolicyConstraints): SandboxProfile {
 	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot, ...(constraints ? { constraints } : {}) });
-	coordinator.configure({ trust: "trusted", permission: "workspace" });
+	// MCP servers own long-lived processes independently of the Shell permission preset.
+	// Explicit server restrictions and managed bounds still select an enforced sandbox.
+	coordinator.configure({ trust: "trusted", permission: config.sandbox?.mode ? "workspace" : "full-access" });
 	const base = coordinator.snapshot().profile;
 	const readonly = config.sandbox?.mode === "read-only";
 	return Object.freeze({ ...base,
