@@ -132,8 +132,9 @@ See `error-handling.md` and `docs/errors.md` for examples and version fences.
   fatal `tool_protocol_error`.
 - Permission mapping is fixed: `read-only` uses read-only filesystem and no
   network/writable roots; `workspace` uses workspace-write with the canonical
-  workspace writable and no network; `full-access` uses explicit
-  danger-full-access with unrestricted filesystem and network.
+  workspace writable and networking enabled; `full-access` uses explicit
+  danger-full-access with unrestricted filesystem and network. Managed network restrictions
+  cap every profile. Permission rows must describe the same defaults as the execution policy.
 - `full-access` skips routine approval only after valid tool parsing and
   explicit exec-policy `deny` / `ask` / `allow` evaluation. It auto-allows
   otherwise-unmatched valid Shell segments, known request-policy extensions,

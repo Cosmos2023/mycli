@@ -76,13 +76,19 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
   numeric JSON-RPC code, bounded timeout/recovery counts, and allowlisted transport codes.
 - Capture HTTP evidence per response in the transport, not in a shared "last error" slot. Drop raw
   response bodies, URLs (including credential-bearing paths), headers, session IDs, and SDK data.
-- Only typed Streamable HTTP POST 404 failures with a sent session ID qualify for reinitialization
-  and one replay. Never infer expiry from error text, replay after a timeout/ambiguous disconnect,
+- Typed Streamable HTTP POST 404 failures with a sent session ID qualify for reinitialization
+  and one replay. ModelScope's HTTP 401 with the exact top-level JSON `Code: "SessionExpired"`
+  qualifies only with a sent session ID as well. Read at most 8 KiB within one second to recognize
+  this machine code, then discard the body. Ordinary 401 responses, malformed/oversized bodies,
+  and free-form expiry messages do not qualify. Never replay after a timeout/ambiguous disconnect
   or treat the optional GET stream's HTTP 405 as a failed tool request.
 - Recovery compares connection generations. Concurrent failures reuse one replacement handshake;
   retiring a connection must not cancel other in-flight requests. A cancelled waiter must not abort
   a handshake still needed by another caller. Close or cancellation of the last waiter must stop
   further initialization/replay; old-connection cleanup must not delay joining shared recovery.
+- Local stdio cancellation/timeout retires only the current connection/process generation.
+  Later explicit calls can reconnect, without replaying the failed operation. Siblings affected by
+  process retirement report connection failure/unknown outcome, not a false user cancellation.
 - Initialization failures and confirmed request rejection mean `not_started` with no tool effects.
   Timeouts and ambiguous post-dispatch failures retain `unknown` outcomes and possible tool effects.
   Resource reads/discovery have no mutation effects. Parallel-call permission alone is not evidence
@@ -143,6 +149,11 @@ providers, runtime, storage, Worker RPC, gateway, or TUI code.
   terminal handling.
 
 ### Runtime Boundary
+
+- A policy block with no user decision maps to `permission_denied` / `policy.access_denied`.
+  An unregistered tool maps to `unknown_tool` / `tool.not_found`, and malformed arguments map to
+  `invalid_arguments`. Reserve `approval_rejected` / `policy.approval_denied` for an actual rejected
+  approval; do not infer user intent from an internal `deny` decision.
 
 - `RuntimeFailure.message` is the concise canonical public text, not a raw
   exception message. Sanitized upstream context belongs only in the optional

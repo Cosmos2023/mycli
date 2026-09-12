@@ -25,6 +25,9 @@
 
 ### 3. Contracts
 
+- The ordinary `workspace` profile enables networking without a temporary grant and retains its
+  canonical workspace write roots. `read-only` starts offline. Shell launch, `web_fetch`, model
+  policy context, child inheritance, and permission-selector defaults use the effective profile.
 - Managed configuration is loaded independently from user and project configuration and is passed
   to runtime only as an upper-bound constraint layer. Ordinary configuration cannot override it.
 - Startup validates managed configuration before resolving ordinary model configuration or

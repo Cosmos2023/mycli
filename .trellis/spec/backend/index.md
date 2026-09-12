@@ -33,6 +33,8 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Permission Grant Contract](./permission-grant-contract.md) | Runtime-owned permission grants, managed upper bounds, and domain enforcement | Active |
 | [Network Proxy Contract](./network-proxy-contract.md) | Process-owned HTTP/CONNECT proxy, pinned destinations, platform enforcement, and cleanup | Active |
 | [Plugin Runtime Contract](./plugin-runtime-contract.md) | Minimal local plugin manifest, loading, hook/tool registration, and diagnostics | Active |
+| [MCP Runtime Contract](./mcp-runtime-contract.md) | MCP connection/discovery lifecycle, shared extension catalogs, and cross-turn exposure | Active |
+| [MCP Interaction Contract](./mcp-interaction-contract.md) | OAuth ownership, live elicitation, typed TUI forms and native discovery replay | Active |
 | [Read-only Tool Output Contract](./read-only-tool-output-contract.md) | Model-visible LS/Glob/Grep/Read discovery output | Active |
 | [File Mutation Tool Contract](./file-mutation-tool-contract.md) | Write/Edit/Patch safety, diffs, and diagnostics | Active |
 | [Provider Tool Replay Contract](./provider-tool-replay-contract.md) | Bounded tool persistence, terminal call closure, replay repair, and safe provider diagnostics | Active |

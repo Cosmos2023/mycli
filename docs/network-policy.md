@@ -1,5 +1,10 @@
 # Shell Network Policy
 
+The default Workspace (Ask for approval) profile enables networking for Shell and `web_fetch`
+without a separate network grant. Filesystem writes remain confined to the workspace and risky
+commands still require approval. Read Only starts offline; Full Access enables networking as well.
+Restart mycli after updating to apply these defaults to new turns.
+
 On macOS, mycli can route domain-constrained Shell HTTP/HTTPS traffic through a
 local proxy. The operating-system sandbox blocks direct network connections.
 Networking must still be authorized by the active permission profile or an
@@ -16,10 +21,10 @@ allowed_network_domains = ["api.github.com", "github.com", "*.githubusercontent.
 ```
 
 Merge these fields with any existing managed policy. Restart mycli to load changes.
-Managed settings restrict permissions; `network = "enabled"` allows a network
-grant but does not itself enable networking in the default workspace profile.
-Approve a network permission request when mycli needs one. Grants and Shell
-escalation remain capped by the managed list, including in Full Access mode.
+Managed settings restrict permissions. Workspace networking is already enabled; the list above
+limits its destinations without requiring an extra grant. `network = "enabled"` does not elevate
+an offline Read Only profile. Grants and Shell escalation remain capped by the managed list,
+including in Full Access mode.
 
 Exact entries permit only that hostname. `*.example.com` permits subdomains, not
 `example.com` itself. List every required redirect destination. An empty list or
@@ -61,3 +66,21 @@ from relaying traffic elsewhere. Domain filtering therefore controls destination
 selection; it is not content filtering. Seatbelt allows a loopback TCP port, not
 a particular listening process identity; this boundary assumes the unsandboxed
 host and runtime are trusted.
+
+## MCP Networking
+
+MCP processes have a separate startup policy: workspace writes and enabled networking by default,
+capped by the same managed network and writable-root bounds. Temporary Shell grants and the turn
+permission selector do not reconfigure a running MCP process. In `mcp_servers.toml`, set
+`[servers.<id>.sandbox] network = "disabled"` to keep an individual server offline.
+
+Domain-constrained stdio MCP uses this same macOS proxy and traffic restrictions, with one proxy per
+process generation. Cancellation/timeout retires that generation and closes its proxy; a later
+explicit call starts a fresh generation. Linux/Windows fail before starting a process when they
+cannot enforce the requested enabled domain restriction.
+
+Remote HTTP MCP checks allowed hostnames and the enabled/disabled policy before every request.
+It rejects redirects instead of forwarding endpoint credentials or tool arguments. Unlike the
+stdio proxy, this HTTP client permits configured loopback endpoints and custom ports. It does
+not inherit Shell's proxy environment. These HTTP hostname checks do not claim the stdio proxy's
+public-address pinning guarantee. See [MCP configuration](node-extensions.md#mcp).

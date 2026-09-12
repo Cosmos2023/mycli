@@ -50,8 +50,17 @@
   names from that run's frozen deferred catalog. Unknown, removed, newly discovered, or duplicate
   names do not widen exposure. Schema additions invalidate Responses continuation before canonical
   replay.
+- Discovery is not execution authorization. Calls to registered deferred tools in the frozen
+  allowed catalog proceed through normal argument validation, policy, and hooks even before a
+  search in this run. Absent/disallowed tools remain unavailable; image capability checks remain
+  separate. Tool-search activation alone does not approve an operation.
+- New run construction applies `planExtensionToolExposure` to the published integration catalog
+  and durable session discovery fingerprints. Retained tools become direct definitions only after
+  full current-definition matching and budget checks. See `mcp-runtime-contract.md` for bounds.
+- Stable external-tool ordering and source descriptions must survive direct/deferred selection
+  changes when the exposed set is unchanged. Actual provider cache hits require provider evidence.
 - `ToolRouter` binds a restored dynamic route only when both its route name and complete current
-  definition match the frozen deferred definition. A refreshed adapter with a different schema is
+  definition match a frozen direct or deferred definition. A refreshed adapter with a different schema is
   unavailable to the old run even if it reuses the same name.
 - Approval and clarification suspension persist the complete run snapshot with the continuation.
   Restoration requires the suspended turn id to match. When the same process still owns the run,

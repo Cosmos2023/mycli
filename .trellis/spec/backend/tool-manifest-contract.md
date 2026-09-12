@@ -133,16 +133,27 @@ Each tool entry must include:
 
 ## Validation
 
+- Tool routing and integration registration use the same strict JSON Schema validator with
+  standard formats enabled. A schema must compile before its integration is advertised. Preserve
+  format validation; do not suppress unknown formats to make a server appear available.
+- Schema ids belong to each tool's validation context. Two servers reusing an `$id` must not
+  collide in the router or poison a subsequent catalog refresh.
+- `ExtensionToolCatalog.replace` prepares routes, policy, and search indexes before publishing any
+  of them. A failed preparation retains the previous complete version. Run construction consumes
+  that published snapshot, not independently sampled composition getters. MCP schema failures
+  remain scoped to individual tools; resources fail independently. See `mcp-runtime-contract.md`.
+
 ### Deferred Tool Discovery
 
 - The static `tool_search` manifest owns its schema and task-based discovery guidance.
   `createToolSearchDefinition(candidates)` adds a sorted, deduplicated source directory from the
-  allowed MCP/plugin candidates. It does not expose configuration, tool arguments, or input schemas.
+  allowed MCP/plugin source catalog. Keep that source directory stable when schemas move between
+  direct and deferred exposure. It does not expose configuration, tool arguments, or input schemas.
 - MCP initialization instructions are optional source descriptions; preserve them through client
   discovery, registrations, and the private catalog cache. Older caches without them remain valid.
 - Source metadata is JSON-quoted, individual descriptions are bounded to 512 characters, and the
   full tool description stays within 8,000 characters with an explicit source-omission marker.
-- Build the description from the same allowed registrations as the run's deferred catalog.
+- Build the description from the run's complete allowed MCP/plugin catalog, including direct tools.
   Snapshot freezing preserves it across provider steps and continuations. Background discovery,
   trust changes, and tool restrictions affect later run catalogs rather than mutating active ones.
 - Search indexes include source descriptions so a capability shown in the source directory can
@@ -157,7 +168,7 @@ Each tool entry must include:
   `tool_search`; ordinary MCP tool calls keep their existing discovery and approval behavior.
 - Listing optionally filters by configured server and always queries live clients, including after
   cached startup. Native MCP `nextCursor` pages are consumed with repeated-cursor rejection and
-  bounds of 100 continuation pages and 10,000 resources per server.
+  bounds of 100 total pages, 10,000 resources, and 8 MiB per server.
 - Resource-only and tool-only MCP servers are valid. The SDK boundary checks declared capabilities
   before calling an unsupported list method.
 - List tools expose Codex's optional `server` and opaque `cursor`; a cursor requires a server.
@@ -532,34 +543,39 @@ skill synchronization remain out of scope.
 - Provider route: `tool_search({query, limit?})`; `limit` defaults to 8 and is bounded to 1-16.
 - Stable manifest id: `builtin:tool_search`; toolset: `discovery`.
 - Durable effect: `tool_activation` metadata containing unique validated provider route names.
+- Durable discovery: `tool_discovery: {version: 1, tools: [{id, name, definitionSha256}]}` on successful
+  search results; see `mcp-runtime-contract.md` for validation and retention limits.
 
 ### 3. Contracts
 
-- Built-ins, `Skill`, and subagent coordination routes remain directly visible. MCP and plugin
-  schemas are withheld in an immutable deferred catalog while every adapter remains registered in
-  `ToolRouter` and participates in duplicate route/id validation.
+- Enabled built-ins, `Skill`, and subagent coordination routes remain directly visible. Small
+  allowed MCP/plugin catalogs are direct; larger catalogs retain validated discoveries and defer
+  remaining schemas. Expose `tool_search` only when deferred tools remain. Every allowed adapter
+  stays registered in `ToolRouter` and participates in duplicate route/id validation.
 - Search bounded name, description, source, and origin metadata with deterministic lexical ranking
   and stable route/id tie-breakers. Results expose summaries and names, never copied input schemas.
 - Append the validated activation effect atomically with a successful `tool_search` result. Only
   after that append succeeds may the provider loop add current-catalog definitions to the next
   `ProviderRequest.tools` array.
-- Activations are scoped by session and turn, restored from SQLite when approval/clarification or a
-  restart reconstructs the execution context, and resolved against the child runtime's allowed
-  catalog. Ignore unknown, stale, duplicate, or disallowed names.
+- Activation effects are scoped by session and turn and restored for live approval/clarification
+  continuations. New user turns and cold resume use bounded discovery fingerprints matched against
+  the current allowed catalog. Children use their own allowed catalog. Ignore unknown, stale,
+  duplicate, or disallowed entries; discovery never grants approval.
 - A schema addition invalidates provider continuation and clears the previous response id before
   canonical replay. A repeated activation that adds no schema leaves exposure and continuation
   eligibility unchanged.
-- Never inject schemas into user, developer, context, or tool-result text. A new user turn returns
-  to the direct tool surface plus `tool_search`.
+- Never inject schemas into user, developer, context, or tool-result text. A new user turn uses
+  current definitions for direct and retained tools, with stable ordering and source descriptions.
 
 ### 4. Validation & Error Matrix
 
 - Blank query or limit outside 1-16 -> bounded `invalid_arguments` result and no activation.
 - No match -> successful empty result with unchanged exposure.
 - Activation append fails -> terminal `persistence_error` and no later provider request.
-- Provider calls a deferred route not present in the request exposure -> persist a failed
-  `unsupported_tool` result before adapter execution and continue the provider loop so the model can
-  recover on the next step.
+- Provider calls a registered allowed deferred route absent from the request exposure -> validate
+  arguments and apply normal approval/hooks before execution.
+- Provider calls a route absent from the frozen allowed catalog -> persist `unsupported_tool`
+  without adapter execution and continue the provider loop so the model can recover.
 
 ### 5. Tests Required
 
@@ -567,7 +583,7 @@ skill synchronization remain out of scope.
   arguments.
 - Direct/deferred composition, adapter retention, duplicate conflict rejection, child allowed scope,
   and stable ordering.
-- SQLite atomic append, validation, reopen recovery, turn isolation, and stale-name filtering.
+- SQLite atomic append, validation, reopen recovery, session isolation, and stale-definition filtering.
 - Provider requests before/after activation, persistence failure fencing, activated execution,
   repeated activation, approval reconstruction, and continuation invalidation only on schema change.
 

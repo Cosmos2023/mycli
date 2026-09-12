@@ -67,7 +67,7 @@ private repositories. Git execution disables user Git config, templates and hook
 package install scripts or download submodules; dependencies must already be available.
 
 Package changes apply when a new runtime session starts. In-session `/plugins` shows plugin
-state, `/skills` lists namespaced skills, and MCP tools enter the normal deferred tool catalog.
+state, `/skills` lists namespaced skills, and MCP tools enter the shared integration catalog with direct/deferred exposure and session discovery reuse.
 
 ## Package Format
 

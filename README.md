@@ -360,10 +360,11 @@ Inspection supports filtering and keyboard navigation. Enter opens details and E
 Inspecting a package or tool does not invoke it. MCP servers retain their own loading, disabled,
 failed, and cached states; they are not listed as plugin packages.
 
-The model can discover relevant MCP and plugin tools from the task context. It uses `tool_search`
-to load matching schemas for the current turn; actual execution still follows approval and sandbox
+The model can select relevant MCP and plugin tools from the task context. Small catalogs are
+provided directly; larger catalogs use `tool_search`, and later turns can reuse discovered tools
+whose definitions still match the current allowed catalog. Execution follows approval and sandbox
 policy. MCP resources and templates use `list_mcp_resources`, `list_mcp_resource_templates`, and
-`read_mcp_resource`. See [extension operations](docs/node-extensions.md).
+`read_mcp_resource`. See [extension operations](docs/node-extensions.md) for exposure and retention limits.
 
 ### Skills
 
@@ -393,19 +394,43 @@ transport = "stdio"
 command = "node"
 args = ["/absolute/path/to/mcp-server.js"]
 enabled = true
-timeout_seconds = 20
+startup_timeout_sec = 10
+tool_timeout_sec = 60
 
 [servers.docs]
 transport = "streamable_http"
 url = "https://mcp.example.com/mcp"
-headers = { Authorization = "${MCP_AUTHORIZATION}" }
-timeout_seconds = 20
+bearer_token_env_var = "MCP_TOKEN"
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+default_tools_approval_mode = "auto"
 ```
 
-Replace the example command or endpoint with your server. Environment placeholders resolve by
-name. Repository servers load only in trusted workspaces. `mycli mcp list` and
+Replace the example command or endpoint with your server and set any referenced environment
+variables. Repository servers load only in trusted workspaces. You can also manage user configuration
+without starting the server:
+
+```bash
+mycli mcp add docs --url https://mcp.example.com/mcp
+mycli mcp add local -- node /absolute/path/to/mcp-server.js
+mycli mcp remove docs
+mycli mcp approvals
+mycli mcp revoke docs
+mycli mcp login docs
+mycli mcp logout docs
+```
+
+Stdio MCP servers enable networking by default while restricting writes to the workspace; managed
+network restrictions still apply. Server/tool approval modes, tool allow/deny lists, separate
+startup/call timeouts, and required-server readiness are configurable. Interactive approvals can
+allow one call, the session, or remember authorization for the unchanged server/tool definition.
+
+`mycli mcp list` and
 `mycli mcp inspect <server-id>` verify discovery and may start or contact enabled servers.
 Use `/mcp verbose` in the TUI to inspect the current catalog. See
+the [OAuth and server question guide](docs/node-extensions.md#oauth-authentication) for browser
+authorization, typed MCP forms and URL requests. Supported providers load discovered tool schemas
+at their history position through pi-ai; other providers retain ordinary function calling. See
 [MCP configuration](docs/node-extensions.md#mcp) for transports, resource pagination, and recovery.
 
 ### Plugins And Marketplaces
@@ -454,8 +479,9 @@ sandbox. See [hook configuration](docs/node-extensions.md#configured-hooks) befo
 ## Permissions And Data
 
 `/permissions` selects a Read-only, Workspace, or Full Access profile. Shell approval dialogs show
-the proposed command and available reason, with `Ctrl+A` for full details. Permission to read a
-workspace does not automatically grant unrestricted process or network access.
+the proposed command and available reason, with `Ctrl+A` for full details. The default Workspace
+profile enables Shell and web-tool networking while restricting writes to the workspace. Read-only
+starts offline; managed network and domain restrictions apply to every profile.
 
 Restricted Shell execution requires the platform sandbox. Missing isolation produces an error
 instead of silently running unrestricted. Administrators can restrict readable paths, writable
