@@ -126,6 +126,34 @@ and all attachments, even if that controller disconnects before reading its repl
 `service.completion` resolves after cleanup with the backend exit code; transport
 or cleanup failure turns an otherwise successful code into 1.
 
+## Plugin Management
+
+`plugin.catalog` reads installed/available package metadata and registered marketplaces for an
+explicit `session_id` and `generation`. An optional `marketplace` narrows the list. It starts no
+plugin worker, MCP server, hook or model. `plugin.inspect` accepts a selected `target` and `revision`
+and loads its declared capability names on demand. Revisions bind selection to package source,
+configuration and marketplace snapshots. Catalog limits are explicit in `truncated` and issues.
+
+`plugin.operation.start` accepts the same session ownership, a unique `operation_id`, and a closed
+`change` variant: `install`, `enable`, `disable`, `update`, `remove`, `marketplace_upgrade`,
+`marketplace_remove` (target/revision), or `install_source`/`marketplace_add` (source). It returns
+promptly. Poll `plugin.operation.get` until `state` is `completed`, `failed` or `cancelled`, or request
+`plugin.operation.cancel`. Cancellation is best effort before atomic commit; committed success wins.
+Never retry a mutation automatically when its transport outcome is unknown. Refresh the catalog.
+
+One package mutation runs per backend; overlap is rejected before dispatch. The backend retains
+32 operation outcomes, deduplicates matching IDs within that window, and gives total staging five
+minutes before cancellation. Existing Git subprocess limits still apply. Session transitions and
+backend shutdown cancel pending work; shutdown awaits cleanup. UI closure explicitly requests
+cancellation. An attachment disconnect follows normal service ownership: accepted work continues
+until cancellation or backend shutdown. Poll/cancel requests retain their original session/generation.
+Observers can read catalogs, inspect details and query outcomes; only the controller starts/cancels
+operations. Cancellation uses reserved control admission so a full ordinary queue cannot block it.
+
+Installation copies validated package data into immutable snapshots. Enabling/installing authorizes
+declared capabilities under the existing sandbox and approval rules. Runtime activation occurs at
+the next safe refresh; pending turns keep their captured configuration.
+
 ## Contract Ownership
 
 `backend/packages/contracts/schemas/gateway-rpc.schema.json` is the canonical

@@ -20,14 +20,33 @@ tool/hook/command registrations over JSON-lines. These are separate authoring fo
 The inspected Codex TUI has separate `/mcp`, `/plugins`, `/skills`, and `/hooks` commands, with no
 public `/tools` directory (`codex-rs/tui/src/slash_command.rs` and `chatwidget/slash_dispatch.rs`).
 mycli uses those separate domain entries too. `/mcp [verbose]` inspects server state and tools;
-`/plugins` lists packages, with capability details on Enter. MCP resources and plugin commands are
+`/plugins` browses packages, with capability details and management actions on Enter. MCP resources and plugin commands are
 not plugin packages and do not appear as separate plugin rows.
 
 mycli retains `/tools [list|sets]` as a search-only diagnostic inventory of actual callable tools.
 The old `/tools plugins`, `/tools hooks`, and `/tools extensions` forms return replacement hints.
-Codex's plugin browser also has marketplace tabs and installation/enablement actions
-(`chatwidget/plugins.rs`). mycli currently performs those operations through `mycli plugins` CLI
-commands; its TUI supports inspection, not the full Codex marketplace browser.
+Codex's plugin browser has All Plugins, Installed, and marketplace tabs, search, capability details,
+and installation/enablement actions (`chatwidget/plugins.rs`). mycli follows that interaction for
+registered local/Git marketplaces. Left/Right selects a tab, typing searches, Enter opens details,
+and Space enables/disables when the search is empty. Details include source, version, declared
+capability names, issues, install/update/uninstall actions, and a Back action. Ctrl+A opens full-text
+inspection; Ctrl+R refreshes. Uninstall and marketplace removal require confirmation.
+
+Ctrl+N opens local/Git plugin installation. Add Marketplace reviews and registers a source. Each
+named marketplace has a Manage marketplace row for refresh/removal. A newly registered marketplace
+becomes the selected tab. Removing it preserves installed packages. These actions use the same
+package manager as the CLI and never need a model call.
+
+Catalog inspection reads metadata only. Enabled/disabled describes configuration, not verified
+process health; `/mcp` and the existing resource diagnostics retain runtime state. Untrusted repository
+plugins are hidden. A broken marketplace retains a visible issue while other catalogs remain usable.
+Remote packages without local manifests show capability details after installation.
+
+Catalog responses are bounded to 2,048 entries and 6 MiB. Large combined catalogs explicitly report
+omission; choose a named marketplace to narrow the list. Capability detail is loaded on demand,
+bounded to 1,024 lines with explicit omission. Closing, switching sessions or shutting down cancels
+pending package work and ignores late UI results. A completed atomic commit remains successful if
+it wins a cancellation race. Active turns adopt changes at their existing safe refresh boundary.
 
 ## Install And Manage
 
@@ -213,7 +232,7 @@ Children inherit captured configuration with separate clients. Their durable aut
 configuration/tool fingerprints, never MCP credentials. If an unloaded child is reloaded after its
 configuration changed, integrations remain unavailable under the old authority; spawn a fresh child
 from the updated parent to use them. Legacy children without fingerprints keep their built-in tools.
-Hosted Apps, marketplace TUI, OS keychain storage and package cache GC remain separate work.
+Hosted Apps/account synchronization, OS keychain storage and package cache GC remain separate work.
 
 ## mycli Process Recovery
 
@@ -231,15 +250,18 @@ session-bearing POST 404 confirms rejection before one bounded replay is allowed
 ## Verification
 
 Validated on macOS with Node 24 on 2026-09-12: the production build, lint, typecheck,
-contract/config drift and error-emitter inventory checks pass. The complete CI suite passes
-all 431 files in 222.6 seconds: 343 unit, 29 contract, 50 integration, 8 platform and 1 release.
+contract/config drift and error-emitter inventory checks pass. All five CI suites pass
+437 files: 346 unit, 30 contract, 52 integration, 8 platform and 1 release.
 
 Regression coverage uses temporary homes, loopback OAuth/MCP servers, deterministic providers and
 local plugin processes. It covers qualified login/logout, configuration precedence and redaction,
 credential reuse across immutable updates, approval invalidation, catalog refresh, active/suspended
-run retention, concurrent refresh, failed/cancelled preparation and shutdown. A real SDK/gateway
+run retention, concurrent refresh, failed/cancelled preparation and shutdown. Plugin browser coverage
+also exercises metadata-only discovery, named capabilities, source revision races, bounded catalogs,
+explicit install/remove actions, cancellation after commit, session switching, deferred detail,
+draft retention, Unicode/narrow layouts and monochrome output. A real SDK/gateway
 journey updates a plugin during approval and executes both old and new versions in the same backend.
 
 Remote Git authentication, OpenAI-hosted Apps and real provider cache hits are outside this
-verification. Remote marketplace/account synchronization, full marketplace TUI, OS keychain
+verification. Hosted marketplace/account synchronization, OS keychain
 storage and automatic package snapshot GC remain unsupported.

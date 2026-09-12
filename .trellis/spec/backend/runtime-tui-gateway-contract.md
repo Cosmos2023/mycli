@@ -258,7 +258,14 @@ and tool execution. A later permission change does not affect a running turn.
 
 ## Scenario: Command Inspection Lists
 
-- `/mcp`, `/plugins`, `/skills`, `/hooks`, and diagnostic `/tools` have independent bounded list displays.
+- `/mcp`, `/plugins`, `/skills`, `/hooks`, and diagnostic `/tools` have independent bounded displays.
+  TUI `/plugins` dispatches `open_plugins` to a dedicated package browser; CLI slash inspection
+  retains its resource display. All/Installed/named-marketplace tabs, search, detail and management
+  share one disposable selector. Detail loads on demand and cannot expose actions for stale metadata.
+  Preserve query, selection and composer draft, use DecisionPanel geometry/inspection, and require
+  explicit removal confirmation. Ctrl+N reviews a local/Git source; Ctrl+R refreshes. Async operations
+  use typed gateway ports with original session/generation and explicit cancellation on disposal.
+  Generation changes/shutdown dispose the selector before late responses can publish.
   The default palette and settings center expose integration domains separately. `/tools` is search-only
   and lists callable tools, never plugin packages or MCP resources. Its only subactions are `list` and `sets`.
   `/tools plugins`, `/tools hooks`, and `/tools extensions` are retired with canonical replacement hints.

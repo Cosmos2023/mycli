@@ -287,7 +287,7 @@ also clears the temporary override so the saved choice takes effect.
 | `/stats` | none | backend | yes | search-only |
 | `/skills` | none | overlay | yes | common |
 | `/mcp` | optional `[verbose]` | server connections and tools; verbose adds transport and resources | yes | common |
-| `/plugins` | none | installed plugin packages and capability details | yes | common |
+| `/plugins` | none | plugin and marketplace browser, capabilities, installation and management | yes | common |
 | `/hooks` | none | configured and plugin-provided hooks | yes | common |
 | `/tools` | optional `[list\|sets]` | actual tool inventory | yes | search-only |
 | `/resources` | none | opens resources | yes | search-only |
@@ -342,7 +342,7 @@ at the previewed metadata revision, while Esc cancels without changing the sourc
 `/resume <session-id>` uses the same backend transition. See [sessions.md](sessions.md) for the
 provider-free management commands and recovery matrix.
 
-The `/mcp`, `/plugins`, `/skills`, `/hooks`, and `/tools` inspection lists support text filtering, arrow-key selection,
+The `/mcp`, `/skills`, `/hooks`, and `/tools` inspection lists support text filtering, arrow-key selection,
 Page Up/Down, and Home/End. Enter opens the selected item's complete returned description and
 status; Esc returns to the list, then closes it without changing the composer draft. The panel
 adapts to the available terminal height. A result capped by the backend reports the loaded count
@@ -351,11 +351,17 @@ separately from the total. `/hooks` lists configured hooks, including disabled o
 MCP servers, plugin packages, and callable tools have separate inventories. `/mcp` includes servers
 that are loading, disabled, failed, or serving cached discovery, including servers without resources.
 Enter shows their tools; `/mcp verbose` also includes transport, timeout, and resource names, without
-dumping environment values, headers, or command arguments. `/plugins` lists each discovered package
-once; Enter shows its declared skills, MCP servers, hooks, tools, commands, and issues. A plugin's
+dumping environment values, headers, or command arguments. `/plugins` browses installed and available
+packages; Enter shows declared skills, MCP servers, hooks, tools, commands, issues, and management actions. A plugin's
 MCP servers still appear under `/mcp`, and its loaded tools appear in the diagnostic `/tools` inventory.
-Opening these views does not invoke a tool, plugin command, or model turn. Package installation,
-updates, removal, and enablement use `mycli plugins`; see [Plugin Compatibility](plugin-codex-parity.md).
+Opening these views does not invoke a tool, plugin command, or model turn. In `/plugins`, Left/Right
+selects All Plugins, Installed, or a marketplace; typing searches the current list. Space toggles
+enablement when the search is empty. Enter opens install/update/uninstall actions. Ctrl+N opens
+local/Git source installation; the Add Marketplace tab registers a source. A named marketplace's
+Manage marketplace row refreshes or removes it. Removal requires confirmation and retains installed
+packages. Ctrl+R reloads and Ctrl+A inspects complete details. Esc goes back or closes; closing during
+an operation cancels pending work. The composer draft survives closing the browser.
+The equivalent `mycli plugins` CLI remains available; see [Plugin Compatibility](plugin-codex-parity.md).
 
 ### Retired Names
 

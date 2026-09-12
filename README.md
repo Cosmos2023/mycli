@@ -462,9 +462,12 @@ and compiled ESM for process-hosted tools, hooks, and commands.
 
 Package changes apply before the next turn or an idle catalog inspection. Active turns, including
 approval waits, keep their original tools and connections until they finish. Each session refreshes
-independently; a waiting child does not block its parent's updates. `/plugins` inspects
-packages and their capabilities; installation, updates, enablement, and marketplace management
-use the CLI. Plugin MCP servers use the same login commands, with readable selectors:
+independently; a waiting child does not block its parent's updates. `/plugins` opens a searchable
+browser with All Plugins, Installed, and marketplace tabs. Enter opens capabilities and actions;
+Space toggles enablement when the search is empty. Install, update, uninstall, and marketplace
+management are available inside the TUI. Ctrl+N installs from a local/Git source, Ctrl+R refreshes,
+and Esc goes back or cancels pending work. Plugin MCP servers use the same login commands, with
+readable selectors:
 
 ```bash
 mycli mcp inspect my-plugin/server-name
