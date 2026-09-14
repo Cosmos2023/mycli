@@ -563,6 +563,8 @@
   {"file":"backend/packages/providers/src/pi-ai/pi-ai-replay.ts","boundary":"runtime_failure","code":"config_error","evidence":"legacy_code","scope":"provider_attempt","reason":"config.invalid"},
   {"file":"backend/packages/providers/src/pi-ai/pi-ai-replay.ts","boundary":"runtime_failure","code":"provider_error","evidence":"legacy_code","scope":"provider_attempt","reason":"provider.failure_unclassified"},
   {"file":"backend/packages/providers/src/pi-ai/pi-ai-replay.ts","boundary":"runtime_failure","code":"tool_protocol_error","evidence":"legacy_code","scope":"provider_attempt","reason":"provider.tool_protocol_invalid"},
+  {"file":"backend/packages/providers/src/pi-ai/pi-ai-stream-queue.ts","boundary":"ProviderFailure","code":"response_stream_error","evidence":"legacy_code","scope":"provider_attempt","reason":"transport.stream_interrupted"},
+  {"file":"backend/packages/providers/src/pi-ai/pi-ai-stream-queue.ts","boundary":"runtime_failure","code":"response_stream_error","evidence":"legacy_code","scope":"provider_attempt","reason":"transport.stream_interrupted"},
   {"file":"backend/packages/providers/src/pi-ai/sse-stream-boundary.ts","boundary":"ProviderFailure","code":"response_stream_error","evidence":"legacy_code","scope":"provider_attempt","reason":"transport.stream_interrupted"},
   {"file":"backend/packages/providers/src/pi-ai/sse-stream-boundary.ts","boundary":"runtime_failure","code":"response_stream_error","evidence":"legacy_code","scope":"provider_attempt","reason":"transport.stream_interrupted"},
   {"file":"backend/packages/providers/src/registry/provider-directory.ts","boundary":"ProviderFailure","code":"config_error","evidence":"legacy_code","scope":"provider_attempt","reason":"config.invalid"},

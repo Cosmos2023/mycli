@@ -83,7 +83,7 @@ export class PiAiProvider implements ModelProvider {
 		const consumer = new AbortController();
 		const upstreamSignal = AbortSignal.any([options.signal, consumer.signal]);
 		const evidence: ProviderAttemptEvidence = {};
-		let iterator: AsyncIterator<PiAiStreamEvent> | undefined;
+		let iterator: AsyncIterator<AssistantMessageEvent | PiAiStreamEvent> | undefined;
 		let upstreamExhausted = false;
 		let sawOutput = false;
 		const reportPhase = (phase: ProviderStreamPhase): void => {

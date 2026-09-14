@@ -45,6 +45,11 @@ an explicit declaration for semantic metadata such as images and reasoning; pi-a
 detection, plus an optional validated `compat` override, owns its wire format. Hosted web search
 remains a separate Responses-only mycli capability.
 
+Hosted search and assistant text share a bounded stream queue. A slow consumer pauses upstream
+delivery; the queue retains at most 64 events and 8 MiB of serialized UTF-8 payloads. Exceeding a
+limit reports `response_stream_error` with a buffering-limit detail. Cancelling a turn or stopping
+consumption releases pending stream reads.
+
 Request caching is expressed once as `request.cache_retention = "none" | "short" | "long"`, with
 `short` as the default. Mycli passes that preference and the stable session id to pi-ai. Pi-ai maps
 them to provider-specific fields, and the provider decides whether a cache entry is stored or hit.

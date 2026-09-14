@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type { ProviderEvent, ProviderRequest, WebSearchAction } from "@mycli/core";
 import { ProviderFailure } from "../../src/errors.ts";
@@ -82,6 +82,43 @@ test("hosted search cannot overtake adjacent deltas in an unfinished assistant m
 	]);
 });
 
+test("slow hosted-search delivery backpressures SSE and preserves a long interleaved response", async () => {
+	const message = { type: "message", id: "msg-long", role: "assistant", status: "in_progress", content: [] };
+	const frames = [created(), sse({ type: "response.output_item.added", output_index: 0, item: message })];
+	const expected: ProviderEvent[] = [];
+	for (let index = 0; index < 300; index += 1) {
+		const value = `${index} `;
+		frames.push(sse({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: value }));
+		expected.push({ type: "text_delta", text: value });
+		if (index % 20 === 0) {
+			const id = `search-${index}`;
+			const action: WebSearchAction = { type: "search", query: "docs" };
+			frames.push(searchAdded(id, 1), searchDone(id, action, 1));
+			expected.push({ type: "web_search_started", callId: id }, { type: "web_search_completed", call: { callId: id, action } });
+		}
+	}
+	frames.push(sse({ type: "response.output_item.done", output_index: 0, item: { ...message, status: "completed",
+		content: [{ type: "output_text", text: "Done", annotations: [] }] } }), completed());
+	let reads = 0;
+	let cancelled = false;
+	const provider = providerWithFetch(async () => new Response(new ReadableStream<Uint8Array>({
+		pull(controller): void {
+			const frame = frames[reads++];
+			if (frame) controller.enqueue(bytes(frame)); else controller.close();
+		},
+		cancel(): void { cancelled = true; },
+	}, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } }));
+	const events: ProviderEvent[] = [];
+	for await (const event of provider.stream(request, { signal: AbortSignal.timeout(3_000) })) {
+		events.push(event);
+		await tick();
+		if (events.length === 1) assert(reads <= 8, `read ${reads} frames after consuming one delta`);
+	}
+	assert.deepEqual(visibleEvents(events), expected);
+	assert.equal(events.at(-1)?.type, "completed");
+	assert.equal(cancelled, true);
+});
+
 test("hosted search recovers completed output items and terminal-only activities", async (t) => {
 	for (const action of [
 		{ type: "search", query: "mycli" },
@@ -141,11 +178,11 @@ test("cancelling a live hosted search stops the source without completing it", {
 	assert.equal(cancelled, true);
 });
 
-test("stopping a hosted-search consumer aborts its pending SDK read", { timeout: 3_000 }, async () => {
+test("stopping a hosted-search consumer releases its pending SDK read and SSE drain", { timeout: 3_000 }, async () => {
 	let aborted = false;
 	const provider = providerWithFetch(async (_input, init) => new Response(new ReadableStream<Uint8Array>({
 		start(controller): void {
-			controller.enqueue(bytes(created() + searchAdded("ws-stop")));
+			controller.enqueue(bytes(created() + searchDone("ws-stop", { type: "search", query: "docs" })));
 			init?.signal?.addEventListener("abort", () => {
 				aborted = true;
 				controller.error(init.signal?.reason);
@@ -157,6 +194,15 @@ test("stopping a hosted-search consumer aborts its pending SDK read", { timeout:
 		break;
 	}
 	assert.equal(aborted, true);
+});
+
+test("a native-event overflow reaches the provider as a structured stream failure", async () => {
+	const output = Array.from({ length: 40 }, (_, index) => ({ type: "web_search_call", id: `burst-${index}`,
+		status: "completed", action: { type: "search", query: "docs" } }));
+	const stream = providerWithFetch(async () => response(created() + completed(output)))
+		.stream(request, { signal: AbortSignal.timeout(2_000) });
+	await assert.rejects(collect(stream), (error: unknown) => error instanceof ProviderFailure
+		&& error.code === "response_stream_error" && error.publicDetail === "Response stream exceeded its buffering limit.");
 });
 
 test("hosted search completes without remote EOF and ignores trailing activities", { timeout: 3_000 }, async () => {

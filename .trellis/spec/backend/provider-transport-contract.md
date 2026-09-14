@@ -144,6 +144,14 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
   the SDK requests its next frame, acknowledging consumption, not when a network chunk is parsed.
   Merge the activity with SDK events promptly so chunk coalescing and slow consumers cannot move
   a search ahead of preceding assistant text, including deltas in an unfinished message.
+- Await SSE consumption acknowledgements and SDK delivery on downstream drain. The merge queue
+  retains at most 64 events and 8 MiB of serialized UTF-8 payloads; count or byte overflow raises
+  `response_stream_error` with a bounded public detail, without silent drops or automatic replay.
+  Keep only text/thinking deltas, native search events, and terminal SDK messages in this queue;
+  mutable intermediate `partial` snapshots and ignored SDK bookkeeping are not retained.
+  Cancellation and early return release both readers and blocked drain waiters. A pending SDK
+  read/return that ignores cancellation must not hang the caller. Transport abort remains owned
+  by the provider. Slow-reader tests cover upstream pull counts, interleaving, overflow, and cleanup.
 - Emit one `web_search_started` and at most one `web_search_completed` per native call id and
   provider attempt. Completion comes from a completed output item, including terminal output
   fallback. A completion heartbeat without action metadata waits for the output item or a successful

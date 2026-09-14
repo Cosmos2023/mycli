@@ -6767,8 +6767,13 @@ test("TUI review uses read-only tools and releases its runtime before ordinary c
  writeRequest(backend, "normal-after-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "normal-turn", client_user_message_id: "normal-turn", message: "Continue ordinary chat." });
  await waitFor(() => finalMessageCount(messages) === completedBeforeNormal + 1, 10000);
  assert.ok((requests.at(-1)!.tools as { name: string }[]).some((tool) => tool.name === "Shell"));
+ // The final message and terminal status precede runtime cleanup; /rename requires idle.
+ await waitFor(() => messages.some((message) => message.method === "turn.status" && paramValue(message, "terminal") === true && paramValue(message, "client_turn_id") === "normal-turn"), 10000);
+ const normalTerminalIndex = messages.findIndex((message) => message.method === "turn.status" && paramValue(message, "terminal") === true && paramValue(message, "client_turn_id") === "normal-turn");
+ await waitFor(() => messages.slice(normalTerminalIndex + 1).some((message) => message.method === "status.changed" && paramValue(message, "turn_running") === false), 10000);
  writeRequest(backend, "rename-reviewed", "command.run", { command: "/rename Reviewed session", surface: "tui", session_id: "review-session", generation: 1 });
  const renamed = await waitFor(() => response(messages, "rename-reviewed"));
+ assert.equal(renamed.error, undefined, JSON.stringify(renamed));
  assert.equal(resultValue(renamed, "session_title"), "Reviewed session");
  writeRequest(backend, "preview-reviewed", "session.preview", { session_id: "review-session", generation: 1, target_session_id: "review-session" });
  const preview = await waitFor(() => response(messages, "preview-reviewed"));
