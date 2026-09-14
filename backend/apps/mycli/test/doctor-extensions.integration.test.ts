@@ -3,14 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type {
-	McpManagedClient,
-	PluginHostContract,
-	PluginHostStatus,
-} from "@mycli/integrations";
 import { collectExtensionChecks } from "../src/management/doctor/check-extensions.ts";
 
-test("extension doctor isolates malformed trees, reports migration, and closes probes", {
+test("extension doctor isolates malformed metadata and reports migration without probing runtimes", {
 	timeout: 10_000,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-doctor-extensions-"));
@@ -44,7 +39,7 @@ test("extension doctor isolates malformed trees, reports migration, and closes p
 		"  tools: []",
 		"  hooks: []",
 		"  commands: []",
-		"requires_env: []",
+		"requires_env: [DOCTOR_FIXTURE_KEY]",
 		"capabilities: []",
 	].join("\n"), "utf8");
 	await writeFile(join(mycliRoot, "config.toml"), [
@@ -58,37 +53,11 @@ test("extension doctor isolates malformed trees, reports migration, and closes p
 		`command = ${JSON.stringify(process.execPath)}`,
 	].join("\n"), "utf8");
 
-	let pluginStatus: PluginHostStatus = "idle";
-	let pluginCloseCount = 0;
-	let mcpCloseCount = 0;
-	const pluginHost: PluginHostContract = {
-		get status() { return pluginStatus; },
-		registrations: [],
-		start: async () => {
-			pluginStatus = "ready";
-			return [];
-		},
-		invoke: async () => ({ ok: true, resultType: "command_result", value: {} }),
-		close: async () => {
-			pluginStatus = "closed";
-			pluginCloseCount += 1;
-		},
-	};
-	const mcpClient: McpManagedClient = {
-		listTools: async () => [],
-		callTool: async () => ({ content: [], isError: false }),
-		listResources: async () => [],
-		readResource: async () => [],
-		close: async () => { mcpCloseCount += 1; },
-	};
-
 	const checks = await collectExtensionChecks({
 		workspaceRoot,
 		homeDir,
-		env: {},
+		env: { DOCTOR_FIXTURE_KEY: "plugin-env-test-secret" },
 		builtinSkillRoot,
-		createPluginHost: () => pluginHost,
-		createMcpClient: () => mcpClient,
 	}, new AbortController().signal);
 	const byName = new Map(checks.map((check) => [check.name, check]));
 
@@ -108,10 +77,17 @@ test("extension doctor isolates malformed trees, reports migration, and closes p
 	assert.equal(byName.get("subagents")?.status, "ok");
 	assert.equal(byName.get("subagents")?.message, "mode=prompt_driven profiles=disabled");
 	assert.equal(byName.get("mcp")?.status, "ok");
-	assert.equal(pluginCloseCount, 1);
-	assert.equal(mcpCloseCount, 1);
+	assert.match(byName.get("plugins")?.message ?? "", /runtime=not_probed/u);
+	assert.match(byName.get("mcp")?.message ?? "", /runtime=not_probed/u);
 	assert.doesNotMatch(
 		JSON.stringify(checks),
-		/hook-test-secret|skill-test-secret|python-test-secret|private.*prompt/u,
+		/hook-test-secret|skill-test-secret|python-test-secret|plugin-env-test-secret|private.*prompt/u,
 	);
+	const missingEnv = await collectExtensionChecks({ workspaceRoot, homeDir, env: {}, builtinSkillRoot }, new AbortController().signal);
+	assert.equal(missingEnv.find((check) => check.name === "plugins")?.status, "failed");
+	assert.match(missingEnv.find((check) => check.name === "plugins")?.detail ?? "", /missing_required_env/u);
+	const untrusted = await collectExtensionChecks({ workspaceRoot, homeDir, env: {}, builtinSkillRoot, includeRepository: false }, new AbortController().signal);
+	assert.equal(untrusted.find((check) => check.name === "plugins")?.status, "ok");
+	assert.equal(untrusted.find((check) => check.name === "plugin_migration")?.message, "migration_required=0");
+	assert.match(untrusted.find((check) => check.name === "mcp")?.message ?? "", /configured=0/u);
 });

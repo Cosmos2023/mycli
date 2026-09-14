@@ -1,23 +1,11 @@
-import { loadManagedExecutionPolicy } from "@mycli/config";
 import { join } from "node:path";
 import {
 	builtinSkillRoot as defaultBuiltinSkillRoot,
+	discoverConfiguredMcpServers,
+	discoverPlugins,
 	HookManagementService,
-	McpClient,
-	McpManagementService,
-	PluginManagementService,
 	SkillRegistry,
 } from "@mycli/integrations";
-import type {
-	LoadedPluginManifest,
-	McpManagedClient,
-	McpServerConfig,
-	PluginHostContract,
-} from "@mycli/integrations";
-import {
-	pluginSandboxProfile,
-	mcpSandboxProfile,
-} from "../../node-runtime/integration-sandbox.ts";
 import type { DoctorCheck, DoctorStatus } from "./types.ts";
 
 export interface ExtensionDoctorOptions {
@@ -26,8 +14,6 @@ export interface ExtensionDoctorOptions {
 	readonly env: NodeJS.ProcessEnv;
 	readonly includeRepository?: boolean;
 	readonly builtinSkillRoot?: string;
-	readonly createPluginHost?: (manifest: LoadedPluginManifest) => PluginHostContract;
-	readonly createMcpClient?: (config: McpServerConfig) => McpManagedClient;
 }
 
 export async function collectExtensionChecks(
@@ -71,27 +57,24 @@ async function checkPlugins(
 	options: ExtensionDoctorOptions,
 	signal: AbortSignal,
 ): Promise<readonly DoctorCheck[]> {
-	const response = await new PluginManagementService({
-		runtimeOptions: {
-			workspaceRoot: options.workspaceRoot,
-			homeDir: options.homeDir,
-			env: options.env,
-			...(options.includeRepository === undefined
-				? {}
-				: { includeRepository: options.includeRepository }),
-			sandboxProfile: pluginSandboxProfile,
-			...(options.createPluginHost ? { createHost: options.createPluginHost } : {}),
-		},
-	}).list(signal);
-	const migrations = response.plugins.filter((plugin) => plugin.status === "migration_required");
-	const errors = response.plugins.filter((plugin) => plugin.status === "error");
-	const loaded = response.plugins.filter((plugin) => plugin.status === "loaded");
+	signal.throwIfAborted();
+	const discovery = await discoverPlugins(options);
+	signal.throwIfAborted();
+	const migrations = discovery.selected.filter((plugin) => plugin.kind === "migration_required");
+	const invalid = discovery.selected.filter((plugin) => plugin.kind === "invalid");
+	const issues = [
+		...discovery.diagnostics.map((issue) => issue.errorClass),
+		...discovery.selected.flatMap((plugin) => plugin.kind === "bundle" ? plugin.manifest.issues : []),
+		...discovery.plugins.filter((plugin) => plugin.enabled
+			&& plugin.manifest.requires_env.some((key) => !options.env[key])).map(() => "missing_required_env"),
+	];
+	const enabled = discovery.selected.filter((plugin) => plugin.enabled).length;
 	return Object.freeze([
 		check(
 			"plugins",
-			!response.ok || errors.length > 0 ? "failed" : "ok",
-			`discovered=${response.plugins.length} loaded=${loaded.length} failed=${errors.length}`,
-			issueCategories(errors.flatMap((plugin) => plugin.issues)),
+			issues.length > 0 ? "failed" : "ok",
+			`configured=${discovery.selected.length} enabled=${enabled} invalid=${invalid.length} runtime=not_probed`,
+			diagnosticClasses(issues),
 		),
 		check(
 			"plugin_migration",
@@ -125,31 +108,16 @@ async function checkMcp(
 	options: ExtensionDoctorOptions,
 	signal: AbortSignal,
 ): Promise<DoctorCheck> {
-	const constraints = await loadManagedExecutionPolicy({ homeDir: options.homeDir });
-	const response = await new McpManagementService({
-		workspaceRoot: options.workspaceRoot,
-		homeDir: options.homeDir,
-		env: options.env,
-		...(options.includeRepository === undefined
-			? {}
-			: { includeRepository: options.includeRepository }),
-		createClient: options.createMcpClient ?? ((config) => new McpClient({
-			config,
-			cwd: options.workspaceRoot,
-			sandboxProfile: mcpSandboxProfile(options.workspaceRoot, config, constraints),
-		})),
-	}).list(signal);
-	const failed = response.servers.filter((server) => server.status === "failed");
-	const disabled = response.servers.filter((server) => server.status === "disabled");
-	const status: DoctorStatus = !response.ok || failed.length > 0 ? "failed" : "ok";
+	signal.throwIfAborted();
+	const config = await discoverConfiguredMcpServers(options);
+	signal.throwIfAborted();
+	const disabled = config.servers.filter((server) => !server.enabled).length;
+	const issues = [...config.diagnostics, ...config.pluginIssues].map((issue) => issue.errorClass);
 	return check(
 		"mcp",
-		status,
-		`configured=${response.servers.length} failed=${failed.length} disabled=${disabled.length}`,
-		diagnosticClasses([
-			...failed.flatMap((server) => server.failureCategory ? [server.failureCategory] : []),
-			...response.issues.map(lastIssueSegment),
-		]),
+		issues.length > 0 ? "failed" : "ok",
+		`configured=${config.servers.length} disabled=${disabled} invalid=${issues.length} runtime=not_probed`,
+		diagnosticClasses(issues),
 	);
 }
 

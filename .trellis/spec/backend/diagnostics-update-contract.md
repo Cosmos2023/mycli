@@ -65,6 +65,12 @@ await updates.close();
   value-free actions, effects, and configuration changes. Apply is available only through
   `--confirm <plan-id>` and only for deterministic actions delegated to the service that owns the
   state; the initial action is canonical user-config migration.
+- All Doctor modes discover MCP/plugin metadata without starting transports or Plugin API v2 hosts.
+  Preserve trust filtering, disabled entries, migration, invalid manifests, and missing environment
+  diagnostics. Mark these rows `runtime=not_probed`; metadata success is not live runtime readiness.
+  Explicit `mycli mcp inspect <id>` owns live discovery and process cleanup. Compiled-CLI tests must
+  assert absent startup markers during Doctor, preview, and support collection, then prove a live
+  inspect still starts and closes its server.
 - A repair plan hashes the complete projected action plus its owning migration expected version.
   Apply rebuilds the plan before mutation. A different plan id returns `version_conflict` and does
   not apply the replacement plan. Each action reports its own applied, failed, not-needed, or
