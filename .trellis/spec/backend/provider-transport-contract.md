@@ -90,6 +90,12 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
 - Provider and model discovery lazy-loads pi-ai metadata only on explicit directory/catalog demand.
   Directory DTOs expose identity, supported API, input modality, reasoning levels, limits, and cost,
   but never pi-ai `compat`, auth objects, functions, headers, keys, or duplicated wire facts.
+- Bootstrap, session preference activation, and trust reload do not capture the complete model
+  directory. Login rows use profiles, declarations, and shared product activation. Native readiness
+  loads only the selected SDK auth adapter; typed lazy module wiring is checked against the pinned
+  SDK directory. Environment/OAuth/reference semantics remain SDK-owned. Full route/model capture
+  runs on execution or explicit discovery/connectivity demand. Fresh-process compiled tests check
+  both deferred imports and existing credentials, in addition to packed startup smoke.
 - Model input and reasoning metadata comes from the pinned pi-ai catalog. A complete explicit model
   declaration supplies metadata for an uncatalogued private relay. Hosted search stays a separate
   mycli product capability because the current integration has no first-class hosted-search option.

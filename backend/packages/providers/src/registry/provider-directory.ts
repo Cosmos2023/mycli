@@ -13,6 +13,7 @@ import {
 	type ReasoningEffort,
 } from "@mycli/core";
 import { ProviderFailure } from "../errors.ts";
+import { PI_AI_PROVIDER_LOADERS } from "./provider-loaders.ts";
 import type {
 	ProviderDirectoryDisabledReason,
 	ProviderDirectoryEntry,
@@ -63,6 +64,7 @@ const DEFAULT_THINKING_LEVELS = Object.freeze<readonly ModelThinkingLevel[]>([
 
 let providerCatalogPromise: Promise<PiAiProviderCatalogState> | undefined;
 let providerDirectoryPromise: Promise<ProviderDirectorySnapshot> | undefined;
+const builtinProviderPromises = new Map<string, Promise<Provider>>();
 
 export function loadPiAiProviderDirectory(): Promise<ProviderDirectorySnapshot> {
 	providerDirectoryPromise ??= buildProviderDirectory();
@@ -73,11 +75,29 @@ export async function loadPiAiBuiltinProvider(
 	providerId: ProviderRouteId,
 ): Promise<Provider | undefined> {
 	try {
-		return (await loadProviderCatalog()).providerIndex.get(providerId);
+		if (providerCatalogPromise) return (await providerCatalogPromise).providerIndex.get(providerId);
+		const loader = PI_AI_PROVIDER_LOADERS.get(providerId);
+		if (!loader) return undefined;
+		let pending = builtinProviderPromises.get(providerId);
+		if (!pending) {
+			pending = loader().then((provider) => {
+				if (provider.id !== providerId) throw directoryFailure();
+				return provider;
+			});
+			builtinProviderPromises.set(providerId, pending);
+		}
+		return await pending;
 	} catch (error) {
 		if (error instanceof ProviderFailure) throw error;
 		throw directoryFailure();
 	}
+}
+
+export async function loadPiAiProviderEntry(
+	providerId: ProviderRouteId,
+): Promise<ProviderDirectoryEntry | undefined> {
+	const provider = await loadPiAiBuiltinProvider(providerId);
+	return provider ? sanitizeProvider(provider, provider.getModels()) : undefined;
 }
 
 async function buildProviderDirectory(): Promise<ProviderDirectorySnapshot> {
@@ -96,7 +116,8 @@ function loadProviderCatalog(): Promise<PiAiProviderCatalogState> {
 
 async function buildProviderCatalog(): Promise<PiAiProviderCatalogState> {
 	const directory = await import("@earendil-works/pi-ai/providers/all");
-	const providers = Object.freeze(directory.builtinProviders());
+	const providers = Object.freeze(await Promise.all(directory.builtinProviders().map((provider) =>
+		builtinProviderPromises.get(provider.id) ?? provider)));
 	const providerIndex = new Map<string, Provider>();
 	for (const provider of providers) {
 		if (providerIndex.has(provider.id)) throw directoryFailure();

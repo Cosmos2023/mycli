@@ -10,6 +10,11 @@ after the dependency update passes. Credentials remain owned by mycli through `M
 private `~/.mycli/auth.json` store. Supported native routes can also use provider environment
 authentication and OAuth through mycli's credential adapter.
 
+Startup and session restoration read login metadata without loading the complete pi-ai catalog.
+Native credential checks load the relevant auth adapter locally without refreshing OAuth or sending
+a model request. Opening `/model` discovers the full directory; executing a turn captures its
+selected route and model metadata before dispatch.
+
 The three route tiers are:
 
 - `stable`: product-supported routes with backward-compatible defaults.

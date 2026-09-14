@@ -5,7 +5,7 @@ import { sanitizeRuntimeErrorDetail } from "@mycli/contracts";
 import { readProviderCredential } from "@mycli/config";
 import { ProviderFailure } from "../errors.ts";
 import { createPiAiModelsAuth } from "../pi-ai/pi-ai-auth.ts";
-import { loadPiAiBuiltinProvider, loadPiAiProviderDirectory } from "../registry/provider-directory.ts";
+import { loadPiAiBuiltinProvider, loadPiAiProviderEntry } from "../registry/provider-directory.ts";
 
 export type NativeAuthPrompt = {
 	readonly signal?: AbortSignal;
@@ -104,8 +104,7 @@ async function operations(input: NativeAuthTarget): Promise<NativeProviderAuthOp
 	input.signal?.throwIfAborted();
 	let id: ProviderRouteId;
 	try { id = parseProviderRouteId(input.provider); } catch { throw unavailable(); }
-	const directory = await loadPiAiProviderDirectory();
-	const entry = directory.providers.find((candidate) => candidate.catalogProviderId === id);
+	const entry = await loadPiAiProviderEntry(id);
 	if (!entry || entry.status === "unsupported") throw unavailable();
 	const provider = await loadPiAiBuiltinProvider(id);
 	if (!provider) throw unavailable();

@@ -18,7 +18,6 @@ import {
 	CachedUpdateService,
 	detectTerminalCapabilities,
 	ExecPolicyStore,
-	listProviderProfiles,
 	loadManagedExecutionPolicy,
 	modelInputTokenLimit,
 	parseConfigProfileName,
@@ -81,7 +80,6 @@ import {
 import {
 	ProviderRegistry,
 	captureProviderNativeEnvironment,
-	inspectNativeProviderAuth,
 	resolveProviderNativeTransport,
 	type ProviderRouteDescriptor,
 } from "@mycli/providers";
@@ -228,6 +226,7 @@ import {
 	ProviderModelDirectory,
 	type ProviderModelDirectorySnapshot,
 } from "./provider-model-directory.ts";
+import { authProviderPayload, providerCredentialReadiness } from "./provider-credentials.ts";
 import { MYCLI_PACKAGE_NAME, MYCLI_VERSION } from "../version.ts";
 import { NodeRuntimeRegistry } from "./node-runtime-registry.ts";
 import {
@@ -1778,7 +1777,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
 				const initialPreferences = initial.binding.sessionPreferences?.();
 				if (initialPreferences) {
-					controlConfig = await resolveCapturedProviderModelConfig({
+					controlConfig = await resolveWorkspaceModelRuntimeConfig({
 						homeDir,
 					workspaceRoot: initial.workspaceRoot,
 					env: options.env,
@@ -1796,7 +1795,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					env: options.env,
 					overrides: sessionPreferenceOverrides(active.sessionId, preferences),
 				});
-				return providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute);
+				return providerCredentialReadiness(resolved, homeDir, options.env);
 			};
 			const providerDirectory = async (): Promise<readonly JsonObject[]> => providerDirectoryPayload(
 				await providerModelDirectory.load(controlConfig),
@@ -1846,7 +1845,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					const active = sessionCoordinator.snapshot();
 					const resolved = await resolveWorkspaceModelRuntimeConfig({ homeDir, workspaceRoot: active.workspaceRoot,
 						env: options.env, overrides: sessionPreferenceOverrides(active.sessionId, preferences) });
-					return (await providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute)).ready;
+					return (await providerCredentialReadiness(resolved, homeDir, options.env)).ready;
 				},
 				...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
 			});
@@ -2028,22 +2027,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						undo: (sessionId) => activeFileHistory().undoLatest({ sessionId }),
 					},
 					controlCommands: {
-						authProviders: async () => {
-							const profiles = listProviderProfiles();
-							return (await providerDirectory())
-								.filter((route) => route.activation === "active")
-								.map((route) => {
-									const profile = profiles.find((entry) => entry.provider === route.id);
-									return {
-										id: route.id,
-										name: profile?.displayName ?? route.name,
-										configured: route.ready,
-										credential_source: route.credential_source,
-										auth_ref: route.auth_ref,
-										...(profile?.defaultModel ? { default_model: profile.defaultModel } : {}),
-									};
-								});
-						},
+						authProviders: async () => authProviderPayload(controlConfig, homeDir, await credentialReadiness()),
 						credentialReadiness,
 						saveApiKey: async (providerId, apiKey, requestedAuthRef) => {
 							let provider;
@@ -2228,7 +2212,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							},
 							activateSessionPreferences: async (preferences) => {
 							const active = sessionCoordinator.snapshot();
-							controlConfig = await resolveCapturedProviderModelConfig({
+							controlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
@@ -2306,7 +2290,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						? active.binding.sessionPreferences?.()
 							?? loadSessionPreferences(store, active.sessionId)
 						: undefined;
-					const nextControlConfig = await resolveCapturedProviderModelConfig({
+					const nextControlConfig = await resolveWorkspaceModelRuntimeConfig({
 						homeDir,
 						workspaceRoot,
 						env: options.env,
@@ -2355,30 +2339,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
-}
-
-async function providerCredentialReadiness(
-	config: NodeRuntimeConfig,
-	homeDir: string,
-	environment: Readonly<NodeJS.ProcessEnv>,
-	captureNative?: (config: NodeRuntimeConfig) => Promise<NodeRuntimeConfig>,
-): Promise<NodeGatewayCredentialReadiness> {
-	const stored = await readProviderCredential({ homeDir, authRef: config.authRef });
-	const captured = !config.apiKey && !config.nativeTransport && (stored || config.allowAmbientAuth) && captureNative
-		? await captureNative(config) : config;
-	const native = !captured.apiKey && captured.nativeTransport ? await inspectNativeProviderAuth({
-		provider: captured.nativeTransport.catalogProviderId, homeDir, authRef: captured.authRef,
-		...(captured.providerEnv ? { providerEnv: captured.providerEnv } : {}),
-		...(captured.allowAmbientAuth === undefined ? {} : { allowAmbientAuth: captured.allowAmbientAuth }),
-	}) : undefined;
-	return Object.freeze({
-		ready: Boolean(config.apiKey) || native?.configured === true,
-		providerId: config.provider,
-		authRef: config.authRef,
-		source: config.apiKey
-			? environment.MYCLI_API_KEY?.trim() ? "environment" : stored ? "stored" : "legacy_config"
-			: native?.source ?? "missing",
-	});
 }
 
 async function providerDirectoryPayload(

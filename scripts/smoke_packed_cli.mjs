@@ -293,7 +293,7 @@ import {
 	builtinModelReasoningDefaults,
 	listProviderProfiles,
 } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/config/dist/index.js";
-import { ProviderRegistry } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/providers/dist/index.js";
+import { loadPiAiProviderDirectory, ProviderRegistry } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/providers/dist/index.js";
 
 const curated = [
 	["openrouter", "openrouter/auto", "medium"],
@@ -303,6 +303,14 @@ const curated = [
 	["nvidia", "openai/gpt-oss-120b", "none"],
 	["cerebras", "gpt-oss-120b", "medium"],
 ];
+// Individual snapshots now load only their provider. Explicit discovery owns the full catalog.
+const directory = await loadPiAiProviderDirectory();
+assert.ok(directory.providers.length >= 40);
+for (const [id, model] of curated) {
+	const provider = directory.providers.find((entry) => entry.catalogProviderId === id);
+	assert.equal(provider?.status, "serviceable");
+	assert.ok(provider.models.some((entry) => entry.id === model));
+}
 const profiles = listProviderProfiles().filter((profile) => (
 	curated.some(([provider]) => provider === profile.provider)
 ));

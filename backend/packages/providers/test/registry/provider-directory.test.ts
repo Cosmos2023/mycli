@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadPiAiProviderDirectory } from "../../src/registry/provider-directory.ts";
+import { loadPiAiBuiltinProvider, loadPiAiProviderDirectory } from "../../src/registry/provider-directory.ts";
+import { PI_AI_PROVIDER_LOADERS } from "../../src/registry/provider-loaders.ts";
+import { parseProviderRouteId } from "@mycli/core";
+
+test("lazy loaders cover the SDK directory and preserve selected provider instances", async () => {
+	const openai = await loadPiAiBuiltinProvider(parseProviderRouteId("openai"));
+	assert(openai);
+	assert.equal(await loadPiAiBuiltinProvider(parseProviderRouteId("unknown-route")), undefined);
+	const directory = await loadPiAiProviderDirectory();
+	assert.deepEqual(new Set(PI_AI_PROVIDER_LOADERS.keys()), new Set(directory.providers.map((entry) => entry.catalogProviderId)));
+	for (const [id, loader] of PI_AI_PROVIDER_LOADERS) assert.equal((await loader()).id, id);
+	assert.strictEqual(await loadPiAiBuiltinProvider(parseProviderRouteId("openai")), openai);
+});
 
 test("loads one immutable sanitized pi-ai provider directory snapshot", async () => {
 	const first = loadPiAiProviderDirectory();
