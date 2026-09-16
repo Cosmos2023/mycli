@@ -124,9 +124,10 @@ SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
     RequireKnownFields(
         root,
         {"protocol_version", "command", "cwd", "workspace_roots", "writable_roots",
-         "denied_read_roots", "denied_read_globs", "filesystem", "network", "mode"});
+         "denied_read_roots", "denied_read_globs", "filesystem", "network", "mode",
+         "network_proxy_port"});
     const auto& version = root.at("protocol_version");
-    if (!version.is_number_unsigned() || version.get<std::uint32_t>() != kProtocolVersion) {
+    if (!version.is_number_unsigned() || version.get<std::uint64_t>() != kProtocolVersion) {
         throw std::runtime_error("sandbox protocol version mismatch");
     }
     const auto& command = root.at("command");
@@ -144,6 +145,14 @@ SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
         .network = ParseNetwork(RequireString(root, "network")),
         .mode = ParseMode(RequireString(root, "mode")),
     };
+    if (root.contains("network_proxy_port")) {
+        const auto& port = root.at("network_proxy_port");
+        if (!port.is_number_unsigned() || port.get<std::uint64_t>() < 1 ||
+            port.get<std::uint64_t>() > 65535 || request.network != NetworkPolicy::kEnabled) {
+            throw std::runtime_error("invalid sandbox network proxy endpoint");
+        }
+        request.network_proxy_port = port.get<unsigned short>();
+    }
     if (request.command_argv.empty() || request.command_argv.front().empty()) {
         throw std::runtime_error("command argv must contain a non-empty executable");
     }

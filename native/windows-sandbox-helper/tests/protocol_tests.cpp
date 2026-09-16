@@ -56,6 +56,28 @@ int RunTests() {
         return 1;
     }
 
+    auto proxy = network_enabled;
+    proxy.insert(proxy.rfind(L'}'), L", \"network_proxy_port\": 40000");
+    if (Rejects(proxy)) {
+        std::cerr << "valid proxy request was rejected\n";
+        return 1;
+    }
+    for (const auto* port : {L"0", L"-1", L"65536", L"1.5", L"\"40000\""}) {
+        auto invalid_proxy = network_enabled;
+        invalid_proxy.insert(invalid_proxy.rfind(L'}'),
+            std::wstring{L", \"network_proxy_port\": "} + port);
+        if (!Rejects(invalid_proxy)) {
+            std::cerr << "invalid proxy port was accepted\n";
+            return 1;
+        }
+    }
+    auto offline_proxy = std::wstring{kValidRequest};
+    offline_proxy.insert(offline_proxy.rfind(L'}'), L", \"network_proxy_port\": 40000");
+    if (!Rejects(offline_proxy)) {
+        std::cerr << "offline policy accepted a proxy exception\n";
+        return 1;
+    }
+
     std::wstring empty_write_roots{kValidRequest};
     const std::wstring write_roots = LR"("writable_roots": ["C:\\workspace"])";
     empty_write_roots.replace(empty_write_roots.find(write_roots), write_roots.size(),

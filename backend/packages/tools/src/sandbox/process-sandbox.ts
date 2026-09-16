@@ -68,7 +68,7 @@ export function prepareSandboxedProcess(
 ): SandboxedProcessLaunch {
 	validateArgv(argv);
 	const platform = probes.platform ?? process.platform;
-	if (networkProxy && (platform !== "darwin" || profile.network !== "enabled"
+	if (networkProxy && ((platform !== "darwin" && platform !== "win32") || profile.network !== "enabled"
 		|| profile.networkDomains === undefined || profile.networkDomains.length === 0
 		|| !Number.isSafeInteger(networkProxy.port) || networkProxy.port < 1 || networkProxy.port > 65_535)) {
 		throw new ProcessSandboxError("network_proxy_unavailable", "The process network proxy cannot enforce this policy.");
@@ -111,14 +111,16 @@ export function prepareSandboxedProcess(
 	if (platform === "win32") {
 		const helper = probes.windowsHelperPath ?? packagedWindowsSandboxHelper();
 		if (!isExecutable(helper)) throw unavailable();
-		return windowsRestrictedTokenLaunch(helper, argv, resolvedProfile);
+		return windowsRestrictedTokenLaunch(helper, argv, resolvedProfile, networkProxy);
 	}
 	throw unavailable();
 }
 
 function resolveProfile(profile: SandboxProfile): SandboxProfile {
-	const workspaceRoot = realpathSync(profile.workspaceRoot);
-	const cwd = realpathSync(profile.cwd);
+	// Match fs.promises.realpath used by Shell cwd resolution. On Windows the
+	// JS fallback can retain 8.3 names while the native API expands them.
+	const workspaceRoot = realpathSync.native(profile.workspaceRoot);
+	const cwd = realpathSync.native(profile.cwd);
 	if (!hasUnrestrictedFilesystem(profile) && isOutside(workspaceRoot, cwd)) {
 		throw new ProcessSandboxError("sandbox_unavailable", "Sandbox cwd is outside the workspace.");
 	}
@@ -126,7 +128,7 @@ function resolveProfile(profile: SandboxProfile): SandboxProfile {
 		...profile,
 		workspaceRoot,
 		cwd,
-		writableRoots: Object.freeze(profile.writableRoots.map((root) => realpathSync(root))),
+		writableRoots: Object.freeze(profile.writableRoots.map((root) => realpathSync.native(root))),
 	});
 }
 

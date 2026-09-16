@@ -4,11 +4,13 @@
 
 #include <cstddef>
 #include <cwctype>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "win32.hpp"
+#include "wfp.hpp"
 
 namespace mycli::sandbox {
 namespace {
@@ -269,7 +271,9 @@ DWORD RunProcessWithLogonInJob(
     const std::wstring& username,
     const std::wstring& password,
     const std::vector<std::wstring>& argv,
-    const std::filesystem::path& cwd) {
+    const std::filesystem::path& cwd,
+    const std::wstring& account_sid,
+    unsigned short network_proxy_port) {
     auto command_line = BuildWindowsCommandLine(argv);
     std::vector<wchar_t> mutable_command_line(
         command_line.begin(), command_line.end());
@@ -309,6 +313,10 @@ DWORD RunProcessWithLogonInJob(
     if (AssignProcessToJobObject(job.get(), process.get()) == 0) {
         TerminateProcess(process.get(), 1);
         throw Win32Error("AssignProcessToJobObject(logon process)");
+    }
+    std::unique_ptr<NetworkProxySession> proxy;
+    if (network_proxy_port != 0) {
+        proxy = std::make_unique<NetworkProxySession>(process.get(), account_sid, network_proxy_port);
     }
     if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
         TerminateJobObject(job.get(), 1);

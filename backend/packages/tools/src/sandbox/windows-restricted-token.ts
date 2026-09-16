@@ -2,7 +2,7 @@ import {
 	hasUnrestrictedNetwork,
 	type SandboxProfile,
 } from "../policy/execution-policy.ts";
-import type { SandboxedProcessLaunch } from "./process-sandbox.ts";
+import type { ProcessNetworkProxy, SandboxedProcessLaunch } from "./process-sandbox.ts";
 
 export const WINDOWS_SANDBOX_PROTOCOL_VERSION = 1;
 
@@ -17,6 +17,7 @@ export interface WindowsSandboxRequest {
 	readonly denied_read_globs: readonly string[];
 	readonly filesystem: SandboxProfile["filesystem"];
 	readonly network: "enabled" | "disabled";
+	readonly network_proxy_port?: number;
 	readonly mode: SandboxProfile["mode"];
 }
 
@@ -24,6 +25,7 @@ export function windowsRestrictedTokenLaunch(
 	executable: string,
 	argv: readonly string[],
 	profile: SandboxProfile,
+	networkProxy?: ProcessNetworkProxy,
 ): SandboxedProcessLaunch {
 	const request: WindowsSandboxRequest = {
 		protocol_version: WINDOWS_SANDBOX_PROTOCOL_VERSION,
@@ -34,7 +36,8 @@ export function windowsRestrictedTokenLaunch(
 		denied_read_roots: [],
 		denied_read_globs: [],
 		filesystem: profile.filesystem,
-		network: hasUnrestrictedNetwork(profile) ? "enabled" : "disabled",
+		network: networkProxy || hasUnrestrictedNetwork(profile) ? "enabled" : "disabled",
+		...(networkProxy ? { network_proxy_port: networkProxy.port } : {}),
 		mode: profile.mode,
 	};
 	return Object.freeze({

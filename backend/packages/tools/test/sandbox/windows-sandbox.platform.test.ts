@@ -3,7 +3,8 @@ import { execFile } from "node:child_process";
 import { once } from "node:events";
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createSocket } from "node:dgram";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,6 +17,7 @@ import { resolveShellProfile } from "../../src/shell/shell-profile.ts";
 import { ShellSessionManager, type ShellSessionSnapshot } from "../../src/shell/shell-session-manager.ts";
 import { ShellTool } from "../../src/shell/shell-tool.ts";
 import type { ToolAdapterResult } from "../../src/types.ts";
+import { startNetworkProxy, type NetworkProxyLease } from "../../src/network/network-proxy.ts";
 
 const windows = { skip: process.platform !== "win32", timeout: 60_000 };
 const runFile = promisify(execFile);
@@ -121,6 +123,52 @@ test("Windows sandbox ConPTY supports input, resize and completion", windows, as
 	assert.match(output, /input:hello-sandbox/u);
 });
 
+test("Windows domain proxy blocks direct egress and other running Shells' proxy ports", windows, async (t) => {
+	let hits = 0;
+	const origin = createHttpServer((_request, response) => { hits += 1; response.end("allowed"); });
+	origin.listen(0, "127.0.0.1");
+	await once(origin, "listening");
+	t.after(() => new Promise<void>((resolve) => { origin.closeAllConnections(); origin.close(() => resolve()); }));
+	const address = origin.address();
+	assert.ok(address && typeof address !== "string");
+	const proxies: NetworkProxyLease[] = [];
+	const fixture = await createFixture(t, true, async (domains) => {
+		const proxy = await startNetworkProxy({ domains,
+			lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+			connect: () => createConnection({ host: "127.0.0.1", port: address.port }),
+		});
+		proxies.push(proxy);
+		return proxy;
+	});
+	t.after(async () => { await Promise.all(proxies.map((proxy) => proxy.close())); });
+	const policy = { ...fixture.policy, networkDomains: ["api.example.com"] };
+	assertExit(await fixture.run(["proxy", "http://api.example.com/"], { policy }), 0);
+	assert.equal(hits, 1);
+	assertExit(await fixture.run(["proxy", "http://denied.example.com/"], { policy }), 44);
+	assert.equal(hits, 1);
+	assertExit(await fixture.run(["connect", "127.0.0.1", String(address.port)], { policy }), 37);
+	assertExit(await fixture.run(["udp", "127.0.0.1", String(address.port)], { policy }), 37);
+	const held = await fixture.run(["proxy-hold", "http://api.example.com/"], { policy, yieldTimeMs: 500 });
+	const firstProxy = proxies.at(-1);
+	assert.ok(firstProxy);
+	const id = held.metadata?.shell_id;
+	assert.equal(typeof id, "string");
+	if (typeof id !== "string") throw new Error("missing held shell id");
+	let output = held.modelOutput;
+	while (!output.includes("proxy:200:allowed")) {
+		const snapshot = await fixture.manager.interact({ ownerSessionId: fixture.owner, shellId: id,
+			chars: "", yieldTimeMs: 1_000, signal: t.signal });
+		output += snapshot.output;
+		assert.ok(snapshot.terminalState === undefined || output.includes("proxy:200:allowed"), output);
+	}
+	assertExit(await fixture.run(["connect", "127.0.0.1", String(firstProxy.port)], { policy }), 37);
+	await fixture.manager.terminate(fixture.owner, id);
+	const socket = createConnection({ host: "127.0.0.1", port: firstProxy.port });
+	try { await assert.rejects(once(socket, "connect"), { code: "ECONNREFUSED" }); }
+	finally { socket.destroy(); }
+	assert.equal(hits, 2);
+});
+
 test("Windows sandbox kills descendants on exit, stop and owner shutdown", windows, async (t) => {
 	const fixture = await createFixture(t);
 	for (const action of ["exit", "stop", "shutdown"] as const) {
@@ -169,7 +217,8 @@ interface Fixture {
 		readonly tty?: boolean; readonly yieldTimeMs?: number }): Promise<ToolAdapterResult>;
 }
 
-async function createFixture(t: TestContext, requireReady = true): Promise<Fixture> {
+async function createFixture(t: TestContext, requireReady = true,
+	networkProxyFactory?: (domains: readonly string[]) => Promise<NetworkProxyLease>): Promise<Fixture> {
 	if (requireReady) {
 		assert.equal((await inspectSandboxReadiness()).state, "ready",
 			"Build the Windows helper and run mycli sandbox setup --confirm before the platform tests.");
@@ -184,6 +233,7 @@ async function createFixture(t: TestContext, requireReady = true): Promise<Fixtu
 	const tool = new ShellTool({ workspaceRoot: root, manager, timeoutSeconds: 30,
 		profile: resolveShellProfile({ platform: "win32", shellPath: "powershell.exe" }),
 		env: { ...process.env, LANG: "mycli-sandbox-test" },
+		...(networkProxyFactory ? { networkProxyFactory } : {}),
 	});
 	const policy = executionPolicy("workspace", root);
 	let sequence = 0;

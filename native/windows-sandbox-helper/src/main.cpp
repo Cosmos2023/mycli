@@ -14,6 +14,7 @@
 #include "elevation.hpp"
 #include "identity.hpp"
 #include "token.hpp"
+#include "wfp.hpp"
 #include "win32.hpp"
 
 namespace {
@@ -63,20 +64,26 @@ bool SetupComplete() {
     const auto owner_sid = mycli::sandbox::CurrentUserSidString();
     try {
         if (!mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOffline) ||
-            !mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOnline)) return false;
+            !mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOnline) ||
+            !mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kProxy)) return false;
         const auto identity = mycli::sandbox::LoadSandboxIdentity(
             state_directory, owner_sid, SandboxIdentityKind::kOffline);
         const auto online = mycli::sandbox::LoadSandboxIdentity(
             state_directory, owner_sid, SandboxIdentityKind::kOnline);
-        if (EqualSid(identity.sid.get(), online.sid.get()) != 0) return false;
+        const auto proxy = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, SandboxIdentityKind::kProxy);
+        if (EqualSid(identity.sid.get(), online.sid.get()) != 0 ||
+            EqualSid(identity.sid.get(), proxy.sid.get()) != 0 ||
+            EqualSid(online.sid.get(), proxy.sid.get()) != 0) return false;
         const auto capability = mycli::sandbox::DeriveCapabilitySid(state_directory, L"read-only");
-        for (const auto token : {identity.token.get(), online.token.get()}) {
+        for (const auto token : {identity.token.get(), online.token.get(), proxy.token.get()}) {
             const auto restricted = mycli::sandbox::CreateRestrictedPrimaryTokenFrom(
                 token, {capability.get()});
             if (IsTokenRestricted(restricted.get()) == 0) return false;
         }
         return mycli::sandbox::OfflineFirewallSetupReady(
-            identity.sid_string, state_directory);
+            identity.sid_string, state_directory) &&
+            mycli::sandbox::ProxyWfpReady(proxy.sid_string, owner_sid);
     } catch (const std::exception&) {
         return false;
     }
@@ -87,9 +94,13 @@ void SetupForUser(
     const std::wstring& owner_sid) {
     mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kOffline);
     mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kOnline);
+    mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kProxy);
     const auto identity = mycli::sandbox::LoadSandboxIdentity(
         state_directory, owner_sid, SandboxIdentityKind::kOffline);
     mycli::sandbox::SetupOfflineFirewall(identity.sid_string, state_directory);
+    const auto proxy = mycli::sandbox::LoadSandboxIdentity(
+        state_directory, owner_sid, SandboxIdentityKind::kProxy);
+    mycli::sandbox::SetupProxyWfp(proxy.sid_string, owner_sid);
 }
 
 void EnsureSetupComplete() {
@@ -165,22 +176,29 @@ int Run(int argc, wchar_t* argv[]) {
         EnsureSetupComplete();
         const auto state_directory = mycli::sandbox::SandboxStateDirectory();
         const auto owner_sid = mycli::sandbox::CurrentUserSidString();
-        const auto kind = request.network == mycli::sandbox::NetworkPolicy::kEnabled
-            ? SandboxIdentityKind::kOnline : SandboxIdentityKind::kOffline;
+        const auto kind = request.network_proxy_port != 0 ? SandboxIdentityKind::kProxy
+            : request.network == mycli::sandbox::NetworkPolicy::kEnabled
+                ? SandboxIdentityKind::kOnline : SandboxIdentityKind::kOffline;
         const auto identity = mycli::sandbox::LoadSandboxIdentity(
             state_directory, owner_sid, kind);
-        mycli::sandbox::PrepareSandboxRequest(request, identity.sid.get());
         const auto helper = CurrentExecutablePath();
         const auto helper_root = helper.parent_path().has_parent_path()
             ? helper.parent_path().parent_path()
             : helper.parent_path();
-        mycli::sandbox::GrantReadableRoot(helper_root, identity.sid.get());
+        {
+            // ACL updates are read/merge/write operations. Serialize preparation
+            // across this owner's concurrent Shells without serializing execution.
+            const SetupStateLock preparation_lock{owner_sid};
+            static_cast<void>(preparation_lock);
+            mycli::sandbox::PrepareSandboxRequest(request, identity.sid.get());
+            mycli::sandbox::GrantReadableRoot(helper_root, identity.sid.get());
+        }
         return static_cast<int>(mycli::sandbox::RunAsSandboxIdentity(
             state_directory,
             owner_sid,
             kind,
             {helper.wstring(), L"--run-prepared-json", argv[2], identity.sid_string},
-            std::filesystem::path{request.cwd}));
+            std::filesystem::path{request.cwd}, request.network_proxy_port));
     }
     throw std::runtime_error(
         "expected --handshake, --setup, --setup-for-user, --ensure-setup, "

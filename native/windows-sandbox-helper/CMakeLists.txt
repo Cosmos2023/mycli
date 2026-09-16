@@ -35,6 +35,7 @@ add_executable(mycli-windows-sandbox
     src/sid.cpp
     src/token.cpp
     src/wfp.cpp
+    src/wfp-access.cpp
 )
 mycli_configure_windows_target(mycli-windows-sandbox)
 
@@ -57,6 +58,7 @@ add_executable(mycli-windows-sandbox-primitives-tests
     src/sid.cpp
     src/token.cpp
     src/wfp.cpp
+    src/wfp-access.cpp
 )
 mycli_configure_windows_target(mycli-windows-sandbox-primitives-tests)
 add_test(NAME windows_primitives COMMAND mycli-windows-sandbox-primitives-tests)

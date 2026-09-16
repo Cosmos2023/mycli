@@ -28,7 +28,7 @@ export function executionPolicy(
 	workspaceRoot: string,
 ): ExecutionPolicy {
 	if (!workspaceRoot.trim()) throw new TypeError("workspaceRoot must be non-empty");
-	const workspace = realpathSync(workspaceRoot);
+	const workspace = realpathSync.native(workspaceRoot);
 	switch (permission) {
 		case "read-only":
 			return immutablePolicy("read-only", "read_only", "disabled", []);

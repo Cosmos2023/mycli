@@ -9,7 +9,7 @@
 
 namespace mycli::sandbox {
 
-enum class SandboxIdentityKind { kOffline, kOnline };
+enum class SandboxIdentityKind { kOffline, kOnline, kProxy };
 
 struct SandboxIdentity {
     UniqueHandle token;
@@ -35,7 +35,8 @@ DWORD RunAsSandboxIdentity(
     const std::wstring& owner_sid,
     SandboxIdentityKind kind,
     const std::vector<std::wstring>& argv,
-    const std::filesystem::path& cwd);
+    const std::filesystem::path& cwd,
+    unsigned short network_proxy_port = 0);
 bool SandboxIdentityCredentialsExist(
     const std::filesystem::path& state_directory, SandboxIdentityKind kind);
 std::filesystem::path SandboxStateDirectory();

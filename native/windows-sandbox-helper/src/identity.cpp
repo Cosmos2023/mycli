@@ -40,8 +40,12 @@ std::filesystem::path StateDirectory() {
 
 std::filesystem::path CredentialPath(
     const std::filesystem::path& state_directory, SandboxIdentityKind kind) {
-    return state_directory / (kind == SandboxIdentityKind::kOffline
-        ? L"offline.credential" : L"online.credential");
+    switch (kind) {
+        case SandboxIdentityKind::kOffline: return state_directory / L"offline.credential";
+        case SandboxIdentityKind::kOnline: return state_directory / L"online.credential";
+        case SandboxIdentityKind::kProxy: return state_directory / L"proxy.credential";
+    }
+    throw std::invalid_argument("unknown sandbox identity kind");
 }
 
 void RequireAdministrator() {
@@ -376,7 +380,8 @@ std::wstring SandboxUsernameForOwner(
     static_cast<void>(SidFromString(owner_sid));
     const auto digest = HashSandboxKey(owner_sid);
     constexpr wchar_t hex[] = L"0123456789abcdef";
-    std::wstring username = kind == SandboxIdentityKind::kOffline ? L"mcli_" : L"mclo_";
+    std::wstring username = kind == SandboxIdentityKind::kOffline ? L"mcli_"
+        : kind == SandboxIdentityKind::kOnline ? L"mclo_" : L"mclp_";
     for (std::size_t index = 0; index < 15; ++index) {
         const unsigned char byte = digest[index / 2];
         username.push_back(
@@ -407,7 +412,7 @@ void SetupSandboxIdentity(
 
 void ResetSandboxIdentityCredentials(
     const std::filesystem::path& state_directory) {
-    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline}) {
+    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline, SandboxIdentityKind::kProxy}) {
         const auto credential = CredentialPath(state_directory, kind);
         std::error_code error;
         std::filesystem::remove(credential, error);
@@ -451,12 +456,14 @@ DWORD RunAsSandboxIdentity(
     const std::wstring& owner_sid,
     SandboxIdentityKind kind,
     const std::vector<std::wstring>& argv,
-    const std::filesystem::path& cwd) {
+    const std::filesystem::path& cwd,
+    unsigned short network_proxy_port) {
     const auto username = SandboxUsernameForOwner(owner_sid, kind);
+    const auto [sid, sid_string] = LookupOfflineSid(username);
     auto password = LoadPassword(state_directory, kind);
     try {
         const DWORD exit_code = RunProcessWithLogonInJob(
-            username, password, argv, cwd);
+            username, password, argv, cwd, sid_string, network_proxy_port);
         SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
         return exit_code;
     } catch (...) {

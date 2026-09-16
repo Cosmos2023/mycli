@@ -89,7 +89,7 @@ test("macOS admits only the host-owned proxy port for a constrained policy", asy
 		assert.throws(() => prepareSandboxedProcess(["/usr/bin/true"], profile,
 			probes("darwin", ["/usr/bin/sandbox-exec"]), { port: invalid }), ProcessSandboxError);
 	}
-	for (const platform of ["linux", "win32"] as const) {
+	for (const platform of ["linux"] as const) {
 		assert.throws(() => prepareSandboxedProcess(["command"], profile,
 			probes(platform, []), { port: 40_000 }), { kind: "network_proxy_unavailable" });
 	}
@@ -121,6 +121,24 @@ test("macOS uses the fixed seatbelt executable and protects repository metadata"
 	const profile = launch.args[launch.args.indexOf("-p") + 1];
 	assert.match(profile ?? "", /deny file-write\*/u);
 	assert.match(profile ?? "", /\(allow network-outbound\)/u);
+});
+
+test("Windows proxy authority is an explicit endpoint and absent endpoints stay offline", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const profile = { ...executionPolicy("workspace", workspace),
+		networkDomains: ["api.example.com"], workspaceRoot: workspace, cwd: workspace };
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const options = { ...probes("win32", [helper]), windowsHelperPath: helper };
+	const proxied = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], profile, options, { port: 40_000 });
+	assert.equal(JSON.parse(proxied.args[1]!).network_proxy_port, 40_000);
+	assert.equal(JSON.parse(proxied.args[1]!).network, "enabled");
+	const offline = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], profile, options);
+	assert.equal(JSON.parse(offline.args[1]!).network, "disabled");
+	assert.equal(Object.hasOwn(JSON.parse(offline.args[1]!), "network_proxy_port"), false);
+	for (const port of [0, -1, 65_536, 1.5, NaN]) {
+		assert.throws(() => prepareSandboxedProcess(["cmd.exe"], profile, options, { port }),
+			{ kind: "network_proxy_unavailable" });
+	}
 });
 
 test("macOS denies protected metadata paths before they exist", async (t) => {

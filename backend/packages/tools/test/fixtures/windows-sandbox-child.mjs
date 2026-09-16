@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 import { createSocket } from "node:dgram";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { request } from "node:http";
 
 const [operation, target, argument] = process.argv.slice(2);
 try {
@@ -34,6 +35,26 @@ try {
 			console.log(`env:${process.env.LANG}`);
 			console.error("stderr:ok");
 			break;
+		case "proxy":
+		case "proxy-hold": {
+			const destination = new URL(target);
+			const proxy = new URL(process.env.HTTP_PROXY);
+			const call = request({ hostname: proxy.hostname, port: proxy.port,
+				path: target, headers: { Host: destination.host } }, (response) => {
+				response.setEncoding("utf8");
+				let body = "";
+				response.on("data", (chunk) => { body += chunk; });
+				response.on("end", () => {
+					console.log(`proxy:${response.statusCode}:${body}`);
+					if (response.statusCode !== 200) process.exitCode = 44;
+					else if (operation === "proxy-hold") setInterval(() => {}, 1_000);
+				});
+			});
+			call.on("error", () => { console.log("network:denied"); process.exit(37); });
+			call.setTimeout(3_000, () => { call.destroy(); process.exit(38); });
+			call.end();
+			break;
+		}
 		case "echo":
 			console.log("input:ready");
 			createInterface({ input: process.stdin }).once("line", (line) => {

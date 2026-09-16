@@ -329,7 +329,7 @@ test("Shell freezes proxy authority before async preparation and transfers proce
 test("Shell rejects unsupported proxy platforms and never creates a proxy when networking is disabled", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-proxy-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
-	for (const platform of ["linux", "win32"] as const) {
+	for (const platform of ["linux"] as const) {
 		let proxies = 0;
 		const manager = new StartManager(completedSnapshot());
 		const tool = new ShellTool({
