@@ -209,6 +209,8 @@ test("Windows uses protocol version 1 with the injected restricted-token helper"
 		cwd: canonicalWorkspace,
 		workspace_roots: [canonicalWorkspace],
 		writable_roots: [canonicalWorkspace],
+		denied_read_roots: [],
+		denied_read_globs: [],
 		filesystem: "workspace_write",
 		network: "enabled",
 		mode: "workspace-write",

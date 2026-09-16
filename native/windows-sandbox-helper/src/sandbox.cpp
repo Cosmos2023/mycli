@@ -31,7 +31,7 @@ void RejectReparseTraversal(
     const std::filesystem::path& root,
     const std::filesystem::path& path) {
     auto current = root;
-    const auto relative = std::filesystem::relative(path, root);
+    const auto relative = path.lexically_relative(root);
     for (const auto& component : relative) {
         current /= component;
         if (IsReparsePoint(current)) {
@@ -62,13 +62,14 @@ std::vector<std::filesystem::path> ResolveDeniedReadPaths(
             matches.insert(std::filesystem::weakly_canonical(path));
         }
     }
+    if (request.denied_read_globs.empty()) return {matches.begin(), matches.end()};
     for (const auto& root_value : request.workspace_roots) {
         const std::filesystem::path root =
             std::filesystem::weakly_canonical(root_value);
         std::error_code error;
         std::filesystem::recursive_directory_iterator iterator{
             root,
-            std::filesystem::directory_options::skip_permission_denied,
+            std::filesystem::directory_options::none,
             error};
         const std::filesystem::recursive_directory_iterator end;
         if (error) {
@@ -79,10 +80,7 @@ std::vector<std::filesystem::path> ResolveDeniedReadPaths(
                 throw std::runtime_error("failed to enumerate denied-read globs");
             }
             const auto& path = iterator->path();
-            const auto relative = std::filesystem::relative(path, root, error);
-            if (error) {
-                throw std::runtime_error("failed to resolve denied-read path");
-            }
+            const auto relative = path.lexically_relative(root);
             if (std::any_of(
                     request.denied_read_globs.begin(),
                     request.denied_read_globs.end(),
@@ -102,7 +100,7 @@ std::vector<std::filesystem::path> ResolveDeniedReadPaths(
 
 std::vector<LocalSid> CapabilitiesForRequest(const SandboxRequest& request) {
     std::vector<LocalSid> capabilities;
-    if (request.mode == SandboxMode::kReadOnly) {
+    if (request.mode == SandboxMode::kReadOnly || request.writable_roots.empty()) {
         capabilities.push_back(DeriveCapabilitySid(
             std::filesystem::path{request.cwd}, L"read-only"));
         return capabilities;
@@ -134,6 +132,22 @@ DWORD RunWithCapabilities(
 }  // namespace
 
 void PrepareSandboxRequest(const SandboxRequest& request, PSID account_sid) {
+    // Reject metadata aliases before modifying ACLs. Include workspace roots even
+    // when the write allowlist is narrowed to a child directory or file.
+    std::set<std::filesystem::path> protected_paths;
+    auto protection_roots = request.workspace_roots;
+    protection_roots.insert(protection_roots.end(),
+        request.writable_roots.begin(), request.writable_roots.end());
+    for (const auto& root : protection_roots) {
+        for (const auto* name : kProtectedMetadata) {
+            const auto path = std::filesystem::path{root} / name;
+            if (IsReparsePoint(path)) {
+                throw std::runtime_error("protected metadata must not be a reparse point");
+            }
+            if (std::filesystem::exists(path)) protected_paths.insert(path);
+        }
+    }
+    const auto denied_paths = ResolveDeniedReadPaths(request);
     if (account_sid != nullptr) {
         for (const auto& root_value : request.workspace_roots) {
             GrantReadableRoot(std::filesystem::path{root_value}, account_sid);
@@ -155,32 +169,15 @@ void PrepareSandboxRequest(const SandboxRequest& request, PSID account_sid) {
         }
     }
 
-    const auto denied_paths = ResolveDeniedReadPaths(request);
     for (const auto& capability : capabilities) {
         for (const auto& path : denied_paths) {
             DenyReadPath(path, capability.get());
         }
-        for (const auto& root_value : request.writable_roots) {
-            const std::filesystem::path root{root_value};
-            for (const auto* name : kProtectedMetadata) {
-                const auto protected_path = root / name;
-                if (std::filesystem::exists(protected_path)) {
-                    DenyWritePath(protected_path, capability.get());
-                }
-            }
-        }
+        for (const auto& path : protected_paths) DenyWritePath(path, capability.get());
     }
     if (account_sid != nullptr) {
         for (const auto& path : denied_paths) DenyReadPath(path, account_sid);
-        for (const auto& root_value : request.writable_roots) {
-            const std::filesystem::path root{root_value};
-            for (const auto* name : kProtectedMetadata) {
-                const auto protected_path = root / name;
-                if (std::filesystem::exists(protected_path)) {
-                    DenyWritePath(protected_path, account_sid);
-                }
-            }
-        }
+        for (const auto& path : protected_paths) DenyWritePath(path, account_sid);
     }
 }
 

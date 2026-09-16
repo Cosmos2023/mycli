@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <array>
 #include <filesystem>
 #include "win32.hpp"
 
@@ -23,6 +24,7 @@ class LocalSid {
   private:
     PSID sid_ = nullptr;
 };
+std::array<unsigned char, 32> HashSandboxKey(const std::wstring& value);
 LocalSid DeriveCapabilitySid(
     const std::filesystem::path& root,
     const std::wstring& capability_scope);

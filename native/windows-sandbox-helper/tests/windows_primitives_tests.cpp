@@ -82,14 +82,21 @@ int RunTests(const std::filesystem::path& executable) {
         return 1;
     }
 
-    const auto owner_a = mycli::sandbox::OfflineUsernameForOwner(
-        L"S-1-5-21-1-2-3-1001");
-    const auto owner_b = mycli::sandbox::OfflineUsernameForOwner(
-        L"S-1-5-21-1-2-3-1002");
-    if (owner_a != mycli::sandbox::OfflineUsernameForOwner(
-                       L"S-1-5-21-1-2-3-1001") ||
+    const auto owner_a = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kOffline);
+    const auto owner_b = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1002", mycli::sandbox::SandboxIdentityKind::kOffline);
+    if (owner_a != mycli::sandbox::SandboxUsernameForOwner(
+                       L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kOffline) ||
         owner_a == owner_b || owner_a.size() != 20 || !owner_a.starts_with(L"mcli_")) {
         std::cerr << "offline account derivation failed\n";
+        return 1;
+    }
+
+    const auto online = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kOnline);
+    if (online == owner_a || !online.starts_with(L"mclo_")) {
+        std::cerr << "online and offline identities collided\n";
         return 1;
     }
 
@@ -122,17 +129,21 @@ int RunTests(const std::filesystem::path& executable) {
     {
         std::ofstream credential{setup_state / L"offline.credential"};
         std::ofstream temporary{setup_state / L"offline.credential.tmp"};
+        std::ofstream online_credential{setup_state / L"online.credential"};
+        std::ofstream online_temporary{setup_state / L"online.credential.tmp"};
         std::ofstream firewall_marker{setup_state / L"firewall.v1"};
         credential << "credential";
         temporary << "temporary";
         firewall_marker << "marker";
     }
-    mycli::sandbox::ResetOfflineIdentityCredentials(setup_state);
+    mycli::sandbox::ResetSandboxIdentityCredentials(setup_state);
     mycli::sandbox::ResetOfflineFirewallState(setup_state);
-    mycli::sandbox::ResetOfflineIdentityCredentials(setup_state);
+    mycli::sandbox::ResetSandboxIdentityCredentials(setup_state);
     mycli::sandbox::ResetOfflineFirewallState(setup_state);
     if (std::filesystem::exists(setup_state / L"offline.credential") ||
         std::filesystem::exists(setup_state / L"offline.credential.tmp") ||
+        std::filesystem::exists(setup_state / L"online.credential") ||
+        std::filesystem::exists(setup_state / L"online.credential.tmp") ||
         std::filesystem::exists(setup_state / L"firewall.v1")) {
         std::cerr << "sandbox setup state reset failed\n";
         return 1;

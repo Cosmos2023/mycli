@@ -51,8 +51,30 @@ int RunTests() {
         network_enabled.find(L"\"network\": \"disabled\""),
         std::wstring{L"\"network\": \"disabled\""}.size(),
         L"\"network\": \"enabled\"");
-    if (!Rejects(network_enabled)) {
-        std::cerr << "network-enabled request was accepted\n";
+    if (Rejects(network_enabled)) {
+        std::cerr << "network-enabled request was rejected\n";
+        return 1;
+    }
+
+    std::wstring empty_write_roots{kValidRequest};
+    const std::wstring write_roots = LR"("writable_roots": ["C:\\workspace"])";
+    empty_write_roots.replace(empty_write_roots.find(write_roots), write_roots.size(),
+        L"\"writable_roots\": []");
+    if (Rejects(empty_write_roots)) {
+        std::cerr << "empty write allowlist was rejected\n";
+        return 1;
+    }
+    std::wstring missing_field{kValidRequest};
+    const std::wstring deny_field = LR"(    "denied_read_globs": ["**/.env"],)";
+    missing_field.erase(missing_field.find(deny_field), deny_field.size());
+    if (!Rejects(missing_field)) {
+        std::cerr << "missing protocol field was accepted\n";
+        return 1;
+    }
+    std::wstring embedded_nul{kValidRequest};
+    embedded_nul.insert(embedded_nul.find(L"echo ok") + 4, LR"(\u0000)");
+    if (!Rejects(embedded_nul)) {
+        std::cerr << "embedded NUL was accepted\n";
         return 1;
     }
 

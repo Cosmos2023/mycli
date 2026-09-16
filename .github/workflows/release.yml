@@ -10,28 +10,7 @@ permissions:
 
 jobs:
   windows-sandbox-helper:
-    runs-on: windows-2022
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Windows sandbox helper
-        shell: pwsh
-        run: |
-          cmake `
-            -S native/windows-sandbox-helper `
-            -B native/windows-sandbox-helper/build `
-            -A x64
-          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
-          New-Item -ItemType Directory -Force release-artifacts | Out-Null
-          Copy-Item `
-            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
-            release-artifacts/mycli-windows-sandbox.exe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-sandbox-helper
-          path: release-artifacts/mycli-windows-sandbox.exe
-          if-no-files-found: error
-          retention-days: 1
+    uses: ./.github/workflows/windows-sandbox.yml
 
   publish:
     needs: windows-sandbox-helper

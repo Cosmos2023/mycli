@@ -33,6 +33,9 @@ std::string WideToUtf8(const std::wstring& value) {
 }
 
 std::wstring Utf8ToWide(const std::string& value) {
+    if (value.find('\0') != std::string::npos) {
+        throw std::runtime_error("request strings must not contain NUL");
+    }
     if (value.empty()) return {};
     const int chars = MultiByteToWideChar(
         CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
@@ -114,6 +117,9 @@ SandboxMode ParseMode(const std::wstring& value) {
 }  // namespace
 
 SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
+    if (request_json.size() > 32767) {
+        throw std::runtime_error("sandbox request exceeds command-line size limit");
+    }
     const Json root = Json::parse(WideToUtf8(request_json));
     RequireKnownFields(
         root,
@@ -155,17 +161,13 @@ SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
             [](const std::wstring& value) { return value.empty(); })) {
         throw std::runtime_error("denied_read_globs must not contain empty patterns");
     }
-    if (request.network != NetworkPolicy::kDisabled) {
-        throw std::runtime_error("restricted Windows sandbox requires network=disabled");
-    }
     if (request.mode == SandboxMode::kReadOnly) {
         if (request.filesystem != FilesystemPolicy::kReadOnly ||
             !request.writable_roots.empty()) {
             throw std::runtime_error("read-only request contains writable policy");
         }
-    } else if (request.filesystem != FilesystemPolicy::kWorkspaceWrite ||
-               request.writable_roots.empty()) {
-        throw std::runtime_error("workspace-write request is missing writable roots");
+    } else if (request.filesystem != FilesystemPolicy::kWorkspaceWrite) {
+        throw std::runtime_error("workspace-write request has incompatible filesystem policy");
     }
     return request;
 }

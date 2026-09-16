@@ -13,12 +13,13 @@
 #include "firewall.hpp"
 #include "elevation.hpp"
 #include "identity.hpp"
+#include "token.hpp"
 #include "win32.hpp"
 
 namespace {
 
 constexpr wchar_t kHelperName[] = L"mycli-windows-sandbox";
-constexpr bool kEnforcementReleased = false;
+using mycli::sandbox::SandboxIdentityKind;
 
 class SetupStateLock {
   public:
@@ -26,7 +27,7 @@ class SetupStateLock {
         : handle_{CreateMutexW(
               nullptr,
               FALSE,
-              (L"Local\\mycli-windows-sandbox-setup-" + owner_sid).c_str())} {
+              (L"Global\\mycli-windows-sandbox-setup-" + owner_sid).c_str())} {
         if (!handle_) throw mycli::sandbox::Win32Error("CreateMutexW(sandbox setup)");
         const DWORD wait_result = WaitForSingleObject(handle_.get(), INFINITE);
         if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
@@ -60,10 +61,20 @@ std::filesystem::path CurrentExecutablePath() {
 bool SetupComplete() {
     const auto state_directory = mycli::sandbox::SandboxStateDirectory();
     const auto owner_sid = mycli::sandbox::CurrentUserSidString();
-    if (!mycli::sandbox::OfflineIdentityCredentialsExist(state_directory)) return false;
     try {
-        const auto identity = mycli::sandbox::LoadOfflineIdentity(
-            state_directory, owner_sid);
+        if (!mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOffline) ||
+            !mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOnline)) return false;
+        const auto identity = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, SandboxIdentityKind::kOffline);
+        const auto online = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, SandboxIdentityKind::kOnline);
+        if (EqualSid(identity.sid.get(), online.sid.get()) != 0) return false;
+        const auto capability = mycli::sandbox::DeriveCapabilitySid(state_directory, L"read-only");
+        for (const auto token : {identity.token.get(), online.token.get()}) {
+            const auto restricted = mycli::sandbox::CreateRestrictedPrimaryTokenFrom(
+                token, {capability.get()});
+            if (IsTokenRestricted(restricted.get()) == 0) return false;
+        }
         return mycli::sandbox::OfflineFirewallSetupReady(
             identity.sid_string, state_directory);
     } catch (const std::exception&) {
@@ -74,14 +85,11 @@ bool SetupComplete() {
 void SetupForUser(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid) {
-    std::cerr << "setup: identity-start\n" << std::flush;
-    mycli::sandbox::SetupOfflineIdentity(state_directory, owner_sid);
-    std::cerr << "setup: identity-done\n" << std::flush;
-    const auto identity = mycli::sandbox::LoadOfflineIdentity(
-        state_directory, owner_sid);
-    std::cerr << "setup: firewall-start\n" << std::flush;
+    mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kOffline);
+    mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kOnline);
+    const auto identity = mycli::sandbox::LoadSandboxIdentity(
+        state_directory, owner_sid, SandboxIdentityKind::kOffline);
     mycli::sandbox::SetupOfflineFirewall(identity.sid_string, state_directory);
-    std::cerr << "setup: firewall-done\n" << std::flush;
 }
 
 void EnsureSetupComplete() {
@@ -107,7 +115,7 @@ void ResetSetupState() {
     const SetupStateLock setup_lock{owner_sid};
     static_cast<void>(setup_lock);
     const auto state_directory = mycli::sandbox::SandboxStateDirectory();
-    mycli::sandbox::ResetOfflineIdentityCredentials(state_directory);
+    mycli::sandbox::ResetSandboxIdentityCredentials(state_directory);
     mycli::sandbox::ResetOfflineFirewallState(state_directory);
 }
 
@@ -120,7 +128,7 @@ int Run(int argc, wchar_t* argv[]) {
                    << L",\"setup_complete\":"
                    << (setup_complete ? L"true" : L"false")
                    << L",\"sandbox_ready\":"
-                   << (setup_complete && kEnforcementReleased ? L"true" : L"false")
+                   << (setup_complete ? L"true" : L"false")
                    << L"}\n";
         return 0;
     }
@@ -157,17 +165,20 @@ int Run(int argc, wchar_t* argv[]) {
         EnsureSetupComplete();
         const auto state_directory = mycli::sandbox::SandboxStateDirectory();
         const auto owner_sid = mycli::sandbox::CurrentUserSidString();
-        const auto identity = mycli::sandbox::LoadOfflineIdentity(
-            state_directory, owner_sid);
+        const auto kind = request.network == mycli::sandbox::NetworkPolicy::kEnabled
+            ? SandboxIdentityKind::kOnline : SandboxIdentityKind::kOffline;
+        const auto identity = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, kind);
         mycli::sandbox::PrepareSandboxRequest(request, identity.sid.get());
         const auto helper = CurrentExecutablePath();
         const auto helper_root = helper.parent_path().has_parent_path()
             ? helper.parent_path().parent_path()
             : helper.parent_path();
         mycli::sandbox::GrantReadableRoot(helper_root, identity.sid.get());
-        return static_cast<int>(mycli::sandbox::RunAsOfflineIdentity(
+        return static_cast<int>(mycli::sandbox::RunAsSandboxIdentity(
             state_directory,
             owner_sid,
+            kind,
             {helper.wstring(), L"--run-prepared-json", argv[2], identity.sid_string},
             std::filesystem::path{request.cwd}));
     }

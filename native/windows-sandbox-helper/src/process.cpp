@@ -43,6 +43,21 @@ class ThreadAttributeList {
     PPROC_THREAD_ATTRIBUTE_LIST list_ = nullptr;
 };
 
+// CreateProcessWithLogonW otherwise builds the target account's default environment,
+// losing the host's sanitized PATH, locale, and process-owned proxy settings.
+class InheritedEnvironment {
+  public:
+    InheritedEnvironment() : value_{GetEnvironmentStringsW()} {
+        if (value_ == nullptr) throw Win32Error("GetEnvironmentStringsW");
+    }
+    ~InheritedEnvironment() { FreeEnvironmentStringsW(value_); }
+    InheritedEnvironment(const InheritedEnvironment&) = delete;
+    InheritedEnvironment& operator=(const InheritedEnvironment&) = delete;
+    [[nodiscard]] LPVOID get() const noexcept { return value_; }
+  private:
+    LPWCH value_;
+};
+
 UniqueHandle OpenNullDevice(DWORD desired_access) {
     const HANDLE handle = CreateFileW(
         L"NUL",
@@ -274,6 +289,7 @@ DWORD RunProcessWithLogonInJob(
     const auto job = CreateKillOnCloseJob();
     constexpr DWORD kCreationFlags =
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+    const InheritedEnvironment environment;
     if (CreateProcessWithLogonW(
             username.c_str(),
             L".",
@@ -282,7 +298,7 @@ DWORD RunProcessWithLogonInJob(
             nullptr,
             mutable_command_line.data(),
             kCreationFlags,
-            nullptr,
+            environment.get(),
             cwd.c_str(),
             &startup,
             &process_info) == 0) {

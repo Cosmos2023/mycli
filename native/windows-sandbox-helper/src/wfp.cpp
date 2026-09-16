@@ -6,6 +6,7 @@
 #include <rpc.h>
 
 #include <array>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -18,10 +19,6 @@ constexpr GUID kProviderKey{
     0x9a91d8d2, 0x9d9b, 0x415b, {0xb3, 0x04, 0x29, 0x78, 0xd0, 0xe4, 0xd6, 0x0c}};
 constexpr GUID kSublayerKey{
     0x5c1e50a5, 0x9ccf, 0x41dd, {0xaf, 0x3b, 0xe0, 0x62, 0xa9, 0x04, 0x99, 0x2d}};
-constexpr GUID kFilterV4Key{
-    0xdc3dfb87, 0xb89c, 0x4f5f, {0x9b, 0x09, 0x7d, 0x1f, 0xb3, 0xde, 0x14, 0x9d}};
-constexpr GUID kFilterV6Key{
-    0x05be27a4, 0xfd6e, 0x44e0, {0x9c, 0xf3, 0x95, 0xdc, 0x0d, 0xa8, 0xdc, 0xfb}};
 constexpr GUID kAleAuthConnectV4{
     0xc38d57d1, 0x05a7, 0x4c33, {0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82}};
 constexpr GUID kAleAuthConnectV6{
@@ -31,17 +28,27 @@ constexpr GUID kAleUserId{
 constexpr UINT32 kPersistentFlag = 0x00000001;
 
 struct FilterSpec {
-    const GUID* key;
+    GUID key;
     const GUID* layer;
     const wchar_t* name;
 };
 
-const std::array<FilterSpec, 2> kFilterSpecs{{
-    {&kFilterV4Key, &kAleAuthConnectV4,
-     L"mycli Sandbox Offline - Block Connect IPv4"},
-    {&kFilterV6Key, &kAleAuthConnectV6,
-     L"mycli Sandbox Offline - Block Connect IPv6"},
-}};
+// Stable keys include the account SID: provisioning another Windows user must
+// never replace filters protecting an already-running sandbox.
+std::array<FilterSpec, 4> FilterSpecs(const std::wstring& account_sid) {
+    const auto make = [&](const GUID* layer, const wchar_t* scope) {
+        const auto digest = HashSandboxKey(L"mycli/windows/network/" + account_sid + L"/" + scope);
+        GUID key{};
+        std::memcpy(&key, digest.data(), sizeof(key));
+        return FilterSpec{key, layer, scope};
+    };
+    return {{
+        make(&kAleAuthConnectV4, L"Block Connect IPv4"),
+        make(&kAleAuthConnectV6, L"Block Connect IPv6"),
+        make(&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4, L"Block Accept IPv4"),
+        make(&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, L"Block Accept IPv6"),
+    }};
+}
 
 void RequireWfpSuccess(DWORD result, const char* operation) {
     if (result != ERROR_SUCCESS) {
@@ -202,7 +209,7 @@ void AddFilter(HANDLE engine, const FilterSpec& spec, UserCondition& user) {
     std::wstring description = L"Block all outbound connections for the mycli offline account";
     GUID provider_key = kProviderKey;
     FWPM_FILTER0 filter{};
-    filter.filterKey = *spec.key;
+    filter.filterKey = spec.key;
     filter.displayData.name = name.data();
     filter.displayData.description = description.data();
     filter.flags = kPersistentFlag;
@@ -221,11 +228,13 @@ void AddFilter(HANDLE engine, const FilterSpec& spec, UserCondition& user) {
 bool DescriptorMatchesSid(const FWP_BYTE_BLOB* blob, PSID expected_sid) {
     if (blob == nullptr || blob->data == nullptr || blob->size == 0) return false;
     const auto descriptor = static_cast<PSECURITY_DESCRIPTOR>(blob->data);
+    if (IsValidSecurityDescriptor(descriptor) == 0 ||
+        GetSecurityDescriptorLength(descriptor) > blob->size) return false;
     BOOL present = FALSE;
     BOOL defaulted = FALSE;
     PACL dacl = nullptr;
     if (GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) == 0 ||
-        present == FALSE || dacl == nullptr) {
+        present == FALSE || dacl == nullptr || dacl->AceCount != 1) {
         return false;
     }
     for (DWORD index = 0; index < dacl->AceCount; ++index) {
@@ -245,7 +254,7 @@ bool DescriptorMatchesSid(const FWP_BYTE_BLOB* blob, PSID expected_sid) {
 
 bool FilterReady(HANDLE engine, const FilterSpec& spec, PSID expected_sid) {
     FWPM_FILTER0* filter = nullptr;
-    if (FwpmFilterGetByKey0(engine, spec.key, &filter) != ERROR_SUCCESS ||
+    if (FwpmFilterGetByKey0(engine, &spec.key, &filter) != ERROR_SUCCESS ||
         filter == nullptr) {
         return false;
     }
@@ -277,8 +286,8 @@ void SetupOfflineWfp(const std::wstring& offline_sid) {
     EnsureProvider(engine.get());
     EnsureSublayer(engine.get());
     UserCondition user{sid.get()};
-    for (const auto& spec : kFilterSpecs) {
-        DeleteFilterIfPresent(engine.get(), *spec.key);
+    for (const auto& spec : FilterSpecs(offline_sid)) {
+        DeleteFilterIfPresent(engine.get(), spec.key);
         AddFilter(engine.get(), spec, user);
     }
     transaction.Commit();
@@ -287,7 +296,7 @@ void SetupOfflineWfp(const std::wstring& offline_sid) {
 bool OfflineWfpReady(const std::wstring& offline_sid) {
     auto sid = SidFromString(offline_sid);
     Engine engine;
-    for (const auto& spec : kFilterSpecs) {
+    for (const auto& spec : FilterSpecs(offline_sid)) {
         if (!FilterReady(engine.get(), spec, sid.get())) return false;
     }
     return true;
